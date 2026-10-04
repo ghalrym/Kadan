@@ -53,7 +53,7 @@ try {
   const menu = page.getByRole('group', { name: 'Language model options' })
   const load = page.getByRole('button', { name: 'Load', exact: true })
   const open = async () => { await trigger.click(); await menu.waitFor() }
-  const choose = async name => { await open(); await menu.getByRole('button', { name }).click() }
+  const choose = async name => { await open(); await menu.locator('.model-picker-choice').filter({ hasText: name }).click() }
   const waitFor = async predicate => { for (let n = 0; n < 100 && !predicate(); n++) await page.waitForTimeout(50); assert(predicate()) }
   const finishLoad = async () => {
     await waitFor(() => !!releaseLoad)
