@@ -17,10 +17,14 @@ and Pydantic. Regenerate it from the repository root after changing API contract
 
 ```sh
 .venv/bin/python -m api.export_openapi > frontend/openapi.json
+npm --prefix frontend run generate:api
 ```
 
-This command imports the app directly; it does not require a running server.
-Treat the spec as generated output and update route models rather than editing it.
+The export command imports the app directly; it does not require a running server.
+The second command uses Hey API to generate typed Fetch functions and types in
+`frontend/src/api/generated/`. Treat both artifacts as generated output and update
+route models rather than editing them. Explicit route `operation_id` values supply
+the generated function names.
 
 | Method | Path | Purpose |
 | --- | --- | --- |

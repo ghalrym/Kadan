@@ -74,18 +74,42 @@ Navigation, request-detail links, and the Advanced disclosure work. Everything e
 
 The Python server remains separate. When the backend is ready, replace the fixtures with API data and enable the appropriate controls.
 
-## API specification
+## Generated API client
 
 [`openapi.json`](openapi.json) is generated from the FastAPI routes and Pydantic
-models for frontend development and future client generation. It does not connect
-the frontend to the API.
+models. Hey API generates typed Fetch functions and request/response types in
+`src/api/generated/`, configured by `openapi-ts.config.ts`. The pages still use
+their existing mock data; generating the client does not make any API calls.
 
 Regenerate it from the repository root with the API's Python dependencies installed:
 
 ```sh
 .venv/bin/python -m api.export_openapi > frontend/openapi.json
+npm --prefix frontend run generate:api
 ```
 
-Edit the API routes and models, then regenerate; do not edit the spec by hand.
+The second command can run independently when the spec is already current, including
+inside the frontend container: `docker compose exec frontend npm run generate:api`.
+Edit the API routes and models, then regenerate; do not edit the spec or generated
+TypeScript by hand. Route `operation_id` values determine the SDK function names.
+Hey API is pinned for reproducible generation. The `js-yaml` override keeps its
+schema parser on the patched 4.3.2 release until the upstream dependency is updated.
 The running API also serves `/openapi.json` and interactive documentation at
 `http://localhost:8000/docs`.
+
+For future frontend integration, import functions and types directly:
+
+```ts
+import { createCompletion, type CompletionRequest } from './api/generated'
+
+const body: CompletionRequest = {
+  messages: [{ role: 'user', text: 'Hello' }],
+}
+const { data, error } = await createCompletion({ body })
+```
+
+The generated client uses same-origin URLs. Vite proxies `/v1` and `/health` to
+`http://127.0.0.1:8000` locally, or `http://api:8000` in Compose via `API_PROXY_TARGET`.
+Start both services with `docker compose up --build -d`. Production hosting must
+route these paths to the API, or configure a different API origin using the
+generated client's `setConfig({ baseUrl })` method and allow that origin on the API.

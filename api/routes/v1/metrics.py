@@ -20,7 +20,7 @@ class MetricsResponse(BaseModel):
     queued_jobs: int
 
 
-@router.get("")
+@router.get("", operation_id="getMetrics")
 def get_metrics() -> MetricsResponse:
     return MetricsResponse(status="Online", resources=[
         ResourceMeter(label="GPU 0 · VRAM", used=18.6, total=24),

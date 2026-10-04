@@ -207,7 +207,7 @@ class RequestResponse(BaseModel):
     request: RequestRecord
 
 
-@router.get("")
+@router.get("", operation_id="listRequests")
 def list_requests(filters: Annotated[RequestFilters, Query()]) -> RequestsResponse:
     matches = [record for record in MOCK_REQUESTS
                if (filters.type is None or record.type == filters.type)
@@ -216,7 +216,7 @@ def list_requests(filters: Annotated[RequestFilters, Query()]) -> RequestsRespon
     return RequestsResponse(requests=matches[filters.offset:filters.offset + filters.limit], total=len(matches))
 
 
-@router.get("/{request_id}")
+@router.get("/{request_id}", operation_id="getRequest")
 def get_request(request_id: str) -> RequestResponse:
     for record in MOCK_REQUESTS:
         if record.id == request_id:

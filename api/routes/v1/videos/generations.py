@@ -35,6 +35,6 @@ class VideoGenerationResponse(BaseModel):
     job: VideoJob
 
 
-@router.post("", status_code=202)
+@router.post("", status_code=202, operation_id="generateVideo")
 def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
     return VideoGenerationResponse(job=MOCK_VIDEO_JOB)

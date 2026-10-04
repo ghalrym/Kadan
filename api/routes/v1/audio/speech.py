@@ -43,11 +43,11 @@ class SpeechHistoryResponse(BaseModel):
     script: str
 
 
-@router.get("")
+@router.get("", operation_id="listSpeech")
 def list_speech() -> SpeechHistoryResponse:
     return SpeechHistoryResponse(audio=[MOCK_SPEECH], voice_description=MOCK_VOICE_DESCRIPTION, script=MOCK_SCRIPT)
 
 
-@router.post("")
+@router.post("", operation_id="generateSpeech")
 def generate_speech(body: SpeechRequest) -> SpeechResponse:
     return SpeechResponse(audio=MOCK_SPEECH)

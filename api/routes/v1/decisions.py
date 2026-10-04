@@ -73,12 +73,12 @@ class DecisionPlaygroundResponse(BaseModel):
     answers: list[DecisionAnswer]
 
 
-@router.get("")
+@router.get("", operation_id="getDecisions")
 def get_decisions() -> DecisionPlaygroundResponse:
     return DecisionPlaygroundResponse(state=MOCK_STATE, questions=MOCK_QUESTIONS, answers=[])
 
 
-@router.post("")
+@router.post("", operation_id="evaluateDecisions")
 def evaluate_decisions(body: DecisionRequest) -> DecisionResponse:
     # The mock playground has no evaluated answers yet.
     return DecisionResponse(answers=[])

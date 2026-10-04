@@ -17,6 +17,6 @@ class TranscriptionResponse(BaseModel):
     text: str
 
 
-@router.post("")
+@router.post("", operation_id="transcribeAudio")
 def transcribe_audio(body: TranscriptionRequest) -> TranscriptionResponse:
     return TranscriptionResponse(text=MOCK_TRANSCRIPT)

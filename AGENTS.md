@@ -8,3 +8,12 @@
 - `api/server.py` creates the FastAPI application and registers routers. `api/__main__.py` starts the server.
 - Keep API tests under `api/tests/`, mirroring the API source folder hierarchy and module names. Prefix test filenames with `test_`.
 - For example, tests for `api/routes/v1/chat/completions.py` belong in `api/tests/routes/v1/chat/test_completions.py`. Tests for `api/pydantic_models/chat.py` belong in `api/tests/pydantic_models/test_chat.py`.
+
+## API generation
+
+From the repository root, generate the API schema, then the frontend client:
+
+```sh
+.venv/bin/python -m api.export_openapi > frontend/openapi.json
+npm --prefix frontend run generate:api
+```

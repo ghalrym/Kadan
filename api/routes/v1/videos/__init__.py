@@ -57,12 +57,12 @@ class VideoResponse(BaseModel):
     job: VideoJob
 
 
-@router.get("")
+@router.get("", operation_id="listVideos")
 def list_videos() -> VideosResponse:
     return VideosResponse(jobs=MOCK_VIDEO_JOBS)
 
 
-@router.get("/{video_id}")
+@router.get("/{video_id}", operation_id="getVideo")
 def get_video(video_id: str) -> VideoResponse:
     for job in MOCK_VIDEO_JOBS:
         if job.id == video_id:

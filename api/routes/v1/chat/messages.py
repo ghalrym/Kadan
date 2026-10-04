@@ -36,6 +36,6 @@ class MessagesResponse(BaseModel):
     messages: list[ChatMessage]
 
 
-@router.get("")
+@router.get("", operation_id="listMessages")
 def list_messages() -> MessagesResponse:
     return MessagesResponse(messages=MOCK_MESSAGES)

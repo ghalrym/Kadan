@@ -65,11 +65,11 @@ class SettingsRequest(BaseModel):
         return self
 
 
-@router.get("")
+@router.get("", operation_id="getSettings")
 def get_settings() -> SettingsResponse:
     return SettingsResponse(models=MOCK_MODEL_SETTINGS, whisper_formatting=True)
 
 
-@router.put("", description="Validates settings and returns the unchanged mock settings. Does not persist changes.")
+@router.put("", description="Validates settings and returns the unchanged mock settings. Does not persist changes.", operation_id="updateSettings")
 def update_settings(body: SettingsRequest) -> SettingsResponse:
     return get_settings()

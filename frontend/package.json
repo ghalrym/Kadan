@@ -1,9 +1,15 @@
 {
   "name": "frontend",
   "private": true,
+  "overrides": {
+    "@hey-api/json-schema-ref-parser": {
+      "js-yaml": "4.3.2"
+    }
+  },
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "generate:api": "openapi-ts && prettier --write --single-quote --no-semi src/api/generated",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
@@ -15,11 +21,13 @@
     "react-router": "^8.4.0"
   },
   "devDependencies": {
+    "@hey-api/openapi-ts": "0.99.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
+    "prettier": "3.9.9",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   }

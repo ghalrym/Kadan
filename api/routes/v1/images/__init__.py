@@ -28,6 +28,6 @@ class ImagesResponse(BaseModel):
     images: list[ImageSet]
 
 
-@router.get("")
+@router.get("", operation_id="listImages")
 def list_images() -> ImagesResponse:
     return ImagesResponse(images=MOCK_IMAGE_SETS)

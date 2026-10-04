@@ -1267,7 +1267,7 @@
   "paths": {
     "/health": {
       "get": {
-        "operationId": "health_health_get",
+        "operationId": "health",
         "responses": {
           "200": {
             "content": {
@@ -1288,7 +1288,7 @@
     },
     "/v1/audio/speech": {
       "get": {
-        "operationId": "list_speech_v1_audio_speech_get",
+        "operationId": "listSpeech",
         "responses": {
           "200": {
             "content": {
@@ -1307,7 +1307,7 @@
         ]
       },
       "post": {
-        "operationId": "generate_speech_v1_audio_speech_post",
+        "operationId": "generateSpeech",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1348,7 +1348,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "operationId": "transcribe_audio_v1_audio_transcriptions_post",
+        "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1389,7 +1389,7 @@
     },
     "/v1/chat/completions": {
       "post": {
-        "operationId": "create_completion_v1_chat_completions_post",
+        "operationId": "createCompletion",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1430,7 +1430,7 @@
     },
     "/v1/chat/messages": {
       "get": {
-        "operationId": "list_messages_v1_chat_messages_get",
+        "operationId": "listMessages",
         "responses": {
           "200": {
             "content": {
@@ -1451,7 +1451,7 @@
     },
     "/v1/decisions": {
       "get": {
-        "operationId": "get_decisions_v1_decisions_get",
+        "operationId": "getDecisions",
         "responses": {
           "200": {
             "content": {
@@ -1470,7 +1470,7 @@
         ]
       },
       "post": {
-        "operationId": "evaluate_decisions_v1_decisions_post",
+        "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1511,7 +1511,7 @@
     },
     "/v1/images": {
       "get": {
-        "operationId": "list_images_v1_images_get",
+        "operationId": "listImages",
         "responses": {
           "200": {
             "content": {
@@ -1532,7 +1532,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "operationId": "create_image_v1_images_edits_post",
+        "operationId": "editImages",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1573,7 +1573,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "operationId": "create_image_v1_images_generations_post",
+        "operationId": "generateImages",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1614,7 +1614,7 @@
     },
     "/v1/metrics": {
       "get": {
-        "operationId": "get_metrics_v1_metrics_get",
+        "operationId": "getMetrics",
         "responses": {
           "200": {
             "content": {
@@ -1635,7 +1635,7 @@
     },
     "/v1/requests": {
       "get": {
-        "operationId": "list_requests_v1_requests_get",
+        "operationId": "listRequests",
         "parameters": [
           {
             "in": "query",
@@ -1747,7 +1747,7 @@
     },
     "/v1/requests/{request_id}": {
       "get": {
-        "operationId": "get_request_v1_requests__request_id__get",
+        "operationId": "getRequest",
         "parameters": [
           {
             "in": "path",
@@ -1789,7 +1789,7 @@
     },
     "/v1/settings": {
       "get": {
-        "operationId": "get_settings_v1_settings_get",
+        "operationId": "getSettings",
         "responses": {
           "200": {
             "content": {
@@ -1809,7 +1809,7 @@
       },
       "put": {
         "description": "Validates settings and returns the unchanged mock settings. Does not persist changes.",
-        "operationId": "update_settings_v1_settings_put",
+        "operationId": "updateSettings",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1850,7 +1850,7 @@
     },
     "/v1/videos": {
       "get": {
-        "operationId": "list_videos_v1_videos_get",
+        "operationId": "listVideos",
         "responses": {
           "200": {
             "content": {
@@ -1871,7 +1871,7 @@
     },
     "/v1/videos/generations": {
       "post": {
-        "operationId": "generate_video_v1_videos_generations_post",
+        "operationId": "generateVideo",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1912,7 +1912,7 @@
     },
     "/v1/videos/{video_id}": {
       "get": {
-        "operationId": "get_video_v1_videos__video_id__get",
+        "operationId": "getVideo",
         "parameters": [
           {
             "in": "path",

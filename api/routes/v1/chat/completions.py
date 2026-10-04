@@ -33,6 +33,6 @@ class CompletionResponse(BaseModel):
     message: ChatMessage
 
 
-@router.post("")
+@router.post("", operation_id="createCompletion")
 def create_completion(body: CompletionRequest) -> CompletionResponse:
     return CompletionResponse(message=MOCK_COMPLETION)

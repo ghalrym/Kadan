@@ -9,6 +9,6 @@ class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
 
 
-@router.get("/health", tags=["Health"])
+@router.get("/health", tags=["Health"], operation_id="health")
 def health() -> HealthResponse:
     return HealthResponse()

@@ -27,6 +27,6 @@ class ImageResponse(BaseModel):
     image: ImageSet
 
 
-@router.post("")
+@router.post("", operation_id="generateImages")
 def create_image(body: ImageRequest) -> ImageResponse:
     return ImageResponse(image=MOCK_IMAGE_SET)
