@@ -30,8 +30,8 @@ send API requests, but their model providers are not implemented. They return
 explicit unavailable errors and empty media history, never fabricated results.
 These are connected forms, not working media generation. The API access page reads
 the running OpenAPI reference and does not create keys or change authentication.
-See [endpoint status and remaining decisions](docs/endpoint-status.md) and
-[monitoring limits](docs/monitoring.md).
+Media checkpoints/licenses, input ingestion, artifacts and resource-managed
+adapters remain to be selected and implemented.
 
 The inference service uses host-RAM expert offload and a GPU cache on one selected
 GPU; it does not pool two cards' VRAM. Source modules in `api/inference/` describe
@@ -153,3 +153,17 @@ Linux admission respects visible cgroup limits. Estimates and working-expert
 preflight are conservative checks, not guarantees against external allocations;
 actual entry allocation is admitted again before copying. Target-GPU validation
 is still required.
+
+## Request monitoring
+
+Request history retains the latest 1,000 completed inference HTTP requests in the
+API process and resets on restart. Run one worker. It stores status, elapsed time,
+byte counts and structural summaries, not prompt/output text or credentials.
+Metrics cover the last 60 seconds of retained requests and flag truncated windows.
+Memory meters include other processes; missing GPU measurements are explicit.
+These are observations of HTTP handling, not proof of model quality or performance.
+
+For the optional browser smoke, start a disposable API with empty history and
+its Vite proxy, then run `node frontend/tests/monitoring.browser.cjs`. The script
+accepts `MONITORING_TEST_URL`, `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` to use existing
+local browser tooling; it does not install dependencies or load a model.
