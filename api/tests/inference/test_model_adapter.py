@@ -117,3 +117,72 @@ class ModelAdapterTests(unittest.TestCase):
             actual_next = ours(input_ids=torch.tensor([[3]]), past_key_values=actual.past_key_values, use_cache=True)
             torch.testing.assert_close(actual_next.logits, ref_next.logits)
         self.assertGreater(cache.evictions, 4)
+
+    def test_checkpoint_loader_streams_tiny_fixture_without_resident_expert_parameters(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from safetensors.torch import save_file
+        from transformers import GptOssForCausalLM
+        from api.inference.model_adapter import GptOssAdapter
+        config = GptOssConfig(hidden_size=32, intermediate_size=32, num_local_experts=2,
+            num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
+            head_dim=16, num_experts_per_tok=2, vocab_size=64)
+        config._attn_implementation = 'eager'
+        source = GptOssForCausalLM(config).eval()
+        tensors = {name: value.contiguous() for name, value in source.state_dict().items() if '.experts.' not in name}
+        prefix = 'model.layers.0.mlp.experts.'
+        tensors.update({
+            prefix + 'gate_up_proj_blocks': torch.zeros((2, 64, 1, 16), dtype=torch.uint8),
+            prefix + 'gate_up_proj_scales': torch.full((2, 64, 1), 127, dtype=torch.uint8),
+            prefix + 'gate_up_proj_bias': torch.zeros((2, 64)),
+            prefix + 'down_proj_blocks': torch.zeros((2, 32, 1, 16), dtype=torch.uint8),
+            prefix + 'down_proj_scales': torch.full((2, 32, 1), 127, dtype=torch.uint8),
+            prefix + 'down_proj_bias': torch.zeros((2, 32)),
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            save_file(tensors, path / 'model.safetensors')
+            (path / 'model.safetensors.index.json').write_text(json.dumps({'weight_map': {name: 'model.safetensors' for name in tensors}}))
+            data = config.to_dict()
+            data['quantization_config'] = {'quant_method': 'mxfp4'}
+            (path / 'config.json').write_text(json.dumps(data))
+            resources = Mock()
+            with patch('api.inference.model_adapter.ExpertCache', side_effect=lambda bank, size, device: ExpertCache(bank, size, 'cpu')), \
+                 patch.object(GptOssAdapter, '_restore'), patch('transformers.AutoTokenizer.from_pretrained', return_value=Mock()):
+                adapter = GptOssAdapter(SimpleNamespace(id='medium'), path, resources, 'cuda:0')
+            try:
+                self.assertFalse(any(tensor.is_meta for tensor in adapter.model.parameters()))
+                self.assertFalse(any(tensor.is_meta for tensor in adapter.model.buffers()))
+                self.assertFalse(any('.experts.' in name for name, _ in adapter.model.named_parameters()))
+                with torch.inference_mode():
+                    logits = adapter.model(input_ids=torch.tensor([[1, 2]])).logits
+                self.assertTrue(torch.isfinite(logits).all())
+            finally:
+                adapter.close()
+
+    def test_chunked_prefill_matches_full_prompt_greedy_tokens(self):
+        from transformers import GptOssForCausalLM
+        torch.manual_seed(11)
+        config = GptOssConfig(hidden_size=32, intermediate_size=32, num_local_experts=2,
+            num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=1,
+            head_dim=16, num_experts_per_tok=2, vocab_size=64, eos_token_id=-1)
+        config._attn_implementation = 'eager'
+        config._experts_implementation = 'eager'
+        model = GptOssForCausalLM(config).eval()
+        tokens = torch.randint(0, 64, (1, 65))
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = tokens
+        tokenizer.decode.side_effect = lambda generated, **kw: str(generated)
+        expected = []
+        with torch.inference_mode():
+            inputs, cache = tokens, None
+            for _ in range(3):
+                output = model(input_ids=inputs, past_key_values=cache, use_cache=True, logits_to_keep=1)
+                cache = output.past_key_values
+                inputs = output.logits[:, -1, :].argmax(-1, keepdim=True)
+                expected.append(inputs.item())
+        actual = autoregressive_generate(model, tokenizer, [{'role': 'user', 'text': 'fixture'}],
+                                         'cpu', max_new_tokens=3)
+        self.assertEqual(actual, str(expected))

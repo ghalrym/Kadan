@@ -26,6 +26,16 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
     stops = set(eos if isinstance(eos, list) else [eos])
     generated, cache = [], None
     try:
+        # Eager attention is quadratic in the query chunk. Bound queries to 32
+        # tokens so a full 4096-token prompt never creates a 4096x4096 score map.
+        for start in range(0, max(0, tokens.shape[-1] - 32), 32):
+            check_cancel(cancel_event)
+            output = model(input_ids=tokens[:, start:start + 32], past_key_values=cache,
+                           use_cache=True, return_dict=True, logits_to_keep=1)
+            cache = output.past_key_values
+            del output
+        tail_start = ((tokens.shape[-1] - 1) // 32) * 32
+        tokens = tokens[:, tail_start:]
         for _ in range(max_new_tokens):
             check_cancel(cancel_event)
             output = model(input_ids=tokens, past_key_values=cache, use_cache=True,

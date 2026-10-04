@@ -27,13 +27,13 @@ class GptOssOffloadedExperts(nn.Module):
             with self.cache.use((self.layer, expert)) as tensors:
                 # Decode only the selected projection; never all experts or layers.
                 projected = mxfp4_linear(hidden_states[token_idx], tensors['gate_up_blocks'],
-                    tensors['gate_up_scales'], tensors['gate_up_bias'], scratch_bytes=16 * 1024**2)
+                    tensors['gate_up_scales'], tensors['gate_up_bias'].to(hidden_states.dtype), scratch_bytes=16 * 1024**2)
                 gate, up = projected[..., ::2], projected[..., 1::2]
                 gate = gate.clamp(max=7.0)
                 up = up.clamp(min=-7.0, max=7.0)
                 activation = (up + 1) * gate * torch.sigmoid(1.702 * gate)
                 result = mxfp4_linear(activation, tensors['down_blocks'],
-                    tensors['down_scales'], tensors['down_bias'], scratch_bytes=16 * 1024**2)
+                    tensors['down_scales'], tensors['down_bias'].to(hidden_states.dtype), scratch_bytes=16 * 1024**2)
                 output.index_add_(0, token_idx, (result * routing_weights[token_idx, topk_idx, None]).to(output.dtype))
         return output
 
@@ -75,7 +75,8 @@ class GptOssAdapter:
         # Host preserves packed experts plus dense weights when GPU eviction occurs.
         self.host_reservation = resources.reserve(self.owner + ':host', 'llm',
             host_bytes=packed_bytes + 2 * dense_bytes + 512 * 1024**2)
-        self.device_budget = dense_bytes + 2 * 1024**3 + 2 * 1024**3
+        kv_bytes = 2 * layers * config.num_key_value_heads * config.head_dim * 4096 * 2
+        self.device_budget = dense_bytes + kv_bytes + 2 * 1024**3 + 2 * 1024**3
         self.cache_bytes = 2 * 1024**3
         try:
             check_cancel(cancel_event)
