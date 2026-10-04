@@ -25,6 +25,9 @@ from torch import Tensor
 
 
 def tensor_bytes(tensors: Mapping[str, Tensor]) -> int:
+    """Sum logical tensor bytes in a mapping; unlike bank storage accounting, aliased tensors are
+    counted individually.
+    """
     return sum(t.numel() * t.element_size() for t in tensors.values())
 
 
@@ -35,6 +38,9 @@ class ExpertBank:
     users exist. Pinning the whole model is deliberately avoided.
     """
     def __init__(self, experts: Mapping[Hashable, Mapping[str, Tensor]]):
+        """Retain CPU inference tensors without copying or pinning whole banks; reject non-CPU or
+        gradient-tracked inputs and record unique storage sizes.
+        """
         self._experts = {}
         storages = {}
         for key, tensors in experts.items():
@@ -48,9 +54,11 @@ class ExpertBank:
         self.max_expert_bytes = max((tensor_bytes(t) for t in self._experts.values()), default=0)
 
     def get(self, key: Hashable) -> Mapping[str, Tensor]:
+        """Return the read-only tensor mapping for an expert key; tensors themselves must remain immutable."""
         return self._experts[key]
 
     def __len__(self):
+        """Return the number of expert or dense-tile entries in the host bank."""
         return len(self._experts)
 
 
@@ -65,26 +73,37 @@ class _Entry:
 class _Lease(Mapping):
     """Invalidate the mapping at context exit so a loop variable cannot pin evictees."""
     def __init__(self, tensors):
+        """Wrap a borrowed device tensor dictionary for invalidation when the use context exits."""
         self._tensors = tensors
 
     def _check(self):
+        """Return the live mapping or raise RuntimeError after the lease has ended."""
         if self._tensors is None:
             raise RuntimeError('Expert lease has ended.')
         return self._tensors
 
     def __getitem__(self, key):
+        """Read a named tensor only while the lease remains live; callers must not retain it past
+        context exit.
+        """
         return self._check()[key]
 
     def __iter__(self):
+        """Iterate live tensor names; reject access after lease invalidation."""
         return iter(self._check())
 
     def __len__(self):
+        """Count live tensor names; reject access after lease invalidation."""
         return len(self._check())
 
 
 class ExpertCache:
     def __init__(self, bank: ExpertBank, capacity_bytes: int, device='cuda:0',
                  *, resources=None, owner=None, resource_device=None):
+        """Create a byte-bounded device cache without copying experts. Shared accounting requires
+        an owner; CPU tests can name a virtual resource device and do not validate CUDA
+        behavior.
+        """
         if capacity_bytes <= 0:
             raise ValueError('Expert cache capacity must be positive.')
         self.bank = bank
@@ -116,6 +135,10 @@ class ExpertCache:
         self.evictions = 0
 
     def _drop(self, key):
+        """Wait for recorded CUDA use and free the entry before releasing its reservation.
+        Shared-budget CUDA caches also flush unused allocator blocks before
+        accounting release. The caller owns the cache lock.
+        """
         entry = self._entries[key]
         if entry.finished is not None:
             entry.finished.synchronize()
@@ -139,6 +162,9 @@ class ExpertCache:
         # Admission callbacks must never wait on a cache lock: a cache miss may
         # own it while awaiting admission. Nonblocking failure lets the manager
         # try another resident instead of introducing lock-order inversion.
+        """Evict the expected entry without waiting on the cache lock; raise ResourceBusy instead
+        of inverting admission and cache lock order.
+        """
         if not self._lock.acquire(blocking=False):
             raise ResourceBusy('Expert cache is currently transferring or computing.')
         try:
@@ -148,6 +174,9 @@ class ExpertCache:
             self._lock.release()
 
     def _copy(self, source, destination):
+        """Populate a destination mapping from one host entry; bound pinned staging to that entry
+        and wait for transfer completion before dropping staging references.
+        """
         if self._stream is None:
             for name, tensor in source.items():
                 destination[name] = tensor.to(self.device, copy=True)
@@ -170,6 +199,10 @@ class ExpertCache:
 
     @contextmanager
     def use(self, key):
+        """Yield a borrowed expert mapping under cache and resource leases. Admit bytes before
+        copying, protect CUDA use with an event, and invalidate the mapping on exit; nested use
+        is rejected.
+        """
         with self._lock, torch.inference_mode():
             if self._closed:
                 raise RuntimeError('Expert cache is closed.')
@@ -231,6 +264,9 @@ class ExpertCache:
                 self._drop(next(iter(self._entries)))
 
     def close(self):
+        """Clear inactive device entries and permanently reject subsequent use; host banks remain
+        owned by the adapter.
+        """
         with self._lock:
             self.clear()
             self._closed = True
