@@ -525,6 +525,7 @@
         "type": "object"
       },
       "MetricsResponse": {
+        "description": "Process-local request statistics plus best-effort host/device memory samples.\n\nNull latency/error statistics mean no retained samples in the window. A\ntruncated window covers retained records only; Online does not imply a\nloaded model or successful GPU inference.",
         "properties": {
           "active_requests": {
             "title": "Active Requests",
@@ -920,6 +921,7 @@
         "type": "object"
       },
       "RequestRecord": {
+        "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement.",
         "properties": {
           "endpoint": {
             "title": "Endpoint",
@@ -1004,6 +1006,7 @@
         "type": "object"
       },
       "RequestResponse": {
+        "description": "Wrap a single retained HTTP observation for the detail endpoint.",
         "properties": {
           "request": {
             "$ref": "#/components/schemas/RequestRecord"
@@ -1016,6 +1019,7 @@
         "type": "object"
       },
       "RequestsResponse": {
+        "description": "A page of retained observations with its filtered total and process epoch.",
         "properties": {
           "requests": {
             "items": {
@@ -1047,6 +1051,7 @@
         "type": "object"
       },
       "ResourceMeter": {
+        "description": "Observed host or device-wide memory in GiB, including other processes.",
         "properties": {
           "label": {
             "title": "Label",
@@ -2110,6 +2115,7 @@
     },
     "/v1/metrics": {
       "get": {
+        "description": "Combine a fresh memory sample with the bounded telemetry snapshot.\n\nThis monitoring read is excluded from generation telemetry, so polling\ndoes not increase request counts or feed back into latency statistics.",
         "operationId": "getMetrics",
         "responses": {
           "200": {
@@ -2332,6 +2338,7 @@
     },
     "/v1/requests": {
       "get": {
+        "description": "Filter a newest-first snapshot and return the requested page.\n\nSearch matches IDs, endpoints, catalog IDs and safe summaries. Totals cover\nretained matches only; concurrent completions or eviction can move records\nbetween successive page requests. No database history is consulted.",
         "operationId": "listRequests",
         "parameters": [
           {
@@ -2441,6 +2448,7 @@
     },
     "/v1/requests/{request_id}": {
       "get": {
+        "description": "Return a retained observation by ID, or 404 after eviction or restart.\n\nThe lookup uses a snapshot, so it never holds the telemetry lock while\nserializing the response.",
         "operationId": "getRequest",
         "parameters": [
           {

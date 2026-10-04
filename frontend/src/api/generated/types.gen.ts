@@ -294,6 +294,12 @@ export type MessagesResponse = {
 
 /**
  * MetricsResponse
+ *
+ * Process-local request statistics plus best-effort host/device memory samples.
+ *
+ * Null latency/error statistics mean no retained samples in the window. A
+ * truncated window covers retained records only; Online does not imply a
+ * loaded model or successful GPU inference.
  */
 export type MetricsResponse = {
   /**
@@ -516,6 +522,12 @@ export type NoulQuestion = {
 
 /**
  * RequestRecord
+ *
+ * Completed HTTP-handler observation retained only in the current API process.
+ *
+ * The legacy prompt/output fields contain structural and HTTP summaries, not
+ * user text or model output. Latency includes validation and cleanup; it is
+ * not a token throughput or time-to-first-token measurement.
  */
 export type RequestRecord = {
   /**
@@ -570,6 +582,8 @@ export type RequestRecord = {
 
 /**
  * RequestResponse
+ *
+ * Wrap a single retained HTTP observation for the detail endpoint.
  */
 export type RequestResponse = {
   request: RequestRecord
@@ -577,6 +591,8 @@ export type RequestResponse = {
 
 /**
  * RequestsResponse
+ *
+ * A page of retained observations with its filtered total and process epoch.
  */
 export type RequestsResponse = {
   /**
@@ -599,6 +615,8 @@ export type RequestsResponse = {
 
 /**
  * ResourceMeter
+ *
+ * Observed host or device-wide memory in GiB, including other processes.
  */
 export type ResourceMeter = {
   /**
