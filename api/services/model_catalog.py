@@ -17,7 +17,7 @@ class CatalogEntry:
     estimated_bytes: int
 
 
-CATALOG = {
+CATALOG: dict[str, CatalogEntry] = {
     entry.id: entry for entry in (
         CatalogEntry('small', 'nvidia/Qwen3.6-35B-A3B-NVFP4',
                      '1355db6a052410cfd62085d94b58866fd0f2c3c5', 'apache-2.0', 23_500_000_000),

@@ -1,7 +1,7 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from api.services.model_downloads import BusyError, model_manager
+from api.services.model_downloads import BusyError, DownloadStatus, ModelsStatus, model_manager
 
 router = APIRouter(prefix='/v1/models', tags=['models'])
 
@@ -12,7 +12,7 @@ class ModelStatus(BaseModel):
     revision: str
     license: str
     estimated_bytes: int
-    status: Literal['not_downloaded', 'downloading', 'cancelling', 'cancelled', 'failed', 'complete']
+    status: DownloadStatus
     downloaded_bytes: int
     total_bytes: int
     error: str | None
@@ -37,7 +37,7 @@ class ContextRequest(BaseModel):
 
 
 @router.put('/{model_id}/context', response_model=ModelsResponse)
-def configure_context(model_id: str, body: ContextRequest):
+def configure_context(model_id: str, body: ContextRequest) -> ModelsStatus:
     try:
         model_manager.set_context(model_id, body.context_limit)
         return model_manager.status()
@@ -50,12 +50,12 @@ def configure_context(model_id: str, body: ContextRequest):
 
 
 @router.get('', response_model=ModelsResponse)
-def list_models():
+def list_models() -> ModelsStatus:
     return model_manager.status()
 
 
 @router.put('/selection', response_model=ModelsResponse)
-def select_model(body: SelectionRequest):
+def select_model(body: SelectionRequest) -> ModelsStatus:
     try:
         model_manager.select(body.model_id)
         return model_manager.status()
@@ -68,7 +68,7 @@ def select_model(body: SelectionRequest):
 
 
 @router.post('/{model_id}/download', response_model=ModelsResponse, status_code=202)
-def download_model(model_id: str):
+def download_model(model_id: str) -> ModelsStatus:
     try:
         model_manager.start(model_id)
         return model_manager.status()
@@ -81,7 +81,7 @@ def download_model(model_id: str):
 
 
 @router.delete('/{model_id}/download', response_model=ModelsResponse, status_code=202)
-def cancel_download(model_id: str):
+def cancel_download(model_id: str) -> ModelsStatus:
     try:
         model_manager.cancel(model_id)
         return model_manager.status()
