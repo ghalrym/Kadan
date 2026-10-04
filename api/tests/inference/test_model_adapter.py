@@ -17,6 +17,7 @@ class ModelAdapterTests(unittest.TestCase):
     def test_offloaded_experts_match_transformers_equation_with_eviction(self):
         torch.manual_seed(12)
         config = GptOssConfig(hidden_size=32, intermediate_size=32, num_local_experts=3)
+        config._experts_implementation = 'eager'
         reference = GptOssExperts(config)
         banks = {}
         for expert in range(3):
@@ -167,13 +168,14 @@ class ModelAdapterTests(unittest.TestCase):
         torch.manual_seed(11)
         config = GptOssConfig(hidden_size=32, intermediate_size=32, num_local_experts=2,
             num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=1,
-            head_dim=16, num_experts_per_tok=2, vocab_size=64, eos_token_id=-1)
+            head_dim=16, num_experts_per_tok=2, vocab_size=64, eos_token_id=None)
         config._attn_implementation = 'eager'
         config._experts_implementation = 'eager'
         model = GptOssForCausalLM(config).eval()
         tokens = torch.randint(0, 64, (1, 65))
         tokenizer = Mock()
         tokenizer.apply_chat_template.return_value = tokens
+        tokenizer.eos_token_id = None
         tokenizer.decode.side_effect = lambda generated, **kw: str(generated)
         expected = []
         with torch.inference_mode():
