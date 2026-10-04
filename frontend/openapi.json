@@ -1177,22 +1177,27 @@
           "duration": {
             "default": 8,
             "exclusiveMinimum": 0.0,
+            "maximum": 120.0,
             "title": "Duration",
             "type": "integer"
           },
           "fps": {
             "default": 24,
             "exclusiveMinimum": 0.0,
+            "maximum": 120.0,
             "title": "Fps",
             "type": "integer"
           },
           "negative_prompt": {
             "default": "",
+            "maxLength": 8000,
             "title": "Negative Prompt",
             "type": "string"
           },
           "prompt": {
+            "maxLength": 8000,
             "minLength": 1,
+            "pattern": "\\S",
             "title": "Prompt",
             "type": "string"
           },
@@ -2302,6 +2307,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Video provider unavailable"
           }
         },
         "summary": "Generate Video",
@@ -2334,6 +2342,9 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "Video not found"
           },
           "422": {
             "content": {
