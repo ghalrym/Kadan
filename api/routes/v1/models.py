@@ -1,6 +1,6 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from api.services.model_downloads import BusyError, model_manager
 
 router = APIRouter(prefix='/v1/models', tags=['models'])
@@ -16,6 +16,8 @@ class ModelStatus(BaseModel):
     downloaded_bytes: int
     total_bytes: int
     error: str | None
+    context_limit: int | None
+    architecture_context_limit: int | None
 
 
 class ModelsResponse(BaseModel):
@@ -26,6 +28,17 @@ class ModelsResponse(BaseModel):
 class SelectionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     model_id: Literal['small', 'medium', 'large']
+
+
+class ContextRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    context_limit: StrictInt | None = Field(ge=1, le=2**31 - 1,
+        description='Total context tokens; null uses the checkpoint architecture maximum on load.')
+
+
+@router.put('/{model_id}/context', response_model=ModelsResponse)
+def configure_context(model_id: str, body: ContextRequest):
+    return _perform(model_manager.set_context, model_id, body.context_limit)
 
 
 def _perform(action, *args):

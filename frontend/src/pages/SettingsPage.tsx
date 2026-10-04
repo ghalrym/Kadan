@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
-import RuntimePanel from '../components/RuntimePanel'
+import ModelLifecyclePanel from '../components/ModelLifecyclePanel'
 import './SettingsPage.css'
 
 type Model = {
@@ -13,6 +13,8 @@ type Model = {
   downloaded_bytes: number
   total_bytes: number
   error: string | null
+  context_limit: number | null
+  architecture_context_limit: number | null
 }
 type Models = { models: Model[]; selected_model_id: string | null }
 
@@ -33,6 +35,18 @@ async function request(path = '', method = 'GET', body?: object, signal?: AbortS
   return response.json()
 }
 const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
+
+function ContextControl({ model, pending, save }: { model: Model; pending: boolean; save: (limit: number | null) => void }) {
+  const [value, setValue] = useState(model.context_limit?.toString() ?? '')
+  const parsed = value.trim() === '' ? null : Number(value)
+  const valid = parsed === null || (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 2147483647 && (model.architecture_context_limit === null || parsed <= model.architecture_context_limit))
+  return <div className="field">
+    <label htmlFor={`context-${model.id}`}>Context window (tokens)</label>
+    <input id={`context-${model.id}`} className="input" type="number" min={1} max={model.architecture_context_limit ?? 2147483647} step={1} value={value} disabled={pending} onChange={event => setValue(event.target.value)} placeholder="Architecture maximum" />
+    <p>Saved: {model.context_limit ?? 'Architecture maximum'}. Architecture maximum: {model.architecture_context_limit ?? 'available after download'}. Blank uses the architecture maximum on load; larger windows require more memory. No silent reduction.</p>
+    <button type="button" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
+  </div>
+}
 
 export default function SettingsPage() {
   const mutationVersion = useRef(0)
@@ -83,7 +97,7 @@ export default function SettingsPage() {
   return (
     <div className="scroll-page">
       <div className="settings-layout stack">
-        <RuntimePanel selectedModelId={data?.selected_model_id ?? null} />
+        <ModelLifecyclePanel selectedModelId={data?.selected_model_id ?? null} />
         <SectionHeading>Language models</SectionHeading>
         <p>Download a checkpoint, then select it for loading. Downloads require the listed disk space plus a 1 GiB reserve. Selection does not load the model into memory.</p>
         <p>These checkpoints use Apache 2.0 or MIT licenses. Review each model card and its usage terms before downloading. Other modalities are not configured yet.</p>
@@ -103,6 +117,7 @@ export default function SettingsPage() {
               <p>{gb(model.downloaded_bytes)} / {model.total_bytes ? gb(model.total_bytes) : 'checking checkpoint size'}</p>
             </>}
             {model.error && <p role="alert">{model.error}</p>}
+            <ContextControl key={`${model.id}-${model.context_limit}`} model={model} pending={pending} save={limit => void act(`/${model.id}/context`, 'PUT', { context_limit: limit })} />
             <div className="checkpoint-actions">
               {active ? <button type="button" disabled={pending || model.status === 'cancelling'} onClick={() => void act(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
                 : model.status !== 'complete' && <button type="button" disabled={pending || downloading} onClick={() => void act(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
