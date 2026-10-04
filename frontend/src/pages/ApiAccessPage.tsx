@@ -22,6 +22,18 @@ export default function ApiAccessPage() {
         if (!data.info?.title || !data.paths || typeof data.paths !== 'object') {
           throw new Error('The API returned an invalid OpenAPI schema.')
         }
+        for (const operations of Object.values(data.paths)) {
+          if (!operations || typeof operations !== 'object' || Array.isArray(operations)) {
+            throw new Error('The API returned invalid path definitions.')
+          }
+          for (const [method, operation] of Object.entries(operations)) {
+            if (methods.has(method) && (!operation || typeof operation !== 'object'
+              || (operation.summary !== undefined && typeof operation.summary !== 'string')
+              || (operation.description !== undefined && typeof operation.description !== 'string'))) {
+              throw new Error('The API returned an invalid operation definition.')
+            }
+          }
+        }
         if (!controller.signal.aborted) setSchema(data)
       } catch (failure) {
         if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'Cannot reach the API.')
