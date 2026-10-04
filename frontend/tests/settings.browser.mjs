@@ -18,7 +18,7 @@ try {
   const errors = []
   const mutations = []
   page.on('pageerror', error => errors.push(error.message))
-  const model = (id, name, status) => ({ id, repo_id: name, revision: 'a'.repeat(40), license: 'apache-2.0', estimated_bytes: 23.5e9, status, downloaded_bytes: 2e9, total_bytes: 23.5e9, error: null, context_limit: null, architecture_context_limit: 262144 })
+  const model = (id, name, status) => ({ id, repo_id: name, revision: 'a'.repeat(40), license: 'apache-2.0', estimated_bytes: 23.5e9, status, downloaded_bytes: 2e9, total_bytes: 23.5e9, error: null, context_limit: 65536, architecture_context_limit: 262144 })
   const catalog = { models: [model('small', 'nvidia/Qwen3.6-35B-A3B-NVFP4', 'not_downloaded'), model('medium', 'openai/gpt-oss-120b', 'complete'), model('large', 'RedHatAI/GLM-5.3-Flash-NVFP4', 'not_downloaded')], selected_model_id: null }
   let failRead = false
   let failSelection = false
@@ -86,11 +86,56 @@ try {
   catalog.selected_model_id = 'small'
   await page.waitForFunction(() => document.querySelector('#model-LLM')?.textContent.includes('Qwen3.6'))
   const context = page.getByLabel('Max context length (tokens)')
-  await context.fill('262145')
+  assert.equal(await context.inputValue(), '65536')
   assert(await page.getByRole('button', { name: 'Save context window' }).isDisabled())
-  await context.fill('4096')
+  assert.deepEqual(await context.locator('option').evaluateAll(options => options.map(option => [option.textContent, option.value])), [
+    ['8k', '8192'], ['16k', '16384'], ['32k', '32768'], ['64k', '65536'],
+    ['128k', '131072'], ['500k', '500000'], ['1M', '1000000'], ['Architecture maximum', ''],
+  ])
+  for (const label of ['500k', '1M']) assert(await context.getByRole('option', { name: label, exact: true }).isDisabled())
+  await context.selectOption('131072')
   await page.getByRole('button', { name: 'Save context window' }).click()
-  await page.waitForFunction(() => document.querySelector('.model-context input')?.value === '4096' && document.querySelector('.model-context button')?.disabled)
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '131072' && document.querySelector('.model-context button')?.disabled)
+  assert.equal(catalog.models[0].context_limit, 131072)
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '131072')
+  // A persisted nonpreset value remains visible and is not silently rewritten.
+  catalog.models[0].context_limit = 4096
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '4096')
+  assert.equal(await context.locator('option:checked').innerText(), '4096 (saved)')
+  assert(await page.getByRole('button', { name: 'Save context window' }).isDisabled())
+  // An oversized saved custom value stays visible but cannot be chosen/saved.
+  catalog.models[0].context_limit = 300000
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '300000')
+  const oversizedSaved = context.getByRole('option', { name: '300000 (saved)', exact: true })
+  assert(await oversizedSaved.isDisabled())
+  assert.equal(await context.inputValue(), '300000')
+  assert(await page.getByRole('button', { name: 'Save context window' }).isDisabled())
+  await context.selectOption('65536')
+  await page.getByRole('button', { name: 'Save context window' }).click()
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '65536' && document.querySelector('.model-context button')?.disabled)
+  catalog.models[1].context_limit = null
+  catalog.models[1].architecture_context_limit = null
+  await open()
+  await dialog.getByRole('button', { name: /gpt-oss-120b.*complete/ }).click()
+  await page.waitForFunction(() => document.querySelector('#context-medium')?.value === '')
+  assert.equal(await context.locator('option:checked').innerText(), 'Architecture maximum')
+  assert(await page.getByRole('button', { name: 'Save context window' }).isDisabled())
+  assert(!(await context.getByRole('option', { name: '1M', exact: true }).isDisabled()))
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('#context-medium')?.value === '')
+  await context.selectOption('1000000')
+  await page.getByRole('button', { name: 'Save context window' }).click()
+  await page.waitForFunction(() => document.querySelector('#context-medium')?.value === '1000000' && document.querySelector('.model-context button')?.disabled)
+  await context.selectOption('')
+  await page.getByRole('button', { name: 'Save context window' }).click()
+  await page.waitForFunction(() => document.querySelector('#context-medium')?.value === '' && document.querySelector('.model-context button')?.disabled)
+  assert.equal(catalog.models[1].context_limit, null)
+  await open()
+  await dialog.getByRole('button', { name: /Qwen3.6.*complete/ }).click()
+  await page.waitForFunction(() => document.querySelector('#context-small')?.value === '65536')
   failSelection = true
   await open()
   await dialog.getByRole('button', { name: /gpt-oss-120b.*complete/ }).click()
@@ -103,7 +148,7 @@ try {
   await page.getByRole('button', { name: 'Refresh', exact: true }).click()
   await page.getByRole('button', { name: 'Refresh', exact: true }).waitFor({ state: 'hidden' })
   await page.reload()
-  await page.waitForFunction(() => document.querySelector('.model-context input')?.value === '4096' && document.querySelector('.model-context button')?.disabled)
+  await page.waitForFunction(() => document.querySelector('.model-context select')?.value === '65536' && document.querySelector('.model-context button')?.disabled)
   assert.doesNotMatch(await page.locator('.settings-layout').innerText(), /Saved:|Blank uses|larger windows|Selection does not|Not selected|Model card|apache-2.0|disk reserve|providers are implemented|Download a model before/)
   await page.screenshot({ path: '/tmp/kadan-settings-compact-desktop.png', fullPage: true })
   await page.setViewportSize({ width: 768, height: 1024 })
@@ -120,7 +165,7 @@ try {
   assert.equal(await dialog.count(), 0)
   assert.deepEqual(errors, [])
   assert(mutations.some(([method, path]) => method === 'DELETE' && path.endsWith('/small/download')))
-  assert(mutations.some(([method, path, body]) => method === 'PUT' && path.endsWith('/context') && body.context_limit === 4096))
+  assert(mutations.some(([method, path, body]) => method === 'PUT' && path.endsWith('/context') && body.context_limit === 131072))
   console.log('PASS compact settings: original rows, download/cancel/retry/progress/selection/context/errors, keyboard, desktop/mobile, no page errors')
 } finally {
   await browser.close()
