@@ -42,7 +42,7 @@ function ContextControl({ model, pending, save }: { model: ModelStatus; pending:
     <label htmlFor={`context-${model.id}`}>Context window (tokens)</label>
     <input id={`context-${model.id}`} className="input" type="number" min={1} max={model.architecture_context_limit ?? 2147483647} step={1} value={value} disabled={pending} onChange={event => setValue(event.target.value)} placeholder="Architecture maximum" />
     <p>Saved: {model.context_limit ?? 'Architecture maximum'}. Architecture maximum: {model.architecture_context_limit ?? 'available after download'}. Blank uses the architecture maximum on load; larger windows require more memory. No silent reduction.</p>
-    <button type="button" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
+    <button type="button" className="button button--secondary" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
   </div>
 }
 
@@ -114,7 +114,7 @@ export default function SettingsPage() {
         <SectionHeading>Language models</SectionHeading>
         <p>Download a checkpoint, then select it for loading. Downloads require the listed disk space plus a 1 GiB reserve. Selection does not load the model into memory.</p>
         <p>These checkpoints use Apache 2.0 or MIT licenses. Review each model card and its usage terms before downloading. Other modalities are not configured yet.</p>
-        {error && <div role="alert">{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
+        {error && <div role="alert">{error} <button type="button" className="button button--secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
         {actionError && <p role="alert">{actionError}</p>}
         {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
         {modelStatus?.models.map(model => {
@@ -132,9 +132,9 @@ export default function SettingsPage() {
             {model.error && <p role="alert">{model.error}</p>}
             <ContextControl key={`${model.id}-${model.context_limit}`} model={model} pending={pending} save={limit => void submitModelChange(`/${model.id}/context`, 'PUT', { context_limit: limit })} />
             <div className="checkpoint-actions">
-              {active ? <button type="button" disabled={pending || model.status === 'cancelling'} onClick={() => void submitModelChange(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
-                : model.status !== 'complete' && <button type="button" disabled={pending || downloading} onClick={() => void submitModelChange(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
-              <button type="button" disabled={pending || model.status !== 'complete' || selected} onClick={() => void submitModelChange('/selection', 'PUT', { model_id: model.id })}>{selected ? 'Selected' : 'Select model'}</button>
+              {active ? <button type="button" className="button button--secondary" disabled={pending || model.status === 'cancelling'} onClick={() => void submitModelChange(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
+                : model.status !== 'complete' && <button type="button" className="button button--primary" disabled={pending || downloading} onClick={() => void submitModelChange(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
+              <button type="button" className="button button--secondary" disabled={pending || model.status !== 'complete' || selected} onClick={() => void submitModelChange('/selection', 'PUT', { model_id: model.id })}>{selected ? 'Selected' : 'Select model'}</button>
             </div>
           </Panel>
         })}
