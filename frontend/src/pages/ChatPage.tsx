@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  MAX_HISTORY_MESSAGES,
-  MAX_MESSAGE_LENGTH,
-  requestChat,
-  type ConversationMessage,
-} from '../api/chat'
+import { requestChat, type ConversationMessage } from '../api/chat'
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ConversationMessage[]>([])
@@ -69,14 +64,8 @@ export default function ChatPage() {
   }
 
   function submit() {
-    const text = draft.trim()
-    if (
-      !text ||
-      pending ||
-      retryMessages ||
-      messages.length >= MAX_HISTORY_MESSAGES
-    )
-      return
+    const text = draft
+    if (!text.trim() || pending || retryMessages) return
     setDraft('')
     void send([...messages, { role: 'user', text }])
   }
@@ -126,11 +115,6 @@ export default function ChatPage() {
             Retry last message
           </button>
         )}
-        {messages.length >= MAX_HISTORY_MESSAGES && (
-          <p role="status">
-            Conversation limit reached. Start a new chat to continue.
-          </p>
-        )}
         <form
           className="chat-composer"
           onSubmit={(event) => {
@@ -141,12 +125,7 @@ export default function ChatPage() {
           <textarea
             rows={2}
             value={draft}
-            maxLength={MAX_MESSAGE_LENGTH}
-            disabled={
-              pending ||
-              !!retryMessages ||
-              messages.length >= MAX_HISTORY_MESSAGES
-            }
+            disabled={pending || !!retryMessages}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (
@@ -189,20 +168,16 @@ export default function ChatPage() {
               <button
                 type="submit"
                 className="button button--primary push-right"
-                disabled={
-                  !draft.trim() ||
-                  !!retryMessages ||
-                  messages.length >= MAX_HISTORY_MESSAGES
-                }
+                disabled={!draft.trim() || !!retryMessages}
               >
                 Send ↵
               </button>
             )}
           </div>
           <p id="chat-input-help" className="faint">
-            {draft.length}/{MAX_MESSAGE_LENGTH} characters · Enter to send,
-            Shift+Enter for a new line · Up to {MAX_HISTORY_MESSAGES / 2} turns
-            per chat
+            {draft.length} characters · Enter to send, Shift+Enter for a new
+            line. The loaded model’s configured token context determines
+            conversation capacity.
           </p>
         </form>
       </div>

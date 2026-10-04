@@ -96,6 +96,18 @@ export type CompletionResponse = {
 }
 
 /**
+ * ContextRequest
+ */
+export type ContextRequest = {
+  /**
+   * Context Limit
+   *
+   * Total context tokens; null uses the checkpoint architecture maximum on load.
+   */
+  context_limit: number | null
+}
+
+/**
  * DecisionAnswer
  */
 export type DecisionAnswer = {
@@ -309,6 +321,46 @@ export type MetricsResponse = {
 }
 
 /**
+ * ModelLifecycleStatus
+ */
+export type ModelLifecycleStatus = {
+  /**
+   * Configured Context Limit
+   */
+  configured_context_limit?: number | null
+  /**
+   * Effective Context Limit
+   */
+  effective_context_limit?: number | null
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Max Output Tokens
+   */
+  max_output_tokens?: number
+  /**
+   * Memory
+   */
+  memory?: {
+    [key: string]: unknown
+  } | null
+  /**
+   * Model Id
+   */
+  model_id?: string | null
+  /**
+   * State
+   */
+  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
+  /**
+   * Supported Context Limit
+   */
+  supported_context_limit?: number | null
+}
+
+/**
  * ModelSetting
  */
 export type ModelSetting = {
@@ -334,6 +386,14 @@ export type ModelSetting = {
  * ModelStatus
  */
 export type ModelStatus = {
+  /**
+   * Architecture Context Limit
+   */
+  architecture_context_limit: number | null
+  /**
+   * Context Limit
+   */
+  context_limit: number | null
   /**
    * Downloaded Bytes
    */
@@ -505,30 +565,6 @@ export type ResourceMeter = {
    * Used
    */
   used: number
-}
-
-/**
- * RuntimeStatus
- */
-export type RuntimeStatus = {
-  /**
-   * Error
-   */
-  error?: string | null
-  /**
-   * Memory
-   */
-  memory?: {
-    [key: string]: unknown
-  } | null
-  /**
-   * Model Id
-   */
-  model_id?: string | null
-  /**
-   * State
-   */
-  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
 }
 
 /**
@@ -886,6 +922,57 @@ export type HealthResponses = {
 
 export type HealthResponse2 = HealthResponses[keyof HealthResponses]
 
+export type GetModelLifecycleStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle'
+}
+
+export type GetModelLifecycleStatusResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type GetModelLifecycleStatusResponse =
+  GetModelLifecycleStatusResponses[keyof GetModelLifecycleStatusResponses]
+
+export type LoadSelectedModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle/load'
+}
+
+export type LoadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  202: ModelLifecycleStatus
+}
+
+export type LoadSelectedModelResponse =
+  LoadSelectedModelResponses[keyof LoadSelectedModelResponses]
+
+export type UnloadSelectedModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle/unload'
+}
+
+export type UnloadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type UnloadSelectedModelResponse =
+  UnloadSelectedModelResponses[keyof UnloadSelectedModelResponses]
+
 export type ListSpeechData = {
   body?: never
   path?: never
@@ -1188,6 +1275,38 @@ export type SelectModelV1ModelsSelectionPutResponses = {
 export type SelectModelV1ModelsSelectionPutResponse =
   SelectModelV1ModelsSelectionPutResponses[keyof SelectModelV1ModelsSelectionPutResponses]
 
+export type ConfigureContextV1ModelsModelIdContextPutData = {
+  body: ContextRequest
+  path: {
+    /**
+     * Model Id
+     */
+    model_id: string
+  }
+  query?: never
+  url: '/v1/models/{model_id}/context'
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutError =
+  ConfigureContextV1ModelsModelIdContextPutErrors[keyof ConfigureContextV1ModelsModelIdContextPutErrors]
+
+export type ConfigureContextV1ModelsModelIdContextPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutResponse =
+  ConfigureContextV1ModelsModelIdContextPutResponses[keyof ConfigureContextV1ModelsModelIdContextPutResponses]
+
 export type CancelDownloadV1ModelsModelIdDownloadDeleteData = {
   body?: never
   path: {
@@ -1328,57 +1447,6 @@ export type GetRequestResponses = {
 }
 
 export type GetRequestResponse = GetRequestResponses[keyof GetRequestResponses]
-
-export type GetRuntimeStatusData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime'
-}
-
-export type GetRuntimeStatusResponses = {
-  /**
-   * Successful Response
-   */
-  200: RuntimeStatus
-}
-
-export type GetRuntimeStatusResponse =
-  GetRuntimeStatusResponses[keyof GetRuntimeStatusResponses]
-
-export type LoadRuntimeModelData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime/load'
-}
-
-export type LoadRuntimeModelResponses = {
-  /**
-   * Successful Response
-   */
-  202: RuntimeStatus
-}
-
-export type LoadRuntimeModelResponse =
-  LoadRuntimeModelResponses[keyof LoadRuntimeModelResponses]
-
-export type UnloadRuntimeModelData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime/unload'
-}
-
-export type UnloadRuntimeModelResponses = {
-  /**
-   * Successful Response
-   */
-  200: RuntimeStatus
-}
-
-export type UnloadRuntimeModelResponse =
-  UnloadRuntimeModelResponses[keyof UnloadRuntimeModelResponses]
 
 export type GetSettingsData = {
   body?: never
