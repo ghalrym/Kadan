@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       head:
-        description: Existing codex/name branch in this repository
+        description: Existing codex/name branch (approved bot migration aliases infer their stacked base)
         required: true
         type: string
       expected_sha:

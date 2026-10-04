@@ -23,6 +23,40 @@ BASE = 'master'
 ENVIRONMENT = 'kadan-pr-publishing'
 ROOT = '/repos/' + REPOSITORY
 
+# One-time, reviewed migration only. No dispatch input can choose a base or SHA.
+_MIGRATION_ROWS = (
+    (4, 'decisions-api', '35ddcc21dc8d3139c14b25dbc17896b1521b32d2'),
+    (5, 'images-api', '3c7ff32f02ec67cff67b9eef65e2ba1e136f7d0b'),
+    (6, 'video-api', '3557a2e6a9108a920f35794a7a740c2fe7000855'),
+    (7, 'speech-api', '3688f9d00d8476142a43b33ef719e62ccd3bd4b6'),
+    (8, 'transcription-api', '1916c653d65ca7473c89e01d74dbf0b8ebd396fc'),
+    (9, 'api-state', '12fef0b057f30e48e346b01a15296792843477be'),
+    (10, 'api-access', '2627ae3c64bb6130822cdecfce7f81074266521d'),
+    (11, 'monitoring-api', '21ee2f69ffa3399c2a16c9451036a3bdc07c071e'),
+)
+MIGRATIONS = {}
+for _index, (_number, _name, _sha) in enumerate(_MIGRATION_ROWS):
+    _previous = _MIGRATION_ROWS[_index - 1] if _index else None
+    MIGRATIONS['codex/bot-' + _name] = dict(
+        original_number=_number, original_head='codex/' + _name, head_sha=_sha,
+        original_base='codex/' + _previous[1] if _previous else 'codex/freetoken-runtime',
+        base='codex/bot-' + _previous[1] if _previous else 'codex/freetoken-runtime',
+        base_sha=_previous[2] if _previous else 'faff092b0882996b5b2b058b4ce45424c2a1efb6')
+
+
+def migration(values):
+    rule = MIGRATIONS.get(values['head'])
+    require(not values['head'].startswith('codex/bot-') or rule is not None,
+            'Unapproved migration alias')
+    if rule is not None:
+        require(values['expected_sha'] == rule['head_sha'], 'Migration SHA is not the approved commit')
+    return rule
+
+
+def target_base(values):
+    rule = migration(values)
+    return rule['base'] if rule else BASE
+
 
 class Failure(Exception):
     """Only fixed, sanitized diagnostic strings may reach workflow logs."""
@@ -99,6 +133,7 @@ def inputs(event, environ):
         json.dumps(values, ensure_ascii=False).encode('utf-8')
     except UnicodeError:
         raise Failure('Invalid input Unicode') from None
+    migration(values)
     return values
 
 
@@ -144,7 +179,7 @@ def branch_sha(api, values):
 
 
 def pr_url(pr, values):
-    require(pr.get('head', {}).get('ref') == values['head'] and pr.get('base', {}).get('ref') == BASE
+    require(pr.get('head', {}).get('ref') == values['head'] and pr.get('base', {}).get('ref') == target_base(values)
             and pr.get('head', {}).get('repo', {}).get('id') == REPOSITORY_ID
             and pr.get('base', {}).get('repo', {}).get('id') == REPOSITORY_ID,
             'Pull request repository or branch mismatch')
@@ -155,23 +190,65 @@ def pr_url(pr, values):
     return url
 
 
+def migration_refs(api, values, rule, originals=True):
+    refs = ((values['head'], rule['head_sha']), (rule['base'], rule['base_sha']),
+                      (rule['original_head'], rule['head_sha']), (rule['original_base'], rule['base_sha']))
+    for head, sha in (refs if originals else refs[:2]):
+        branch_sha(api, {'head': head, 'expected_sha': sha})
+
+
+def migration_guards(api, values, rule):
+    """PR-read permission suffices; any discussion blocks migration."""
+    migration_refs(api, values, rule)
+    original = api.request('GET', ROOT + '/pulls/' + str(rule['original_number']))
+    require(original.get('number') == rule['original_number'] and original.get('state') == 'open'
+            and original.get('merged_at') is None
+            and original.get('head', {}).get('ref') == rule['original_head']
+            and original.get('head', {}).get('sha') == rule['head_sha']
+            and original.get('base', {}).get('ref') == rule['original_base']
+            and original.get('base', {}).get('sha') == rule['base_sha']
+            and original.get('head', {}).get('repo', {}).get('id') == REPOSITORY_ID
+            and original.get('base', {}).get('repo', {}).get('id') == REPOSITORY_ID,
+            'Original pull request changed; migration denied')
+    number = str(rule['original_number'])
+    for path in ('/issues/' + number + '/comments', '/pulls/' + number + '/comments',
+                 '/pulls/' + number + '/reviews'):
+        require(not list(pages(api, ROOT + path)), 'Original pull request has discussion or reviews; migration denied')
+
+
 def publish(api, values, environ):
+    rule = migration(values)
+    base = target_base(values)
     require(environ.get('APP_INSTALLATION_ID') == INSTALLATION_ID, 'Unexpected App installation')
     installation = api.request('GET', '/installation/repositories?per_page=100&page=1')
     repositories = installation.get('repositories')
     require(installation.get('total_count') == 1 and isinstance(repositories, list) and len(repositories) == 1 and repositories[0].get('id') == REPOSITORY_ID
             and repositories[0].get('full_name') == REPOSITORY, 'App token must access only Kadan')
     branch_sha(api, values)
-    query = urllib.parse.urlencode({'state': 'all', 'head': 'ghalrym:' + values['head'], 'base': BASE})
+    if rule:
+        migration_refs(api, values, rule, originals=False)
+    query = urllib.parse.urlencode({'state': 'all', 'head': 'ghalrym:' + values['head'], 'base': base})
     existing = list(pages(api, ROOT + '/pulls?' + query))
     if existing:
         # Closed and merged PRs count too: reruns never create replacements.
         urls = [pr_url(pr, values) for pr in existing]
+        if rule:
+            require(all(pr.get('head', {}).get('sha') == rule['head_sha']
+                        and pr.get('base', {}).get('sha') == rule['base_sha'] for pr in existing),
+                    'Existing replacement SHA mismatch')
         return urls[0]
+    if rule:
+        migration_guards(api, values, rule)
+    body = values['body']
+    if rule:
+        body = (f"Replacement draft for original PR https://github.com/{REPOSITORY}/pull/{rule['original_number']}. "
+                'This changes PR authorship only; commit authorship and approved head/base commits are unchanged.\n\n' + body)
     branch_sha(api, values)  # Narrow the race between listing and creation.
+    if rule:
+        migration_refs(api, values, rule, originals=False)
     try:
         created = api.request('POST', ROOT + '/pulls', {
-            'head': values['head'], 'base': BASE, 'title': values['title'], 'body': values['body'],
+            'head': values['head'], 'base': base, 'title': values['title'], 'body': body,
             'draft': True, 'maintainer_can_modify': False})
         url = pr_url(created, values)
         require(created.get('draft') is True, 'Created pull request is not a draft')
@@ -179,6 +256,9 @@ def publish(api, values, environ):
         require(pr_url(verified, values) == url and verified.get('head', {}).get('sha') == values['expected_sha'],
                 'Created pull request SHA could not be verified')
         branch_sha(api, values)
+        if rule:
+            require(verified.get('base', {}).get('sha') == rule['base_sha'], 'Replacement base SHA mismatch')
+            migration_guards(api, values, rule)
         return url
     except (Failure, ValueError, TypeError, AttributeError, KeyError, RecursionError):
         raise Failure('Publish outcome uncertain; inspect existing pull requests and branch SHA. No creation retry was attempted.') from None

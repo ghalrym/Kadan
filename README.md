@@ -47,7 +47,8 @@ root.
 ## Publish draft pull requests as Ai Kadan
 
 The manual **Publish draft PR as Ai Kadan** workflow opens a draft against
-`master` from an existing `codex/name` branch in `ghalrym/Kadan`. Codex continues
+`master` from an existing `codex/name` branch in `ghalrym/Kadan`, except for the
+explicit migration mapping below. Codex continues
 committing and pushing through its existing connection. Only PR creation uses
 the Ai Kadan installation token: this does **not** change commit authors,
 committers, push identity, or authorship of existing PRs. The bootstrap PR for
@@ -133,3 +134,55 @@ python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 Implementation references: [official token action](https://github.com/actions/create-github-app-token),
 [environment protection and plan support](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments),
 and [required reviews](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
+
+
+### Approved migration of PRs #4–11
+
+This is a fixed migration allowlist, not arbitrary stacked-base publishing.
+PRs #1–3 remain in place. For the eight aliases below, the publisher derives the
+base from the allowlist; there is no caller-supplied base input. Ordinary branches
+still target `master`. Unknown `codex/bot-` aliases are rejected. No token or
+environment permission changes are needed, and the workflow still executes only
+from trusted `master` regardless of the PR's base.
+
+| Original | New head alias | New base | Exact head SHA |
+| --- | --- | --- | --- |
+| #4 | `codex/bot-decisions-api` | `codex/freetoken-runtime` | `35ddcc21dc8d3139c14b25dbc17896b1521b32d2` |
+| #5 | `codex/bot-images-api` | `codex/bot-decisions-api` | `3c7ff32f02ec67cff67b9eef65e2ba1e136f7d0b` |
+| #6 | `codex/bot-video-api` | `codex/bot-images-api` | `3557a2e6a9108a920f35794a7a740c2fe7000855` |
+| #7 | `codex/bot-speech-api` | `codex/bot-video-api` | `3688f9d00d8476142a43b33ef719e62ccd3bd4b6` |
+| #8 | `codex/bot-transcription-api` | `codex/bot-speech-api` | `1916c653d65ca7473c89e01d74dbf0b8ebd396fc` |
+| #9 | `codex/bot-api-state` | `codex/bot-transcription-api` | `12fef0b057f30e48e346b01a15296792843477be` |
+| #10 | `codex/bot-api-access` | `codex/bot-api-state` | `2627ae3c64bb6130822cdecfce7f81074266521d` |
+| #11 | `codex/bot-monitoring-api` | `codex/bot-api-access` | `21ee2f69ffa3399c2a16c9451036a3bdc07c071e` |
+
+The initial base, `codex/freetoken-runtime`, is pinned to
+`faff092b0882996b5b2b058b4ce45424c2a1efb6`. Each later base is pinned to the preceding
+row's head SHA. New alias branches must point directly to the approved commits:
+no cherry-picking, rebasing, new commits, or changes to historical authorship.
+Original branches remain intact. Equal head and base commits preserve each
+original PR's diff and ancestry without flattening the stack.
+
+After the extension is reviewed and merged, recheck that the original PRs are
+still open with these exact head/base refs and commits and have no conversation,
+inline comments, or review submissions. Any new review activity (including
+bot-generated comments) blocks creation and requires a fresh decision; do not
+ignore it or delete it. Prepare alias refs through the existing push connection,
+then dispatch the publisher sequentially from #4 through #11, using each alias
+and exact SHA plus the original title/body. The publisher prepends a link to the
+original PR and states that commit history is unchanged. It verifies original
+and alias refs, original PR identity, and absence of review activity before
+creation; changed head/base SHAs fail closed. The existing all-state duplicate
+check applies to each new alias/base pair, so a retry reports an existing
+replacement instead of creating another. Closing an original is not a way to
+bypass the duplicate guard on its old branch.
+
+Before closing any original, independently verify every replacement's Ai Kadan
+bot author, draft status, expected refs/SHAs, identical per-PR diff, and passing
+current-head CI. Recheck the originals for review activity again immediately
+before closure: GitHub does not provide an atomic comment-check-and-create
+operation. If anything changed, preserve the original and ask for a decision.
+Only then may the explicitly authorized originals be closed, with transparent
+replacement links. The publisher itself never closes, reopens, merges, retargets,
+or edits an existing PR and never creates or deletes a branch. Its checks are
+not substitutes for the independent verification before closure.
