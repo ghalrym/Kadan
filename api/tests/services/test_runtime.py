@@ -166,3 +166,34 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.manager.task
         self.assertEqual(self.manager.state, 'error')
         self.factory.assert_not_called()
+
+    async def test_native_import_errors_identify_missing_modules_and_preserve_cause(self):
+        import builtins
+        original_import = builtins.__import__
+        self.manager._factory = None
+        failures = (
+            (ModuleNotFoundError("No module named 'torch'", name='torch'),
+             'Inference dependency is missing: torch.'),
+            (ModuleNotFoundError("No module named 'safetensors'", name='safetensors'),
+             'Inference dependency is missing: safetensors.'),
+            (ImportError("cannot import name 'ChangedAPI'", name='transformers'),
+             "Inference runtime import failed: cannot import name 'ChangedAPI'"),
+            (ModuleNotFoundError('loader failed without a module name'),
+             'Inference runtime import failed: loader failed without a module name'),
+        )
+        for failure, expected in failures:
+            def controlled_import(name, *args, **kwargs):
+                if name == 'api.inference.model_adapter':
+                    raise failure
+                return original_import(name, *args, **kwargs)
+            with self.subTest(error=expected), patch('builtins.__import__', side_effect=controlled_import):
+                with self.assertRaises(RuntimeFailure) as caught:
+                    self.manager._construct(SimpleNamespace(id='medium'), Path('/models/pinned'), threading.Event())
+                self.assertEqual(str(caught.exception), expected)
+                self.assertIs(caught.exception.__cause__, failure)
+                await self.manager.load()
+                await self.manager.task
+            self.assertEqual(self.manager.state, 'error')
+            self.assertEqual(self.manager.status()['error'], expected)
+            self.assertIsNone(self.manager.adapter)
+        self.assertEqual(self.models.release_runtime_model.call_count, len(failures))

@@ -71,7 +71,7 @@ class RuntimeManager:
                     memory=self.resources.snapshot() if self.resources else None)
 
     def _construct(self, entry, path, cancel):
-        # Optional model dependencies are imported only on a requested load.
+        # Native model dependencies are imported only on a requested load.
         """Build on a worker thread using the selected single GPU and shared budgets, then apply
         context settings; close the adapter if configuration fails.
         """
@@ -80,7 +80,10 @@ class RuntimeManager:
             try:
                 from api.inference.model_adapter import build_runtime
             except ImportError as exc:
-                raise RuntimeFailure('Install the optional Kadan inference requirements before loading a model.') from exc
+                detail = (f'Inference dependency is missing: {exc.name}.'
+                          if isinstance(exc, ModuleNotFoundError) and exc.name
+                          else f'Inference runtime import failed: {exc}')
+                raise RuntimeFailure(detail) from exc
             factory = build_runtime
         if self.resources is None:
             available = probe_memory()
@@ -90,7 +93,7 @@ class RuntimeManager:
         if not gpu.isdecimal():
             raise RuntimeFailure('KADAN_GPU must be one nonnegative GPU index; VRAM is not pooled.')
         if self._factory is None and int(gpu) not in self.resources.capacity.device_bytes:
-            raise RuntimeFailure('The selected CUDA GPU is unavailable. Install a compatible PyTorch CUDA build on the GPU host.')
+            raise RuntimeFailure('The selected CUDA GPU is unavailable. Check GPU access and driver compatibility.')
         adapter = factory(entry, path, self.resources, device=f'cuda:{gpu}', cancel_event=cancel)
         try:
             adapter.configure_context(self.context_settings['configured_context_limit'])
