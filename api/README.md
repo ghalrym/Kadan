@@ -91,3 +91,9 @@ Tests under `api/tests/` mirror the API source folders and module names. For exa
 See the root `AGENTS.md` for folder responsibilities.
 
 Run unit tests with `.venv/bin/python -m unittest discover -s api/tests -v`.
+
+GitHub Actions runs the backend tests on pushes and pull requests. The tests in
+`api/tests/test_export_openapi.py` check that `frontend/openapi.json` matches both
+the FastAPI schema and the export command's output. A separate CI job regenerates
+the Hey API client and fails if generated files changed, were removed, or were added.
+Regenerate and commit the schema and client together when changing API contracts.
