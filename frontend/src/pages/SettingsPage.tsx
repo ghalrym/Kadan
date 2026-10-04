@@ -1,23 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
+import type { ContextRequest, ModelsResponse, ModelStatus } from '../api/generated'
 import './SettingsPage.css'
 
-type Model = {
-  id: string
-  repo_id: string
-  revision: string
-  license: string
-  estimated_bytes: number
-  status: 'not_downloaded' | 'downloading' | 'cancelling' | 'cancelled' | 'failed' | 'complete'
-  downloaded_bytes: number
-  total_bytes: number
-  error: string | null
-  context_limit: number | null
-  architecture_context_limit: number | null
-}
-type Models = { models: Model[]; selected_model_id: string | null }
-
-async function request(path = '', method = 'GET', body?: object, signal?: AbortSignal): Promise<Models> {
+async function requestModelStatus(path = '', method: 'GET' | 'PUT' | 'POST' | 'DELETE' = 'GET', body?: ContextRequest | { model_id: string }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -26,16 +12,18 @@ async function request(path = '', method = 'GET', body?: object, signal?: AbortS
   if (!response.ok) {
     let message = `Model service returned HTTP ${response.status}`
     try {
-      const data = await response.json()
-      if (typeof data.detail === 'string') message = data.detail
+      const errorResponse: unknown = await response.json()
+      if (typeof errorResponse === 'object' && errorResponse !== null && 'detail' in errorResponse && typeof errorResponse.detail === 'string') {
+        message = errorResponse.detail
+      }
     } catch { /* A proxy error may not be JSON. */ }
     throw new Error(message)
   }
   return response.json()
 }
-const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
+const formatGigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
 
-function ContextControl({ model, pending, save }: { model: Model; pending: boolean; save: (limit: number | null) => void }) {
+function ContextControl({ model, pending, save }: { model: ModelStatus; pending: boolean; save: (limit: number | null) => void }) {
   const [value, setValue] = useState(model.context_limit?.toString() ?? '')
   const parsed = value.trim() === '' ? null : Number(value)
   const valid = parsed === null || (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 2147483647 && (model.architecture_context_limit === null || parsed <= model.architecture_context_limit))
@@ -51,7 +39,7 @@ export default function SettingsPage() {
   const mutationVersion = useRef(0)
   const actionController = useRef<AbortController | null>(null)
   useEffect(() => () => { actionController.current?.abort() }, [])
-  const [data, setData] = useState<Models | null>(null)
+  const [modelStatus, setModelStatus] = useState<ModelsResponse | null>(null)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
@@ -62,10 +50,12 @@ export default function SettingsPage() {
     async function poll() {
       const version = mutationVersion.current
       try {
-        const next = await request('', 'GET', undefined, controller.signal)
-        if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) { setData(next); setError('') }
+        const next = await requestModelStatus('', 'GET', undefined, controller.signal)
+        if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) { setModelStatus(next); setError('') }
       } catch (failure) {
-        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not reach model service')
+        if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) {
+          setError(failure instanceof Error ? failure.message : 'Could not reach model service')
+        }
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(poll, 1500)
       }
@@ -74,7 +64,7 @@ export default function SettingsPage() {
     return () => { controller.abort(); clearTimeout(timer) }
   }, [refresh])
 
-  async function act(path: string, method: string, body?: object) {
+  async function submitModelChange(path: string, method: 'PUT' | 'POST' | 'DELETE', body?: ContextRequest | { model_id: string }) {
     if (actionController.current) return
     const controller = new AbortController()
     actionController.current = controller
@@ -82,8 +72,8 @@ export default function SettingsPage() {
     setPending(true)
     setActionError('')
     try {
-      const next = await request(path, method, body, controller.signal)
-      if (!controller.signal.aborted) setData(next)
+      const next = await requestModelStatus(path, method, body, controller.signal)
+      if (!controller.signal.aborted) { setModelStatus(next); setError('') }
     } catch (failure) {
       if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'Request failed')
     } finally {
@@ -92,7 +82,7 @@ export default function SettingsPage() {
       if (!controller.signal.aborted) setPending(false)
     }
   }
-  const downloading = data?.models.some(model => model.status === 'downloading' || model.status === 'cancelling')
+  const downloading = modelStatus?.models.some(model => model.status === 'downloading' || model.status === 'cancelling')
   return (
     <div className="scroll-page">
       <div className="settings-layout stack">
@@ -101,25 +91,25 @@ export default function SettingsPage() {
         <p>These checkpoints use Apache 2.0 or MIT licenses. Review each model card and its usage terms before downloading. Other modalities are not configured yet.</p>
         {error && <div role="alert">{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
         {actionError && <p role="alert">{actionError}</p>}
-        {!data && !error && <p role="status">Loading model catalog…</p>}
-        {data?.models.map(model => {
+        {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
+        {modelStatus?.models.map(model => {
           const active = model.status === 'downloading' || model.status === 'cancelling'
-          const selected = data.selected_model_id === model.id
+          const selected = modelStatus.selected_model_id === model.id
           return <Panel className="checkpoint-card" key={model.id}>
             <h3>{model.id[0].toUpperCase() + model.id.slice(1)} — {model.repo_id.split('/')[1]}</h3>
             <a href={`https://huggingface.co/${model.repo_id}/tree/${model.revision}`} target="_blank" rel="noreferrer">Model card and pinned files</a>
-            <p>{gb(model.estimated_bytes)} estimated · {model.license} · revision {model.revision.slice(0, 8)}</p>
+            <p>{formatGigabytes(model.estimated_bytes)} estimated · {model.license} · revision {model.revision.slice(0, 8)}</p>
             <p role="status">{model.status.replaceAll('_', ' ')}{selected ? ' · Selected' : ''}</p>
             {active && <>
               <progress aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} />
-              <p>{gb(model.downloaded_bytes)} / {model.total_bytes ? gb(model.total_bytes) : 'checking checkpoint size'}</p>
+              <p>{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</p>
             </>}
             {model.error && <p role="alert">{model.error}</p>}
-            <ContextControl key={`${model.id}-${model.context_limit}`} model={model} pending={pending} save={limit => void act(`/${model.id}/context`, 'PUT', { context_limit: limit })} />
+            <ContextControl key={`${model.id}-${model.context_limit}`} model={model} pending={pending} save={limit => void submitModelChange(`/${model.id}/context`, 'PUT', { context_limit: limit })} />
             <div className="checkpoint-actions">
-              {active ? <button type="button" disabled={pending || model.status === 'cancelling'} onClick={() => void act(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
-                : model.status !== 'complete' && <button type="button" disabled={pending || downloading} onClick={() => void act(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
-              <button type="button" disabled={pending || model.status !== 'complete' || selected} onClick={() => void act('/selection', 'PUT', { model_id: model.id })}>{selected ? 'Selected' : 'Select model'}</button>
+              {active ? <button type="button" disabled={pending || model.status === 'cancelling'} onClick={() => void submitModelChange(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
+                : model.status !== 'complete' && <button type="button" disabled={pending || downloading} onClick={() => void submitModelChange(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
+              <button type="button" disabled={pending || model.status !== 'complete' || selected} onClick={() => void submitModelChange('/selection', 'PUT', { model_id: model.id })}>{selected ? 'Selected' : 'Select model'}</button>
             </div>
           </Panel>
         })}
