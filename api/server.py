@@ -27,6 +27,7 @@ app = FastAPI(
     description="Local model downloads and selection are persisted. Chat and decisions use Kadan's explicitly loaded inference adapter and return errors when no model is ready or output is invalid. Image, video, speech and transcription providers are not implemented; those generation endpoints return unavailable errors and media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
 )
 
+# Observe only generation POST handlers; dashboard polling is excluded.
 app.add_middleware(TelemetryMiddleware)
 
 for router in (

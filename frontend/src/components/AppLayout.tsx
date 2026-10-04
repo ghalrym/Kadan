@@ -4,6 +4,9 @@ import { navigation } from '../data/navigation'
 import type { MetricsResponse } from '../api/generated/types.gen'
 import { usePolling } from '../hooks/usePolling'
 
+/** Poll observed host/device memory; unavailable probes remain explicit.
+ * Values include other processes and do not establish model or GPU readiness.
+ */
 function ResourceMeters() {
   const { data, error, refresh } = usePolling<MetricsResponse>(
     '/v1/metrics',
@@ -59,6 +62,7 @@ function ResourceMeters() {
   )
 }
 
+/** Render shared navigation and the route outlet alongside live memory samples. */
 export default function AppLayout() {
   const { pathname } = useLocation()
   const page = navigation.find(

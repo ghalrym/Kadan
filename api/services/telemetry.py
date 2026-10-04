@@ -20,7 +20,12 @@ MAX_BODY_SUMMARY_BYTES = 16_384
 
 
 class TelemetryStore:
+    """Thread-safe bounded completion history and counters for one API process.
+
+    Restarting creates a new epoch and clears all measurements. Callers pair
+    each begin with one finish; records supplied to finish must not be mutated."""
     def __init__(self, capacity=1000):
+        """Start an empty bounded history; reject nonpositive record capacity."""
         if capacity < 1:
             raise ValueError('Telemetry capacity must be positive')
         self.capacity = capacity
@@ -31,10 +36,16 @@ class TelemetryStore:
         self._last_evicted = float('-inf')
 
     def begin(self):
+        """Increment the active-handler count under the store lock."""
         with self._lock:
             self.active += 1
 
     def finish(self, record, now=None):
+        """Complete one begun handler and append its observation under the lock.
+
+        At capacity, evict the oldest record and remember its monotonic timestamp
+        so rolling metrics can flag incomplete coverage. Optional now supports
+        deterministic sampling; it must use the same monotonic clock as metrics."""
         now = time.monotonic() if now is None else now
         with self._lock:
             self.active -= 1
@@ -44,10 +55,19 @@ class TelemetryStore:
             self._records.append((now, record))
 
     def records(self):
+        """Return a newest-first list snapshot without transferring record ownership.
+
+        The list is independent of the deque; contained records remain shared and
+        are treated as immutable by consumers."""
         with self._lock:
             return [record for _, record in reversed(self._records)]
 
     def metrics(self, now=None):
+        """Return process counters and rolling statistics for retained completions.
+
+        Active/lifetime counters are separate from the 60-second window. The snapshot
+        is lock-consistent. Median latency and error percentage are None for an empty window; eviction within the window sets window_truncated
+        and makes the reported request count a lower bound on completed traffic."""
         now = time.monotonic() if now is None else now
         with self._lock:
             recent = [record for stamp, record in self._records if stamp > now - 60]
@@ -94,10 +114,21 @@ def summarize(body, size, complete):
 
 
 class TelemetryMiddleware:
+    """Observe only allowlisted generation POST handlers without consuming extra input.
+
+    Buffer at most 16 KiB transiently for structural summaries. Monitoring
+    reads bypass this wrapper, preventing polling from monitoring itself."""
     def __init__(self, app, store=None):
+        """Wrap an ASGI app with an injected store or the process-local default."""
         self.app, self.store = app, store if store is not None else telemetry
 
     async def __call__(self, scope, receive, send):
+        """Measure one eligible handler and record its final outcome during cleanup.
+
+        Forward ASGI messages unchanged. Count consumed request bytes and emitted
+        response bytes; never retain output bodies. Cancellation records 499, as does
+        an observed disconnect before response completion. Other raised exceptions
+        record 500 unless that disconnect takes precedence; errors propagate. Elapsed time covers handler validation and cleanup."""
         path = scope.get('path', '')
         if scope['type'] != 'http' or scope.get('method') != 'POST' or path not in GENERATION_PATHS:
             return await self.app(scope, receive, send)
@@ -110,6 +141,10 @@ class TelemetryMiddleware:
         self.store.begin()
 
         async def capture_receive():
+            """Observe bytes the app actually consumes and pass the ASGI message through.
+
+            Keep only a bounded prefix transiently and track whether input completed
+            or the client disconnected; do not drain an unread request body."""
             nonlocal received, complete, disconnected
             message = await receive()
             if message['type'] == 'http.request':
@@ -123,6 +158,9 @@ class TelemetryMiddleware:
             return message
 
         async def capture_send(message):
+            """Forward response messages while tracking status, byte count and completion.
+
+            Completion is marked only after the final body message sends successfully."""
             nonlocal status, sent, response_complete
             if message['type'] == 'http.response.start':
                 status = message['status']

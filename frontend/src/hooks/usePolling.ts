@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
 
+/** Fetch uncached JSON with caller-owned cancellation.
+ * Reject HTTP failures (including expired-record 404s) and malformed JSON; the
+ * generic type describes the contract but does not validate the response schema.
+ */
 export async function readJson<T>(
   url: string,
   signal: AbortSignal,
@@ -15,7 +19,11 @@ export async function readJson<T>(
   return response.json() as Promise<T>
 }
 
-/** Serialized polling: no overlap; changes/unmount abort and reject late results. */
+/** Poll serially with a ten-second request timeout and a delay after completion.
+ * Returns data/error/last-success time for the current URL and a manual refresh
+ * callback. Failed polls clear data and its timestamp; URL changes hide the previous snapshot.
+ * Cleanup aborts in-flight work and prevents late results or future polling.
+ */
 export function usePolling<T>(url: string, interval = 3000) {
   const [snapshot, setSnapshot] = useState<{
     url: string
@@ -32,6 +40,7 @@ export function usePolling<T>(url: string, interval = 3000) {
   useEffect(() => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
+    /** Publish one current response or error, then schedule the next poll. */
     async function poll() {
       try {
         const data = await readJson<T>(

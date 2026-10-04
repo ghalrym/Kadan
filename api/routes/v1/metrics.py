@@ -8,12 +8,18 @@ router = APIRouter(prefix='/v1/metrics', tags=['Monitoring'])
 
 
 class ResourceMeter(BaseModel):
+    """Observed host or device-wide memory in GiB, including other processes."""
     label: str
     used: float
     total: float
 
 
 class MetricsResponse(BaseModel):
+    """Process-local request statistics plus best-effort host/device memory samples.
+
+    Null latency/error statistics mean no retained samples in the window. A
+    truncated window covers retained records only; Online does not imply a
+    loaded model or successful GPU inference."""
     status: Literal['Online'] = 'Online'
     resources: list[ResourceMeter]
     resource_errors: list[str]
@@ -31,6 +37,12 @@ class MetricsResponse(BaseModel):
 
 
 def memory_meters():
+    """Return observed memory meters and independent measurement-error messages.
+
+    Host usage is MemTotal minus MemAvailable, not process RSS or a cgroup
+    admission budget. CUDA driver readings run only when torch is already
+    imported; polling never imports inference dependencies or runs inference.
+    Unavailable probes leave explicit errors instead of fabricated readings."""
     resources, errors = [], []
     try:
         with open('/proc/meminfo') as stream:
@@ -60,5 +72,9 @@ def memory_meters():
 
 @router.get('', operation_id='getMetrics')
 def get_metrics() -> MetricsResponse:
+    """Combine a fresh memory sample with the bounded telemetry snapshot.
+
+    This monitoring read is excluded from generation telemetry, so polling
+    does not increase request counts or feed back into latency statistics."""
     resources, errors = memory_meters()
     return MetricsResponse(resources=resources, resource_errors=errors, **telemetry.metrics())

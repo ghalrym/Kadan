@@ -15,9 +15,11 @@ const types: RequestRecord['type'][] = [
   'STT',
   'Decision',
 ]
+/** Choose display severity from the observed HTTP outcome, not model quality. */
 const statusClass = (status: number) =>
   status >= 500 ? 'danger' : status >= 400 ? 'warning' : 'success'
 
+/** Show rolling retained-sample metrics and explicitly flag truncated windows. */
 function RequestStats() {
   const { data, error } = usePolling<MetricsResponse>('/v1/metrics')
   const stats = [
@@ -64,6 +66,10 @@ function RequestStats() {
   )
 }
 
+/** Browse process-local observations with server-side filters and pagination.
+ * Filter changes reset the page; polling may shift rows as requests complete or
+ * expire. Empty, loading and failed reads stay distinct from successful results.
+ */
 export default function RequestsPage() {
   const [type, setType] = useState('')
   const [status, setStatus] = useState('')

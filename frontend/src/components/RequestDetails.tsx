@@ -2,6 +2,9 @@ import { Link, useParams } from 'react-router'
 import type { RequestResponse } from '../api/generated/types.gen'
 import { usePolling } from '../hooks/usePolling'
 
+/** Display a polled retained observation, including expiry/error states.
+ * Summary fields contain counts and HTTP metadata, never original payload text.
+ */
 export default function RequestDetails() {
   const { requestId } = useParams()
   const { data, error, refresh } = usePolling<RequestResponse>(

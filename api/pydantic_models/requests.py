@@ -6,6 +6,11 @@ RequestStatus = Annotated[int, Field(ge=100, le=599)]
 
 
 class RequestRecord(BaseModel):
+    """Completed HTTP-handler observation retained only in the current API process.
+
+    The legacy prompt/output fields contain structural and HTTP summaries, not
+    user text or model output. Latency includes validation and cleanup; it is
+    not a token throughput or time-to-first-token measurement."""
     id: str
     time: str
     type: RequestType
