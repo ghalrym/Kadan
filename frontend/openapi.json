@@ -118,7 +118,6 @@
             "items": {
               "$ref": "#/components/schemas/ChatMessage"
             },
-            "maxItems": 128,
             "minItems": 1,
             "title": "Messages",
             "type": "array"
@@ -559,6 +558,28 @@
       },
       "ModelLifecycleStatus": {
         "properties": {
+          "configured_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configured Context Limit"
+          },
+          "effective_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Context Limit"
+          },
           "error": {
             "anyOf": [
               {
@@ -569,6 +590,11 @@
               }
             ],
             "title": "Error"
+          },
+          "max_output_tokens": {
+            "default": 256,
+            "title": "Max Output Tokens",
+            "type": "integer"
           },
           "memory": {
             "anyOf": [
@@ -604,6 +630,17 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "supported_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Context Limit"
           }
         },
         "required": [

@@ -325,9 +325,21 @@ export type MetricsResponse = {
  */
 export type ModelLifecycleStatus = {
   /**
+   * Configured Context Limit
+   */
+  configured_context_limit?: number | null
+  /**
+   * Effective Context Limit
+   */
+  effective_context_limit?: number | null
+  /**
    * Error
    */
   error?: string | null
+  /**
+   * Max Output Tokens
+   */
+  max_output_tokens?: number
   /**
    * Memory
    */
@@ -342,6 +354,10 @@ export type ModelLifecycleStatus = {
    * State
    */
   state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
+  /**
+   * Supported Context Limit
+   */
+  supported_context_limit?: number | null
 }
 
 /**
