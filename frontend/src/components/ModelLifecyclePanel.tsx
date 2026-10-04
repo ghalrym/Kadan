@@ -5,6 +5,10 @@ type ModelLifecycleStatus = {
   state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
   model_id: string | null
   error: string | null
+  configured_context_limit: number | null
+  effective_context_limit: number | null
+  supported_context_limit: number | null
+  max_output_tokens: number
 }
 
 async function modelLifecycleRequest(path: string, signal: AbortSignal, method = 'GET') {
@@ -77,6 +81,12 @@ export default function ModelLifecyclePanel({ selectedModelId }: { selectedModel
     <Panel className="stack runtime-panel">
       <SectionHeading>Model lifecycle</SectionHeading>
       <p role="status">{status ? `${status.state}${status.model_id ? ` · ${status.model_id}` : ''}` : 'Model lifecycle status unavailable'}</p>
+      {status?.effective_context_limit != null && <p>
+        Effective context: {status.effective_context_limit.toLocaleString()} tokens
+        {' · '}Architecture maximum: {status.supported_context_limit?.toLocaleString() ?? 'unknown'}
+        {' · '}Output allowance: {status.max_output_tokens.toLocaleString()} tokens
+      </p>}
+      <p className="muted">Context includes the prompt, conversation and output allowance. The cache grows with the request; a saved limit is not a promise of RAM or VRAM fit.</p>
       <p className="muted">Load the selected download to use chat. To switch models, unload first, then select and load another download.</p>
       {status?.state === 'offloaded' && <p>Model memory was released for another workload. The next chat request restores the selected model.</p>}
       {(error || pollError || status?.error) && <p role="alert">{error || pollError || status?.error}</p>}
