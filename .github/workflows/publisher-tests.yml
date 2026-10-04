@@ -24,3 +24,16 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+  public-preflight-diagnostic:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/publisher-http-diagnostics'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Probe public preflight endpoints without authentication
+        run: python3 .github/scripts/probe_publisher_preflight.py

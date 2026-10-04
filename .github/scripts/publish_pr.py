@@ -73,6 +73,27 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise Failure('GitHub API redirect rejected')
 
 
+def http_diagnostic(path, status, headers):
+    """Describe an HTTP result without response bodies, query values, or credentials.
+
+    Only known fixed endpoint paths and bounded decimal rate-limit/retry values
+    may reach logs. Unknown paths and nonnumeric header values are omitted.
+    """
+    endpoint = path.split('?', 1)[0].split('#', 1)[0]
+    known = re.fullmatch(re.escape(ROOT) +
+        r'(?:/environments/kadan-pr-publishing(?:/deployment-branch-policies)?'
+        r'|/pulls(?:/[0-9]+(?:/comments|/reviews)?)?|/issues/[0-9]+/comments)?', endpoint)
+    if not known and endpoint != '/installation/repositories':
+        endpoint = '<redacted>'
+    fields = [f'HTTP {status}', f'path={endpoint}']
+    for name in ('x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-used',
+                 'x-ratelimit-reset', 'retry-after'):
+        value = (headers or {}).get(name)
+        if isinstance(value, str) and re.fullmatch(r'[0-9]{1,12}', value):
+            fields.append(f'{name}={value}')
+    return '; '.join(fields)
+
+
 class API:
     def __init__(self, token=None):
         """Build an API client with optional bearer authentication; perform no request yet."""
@@ -103,7 +124,8 @@ class API:
                     raise Failure('GitHub API response exceeded size limit')
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
-            raise Failure(f'GitHub API request failed (HTTP {exc.code})') from None
+            raise Failure('GitHub API request failed (' +
+                          http_diagnostic(path, exc.code, exc.headers) + ')') from None
         except (urllib.error.URLError, OSError, ValueError, RecursionError):
             raise Failure('GitHub API transport or JSON failure') from None
 
