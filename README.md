@@ -102,8 +102,8 @@ installed engine or vendored runtime. Source references are kept in code.
 ## CPU decisions
 
 `POST /v1/decisions` lazy-loads embedded Laya on CPU, independently of the chat
-model. Use the inference environment above with a CPU PyTorch wheel on CPU-only
-hosts; the API-only Compose image still does not include inference dependencies.
+model. The standard API requirements and Compose image include Laya. CPU-only
+native installations can use the CPU PyTorch wheel; chat still requires a GPU.
 Run one API worker. No Laya server, GPU allocation or generative-model fallback
 is involved.
 
