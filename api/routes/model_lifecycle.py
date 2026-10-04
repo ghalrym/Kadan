@@ -12,6 +12,10 @@ class ModelLifecycleStatus(BaseModel):
     model_id: str | None = None
     error: str | None = None
     memory: dict | None = None
+    configured_context_limit: int | None = None
+    effective_context_limit: int | None = None
+    supported_context_limit: int | None = None
+    max_output_tokens: int = 256
 
 
 @router.get('', operation_id='getModelLifecycleStatus')

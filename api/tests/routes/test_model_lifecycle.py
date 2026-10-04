@@ -68,8 +68,13 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         oversized = self.client.post('/v1/chat/completions', json={
             'messages': [{'role': 'user', 'text': 'x' * 32769}],
         })
-        self.assertEqual(oversized.status_code, 413)
-        self.runtime.complete.assert_awaited_once()
+        self.assertEqual(oversized.status_code, 200)
+        self.assertEqual(len(self.runtime.complete.await_args.args[0][0].text), 32769)
+        many = self.client.post('/v1/chat/completions', json={
+            'messages': [{'role': 'user', 'text': 'Hi'}] * 129,
+        })
+        self.assertEqual(many.status_code, 200)
+        self.assertEqual(len(self.runtime.complete.await_args.args[0]), 129)
 
     def test_api_lifespan_closes_runtime_and_download_manager(self):
         self.runtime.close = AsyncMock()
