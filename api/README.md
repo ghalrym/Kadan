@@ -11,6 +11,17 @@ The API listens at http://localhost:8000; interactive documentation is at
 http://localhost:8000/docs and the schema is at http://localhost:8000/openapi.json.
 The existing frontend remains on port 5173 and still uses its own fixtures.
 
+The generated frontend API contract is in `frontend/openapi.json`. It includes
+the routes, request and response schemas, and validation constraints from FastAPI
+and Pydantic. Regenerate it from the repository root after changing API contracts:
+
+```sh
+.venv/bin/python -m api.export_openapi > frontend/openapi.json
+```
+
+This command imports the app directly; it does not require a running server.
+Treat the spec as generated output and update route models rather than editing it.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Service health and mock mode |

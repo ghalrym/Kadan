@@ -1,0 +1,1956 @@
+{
+  "components": {
+    "schemas": {
+      "ChatMessage": {
+        "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChoiceOption": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "description"
+        ],
+        "title": "ChoiceOption",
+        "type": "object"
+      },
+      "ChoiceQuestion": {
+        "properties": {
+          "instructions": {
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ChoiceOption"
+            },
+            "minItems": 1,
+            "title": "Options",
+            "type": "array"
+          },
+          "type": {
+            "const": "Choice",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instructions",
+          "type",
+          "options"
+        ],
+        "title": "ChoiceQuestion",
+        "type": "object"
+      },
+      "ClonedVoice": {
+        "properties": {
+          "mode": {
+            "const": "clone",
+            "title": "Mode",
+            "type": "string"
+          },
+          "sample": {
+            "description": "Voice sample reference; not fetched in mock mode",
+            "minLength": 1,
+            "title": "Sample",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "sample"
+        ],
+        "title": "ClonedVoice",
+        "type": "object"
+      },
+      "CompletionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "minItems": 1,
+            "title": "Messages",
+            "type": "array"
+          },
+          "model": {
+            "default": "Qwen3 32B Instruct",
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "CompletionRequest",
+        "type": "object"
+      },
+      "CompletionResponse": {
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/ChatMessage"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "CompletionResponse",
+        "type": "object"
+      },
+      "DecisionAnswer": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "probabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probabilities"
+          },
+          "type": {
+            "enum": [
+              "Choice",
+              "Score",
+              "Noul"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "value"
+        ],
+        "title": "DecisionAnswer",
+        "type": "object"
+      },
+      "DecisionPlaygroundResponse": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "questions": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "Choice": "#/components/schemas/ChoiceQuestion",
+                  "Noul": "#/components/schemas/NoulQuestion",
+                  "Score": "#/components/schemas/ScoreQuestion"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulQuestion"
+                }
+              ]
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "questions",
+          "answers"
+        ],
+        "title": "DecisionPlaygroundResponse",
+        "type": "object"
+      },
+      "DecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "Choice": "#/components/schemas/ChoiceQuestion",
+                  "Noul": "#/components/schemas/NoulQuestion",
+                  "Score": "#/components/schemas/ScoreQuestion"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulQuestion"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Questions",
+            "type": "array"
+          },
+          "state": {
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "questions"
+        ],
+        "title": "DecisionRequest",
+        "type": "object"
+      },
+      "DecisionResponse": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            },
+            "title": "Answers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "title": "DecisionResponse",
+        "type": "object"
+      },
+      "DescribedVoice": {
+        "properties": {
+          "description": {
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "mode": {
+            "const": "describe",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "description"
+        ],
+        "title": "DescribedVoice",
+        "type": "object"
+      },
+      "GeneratedSpeech": {
+        "properties": {
+          "meta": {
+            "title": "Meta",
+            "type": "string"
+          },
+          "script": {
+            "title": "Script",
+            "type": "string"
+          },
+          "time": {
+            "title": "Time",
+            "type": "string"
+          },
+          "voice": {
+            "title": "Voice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice",
+          "meta",
+          "script",
+          "time"
+        ],
+        "title": "GeneratedSpeech",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "ImageResponse": {
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/ImageSet"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "title": "ImageResponse",
+        "type": "object"
+      },
+      "ImageSet": {
+        "properties": {
+          "aspect": {
+            "enum": [
+              "square",
+              "landscape",
+              "portrait",
+              "wide"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "title": "Meta",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "Generate",
+              "Edit"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seeds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Seeds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "prompt",
+          "aspect",
+          "seeds",
+          "meta"
+        ],
+        "title": "ImageSet",
+        "type": "object"
+      },
+      "ImagesResponse": {
+        "properties": {
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ImageSet"
+            },
+            "title": "Images",
+            "type": "array"
+          }
+        },
+        "required": [
+          "images"
+        ],
+        "title": "ImagesResponse",
+        "type": "object"
+      },
+      "MessagesResponse": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "MessagesResponse",
+        "type": "object"
+      },
+      "MetricsResponse": {
+        "properties": {
+          "error_rate_percent": {
+            "title": "Error Rate Percent",
+            "type": "number"
+          },
+          "p50_latency_seconds": {
+            "title": "P50 Latency Seconds",
+            "type": "number"
+          },
+          "queued_jobs": {
+            "title": "Queued Jobs",
+            "type": "integer"
+          },
+          "requests_per_minute": {
+            "title": "Requests Per Minute",
+            "type": "integer"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceMeter"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "status": {
+            "const": "Online",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "resources",
+          "requests_per_minute",
+          "p50_latency_seconds",
+          "error_rate_percent",
+          "queued_jobs"
+        ],
+        "title": "MetricsResponse",
+        "type": "object"
+      },
+      "ModelSetting": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "selected": {
+            "title": "Selected",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "LLM",
+              "Image",
+              "Video",
+              "TTS",
+              "STT"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "type",
+          "selected",
+          "options"
+        ],
+        "title": "ModelSetting",
+        "type": "object"
+      },
+      "NoulQuestion": {
+        "properties": {
+          "falseWhen": {
+            "default": "",
+            "title": "Falsewhen",
+            "type": "string"
+          },
+          "instructions": {
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "trueWhen": {
+            "default": "",
+            "title": "Truewhen",
+            "type": "string"
+          },
+          "type": {
+            "const": "Noul",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instructions",
+          "type"
+        ],
+        "title": "NoulQuestion",
+        "type": "object"
+      },
+      "RequestRecord": {
+        "properties": {
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "latency": {
+            "title": "Latency",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output": {
+            "title": "Output",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              200,
+              202,
+              429,
+              500
+            ],
+            "title": "Status",
+            "type": "integer"
+          },
+          "time": {
+            "title": "Time",
+            "type": "string"
+          },
+          "tokensPerSecond": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenspersecond"
+          },
+          "ttft": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft"
+          },
+          "type": {
+            "enum": [
+              "LLM",
+              "Image",
+              "Video",
+              "TTS",
+              "STT",
+              "Decision"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "type",
+          "model",
+          "status",
+          "latency",
+          "endpoint",
+          "prompt",
+          "output"
+        ],
+        "title": "RequestRecord",
+        "type": "object"
+      },
+      "RequestResponse": {
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/RequestRecord"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "RequestResponse",
+        "type": "object"
+      },
+      "RequestsResponse": {
+        "properties": {
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/RequestRecord"
+            },
+            "title": "Requests",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requests",
+          "total"
+        ],
+        "title": "RequestsResponse",
+        "type": "object"
+      },
+      "ResourceMeter": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "number"
+          },
+          "used": {
+            "title": "Used",
+            "type": "number"
+          }
+        },
+        "required": [
+          "label",
+          "used",
+          "total"
+        ],
+        "title": "ResourceMeter",
+        "type": "object"
+      },
+      "ScoreQuestion": {
+        "properties": {
+          "instructions": {
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "levels": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Levels",
+            "type": "array"
+          },
+          "type": {
+            "const": "Score",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instructions",
+          "type",
+          "levels"
+        ],
+        "title": "ScoreQuestion",
+        "type": "object"
+      },
+      "SettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "models": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "LLM",
+                "Image",
+                "Video",
+                "TTS",
+                "STT"
+              ]
+            },
+            "title": "Models",
+            "type": "object"
+          },
+          "whisper_formatting": {
+            "default": true,
+            "title": "Whisper Formatting",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "SettingsRequest",
+        "type": "object"
+      },
+      "SettingsResponse": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelSetting"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "whisper_formatting": {
+            "title": "Whisper Formatting",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "models",
+          "whisper_formatting"
+        ],
+        "title": "SettingsResponse",
+        "type": "object"
+      },
+      "SpeechHistoryResponse": {
+        "properties": {
+          "audio": {
+            "items": {
+              "$ref": "#/components/schemas/GeneratedSpeech"
+            },
+            "title": "Audio",
+            "type": "array"
+          },
+          "script": {
+            "title": "Script",
+            "type": "string"
+          },
+          "voice_description": {
+            "title": "Voice Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio",
+          "voice_description",
+          "script"
+        ],
+        "title": "SpeechHistoryResponse",
+        "type": "object"
+      },
+      "SpeechRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "script": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Script",
+            "type": "string"
+          },
+          "voice": {
+            "discriminator": {
+              "mapping": {
+                "clone": "#/components/schemas/ClonedVoice",
+                "describe": "#/components/schemas/DescribedVoice"
+              },
+              "propertyName": "mode"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DescribedVoice"
+              },
+              {
+                "$ref": "#/components/schemas/ClonedVoice"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "script",
+          "voice"
+        ],
+        "title": "SpeechRequest",
+        "type": "object"
+      },
+      "SpeechResponse": {
+        "properties": {
+          "audio": {
+            "$ref": "#/components/schemas/GeneratedSpeech"
+          }
+        },
+        "required": [
+          "audio"
+        ],
+        "title": "SpeechResponse",
+        "type": "object"
+      },
+      "TranscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio": {
+            "description": "Audio reference; not fetched in mock mode",
+            "minLength": 1,
+            "title": "Audio",
+            "type": "string"
+          },
+          "formatting": {
+            "default": true,
+            "title": "Formatting",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "audio"
+        ],
+        "title": "TranscriptionRequest",
+        "type": "object"
+      },
+      "TranscriptionResponse": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TranscriptionResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VideoGenerationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect": {
+            "default": "16:9",
+            "enum": [
+              "16:9",
+              "9:16",
+              "1:1"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "duration": {
+            "default": 8,
+            "exclusiveMinimum": 0.0,
+            "title": "Duration",
+            "type": "integer"
+          },
+          "fps": {
+            "default": 24,
+            "exclusiveMinimum": 0.0,
+            "title": "Fps",
+            "type": "integer"
+          },
+          "negative_prompt": {
+            "default": "",
+            "title": "Negative Prompt",
+            "type": "string"
+          },
+          "prompt": {
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "resolution": {
+            "default": "720p",
+            "enum": [
+              "480p",
+              "720p",
+              "1080p"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "VideoGenerationRequest",
+        "type": "object"
+      },
+      "VideoGenerationResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/VideoJob"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "title": "VideoGenerationResponse",
+        "type": "object"
+      },
+      "VideoJob": {
+        "properties": {
+          "aspect": {
+            "enum": [
+              "wide",
+              "portrait",
+              "square"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "duration": {
+            "title": "Duration",
+            "type": "string"
+          },
+          "fps": {
+            "title": "Fps",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "progressText": {
+            "title": "Progresstext",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "resolution": {
+            "title": "Resolution",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "Rendering",
+              "Queued",
+              "Done"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "thumbnail": {
+            "title": "Thumbnail",
+            "type": "string"
+          },
+          "time": {
+            "title": "Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "prompt",
+          "duration",
+          "resolution",
+          "aspect",
+          "fps",
+          "progress",
+          "time",
+          "status",
+          "thumbnail",
+          "progressText"
+        ],
+        "title": "VideoJob",
+        "type": "object"
+      },
+      "VideoResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/VideoJob"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "title": "VideoResponse",
+        "type": "object"
+      },
+      "VideosResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/VideoJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "title": "VideosResponse",
+        "type": "object"
+      },
+      "api__routes__v1__images__edits__ImageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect": {
+            "default": "1:1",
+            "enum": [
+              "1:1",
+              "4:3",
+              "3:4",
+              "16:9"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "count": {
+            "default": 4,
+            "enum": [
+              1,
+              2,
+              4
+            ],
+            "title": "Count",
+            "type": "integer"
+          },
+          "image": {
+            "description": "Source image reference; not fetched in mock mode",
+            "minLength": 1,
+            "title": "Image",
+            "type": "string"
+          },
+          "prompt": {
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "strength": {
+            "default": 0.65,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Strength",
+            "type": "number"
+          }
+        },
+        "required": [
+          "prompt",
+          "image"
+        ],
+        "title": "ImageRequest",
+        "type": "object"
+      },
+      "api__routes__v1__images__generations__ImageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect": {
+            "default": "1:1",
+            "enum": [
+              "1:1",
+              "4:3",
+              "3:4",
+              "16:9"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "count": {
+            "default": 4,
+            "enum": [
+              1,
+              2,
+              4
+            ],
+            "title": "Count",
+            "type": "integer"
+          },
+          "prompt": {
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "ImageRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Deterministic mock API matching the frontend fixtures. Inputs are validated, but generation responses are fixed and writes are not persisted. Media is placeholder metadata, not downloadable files. This is not an OpenAI-compatible API.",
+    "title": "Kadan API",
+    "version": "0.0.1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/v1/audio/speech": {
+      "get": {
+        "operationId": "list_speech_v1_audio_speech_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Speech",
+        "tags": [
+          "Audio"
+        ]
+      },
+      "post": {
+        "operationId": "generate_speech_v1_audio_speech_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Speech",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "operationId": "transcribe_audio_v1_audio_transcriptions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transcribe Audio",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "create_completion_v1_chat_completions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Completion",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/v1/chat/messages": {
+      "get": {
+        "operationId": "list_messages_v1_chat_messages_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Messages",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/v1/decisions": {
+      "get": {
+        "operationId": "get_decisions_v1_decisions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionPlaygroundResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Decisions",
+        "tags": [
+          "Decisions"
+        ]
+      },
+      "post": {
+        "operationId": "evaluate_decisions_v1_decisions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evaluate Decisions",
+        "tags": [
+          "Decisions"
+        ]
+      }
+    },
+    "/v1/images": {
+      "get": {
+        "operationId": "list_images_v1_images_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImagesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Images",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/edits": {
+      "post": {
+        "operationId": "create_image_v1_images_edits_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api__routes__v1__images__edits__ImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/generations": {
+      "post": {
+        "operationId": "create_image_v1_images_generations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api__routes__v1__images__generations__ImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/metrics": {
+      "get": {
+        "operationId": "get_metrics_v1_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Metrics",
+        "tags": [
+          "Monitoring"
+        ]
+      }
+    },
+    "/v1/requests": {
+      "get": {
+        "operationId": "list_requests_v1_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "LLM",
+                    "Image",
+                    "Video",
+                    "TTS",
+                    "STT",
+                    "Decision"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    200,
+                    202,
+                    429,
+                    500
+                  ],
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Search",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Requests",
+        "tags": [
+          "Requests"
+        ]
+      }
+    },
+    "/v1/requests/{request_id}": {
+      "get": {
+        "operationId": "get_request_v1_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Request",
+        "tags": [
+          "Requests"
+        ]
+      }
+    },
+    "/v1/settings": {
+      "get": {
+        "operationId": "get_settings_v1_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Settings",
+        "tags": [
+          "Settings"
+        ]
+      },
+      "put": {
+        "description": "Validates settings and returns the unchanged mock settings. Does not persist changes.",
+        "operationId": "update_settings_v1_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Settings",
+        "tags": [
+          "Settings"
+        ]
+      }
+    },
+    "/v1/videos": {
+      "get": {
+        "operationId": "list_videos_v1_videos_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideosResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Videos",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/generations": {
+      "post": {
+        "operationId": "generate_video_v1_videos_generations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoGenerationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoGenerationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/{video_id}": {
+      "get": {
+        "operationId": "get_video_v1_videos__video_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    }
+  }
+}

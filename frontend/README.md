@@ -22,7 +22,7 @@ docker compose down             # Stop the services
 ```
 
 Stop any locally running Vite server before starting Docker; both use port 5173.
-Only the frontend is configured in Compose for now.
+Compose also provides the separate mock API on port 8000.
 
 To run directly on your machine instead:
 
@@ -73,3 +73,19 @@ The root redirects to `/requests`. Unknown URLs and unknown request IDs have exp
 Navigation, request-detail links, and the Advanced disclosure work. Everything else is a visual placeholder: inputs are read-only, action buttons and settings are disabled, and no server requests, timers, storage, recording, uploads, downloads, or simulated generation run. “Online”, “Live”, metrics, request output, and queue progress are frozen design fixtures, not server status. Image tiles intentionally keep the reference's striped placeholders.
 
 The Python server remains separate. When the backend is ready, replace the fixtures with API data and enable the appropriate controls.
+
+## API specification
+
+[`openapi.json`](openapi.json) is generated from the FastAPI routes and Pydantic
+models for frontend development and future client generation. It does not connect
+the frontend to the API.
+
+Regenerate it from the repository root with the API's Python dependencies installed:
+
+```sh
+.venv/bin/python -m api.export_openapi > frontend/openapi.json
+```
+
+Edit the API routes and models, then regenerate; do not edit the spec by hand.
+The running API also serves `/openapi.json` and interactive documentation at
+`http://localhost:8000/docs`.
