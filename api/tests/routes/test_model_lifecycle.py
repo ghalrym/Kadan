@@ -55,6 +55,55 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(self.client.post('/model-lifecycle/unload').json()['state'], 'unloaded')
 
+    def test_load_payload_is_strict_before_runtime_changes(self):
+        for body in (
+            {}, {'model_id': 'unknown'}, {'model_id': 'small', 'context_limit': True},
+            {'model_id': 'small', 'context_limit': '65536'},
+            {'model_id': 'small', 'context_limit': 0},
+            {'model_id': 'small', 'context_limit': 2**31},
+            {'model_id': 'small', 'context_limit': 1.5},
+            {'model_id': 'small', 'extra': 'ignored?'},
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.client.post('/model-lifecycle/load', json=body).status_code, 422)
+        self.assertEqual(self.runtime.state, 'unloaded')
+        self.assertFalse((self.models.root / 'selection.json').exists())
+
+    def test_load_body_drives_real_store_and_controller(self):
+        import json
+        from api.services.model_catalog import CATALOG
+        from api.inference.resources import ResourceManager
+        from api.tests.services.test_runtime import Adapter
+        from unittest.mock import Mock
+        entry = CATALOG['small']
+        path = self.models._checkpoint_directory(entry)
+        path.mkdir()
+        (path / 'config.json').write_text(json.dumps({'max_position_embeddings': 131072}))
+        factory = Mock(side_effect=lambda *args, **kwargs: Adapter())
+        self.runtime._factory = factory
+        self.runtime.resources = ResourceManager(1000, {0: 1000})
+        async def finish_load():
+            await self.runtime.task
+        with patch.object(self.models, '_checkpoint_complete', return_value=True), TestClient(app) as client:
+            for payload, configured, effective in (
+                ({'model_id': 'small'}, 65536, 65536),
+                ({'model_id': 'small', 'context_limit': None}, None, 131072),
+                ({'model_id': 'small', 'context_limit': 32768}, 32768, 32768),
+            ):
+                response = client.post('/model-lifecycle/load', json=payload)
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(response.json()['state'], 'loading')
+                self.assertEqual(response.json()['configured_context_limit'], configured)
+                client.portal.call(finish_load)
+                status = client.get('/model-lifecycle').json()
+                self.assertEqual(status['state'], 'ready')
+                self.assertEqual(status['effective_context_limit'], effective)
+                self.assertEqual(self.models.configured_context('small'), configured)
+            invalid = client.post('/model-lifecycle/load', json={'model_id': 'small', 'context_limit': 131073})
+            self.assertEqual(invalid.status_code, 422)
+            self.assertEqual(client.get('/model-lifecycle').json()['state'], 'ready')
+            self.assertEqual(factory.call_count, 3)
+
     def test_completion_contract_and_limits(self):
         self.runtime.complete = AsyncMock(return_value='Controlled runtime reply')
         response = self.client.post('/v1/chat/completions', json={

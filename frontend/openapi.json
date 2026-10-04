@@ -737,6 +737,39 @@
         "title": "ModelLifecycleStatus",
         "type": "object"
       },
+      "ModelLoadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_limit": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit to retain saved/default context; explicit null uses the architecture maximum.",
+            "title": "Context Limit"
+          },
+          "model_id": {
+            "enum": [
+              "small",
+              "medium",
+              "large"
+            ],
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "ModelLoadRequest",
+        "type": "object"
+      },
       "ModelSetting": {
         "description": "A catalog-backed selection; None means no model is selected.",
         "properties": {
@@ -1836,8 +1869,25 @@
     },
     "/model-lifecycle/load": {
       "post": {
-        "description": "Accept loading of the selected complete checkpoint and return its initial state; map\nlifecycle conflicts and validation failures to HTTP errors.",
+        "description": "Accept a saved-selection load, or atomically configure and load the supplied target.\nValidate before switching; 202/loading is acceptance, not completed construction.\nPoll status for readiness or errors. Identical explicit requests reuse the current load.",
         "operationId": "loadSelectedModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ModelLoadRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
@@ -1848,6 +1898,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Load Selected Model",
