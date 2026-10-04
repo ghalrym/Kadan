@@ -35,6 +35,7 @@ class RuntimeManager:
         self.error = None
         self.adapter = None
         self.resources = resources
+        self._resources_lock = threading.Lock()
         self._factory = factory
         self._leased = False
         self._cancel = threading.Event()
@@ -54,6 +55,15 @@ class RuntimeManager:
         return dict(state=state, model_id=self.model_id, error=self.error, max_output_tokens=256, **self.context_settings,
                     memory=self.resources.snapshot() if self.resources else None)
 
+    def ensure_resources(self):
+        """Initialize shared budgets once, including when CPU decisions load before chat."""
+        with self._resources_lock:
+            if self.resources is None:
+                available = probe_memory()
+                self.resources = ResourceManager(int(available.host_bytes * .8),
+                    {index: int(size * .8) for index, size in available.device_bytes.items()}, probe=probe_memory)
+            return self.resources
+
     def _construct(self, entry, path, cancel):
         # Optional model dependencies are imported only on a requested load.
         """Build on a worker thread using the selected single GPU and shared budgets, then apply
@@ -66,10 +76,7 @@ class RuntimeManager:
             except ImportError as exc:
                 raise RuntimeFailure('Install the optional Kadan inference requirements before loading a model.') from exc
             factory = build_runtime
-        if self.resources is None:
-            available = probe_memory()
-            self.resources = ResourceManager(int(available.host_bytes * .8),
-                {index: int(size * .8) for index, size in available.device_bytes.items()}, probe=probe_memory)
+        self.ensure_resources()
         gpu = os.environ.get('KADAN_GPU', '0')
         if not gpu.isdecimal():
             raise RuntimeFailure('KADAN_GPU must be one nonnegative GPU index; VRAM is not pooled.')

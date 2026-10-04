@@ -11,6 +11,7 @@ from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 from api.services.telemetry import TelemetryMiddleware
+from api.services.decisions import decision_manager
 
 
 @asynccontextmanager
@@ -21,8 +22,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await runtime_manager.close()
-        await asyncio.to_thread(model_manager.close)
+        try:
+            await decision_manager.close()
+        finally:
+            try:
+                await runtime_manager.close()
+            finally:
+                await asyncio.to_thread(model_manager.close)
 
 app = FastAPI(
     lifespan=lifespan,
