@@ -2,6 +2,7 @@
 
 export {
   cancelDownloadV1ModelsModelIdDownloadDelete,
+  configureContextV1ModelsModelIdContextPut,
   createCompletion,
   downloadModelV1ModelsModelIdDownloadPost,
   editImages,
@@ -41,6 +42,12 @@ export type {
   ClonedVoice,
   CompletionRequest,
   CompletionResponse,
+  ConfigureContextV1ModelsModelIdContextPutData,
+  ConfigureContextV1ModelsModelIdContextPutError,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ConfigureContextV1ModelsModelIdContextPutResponse,
+  ConfigureContextV1ModelsModelIdContextPutResponses,
+  ContextRequest,
   CreateCompletionData,
   CreateCompletionError,
   CreateCompletionErrors,

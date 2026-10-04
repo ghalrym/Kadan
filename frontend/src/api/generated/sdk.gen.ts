@@ -12,6 +12,9 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  ConfigureContextV1ModelsModelIdContextPutData,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ConfigureContextV1ModelsModelIdContextPutResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
@@ -309,6 +312,31 @@ export const selectModelV1ModelsSelectionPut = <
     ThrowOnError
   >({
     url: '/v1/models/selection',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Configure Context
+ */
+export const configureContextV1ModelsModelIdContextPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ConfigureContextV1ModelsModelIdContextPutData, ThrowOnError>,
+): RequestResult<
+  ConfigureContextV1ModelsModelIdContextPutResponses,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    ConfigureContextV1ModelsModelIdContextPutResponses,
+    ConfigureContextV1ModelsModelIdContextPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/{model_id}/context',
     ...options,
     headers: {
       'Content-Type': 'application/json',
