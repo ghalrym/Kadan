@@ -111,6 +111,8 @@ export const health = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Model Lifecycle
+ *
+ * Return current model state, context limits and shared-memory accounting without loading a model.
  */
 export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
   options?: Options<GetModelLifecycleStatusData, ThrowOnError>,
@@ -123,6 +125,9 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 
 /**
  * Load Selected Model
+ *
+ * Accept loading of the selected complete checkpoint and return its initial state; map
+ * lifecycle conflicts and validation failures to HTTP errors.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,
@@ -135,6 +140,8 @@ export const loadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * Unload Selected Model
+ *
+ * Request cooperative cancellation and wait for model cleanup before returning unloaded state.
  */
 export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<UnloadSelectedModelData, ThrowOnError>,
@@ -147,6 +154,8 @@ export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * List Speech
+ *
+ * Return empty speech history and blank editor defaults, without fixture audio.
  */
 export const listSpeech = <ThrowOnError extends boolean = false>(
   options?: Options<ListSpeechData, ThrowOnError>,
@@ -158,6 +167,11 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 
 /**
  * Generate Speech
+ *
+ * Reject a validated describe/clone request with HTTP 503.
+ *
+ * No speech provider is configured, so no audio is generated or persisted and
+ * clone sample references are neither fetched nor treated as uploaded files.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -200,6 +214,9 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Completion
+ *
+ * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
+ * awaits cleanup; runtime failures preserve their HTTP status.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,
@@ -233,6 +250,8 @@ export const listMessages = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Decisions
+ *
+ * Return blank playground state; no saved questions or model answers are loaded.
  */
 export const getDecisions = <ThrowOnError extends boolean = false>(
   options?: Options<GetDecisionsData, ThrowOnError>,
@@ -243,6 +262,14 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 
 /**
  * Evaluate Decisions
+ *
+ * Evaluate validated questions using the currently loaded shared model.
+ *
+ * Returns strictly validated answers, preserves runtime HTTP error statuses,
+ * and reports invalid model JSON as 502. If disconnect wins the completion race,
+ * cancel inference and raise HTTP 499; pending tasks are cancelled and awaited
+ * on exit. A disconnected client may not receive that response.
+ * This route neither loads a second model nor persists playground results.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,
@@ -266,6 +293,8 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 
 /**
  * List Images
+ *
+ * Return empty image history while no image provider or stored results exist.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -277,6 +306,11 @@ export const listImages = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Image
+ *
+ * Reject a validated edit request with HTTP 503 until a provider exists.
+ *
+ * The source reference is opaque: this route does not fetch/upload images,
+ * allocate an inference model, or create a placeholder result.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -296,6 +330,10 @@ export const editImages = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Image
+ *
+ * Reject validated image-generation settings with HTTP 503.
+ *
+ * No image provider runs, GPU work starts, or synthetic result is returned.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,
@@ -326,6 +364,12 @@ export const getMetrics = <ThrowOnError extends boolean = false>(
 
 /**
  * List Models
+ *
+ * Return current catalog, download progress, saved selection, and context limits.
+ *
+ * Completeness is checked from local files; this does not start downloads or
+ * load models. Context/configuration errors propagate; an unreadable or
+ * invalid saved selection is represented as no selection.
  */
 export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
   options?: Options<ListModelsV1ModelsGetData, ThrowOnError>,
@@ -338,6 +382,11 @@ export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
 
 /**
  * Select Model
+ *
+ * Save a completed model as the selection for a subsequent runtime load.
+ *
+ * Returns refreshed status, or 409 for a runtime lease, 400 for an incomplete
+ * checkpoint, and 503 for unavailable storage. Selection alone loads no tensors.
  */
 export const selectModelV1ModelsSelectionPut = <
   ThrowOnError extends boolean = false,
@@ -363,6 +412,11 @@ export const selectModelV1ModelsSelectionPut = <
 
 /**
  * Configure Context
+ *
+ * Persist the model's context limit and return refreshed catalog status.
+ *
+ * Null uses the architecture maximum on load. Returns 409 while a runtime lease
+ * is held, 400 for invalid limits/model IDs, or 503 for unavailable storage.
  */
 export const configureContextV1ModelsModelIdContextPut = <
   ThrowOnError extends boolean = false,
@@ -388,6 +442,11 @@ export const configureContextV1ModelsModelIdContextPut = <
 
 /**
  * Cancel Download
+ *
+ * Request cancellation and return status with HTTP 202 before cleanup finishes.
+ *
+ * Unknown models return 400, inactive jobs return 409, and storage errors return
+ * 503. Completed checkpoints are never deleted by this endpoint.
  */
 export const cancelDownloadV1ModelsModelIdDownloadDelete = <
   ThrowOnError extends boolean = false,
@@ -409,6 +468,12 @@ export const cancelDownloadV1ModelsModelIdDownloadDelete = <
 
 /**
  * Download Model
+ *
+ * Start a catalog checkpoint download and return status with HTTP 202.
+ *
+ * Acceptance is not completion; poll the catalog for progress or failure.
+ * Unknown models return 400; active/completed conflicts return 409 and storage
+ * failures return 503. Only pinned catalog checkpoints may be downloaded.
  */
 export const downloadModelV1ModelsModelIdDownloadPost = <
   ThrowOnError extends boolean = false,
@@ -483,6 +548,8 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
 
 /**
  * List Videos
+ *
+ * Return an empty queue because no video jobs are persisted or scheduled.
  */
 export const listVideos = <ThrowOnError extends boolean = false>(
   options?: Options<ListVideosData, ThrowOnError>,
@@ -494,6 +561,11 @@ export const listVideos = <ThrowOnError extends boolean = false>(
 
 /**
  * Generate Video
+ *
+ * Reject validated generation settings with HTTP 503 without queuing a job.
+ *
+ * The declared 202 response is the future job contract, not evidence that a
+ * provider ran or that GPU rendering has started.
  */
 export const generateVideo = <ThrowOnError extends boolean = false>(
   options: Options<GenerateVideoData, ThrowOnError>,
@@ -513,6 +585,8 @@ export const generateVideo = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Video
+ *
+ * Report HTTP 404 for the requested ID; no provider-backed video jobs exist.
  */
 export const getVideo = <ThrowOnError extends boolean = false>(
   options: Options<GetVideoData, ThrowOnError>,

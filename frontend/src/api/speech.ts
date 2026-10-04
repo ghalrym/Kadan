@@ -1,6 +1,11 @@
 import { generateSpeech, listSpeech } from './generated/sdk.gen'
 import type { GeneratedSpeech, SpeechRequest } from './generated/types.gen'
 
+/**
+ * Trim editor values into the discriminated describe/clone API payload.
+ * Throw for blank or oversized script/voice input; clone voice text is an opaque
+ * sample reference, not an upload or permission to fetch remote media.
+ */
 export function speechRequest(
   script: string,
   mode: 'describe' | 'clone',
@@ -23,6 +28,9 @@ export function speechRequest(
   }
 }
 
+/**
+ * Translate an HTTP status or missing response into a user-facing speech error.
+ */
 function speechError(status?: number): Error {
   if (status === 503)
     return new Error(
@@ -39,6 +47,9 @@ function speechError(status?: number): Error {
   )
 }
 
+/**
+ * Recognize the four-string speech metadata shape without implying playable audio.
+ */
 function validAudio(value: unknown): value is GeneratedSpeech {
   return (
     !!value &&
@@ -49,6 +60,10 @@ function validAudio(value: unknown): value is GeneratedSpeech {
   )
 }
 
+/**
+ * Fetch cancellable speech history and reject transport errors or malformed metadata.
+ * The current backend returns an empty list rather than seeded audio.
+ */
 export async function fetchSpeechHistory(
   signal: AbortSignal,
 ): Promise<GeneratedSpeech[]> {
@@ -62,6 +77,10 @@ export async function fetchSpeechHistory(
   return result.data.audio
 }
 
+/**
+ * Send a typed speech request with caller cancellation and validate response metadata.
+ * Reject provider/network/validation failures; returned metadata has no playback URL.
+ */
 export async function requestSpeech(
   body: SpeechRequest,
   signal: AbortSignal,

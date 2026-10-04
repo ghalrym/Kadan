@@ -5,6 +5,11 @@ import type {
 } from './generated/types.gen'
 
 export type ImageOptions = ApiRoutesV1ImagesGenerationsImageRequest
+/**
+ * Send typed generation settings, or edit settings when source is supplied.
+ * Forward the abort signal and reject network/HTTP failures. Even a 2xx metadata
+ * response is rejected because this contract has no deliverable image URLs.
+ */
 export async function requestImages(
   options: ImageOptions,
   signal: AbortSignal,
@@ -32,6 +37,10 @@ export async function requestImages(
     'The API returned metadata without image files. No generated image is available.',
   )
 }
+/**
+ * Fetch the image metadata list with caller-controlled cancellation.
+ * Reject unavailable or non-array history; entries are not playable image files.
+ */
 export async function imageHistory(signal: AbortSignal): Promise<ImageSet[]> {
   const result = await listImages({ signal })
   if (!result.response?.ok || !Array.isArray(result.data?.images))

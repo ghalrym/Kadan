@@ -22,11 +22,20 @@ from .resources import ResourceBusy
 
 
 def checkpoint_name(name):
+    """Map text-only Transformers parameter names to the multimodal checkpoint prefix.
+
+    The top-level lm_head name remains unchanged.
+    """
     return name.replace('model.', 'model.language_model.', 1) if name.startswith('model.') else name
 
 
 def read_projection(reader, prefix):
-    """Accept only canonical ModelOpt packed bytes or scaled FP8 weights."""
+    """Read one CPU projection without expanding its quantized weights.
+
+    NVFP4 uses uint8 [out, in/2], E4M3 [out, in/16] block scales
+    and one global multiplier; FP8 uses [out, in] and scalar/row scales.
+    Return the tensor mapping consumed by project(); reject other layouts.
+    """
     weight = reader.tensor(prefix + '.weight')
     scale = reader.tensor(prefix + '.weight_scale')
     if weight.dtype == torch.uint8:
@@ -44,6 +53,12 @@ def read_projection(reader, prefix):
 
 
 def project(x, part):
+    """Apply a cached projection to [..., in] inputs, returning [..., out].
+
+    Weights and inputs must share a device. NVFP4 decoding uses the
+    reference linear helper; FP8 weights multiply by scales in FP32 before casting
+    to the input dtype. This is weight-only reference execution.
+    """
     if 'global' in part:
         return nvfp4_linear(x, part['weight'], part['scale'], part['global'])
     # Dense FP8 rows are tiled before transfer. Accumulate scaling in FP32.
@@ -54,11 +69,21 @@ def project(x, part):
 class HostLinear(nn.Module):
     """Packed output-row tiles are copied only while their cache lease is held."""
     def __init__(self, keys, rows, out_features, cache, cancellation):
+        """Bind ordered cache keys to adjacent output-row boundaries.
+
+        The cancellation callback returns the current request event; this
+        module owns no resident weight parameter.
+        """
         super().__init__()
         self.keys, self.rows, self.out_features = keys, rows, out_features
         self.cache, self.cancellation = cache, cancellation
 
     def forward(self, x):
+        """Assemble [..., out_features] from leased weight tiles on the input device.
+
+        Check cancellation between tiles and release cached tensor references
+        before another tile can trigger eviction.
+        """
         result = torch.empty((*x.shape[:-1], self.out_features), dtype=x.dtype, device=x.device)
         for key, start, stop in zip(self.keys, self.rows[:-1], self.rows[1:]):
             check_cancel(self.cancellation())
@@ -71,10 +96,17 @@ class HostLinear(nn.Module):
 class QwenExperts(nn.Module):
     """Routing and shared experts remain in HF; only expert storage changes."""
     def __init__(self, layer, cache, cancellation):
+        """Bind one layer to its packed expert cache and current-event callback."""
         super().__init__()
         self.layer, self.cache, self.cancellation = layer, cache, cancellation
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
+        """Combine selected SiLU experts for flattened [tokens, hidden] inputs.
+
+        Indices and weights are [tokens, top_k], supplied by the preserved
+        router. One expert is leased at a time; the returned tensor matches
+        the input shape. Shared-expert gating remains outside this module.
+        """
         output = torch.zeros_like(hidden_states)
         for expert in top_k_index.unique().tolist():
             check_cancel(self.cancellation())
@@ -91,7 +123,9 @@ class QwenExperts(nn.Module):
 
 
 class QwenAdapter:
+    """Own Qwen model residency, request serialization and host/device reservations."""
     def __init__(self, device):
+        """Create an empty lifecycle holder; build_qwen supplies weights and budgets."""
         self.device = torch.device(device)
         self.model = self.tokenizer = self.cache = self.bank = self.reservation = None
         self._lock = threading.RLock()
@@ -100,9 +134,15 @@ class QwenAdapter:
 
     @property
     def is_resident(self):
+        """Report whether a model and device reservation are currently retained."""
         return self.model is not None and self.device_reservation is not None
 
     def _restore(self, event=None):
+        """Reserve device memory and move retained dense state back to the device.
+
+        The host bank stays in RAM. Closed models and failed admission raise;
+        a failed transfer invokes offload cleanup before propagating its error.
+        """
         if self.is_resident:
             return
         if self.model is None:
@@ -120,6 +160,11 @@ class QwenAdapter:
     def _offload(self):
         # Admission callbacks must never wait for an adapter lock: generation
         # can hold it while waiting for admission, creating lock inversion.
+        """Release device state while retaining the CPU model and packed host bank.
+
+        Used as an admission callback: fail with ResourceBusy instead of
+        waiting for the adapter lock and inverting the admission lock order.
+        """
         if not self._lock.acquire(blocking=False):
             raise ResourceBusy('Qwen is busy; cannot evict during restore/generation')
         try:
@@ -138,6 +183,12 @@ class QwenAdapter:
             self._lock.release()
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None):
+        """Return decoded chat text while leasing host and device residency.
+
+        Restore an evicted model first, expose cancellation to expert calls,
+        and pass the configured context and shared memory manager to the
+        generation loop. Propagate admission, context and inference errors.
+        """
         with self._lock:
             with self.reservation.lease(cancel_event):
                 self._restore(cancel_event)
@@ -152,6 +203,11 @@ class QwenAdapter:
                         self._cancel = None
 
     def close(self):
+        """Discard all owned state, synchronize CUDA work and release reservations.
+
+        Unlike offload, closing does not retain a reloadable CPU model. It
+        also handles partial meta skeletons left by failed loading.
+        """
         with self._lock:
             # Failure can leave a partial meta skeleton: discard it, never try
             # copying unresolved meta tensors to CPU during cleanup.
@@ -171,6 +227,11 @@ class QwenAdapter:
 
 
 def qwen_skeleton(config):
+    """Build parameter storage on meta, then reconstruct CPU RoPE buffers.
+
+    The device context intercepts allocation before Parameter creation,
+    so construction does not temporarily materialize all expert weights.
+    """
     from transformers import Qwen3_5MoeForCausalLM
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextRotaryEmbedding
     with torch.device('meta'):
@@ -180,6 +241,14 @@ def qwen_skeleton(config):
 
 
 def build_qwen(entry, path, resources, device, cancel_event=None):
+    """Load a local reviewed ModelOpt text checkpoint into a QwenAdapter.
+
+    Keep routed experts and quantized dense row tiles packed in CPU RAM;
+    replace their modules with Kadan cache consumers. Load remaining
+    parameters, validate unresolved meta state, and reserve device residency.
+    The tokenizer is local-only. Cancellation or malformed tensors release
+    partial ownership and propagate an error; no GPU validation is implied.
+    """
     from accelerate.utils import set_module_tensor_to_device
     from transformers import AutoTokenizer, Qwen3_5MoeTextConfig
 
