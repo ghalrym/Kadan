@@ -39,9 +39,14 @@ class SpeechUnavailable(BaseModel):
 
 @router.get("", operation_id="listSpeech")
 def list_speech() -> SpeechHistoryResponse:
+    """Return empty speech history and blank editor defaults, without fixture audio."""
     return SpeechHistoryResponse(audio=[], voice_description="", script="")
 
 
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "No speech provider is configured"}})
 def generate_speech(body: SpeechRequest) -> SpeechResponse:
+    """Reject a validated describe/clone request with HTTP 503.
+
+    No speech provider is configured, so no audio is generated or persisted and
+    clone sample references are neither fetched nor treated as uploaded files."""
     raise HTTPException(status_code=503, detail="No speech provider is configured. Speech generation and voice cloning are unavailable.")
