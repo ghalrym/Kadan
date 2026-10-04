@@ -1,23 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from './Controls'
 
-type RuntimeStatus = {
+type ModelLifecycleStatus = {
   state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
   model_id: string | null
   error: string | null
 }
 
-async function runtimeRequest(path: string, signal: AbortSignal, method = 'GET') {
-  const response = await fetch(`/v1/runtime${path}`, { method, signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]) })
+async function modelLifecycleRequest(path: string, signal: AbortSignal, method = 'GET') {
+  const response = await fetch(`/model-lifecycle${path}`, { method, signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]) })
   const data = await response.json()
   if (!response.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : `Runtime request failed (${response.status}).`)
+    throw new Error(typeof data.detail === 'string' ? data.detail : `Model lifecycle request failed (${response.status}).`)
   }
-  return data as RuntimeStatus
+  return data as ModelLifecycleStatus
 }
 
-export default function RuntimePanel({ selectedModelId }: { selectedModelId: string | null }) {
-  const [status, setStatus] = useState<RuntimeStatus | null>(null)
+export default function ModelLifecyclePanel({ selectedModelId }: { selectedModelId: string | null }) {
+  const [status, setStatus] = useState<ModelLifecycleStatus | null>(null)
   const [error, setError] = useState('')
   const [pollError, setPollError] = useState('')
   const [pending, setPending] = useState(false)
@@ -30,7 +30,7 @@ export default function RuntimePanel({ selectedModelId }: { selectedModelId: str
     async function poll() {
       const before = revision.current
       try {
-        const next = await runtimeRequest('', controller.signal)
+        const next = await modelLifecycleRequest('', controller.signal)
         if (!controller.signal.aborted && before === revision.current && !action.current) {
           setStatus(next)
           setPollError('')
@@ -38,7 +38,7 @@ export default function RuntimePanel({ selectedModelId }: { selectedModelId: str
       } catch (reason) {
         if (!controller.signal.aborted && before === revision.current && !action.current) {
           setStatus(null)
-          setPollError(reason instanceof Error ? reason.message : 'Cannot reach model runtime.')
+          setPollError(reason instanceof Error ? reason.message : 'Cannot reach model lifecycle service.')
         }
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(poll, 2000)
@@ -60,13 +60,13 @@ export default function RuntimePanel({ selectedModelId }: { selectedModelId: str
     setPending(true)
     setError('')
     try {
-      const next = await runtimeRequest(path, controller.signal, 'POST')
+      const next = await modelLifecycleRequest(path, controller.signal, 'POST')
       if (!controller.signal.aborted) {
         setStatus(next)
         setPollError('')
       }
     } catch (reason) {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Runtime request failed.')
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Model lifecycle request failed.')
     } finally {
       if (!controller.signal.aborted) setPending(false)
       if (action.current === controller) action.current = null
@@ -75,10 +75,10 @@ export default function RuntimePanel({ selectedModelId }: { selectedModelId: str
 
   return (
     <Panel className="stack runtime-panel">
-      <SectionHeading>Chat runtime</SectionHeading>
-      <p role="status">{status ? `${status.state}${status.model_id ? ` · ${status.model_id}` : ''}` : 'Runtime status unavailable'}</p>
+      <SectionHeading>Model lifecycle</SectionHeading>
+      <p role="status">{status ? `${status.state}${status.model_id ? ` · ${status.model_id}` : ''}` : 'Model lifecycle status unavailable'}</p>
       <p className="muted">Load the selected download to use chat. To switch models, unload first, then select and load another download.</p>
-      {status?.state === 'offloaded' && <p>GPU memory was released for another workload. The next chat request restores the selected model.</p>}
+      {status?.state === 'offloaded' && <p>Model memory was released for another workload. The next chat request restores the selected model.</p>}
       {(error || pollError || status?.error) && <p role="alert">{error || pollError || status?.error}</p>}
       <div className="row wrap">
         <button type="button" className="button button--primary" disabled={pending || !status || !selectedModelId || !['unloaded', 'error'].includes(status.state)} onClick={() => void change('/load')}>Load selected model</button>

@@ -13,14 +13,14 @@ from api.services.runtime import RuntimeManager
 from api.routes.v1.chat.completions import CompletionRequest, create_completion
 
 
-class RuntimeRouteTests(unittest.TestCase):
+class ModelLifecycleRouteTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.models = ModelManager(Path(temporary.name))
         self.runtime = RuntimeManager()
         for target, value in (
-            ('api.routes.v1.runtime.runtime_manager', self.runtime),
+            ('api.routes.model_lifecycle.runtime_manager', self.runtime),
             ('api.routes.v1.chat.completions.runtime_manager', self.runtime),
             ('api.services.model_downloads.model_manager', self.models),
             ('api.server.runtime_manager', self.runtime),
@@ -39,13 +39,21 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertIn('No model is ready', response.json()['detail'])
         self.assertNotIn('message', response.json())
 
+    def test_control_routes_are_outside_versioned_inference_api(self):
+        paths = self.client.get('/openapi.json').json()['paths']
+        self.assertIn('/model-lifecycle', paths)
+        self.assertIn('/model-lifecycle/load', paths)
+        self.assertIn('/model-lifecycle/unload', paths)
+        self.assertNotIn('/v1/runtime', paths)
+        self.assertEqual(self.client.get('/v1/runtime').status_code, 404)
+
     def test_load_requires_selection_and_unload_is_idempotent(self):
-        self.assertEqual(self.client.get('/v1/runtime').json()['state'], 'unloaded')
-        response = self.client.post('/v1/runtime/load')
+        self.assertEqual(self.client.get('/model-lifecycle').json()['state'], 'unloaded')
+        response = self.client.post('/model-lifecycle/load')
         self.assertEqual(response.status_code, 409)
         self.assertIn('select', response.json()['detail'])
         for _ in range(2):
-            self.assertEqual(self.client.post('/v1/runtime/unload').json()['state'], 'unloaded')
+            self.assertEqual(self.client.post('/model-lifecycle/unload').json()['state'], 'unloaded')
 
     def test_completion_contract_and_limits(self):
         self.runtime.complete = AsyncMock(return_value='Controlled runtime reply')

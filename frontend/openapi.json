@@ -533,6 +533,61 @@
         "title": "MetricsResponse",
         "type": "object"
       },
+      "ModelLifecycleStatus": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "state": {
+            "enum": [
+              "unloaded",
+              "loading",
+              "ready",
+              "offloaded",
+              "unloading",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ModelLifecycleStatus",
+        "type": "object"
+      },
       "ModelSetting": {
         "properties": {
           "label": {
@@ -846,61 +901,6 @@
           "total"
         ],
         "title": "ResourceMeter",
-        "type": "object"
-      },
-      "RuntimeStatus": {
-        "properties": {
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "memory": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Memory"
-          },
-          "model_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
-          },
-          "state": {
-            "enum": [
-              "unloaded",
-              "loading",
-              "ready",
-              "offloaded",
-              "unloading",
-              "error"
-            ],
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "state"
-        ],
-        "title": "RuntimeStatus",
         "type": "object"
       },
       "ScoreQuestion": {
@@ -1460,6 +1460,69 @@
         "summary": "Health",
         "tags": [
           "Health"
+        ]
+      }
+    },
+    "/model-lifecycle": {
+      "get": {
+        "operationId": "getModelLifecycleStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Model Lifecycle",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/load": {
+      "post": {
+        "operationId": "loadSelectedModel",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Load Selected Model",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/unload": {
+      "post": {
+        "operationId": "unloadSelectedModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unload Selected Model",
+        "tags": [
+          "Model lifecycle"
         ]
       }
     },
@@ -2105,69 +2168,6 @@
         "summary": "Get Request",
         "tags": [
           "Requests"
-        ]
-      }
-    },
-    "/v1/runtime": {
-      "get": {
-        "operationId": "getRuntimeStatus",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Runtime Status",
-        "tags": [
-          "Runtime"
-        ]
-      }
-    },
-    "/v1/runtime/load": {
-      "post": {
-        "operationId": "loadRuntimeModel",
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Load Runtime Model",
-        "tags": [
-          "Runtime"
-        ]
-      }
-    },
-    "/v1/runtime/unload": {
-      "post": {
-        "operationId": "unloadRuntimeModel",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Unload Runtime Model",
-        "tags": [
-          "Runtime"
         ]
       }
     },

@@ -309,6 +309,30 @@ export type MetricsResponse = {
 }
 
 /**
+ * ModelLifecycleStatus
+ */
+export type ModelLifecycleStatus = {
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Memory
+   */
+  memory?: {
+    [key: string]: unknown
+  } | null
+  /**
+   * Model Id
+   */
+  model_id?: string | null
+  /**
+   * State
+   */
+  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
+}
+
+/**
  * ModelSetting
  */
 export type ModelSetting = {
@@ -505,30 +529,6 @@ export type ResourceMeter = {
    * Used
    */
   used: number
-}
-
-/**
- * RuntimeStatus
- */
-export type RuntimeStatus = {
-  /**
-   * Error
-   */
-  error?: string | null
-  /**
-   * Memory
-   */
-  memory?: {
-    [key: string]: unknown
-  } | null
-  /**
-   * Model Id
-   */
-  model_id?: string | null
-  /**
-   * State
-   */
-  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
 }
 
 /**
@@ -865,6 +865,57 @@ export type HealthResponses = {
 }
 
 export type HealthResponse2 = HealthResponses[keyof HealthResponses]
+
+export type GetModelLifecycleStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle'
+}
+
+export type GetModelLifecycleStatusResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type GetModelLifecycleStatusResponse =
+  GetModelLifecycleStatusResponses[keyof GetModelLifecycleStatusResponses]
+
+export type LoadSelectedModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle/load'
+}
+
+export type LoadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  202: ModelLifecycleStatus
+}
+
+export type LoadSelectedModelResponse =
+  LoadSelectedModelResponses[keyof LoadSelectedModelResponses]
+
+export type UnloadSelectedModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle/unload'
+}
+
+export type UnloadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type UnloadSelectedModelResponse =
+  UnloadSelectedModelResponses[keyof UnloadSelectedModelResponses]
 
 export type ListSpeechData = {
   body?: never
@@ -1292,57 +1343,6 @@ export type GetRequestResponses = {
 }
 
 export type GetRequestResponse = GetRequestResponses[keyof GetRequestResponses]
-
-export type GetRuntimeStatusData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime'
-}
-
-export type GetRuntimeStatusResponses = {
-  /**
-   * Successful Response
-   */
-  200: RuntimeStatus
-}
-
-export type GetRuntimeStatusResponse =
-  GetRuntimeStatusResponses[keyof GetRuntimeStatusResponses]
-
-export type LoadRuntimeModelData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime/load'
-}
-
-export type LoadRuntimeModelResponses = {
-  /**
-   * Successful Response
-   */
-  202: RuntimeStatus
-}
-
-export type LoadRuntimeModelResponse =
-  LoadRuntimeModelResponses[keyof LoadRuntimeModelResponses]
-
-export type UnloadRuntimeModelData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/runtime/unload'
-}
-
-export type UnloadRuntimeModelResponses = {
-  /**
-   * Successful Response
-   */
-  200: RuntimeStatus
-}
-
-export type UnloadRuntimeModelResponse =
-  UnloadRuntimeModelResponses[keyof UnloadRuntimeModelResponses]
 
 export type GetSettingsData = {
   body?: never
