@@ -40,6 +40,8 @@ import type {
   GetRequestData,
   GetRequestErrors,
   GetRequestResponses,
+  GetRuntimeStatusData,
+  GetRuntimeStatusResponses,
   GetSettingsData,
   GetSettingsResponses,
   GetVideoData,
@@ -60,12 +62,16 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
+  LoadRuntimeModelData,
+  LoadRuntimeModelResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
+  UnloadRuntimeModelData,
+  UnloadRuntimeModelResponses,
   UpdateSettingsData,
   UpdateSettingsErrors,
   UpdateSettingsResponses,
@@ -378,6 +384,42 @@ export const getRequest = <ThrowOnError extends boolean = false>(
     GetRequestErrors,
     ThrowOnError
   >({ url: '/v1/requests/{request_id}', ...options })
+
+/**
+ * Get Runtime Status
+ */
+export const getRuntimeStatus = <ThrowOnError extends boolean = false>(
+  options?: Options<GetRuntimeStatusData, ThrowOnError>,
+): RequestResult<GetRuntimeStatusResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetRuntimeStatusResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/runtime', ...options })
+
+/**
+ * Load Runtime Model
+ */
+export const loadRuntimeModel = <ThrowOnError extends boolean = false>(
+  options?: Options<LoadRuntimeModelData, ThrowOnError>,
+): RequestResult<LoadRuntimeModelResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).post<
+    LoadRuntimeModelResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/runtime/load', ...options })
+
+/**
+ * Unload Runtime Model
+ */
+export const unloadRuntimeModel = <ThrowOnError extends boolean = false>(
+  options?: Options<UnloadRuntimeModelData, ThrowOnError>,
+): RequestResult<UnloadRuntimeModelResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).post<
+    UnloadRuntimeModelResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/runtime/unload', ...options })
 
 /**
  * Get Settings

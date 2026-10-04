@@ -19,6 +19,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('moe.nvfp4=triton', command)
         self.assertNotIn('--tp', command)
         self.assertNotIn('--moe-cpu-layers', command)
+        with patch.dict('os.environ', {'KADAN_FT_GPU': '0,1'}):
+            with self.assertRaises(RuntimeFailure):
+                manager.command(Path('/models/small'), 'small', 12345)
 
     async def test_missing_runtime_and_wrong_model_fail(self):
         manager = RuntimeManager()

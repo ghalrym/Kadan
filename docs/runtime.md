@@ -28,8 +28,17 @@ python3 -m venv .venv-freetoken
 .venv-freetoken/bin/ft --version
 export KADAN_FT_EXECUTABLE="$PWD/.venv-freetoken/bin/ft"
 export KADAN_FT_GPU=0
-# Start the normally configured Kadan API with one worker, no --reload.
+python3 -m venv .venv
+.venv/bin/pip install -r api/requirements.txt
+.venv/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
 ```
+
+In a second terminal run `npm ci --prefix frontend` and
+`npm --prefix frontend run dev -- --host 127.0.0.1`. Open the printed URL, download
+and select a model in Settings, click Load selected model, wait for `ready`, then
+open Chat. Do not run the Compose API on the same port at the same time.
+Chat/model storage do not access Postgres; retain the existing migration/database
+setup for other database work. No demo data is inserted.
 
 The API environment also needs its normal requirements, including httpx; the GPU
 worker environment is separate. FreeToken output inherits API logs. Startup errors
@@ -81,3 +90,9 @@ request translation, concurrency rejection and failure behavior. No model weight
 GPU inference, performance, or peak RAM/VRAM behavior were tested in cloud. Target-host
 validation must check install/JIT, each checkpoint's actual load, measured memory,
 chat, cancellation and unload before treating this draft as production-ready.
+
+Cloud validation also exercised the actual API's unloaded-model HTTP 503 response
+through Chromium and the Vite proxy. Controlled browser routes covered chat
+retry without duplicate turns, cancellation suppressing late responses, download
+failure/retry/progress/cancel/selection, and runtime load/readiness/unload. These
+browser responses were fixtures, not claims of successful GPU inference or downloads.

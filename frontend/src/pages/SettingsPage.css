@@ -4,3 +4,5 @@
 .checkpoint-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 .checkpoint-actions button { padding: 8px 14px; cursor: pointer; }
 .checkpoint-actions button:disabled { cursor: default; opacity: .5; }
+.runtime-panel { padding: 20px; }
+.runtime-panel .button:disabled { opacity: .5; }

@@ -23,8 +23,12 @@ async def create_completion(body: CompletionRequest, request: Request) -> Comple
     if sum(len(message.text) for message in body.messages) > 32768:
         raise HTTPException(413, 'Conversation exceeds the 32768-character request limit.')
     async def watch_disconnect():
-        while not await request.is_disconnected():
-            await asyncio.sleep(0.5)
+        # FastAPI has already consumed/validated the JSON body. Wait directly on
+        # the ASGI channel: is_disconnected() uses an AnyIO cancellation scope
+        # that can swallow this task's cancellation during response cleanup.
+        while True:
+            if (await request.receive())['type'] == 'http.disconnect':
+                return
 
     generation = asyncio.create_task(runtime_manager.complete(body.messages, body.model))
     disconnected = asyncio.create_task(watch_disconnect())

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
+import RuntimePanel from '../components/RuntimePanel'
 import './SettingsPage.css'
 
 type Model = {
@@ -82,6 +83,7 @@ export default function SettingsPage() {
   return (
     <div className="scroll-page">
       <div className="settings-layout stack">
+        <RuntimePanel selectedModelId={data?.selected_model_id ?? null} />
         <SectionHeading>Language models</SectionHeading>
         <p>Download a checkpoint, then select it for loading. Downloads require the listed disk space plus a 1 GiB reserve. Selection does not load the model into memory.</p>
         <p>These checkpoints use Apache 2.0 or MIT licenses. Review each model card and its usage terms before downloading. Other modalities are not configured yet.</p>

@@ -71,6 +71,12 @@ class ModelManager:
             raise ValueError('Unknown catalog model')
         return CATALOG[model_id]
 
+    def close(self):
+        """Stop a download at the next read boundary during API shutdown."""
+        self._cancel.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=35)
+
     def _path(self, entry: CatalogEntry) -> Path:
         return self.root / f'{entry.id}-{entry.revision}'
 

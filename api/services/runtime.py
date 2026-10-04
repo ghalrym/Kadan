@@ -31,10 +31,13 @@ class RuntimeManager:
         return dict(state=self.state, model_id=self.model_id, error=self.error)
 
     def command(self, path: Path, model_id: str, port: int):
+        gpu = os.environ.get('KADAN_FT_GPU', '0')
+        if ',' in gpu:
+            raise RuntimeFailure('KADAN_FT_GPU must select one GPU; multi-GPU serving is not configured.')
         command = [os.environ.get('KADAN_FT_EXECUTABLE', 'ft'), 'serve',
                    '--model', str(path), '--served-model-name', model_id,
                    '--host', '127.0.0.1', '--port', str(port),
-                   '--gpu', os.environ.get('KADAN_FT_GPU', '0'),
+                   '--gpu', gpu,
                    '--moe-strategy', 'offload', '--moe-cache-auto',
                    '--text-model-only',
                    '--memory-ratio', '0.8', '--max-running-requests', '1',

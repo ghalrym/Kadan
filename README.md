@@ -13,6 +13,20 @@ of VRAM and reload it afterward. Agents just call the API. Kadan handles the mem
 The goal is to fit all these tools in one box, accepting slower model switches
 to keep hardware requirements down.
 
+## Chat development flow
+
+Settings can download and select the three pinned language-model checkpoints.
+The chat page sends real API requests. With a separately installed FreeToken
+worker, Settings can load/unload the selected model and show its readiness or
+failure. Chat has no mock fallback when a model is unavailable. Other modalities,
+history and dashboard metrics still use fixtures.
+
+See [checkpoint storage](docs/model-downloads.md), [GPU runtime setup](docs/runtime.md),
+and [web chat testing](docs/chat-web-testing.md). The runtime uses host-RAM expert
+offload and a GPU cache on one selected GPU; it does not pool two cards' VRAM.
+GPU installation, memory fit and inference remain unvalidated on target hardware.
+The Compose API image below supports downloads but does not include the GPU worker.
+
 ![Kadan request dashboard showing AI requests, latency, and GPU and system memory usage](docs/images/requests.png)
 
 ![Kadan settings showing model selections for language, images, video, and speech](docs/images/settings.png)

@@ -118,14 +118,21 @@
             "items": {
               "$ref": "#/components/schemas/ChatMessage"
             },
+            "maxItems": 128,
             "minItems": 1,
             "title": "Messages",
             "type": "array"
           },
           "model": {
-            "default": "Qwen3 32B Instruct",
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -841,6 +848,47 @@
         "title": "ResourceMeter",
         "type": "object"
       },
+      "RuntimeStatus": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "state": {
+            "enum": [
+              "unloaded",
+              "loading",
+              "ready",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "RuntimeStatus",
+        "type": "object"
+      },
       "ScoreQuestion": {
         "properties": {
           "instructions": {
@@ -1374,7 +1422,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Generation and media endpoints remain deterministic mock responses until a runtime is configured. Media is placeholder metadata, not downloadable files. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses the explicitly loaded FreeToken runtime and returns an error when no model is ready. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2043,6 +2091,69 @@
         "summary": "Get Request",
         "tags": [
           "Requests"
+        ]
+      }
+    },
+    "/v1/runtime": {
+      "get": {
+        "operationId": "getRuntimeStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Runtime Status",
+        "tags": [
+          "Runtime"
+        ]
+      }
+    },
+    "/v1/runtime/load": {
+      "post": {
+        "operationId": "loadRuntimeModel",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Load Runtime Model",
+        "tags": [
+          "Runtime"
+        ]
+      }
+    },
+    "/v1/runtime/unload": {
+      "post": {
+        "operationId": "unloadRuntimeModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unload Runtime Model",
+        "tags": [
+          "Runtime"
         ]
       }
     },

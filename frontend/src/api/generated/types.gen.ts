@@ -85,7 +85,7 @@ export type CompletionRequest = {
   /**
    * Model
    */
-  model?: string
+  model?: string | null
 }
 
 /**
@@ -505,6 +505,24 @@ export type ResourceMeter = {
    * Used
    */
   used: number
+}
+
+/**
+ * RuntimeStatus
+ */
+export type RuntimeStatus = {
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Model Id
+   */
+  model_id?: string | null
+  /**
+   * State
+   */
+  state: 'unloaded' | 'loading' | 'ready' | 'error'
 }
 
 /**
@@ -1268,6 +1286,57 @@ export type GetRequestResponses = {
 }
 
 export type GetRequestResponse = GetRequestResponses[keyof GetRequestResponses]
+
+export type GetRuntimeStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/runtime'
+}
+
+export type GetRuntimeStatusResponses = {
+  /**
+   * Successful Response
+   */
+  200: RuntimeStatus
+}
+
+export type GetRuntimeStatusResponse =
+  GetRuntimeStatusResponses[keyof GetRuntimeStatusResponses]
+
+export type LoadRuntimeModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/runtime/load'
+}
+
+export type LoadRuntimeModelResponses = {
+  /**
+   * Successful Response
+   */
+  202: RuntimeStatus
+}
+
+export type LoadRuntimeModelResponse =
+  LoadRuntimeModelResponses[keyof LoadRuntimeModelResponses]
+
+export type UnloadRuntimeModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/runtime/unload'
+}
+
+export type UnloadRuntimeModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: RuntimeStatus
+}
+
+export type UnloadRuntimeModelResponse =
+  UnloadRuntimeModelResponses[keyof UnloadRuntimeModelResponses]
 
 export type GetSettingsData = {
   body?: never
