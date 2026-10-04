@@ -508,6 +508,7 @@
         "type": "object"
       },
       "MessagesResponse": {
+        "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
           "messages": {
             "items": {
@@ -717,6 +718,7 @@
         "type": "object"
       },
       "ModelSetting": {
+        "description": "A catalog-backed selection; None means no model is selected.",
         "properties": {
           "label": {
             "title": "Label",
@@ -1123,6 +1125,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
+        "description": "Accept only the supported LLM selection; reject unknown top-level fields.",
         "properties": {
           "models": {
             "additionalProperties": {
@@ -1158,6 +1161,7 @@
         "type": "object"
       },
       "SettingsResponse": {
+        "description": "Expose real catalog selection and null for unavailable transcription settings.",
         "properties": {
           "models": {
             "items": {
@@ -1678,6 +1682,7 @@
     },
     "/model-lifecycle": {
       "get": {
+        "description": "Return current model state, context limits and shared-memory accounting without loading a model.",
         "operationId": "getModelLifecycleStatus",
         "responses": {
           "200": {
@@ -1699,6 +1704,7 @@
     },
     "/model-lifecycle/load": {
       "post": {
+        "description": "Accept loading of the selected complete checkpoint and return its initial state; map\nlifecycle conflicts and validation failures to HTTP errors.",
         "operationId": "loadSelectedModel",
         "responses": {
           "202": {
@@ -1720,6 +1726,7 @@
     },
     "/model-lifecycle/unload": {
       "post": {
+        "description": "Request cooperative cancellation and wait for model cleanup before returning unloaded state.",
         "operationId": "unloadSelectedModel",
         "responses": {
           "200": {
@@ -1741,6 +1748,7 @@
     },
     "/v1/audio/speech": {
       "get": {
+        "description": "Return empty speech history and blank editor defaults, without fixture audio.",
         "operationId": "listSpeech",
         "responses": {
           "200": {
@@ -1760,6 +1768,7 @@
         ]
       },
       "post": {
+        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -1811,6 +1820,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
+        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -1862,6 +1872,7 @@
     },
     "/v1/chat/completions": {
       "post": {
+        "description": "Generate an assistant reply with the loaded model. Client disconnect cancels generation and\nawaits cleanup; runtime failures preserve their HTTP status.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {
@@ -1925,6 +1936,7 @@
     },
     "/v1/decisions": {
       "get": {
+        "description": "Return blank playground state; no saved questions or model answers are loaded.",
         "operationId": "getDecisions",
         "responses": {
           "200": {
@@ -1944,6 +1956,7 @@
         ]
       },
       "post": {
+        "description": "Evaluate validated questions using the currently loaded shared model.\n\nReturns strictly validated answers, preserves runtime HTTP error statuses,\nand reports invalid model JSON as 502. If disconnect wins the completion race,\ncancel inference and raise HTTP 499; pending tasks are cancelled and awaited\non exit. A disconnected client may not receive that response.\nThis route neither loads a second model nor persists playground results.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
@@ -1985,6 +1998,7 @@
     },
     "/v1/images": {
       "get": {
+        "description": "Return empty image history while no image provider or stored results exist.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -2006,6 +2020,7 @@
     },
     "/v1/images/edits": {
       "post": {
+        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2050,6 +2065,7 @@
     },
     "/v1/images/generations": {
       "post": {
+        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -2115,6 +2131,7 @@
     },
     "/v1/models": {
       "get": {
+        "description": "Return current catalog, download progress, saved selection, and context limits.\n\nCompleteness is checked from local files; this does not start downloads or\nload models. Context/configuration errors propagate; an unreadable or\ninvalid saved selection is represented as no selection.",
         "operationId": "list_models_v1_models_get",
         "responses": {
           "200": {
@@ -2136,6 +2153,7 @@
     },
     "/v1/models/selection": {
       "put": {
+        "description": "Save a completed model as the selection for a subsequent runtime load.\n\nReturns refreshed status, or 409 for a runtime lease, 400 for an incomplete\ncheckpoint, and 503 for unavailable storage. Selection alone loads no tensors.",
         "operationId": "select_model_v1_models_selection_put",
         "requestBody": {
           "content": {
@@ -2177,6 +2195,7 @@
     },
     "/v1/models/{model_id}/context": {
       "put": {
+        "description": "Persist the model's context limit and return refreshed catalog status.\n\nNull uses the architecture maximum on load. Returns 409 while a runtime lease\nis held, 400 for invalid limits/model IDs, or 503 for unavailable storage.",
         "operationId": "configure_context_v1_models__model_id__context_put",
         "parameters": [
           {
@@ -2229,6 +2248,7 @@
     },
     "/v1/models/{model_id}/download": {
       "delete": {
+        "description": "Request cancellation and return status with HTTP 202 before cleanup finishes.\n\nUnknown models return 400, inactive jobs return 409, and storage errors return\n503. Completed checkpoints are never deleted by this endpoint.",
         "operationId": "cancel_download_v1_models__model_id__download_delete",
         "parameters": [
           {
@@ -2269,6 +2289,7 @@
         ]
       },
       "post": {
+        "description": "Start a catalog checkpoint download and return status with HTTP 202.\n\nAcceptance is not completion; poll the catalog for progress or failure.\nUnknown models return 400; active/completed conflicts return 409 and storage\nfailures return 503. Only pinned catalog checkpoints may be downloaded.",
         "operationId": "download_model_v1_models__model_id__download_post",
         "parameters": [
           {
@@ -2462,6 +2483,7 @@
     },
     "/v1/settings": {
       "get": {
+        "description": "Read the shared model store and return the catalog selection.\n\nRaise HTTP 503 if the stored selection is outside the catalog; this read does\nnot load a model or configure another modality.",
         "operationId": "getSettings",
         "responses": {
           "200": {
@@ -2523,6 +2545,7 @@
     },
     "/v1/videos": {
       "get": {
+        "description": "Return an empty queue because no video jobs are persisted or scheduled.",
         "operationId": "listVideos",
         "responses": {
           "200": {
@@ -2544,6 +2567,7 @@
     },
     "/v1/videos/generations": {
       "post": {
+        "description": "Reject validated generation settings with HTTP 503 without queuing a job.\n\nThe declared 202 response is the future job contract, not evidence that a\nprovider ran or that GPU rendering has started.",
         "operationId": "generateVideo",
         "requestBody": {
           "content": {
@@ -2588,6 +2612,7 @@
     },
     "/v1/videos/{video_id}": {
       "get": {
+        "description": "Report HTTP 404 for the requested ID; no provider-backed video jobs exist.",
         "operationId": "getVideo",
         "parameters": [
           {

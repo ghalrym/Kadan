@@ -1,6 +1,10 @@
 import { MediaPlaceholder } from './Media'
 import type { VideoJob } from '../api/video'
 
+/**
+ * Display API job metadata and reported progress with a labeled placeholder.
+ * This card does not synthesize progress or provide a generated video file.
+ */
 export default function VideoJobCard({ job }: { job: VideoJob }) {
   return (
     <article className="panel video-job">

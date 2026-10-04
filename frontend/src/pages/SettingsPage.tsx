@@ -4,6 +4,11 @@ import ModelLifecyclePanel from '../components/ModelLifecyclePanel'
 import type { ContextRequest, ModelsResponse, ModelStatus } from '../api/generated'
 import './SettingsPage.css'
 
+/**
+ * Request catalog status or a mutation under /v1/models with a 15-second timeout.
+ * Combines caller cancellation with the timeout; throws backend detail when
+ * available, or an HTTP error for non-JSON proxy failures. Returns typed status.
+ */
 async function requestModelStatus(path = '', method: 'GET' | 'PUT' | 'POST' | 'DELETE' = 'GET', body?: ContextRequest | { model_id: string }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
@@ -22,8 +27,14 @@ async function requestModelStatus(path = '', method: 'GET' | 'PUT' | 'POST' | 'D
   }
   return response.json()
 }
+/** Format bytes as decimal GB to match the upstream checkpoint size estimates. */
 const formatGigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
 
+/**
+ * Edit one model's saved context limit. Blank means architecture maximum;
+ * validation disables saving invalid values, while save owns persistence/errors.
+ * The parent keys this control by the saved limit to reset its local draft.
+ */
 function ContextControl({ model, pending, save }: { model: ModelStatus; pending: boolean; save: (limit: number | null) => void }) {
   const [value, setValue] = useState(model.context_limit?.toString() ?? '')
   const parsed = value.trim() === '' ? null : Number(value)
@@ -36,6 +47,11 @@ function ContextControl({ model, pending, save }: { model: ModelStatus; pending:
   </div>
 }
 
+/**
+ * Show live checkpoint downloads and persist selection/context changes.
+ * Polling and mutations have separate error state; request generations prevent
+ * older polls from overwriting mutations. Unmount aborts outstanding requests.
+ */
 export default function SettingsPage() {
   const mutationVersion = useRef(0)
   const actionController = useRef<AbortController | null>(null)
@@ -48,6 +64,10 @@ export default function SettingsPage() {
   useEffect(() => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
+    /**
+     * Refresh status only if no mutation superseded this request. Poll again
+     * after completion, and stop updates/timers when the effect is disposed.
+     */
     async function poll() {
       const version = mutationVersion.current
       try {
@@ -65,6 +85,11 @@ export default function SettingsPage() {
     return () => { controller.abort(); clearTimeout(timer) }
   }, [refresh])
 
+  /**
+   * Serialize a model mutation, update status on success, and retain its error
+   * independently from polling. Version changes invalidate polls spanning it;
+   * the controller also suppresses state updates after unmount cancellation.
+   */
   async function submitModelChange(path: string, method: 'PUT' | 'POST' | 'DELETE', body?: ContextRequest | { model_id: string }) {
     if (actionController.current) return
     const controller = new AbortController()

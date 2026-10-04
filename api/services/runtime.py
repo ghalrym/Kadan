@@ -10,6 +10,9 @@ from api.inference.context import ContextLimitError, ContextMemoryError, resolve
 
 
 def read_context_settings(path, configured):
+    """Read local checkpoint configuration and return configured, supported and effective limits;
+    file or validation errors propagate.
+    """
     supported, effective = resolve_context(json.loads((path / 'config.json').read_text()), configured)
     return dict(configured_context_limit=configured, supported_context_limit=supported,
                 effective_context_limit=effective)
@@ -17,12 +20,16 @@ def read_context_settings(path, configured):
 
 class RuntimeFailure(Exception):
     def __init__(self, detail: str, status_code: int = 503):
+        """Attach an HTTP status to a caller-visible lifecycle or inference failure."""
         super().__init__(detail)
         self.status_code = status_code
 
 
 class RuntimeManager:
     def __init__(self, factory=None, resources=None):
+        """Initialize one process-local controller with optional test factory and shared resource
+        manager; allocate no model at construction.
+        """
         self.state = 'unloaded'
         self.model_id = None
         self.error = None
@@ -38,6 +45,9 @@ class RuntimeManager:
         self.context_settings = dict(configured_context_limit=None, supported_context_limit=None, effective_context_limit=None)
 
     def status(self):
+        """Return lifecycle, context and accounting metadata, reporting ready but evicted adapters
+        as offloaded without reloading them.
+        """
         state = self.state
         if state == 'ready' and self.adapter is not None and not self.adapter.is_resident:
             state = 'offloaded'
@@ -46,6 +56,9 @@ class RuntimeManager:
 
     def _construct(self, entry, path, cancel):
         # Optional model dependencies are imported only on a requested load.
+        """Build on a worker thread using the selected single GPU and shared budgets, then apply
+        context settings; close the adapter if configuration fails.
+        """
         factory = self._factory
         if factory is None:
             try:
@@ -71,12 +84,16 @@ class RuntimeManager:
         return adapter
 
     def _release(self):
+        """Release the model-selection lease once, allowing selection changes after cleanup."""
         if self._leased:
             from api.services.model_downloads import model_manager
             model_manager.release_runtime_model()
             self._leased = False
 
     async def _dispose(self):
+        """Close the owned adapter on a worker thread before releasing selection; cleanup errors
+        preserve its handle.
+        """
         adapter = self.adapter
         if adapter is not None:
             await asyncio.to_thread(adapter.close)
@@ -84,6 +101,9 @@ class RuntimeManager:
         self._release()
 
     async def load(self):
+        """Acquire selection and start asynchronous construction under the transition lock. Return
+        loading status; reject conflicting work or invalid context before scheduling.
+        """
         from api.services.model_downloads import model_manager
         async with self._transition:
             if (self.state in ('loading', 'ready', 'unloading') or self._generation.locked()
@@ -105,6 +125,9 @@ class RuntimeManager:
             return self.status()
 
     async def _load(self, entry, path, cancel):
+        """Await a shielded construction worker. Timeout or cancellation requests cooperative
+        cleanup and waits for ownership to return rather than abandoning allocations.
+        """
         worker = asyncio.create_task(asyncio.to_thread(self._construct, entry, path, cancel))
         try:
             # A timeout requests cooperative cancellation; it never abandons a
@@ -131,6 +154,9 @@ class RuntimeManager:
             await self._dispose()
 
     async def unload(self):
+        """Serialize cancellation and cleanup, waiting for loader/generation workers before
+        releasing the adapter and selection; return unloaded status.
+        """
         async with self._transition:
             self.state = 'unloading'
             self._cancel.set()
@@ -147,9 +173,14 @@ class RuntimeManager:
             return self.status()
 
     async def close(self):
+        """Run the same cooperative unload path during application shutdown."""
         await self.unload()
 
     async def complete(self, messages, model: str | None):
+        """Return text from one bounded-output generation, rejecting concurrent calls.
+        Context/admission errors preserve the model; cancellation waits for cleanup and unloads,
+        while other inference failures dispose it.
+        """
         if self.state != 'ready' or self.adapter is None:
             raise RuntimeFailure('No model is ready. Download, select and load one in Settings.')
         if model is not None and model != self.model_id:

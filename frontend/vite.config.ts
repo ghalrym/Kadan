@@ -1,7 +1,9 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// https://vite.dev/config/
+/** Development proxies keep API and documentation links on the frontend origin.
+ * API_PROXY_TARGET chooses the backend; this does not configure production routing.
+ */
 export default defineConfig({
   plugins: [react()],
   server: {

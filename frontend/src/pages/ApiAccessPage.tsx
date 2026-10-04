@@ -6,12 +6,16 @@ type Schema = {
 }
 const methods = new Set(['get', 'post', 'put', 'patch', 'delete'])
 
+/** Show operations from the running API schema; listing is not model readiness.
+ * Fetches are abortable on retry/unmount, and failures remain visible with retry.
+ */
 export default function ApiAccessPage() {
   const [schema, setSchema] = useState<Schema | null>(null)
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
     const controller = new AbortController()
+    /** Validate the schema shape before rendering; ignore results after cleanup. */
     async function load() {
       try {
         const response = await fetch('/openapi.json', {
