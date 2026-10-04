@@ -24,7 +24,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   useEffect(() => {
     const controller = new AbortController()
     imageHistory(controller.signal)
-      .then(setHistory)
+      .then((items) => { if (!controller.signal.aborted) setHistory(items) })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
           setHistoryError(
