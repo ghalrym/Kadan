@@ -1,8 +1,42 @@
 services:
+  postgres:
+    image: postgres:18
+    environment: &postgres_environment
+      POSTGRES_DB: ${POSTGRES_DB:-kadan}
+      POSTGRES_USER: ${POSTGRES_USER:-kadan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kadan}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    build:
+      context: ./api
+    environment: &database_environment
+      <<: *postgres_environment
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    command: ["alembic", "-c", "api/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ./api
     init: true
+    environment: *database_environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -30,4 +64,5 @@ services:
       - npm ci && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
 
 volumes:
+  postgres_data:
   frontend_node_modules:
