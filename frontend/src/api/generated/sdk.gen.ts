@@ -191,6 +191,11 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
 
 /**
  * Transcribe Audio
+ *
+ * Return HTTP 503 for validated requests while transcription is unconfigured.
+ *
+ * Neither audio fetching/recording/upload nor inference occurs; formatting is
+ * accepted as future-provider input, not applied to a fabricated transcript.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,

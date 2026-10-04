@@ -1734,6 +1734,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
+        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
