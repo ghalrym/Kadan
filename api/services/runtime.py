@@ -9,6 +9,8 @@ from api.inference.resources import ResourceManager, probe_memory
 from api.inference.context import ContextLimitError, ContextMemoryError, resolve_context
 
 
+_UNSET = object()
+
 def read_context_settings(path, configured):
     """Read local checkpoint configuration and return configured, supported and effective limits;
     file or validation errors propagate.
@@ -16,6 +18,20 @@ def read_context_settings(path, configured):
     supported, effective = resolve_context(json.loads((path / 'config.json').read_text()), configured)
     return dict(configured_context_limit=configured, supported_context_limit=supported,
                 effective_context_limit=effective)
+
+
+async def finish_cleanup(task):
+    """Keep ownership until cleanup ends, then propagate any caller cancellation."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 class RuntimeFailure(Exception):
@@ -94,35 +110,97 @@ class RuntimeManager:
         """Close the owned adapter on a worker thread before releasing selection; cleanup errors
         preserve its handle.
         """
+        await finish_cleanup(asyncio.create_task(self._finish_dispose()))
+
+    async def _finish_dispose(self):
+        """Release the handle and selection only after native close has succeeded."""
         adapter = self.adapter
         if adapter is not None:
             await asyncio.to_thread(adapter.close)
             self.adapter = None
         self._release()
 
-    async def load(self):
-        """Acquire selection and start asynchronous construction under the transition lock. Return
-        loading status; reject conflicting work or invalid context before scheduling.
+    def _start_load(self, model_manager):
+        """Acquire selection and schedule construction; caller owns the transition lock."""
+        try:
+            entry, path = model_manager.acquire_runtime_model()
+        except ValueError as exc:
+            raise RuntimeFailure(str(exc), 409) from exc
+        self._leased = True
+        try:
+            self.context_settings = read_context_settings(path, model_manager.configured_context(entry.id))
+        except (ValueError, OSError) as exc:
+            self._release()
+            raise RuntimeFailure(f'Cannot load context configuration: {exc}', 422) from exc
+        self._cancel = threading.Event()
+        self.model_id, self.error, self.state = entry.id, None, 'loading'
+        self.task = asyncio.create_task(self._load(entry, path, self._cancel))
+        return self.status()
+
+    async def load(self, model_id=None, context_limit=_UNSET):
+        """Validate, configure and start one load transaction, or load the saved selection.
+
+        Explicit requests may switch an idle ready model. Identical loading/ready
+        requests are idempotent; conflicting construction or generation returns 409.
+        A 202/loading result accepts construction, whose failure remains visible in status.
         """
-        from api.services.model_downloads import model_manager
+        from api.services.model_downloads import model_manager, BusyError
         async with self._transition:
-            if (self.state in ('loading', 'ready', 'unloading') or self._generation.locked()
-                    or (self.task is not None and not self.task.done())):
-                raise RuntimeFailure('Unload the current model before loading another.', 409)
+            if model_id is None:
+                if (self.state in ('loading', 'ready', 'unloading') or self._generation.locked()
+                        or (self.task is not None and not self.task.done())):
+                    raise RuntimeFailure('Unload the current model before loading another.', 409)
+                return self._start_load(model_manager)
+
+            def validate():
+                entry = model_manager._catalog_entry(model_id)
+                if not model_manager._checkpoint_complete(entry):
+                    raise RuntimeFailure('Download this model completely before loading it.', 409)
+                configured = model_manager.configured_context(model_id) if context_limit is _UNSET else context_limit
+                if configured is not None and (type(configured) is not int or not 1 <= configured <= 2**31 - 1):
+                    raise ValueError('Context limit must be a positive integer or null')
+                return configured, read_context_settings(model_manager._checkpoint_directory(entry), configured)
+
             try:
-                entry, path = model_manager.acquire_runtime_model()
-            except ValueError as exc:
+                # Never unload a usable model for an invalid or incomplete target.
+                with model_manager._lock:
+                    configured, settings = validate()
+                same = self.model_id == model_id and self.context_settings == settings
+                if same and self.state in ('loading', 'ready'):
+                    return self.status()
+                if (self.state in ('loading', 'unloading') or self._generation.locked()
+                        or (self.task is not None and not self.task.done())):
+                    raise RuntimeFailure('Model lifecycle or generation is busy; retry when it finishes.', 409)
+                if self.adapter is not None or self._leased:
+                    await self._unload_locked()
+                # Selection/context endpoints use this same store lock. No await
+                # occurs between persistence and acquiring the runtime selection lease.
+                with model_manager._lock:
+                    configured, _ = validate()
+                    files = [model_manager.root / name for name in ('context.json', 'selection.json')]
+                    previous = {path: path.read_bytes() if path.exists() else None for path in files}
+                    try:
+                        model_manager.set_context(model_id, configured)
+                        model_manager.select(model_id)
+                        return self._start_load(model_manager)
+                    except Exception as failure:
+                        try:
+                            for path, data in previous.items():
+                                if data is None:
+                                    path.unlink(missing_ok=True)
+                                else:
+                                    temporary = path.with_suffix('.rollback.tmp')
+                                    temporary.write_bytes(data)
+                                    temporary.replace(path)
+                        except OSError as rollback:
+                            raise RuntimeFailure('Load failed and saved settings could not be restored; refresh Settings before retrying.', 503) from rollback
+                        raise failure
+            except BusyError as exc:
                 raise RuntimeFailure(str(exc), 409) from exc
-            self._leased = True
-            try:
-                self.context_settings = read_context_settings(path, model_manager.configured_context(entry.id))
-            except (ValueError, OSError) as exc:
-                self._release()
+            except ValueError as exc:
                 raise RuntimeFailure(f'Cannot load context configuration: {exc}', 422) from exc
-            self._cancel = threading.Event()
-            self.model_id, self.error, self.state = entry.id, None, 'loading'
-            self.task = asyncio.create_task(self._load(entry, path, self._cancel))
-            return self.status()
+            except OSError as exc:
+                raise RuntimeFailure('Model storage is unavailable; load was not started. Refresh Settings before retrying.', 503) from exc
 
     async def _load(self, entry, path, cancel):
         """Await a shielded construction worker. Timeout or cancellation requests cooperative
@@ -158,19 +236,28 @@ class RuntimeManager:
         releasing the adapter and selection; return unloaded status.
         """
         async with self._transition:
-            self.state = 'unloading'
-            self._cancel.set()
-            if self.task is not None:
-                with suppress(Exception):
-                    await asyncio.shield(self.task)
-                self.task = None
-            if self._worker is not None:
-                with suppress(Exception):
-                    await asyncio.shield(self._worker)
-            await self._dispose()
-            self.model_id, self.error, self.state = None, None, 'unloaded'
-            self.context_settings = dict(configured_context_limit=None, supported_context_limit=None, effective_context_limit=None)
-            return self.status()
+            return await self._unload_locked()
+
+    async def _unload_locked(self):
+        """Retain transition ownership through cleanup, even on repeated caller cancellation."""
+        self.state = 'unloading'
+        return await finish_cleanup(asyncio.create_task(self._finish_unload()))
+
+    async def _finish_unload(self):
+        """Complete the owned unload transaction before its caller may release the lock."""
+        self.state = 'unloading'
+        self._cancel.set()
+        if self.task is not None:
+            with suppress(Exception):
+                await asyncio.shield(self.task)
+            self.task = None
+        if self._worker is not None:
+            with suppress(Exception):
+                await asyncio.shield(self._worker)
+        await self._dispose()
+        self.model_id, self.error, self.state = None, None, 'unloaded'
+        self.context_settings = dict(configured_context_limit=None, supported_context_limit=None, effective_context_limit=None)
+        return self.status()
 
     async def close(self):
         """Run the same cooperative unload path during application shutdown."""

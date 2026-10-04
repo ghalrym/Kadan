@@ -66,6 +66,7 @@ import type {
   ListVideosData,
   ListVideosResponses,
   LoadSelectedModelData,
+  LoadSelectedModelErrors,
   LoadSelectedModelResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
@@ -126,17 +127,29 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 /**
  * Load Selected Model
  *
- * Accept loading of the selected complete checkpoint and return its initial state; map
- * lifecycle conflicts and validation failures to HTTP errors.
+ * Accept a saved-selection load, or atomically configure and load the supplied target.
+ * Validate before switching; 202/loading is acceptance, not completed construction.
+ * Poll status for readiness or errors. Identical explicit requests reuse the current load.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,
-): RequestResult<LoadSelectedModelResponses, unknown, ThrowOnError> =>
+): RequestResult<
+  LoadSelectedModelResponses,
+  LoadSelectedModelErrors,
+  ThrowOnError
+> =>
   (options?.client ?? client).post<
     LoadSelectedModelResponses,
-    unknown,
+    LoadSelectedModelErrors,
     ThrowOnError
-  >({ url: '/model-lifecycle/load', ...options })
+  >({
+    url: '/model-lifecycle/load',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  })
 
 /**
  * Unload Selected Model
