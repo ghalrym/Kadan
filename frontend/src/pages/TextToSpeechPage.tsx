@@ -3,6 +3,9 @@ import { ModeNavigation } from '../components/Controls'
 import { fetchSpeechHistory, requestSpeech, speechRequest } from '../api/speech'
 import type { GeneratedSpeech } from '../api/generated/types.gen'
 
+/**
+ * Choose describe/clone mode and reset workspace state when the mode changes.
+ */
 export default function TextToSpeechPage({
   clone = false,
 }: {
@@ -11,6 +14,11 @@ export default function TextToSpeechPage({
   return <SpeechWorkspace key={clone ? 'clone' : 'describe'} clone={clone} />
 }
 
+/**
+ * Own editable speech fields, cancellable history and one active submission.
+ * Show the unconfigured-provider state and metadata only; no upload or fabricated
+ * playback controls are provided. Unmount aborts reads and invalidates submissions.
+ */
 function SpeechWorkspace({ clone }: { clone: boolean }) {
   const [script, setScript] = useState('')
   const [description, setDescription] = useState('')
@@ -51,6 +59,9 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
     }
   }, [])
 
+  /**
+   * Abort the browser request, release pending UI state and reject late results.
+   */
   function cancel() {
     active.current?.abort()
     active.current = null
@@ -58,6 +69,11 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
     setNotice('Request cancelled in this browser.')
   }
 
+  /**
+   * Validate the selected voice mode and submit once history loading has finished.
+   * Keep user input for retry, expose API errors, and append only validated metadata
+   * from the still-active controller; cancellation cannot create a local audio result.
+   */
   async function submit() {
     if (active.current || loadingHistory) return
     setError(null)

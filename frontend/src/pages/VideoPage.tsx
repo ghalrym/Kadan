@@ -9,6 +9,11 @@ import {
   type VideoGenerationRequest,
 } from '../api/video'
 
+/**
+ * Manage generation settings and server-reported queue state.
+ * Load history and poll only pending jobs; cleanup aborts reads/submissions and
+ * clears polling timers. Provider errors never create local placeholder jobs.
+ */
 export default function VideoPage() {
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
@@ -82,6 +87,10 @@ export default function VideoPage() {
     }
   }, [jobs, loading, refresh])
 
+  /**
+   * Submit one settings snapshot and upsert the returned job by ID.
+   * Only the active, non-aborted controller may update queue/error/pending state.
+   */
   async function submit() {
     if (active.current) return
     const controller = new AbortController()
@@ -121,6 +130,10 @@ export default function VideoPage() {
     }
   }
 
+  /**
+   * Stop waiting in this browser and ignore late submission results.
+   * This does not cancel any server-accepted job; advise refreshing before retrying.
+   */
   function cancel() {
     active.current?.abort()
     active.current = null

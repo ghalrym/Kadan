@@ -14,6 +14,9 @@ from api.services.runtime import runtime_manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """On shutdown, release inference ownership first, then cooperatively stop the downloader on a
+    worker thread.
+    """
     try:
         yield
     finally:

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel } from '../components/Controls'
 import { MAX_AUDIO_REFERENCE_LENGTH, requestTranscription } from '../api/transcription'
 
+/**
+ * Manage transcription input and display only API-returned text.
+ * Unmount invalidates the active request; recording and uploads remain unavailable.
+ */
 export default function SpeechToTextPage() {
   const [audio, setAudio] = useState('')
   const [formatting, setFormatting] = useState(true)
@@ -12,6 +16,11 @@ export default function SpeechToTextPage() {
   const active = useRef<AbortController | null>(null)
   useEffect(() => () => { active.current?.abort(); active.current = null }, [])
 
+  /**
+   * Send one reference/formatting snapshot with a 60-second browser timeout.
+   * Clear stale text first and apply results/errors only from the current,
+   * non-cancelled request; pending state is released even when the request fails.
+   */
   async function submit() {
     if (active.current || !audio.trim()) return
     const controller = new AbortController()
@@ -32,6 +41,9 @@ export default function SpeechToTextPage() {
     }
   }
 
+  /**
+   * Abort browser waiting and invalidate the controller so late text is discarded.
+   */
   function cancel() {
     active.current?.abort()
     active.current = null
@@ -39,6 +51,9 @@ export default function SpeechToTextPage() {
     setNotice('Request cancelled in this browser.')
   }
 
+  /**
+   * Copy the displayed transcript to the clipboard or show a manual-copy fallback.
+   */
   async function copy() {
     try { await navigator.clipboard.writeText(transcript); setNotice('Transcript copied.') }
     catch { setError('Could not copy. Select the transcript and copy it manually.') }
