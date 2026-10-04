@@ -17,7 +17,7 @@ def _unpack(packed: Tensor) -> Tensor:
     if packed.dtype != torch.uint8:
         raise ValueError('Canonical FP4 bytes must have dtype uint8.')
     codes = torch.stack((packed & 15, packed >> 4), dim=-1).flatten(-2).long()
-    magnitudes = torch.tensor([0., .5, 1., 1.5, 2., 3., 4., 6.], device=packed.device)
+    magnitudes = torch.tensor([0., .5, 1., 1.5, 2., 3., 4., 6.], device=packed.device, dtype=torch.float32)
     return magnitudes[codes & 7] * torch.where(codes < 8, 1., -1.)
 
 
@@ -56,7 +56,9 @@ def dequantize_nvfp4(weight: Tensor, scale: Tensor, global_scale: Tensor,
     if scale.dtype != torch.float8_e4m3fn:
         raise ValueError('NVFP4 block scales must be E4M3FN or its raw uint8 bytes.')
     global_scale = global_scale.to(torch.float32)
-    if global_scale.numel() != 1:
+    if global_scale.numel() == 1:
+        global_scale = global_scale.reshape(())
+    else:
         if global_scale.shape == weight.shape[:-1]:
             global_scale = global_scale.unsqueeze(-1)
         elif global_scale.shape != (*weight.shape[:-1], 1):

@@ -69,3 +69,15 @@ class OffloadTests(unittest.TestCase):
         thread.join(2)
         self.assertTrue(finished.is_set())
         self.assertEqual(cache.resident_bytes, 4)
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA validation requires target GPU')
+    def test_cuda_transfer_compute_eviction_and_close(self):
+        cache = ExpertCache(self.bank(), 4, 'cuda:0')
+        outputs = []
+        for key in [0, 1, 2, 0]:
+            with cache.use(key) as expert:
+                outputs.append(expert['w'].float().sum())
+                self.assertEqual(cache.resident_bytes, 4)
+        cache.close()
+        self.assertEqual([value.item() for value in outputs], [0., 4., 8., 0.])
+        self.assertEqual(cache.resident_bytes, 0)
