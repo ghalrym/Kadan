@@ -1,3 +1,6 @@
-# Optional GPU worker environment; do not install in the API-only container.
-# Upstream Apache-2.0; reviewed source/CLI at this exact revision.
-freetoken[accel] @ git+https://github.com/FlashML-org/FreeToken.git@d3512b43affe981465e03ee28cbd88f49c39b9aa
+# Optional native inference environment. Install alongside API requirements.
+# CUDA wheel selection is target-host-specific; CPU wheels suffice for tensor tests.
+torch==2.11.0
+transformers @ git+https://github.com/huggingface/transformers.git@469230357aab0f2b303b0d638c1f8d06edb14184
+accelerate==1.10.1
+safetensors==0.8.0
