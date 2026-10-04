@@ -2,9 +2,17 @@
 import asyncio
 from contextlib import suppress
 import os
+import json
 import threading
 
 from api.inference.resources import ResourceManager, probe_memory
+from api.inference.context import ContextLimitError, ContextMemoryError, resolve_context
+
+
+def read_context_settings(path, configured):
+    supported, effective = resolve_context(json.loads((path / 'config.json').read_text()), configured)
+    return dict(configured_context_limit=configured, supported_context_limit=supported,
+                effective_context_limit=effective)
 
 
 class RuntimeFailure(Exception):
@@ -27,12 +35,13 @@ class RuntimeManager:
         self._generation = asyncio.Lock()
         self.task = None
         self._worker = None
+        self.context_settings = dict(configured_context_limit=None, supported_context_limit=None, effective_context_limit=None)
 
     def status(self):
         state = self.state
         if state == 'ready' and self.adapter is not None and not self.adapter.is_resident:
             state = 'offloaded'
-        return dict(state=state, model_id=self.model_id, error=self.error,
+        return dict(state=state, model_id=self.model_id, error=self.error, max_output_tokens=256, **self.context_settings,
                     memory=self.resources.snapshot() if self.resources else None)
 
     def _construct(self, entry, path, cancel):
@@ -53,7 +62,13 @@ class RuntimeManager:
             raise RuntimeFailure('KADAN_GPU must be one nonnegative GPU index; VRAM is not pooled.')
         if self._factory is None and int(gpu) not in self.resources.capacity.device_bytes:
             raise RuntimeFailure('The selected CUDA GPU is unavailable. Install a compatible PyTorch CUDA build on the GPU host.')
-        return factory(entry, path, self.resources, device=f'cuda:{gpu}', cancel_event=cancel)
+        adapter = factory(entry, path, self.resources, device=f'cuda:{gpu}', cancel_event=cancel)
+        try:
+            adapter.configure_context(self.context_settings['configured_context_limit'])
+        except BaseException:
+            adapter.close()
+            raise
+        return adapter
 
     def _release(self):
         if self._leased:
@@ -79,6 +94,11 @@ class RuntimeManager:
             except ValueError as exc:
                 raise RuntimeFailure(str(exc), 409) from exc
             self._leased = True
+            try:
+                self.context_settings = read_context_settings(path, model_manager.configured_context(entry.id))
+            except (ValueError, OSError) as exc:
+                self._release()
+                raise RuntimeFailure(f'Cannot load context configuration: {exc}', 422) from exc
             self._cancel = threading.Event()
             self.model_id, self.error, self.state = entry.id, None, 'loading'
             self.task = asyncio.create_task(self._load(entry, path, self._cancel))
@@ -123,6 +143,7 @@ class RuntimeManager:
                     await asyncio.shield(self._worker)
             await self._dispose()
             self.model_id, self.error, self.state = None, None, 'unloaded'
+            self.context_settings = dict(configured_context_limit=None, supported_context_limit=None, effective_context_limit=None)
             return self.status()
 
     async def close(self):
@@ -161,6 +182,9 @@ class RuntimeManager:
                     await asyncio.shield(worker)
                 await self.unload()
                 raise
+            except (ContextLimitError, ContextMemoryError) as exc:
+                # Admission failures are request errors, not a damaged model.
+                raise RuntimeFailure(str(exc), 422 if isinstance(exc, ContextLimitError) else 503) from exc
             except Exception as exc:
                 if self.state != 'unloading':
                     async with self._transition:

@@ -200,7 +200,9 @@ class GlmAdapter:
                             layer.mlp.experts.cancel_event = cancel_event
                     try:
                         return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=512)
+                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                       resources=self.resources, owner=self.owner,
+                                                       expert_headroom_bytes=self.bank.max_expert_bytes)
                     finally:
                         self._cancel = None
 
@@ -222,8 +224,9 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
     """Strict, no-network loading of the GLM text decoder with Kadan ownership.
 
     Eager reference kernels are slow. Exact checkpoint/GPU parity is unvalidated.
-    Admission reserves 8 GiB for cache, dense scratch, activations and request state
-    in addition to measured resident tensors; dense projections stream from RAM; insufficient capacity fails before load.
+    Only measured resident tensors and 16 MiB decode scratch remain reserved.
+    Cache entries and request KV/workspace share remaining VRAM dynamically;
+    dense projections stream from RAM. Insufficient capacity fails explicitly.
     """
     check_cancel(cancel_event)
     try:
@@ -334,16 +337,19 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
                         experts[key]['bias'] = module.bias.detach()[start:start + 1024]
                 tiles[name] = tile_keys
             adapter.bank = ExpertBank(experts)
-            adapter.cache = ExpertCache(adapter.bank, 1024**3, device=device)
+            adapter.cache = ExpertCache(adapter.bank, resources.capacity.device_bytes[device.index or 0],
+                                        device=device, resources=resources, owner=adapter.owner + ':experts')
             for name, module in linears:
                 parent_name, _, leaf = name.rpartition('.')
                 parent = model.get_submodule(parent_name) if parent_name else model
                 setattr(parent, leaf, HostLinear(module.weight, tiles[name], adapter.cache, lambda: adapter._cancel))
             for layer in sparse:
                 model.model.layers[layer].mlp.experts = GlmExperts(adapter.cache, layer, config.swiglu_limit)
-            adapter.gpu_bytes = sum(p.numel() * p.element_size() for p in list(model.parameters()) + list(model.buffers())) + 8 * 1024**3
+            adapter.gpu_bytes = sum(p.numel() * p.element_size() for p in list(model.parameters()) + list(model.buffers())) + 16 * 1024**2
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             adapter.model = model.eval()
+            from api.inference.context import configure_context
+            configure_context(adapter, None)
             adapter._restore(cancel_event)
             check_cancel(cancel_event)
         return adapter

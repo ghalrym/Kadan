@@ -97,6 +97,50 @@ class ModelManager:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
+    def _context_settings(self) -> dict:
+        try:
+            value = json.loads((self.root / 'context.json').read_text())
+        except FileNotFoundError:
+            return {}
+        if not isinstance(value, dict) or any(
+            key not in CATALOG or (limit is not None and (type(limit) is not int or not 1 <= limit <= 2**31 - 1))
+            for key, limit in value.items()
+        ):
+            raise ValueError('Invalid persisted context settings; repair context.json before loading')
+        return value
+
+    def configured_context(self, model_id: str) -> int | None:
+        with self._lock:
+            self._entry(model_id)
+            return self._context_settings().get(model_id)
+
+    def architecture_context(self, model_id: str) -> int | None:
+        entry = self._entry(model_id)
+        if not self._complete(entry):
+            return None
+        config = json.loads((self._path(entry) / 'config.json').read_text())
+        maximum = config.get('text_config', config).get('max_position_embeddings')
+        if type(maximum) is not int or maximum <= 0:
+            return None
+        return maximum
+
+    def set_context(self, model_id: str, context_limit: int | None):
+        with self._lock:
+            self._entry(model_id)
+            if self._in_use:
+                raise BusyError('Unload the running model before changing context limits')
+            if context_limit is not None and (type(context_limit) is not int or not 1 <= context_limit <= 2**31 - 1):
+                raise ValueError('Context limit must be a positive integer or null for architecture maximum')
+            maximum = self.architecture_context(model_id)
+            if context_limit is not None and maximum is not None and context_limit > maximum:
+                raise ValueError(f'Context limit exceeds the checkpoint architecture maximum of {maximum}')
+            settings = self._context_settings()
+            settings[model_id] = context_limit
+            self.root.mkdir(parents=True, exist_ok=True)
+            temporary = self.root / 'context.tmp'
+            temporary.write_text(json.dumps(settings))
+            temporary.replace(self.root / 'context.json')
+
     def status(self) -> dict:
         with self._lock:
             rows = []
@@ -109,7 +153,8 @@ class ModelManager:
                 elif not state:
                     state = {'status': 'not_downloaded'}
                 rows.append({**asdict(entry), 'downloaded_bytes': 0, 'total_bytes': 0,
-                             'error': None, **state})
+                             'error': None, **state, 'context_limit': self.configured_context(entry.id),
+                             'architecture_context_limit': self.architecture_context(entry.id)})
             return {'models': rows, 'selected_model_id': self._selected_id()}
 
     def get_selected(self) -> tuple[CatalogEntry, Path]:
