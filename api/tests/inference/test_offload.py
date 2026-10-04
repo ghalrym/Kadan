@@ -204,3 +204,36 @@ class SharedBudgetOffloadTests(unittest.TestCase):
                 pass
         cache.close()
         self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_shared_cuda_drop_orders_event_storage_flush_and_accounting(self):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import weakref
+        _, resources, cache = self.setup_cache(4)
+        with cache.use(0) as tensors:
+            allocation = weakref.ref(tensors['w'])
+        order = []
+        def wait_event():
+            self.assertIsNotNone(allocation())
+            order.append('event')
+        def flush_allocator():
+            self.assertIsNone(allocation())
+            self.assertEqual(cache.resident_bytes, 4)
+            order.append('allocator')
+        release = resources._release
+        def release_accounting(owner, token):
+            self.assertEqual(order, ['event', 'allocator'])
+            self.assertEqual(cache.resident_bytes, 0)
+            order.append('release')
+            release(owner, token)
+        cache._entries[0].finished = SimpleNamespace(synchronize=wait_event)
+        cache.device = torch.device('cuda:0')
+        # Exercise CUDA cleanup ordering without claiming actual driver validation.
+        with patch('torch.cuda.device', return_value=nullcontext()) as device, \
+             patch('torch.cuda.empty_cache', side_effect=flush_allocator), \
+             patch.object(resources, '_release', side_effect=release_accounting):
+            cache.clear()
+        device.assert_called_once_with(torch.device('cuda:0'))
+        self.assertEqual(order, ['event', 'allocator', 'release'])
+        self.assertEqual(resources.snapshot()['reservations'], {})
