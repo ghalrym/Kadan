@@ -42,7 +42,6 @@ function ContextControl({ model, pending, save }: { model: ModelStatus; pending:
   return <div className="field model-context">
     <label htmlFor={`context-${model.id}`}>Max context length (tokens)</label>
     <input id={`context-${model.id}`} className="input" type="number" min={1} max={model.architecture_context_limit ?? 2147483647} step={1} value={value} disabled={pending} onChange={event => setValue(event.target.value)} placeholder="Architecture maximum" />
-    <p className="faint">Saved: {model.context_limit ?? 'Architecture maximum'}. Blank uses {model.architecture_context_limit ?? 'the architecture maximum'} tokens; larger windows need more memory.</p>
     <button type="button" className="button button--secondary" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
   </div>
 }
@@ -96,13 +95,12 @@ function ModelPicker({ models, current, selectedId, pending, downloading, choose
     {open && <div id="language-model-picker" role="dialog" aria-label="Language model options" className="model-picker-options" ref={popup}>
       {models.map(model => <div className="model-picker-option" key={model.id}>
         <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
-          <span>{model.repo_id.split('/')[1]}</span><small>{model.id} · {formatGigabytes(model.estimated_bytes)} · {model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</small>
+          <span>{model.repo_id.split('/')[1]}</span><small>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</small>
         </button>
         {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${model.repo_id.split('/')[1]}`} title={`Download ${model.repo_id.split('/')[1]}`} onClick={() => { download(model); dismiss() }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
         </button>}
       </div>)}
-      <p className="faint">Download a model before selecting it.</p>
       <button type="button" className="button button--text" onClick={dismiss}>Close model options</button>
     </div>}
   </div>
@@ -194,8 +192,6 @@ export default function SettingsPage() {
               {!chosen && <div className="field"><label htmlFor="context-unselected">Max context length (tokens)</label><input id="context-unselected" className="input" placeholder="Choose a language model" disabled /></div>}
               {chosen && <>
                 <ContextControl key={`${chosen.id}-${chosen.context_limit}`} model={chosen} pending={pending} save={limit => void submitModelChange(`/${chosen.id}/context`, 'PUT', { context_limit: limit })} />
-                <p className="faint">{chosen.id === modelStatus?.selected_model_id ? 'Selected' : 'Not selected'} · {chosen.status.replaceAll('_', ' ')}. Selection does not load the model.</p>
-                <p className="faint"><a href={`https://huggingface.co/${chosen.repo_id}/tree/${chosen.revision}`} target="_blank" rel="noreferrer">Model card and license</a> · {chosen.license} · {formatGigabytes(chosen.estimated_bytes)} plus 1 GiB disk reserve.</p>
               </>}
               {(downloadStatus ? [downloadStatus] : []).map(model => {
                 const active = model.status === 'downloading' || model.status === 'cancelling'
@@ -210,7 +206,7 @@ export default function SettingsPage() {
           </div>
           {modelSettings.filter(model => model.type !== 'LLM').map(model => <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
-            <select className="input" id={`model-${model.type}`} value={model.selected} disabled aria-describedby="unavailable-modalities">
+            <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
             </select>
           </div>)}
@@ -219,7 +215,6 @@ export default function SettingsPage() {
             <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
           </div>
         </Panel>
-        <p id="unavailable-modalities" className="faint">Image, video, speech, and transcription controls are unavailable until their providers are implemented.</p>
       </div>
     </div>
   )

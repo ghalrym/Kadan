@@ -9,7 +9,6 @@
 .model-picker-choice[aria-pressed="true"] { border-color: var(--accent); }
 .model-picker-choice small { color: var(--muted); }
 .model-download-icon { flex: none; padding: 8px; }
-.model-picker-options > p { margin: 8px 0; }
 .model-llm-details { grid-column: 2; min-width: 0; }
 .model-llm-details:empty { display: none; }
 .model-context > .button, .model-download-status > .button { align-self: flex-start; }
