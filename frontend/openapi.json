@@ -153,6 +153,30 @@
         "title": "CompletionResponse",
         "type": "object"
       },
+      "ContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_limit": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total context tokens; null uses the checkpoint architecture maximum on load.",
+            "title": "Context Limit"
+          }
+        },
+        "required": [
+          "context_limit"
+        ],
+        "title": "ContextRequest",
+        "type": "object"
+      },
       "DecisionAnswer": {
         "properties": {
           "confidence": {
@@ -628,6 +652,28 @@
       },
       "ModelStatus": {
         "properties": {
+          "architecture_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Context Limit"
+          },
+          "context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Limit"
+          },
           "downloaded_bytes": {
             "title": "Downloaded Bytes",
             "type": "integer"
@@ -689,7 +735,9 @@
           "status",
           "downloaded_bytes",
           "total_bytes",
-          "error"
+          "error",
+          "context_limit",
+          "architecture_context_limit"
         ],
         "title": "ModelStatus",
         "type": "object"
@@ -1930,6 +1978,58 @@
           }
         },
         "summary": "Select Model",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/v1/models/{model_id}/context": {
+      "put": {
+        "operationId": "configure_context_v1_models__model_id__context_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Configure Context",
         "tags": [
           "models"
         ]

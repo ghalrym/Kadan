@@ -96,6 +96,18 @@ export type CompletionResponse = {
 }
 
 /**
+ * ContextRequest
+ */
+export type ContextRequest = {
+  /**
+   * Context Limit
+   *
+   * Total context tokens; null uses the checkpoint architecture maximum on load.
+   */
+  context_limit: number | null
+}
+
+/**
  * DecisionAnswer
  */
 export type DecisionAnswer = {
@@ -358,6 +370,14 @@ export type ModelSetting = {
  * ModelStatus
  */
 export type ModelStatus = {
+  /**
+   * Architecture Context Limit
+   */
+  architecture_context_limit: number | null
+  /**
+   * Context Limit
+   */
+  context_limit: number | null
   /**
    * Downloaded Bytes
    */
@@ -1202,6 +1222,38 @@ export type SelectModelV1ModelsSelectionPutResponses = {
 
 export type SelectModelV1ModelsSelectionPutResponse =
   SelectModelV1ModelsSelectionPutResponses[keyof SelectModelV1ModelsSelectionPutResponses]
+
+export type ConfigureContextV1ModelsModelIdContextPutData = {
+  body: ContextRequest
+  path: {
+    /**
+     * Model Id
+     */
+    model_id: string
+  }
+  query?: never
+  url: '/v1/models/{model_id}/context'
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutError =
+  ConfigureContextV1ModelsModelIdContextPutErrors[keyof ConfigureContextV1ModelsModelIdContextPutErrors]
+
+export type ConfigureContextV1ModelsModelIdContextPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutResponse =
+  ConfigureContextV1ModelsModelIdContextPutResponses[keyof ConfigureContextV1ModelsModelIdContextPutResponses]
 
 export type CancelDownloadV1ModelsModelIdDownloadDeleteData = {
   body?: never
