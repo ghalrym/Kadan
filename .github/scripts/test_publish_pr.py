@@ -305,7 +305,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_all_eight_rules_have_fixed_approved_chain(self):
         self.assertEqual(len(p.MIGRATIONS), 8)
-        previous_base, previous_sha = 'codex/freetoken-runtime', 'd2773d4241a264f84d63235650a226c434df47aa'
+        previous_base, previous_sha = 'codex/freetoken-runtime', 'ce09eb5c77ee88b9120e42eeee0e77c0431dc22c'
         for alias, rule in p.MIGRATIONS.items():
             self.assertEqual(rule['base'], previous_base)
             self.assertEqual(rule['base_sha'], previous_sha)
