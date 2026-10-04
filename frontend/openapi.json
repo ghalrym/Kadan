@@ -118,7 +118,6 @@
             "items": {
               "$ref": "#/components/schemas/ChatMessage"
             },
-            "maxItems": 128,
             "minItems": 1,
             "title": "Messages",
             "type": "array"
@@ -151,6 +150,30 @@
           "message"
         ],
         "title": "CompletionResponse",
+        "type": "object"
+      },
+      "ContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_limit": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total context tokens; null uses the checkpoint architecture maximum on load.",
+            "title": "Context Limit"
+          }
+        },
+        "required": [
+          "context_limit"
+        ],
+        "title": "ContextRequest",
         "type": "object"
       },
       "DecisionAnswer": {
@@ -538,6 +561,99 @@
         "title": "MetricsResponse",
         "type": "object"
       },
+      "ModelLifecycleStatus": {
+        "properties": {
+          "configured_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configured Context Limit"
+          },
+          "effective_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Context Limit"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "max_output_tokens": {
+            "default": 256,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "state": {
+            "enum": [
+              "unloaded",
+              "loading",
+              "ready",
+              "offloaded",
+              "unloading",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "supported_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Context Limit"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ModelLifecycleStatus",
+        "type": "object"
+      },
       "ModelSetting": {
         "properties": {
           "label": {
@@ -578,6 +694,28 @@
       },
       "ModelStatus": {
         "properties": {
+          "architecture_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Context Limit"
+          },
+          "context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Limit"
+          },
           "downloaded_bytes": {
             "title": "Downloaded Bytes",
             "type": "integer"
@@ -639,7 +777,9 @@
           "status",
           "downloaded_bytes",
           "total_bytes",
-          "error"
+          "error",
+          "context_limit",
+          "architecture_context_limit"
         ],
         "title": "ModelStatus",
         "type": "object"
@@ -851,61 +991,6 @@
           "total"
         ],
         "title": "ResourceMeter",
-        "type": "object"
-      },
-      "RuntimeStatus": {
-        "properties": {
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "memory": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Memory"
-          },
-          "model_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
-          },
-          "state": {
-            "enum": [
-              "unloaded",
-              "loading",
-              "ready",
-              "offloaded",
-              "unloading",
-              "error"
-            ],
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "state"
-        ],
-        "title": "RuntimeStatus",
         "type": "object"
       },
       "ScoreQuestion": {
@@ -1473,6 +1558,69 @@
         ]
       }
     },
+    "/model-lifecycle": {
+      "get": {
+        "operationId": "getModelLifecycleStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Model Lifecycle",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/load": {
+      "post": {
+        "operationId": "loadSelectedModel",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Load Selected Model",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/unload": {
+      "post": {
+        "operationId": "unloadSelectedModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unload Selected Model",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
     "/v1/audio/speech": {
       "get": {
         "operationId": "listSpeech",
@@ -1888,6 +2036,58 @@
         ]
       }
     },
+    "/v1/models/{model_id}/context": {
+      "put": {
+        "operationId": "configure_context_v1_models__model_id__context_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Configure Context",
+        "tags": [
+          "models"
+        ]
+      }
+    },
     "/v1/models/{model_id}/download": {
       "delete": {
         "operationId": "cancel_download_v1_models__model_id__download_delete",
@@ -2121,69 +2321,6 @@
         "summary": "Get Request",
         "tags": [
           "Requests"
-        ]
-      }
-    },
-    "/v1/runtime": {
-      "get": {
-        "operationId": "getRuntimeStatus",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Runtime Status",
-        "tags": [
-          "Runtime"
-        ]
-      }
-    },
-    "/v1/runtime/load": {
-      "post": {
-        "operationId": "loadRuntimeModel",
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Load Runtime Model",
-        "tags": [
-          "Runtime"
-        ]
-      }
-    },
-    "/v1/runtime/unload": {
-      "post": {
-        "operationId": "unloadRuntimeModel",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Unload Runtime Model",
-        "tags": [
-          "Runtime"
         ]
       }
     },
