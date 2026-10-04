@@ -23,6 +23,34 @@ export type ChatMessage = {
 }
 
 /**
+ * ChoiceAnswer
+ */
+export type ChoiceAnswer = {
+  /**
+   * Confidence
+   */
+  confidence?: number | null
+  /**
+   * Key
+   */
+  key: string
+  /**
+   * Probabilities
+   */
+  probabilities?: {
+    [key: string]: number
+  } | null
+  /**
+   * Type
+   */
+  type: 'Choice'
+  /**
+   * Value
+   */
+  value: string
+}
+
+/**
  * ChoiceOption
  */
 export type ChoiceOption = {
@@ -108,41 +136,13 @@ export type ContextRequest = {
 }
 
 /**
- * DecisionAnswer
- */
-export type DecisionAnswer = {
-  /**
-   * Confidence
-   */
-  confidence?: number | null
-  /**
-   * Key
-   */
-  key: string
-  /**
-   * Probabilities
-   */
-  probabilities?: {
-    [key: string]: number
-  } | null
-  /**
-   * Type
-   */
-  type: 'Choice' | 'Score' | 'Noul'
-  /**
-   * Value
-   */
-  value: string | number | number | boolean
-}
-
-/**
  * DecisionPlaygroundResponse
  */
 export type DecisionPlaygroundResponse = {
   /**
    * Answers
    */
-  answers: Array<DecisionAnswer>
+  answers: Array<ChoiceAnswer | ScoreAnswer | NoulAnswer>
   /**
    * Questions
    */
@@ -174,7 +174,7 @@ export type DecisionResponse = {
   /**
    * Answers
    */
-  answers: Array<DecisionAnswer>
+  answers: Array<ChoiceAnswer | ScoreAnswer | NoulAnswer>
 }
 
 /**
@@ -457,6 +457,36 @@ export type ModelsResponse = {
 }
 
 /**
+ * NoulAnswer
+ */
+export type NoulAnswer = {
+  /**
+   * Confidence
+   */
+  confidence?: number | null
+  /**
+   * Key
+   */
+  key: string
+  /**
+   * Probabilities
+   */
+  probabilities?: {
+    [key: string]: number
+  } | null
+  /**
+   * Type
+   */
+  type: 'Noul'
+  /**
+   * Value
+   *
+   * Probability that the criterion is true.
+   */
+  value: number
+}
+
+/**
  * NoulQuestion
  */
 export type NoulQuestion = {
@@ -569,6 +599,36 @@ export type ResourceMeter = {
    * Used
    */
   used: number
+}
+
+/**
+ * ScoreAnswer
+ */
+export type ScoreAnswer = {
+  /**
+   * Confidence
+   */
+  confidence?: number | null
+  /**
+   * Key
+   */
+  key: string
+  /**
+   * Probabilities
+   */
+  probabilities?: {
+    [key: string]: number
+  } | null
+  /**
+   * Type
+   */
+  type: 'Score'
+  /**
+   * Value
+   *
+   * Expected zero-based ordinal rubric index; may be fractional.
+   */
+  value: number
 }
 
 /**
