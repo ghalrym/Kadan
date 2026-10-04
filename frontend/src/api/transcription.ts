@@ -1,0 +1,22 @@
+import { transcribeAudio } from './generated/sdk.gen'
+import type { TranscriptionRequest } from './generated/types.gen'
+
+export const MAX_AUDIO_REFERENCE_LENGTH = 2048
+
+export async function requestTranscription(audio: string, formatting: boolean, signal: AbortSignal): Promise<string> {
+  const reference = audio.trim()
+  if (!reference || reference.length > MAX_AUDIO_REFERENCE_LENGTH) {
+    throw new Error('Enter an audio reference of 1–2048 characters.')
+  }
+  const body: TranscriptionRequest = { audio: reference, formatting }
+  const result = await transcribeAudio({ body, signal })
+  if (!result.response?.ok) {
+    if (result.response?.status === 503) {
+      throw new Error('Transcription is unavailable: no speech-to-text provider is configured. Recording and file upload are not supported yet.')
+    }
+    if (result.response?.status === 422) throw new Error('The API rejected this audio reference. Check the input and retry.')
+    throw new Error(result.response ? `Transcription failed (HTTP ${result.response.status}). Please retry.` : 'Cannot reach the transcription API. Check that the backend is running.')
+  }
+  if (typeof result.data?.text !== 'string' || !result.data.text.trim()) throw new Error('The API returned an invalid transcript.')
+  return result.data.text
+}

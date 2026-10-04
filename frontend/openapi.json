@@ -1108,7 +1108,8 @@
         "additionalProperties": false,
         "properties": {
           "audio": {
-            "description": "Audio reference; not fetched in mock mode",
+            "description": "Audio reference only; no upload or fetching is implemented",
+            "maxLength": 2048,
             "minLength": 1,
             "title": "Audio",
             "type": "string"
@@ -1136,6 +1137,19 @@
           "text"
         ],
         "title": "TranscriptionResponse",
+        "type": "object"
+      },
+      "TranscriptionUnavailable": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "TranscriptionUnavailable",
         "type": "object"
       },
       "ValidationError": {
@@ -1598,6 +1612,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionUnavailable"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Transcribe Audio",

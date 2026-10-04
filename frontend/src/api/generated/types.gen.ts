@@ -655,7 +655,7 @@ export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference; not fetched in mock mode
+   * Audio reference only; no upload or fetching is implemented
    */
   audio: string
   /**
@@ -672,6 +672,16 @@ export type TranscriptionResponse = {
    * Text
    */
   text: string
+}
+
+/**
+ * TranscriptionUnavailable
+ */
+export type TranscriptionUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
 }
 
 /**
@@ -935,6 +945,10 @@ export type TranscribeAudioErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Service Unavailable
+   */
+  503: TranscriptionUnavailable
 }
 
 export type TranscribeAudioError =

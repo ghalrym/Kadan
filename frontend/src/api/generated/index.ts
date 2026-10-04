@@ -169,6 +169,7 @@ export type {
   TranscribeAudioResponses,
   TranscriptionRequest,
   TranscriptionResponse,
+  TranscriptionUnavailable,
   UnloadRuntimeModelData,
   UnloadRuntimeModelResponse,
   UnloadRuntimeModelResponses,
