@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
 import ModelLifecyclePanel from '../components/ModelLifecyclePanel'
+import { modelSettings } from '../data/playground'
 import type { ContextRequest, ModelsResponse, ModelStatus } from '../api/generated'
 import './SettingsPage.css'
 
@@ -39,11 +40,72 @@ function ContextControl({ model, pending, save }: { model: ModelStatus; pending:
   const [value, setValue] = useState(model.context_limit?.toString() ?? '')
   const parsed = value.trim() === '' ? null : Number(value)
   const valid = parsed === null || (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 2147483647 && (model.architecture_context_limit === null || parsed <= model.architecture_context_limit))
-  return <div className="field">
-    <label htmlFor={`context-${model.id}`}>Context window (tokens)</label>
+  return <div className="field model-context">
+    <label htmlFor={`context-${model.id}`}>Max context length (tokens)</label>
     <input id={`context-${model.id}`} className="input" type="number" min={1} max={model.architecture_context_limit ?? 2147483647} step={1} value={value} disabled={pending} onChange={event => setValue(event.target.value)} placeholder="Architecture maximum" />
-    <p>Saved: {model.context_limit ?? 'Architecture maximum'}. Architecture maximum: {model.architecture_context_limit ?? 'available after download'}. Blank uses the architecture maximum on load; larger windows require more memory. No silent reduction.</p>
+    <p className="faint">Saved: {model.context_limit ?? 'Architecture maximum'}. Blank uses {model.architecture_context_limit ?? 'the architecture maximum'} tokens; larger windows need more memory.</p>
     <button type="button" className="button button--secondary" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
+  </div>
+}
+
+/** Preserve the original modality icons alongside the compact settings rows. */
+function ModelIcon({ type }: { type: string }) {
+  return <svg className={`model-icon type-${type}`} width="13" height="13" viewBox="0 0 12 12" aria-hidden="true">
+    <circle cx="6" cy="3" r="2.5" /><circle cx="8.85" cy="5.07" r="2.5" />
+    <circle cx="7.76" cy="8.43" r="2.5" /><circle cx="4.24" cy="8.43" r="2.5" />
+    <circle cx="3.15" cy="5.07" r="2.5" /><circle className="model-icon-center" cx="6" cy="6" r="1.5" />
+  </svg>
+}
+
+/**
+ * A nonmodal picker with sibling selection/download controls, rather than
+ * interactive children inside native options. Escape restores trigger focus;
+ * arrows/Home/End move between enabled controls, Tab and outside clicks dismiss.
+ */
+function ModelPicker({ models, current, selectedId, pending, downloading, choose, download }: {
+  models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
+  choose: (model: ModelStatus) => void; download: (model: ModelStatus) => void;
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapper = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const popup = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    popup.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    const outside = (event: PointerEvent) => { if (!wrapper.current?.contains(event.target as Node)) setOpen(false) }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [open])
+  function dismiss() { setOpen(false); trigger.current?.focus() }
+  return <div className="model-picker" ref={wrapper} onBlur={event => {
+    if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false)
+  }} onKeyDown={event => {
+    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss() }
+    if (!open || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const controls = Array.from(popup.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
+    const index = controls.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + controls.length) % controls.length
+    controls[next]?.focus()
+  }}>
+    <button type="button" id="model-LLM" className="input model-picker-trigger" ref={trigger} aria-haspopup="dialog" aria-expanded={open} aria-controls="language-model-picker" disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
+      if (!open && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true) }
+    }}>
+      <span>{current?.repo_id.split('/')[1] ?? 'Choose a language model'}</span><span aria-hidden="true">▾</span>
+    </button>
+    {open && <div id="language-model-picker" role="dialog" aria-label="Language model options" className="model-picker-options" ref={popup}>
+      {models.map(model => <div className="model-picker-option" key={model.id}>
+        <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
+          <span>{model.repo_id.split('/')[1]}</span><small>{model.id} · {formatGigabytes(model.estimated_bytes)} · {model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</small>
+        </button>
+        {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${model.repo_id.split('/')[1]}`} title={`Download ${model.repo_id.split('/')[1]}`} onClick={() => { download(model); dismiss() }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
+        </button>}
+      </div>)}
+      <p className="faint">Download a model before selecting it.</p>
+      <button type="button" className="button button--text" onClick={dismiss}>Close model options</button>
+    </div>}
   </div>
 }
 
@@ -61,6 +123,7 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [chosenId, setChosenId] = useState<string | null>(null)
   useEffect(() => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
@@ -91,7 +154,7 @@ export default function SettingsPage() {
    * the controller also suppresses state updates after unmount cancellation.
    */
   async function submitModelChange(path: string, method: 'PUT' | 'POST' | 'DELETE', body?: ContextRequest | { model_id: string }) {
-    if (actionController.current) return
+    if (actionController.current) return false
     const controller = new AbortController()
     actionController.current = controller
     mutationVersion.current += 1
@@ -99,47 +162,66 @@ export default function SettingsPage() {
     setActionError('')
     try {
       const next = await requestModelStatus(path, method, body, controller.signal)
-      if (!controller.signal.aborted) { setModelStatus(next); setError('') }
+      if (!controller.signal.aborted) { setModelStatus(next); setError(''); return true }
+      return false
     } catch (failure) {
       if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'Request failed')
+      return false
     } finally {
       mutationVersion.current += 1
       actionController.current = null
       if (!controller.signal.aborted) setPending(false)
     }
   }
-  const downloading = modelStatus?.models.some(model => model.status === 'downloading' || model.status === 'cancelling')
+  const models = modelStatus?.models ?? []
+  const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
+  const chosen = models.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
+  const downloadStatus = models.find(model => model.status === 'downloading' || model.status === 'cancelling')
+    ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
   return (
     <div className="scroll-page">
       <div className="settings-layout stack">
         <ModelLifecyclePanel selectedModelId={modelStatus?.selected_model_id ?? null} />
-        <SectionHeading>Language models</SectionHeading>
-        <p>Download a checkpoint, then select it for loading. Downloads require the listed disk space plus a 1 GiB reserve. Selection does not load the model into memory.</p>
-        <p>These checkpoints use Apache 2.0 or MIT licenses. Review each model card and its usage terms before downloading. Other modalities are not configured yet.</p>
-        {error && <div role="alert">{error} <button type="button" className="button button--secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
-        {actionError && <p role="alert">{actionError}</p>}
-        {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
-        {modelStatus?.models.map(model => {
-          const active = model.status === 'downloading' || model.status === 'cancelling'
-          const selected = modelStatus.selected_model_id === model.id
-          return <Panel className="checkpoint-card" key={model.id}>
-            <h3>{model.id[0].toUpperCase() + model.id.slice(1)} — {model.repo_id.split('/')[1]}</h3>
-            <a href={`https://huggingface.co/${model.repo_id}/tree/${model.revision}`} target="_blank" rel="noreferrer">Model card and pinned files</a>
-            <p>{formatGigabytes(model.estimated_bytes)} estimated · {model.license} · revision {model.revision.slice(0, 8)}</p>
-            <p role="status">{model.status.replaceAll('_', ' ')}{selected ? ' · Selected' : ''}</p>
-            {active && <>
-              <progress aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} />
-              <p>{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</p>
-            </>}
-            {model.error && <p role="alert">{model.error}</p>}
-            <ContextControl key={`${model.id}-${model.context_limit}`} model={model} pending={pending} save={limit => void submitModelChange(`/${model.id}/context`, 'PUT', { context_limit: limit })} />
-            <div className="checkpoint-actions">
-              {active ? <button type="button" className="button button--secondary" disabled={pending || model.status === 'cancelling'} onClick={() => void submitModelChange(`/${model.id}/download`, 'DELETE')}>{model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download'}</button>
-                : model.status !== 'complete' && <button type="button" className="button button--primary" disabled={pending || downloading} onClick={() => void submitModelChange(`/${model.id}/download`, 'POST')}>{model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}</button>}
-              <button type="button" className="button button--secondary" disabled={pending || model.status !== 'complete' || selected} onClick={() => void submitModelChange('/selection', 'PUT', { model_id: model.id })}>{selected ? 'Selected' : 'Select model'}</button>
+        <SectionHeading>Models</SectionHeading>
+        <Panel className="model-settings">
+          <div className="model-row model-row--llm">
+            <label htmlFor="model-LLM"><ModelIcon type="LLM" />Language model</label>
+            <ModelPicker models={models} current={chosen} selectedId={modelStatus?.selected_model_id ?? null} pending={pending} downloading={downloading}
+              choose={model => { void submitModelChange('/selection', 'PUT', { model_id: model.id }).then(saved => { if (saved) setChosenId(null) }) }}
+              download={model => { setChosenId(model.id); void submitModelChange(`/${model.id}/download`, 'POST') }} />
+            <div className="model-llm-details stack">
+              {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
+              {error && <div role="alert">{error} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
+              {actionError && <p role="alert">{actionError}</p>}
+              {!chosen && <div className="field"><label htmlFor="context-unselected">Max context length (tokens)</label><input id="context-unselected" className="input" placeholder="Choose a language model" disabled /></div>}
+              {chosen && <>
+                <ContextControl key={`${chosen.id}-${chosen.context_limit}`} model={chosen} pending={pending} save={limit => void submitModelChange(`/${chosen.id}/context`, 'PUT', { context_limit: limit })} />
+                <p className="faint">{chosen.id === modelStatus?.selected_model_id ? 'Selected' : 'Not selected'} · {chosen.status.replaceAll('_', ' ')}. Selection does not load the model.</p>
+                <p className="faint"><a href={`https://huggingface.co/${chosen.repo_id}/tree/${chosen.revision}`} target="_blank" rel="noreferrer">Model card and license</a> · {chosen.license} · {formatGigabytes(chosen.estimated_bytes)} plus 1 GiB disk reserve.</p>
+              </>}
+              {(downloadStatus ? [downloadStatus] : []).map(model => {
+                const active = model.status === 'downloading' || model.status === 'cancelling'
+                return <div className="model-download-status stack compact" key={model.id}>
+                  <p role="status">{model.repo_id.split('/')[1]} · {model.status}</p>
+                  {active && <><progress aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} /><span className="faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span></>}
+                  {model.error && <p role="alert">{model.error}</p>}
+                  <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); void submitModelChange(`/${model.id}/download`, active ? 'DELETE' : 'POST') }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
+                </div>
+              })}
             </div>
-          </Panel>
-        })}
+          </div>
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => <div className="model-row" key={model.type}>
+            <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
+            <select className="input" id={`model-${model.type}`} value={model.selected} disabled aria-describedby="unavailable-modalities">
+              {model.options.map(option => <option key={option}>{option}</option>)}
+            </select>
+          </div>)}
+          <div className="model-row">
+            <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
+            <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
+          </div>
+        </Panel>
+        <p id="unavailable-modalities" className="faint">Image, video, speech, and transcription controls are unavailable until their providers are implemented.</p>
       </div>
     </div>
   )
