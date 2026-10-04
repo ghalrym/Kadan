@@ -6,7 +6,7 @@ import DecisionQuestionCard, {
 import type { DecisionResponse } from '../api/generated'
 
 /**
- * Edit page-local decision state and display answers from the shared model API.
+ * Edit page-local decision state and display answers from the CPU Laya API.
  * Only the active request may update results; leaving the page aborts that request.
  */
 export default function DecisionsPage() {
@@ -91,7 +91,7 @@ export default function DecisionsPage() {
     active.current = null
     setPending(false)
     setNotice(
-      'Evaluation cancelled. Runtime cleanup may take a moment; reload the model if needed.',
+      'Evaluation cancelled. The CPU worker may take a moment to finish.',
     )
   }
   return (
@@ -169,8 +169,9 @@ export default function DecisionsPage() {
           {error && <p role="alert">{error}</p>}
           {notice && <p role="status">{notice}</p>}
           <p className="muted">
-            Uses the model loaded in Settings. Questions and answers stay in
-            this page; they are not saved.
+            Uses Laya on CPU, independently of the chat model. Score is an expected
+            rubric index; Noul is the probability of true. Inputs must fit the
+            specialist’s token budget. Questions and answers are not saved.
           </p>
         </form>
         <Panel className="answers-panel">
@@ -183,7 +184,7 @@ export default function DecisionsPage() {
               : answers.length
                 ? answers.map((answer) => (
                     <p key={answer.key}>
-                      <strong>{answer.key}</strong>: {String(answer.value)}
+                      <strong>{answer.key}</strong>: {answer.type === 'Noul' ? `${(Number(answer.value) * 100).toFixed(1)}% true` : String(answer.value)}
                     </p>
                   ))
                 : 'No answers yet'}
