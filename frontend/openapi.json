@@ -2406,6 +2406,7 @@
     },
     "/v1/videos": {
       "get": {
+        "description": "Return an empty queue because no video jobs are persisted or scheduled.",
         "operationId": "listVideos",
         "responses": {
           "200": {
@@ -2427,6 +2428,7 @@
     },
     "/v1/videos/generations": {
       "post": {
+        "description": "Reject validated generation settings with HTTP 503 without queuing a job.\n\nThe declared 202 response is the future job contract, not evidence that a\nprovider ran or that GPU rendering has started.",
         "operationId": "generateVideo",
         "requestBody": {
           "content": {
@@ -2471,6 +2473,7 @@
     },
     "/v1/videos/{video_id}": {
       "get": {
+        "description": "Report HTTP 404 for the requested ID; no provider-backed video jobs exist.",
         "operationId": "getVideo",
         "parameters": [
           {
