@@ -133,3 +133,13 @@ Set a per-model context limit in Settings, or leave it blank to use that
 checkpoint's architecture maximum. Configuration persists across restarts.
 Unload the active model before changing context. A saved context is not a memory
 allocation or a guarantee that a request of that size fits on the target hardware.
+
+Context memory is admitted from each request's actual prompt and output allowance,
+not preallocated at the configured ceiling. Packed GPU expert entries share that
+budget and can be evicted to make room while CPU weights remain available. RAM
+pressure can also evict an idle model's host backing; its next request reconstructs
+it from the local checkpoint. Active work is protected from either eviction.
+Linux admission respects visible cgroup limits. Estimates and working-expert
+preflight are conservative checks, not guarantees against external allocations;
+actual entry allocation is admitted again before copying. Target-GPU validation
+is still required.
