@@ -36,6 +36,9 @@ class ReloadableTests(unittest.TestCase):
         class Inner:
             is_resident = True
             def __init__(self):
+                self.model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=8192))
+                self.configured_context_limit = None
+                self.effective_context_limit = self.supported_context_limit = 8192
                 self.payload = torch.ones(24, dtype=torch.float32)
             def generate(self, messages, max_new_tokens, cancel_event):
                 with host.lease(cancel_event), device_reservation.lease(cancel_event):
@@ -135,3 +138,20 @@ class ReloadableTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             adapter.generate([])
         self.assertEqual(self.created, 1)
+
+
+    def test_context_metadata_survives_host_eviction_and_rebuild(self):
+        adapter = self.build()
+        adapter.configure_context(6000)
+        other = self.resources.reserve('image', 'image', host_bytes=96)
+        self.assertEqual(adapter.configured_context_limit, 6000)
+        self.assertEqual(adapter.effective_context_limit, 6000)
+        self.assertEqual(adapter.supported_context_limit, 8192)
+        other.release()
+        adapter.generate([])
+        self.assertEqual(adapter._inner.effective_context_limit, 6000)
+        adapter.configure_context(None)
+        self.assertEqual(adapter.effective_context_limit, 8192)
+        with self.assertRaises(ValueError):
+            adapter.configure_context(9000)
+        adapter.close()

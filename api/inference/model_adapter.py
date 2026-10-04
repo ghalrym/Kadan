@@ -85,8 +85,7 @@ class GptOssAdapter:
         # Host preserves packed experts plus dense weights when GPU eviction occurs.
         self.host_reservation = resources.reserve(self.owner + ':host', 'llm',
             host_bytes=packed_bytes + 2 * dense_bytes + 512 * 1024**2)
-        kv_bytes = 2 * layers * config.num_key_value_heads * config.head_dim * 4096 * 2
-        self.device_budget = dense_bytes + kv_bytes + 2 * 1024**3 + 2 * 1024**3
+        self.device_budget = dense_bytes + 2 * 1024**3 + 2 * 1024**3
         self.cache_bytes = 2 * 1024**3
         try:
             check_cancel(cancel_event)
@@ -129,6 +128,8 @@ class GptOssAdapter:
             if any(buffer.is_meta for buffer in self.model.buffers()):
                 raise ValueError('Uninitialized model buffers after meta construction')
             self.model.eval()
+            from api.inference.context import configure_context
+            configure_context(self, None)
             self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             self._restore(cancel_event)
         except BaseException:
@@ -173,7 +174,8 @@ class GptOssAdapter:
                 for layer in self.model.model.layers:
                     layer.mlp.experts.cancel_event = cancel_event
                 return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                    cancel_event=cancel_event, max_new_tokens=max_new_tokens)
+                    cancel_event=cancel_event, max_new_tokens=max_new_tokens,
+                    context_limit=self.effective_context_limit, resources=self.resources, owner=self.owner)
 
     def close(self):
         with self._lock:

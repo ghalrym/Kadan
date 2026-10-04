@@ -22,7 +22,7 @@ class _HostEvictionResources:
     def reserve(self, owner, workload, host_bytes=0, device_bytes=None,
                 evict=None, cancel_event=None):
         return self._manager.reserve(owner, workload, host_bytes=host_bytes,
-            device_bytes=device_bytes, evict=self._on_host_evict if host_bytes else evict,
+            device_bytes=device_bytes, evict=self._on_host_evict if host_bytes and not device_bytes else evict,
             cancel_event=cancel_event)
 
     def __getattr__(self, name):
@@ -41,6 +41,10 @@ class ReloadableAdapter:
         self._gate = threading.Lock()
         self._closed = False
         self._inner = None
+        self._context_was_configured = False
+        self.configured_context_limit = None
+        self.effective_context_limit = None
+        self.supported_context_limit = None
         self._resources = _HostEvictionResources(resources, self._evict_host)
         with self._gate:
             self._construct(cancel_event)
@@ -52,6 +56,37 @@ class ReloadableAdapter:
         inner = self._factory(self._entry, self._path, self._resources,
                               device=self._device, cancel_event=cancel_event)
         self._inner = inner
+        try:
+            if self._context_was_configured:
+                from api.inference.context import configure_context
+                configure_context(inner, self.configured_context_limit)
+        except BaseException:
+            inner.close()
+            self._inner = None
+            raise
+        self._remember_context(inner)
+
+    def _remember_context(self, inner):
+        for name in ('configured_context_limit', 'effective_context_limit', 'supported_context_limit'):
+            setattr(self, name, getattr(inner, name, None))
+
+    def configure_context(self, value):
+        from api.inference.context import configure_context
+        with self._gate:
+            if self._closed:
+                raise RuntimeError('Model has been explicitly closed')
+            if self._inner is None:
+                # Configuration normally occurs just after load. Validate against
+                # the retained architectural maximum if already host-evicted.
+                if value is not None and (type(value) is not int or value < 1 or
+                        self.supported_context_limit is None or value > self.supported_context_limit):
+                    raise ValueError('Configured context exceeds the supported model limit')
+                self.configured_context_limit = value
+                self.effective_context_limit = value or self.supported_context_limit
+            else:
+                configure_context(self._inner, value)
+                self._remember_context(self._inner)
+            self._context_was_configured = True
 
     @property
     def is_resident(self):

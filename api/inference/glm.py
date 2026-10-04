@@ -200,7 +200,8 @@ class GlmAdapter:
                             layer.mlp.experts.cancel_event = cancel_event
                     try:
                         return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=512)
+                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                       resources=self.resources, owner=self.owner)
                     finally:
                         self._cancel = None
 
@@ -344,6 +345,8 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
             adapter.gpu_bytes = sum(p.numel() * p.element_size() for p in list(model.parameters()) + list(model.buffers())) + 8 * 1024**3
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             adapter.model = model.eval()
+            from api.inference.context import configure_context
+            configure_context(adapter, None)
             adapter._restore(cancel_event)
             check_cancel(cancel_event)
         return adapter

@@ -145,7 +145,8 @@ class QwenAdapter:
                     self._cancel = cancel_event
                     try:
                         return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=4096)
+                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                       resources=self.resources, owner=self.owner)
                     finally:
                         self._cancel = None
 
@@ -258,6 +259,8 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
             # Exact resident tensors plus cache and bounded request scratch.
             adapter.gpu_bytes = sum(t.numel() * t.element_size() for t in list(model.parameters()) + list(model.buffers())) + cache_bytes + 2 * 1024**3
             model.eval()
+            from api.inference.context import configure_context
+            configure_context(adapter, None)
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             check_cancel(cancel_event)
             adapter._restore(cancel_event)

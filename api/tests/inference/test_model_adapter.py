@@ -50,7 +50,7 @@ class ModelAdapterTests(unittest.TestCase):
     def test_generation_uses_prefill_then_cached_single_token_and_stops(self):
         calls = []
         class Model:
-            config = SimpleNamespace(eos_token_id=9)
+            config = SimpleNamespace(eos_token_id=9, max_position_embeddings=4096)
             def __call__(self, **kwargs):
                 calls.append(kwargs)
                 logits = torch.zeros(1, 1, 10)
