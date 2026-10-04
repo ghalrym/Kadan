@@ -150,10 +150,17 @@ class ModelAdapterTests(unittest.TestCase):
             data['quantization_config'] = {'quant_method': 'mxfp4'}
             (path / 'config.json').write_text(json.dumps(data))
             resources = Mock()
-            with patch('api.inference.model_adapter.ExpertCache', side_effect=lambda bank, size, device: ExpertCache(bank, size, 'cpu')), \
+            resources.capacity = SimpleNamespace(device_bytes={0: 2**30})
+            with patch('api.inference.model_adapter.ExpertCache', side_effect=lambda bank, size, device, **kwargs: ExpertCache(bank, size, 'cpu')) as cache_factory, \
                  patch.object(GptOssAdapter, '_restore'), patch('transformers.AutoTokenizer.from_pretrained', return_value=Mock()):
                 adapter = GptOssAdapter(SimpleNamespace(id='medium'), path, resources, 'cuda:0')
             try:
+                self.assertIs(cache_factory.call_args.kwargs['resources'], resources)
+                self.assertEqual(cache_factory.call_args.args[1], resources.capacity.device_bytes[0])
+                self.assertIn(':experts', cache_factory.call_args.kwargs['owner'])
+                resident = sum(t.numel() * t.element_size() for t in
+                    list(adapter.model.parameters()) + list(adapter.model.buffers()))
+                self.assertEqual(adapter.device_budget, resident + 16 * 1024**2)
                 self.assertFalse(any(tensor.is_meta for tensor in adapter.model.parameters()))
                 self.assertFalse(any(tensor.is_meta for tensor in adapter.model.buffers()))
                 self.assertFalse(any('.experts.' in name for name, _ in adapter.model.named_parameters()))
