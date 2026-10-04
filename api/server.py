@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
 )
 
 for router in (

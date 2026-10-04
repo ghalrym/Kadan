@@ -161,6 +161,7 @@ export type {
   SpeechHistoryResponse,
   SpeechRequest,
   SpeechResponse,
+  SpeechUnavailable,
   TranscribeAudioData,
   TranscribeAudioError,
   TranscribeAudioErrors,

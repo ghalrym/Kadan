@@ -91,6 +91,7 @@
         "type": "object"
       },
       "ClonedVoice": {
+        "additionalProperties": false,
         "properties": {
           "mode": {
             "const": "clone",
@@ -98,7 +99,8 @@
             "type": "string"
           },
           "sample": {
-            "description": "Voice sample reference; not fetched in mock mode",
+            "description": "Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.",
+            "maxLength": 2000,
             "minLength": 1,
             "title": "Sample",
             "type": "string"
@@ -329,8 +331,10 @@
         "type": "object"
       },
       "DescribedVoice": {
+        "additionalProperties": false,
         "properties": {
           "description": {
+            "maxLength": 2000,
             "minLength": 1,
             "title": "Description",
             "type": "string"
@@ -1087,6 +1091,19 @@
         "title": "SpeechResponse",
         "type": "object"
       },
+      "SpeechUnavailable": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "SpeechUnavailable",
+        "type": "object"
+      },
       "TranscriptionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1451,7 +1468,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1530,6 +1547,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechUnavailable"
+                }
+              }
+            },
+            "description": "No speech provider is configured"
           }
         },
         "summary": "Generate Speech",

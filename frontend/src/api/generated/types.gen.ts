@@ -69,7 +69,7 @@ export type ClonedVoice = {
   /**
    * Sample
    *
-   * Voice sample reference; not fetched in mock mode
+   * Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.
    */
   sample: string
 }
@@ -639,6 +639,16 @@ export type SpeechResponse = {
 }
 
 /**
+ * SpeechUnavailable
+ */
+export type SpeechUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
+}
+
+/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
@@ -894,6 +904,10 @@ export type GenerateSpeechErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * No speech provider is configured
+   */
+  503: SpeechUnavailable
 }
 
 export type GenerateSpeechError =
