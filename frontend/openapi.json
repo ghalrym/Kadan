@@ -201,6 +201,9 @@
                 "type": "string"
               },
               {
+                "type": "integer"
+              },
+              {
                 "type": "number"
               },
               {
@@ -290,11 +293,13 @@
                 }
               ]
             },
+            "maxItems": 8,
             "minItems": 1,
             "title": "Questions",
             "type": "array"
           },
           "state": {
+            "maxLength": 8000,
             "minLength": 1,
             "title": "State",
             "type": "string"

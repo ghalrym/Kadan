@@ -1,106 +1,185 @@
-import { ActionButton, Field, SegmentedControl } from './Controls'
-import type { DecisionQuestion } from '../data/playground'
+import type { DecisionRequest } from '../api/generated'
+export type Question = DecisionRequest['questions'][number]
 
 export default function DecisionQuestionCard({
   question,
   index,
+  onChange,
+  onRemove,
 }: {
-  question: DecisionQuestion
+  question: Question
   index: number
+  onChange: (value: Question) => void
+  onRemove: () => void
 }) {
   return (
     <article className="question-card">
       <header className="question-header">
-        <h3>Question {index + 1}</h3>
-        <SegmentedControl
-          label="Question type"
-          options={['Choice', 'Score', 'Noul']}
-          selected={question.type}
-        />
-        <ActionButton variant="text" className="push-right">
+        <h3>
+          Question {index + 1} · {question.type}
+        </h3>
+        <button
+          type="button"
+          className="button button--text push-right"
+          onClick={onRemove}
+        >
           Remove
-        </ActionButton>
+        </button>
       </header>
-      <div className="question-body">
-        <div className="question-fields">
-          <Field label="Key" value={question.key} mono />
-          <Field label="Instructions" value={question.instructions} />
-        </div>
+      <div className="question-body stack">
+        <label>
+          Key
+          <input
+            className="input"
+            value={question.key}
+            onChange={(e) => onChange({ ...question, key: e.target.value })}
+            required
+          />
+        </label>
+        <label>
+          Instructions
+          <input
+            className="input"
+            value={question.instructions}
+            onChange={(e) =>
+              onChange({ ...question, instructions: e.target.value })
+            }
+            required
+          />
+        </label>
         {question.type === 'Choice' && (
-          <div className="stack compact">
-            <span className="field-label">Options</span>
-            <div className="option-row eyebrow">
-              <span>Key</span>
-              <span>Description</span>
-              <span />
-            </div>
-            {question.options.map((option) => (
-              <div className="option-row" key={option.key}>
+          <>
+            <span>Options</span>
+            {question.options.map((option, i) => (
+              <div className="option-row" key={i}>
                 <input
-                  className="input mono"
+                  className="input"
+                  aria-label={`Option ${i + 1} key`}
                   value={option.key}
-                  readOnly
-                  aria-label={`${option.key} key`}
+                  required
+                  onChange={(e) =>
+                    onChange({
+                      ...question,
+                      options: question.options.map((o, j) =>
+                        j === i ? { ...o, key: e.target.value } : o,
+                      ),
+                    })
+                  }
                 />
                 <input
                   className="input"
+                  aria-label={`Option ${i + 1} description`}
                   value={option.description}
-                  readOnly
-                  aria-label={`${option.key} description`}
+                  onChange={(e) =>
+                    onChange({
+                      ...question,
+                      options: question.options.map((o, j) =>
+                        j === i ? { ...o, description: e.target.value } : o,
+                      ),
+                    })
+                  }
                 />
-                <ActionButton variant="text" label={`Remove ${option.key}`}>
-                  ✕
-                </ActionButton>
+                <button
+                  type="button"
+                  className="button"
+                  aria-label={`Remove option ${i + 1}`}
+                  onClick={() =>
+                    onChange({
+                      ...question,
+                      options: question.options.filter((_, j) => j !== i),
+                    })
+                  }
+                >
+                  ×
+                </button>
               </div>
             ))}
-            <div>
-              <ActionButton>+ Option</ActionButton>
-            </div>
-          </div>
+            <button
+              type="button"
+              className="button"
+              onClick={() =>
+                onChange({
+                  ...question,
+                  options: [...question.options, { key: '', description: '' }],
+                })
+              }
+            >
+              + Option
+            </button>
+          </>
         )}
         {question.type === 'Score' && (
-          <div className="stack compact">
-            <span className="field-label">Rubric levels</span>
-            <div className="rubric-row eyebrow">
-              <span>Level</span>
-              <span>Description · lowest to highest</span>
-              <span />
-            </div>
-            {question.levels.map((level, levelIndex) => (
-              <div className="rubric-row" key={level}>
-                <span className="level-number mono">{levelIndex}</span>
+          <>
+            <span>
+              Rubric levels, lowest to highest. Answers use the zero-based level
+              index.
+            </span>
+            {question.levels.map((level, i) => (
+              <div className="rubric-row" key={i}>
+                <span>{i}</span>
                 <input
                   className="input"
+                  required
+                  aria-label={`Level ${i}`}
                   value={level}
-                  readOnly
-                  aria-label={`Level ${levelIndex} description`}
+                  onChange={(e) =>
+                    onChange({
+                      ...question,
+                      levels: question.levels.map((v, j) =>
+                        j === i ? e.target.value : v,
+                      ),
+                    })
+                  }
                 />
-                <ActionButton
-                  variant="text"
-                  label={`Remove level ${levelIndex}`}
+                <button
+                  type="button"
+                  className="button"
+                  aria-label={`Remove level ${i}`}
+                  onClick={() =>
+                    onChange({
+                      ...question,
+                      levels: question.levels.filter((_, j) => j !== i),
+                    })
+                  }
                 >
-                  ✕
-                </ActionButton>
+                  ×
+                </button>
               </div>
             ))}
-            <div>
-              <ActionButton>+ Level</ActionButton>
-            </div>
-          </div>
+            <button
+              type="button"
+              className="button"
+              onClick={() =>
+                onChange({ ...question, levels: [...question.levels, ''] })
+              }
+            >
+              + Level
+            </button>
+          </>
         )}
         {question.type === 'Noul' && (
-          <div className="two-columns">
-            <Field
-              label="True when · optional"
-              placeholder="Describe the true case"
-              value={question.trueWhen}
-            />
-            <Field
-              label="False when · optional"
-              placeholder="Describe the false case"
-              value={question.falseWhen}
-            />
-          </div>
+          <>
+            <label>
+              True when (optional)
+              <input
+                className="input"
+                value={question.trueWhen ?? ''}
+                onChange={(e) =>
+                  onChange({ ...question, trueWhen: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              False when (optional)
+              <input
+                className="input"
+                value={question.falseWhen ?? ''}
+                onChange={(e) =>
+                  onChange({ ...question, falseWhen: e.target.value })
+                }
+              />
+            </label>
+          </>
         )}
       </div>
     </article>

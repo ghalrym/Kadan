@@ -35,6 +35,6 @@ DecisionQuestion = Annotated[ChoiceQuestion | ScoreQuestion | NoulQuestion, Fiel
 class DecisionAnswer(BaseModel):
     key: str
     type: Literal["Choice", "Score", "Noul"]
-    value: str | float | bool
+    value: str | int | float | bool
     confidence: float | None = Field(default=None, ge=0, le=1)
     probabilities: dict[str, float] | None = None

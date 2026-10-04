@@ -120,7 +120,7 @@ export type DecisionAnswer = {
   /**
    * Value
    */
-  value: string | number | boolean
+  value: string | number | number | boolean
 }
 
 /**
