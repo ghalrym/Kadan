@@ -12,6 +12,9 @@ class TranscriptionRequest(BaseModel):
     @field_validator("audio")
     @classmethod
     def validate_reference(cls, value: str) -> str:
+        """Trim the opaque audio reference and reject blank values with ValueError.
+
+        Validation never resolves a URL, reads a file or uploads audio."""
         value = value.strip()
         if not value:
             raise ValueError("Audio reference must not be blank")
@@ -28,6 +31,10 @@ class TranscriptionUnavailable(BaseModel):
 
 @router.post("", operation_id="transcribeAudio", responses={503: {"model": TranscriptionUnavailable}})
 def transcribe_audio(body: TranscriptionRequest) -> TranscriptionResponse:
+    """Return HTTP 503 for validated requests while transcription is unconfigured.
+
+    Neither audio fetching/recording/upload nor inference occurs; formatting is
+    accepted as future-provider input, not applied to a fabricated transcript."""
     raise HTTPException(
         status_code=503,
         detail="Transcription is unavailable: no speech-to-text provider is configured. Audio references are not fetched; recording and file upload are not supported yet.",

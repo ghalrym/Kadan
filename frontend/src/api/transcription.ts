@@ -3,6 +3,11 @@ import type { TranscriptionRequest } from './generated/types.gen'
 
 export const MAX_AUDIO_REFERENCE_LENGTH = 2048
 
+/**
+ * Validate and submit an opaque audio reference plus the formatting preference.
+ * Forward the caller signal; reject unavailable providers, HTTP/network failures
+ * and blank/malformed transcripts. No recording, upload or reference fetch occurs here.
+ */
 export async function requestTranscription(audio: string, formatting: boolean, signal: AbortSignal): Promise<string> {
   const reference = audio.trim()
   if (!reference || reference.length > MAX_AUDIO_REFERENCE_LENGTH) {
