@@ -79,8 +79,14 @@ Chat forwards the full nonblank message text and conversation history without fi
 character or turn limits. Capacity is determined by the backend’s loaded model and
 configured token context; API context errors are shown in the chat page.
 
-Set a per-model context limit in Settings, or leave it blank to use that
-checkpoint's architecture maximum. Configuration persists across restarts.
+Settings offers 8k, 16k, 32k, 64k, 128k, 500k and 1M context presets. The
+first five map to 8,192–131,072 tokens; 500k and 1M mean 500,000 and
+1,000,000 tokens. Unset models default to 65,536 tokens. Explicit saved numbers
+and legacy null (architecture maximum) are preserved, including custom values
+shown as an extra dropdown option. Options above a verified checkpoint limit
+are disabled and backend validation rejects them without clamping. Before a
+checkpoint is downloaded its limit is unknown; loading validates it again.
+Configuration persists across restarts.
 Unload the active model before changing context. A saved context is not a memory
 allocation or a guarantee that a request of that size fits on the target hardware.
 

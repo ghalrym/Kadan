@@ -16,13 +16,48 @@ class ContextTests(unittest.TestCase):
         self.manager = ModelManager(Path(self.directory.name))
 
     def test_defaults_and_persistence_across_restart(self):
-        self.assertIsNone(self.manager.configured_context('small'))
+        self.assertEqual(self.manager.configured_context('small'), 65536)
         self.manager.set_context('small', 131072)
         restarted = ModelManager(self.manager.root)
         self.assertEqual(restarted.configured_context('small'), 131072)
-        self.assertIsNone(restarted.configured_context('medium'))
+        self.assertEqual(restarted.configured_context('medium'), 65536)
         restarted.set_context('small', None)
         self.assertIsNone(ModelManager(self.manager.root).configured_context('small'))
+
+    def test_legacy_custom_and_null_settings_are_preserved_without_rewriting(self):
+        path = self.manager.root / 'context.json'
+        original = '{"small":4096,"medium":null}'
+        path.write_text(original)
+        restarted = ModelManager(self.manager.root)
+        self.assertEqual(restarted.configured_context('small'), 4096)
+        self.assertIsNone(restarted.configured_context('medium'))
+        self.assertEqual(restarted.configured_context('large'), 65536)
+        self.assertEqual([model['context_limit'] for model in restarted.status()['models']], [4096, None, 65536])
+        self.assertEqual(path.read_text(), original)
+
+    def test_default_is_never_silently_clamped_to_a_smaller_verified_limit(self):
+        with patch.object(self.manager, 'architecture_context', return_value=32768):
+            self.assertEqual(self.manager.configured_context('small'), 65536)
+            self.assertEqual(self.manager.status()['models'][0]['context_limit'], 65536)
+            with self.assertRaisesRegex(ValueError, 'architecture maximum'):
+                self.manager.set_context('small', 65536)
+            self.assertFalse((self.manager.root / 'context.json').exists())
+            self.manager.set_context('small', 32768)
+            self.assertEqual(self.manager.configured_context('small'), 32768)
+
+    def test_api_rejects_oversized_presets_and_keeps_saved_custom_value(self):
+        self.manager.set_context('small', 4096)
+        with patch('api.routes.v1.models.model_manager', self.manager), \
+                patch.object(self.manager, 'architecture_context', return_value=131072):
+            client = TestClient(app)
+            for value in (500000, 1000000):
+                response = client.put('/v1/models/small/context', json={'context_limit': value})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(self.manager.configured_context('small'), 4096)
+            for value in (8192, 16384, 32768, 65536, 131072):
+                response = client.put('/v1/models/small/context', json={'context_limit': value})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(ModelManager(self.manager.root).configured_context('small'), value)
 
     def test_positive_strict_integer_and_busy(self):
         for value in [0, -1, True, 1.5, '4096', 2**31]:

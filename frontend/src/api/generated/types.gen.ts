@@ -352,6 +352,8 @@ export type ModelStatus = {
   architecture_context_limit: number | null
   /**
    * Context Limit
+   *
+   * Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.
    */
   context_limit: number | null
   /**

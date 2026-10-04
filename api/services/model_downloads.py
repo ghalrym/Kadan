@@ -23,6 +23,9 @@ from pydantic import TypeAdapter, ValidationError
 from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset
 
 
+DEFAULT_CONTEXT_LIMIT = 65536
+
+
 class BusyError(ValueError):
     pass
 
@@ -192,12 +195,12 @@ class ModelManager:
         return value
 
     def configured_context(self, model_id: str) -> int | None:
-        """Return the saved token limit, or None for the architecture default.
+        """Return a saved limit (including explicit None), or 64k when unset.
 
         Validates the model ID and reads persistence under the manager lock."""
         with self._lock:
             self._catalog_entry(model_id)
-            return self._read_context_limits().get(model_id)
+            return self._read_context_limits().get(model_id, DEFAULT_CONTEXT_LIMIT)
 
     def architecture_context(self, model_id: str) -> int | None:
         """Read the maximum context from a completed checkpoint's configuration.
@@ -219,7 +222,7 @@ class ModelManager:
         return maximum
 
     def set_context(self, model_id: str, context_limit: int | None) -> None:
-        """Atomically persist a token limit for a catalog model; None means default.
+        """Atomically persist a token limit; explicit None keeps architecture-maximum mode.
 
         Rejects invalid/excessive limits and raises BusyError while the runtime
         holds selection. Validation and replacement share the manager lock."""
@@ -261,7 +264,7 @@ class ModelManager:
                     'license': entry.license, 'estimated_bytes': entry.estimated_bytes,
                     'status': status, 'downloaded_bytes': job.downloaded_bytes,
                     'total_bytes': job.total_bytes, 'error': error,
-                    'context_limit': context_limits.get(entry.id),
+                    'context_limit': context_limits.get(entry.id, DEFAULT_CONTEXT_LIMIT),
                     'architecture_context_limit': self.architecture_context(entry.id),
                 })
             return {'models': models, 'selected_model_id': self._read_selected_model_id()}
