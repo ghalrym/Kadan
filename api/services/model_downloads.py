@@ -95,6 +95,10 @@ class WeightIndex(TypedDict):
 
 
 def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
+    """Fetch and validate allowed assets for a catalog entry's pinned revision.
+
+    Returns size/digest metadata without downloading weights. Network errors and
+    invalid upstream metadata propagate; duplicate or missing assets fail closed."""
     metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
     with urlopen(metadata_url, timeout=30) as response:
         checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
@@ -125,6 +129,10 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
 
 class ModelManager:
     def __init__(self, root: Path | None = None) -> None:
+        """Initialize in-memory coordination for a local checkpoint directory.
+
+        Uses KADAN_MODEL_DIR when root is omitted. Resolves paths but creates no
+        files or threads until an operation explicitly needs them."""
         self.root = (root or Path(os.environ.get('KADAN_MODEL_DIR', '~/.local/share/kadan/models')).expanduser()).resolve()
         self._lock = threading.RLock()
         self._jobs: dict[str, DownloadJob] = {}
@@ -133,14 +141,21 @@ class ModelManager:
         self._in_use = False
 
     def _catalog_entry(self, model_id: str) -> CatalogEntry:
+        """Resolve an approved model ID; raise ValueError for unknown IDs."""
         if model_id not in CATALOG:
             raise ValueError('Unknown catalog model')
         return CATALOG[model_id]
 
     def _checkpoint_directory(self, entry: CatalogEntry) -> Path:
+        """Return the immutable destination path for this model and revision."""
         return self.root / f'{entry.id}-{entry.revision}'
 
     def _checkpoint_complete(self, entry: CatalogEntry) -> bool:
+        """Check the completion marker and recorded file sizes without rehashing.
+
+        Missing files, invalid markers, symlinks and size mismatches return False.
+        Same-size content changes are not detected here; integrity hashes are
+        verified during download, not on each status or selection check."""
         path = self._checkpoint_directory(entry)
         try:
             marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
@@ -152,6 +167,7 @@ class ModelManager:
             return False
 
     def _read_selected_model_id(self) -> str | None:
+        """Return the persisted catalog ID, or None for absent/invalid selection."""
         try:
             selection = json.loads((self.root / 'selection.json').read_text())
             model_id = selection['model_id']
@@ -160,6 +176,10 @@ class ModelManager:
             return None
 
     def _read_context_limits(self) -> dict[str, int | None]:
+        """Read per-model context overrides without mutating the store.
+
+        An absent file means no overrides. Invalid values raise ValueError;
+        unreadable files propagate OSError rather than silently resetting limits."""
         try:
             value = json.loads((self.root / 'context.json').read_text())
         except FileNotFoundError:
@@ -172,11 +192,18 @@ class ModelManager:
         return value
 
     def configured_context(self, model_id: str) -> int | None:
+        """Return the saved token limit, or None for the architecture default.
+
+        Validates the model ID and reads persistence under the manager lock."""
         with self._lock:
             self._catalog_entry(model_id)
             return self._read_context_limits().get(model_id)
 
     def architecture_context(self, model_id: str) -> int | None:
+        """Read the maximum context from a completed checkpoint's configuration.
+
+        Returns None before download or when no positive maximum is declared.
+        Malformed configuration raises ValueError; filesystem errors propagate."""
         entry = self._catalog_entry(model_id)
         if not self._checkpoint_complete(entry):
             return None
@@ -192,6 +219,10 @@ class ModelManager:
         return maximum
 
     def set_context(self, model_id: str, context_limit: int | None) -> None:
+        """Atomically persist a token limit for a catalog model; None means default.
+
+        Rejects invalid/excessive limits and raises BusyError while the runtime
+        holds selection. Validation and replacement share the manager lock."""
         with self._lock:
             self._catalog_entry(model_id)
             if self._in_use:
@@ -209,6 +240,11 @@ class ModelManager:
             temporary.replace(self.root / 'context.json')
 
     def status(self) -> ModelsStatus:
+        """Return catalog, download, selection, and context state under one lock.
+
+        Rechecks checkpoint completeness without modifying jobs. Context-file and
+        checkpoint-configuration errors propagate; an unreadable or invalid
+        saved selection is represented as no selection."""
         with self._lock:
             context_limits = self._read_context_limits()
             models: list[ModelStatus] = []
@@ -231,6 +267,10 @@ class ModelManager:
             return {'models': models, 'selected_model_id': self._read_selected_model_id()}
 
     def get_selected(self) -> tuple[CatalogEntry, Path]:
+        """Return the selected catalog entry and absolute completed directory.
+
+        Raises ValueError when nothing valid is selected or files are incomplete.
+        This read does not reserve the model; use acquire_runtime_model to load."""
         with self._lock:
             selected = self._read_selected_model_id()
             if not selected:
@@ -241,6 +281,10 @@ class ModelManager:
             return entry, self._checkpoint_directory(entry)
 
     def acquire_runtime_model(self) -> tuple[CatalogEntry, Path]:
+        """Reserve selection for loading and return its entry and local directory.
+
+        Raises BusyError for a second lease and ValueError for invalid selection.
+        The caller must release the lease after unload or a failed load."""
         with self._lock:
             if self._in_use:
                 raise BusyError('A model is already loaded or loading; unload it first')
@@ -249,10 +293,17 @@ class ModelManager:
             return selected
 
     def release_runtime_model(self) -> None:
+        """Release the runtime selection lease under the lock; repeated calls are safe.
+
+        Does not unload tensors itself. The caller owns runtime cleanup."""
         with self._lock:
             self._in_use = False
 
     def select(self, model_id: str) -> None:
+        """Atomically persist selection of a completely downloaded catalog model.
+
+        Raises BusyError while a runtime lease is held, ValueError for unknown or
+        incomplete models, and OSError when persistence fails. Does not load it."""
         with self._lock:
             if self._in_use:
                 raise BusyError('Unload the running model before changing selection')
@@ -265,6 +316,11 @@ class ModelManager:
             temporary.replace(self.root / 'selection.json')
 
     def start(self, model_id: str) -> None:
+        """Start one background download after acquiring the store's OS writer lock.
+
+        Rejects unknown IDs, concurrent jobs, and completed checkpoints. Returns
+        after thread startup, not download completion; progress/errors use status.
+        Failed startup closes the writer lease. Existing model files are immutable."""
         with self._lock:
             entry = self._catalog_entry(model_id)
             if self._thread and self._thread.is_alive():
@@ -292,6 +348,10 @@ class ModelManager:
                 raise
 
     def cancel(self, model_id: str) -> None:
+        """Request cooperative cancellation of this model's active download.
+
+        Raises BusyError if no matching job is active. The worker checks between
+        reads and before publication; cancellation does not delete complete models."""
         with self._lock:
             self._catalog_entry(model_id)
             job = self._jobs.get(model_id)
@@ -301,6 +361,13 @@ class ModelManager:
             self._cancel.set()
 
     def _download(self, entry: CatalogEntry, lease: IO[str]) -> None:
+        """Download, verify, and atomically publish one pinned checkpoint.
+
+        Owns the supplied filesystem lease until cleanup. Writes only staging
+        files until size/digest/index validation succeeds; job updates and final
+        publication use the manager lock so a cancellation accepted before
+        publication cannot be recorded as a successful download.
+        Records failures in the job, removes staging, and always closes the lease."""
         stage = self.root / f'.{entry.id}.partial'
         try:
             if stage.exists():
