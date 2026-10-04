@@ -37,7 +37,7 @@ The inference service uses host-RAM expert offload and a GPU cache on one select
 GPU; it does not pool two cards' VRAM. Source modules in `api/inference/` describe
 ownership and execution invariants alongside the implementation.
 GPU installation, memory fit and inference remain unvalidated on target hardware.
-The Compose API image below supports downloads but does not include inference dependencies.
+The standard API installation and Compose image include native inference dependencies.
 
 ![Kadan request dashboard showing AI requests, latency, and GPU and system memory usage](docs/images/requests.png)
 
@@ -45,8 +45,10 @@ The Compose API image below supports downloads but does not include inference de
 
 ## Setup with Docker Compose
 
-Install Docker with Docker Compose and run these commands from the repository
-root.
+On a Linux NVIDIA GPU host, install Docker with Docker Compose, a driver compatible
+with CUDA 12.8 and NVIDIA Container Toolkit. Run these commands from the repository
+root. The API image includes the CUDA-enabled PyTorch wheel and pinned inference
+dependencies; Compose exposes the GPUs, and Kadan uses `KADAN_GPU=0` by default.
 
 1. Build and start the services:
 
@@ -56,6 +58,7 @@ root.
 
 2. Open the app at [http://localhost:5173](http://localhost:5173).
    API docs are at [http://localhost:8000/docs](http://localhost:8000/docs).
+   In Settings, download a model, choose its context and click Load.
 
 3. Check service status or follow startup logs:
 
@@ -72,17 +75,18 @@ root.
 
 ## Native model service
 
-The API-only Compose image does not include inference dependencies. On a target
-Linux GPU host, create a separate environment and install a PyTorch 2.11.0 CUDA
-wheel compatible with the host driver, then the pinned remaining requirements:
+For a native installation on a Linux NVIDIA GPU host, the single requirements
+file includes the complete API and inference runtime. Git is needed to install
+the pinned Transformers source. The host driver must support the installed
+PyTorch CUDA build; drivers and physical GPU memory cannot be bundled by Kadan.
 
 ```sh
-python3 -m venv .venv-inference
-# Install the appropriate torch==2.11.0 CUDA wheel first.
-.venv-inference/bin/pip install -r api/requirements.txt -r api/requirements-runtime.txt
+python3 -m venv .venv
+.venv/bin/pip install -r api/requirements.txt
+.venv/bin/python -m api.inference.check_install
 export KADAN_GPU=0
 export KADAN_MODEL_DIR=/path/to/model/storage
-.venv-inference/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
+.venv/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 Do not run multiple API workers or use `--reload` with a loaded model. The

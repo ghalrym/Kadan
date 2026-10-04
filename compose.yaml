@@ -34,6 +34,14 @@ services:
     environment:
       <<: *database_environment
       KADAN_MODEL_DIR: /var/lib/kadan/models
+      KADAN_GPU: ${KADAN_GPU:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
       - model_data:/var/lib/kadan/models
     depends_on:
