@@ -4,6 +4,28 @@ Static React + TypeScript implementation of `../design-work/Kadan Dashboard.html
 
 ## Development
 
+From the repository root, start the frontend in Docker:
+
+```sh
+docker compose up -d frontend
+```
+
+Open `http://localhost:5173`. The container mounts `frontend/` directly, and Vite
+polls for file changes to provide hot reloading. Container dependencies live in a
+separate Docker volume, so they do not overwrite your local `node_modules`.
+The container runs `npm ci` at startup using the committed lockfile.
+
+```sh
+docker compose logs -f frontend   # Follow startup and dev-server logs
+docker compose restart frontend # Reinstall after package/lockfile changes
+docker compose down             # Stop the services
+```
+
+Stop any locally running Vite server before starting Docker; both use port 5173.
+Only the frontend is configured in Compose for now.
+
+To run directly on your machine instead:
+
 ```sh
 cd frontend
 npm install
