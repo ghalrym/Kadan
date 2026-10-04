@@ -25,14 +25,14 @@ ROOT = '/repos/' + REPOSITORY
 
 # One-time, reviewed migration only. No dispatch input can choose a base or SHA.
 _MIGRATION_ROWS = (
-    (4, 'decisions-api', '35ddcc21dc8d3139c14b25dbc17896b1521b32d2'),
-    (5, 'images-api', '3c7ff32f02ec67cff67b9eef65e2ba1e136f7d0b'),
-    (6, 'video-api', '3557a2e6a9108a920f35794a7a740c2fe7000855'),
-    (7, 'speech-api', '3688f9d00d8476142a43b33ef719e62ccd3bd4b6'),
-    (8, 'transcription-api', '1916c653d65ca7473c89e01d74dbf0b8ebd396fc'),
-    (9, 'api-state', '12fef0b057f30e48e346b01a15296792843477be'),
-    (10, 'api-access', '2627ae3c64bb6130822cdecfce7f81074266521d'),
-    (11, 'monitoring-api', '21ee2f69ffa3399c2a16c9451036a3bdc07c071e'),
+    (4, 'decisions-api', '25c08620276d0fc6115e555e7e1d1d2c45982ff1'),
+    (5, 'images-api', 'c6e8428d6e5c87ff56c47b8602855f755a1b3b90'),
+    (6, 'video-api', '6da2a4b0f5c80727eb8a9d1d6596e8b1bdd88ac2'),
+    (7, 'speech-api', 'cd4f7098e1cb0908049b89ca370e013f600684c6'),
+    (8, 'transcription-api', '7cdc6d4ce510ffd16e7feec97bc5621b8c58bf93'),
+    (9, 'api-state', 'bee7b466f9cc8bb030f76caee908060b96902759'),
+    (10, 'api-access', '02a533608155e4669227c89b91d1652fb900f17e'),
+    (11, 'monitoring-api', '1d1cb1f60f18ab9fb848dc8c5341899bffc45a4b'),
 )
 MIGRATIONS = {}
 for _index, (_number, _name, _sha) in enumerate(_MIGRATION_ROWS):
@@ -41,7 +41,7 @@ for _index, (_number, _name, _sha) in enumerate(_MIGRATION_ROWS):
         original_number=_number, original_head='codex/' + _name, head_sha=_sha,
         original_base='codex/' + _previous[1] if _previous else 'codex/freetoken-runtime',
         base='codex/bot-' + _previous[1] if _previous else 'codex/freetoken-runtime',
-        base_sha=_previous[2] if _previous else 'faff092b0882996b5b2b058b4ce45424c2a1efb6')
+        base_sha=_previous[2] if _previous else 'd2773d4241a264f84d63235650a226c434df47aa')
 
 
 def migration(values):

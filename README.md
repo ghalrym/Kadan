@@ -147,17 +147,17 @@ from trusted `master` regardless of the PR's base.
 
 | Original | New head alias | New base | Exact head SHA |
 | --- | --- | --- | --- |
-| #4 | `codex/bot-decisions-api` | `codex/freetoken-runtime` | `35ddcc21dc8d3139c14b25dbc17896b1521b32d2` |
-| #5 | `codex/bot-images-api` | `codex/bot-decisions-api` | `3c7ff32f02ec67cff67b9eef65e2ba1e136f7d0b` |
-| #6 | `codex/bot-video-api` | `codex/bot-images-api` | `3557a2e6a9108a920f35794a7a740c2fe7000855` |
-| #7 | `codex/bot-speech-api` | `codex/bot-video-api` | `3688f9d00d8476142a43b33ef719e62ccd3bd4b6` |
-| #8 | `codex/bot-transcription-api` | `codex/bot-speech-api` | `1916c653d65ca7473c89e01d74dbf0b8ebd396fc` |
-| #9 | `codex/bot-api-state` | `codex/bot-transcription-api` | `12fef0b057f30e48e346b01a15296792843477be` |
-| #10 | `codex/bot-api-access` | `codex/bot-api-state` | `2627ae3c64bb6130822cdecfce7f81074266521d` |
-| #11 | `codex/bot-monitoring-api` | `codex/bot-api-access` | `21ee2f69ffa3399c2a16c9451036a3bdc07c071e` |
+| #4 | `codex/bot-decisions-api` | `codex/freetoken-runtime` | `25c08620276d0fc6115e555e7e1d1d2c45982ff1` |
+| #5 | `codex/bot-images-api` | `codex/bot-decisions-api` | `c6e8428d6e5c87ff56c47b8602855f755a1b3b90` |
+| #6 | `codex/bot-video-api` | `codex/bot-images-api` | `6da2a4b0f5c80727eb8a9d1d6596e8b1bdd88ac2` |
+| #7 | `codex/bot-speech-api` | `codex/bot-video-api` | `cd4f7098e1cb0908049b89ca370e013f600684c6` |
+| #8 | `codex/bot-transcription-api` | `codex/bot-speech-api` | `7cdc6d4ce510ffd16e7feec97bc5621b8c58bf93` |
+| #9 | `codex/bot-api-state` | `codex/bot-transcription-api` | `bee7b466f9cc8bb030f76caee908060b96902759` |
+| #10 | `codex/bot-api-access` | `codex/bot-api-state` | `02a533608155e4669227c89b91d1652fb900f17e` |
+| #11 | `codex/bot-monitoring-api` | `codex/bot-api-access` | `1d1cb1f60f18ab9fb848dc8c5341899bffc45a4b` |
 
 The initial base, `codex/freetoken-runtime`, is pinned to
-`faff092b0882996b5b2b058b4ce45424c2a1efb6`. Each later base is pinned to the preceding
+`d2773d4241a264f84d63235650a226c434df47aa`. Each later base is pinned to the preceding
 row's head SHA. New alias branches must point directly to the approved commits:
 no cherry-picking, rebasing, new commits, or changes to historical authorship.
 Original branches remain intact. Equal head and base commits preserve each
