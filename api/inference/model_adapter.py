@@ -192,12 +192,17 @@ class GptOssAdapter:
 
 
 def build_runtime(entry, path, resources, device='cuda:0', cancel_event=None):
+    # All production model families share idle host eviction + lazy rebuilding.
+    # Direct constructors remain useful for architecture-level tensor tests.
+    from api.inference.reloadable import ReloadableAdapter
     if entry.id == 'medium':
-        return GptOssAdapter(entry, path, resources, device, cancel_event)
-    if entry.id == 'small':
+        factory = GptOssAdapter
+    elif entry.id == 'small':
         from api.inference.qwen import build_qwen
-        return build_qwen(entry, path, resources, device, cancel_event)
-    if entry.id == 'large':
+        factory = build_qwen
+    elif entry.id == 'large':
         from api.inference.glm import build_glm
-        return build_glm(entry, path, resources, device, cancel_event)
-    raise ValueError('No Kadan adapter exists for this model')
+        factory = build_glm
+    else:
+        raise ValueError('No Kadan adapter exists for this model')
+    return ReloadableAdapter(factory, entry, path, resources, device, cancel_event)
