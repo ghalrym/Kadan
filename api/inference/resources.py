@@ -9,6 +9,8 @@ lease when they need other GPU residents fully unloaded.
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
+from pathlib import Path, PurePosixPath
+import re
 import threading
 from typing import Callable, Literal
 
@@ -34,23 +36,96 @@ class MemoryCapacity:
     device_bytes: dict[int, int] = field(default_factory=dict)
 
 
-def probe_memory() -> MemoryCapacity:
-    """Available host/CUDA bytes; importing this module never imports torch.
+def _read_text(path: str | Path) -> str:
+    return Path(path).read_text()
 
-    Linux MemAvailable includes reclaimable caches. CUDA absence is represented
-    by an empty device map, not a fabricated GPU budget.
+
+def _cgroup_remaining() -> int | None:
+    """Minimum visible ancestor hard-limit headroom for this Linux process.
+
+    Resolve membership through mountinfo rather than assuming /sys/fs/cgroup.
+    A cgroup namespace can report membership relative to the mounted root.
+    Missing cgroup support falls back to host memory; a known finite limit whose
+    usage cannot be read fails closed (zero headroom). No swap budget is counted.
     """
-    host = 0
     try:
-        with open('/proc/meminfo') as stream:
-            for line in stream:
-                if line.startswith('MemAvailable:'):
-                    host = int(line.split()[1]) * 1024
-                    break
-    except OSError:
+        memberships = []
+        for line in _read_text('/proc/self/cgroup').splitlines():
+            _, controllers, member = line.split(':', 2)
+            if not controllers or 'memory' in controllers.split(','):
+                memberships.append(('cgroup2' if not controllers else 'cgroup', member))
+        mounts = _read_text('/proc/self/mountinfo').splitlines()
+    except (OSError, ValueError):
+        return None
+    remaining = []
+    for line in mounts:
+        try:
+            before, after = line.split(' - ', 1)
+            fields, filesystem = before.split(), after.split()
+            kind = filesystem[0]
+            if kind not in ('cgroup', 'cgroup2'):
+                continue
+            if kind == 'cgroup' and 'memory' not in filesystem[2].split(','):
+                continue
+            # Kernel mountinfo escapes spaces, tabs, newlines, and backslashes.
+            unescape = lambda value: re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+            root = PurePosixPath(unescape(fields[3]))
+            mount = Path(unescape(fields[4]))
+            for membership_kind, member in memberships:
+                if membership_kind != kind:
+                    continue
+                member_path = PurePosixPath(member)
+                if not member_path.is_absolute() or '..' in member_path.parts:
+                    continue
+                try:
+                    relative = member_path.relative_to(root)
+                except ValueError:
+                    # Membership is relative to a cgroup namespace root.
+                    relative = member_path.relative_to('/')
+                current = mount.joinpath(*relative.parts)
+                while True:
+                    limit_file = 'memory.max' if kind == 'cgroup2' else 'memory.limit_in_bytes'
+                    usage_file = 'memory.current' if kind == 'cgroup2' else 'memory.usage_in_bytes'
+                    try:
+                        value = _read_text(current / limit_file).strip()
+                        limit = None if value == 'max' else int(value)
+                    except (OSError, ValueError):
+                        limit = None
+                    # v1 represents unlimited as PAGE_COUNTER_MAX (~2**63).
+                    if limit is not None and limit >= 0 and (kind == 'cgroup2' or limit < 2**60):
+                        try:
+                            usage = int(_read_text(current / usage_file).strip())
+                            remaining.append(max(0, limit - max(0, usage)))
+                        except (OSError, ValueError):
+                            remaining.append(0)
+                    if current == mount:
+                        break
+                    current = current.parent
+        except (ValueError, IndexError):
+            continue
+    return min(remaining) if remaining else None
+
+
+def probe_memory() -> MemoryCapacity:
+    """Available host/CUDA bytes, capped by visible cgroup RAM headroom.
+
+    This is a conservative admission snapshot, not an allocation guarantee:
+    other processes can allocate after probing. Importing this module never
+    imports torch, and absent CUDA never produces a fabricated GPU budget.
+    """
+    host = None
+    try:
+        for line in _read_text('/proc/meminfo').splitlines():
+            if line.startswith('MemAvailable:'):
+                host = max(0, int(line.split()[1]) * 1024)
+                break
+    except (OSError, ValueError, IndexError):
         pass
-    if not host:
+    if host is None:
         host = os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    remaining = _cgroup_remaining()
+    if remaining is not None:
+        host = min(host, remaining)
     devices = {}
     try:
         import torch
@@ -146,6 +221,14 @@ class ResourceManager:
                 and all(sum(item.device_bytes.get(device, 0) for item in self._residents.values()) + size
                         <= self.capacity.device_bytes[device] for device, size in devices.items()))
 
+    def _physical_fits(self, host, devices):
+        if self._probe is None:
+            return True
+        available = self._probe()
+        return host <= available.host_bytes and all(
+            size <= available.device_bytes.get(device, 0) for device, size in devices.items()
+        )
+
     def _evict(self, owner):
         with self._lock:
             state = self._residents.get(owner)
@@ -187,20 +270,36 @@ class ResourceManager:
                               if not state.active and state.evict is not None]
             for candidate in candidates:
                 with self._lock:
-                    if self._fits(host_bytes, devices):
+                    available = self._probe() if self._probe else None
+                    host_short = (sum(item.host_bytes for item in self._residents.values()) + host_bytes
+                                  > self.capacity.host_bytes
+                                  or (available is not None and host_bytes > available.host_bytes))
+                    short_devices = {
+                        device for device, size in devices.items()
+                        if sum(item.device_bytes.get(device, 0) for item in self._residents.values()) + size
+                        > self.capacity.device_bytes[device]
+                        or (available is not None and size > available.device_bytes.get(device, 0))
+                    }
+                    if not host_short and not short_devices:
                         break
+                    state = self._residents.get(candidate)
+                    if state is None or not (
+                        (host_short and state.host_bytes) or any(state.device_bytes.get(device, 0) for device in short_devices)
+                    ):
+                        continue
                 self._cancelled(cancel_event)
-                self._evict(candidate)
+                try:
+                    self._evict(candidate)
+                except ResourceBusy:
+                    # A generation/construction can become active after the
+                    # candidate snapshot; never force it, try another resident.
+                    continue
             with self._lock:
                 if not self._fits(host_bytes, devices):
                     raise ResourceExhausted('Insufficient unreserved RAM/VRAM; active workloads cannot be evicted')
                 self._cancelled(cancel_event)
-                if self._probe:
-                    available = self._probe()
-                    if host_bytes > available.host_bytes or any(
-                        size > available.device_bytes.get(device, 0) for device, size in devices.items()
-                    ):
-                        raise ResourceExhausted('Physical available memory is below the requested reservation')
+                if not self._physical_fits(host_bytes, devices):
+                    raise ResourceExhausted('Physical available memory is below the requested reservation')
                 token = object()
                 self._residents[owner] = _Resident(workload, host_bytes, devices, evict, token)
                 return Reservation(self, owner, token)

@@ -145,3 +145,126 @@ class ResourceTests(unittest.TestCase):
                 self.manager.reserve('invalid', 'llm', host)
         with self.assertRaises(ResourceExhausted):
             self.manager.reserve('missing-gpu', 'llm', device_bytes={2: 1})
+
+
+class CgroupProbeTests(unittest.TestCase):
+    def probe(self, files):
+        from unittest.mock import patch
+        from api.inference.resources import probe_memory
+        def read(path):
+            try:
+                return files[str(path)]
+            except KeyError:
+                raise FileNotFoundError(str(path)) from None
+        with patch('api.inference.resources._read_text', side_effect=read), patch.dict('sys.modules', {'torch': None}):
+            return probe_memory().host_bytes
+
+    def test_v2_nested_ancestor_limits_and_usage(self):
+        files = {'/proc/meminfo': 'MemAvailable: 1000 kB\n',
+                 '/proc/self/cgroup': '0::/parent/child\n',
+                 '/proc/self/mountinfo': '1 0 0:1 / /cg rw - cgroup2 cgroup rw\n',
+                 '/cg/parent/child/memory.max': '500000', '/cg/parent/child/memory.current': '100000',
+                 '/cg/parent/memory.max': '350000', '/cg/parent/memory.current': '200000',
+                 '/cg/memory.max': 'max'}
+        self.assertEqual(self.probe(files), 150000)
+        files['/cg/parent/memory.current'] = '400000'
+        self.assertEqual(self.probe(files), 0)
+
+    def test_mount_root_namespace_and_escaped_mountpoint(self):
+        files = {'/proc/meminfo': 'MemAvailable: 1000 kB\n',
+                 '/proc/self/cgroup': '0::/container/leaf',
+                 '/proc/self/mountinfo': '1 0 0:1 /container /cg\\040space rw - cgroup2 cgroup rw\n',
+                 '/cg space/leaf/memory.max': '2000', '/cg space/leaf/memory.current': '1200'}
+        self.assertEqual(self.probe(files), 800)
+        files['/proc/self/cgroup'] = '0::/leaf'
+        self.assertEqual(self.probe(files), 800)
+        files['/proc/self/cgroup'] = '0::/'
+        files['/cg space/memory.max'] = '1000'
+        files['/cg space/memory.current'] = '300'
+        self.assertEqual(self.probe(files), 700)
+
+    def test_v1_memory_controller_and_unlimited_parent(self):
+        files = {'/proc/meminfo': 'MemAvailable: 1000 kB\n',
+                 '/proc/self/cgroup': '3:cpu:/wrong\n5:memory:/service\n',
+                 '/proc/self/mountinfo': '1 0 0:1 / /mem rw - cgroup cgroup rw,memory\n',
+                 '/mem/service/memory.limit_in_bytes': '6000', '/mem/service/memory.usage_in_bytes': '4500',
+                 '/mem/memory.limit_in_bytes': '9223372036854771712', '/mem/memory.usage_in_bytes': '0'}
+        self.assertEqual(self.probe(files), 1500)
+
+    def test_host_minimum_unlimited_and_no_cgroup_fallback(self):
+        files = {'/proc/meminfo': 'MemAvailable: 2 kB\n', '/proc/self/cgroup': '0::/',
+                 '/proc/self/mountinfo': '1 0 0:1 / /cg rw - cgroup2 cgroup rw\n',
+                 '/cg/memory.max': '100000', '/cg/memory.current': '1'}
+        self.assertEqual(self.probe(files), 2048)
+        files['/cg/memory.max'] = 'max'
+        self.assertEqual(self.probe(files), 2048)
+        del files['/proc/self/mountinfo']
+        self.assertEqual(self.probe(files), 2048)
+        files['/proc/meminfo'] = 'MemAvailable: 0 kB\n'
+        self.assertEqual(self.probe(files), 0)
+
+    def test_finite_limit_with_unreadable_usage_fails_closed(self):
+        files = {'/proc/meminfo': 'MemAvailable: 1000 kB\n', '/proc/self/cgroup': '0::/',
+                 '/proc/self/mountinfo': '1 0 0:1 / /cg rw - cgroup2 cgroup rw\n',
+                 '/cg/memory.max': '1000'}
+        self.assertEqual(self.probe(files), 0)
+
+
+class PhysicalEvictionTests(unittest.TestCase):
+    def test_physical_pressure_evicts_idle_resident_even_when_budget_fits(self):
+        free = [100]
+        manager = ResourceManager(1000, {0: 1000}, probe=lambda: MemoryCapacity(free[0], {0: free[0]}))
+        events = []
+        def cleanup():
+            events.append('evict')
+            free[0] = 100
+        manager.reserve('llm', 'llm', 50, {0: 50}, cleanup)
+        free[0] = 10
+        manager.reserve('image', 'image', 50, {0: 50})
+        self.assertEqual(events, ['evict'])
+        self.assertEqual(set(manager.snapshot()['reservations']), {'image'})
+
+    def test_physical_pressure_cannot_evict_active_or_admit_without_actual_release(self):
+        free = [100]
+        manager = ResourceManager(1000, {0: 1000}, probe=lambda: MemoryCapacity(free[0], {0: free[0]}))
+        events = []
+        resident = manager.reserve('llm', 'llm', 50, {0: 50}, lambda: events.append('evict'))
+        free[0] = 10
+        with resident.lease():
+            with self.assertRaises(ResourceExhausted):
+                manager.reserve('image', 'image', 50, {0: 50})
+        self.assertEqual(events, [])
+        with self.assertRaises(ResourceExhausted):
+            manager.reserve('image', 'image', 50, {0: 50})
+        self.assertEqual(events, ['evict'])
+        self.assertNotIn('image', manager.snapshot()['reservations'])
+
+    def test_busy_candidate_is_skipped_for_alternative_idle_resident(self):
+        free = [100]
+        events = []
+        manager = ResourceManager(1000, {0: 1000}, probe=lambda: MemoryCapacity(1000, {0: free[0]}))
+        def busy():
+            events.append('busy')
+            raise ResourceBusy('construction in progress')
+        def cleanup():
+            events.append('clean')
+            free[0] = 100
+        manager.reserve('busy', 'llm', device_bytes={0: 20}, evict=busy)
+        manager.reserve('idle', 'llm', device_bytes={0: 20}, evict=cleanup)
+        free[0] = 10
+        manager.reserve('image', 'image', device_bytes={0: 50})
+        self.assertEqual(events, ['busy', 'clean'])
+        self.assertIn('busy', manager.snapshot()['reservations'])
+
+    def test_gpu_pressure_does_not_evict_unrelated_host_reservation(self):
+        free = [100]
+        events = []
+        manager = ResourceManager(1000, {0: 1000}, probe=lambda: MemoryCapacity(1000, {0: free[0]}))
+        manager.reserve('host', 'llm', host_bytes=100, evict=lambda: events.append('host'))
+        def cleanup():
+            events.append('device')
+            free[0] = 100
+        manager.reserve('device', 'llm', device_bytes={0: 20}, evict=cleanup)
+        free[0] = 10
+        manager.reserve('image', 'image', device_bytes={0: 50})
+        self.assertEqual(events, ['device'])

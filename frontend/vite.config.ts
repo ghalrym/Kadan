@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/v1': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
+      '/model-lifecycle': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
       '/health': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
       '/openapi.json': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
       '/docs': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
