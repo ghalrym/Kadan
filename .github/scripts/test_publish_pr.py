@@ -225,5 +225,161 @@ class PublisherTests(unittest.TestCase):
             self.assertNotIn(self.values['body'], out.getvalue() + err.getvalue())
 
 
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        PublisherTests.setUp(self)
+        self.values.update(head='codex/bot-images-api', expected_sha=p.MIGRATIONS['codex/bot-images-api']['head_sha'])
+        self.rule = p.MIGRATIONS[self.values['head']]
+        self.original = dict(number=5, state='open', merged_at=None,
+            head=dict(ref=self.rule['original_head'], sha=self.rule['head_sha'], repo=self.repo),
+            base=dict(ref=self.rule['original_base'], sha=self.rule['base_sha'], repo=self.repo))
+        self.pr['head'].update(ref=self.values['head'], sha=self.rule['head_sha'])
+        self.pr['base'].update(ref=self.rule['base'], sha=self.rule['base_sha'])
+        self.existing = []
+        self.comments = {'/issues/5/comments': [], '/pulls/5/comments': [], '/pulls/5/reviews': []}
+        self.refs = {self.values['head']: self.rule['head_sha'], self.rule['base']: self.rule['base_sha'],
+                     self.rule['original_head']: self.rule['head_sha'], self.rule['original_base']: self.rule['base_sha']}
+        self.calls = []
+        self.after_post = None
+        test = self
+        class API:
+            def request(self, method, path, data=None):
+                test.calls.append((method, path, data))
+                parsed = p.urllib.parse.urlsplit(path)
+                path = parsed.path
+                if method == 'POST':
+                    test.assertEqual(path, p.ROOT + '/pulls')
+                    if test.after_post:
+                        test.after_post()
+                    return copy.deepcopy(test.pr)
+                test.assertEqual(method, 'GET')
+                if path == '/installation/repositories':
+                    return test.installation
+                if path.startswith(p.ROOT + '/git/ref/heads/'):
+                    name = p.urllib.parse.unquote(path.removeprefix(p.ROOT + '/git/ref/heads/'))
+                    return dict(ref='refs/heads/' + name, object=dict(type='commit', sha=test.refs.get(name)))
+                if path == p.ROOT + '/pulls':
+                    query = p.urllib.parse.parse_qs(parsed.query)
+                    test.assertEqual(query['base'], [test.rule['base']])
+                    test.assertEqual(query['state'], ['all'])
+                    return copy.deepcopy(test.existing)
+                if path == p.ROOT + '/pulls/' + str(test.rule['original_number']):
+                    return copy.deepcopy(test.original)
+                if path == p.ROOT + '/pulls/42':
+                    return copy.deepcopy(test.pr)
+                if path.removeprefix(p.ROOT) in test.comments:
+                    return copy.deepcopy(test.comments[path.removeprefix(p.ROOT)])
+                raise AssertionError('Unexpected API path: ' + path)
+        self.api = API()
+
+    def test_happy_migration_fixed_base_transparent_body_single_draft(self):
+        self.assertEqual(p.publish(self.api, self.values, self.environ), self.pr['html_url'])
+        writes = [call for call in self.calls if call[0] != 'GET']
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][2]['base'], 'codex/bot-decisions-api')
+        self.assertTrue(writes[0][2]['draft'])
+        self.assertTrue(writes[0][2]['body'].startswith('Replacement draft for original PR https://github.com/ghalrym/Kadan/pull/5.'))
+        self.assertTrue(writes[0][2]['body'].endswith(self.values['body']))
+
+    def test_first_and_last_migration_create_with_pinned_bases(self):
+        for alias in ('codex/bot-decisions-api', 'codex/bot-monitoring-api'):
+            with self.subTest(alias=alias):
+                self.setUp()
+                self.rule = p.MIGRATIONS[alias]
+                self.values.update(head=alias, expected_sha=self.rule['head_sha'])
+                number = self.rule['original_number']
+                self.original.update(number=number)
+                self.original['head'].update(ref=self.rule['original_head'], sha=self.rule['head_sha'])
+                self.original['base'].update(ref=self.rule['original_base'], sha=self.rule['base_sha'])
+                self.pr['head'].update(ref=alias, sha=self.rule['head_sha'])
+                self.pr['base'].update(ref=self.rule['base'], sha=self.rule['base_sha'])
+                self.refs = {alias: self.rule['head_sha'], self.rule['base']: self.rule['base_sha'],
+                             self.rule['original_head']: self.rule['head_sha'], self.rule['original_base']: self.rule['base_sha']}
+                self.comments = {f'/issues/{number}/comments': [], f'/pulls/{number}/comments': [], f'/pulls/{number}/reviews': []}
+                self.assertEqual(p.publish(self.api, self.values, self.environ), self.pr['html_url'])
+                posts = [call for call in self.calls if call[0] == 'POST']
+                self.assertEqual(len(posts), 1)
+                self.assertEqual(posts[0][2]['base'], self.rule['base'])
+                self.assertIn(f'/pull/{number}.', posts[0][2]['body'])
+
+    def test_all_eight_rules_have_fixed_approved_chain(self):
+        self.assertEqual(len(p.MIGRATIONS), 8)
+        previous_base, previous_sha = 'codex/freetoken-runtime', 'ce09eb5c77ee88b9120e42eeee0e77c0431dc22c'
+        for alias, rule in p.MIGRATIONS.items():
+            self.assertEqual(rule['base'], previous_base)
+            self.assertEqual(rule['base_sha'], previous_sha)
+            self.assertEqual(p.target_base(dict(self.values, head=alias, expected_sha=rule['head_sha'])), previous_base)
+            previous_base, previous_sha = alias, rule['head_sha']
+
+    def test_unapproved_alias_or_sha_rejected_before_network(self):
+        for values in (dict(self.values, head='codex/bot-unknown'), dict(self.values, expected_sha='a' * 40)):
+            with self.assertRaises(p.Failure):
+                p.inputs(dict(self.event, inputs=values), self.environ)
+            with self.assertRaises(p.Failure):
+                p.publish(self.api, values, self.environ)
+        self.assertEqual(self.calls, [])
+
+    def test_any_original_or_alias_ref_change_blocks_creation(self):
+        for name in self.refs:
+            with self.subTest(name=name):
+                before = self.refs[name]
+                self.refs[name] = 'b' * 40
+                with self.assertRaises(p.Failure):
+                    p.publish(self.api, self.values, self.environ)
+                self.refs[name] = before
+                self.assertFalse(any(call[0] == 'POST' for call in self.calls))
+
+    def test_original_state_identity_or_sha_change_blocks_creation(self):
+        changes = [('state', 'closed'), ('number', 6), ('merged_at', 'date')]
+        for key, value in changes:
+            before = copy.deepcopy(self.original)
+            self.original[key] = value
+            with self.assertRaises(p.Failure):
+                p.publish(self.api, self.values, self.environ)
+            self.original = before
+        for side in ('head', 'base'):
+            for key, value in [('ref', 'wrong'), ('sha', 'b' * 40), ('repo', {'id': 1})]:
+                before = copy.deepcopy(self.original)
+                self.original[side][key] = value
+                with self.assertRaises(p.Failure):
+                    p.publish(self.api, self.values, self.environ)
+                self.original = before
+        self.assertFalse(any(call[0] == 'POST' for call in self.calls))
+
+    def test_each_discussion_channel_denies_creation(self):
+        for path in self.comments:
+            self.comments[path] = [{'id': 123}]
+            with self.assertRaisesRegex(p.Failure, 'discussion or reviews'):
+                p.publish(self.api, self.values, self.environ)
+            self.comments[path] = []
+        self.assertFalse(any(call[0] == 'POST' for call in self.calls))
+
+    def test_existing_replacement_after_original_closed_is_read_only(self):
+        self.existing = [dict(self.pr, state='closed')]
+        self.original['state'] = 'closed'
+        self.comments['/issues/5/comments'] = [{'id': 123}]
+        self.assertEqual(p.publish(self.api, self.values, self.environ), self.pr['html_url'])
+        self.assertTrue(all(call[0] == 'GET' for call in self.calls))
+        self.assertFalse(any(call[1] == p.ROOT + '/pulls/5' for call in self.calls))
+
+    def test_existing_replacement_changed_sha_denied(self):
+        self.existing = [copy.deepcopy(self.pr)]
+        self.existing[0]['base']['sha'] = 'b' * 40
+        with self.assertRaises(p.Failure):
+            p.publish(self.api, self.values, self.environ)
+        self.assertTrue(all(call[0] == 'GET' for call in self.calls))
+
+    def test_comment_race_after_create_reports_uncertain_without_retry(self):
+        self.after_post = lambda: self.comments['/pulls/5/reviews'].append({'id': 1})
+        with self.assertRaisesRegex(p.Failure, 'outcome uncertain'):
+            p.publish(self.api, self.values, self.environ)
+        self.assertEqual(sum(call[0] == 'POST' for call in self.calls), 1)
+
+    def test_normal_heads_still_target_master(self):
+        self.assertEqual(p.target_base(dict(self.values, head='codex/ordinary')), 'master')
+        self.assertEqual(p.target_base(dict(self.values, head='codex/decisions-api')), 'master')
+
+
 if __name__ == '__main__':
     unittest.main()
