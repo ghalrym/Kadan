@@ -16,10 +16,18 @@ from api.inference.quantization import mxfp4_linear
 class GptOssOffloadedExperts(nn.Module):
     """The GPT-OSS expert equation; routing stays in Transformers' model layer."""
     def __init__(self, layer, cache, cancel_event=None):
+        """Bind a layer to its packed expert cache and optional cancellation event."""
         super().__init__()
         self.layer, self.cache, self.cancel_event = layer, cache, cancel_event
 
     def forward(self, hidden_states, router_indices=None, routing_weights=None):
+        """Evaluate routed GPT-OSS experts for [tokens, hidden] activations.
+
+        Router indices and weights must be [tokens, top_k]. Lease one packed
+        MXFP4 expert at a time, apply interleaved gate/up projections with
+        GPT-OSS clamping and SwiGLU, then accumulate weighted down projections.
+        Return the input shape; cancellation is checked between experts.
+        """
         output = torch.zeros_like(hidden_states)
         for expert in torch.unique(router_indices).tolist():
             check_cancel(self.cancel_event)
@@ -39,6 +47,10 @@ class GptOssOffloadedExperts(nn.Module):
 
 
 def build_gptoss_skeleton(config):
+    """Create the model on meta and rebuild configuration-derived RoPE on CPU.
+
+    No full expert parameter storage is allocated during construction.
+    """
     from transformers import GptOssForCausalLM
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssRotaryEmbedding
     with torch.device('meta'):
@@ -50,7 +62,16 @@ def build_gptoss_skeleton(config):
 
 
 class GptOssAdapter:
+    """Manage native MXFP4 GPT-OSS weights and one-device inference ownership."""
     def __init__(self, entry, path, resources, device, cancel_event=None):
+        """Load local checkpoint tensors and acquire initial CUDA residency.
+
+        Require native GPT-OSS MXFP4 shapes; retain packed experts in a CPU
+        bank and load dense parameters separately. Host admission covers
+        offloaded state, while device and expert cache allocations use shared
+        resources. Reject CPU production use, unknown tensors or incomplete
+        loading; cleanup partial state before re-raising failures.
+        """
         self.resources, self.device = resources, torch.device(device)
         if self.device.type != 'cuda':
             raise ValueError('Production inference requires one CUDA GPU; CPU is for tensor tests only')
@@ -140,6 +161,11 @@ class GptOssAdapter:
             raise
 
     def _restore(self, cancel_event=None):
+        """Acquire device admission and transfer retained dense parameters to CUDA.
+
+        Call without holding the adapter lock because admission may invoke
+        eviction callbacks. Transfer failures clean up residency and propagate.
+        """
         if self.is_resident:
             return
         check_cancel(cancel_event)
@@ -157,6 +183,11 @@ class GptOssAdapter:
             raise
 
     def _evict(self):
+        """Clear the expert cache and move dense state to CPU for reuse.
+
+        Synchronize CUDA before marking the adapter nonresident. The resource
+        manager removes the evicted device reservation after this callback.
+        """
         with self._lock:
             if self.cache is not None:
                 self.cache.clear()
@@ -167,6 +198,12 @@ class GptOssAdapter:
             self.is_resident = False
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None):
+        """Return decoded chat text under host/device leases and request serialization.
+
+        Restore residency before taking the adapter lock, update expert
+        cancellation events, and use the configured context limit and shared
+        request-memory accounting. A closed model raises RuntimeError.
+        """
         if self.model is None:
             raise RuntimeError('Model has been closed')
         # Admission can run eviction callbacks taking adapter locks. Never hold
@@ -182,6 +219,11 @@ class GptOssAdapter:
                     expert_headroom_bytes=self.bank.max_expert_bytes)
 
     def close(self):
+        """Drop model, tokenizer and cache ownership, then release memory reservations.
+
+        Synchronize pending CUDA work before releasing accounting; repeated
+        close calls are safe once the reservations have been cleared.
+        """
         with self._lock:
             if self.cache is not None:
                 self.cache.clear()
@@ -200,6 +242,12 @@ class GptOssAdapter:
 def build_runtime(entry, path, resources, device='cuda:0', cancel_event=None):
     # All production model families share idle host eviction + lazy rebuilding.
     # Direct constructors remain useful for architecture-level tensor tests.
+    """Select the catalog family and return a lazily rebuildable runtime owner.
+
+    All three families share ReloadableAdapter host-eviction behavior and
+    the supplied resource manager. Unknown catalog IDs raise ValueError;
+    this factory does not start an external inference service.
+    """
     from api.inference.reloadable import ReloadableAdapter
     if entry.id == 'medium':
         factory = GptOssAdapter

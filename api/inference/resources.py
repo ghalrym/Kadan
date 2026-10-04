@@ -37,6 +37,7 @@ class MemoryCapacity:
 
 
 def _read_text(path: str | Path) -> str:
+    """Read a kernel accounting file as text without trimming it; file errors propagate."""
     return Path(path).read_text()
 
 
@@ -152,6 +153,9 @@ class _Resident:
 class Reservation:
     """An owner-specific handle; stale handles cannot release a replacement."""
     def __init__(self, manager: 'ResourceManager', owner: str, token: object):
+        """Bind a handle to one manager owner and generation token; stale handles cannot release
+        later reservations.
+        """
         self._manager = manager
         self.owner = owner
         self._token = token
@@ -181,6 +185,9 @@ class Reservation:
 class ResourceManager:
     def __init__(self, host_bytes: int, device_bytes: dict[int, int],
                  probe: Callable[[], MemoryCapacity] | None = None):
+        """Create independent host and per-GPU byte budgets with an optional current-availability
+        probe; this allocates no tensors.
+        """
         self._validate(host_bytes, device_bytes)
         self.capacity = MemoryCapacity(host_bytes, dict(device_bytes))
         self._probe = probe
@@ -193,6 +200,7 @@ class ResourceManager:
 
     @staticmethod
     def _validate(host: int, devices: dict[int, int]):
+        """Reject negative, noninteger byte budgets and invalid GPU indices with ValueError."""
         if type(host) is not int or host < 0:
             raise ValueError('Host budget must be a nonnegative integer')
         if any(type(device) is not int or device < 0 or type(size) is not int or size < 0
@@ -201,6 +209,7 @@ class ResourceManager:
 
     @staticmethod
     def _cancelled(event):
+        """Raise ResourceCancelled if an optional cooperative cancellation event is set."""
         if event is not None and event.is_set():
             raise ResourceCancelled('Resource acquisition cancelled')
 
@@ -208,6 +217,9 @@ class ResourceManager:
     def _transaction(self, event):
         # Cancellation is checked while waiting, rather than blocking forever
         # behind a potentially slow device-release callback.
+        """Serialize admission and eviction, checking cancellation while waiting and always
+        releasing the admission lock.
+        """
         while not self._admission.acquire(timeout=.05):
             self._cancelled(event)
         try:
@@ -217,11 +229,13 @@ class ResourceManager:
             self._admission.release()
 
     def _fits(self, host, devices):
+        """Check logical capacity against current reservations; callers hold the state lock."""
         return (sum(item.host_bytes for item in self._residents.values()) + host <= self.capacity.host_bytes
                 and all(sum(item.device_bytes.get(device, 0) for item in self._residents.values()) + size
                         <= self.capacity.device_bytes[device] for device, size in devices.items()))
 
     def _physical_fits(self, host, devices):
+        """Check fresh probe headroom, or accept when no probe was supplied; callers hold the state lock."""
         if self._probe is None:
             return True
         available = self._probe()
@@ -230,6 +244,9 @@ class ResourceManager:
         )
 
     def _evict(self, owner):
+        """Invoke an inactive owner cleanup outside the state lock. Remove accounting only after
+        success; busy or failed cleanup preserves ownership.
+        """
         with self._lock:
             state = self._residents.get(owner)
             if state is None:
@@ -251,6 +268,10 @@ class ResourceManager:
                 device_bytes: dict[int, int] | None = None,
                 evict: Callable[[], None] | None = None,
                 cancel_event: threading.Event | None = None) -> Reservation:
+        """Return an ownership handle after logical and physical admission. Evict eligible idle
+        owners if needed; reject busy owners, cancellation or insufficient capacity. Callers
+        allocate only afterward and provide callbacks that free actual tensors.
+        """
         devices = dict(device_bytes or {})
         self._validate(host_bytes, devices)
         if not owner or workload not in WORKLOADS:
@@ -305,6 +326,9 @@ class ResourceManager:
                 return Reservation(self, owner, token)
 
     def _release(self, owner, token):
+        """Remove accounting for the matching owner token only; reject release while its leases
+        remain active.
+        """
         with self._lock:
             state = self._residents.get(owner)
             if state is None or state.token is not token:
@@ -350,6 +374,9 @@ class ResourceManager:
                 self._exclusive = None
 
     def snapshot(self) -> dict:
+        """Return a lock-consistent copy of budgets and reservation metadata, not a measurement of
+        allocated tensors.
+        """
         with self._lock:
             return {
                 'host_capacity_bytes': self.capacity.host_bytes,

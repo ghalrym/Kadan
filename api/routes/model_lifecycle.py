@@ -20,11 +20,15 @@ class ModelLifecycleStatus(BaseModel):
 
 @router.get('', operation_id='getModelLifecycleStatus')
 def get_model_lifecycle() -> ModelLifecycleStatus:
+    """Return current model state, context limits and shared-memory accounting without loading a model."""
     return ModelLifecycleStatus(**runtime_manager.status())
 
 
 @router.post('/load', status_code=202, operation_id='loadSelectedModel')
 async def load_selected_model() -> ModelLifecycleStatus:
+    """Accept loading of the selected complete checkpoint and return its initial state; map
+    lifecycle conflicts and validation failures to HTTP errors.
+    """
     try:
         return ModelLifecycleStatus(**await runtime_manager.load())
     except RuntimeFailure as exc:
@@ -33,4 +37,5 @@ async def load_selected_model() -> ModelLifecycleStatus:
 
 @router.post('/unload', operation_id='unloadSelectedModel')
 async def unload_selected_model() -> ModelLifecycleStatus:
+    """Request cooperative cancellation and wait for model cleanup before returning unloaded state."""
     return ModelLifecycleStatus(**await runtime_manager.unload())

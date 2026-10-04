@@ -1,6 +1,11 @@
 import type { DecisionRequest } from '../api/generated'
 export type Question = DecisionRequest['questions'][number]
 
+/**
+ * Render a controlled Choice, Score or Noul question editor.
+ * Pass complete replacement questions to onChange and removal to onRemove;
+ * validation and evaluation belong to the parent and API, not this card.
+ */
 export default function DecisionQuestionCard({
   question,
   index,

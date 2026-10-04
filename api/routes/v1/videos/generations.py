@@ -22,4 +22,8 @@ class VideoGenerationResponse(BaseModel):
 @router.post("", status_code=202, operation_id="generateVideo",
              responses={503: {"description": "Video provider unavailable"}})
 def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
+    """Reject validated generation settings with HTTP 503 without queuing a job.
+
+    The declared 202 response is the future job contract, not evidence that a
+    provider ran or that GPU rendering has started."""
     raise HTTPException(status_code=503, detail="Video generation provider is not configured. No job was queued.")
