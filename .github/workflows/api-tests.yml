@@ -49,3 +49,9 @@ jobs:
             echo "::error::Generated API client is stale. Run npm --prefix frontend run generate:api and commit the generated files."
             exit 1
           fi
+      - name: Test frontend chat API integration
+        run: npm --prefix frontend test
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+      - name: Build frontend
+        run: npm --prefix frontend run build
