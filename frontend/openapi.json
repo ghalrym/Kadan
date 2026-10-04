@@ -508,6 +508,7 @@
         "type": "object"
       },
       "MessagesResponse": {
+        "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
           "messages": {
             "items": {
@@ -659,6 +660,7 @@
         "type": "object"
       },
       "ModelSetting": {
+        "description": "A catalog-backed selection; None means no model is selected.",
         "properties": {
           "label": {
             "title": "Label",
@@ -1060,6 +1062,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
+        "description": "Accept only the supported LLM selection; reject unknown top-level fields.",
         "properties": {
           "models": {
             "additionalProperties": {
@@ -1095,6 +1098,7 @@
         "type": "object"
       },
       "SettingsResponse": {
+        "description": "Expose real catalog selection and null for unavailable transcription settings.",
         "properties": {
           "models": {
             "items": {
@@ -2419,6 +2423,7 @@
     },
     "/v1/settings": {
       "get": {
+        "description": "Read the shared model store and return the catalog selection.\n\nRaise HTTP 503 if the stored selection is outside the catalog; this read does\nnot load a model or configure another modality.",
         "operationId": "getSettings",
         "responses": {
           "200": {

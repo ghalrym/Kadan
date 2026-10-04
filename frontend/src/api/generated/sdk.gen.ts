@@ -523,6 +523,11 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Settings
+ *
+ * Read the shared model store and return the catalog selection.
+ *
+ * Raise HTTP 503 if the stored selection is outside the catalog; this read does
+ * not load a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,

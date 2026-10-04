@@ -282,6 +282,8 @@ export type ImagesResponse = {
 
 /**
  * MessagesResponse
+ *
+ * Compatibility envelope for client-owned conversations; the server has no history.
  */
 export type MessagesResponse = {
   /**
@@ -362,6 +364,8 @@ export type ModelLifecycleStatus = {
 
 /**
  * ModelSetting
+ *
+ * A catalog-backed selection; None means no model is selected.
  */
 export type ModelSetting = {
   /**
@@ -601,6 +605,8 @@ export type SelectionRequest = {
 
 /**
  * SettingsRequest
+ *
+ * Accept only the supported LLM selection; reject unknown top-level fields.
  */
 export type SettingsRequest = {
   /**
@@ -617,6 +623,8 @@ export type SettingsRequest = {
 
 /**
  * SettingsResponse
+ *
+ * Expose real catalog selection and null for unavailable transcription settings.
  */
 export type SettingsResponse = {
   /**
