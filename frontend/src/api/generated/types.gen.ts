@@ -283,29 +283,61 @@ export type MessagesResponse = {
  */
 export type MetricsResponse = {
   /**
+   * Active Requests
+   */
+  active_requests: number
+  /**
+   * Completed Requests
+   */
+  completed_requests: number
+  /**
    * Error Rate Percent
    */
-  error_rate_percent: number
+  error_rate_percent: number | null
+  /**
+   * Memory Unit
+   */
+  memory_unit?: 'GiB'
   /**
    * P50 Latency Seconds
    */
-  p50_latency_seconds: number
-  /**
-   * Queued Jobs
-   */
-  queued_jobs: number
+  p50_latency_seconds: number | null
   /**
    * Requests Per Minute
    */
   requests_per_minute: number
   /**
+   * Resource Errors
+   */
+  resource_errors: Array<string>
+  /**
    * Resources
    */
   resources: Array<ResourceMeter>
   /**
+   * Retained Requests
+   */
+  retained_requests: number
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
+  /**
    * Status
    */
-  status: 'Online'
+  status?: 'Online'
+  /**
+   * Window Seconds
+   */
+  window_seconds?: number
+  /**
+   * Window Truncated
+   */
+  window_truncated: boolean
 }
 
 /**
@@ -435,9 +467,13 @@ export type RequestRecord = {
    */
   latency: string
   /**
+   * Latency Ms
+   */
+  latency_ms: number
+  /**
    * Model
    */
-  model: string
+  model?: string | null
   /**
    * Output
    */
@@ -447,21 +483,21 @@ export type RequestRecord = {
    */
   prompt: string
   /**
+   * Request Bytes
+   */
+  request_bytes: number
+  /**
+   * Response Bytes
+   */
+  response_bytes: number
+  /**
    * Status
    */
-  status: 200 | 202 | 429 | 500
+  status: number
   /**
    * Time
    */
   time: string
-  /**
-   * Tokenspersecond
-   */
-  tokensPerSecond?: number | null
-  /**
-   * Ttft
-   */
-  ttft?: string | null
   /**
    * Type
    */
@@ -483,6 +519,14 @@ export type RequestsResponse = {
    * Requests
    */
   requests: Array<RequestRecord>
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
   /**
    * Total
    */
@@ -1265,7 +1309,7 @@ export type ListRequestsData = {
     /**
      * Status
      */
-    status?: 200 | 202 | 429 | 500 | null
+    status?: number | null
     /**
      * Search
      */

@@ -10,6 +10,7 @@ from api.routes.v1.videos import generations as video_generations
 from api.routes.v1 import runtime
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
+from api.services.telemetry import TelemetryMiddleware
 
 
 @asynccontextmanager
@@ -23,8 +24,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Chat and decisions use Kadan's explicitly loaded inference adapter and return errors when no model is ready or output is invalid. Image, video, speech and transcription providers are not implemented; those generation endpoints return unavailable errors and media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
 )
+
+app.add_middleware(TelemetryMiddleware)
 
 for router in (
     health.router, messages.router, completions.router, decisions.router,

@@ -502,21 +502,52 @@
       },
       "MetricsResponse": {
         "properties": {
+          "active_requests": {
+            "title": "Active Requests",
+            "type": "integer"
+          },
+          "completed_requests": {
+            "title": "Completed Requests",
+            "type": "integer"
+          },
           "error_rate_percent": {
-            "title": "Error Rate Percent",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Rate Percent"
+          },
+          "memory_unit": {
+            "const": "GiB",
+            "default": "GiB",
+            "title": "Memory Unit",
+            "type": "string"
           },
           "p50_latency_seconds": {
-            "title": "P50 Latency Seconds",
-            "type": "number"
-          },
-          "queued_jobs": {
-            "title": "Queued Jobs",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Latency Seconds"
           },
           "requests_per_minute": {
             "title": "Requests Per Minute",
             "type": "integer"
+          },
+          "resource_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resource Errors",
+            "type": "array"
           },
           "resources": {
             "items": {
@@ -525,19 +556,46 @@
             "title": "Resources",
             "type": "array"
           },
+          "retained_requests": {
+            "title": "Retained Requests",
+            "type": "integer"
+          },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "status": {
             "const": "Online",
+            "default": "Online",
             "title": "Status",
             "type": "string"
+          },
+          "window_seconds": {
+            "default": 60,
+            "title": "Window Seconds",
+            "type": "integer"
+          },
+          "window_truncated": {
+            "title": "Window Truncated",
+            "type": "boolean"
           }
         },
         "required": [
-          "status",
           "resources",
+          "resource_errors",
+          "started_at",
+          "retention_limit",
+          "retained_requests",
+          "completed_requests",
+          "active_requests",
           "requests_per_minute",
+          "window_truncated",
           "p50_latency_seconds",
-          "error_rate_percent",
-          "queued_jobs"
+          "error_rate_percent"
         ],
         "title": "MetricsResponse",
         "type": "object"
@@ -733,9 +791,20 @@
             "title": "Latency",
             "type": "string"
           },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
           "model": {
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "output": {
             "title": "Output",
@@ -745,41 +814,23 @@
             "title": "Prompt",
             "type": "string"
           },
+          "request_bytes": {
+            "title": "Request Bytes",
+            "type": "integer"
+          },
+          "response_bytes": {
+            "title": "Response Bytes",
+            "type": "integer"
+          },
           "status": {
-            "enum": [
-              200,
-              202,
-              429,
-              500
-            ],
+            "maximum": 599.0,
+            "minimum": 100.0,
             "title": "Status",
             "type": "integer"
           },
           "time": {
             "title": "Time",
             "type": "string"
-          },
-          "tokensPerSecond": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokenspersecond"
-          },
-          "ttft": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ttft"
           },
           "type": {
             "enum": [
@@ -798,12 +849,14 @@
           "id",
           "time",
           "type",
-          "model",
           "status",
           "latency",
+          "latency_ms",
           "endpoint",
           "prompt",
-          "output"
+          "output",
+          "request_bytes",
+          "response_bytes"
         ],
         "title": "RequestRecord",
         "type": "object"
@@ -829,6 +882,14 @@
             "title": "Requests",
             "type": "array"
           },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -836,7 +897,9 @@
         },
         "required": [
           "requests",
-          "total"
+          "total",
+          "retention_limit",
+          "started_at"
         ],
         "title": "RequestsResponse",
         "type": "object"
@@ -1501,7 +1564,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat and decisions use Kadan's explicitly loaded inference adapter and return errors when no model is ready or output is invalid. Image, video, speech and transcription providers are not implemented; those generation endpoints return unavailable errors and media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2081,12 +2144,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "enum": [
-                    200,
-                    202,
-                    429,
-                    500
-                  ],
+                  "maximum": 599,
+                  "minimum": 100,
                   "type": "integer"
                 },
                 {
@@ -2102,6 +2161,7 @@
             "required": false,
             "schema": {
               "default": "",
+              "maxLength": 128,
               "title": "Search",
               "type": "string"
             }
@@ -2122,7 +2182,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 100,
               "minimum": 1,
               "title": "Limit",
