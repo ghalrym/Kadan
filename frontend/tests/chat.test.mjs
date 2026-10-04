@@ -73,9 +73,12 @@ test('SDK sends real custom contract and history, without forcing a model', asyn
 })
 
 test('unavailable, busy, validation and server errors are not successes; retry can succeed', async () => {
-  for (const status of [503, 409, 429, 422, 500]) {
+  for (const status of [503, 409, 429, 413, 422, 500]) {
     mockFetch(async () => Response.json({ detail: 'failure' }, { status }))
-    await assert.rejects(requestChat(messages, signal()))
+    await assert.rejects(
+      requestChat(messages, signal()),
+      status === 413 ? /Start a new chat or shorten/ : undefined,
+    )
   }
   mockFetch(async () =>
     Response.json({ message: { role: 'assistant', text: 'Recovered' } }),

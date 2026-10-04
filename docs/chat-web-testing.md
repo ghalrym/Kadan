@@ -22,7 +22,7 @@ ignores late results; it does not guarantee that backend inference has stopped.
 From `frontend/`, run:
 
 ```sh
-node --test tests/chat.test.mjs
+npm test
 npm run lint
 npm run build
 ```

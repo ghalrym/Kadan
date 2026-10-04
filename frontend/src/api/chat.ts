@@ -36,7 +36,7 @@ export async function requestChat(
       throw new Error(
         'The model is busy. Wait for the current operation, then retry.',
       )
-    if (status === 422)
+    if (status === 413 || status === 422)
       throw new Error(
         'The API rejected this conversation. Start a new chat or shorten your message.',
       )
