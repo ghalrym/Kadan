@@ -77,7 +77,8 @@ export KADAN_MODEL_DIR=/path/to/model/storage
 
 Do not run multiple API workers or use `--reload` with a loaded model. The
 `/model-lifecycle` controls are Kadan management endpoints, separate from `/v1`
-inference calls. Settings downloads/selects a checkpoint and explicitly loads it.
+inference calls. In Settings, choose a downloaded checkpoint and context, then
+click Load to save both and start loading through one lifecycle request.
 The status endpoint reports loading, ready, offloaded, unloading or errors;
 selection/download alone does not mean inference is ready. Do not run Compose's
 API on the same port simultaneously. Use `API_PROXY_TARGET` for another API port.
@@ -142,7 +143,7 @@ Cancel a pending request and verify that a late reply is not appended.
 
 ## Checkpoint storage
 
-Settings uses `/v1/models` to download and select the three pinned catalog
+Settings uses `/v1/models` to download the three pinned catalog
 checkpoints. Set `KADAN_MODEL_DIR` to a writable disk with sufficient space
 (default `~/.local/share/kadan/models`). Docker Compose persists its `model_data`
 volume at `/var/lib/kadan/models`; `docker compose down -v` deletes that volume.
@@ -167,8 +168,9 @@ and legacy null (architecture maximum) are preserved, including custom values
 shown as an extra dropdown option. Options above a verified checkpoint limit
 are disabled and backend validation rejects them without clamping. Before a
 checkpoint is downloaded its limit is unknown; loading validates it again.
-Configuration persists across restarts.
-Unload the active model before changing context. A saved context is not a memory
+Configuration persists across restarts. Load also switches an idle loaded model
+or applies a changed context; active work must finish before switching. Loading
+errors remain visible and do not imply a ready model. A saved context is not a memory
 allocation or a guarantee that a request of that size fits on the target hardware.
 
 Context memory is admitted from each request's actual prompt and output allowance,
