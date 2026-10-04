@@ -243,6 +243,8 @@ export const listMessages = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Decisions
+ *
+ * Return blank playground state; no saved questions or model answers are loaded.
  */
 export const getDecisions = <ThrowOnError extends boolean = false>(
   options?: Options<GetDecisionsData, ThrowOnError>,
@@ -253,6 +255,14 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 
 /**
  * Evaluate Decisions
+ *
+ * Evaluate validated questions using the currently loaded shared model.
+ *
+ * Returns strictly validated answers, preserves runtime HTTP error statuses,
+ * and reports invalid model JSON as 502. If disconnect wins the completion race,
+ * cancel inference and raise HTTP 499; pending tasks are cancelled and awaited
+ * on exit. A disconnected client may not receive that response.
+ * This route neither loads a second model nor persists playground results.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,

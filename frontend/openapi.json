@@ -1785,6 +1785,7 @@
     },
     "/v1/decisions": {
       "get": {
+        "description": "Return blank playground state; no saved questions or model answers are loaded.",
         "operationId": "getDecisions",
         "responses": {
           "200": {
@@ -1804,6 +1805,7 @@
         ]
       },
       "post": {
+        "description": "Evaluate validated questions using the currently loaded shared model.\n\nReturns strictly validated answers, preserves runtime HTTP error statuses,\nand reports invalid model JSON as 502. If disconnect wins the completion race,\ncancel inference and raise HTTP 499; pending tasks are cancelled and awaited\non exit. A disconnected client may not receive that response.\nThis route neither loads a second model nor persists playground results.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
