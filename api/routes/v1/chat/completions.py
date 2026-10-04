@@ -1,38 +1,45 @@
-from fastapi import APIRouter
+import asyncio
+from contextlib import suppress
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
+from api.services.runtime import RuntimeFailure, runtime_manager
 
-router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
-
-MOCK_COMPLETION = ChatMessage(
-    role='assistant',
-    text=('Most likely GPU contention. Image edits run on the same device as the LLM, '
-          'and a burst of them holds the GPU long enough to queue chat requests behind '
-          'them.\n'
-          '\n'
-          'Three things to check:\n'
-          '1. Queue time vs. inference time on the slow chat requests. If queue time '
-          "dominates, it's contention, not the model.\n"
-          '2. Whether batch-worker sets a concurrency limit. Without one it can take '
-          'every slot.\n'
-          '3. VRAM headroom. If the image model pushed the KV cache out, the LLM will '
-          're-prefill long prompts.\n'
-          '\n'
-          'A per-client rate limit on /v1/images/edits would stop it happening again.'),
-    meta='214 tokens · 3.1 s',
-)
+router = APIRouter(prefix='/v1/chat/completions', tags=['Chat'])
 
 
 class CompletionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    messages: list[ChatMessage] = Field(min_length=1)
-    model: str = "Qwen3 32B Instruct"
+    model_config = ConfigDict(extra='forbid')
+    messages: list[ChatMessage] = Field(min_length=1, max_length=128)
+    model: str | None = None
 
 
 class CompletionResponse(BaseModel):
     message: ChatMessage
 
 
-@router.post("", operation_id="createCompletion")
-def create_completion(body: CompletionRequest) -> CompletionResponse:
-    return CompletionResponse(message=MOCK_COMPLETION)
+@router.post('', operation_id='createCompletion')
+async def create_completion(body: CompletionRequest, request: Request) -> CompletionResponse:
+    if sum(len(message.text) for message in body.messages) > 32768:
+        raise HTTPException(413, 'Conversation exceeds the 32768-character request limit.')
+    async def watch_disconnect():
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.5)
+
+    generation = asyncio.create_task(runtime_manager.complete(body.messages, body.model))
+    disconnected = asyncio.create_task(watch_disconnect())
+    try:
+        done, _ = await asyncio.wait([generation, disconnected], return_when=asyncio.FIRST_COMPLETED)
+        if generation not in done:
+            generation.cancel()
+            raise HTTPException(499, 'Client disconnected; generation cancelled.')
+        text = await generation
+        return CompletionResponse(message=ChatMessage(role='assistant', text=text))
+    except RuntimeFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    finally:
+        for task in (generation, disconnected):
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task

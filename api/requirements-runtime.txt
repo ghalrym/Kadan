@@ -1,0 +1,3 @@
+# Optional GPU worker environment; do not install in the API-only container.
+# Upstream Apache-2.0; reviewed source/CLI at this exact revision.
+freetoken[accel] @ git+https://github.com/FlashML-org/FreeToken.git@d3512b43affe981465e03ee28cbd88f49c39b9aa
