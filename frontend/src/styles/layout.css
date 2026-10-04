@@ -1,0 +1,243 @@
+.app-shell {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  height: 100dvh;
+}
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 14px;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.brand > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brand strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.brand .mono {
+  font-size: 11px;
+}
+.main-navigation {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 10px;
+  overflow: auto;
+}
+.nav-group {
+  padding: 16px 10px 6px;
+  color: var(--faint);
+  font: 500 10px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: #a4a8b0;
+  white-space: nowrap;
+}
+.nav-link:hover {
+  background: #1a1d22;
+  color: var(--text);
+}
+.nav-link.active {
+  background: #1d2026;
+  color: var(--text);
+}
+.nav-number {
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+.active .nav-number {
+  color: var(--accent);
+}
+.resource-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--border);
+}
+.server-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.resource-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.resource-label {
+  display: flex;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.resource-label > span:nth-child(2) {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+.main-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.page-header {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 60px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.page-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.scroll-page {
+  height: 100%;
+  overflow: auto;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  height: 100%;
+}
+.workspace--speech {
+  grid-template-columns: 400px minmax(0, 1fr);
+}
+.workspace-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  padding: 20px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+.workspace-results {
+  overflow: auto;
+  padding: 24px;
+  min-width: 0;
+}
+.workspace-controls > *,
+.workspace-results > * {
+  flex-shrink: 0;
+}
+.skip-link {
+  position: fixed;
+  top: -60px;
+  left: 16px;
+  z-index: 20;
+  padding: 12px;
+  background: var(--surface);
+}
+.skip-link:focus {
+  top: 10px;
+}
+@media (max-width: 1100px) {
+  .workspace,
+  .workspace--speech {
+    grid-template-columns: 320px minmax(0, 1fr);
+  }
+}
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .resource-meters {
+    padding-inline: 12px;
+  }
+  .workspace,
+  .workspace--speech {
+    display: block;
+    overflow: auto;
+  }
+  .workspace-controls {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+  .workspace-results {
+    overflow: visible;
+  }
+}
+@media (max-width: 640px) {
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar {
+    flex: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    padding: 10px 14px;
+  }
+  .brand > div:last-child {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .main-navigation {
+    flex-direction: row;
+    padding: 0 8px 8px;
+    overflow-x: auto;
+  }
+  .nav-group,
+  .nav-number,
+  .resource-meters {
+    display: none;
+  }
+  .nav-link {
+    flex: none;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .main-content {
+    flex: 1;
+  }
+  .page-header {
+    height: 50px;
+    padding-inline: 16px;
+  }
+  .workspace-controls,
+  .workspace-results {
+    padding: 16px;
+  }
+  .two-columns {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,8 +1,8 @@
-# React + TypeScript + Vite
+# Kadan frontend
 
-## Local development
+Static React + TypeScript implementation of `../design-work/Kadan Dashboard.html`, built with Vite and React Router.
 
-From the repository root:
+## Development
 
 ```sh
 cd frontend
@@ -10,40 +10,44 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite (usually `http://localhost:5173`).
-The frontend runs separately from the Python server at the repository root.
+Open the URL printed by Vite (usually `http://localhost:5173`).
 
-- `npm run build` checks TypeScript and produces a production build in `dist/`.
-- `npm run lint` checks the source with Oxlint.
-- `npm run preview` serves the production build locally after building.
-
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm run build   # TypeScript check and production build
+npm run lint    # Oxlint
+npm run preview
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Structure
+
+- `src/App.tsx` defines the routes and shared application layout.
+- `src/pages/` contains one component for each main screen.
+- `src/components/` contains the sidebar/layout, shared form controls, media views, question cards, video cards, and request drawer.
+- `src/data/` holds navigation metadata and fixed design fixtures.
+- `src/styles/` contains local font declarations, shared tokens and base rules, layout, reusable component styles, and page-specific styles. All styling lives in stylesheets; components have no inline CSS.
+- `src/assets/fonts/` and `public/kadan.svg` preserve the fonts and logo bundled in the supplied design.
+
+## Routes
+
+| URL                    | Screen                                     |
+| ---------------------- | ------------------------------------------ |
+| `/requests`            | Request metrics and history                |
+| `/requests/:requestId` | Request detail drawer over the history     |
+| `/chat`                | Chat                                       |
+| `/decisions`           | State, question configuration, and answers |
+| `/image`               | Image generation                           |
+| `/image/edit`          | Image editing                              |
+| `/video`               | Video generation and queue                 |
+| `/tts`                 | Described voice synthesis                  |
+| `/tts/clone`           | Voice cloning                              |
+| `/stt`                 | Speech recording and transcription         |
+| `/api`                 | API documentation placeholder              |
+| `/settings`            | Model settings                             |
+
+The root redirects to `/requests`. Unknown URLs and unknown request IDs have explicit not-found views. A production host must serve `index.html` for frontend routes so direct links and refreshes work (Vite already does this during development).
+
+## Static scope
+
+Navigation, request-detail links, and the Advanced disclosure work. Everything else is a visual placeholder: inputs are read-only, action buttons and settings are disabled, and no server requests, timers, storage, recording, uploads, downloads, or simulated generation run. “Online”, “Live”, metrics, request output, and queue progress are frozen design fixtures, not server status. Image tiles intentionally keep the reference's striped placeholders.
+
+The Python server remains separate. When the backend is ready, replace the fixtures with API data and enable the appropriate controls.
