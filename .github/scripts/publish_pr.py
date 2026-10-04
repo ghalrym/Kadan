@@ -17,6 +17,8 @@ from pathlib import Path
 REPOSITORY = 'ghalrym/Kadan'
 REPOSITORY_ID = 1403845248
 INSTALLATION_ID = '167899795'
+OWNER = 'ghalrym'
+OWNER_ID = 177494187
 BASE = 'master'
 ENVIRONMENT = 'kadan-pr-publishing'
 ROOT = '/repos/' + REPOSITORY
@@ -70,6 +72,12 @@ def inputs(event, environ):
     require(environ.get('GITHUB_REPOSITORY') == REPOSITORY and
             environ.get('GITHUB_REPOSITORY_ID') == str(REPOSITORY_ID), 'Unexpected workflow repository')
     require(environ.get('GITHUB_REF') == 'refs/heads/master', 'Workflow must run from master')
+    require(environ.get('GITHUB_ACTOR') == OWNER and
+            environ.get('GITHUB_ACTOR_ID') == str(OWNER_ID) and
+            environ.get('GITHUB_TRIGGERING_ACTOR') == OWNER, 'Manual owner dispatch required')
+    sender = event.get('sender', {})
+    require(sender.get('login') == OWNER and sender.get('id') == OWNER_ID,
+            'Unexpected dispatch sender')
     repo = event.get('repository', {})
     require(repo.get('id') == REPOSITORY_ID and repo.get('full_name') == REPOSITORY,
             'Unexpected event repository')
@@ -119,15 +127,8 @@ def preflight(api):
             'Environment requires custom deployment branch policies')
     rules = env.get('protection_rules')
     require(isinstance(rules, list), 'Environment protection rules unavailable')
-    reviewers = [rule for rule in rules if isinstance(rule, dict) and rule.get('type') == 'required_reviewers']
-    require(len(reviewers) == 1 and reviewers[0].get('prevent_self_review') is True,
-            'Environment requires reviewers and prevention of self-review')
-    people = reviewers[0].get('reviewers')
-    require(isinstance(people, list) and len(people) >= 1 and all(
-        isinstance(person, dict) and person.get('type') in ('User', 'Team')
-        and isinstance(person.get('reviewer'), dict)
-        and type(person['reviewer'].get('id')) is int and person['reviewer']['id'] > 0 for person in people),
-        'Environment requires at least one valid reviewer')
+    # Owner dispatch authorizes publishing; a second deployment reviewer is not required.
+    # Existing environment review rules, if configured, still apply in GitHub.
     require('can_admins_bypass' not in env or env['can_admins_bypass'] is False,
             'Environment administrator bypass must be disabled')
     policies = list(pages(api, ROOT + '/environments/' + ENVIRONMENT + '/deployment-branch-policies', 'branch_policies'))
@@ -195,7 +196,7 @@ def main(argv=None, environ=None):
         values = inputs(json.loads(raw), environ)
         if argv == ['preflight']:
             preflight(API())  # Public metadata only; no credential or settings mutation.
-            print('Preflight passed; administrator bypass must be disabled in the environment UI.')
+            print('Owner dispatch and master-only environment validated; verify administrator bypass is disabled in the environment UI.')
         else:
             token = environ.get('GH_TOKEN')
             require(bool(token), 'Missing installation token')

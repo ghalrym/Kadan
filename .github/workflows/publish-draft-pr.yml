@@ -23,7 +23,7 @@ on:
 permissions:
   contents: read
 
-# One publisher at a time, including time waiting for environment approval.
+# One publisher at a time, including any environment protection wait.
 # GitHub may replace older pending runs; it never cancels the running publisher.
 concurrency:
   group: ai-kadan-draft-pr-publisher
@@ -35,7 +35,10 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'ghalrym/Kadan' &&
       github.repository_id == '1403845248' &&
-      github.ref == 'refs/heads/master'
+      github.ref == 'refs/heads/master' &&
+      github.actor == 'ghalrym' &&
+      github.actor_id == '177494187' &&
+      github.triggering_actor == 'ghalrym'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -56,7 +59,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Recheck configuration after environment approval
+      - name: Recheck owner and environment before minting token
         run: python3 .github/scripts/publish_pr.py preflight
       - name: Mint repository-scoped token
         id: app-token

@@ -33,13 +33,14 @@ class PublisherTests(unittest.TestCase):
         self.values = dict(head='codex/test-feature', title='A safe title', body='Body\n`literal` $(data)', expected_sha='a' * 40)
         self.environ = dict(GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY=p.REPOSITORY,
                             GITHUB_REPOSITORY_ID=str(p.REPOSITORY_ID), GITHUB_REF='refs/heads/master',
-                            APP_INSTALLATION_ID=p.INSTALLATION_ID)
+                            APP_INSTALLATION_ID=p.INSTALLATION_ID, GITHUB_ACTOR='ghalrym',
+                            GITHUB_ACTOR_ID='177494187', GITHUB_TRIGGERING_ACTOR='ghalrym')
         self.repo = dict(id=p.REPOSITORY_ID, full_name=p.REPOSITORY, private=False, default_branch='master')
-        self.event = dict(repository=self.repo, inputs=self.values)
+        self.event = dict(repository=self.repo, inputs=self.values,
+                          sender=dict(login='ghalrym', id=177494187))
         self.environment = dict(name=p.ENVIRONMENT,
             deployment_branch_policy=dict(custom_branch_policies=True, protected_branches=False),
-            protection_rules=[dict(type='required_reviewers', prevent_self_review=True,
-                                   reviewers=[dict(type='User', reviewer=dict(id=1))])])
+            protection_rules=[dict(type='branch_policy')])
         self.policy = dict(branch_policies=[dict(name='master', type='branch')])
         self.branch = dict(ref='refs/heads/' + self.values['head'], object=dict(type='commit', sha='a' * 40))
         self.installation = dict(total_count=1, repositories=[self.repo])
@@ -70,6 +71,31 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaises(p.Failure):
             p.inputs(dict(self.event, repository=dict(self.repo, id=1)), self.environ)
 
+    def test_owner_identity_required(self):
+        for key in ('GITHUB_ACTOR', 'GITHUB_ACTOR_ID', 'GITHUB_TRIGGERING_ACTOR'):
+            for value in ('other', '', None):
+                with self.subTest(key=key, value=value), self.assertRaises(p.Failure):
+                    p.inputs(self.event, dict(self.environ, **{key: value}))
+        for sender in ({}, dict(login='other', id=177494187), dict(login='ghalrym', id=1)):
+            with self.subTest(sender=sender), self.assertRaises(p.Failure):
+                p.inputs(dict(self.event, sender=sender), self.environ)
+
+    def test_denied_owner_never_reaches_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'event.json'
+            path.write_text(json.dumps(self.event))
+            for mode in ('preflight', 'publish'):
+                env = dict(self.environ, GITHUB_EVENT_PATH=str(path), GITHUB_ACTOR_ID='1')
+                with patch.object(p, 'API') as api, patch('sys.stderr', io.StringIO()):
+                    self.assertEqual(p.main([mode], env), 1)
+                    api.assert_not_called()
+
+    def test_sole_owner_preflight_without_review_gate(self):
+        self.assertEqual(p.inputs(self.event, self.environ), self.values)
+        api = FakeAPI([self.repo, dict(self.environment, protection_rules=[]), self.policy])
+        p.preflight(api)
+        self.assertTrue(all(call[0] == 'GET' for call in api.calls))
+
     def test_unknown_inputs_rejected(self):
         with self.assertRaises(p.Failure):
             p.inputs(dict(self.event, inputs=dict(self.values, base='other')), self.environ)
@@ -92,11 +118,9 @@ class PublisherTests(unittest.TestCase):
             p.preflight(api)
         self.assertTrue(all(call[0] == 'GET' for call in api.calls))
 
-    def test_review_and_policy_guards(self):
+    def test_policy_guards(self):
         for mutate in (
-            lambda e: e.update(protection_rules=[]),
-            lambda e: e['protection_rules'][0].update(prevent_self_review=False),
-            lambda e: e['protection_rules'][0].update(reviewers=[]),
+            lambda e: e.update(protection_rules=None),
             lambda e: e.update(deployment_branch_policy=None),
             lambda e: e.update(can_admins_bypass=True),
             lambda e: e.update(can_admins_bypass=None),
