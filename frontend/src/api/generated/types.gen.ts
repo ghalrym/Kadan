@@ -811,7 +811,7 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Image
    *
-   * Source image reference; not fetched in mock mode
+   * Source image reference; no image provider is configured and this reference is not fetched
    */
   image: string
   /**
@@ -1052,6 +1052,10 @@ export type EditImagesErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Image provider unavailable
+   */
+  503: unknown
 }
 
 export type EditImagesError = EditImagesErrors[keyof EditImagesErrors]
@@ -1077,6 +1081,10 @@ export type GenerateImagesErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Image provider unavailable
+   */
+  503: unknown
 }
 
 export type GenerateImagesError =

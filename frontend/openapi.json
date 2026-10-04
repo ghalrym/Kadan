@@ -1353,13 +1353,16 @@
             "type": "integer"
           },
           "image": {
-            "description": "Source image reference; not fetched in mock mode",
+            "description": "Source image reference; no image provider is configured and this reference is not fetched",
+            "maxLength": 2048,
             "minLength": 1,
             "title": "Image",
             "type": "string"
           },
           "prompt": {
+            "maxLength": 8000,
             "minLength": 1,
+            "pattern": "\\S",
             "title": "Prompt",
             "type": "string"
           },
@@ -1415,7 +1418,9 @@
             "type": "integer"
           },
           "prompt": {
+            "maxLength": 8000,
             "minLength": 1,
+            "pattern": "\\S",
             "title": "Prompt",
             "type": "string"
           },
@@ -1745,6 +1750,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Image provider unavailable"
           }
         },
         "summary": "Create Image",
@@ -1786,6 +1794,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Image provider unavailable"
           }
         },
         "summary": "Create Image",
