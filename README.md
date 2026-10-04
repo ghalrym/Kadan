@@ -23,9 +23,9 @@ architecture definitions; it does not run FreeToken. Settings shows loading,
 readiness, offloaded state or errors. Chat has no mock fallback. Other modalities,
 history and dashboard metrics still use fixtures.
 
-See [checkpoint storage](docs/model-downloads.md), [GPU runtime setup](docs/runtime.md),
-and [web chat testing](docs/chat-web-testing.md). The runtime uses host-RAM expert
-offload and a GPU cache on one selected GPU; it does not pool two cards' VRAM.
+The inference service uses host-RAM expert offload and a GPU cache on one selected
+GPU; it does not pool two cards' VRAM. Source modules in `api/inference/` describe
+ownership and execution invariants alongside the implementation.
 GPU installation, memory fit and inference remain unvalidated on target hardware.
 The Compose API image below supports downloads but does not include inference dependencies.
 
@@ -59,3 +59,37 @@ root.
    ```sh
    docker compose down
    ```
+
+## Native model service
+
+The API-only Compose image does not include inference dependencies. On a target
+Linux GPU host, create a separate environment and install a PyTorch 2.11.0 CUDA
+wheel compatible with the host driver, then the pinned remaining requirements:
+
+```sh
+python3 -m venv .venv-inference
+# Install the appropriate torch==2.11.0 CUDA wheel first.
+.venv-inference/bin/pip install -r api/requirements.txt -r api/requirements-runtime.txt
+export KADAN_GPU=0
+export KADAN_MODEL_DIR=/path/to/model/storage
+.venv-inference/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+Do not run multiple API workers or use `--reload` with a loaded model. The
+`/model-lifecycle` controls are Kadan management endpoints, separate from `/v1`
+inference calls. Settings downloads/selects a checkpoint and explicitly loads it.
+The status endpoint reports loading, ready, offloaded, unloading or errors;
+selection/download alone does not mean inference is ready. Do not run Compose's
+API on the same port simultaneously. Use `API_PROXY_TARGET` for another API port.
+
+Inference tests use tiny synthetic CPU checkpoints. Full catalog loading,
+CUDA correctness, memory peaks and throughput are not hardware-validated.
+Reservations cannot prevent another process from consuming memory. Validate
+repeated load/generate/cancel/evict/restore/unload cycles on the target GPU before
+relying on resource fit. Reference tensor kernels favor correctness over speed.
+
+Runtime requirements pin Transformers source because the released version lacks
+GLM5-next architecture definitions. Dependencies include PyTorch (BSD-style),
+Transformers/Accelerate/Safetensors (Apache-2.0); preserve upstream notices when
+redistributing. FreeToken Apache-2.0 source was layout research only, never an
+installed engine or vendored runtime. Source references are kept in code.
