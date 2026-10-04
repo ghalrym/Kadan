@@ -1648,6 +1648,7 @@
     },
     "/v1/audio/speech": {
       "get": {
+        "description": "Return empty speech history and blank editor defaults, without fixture audio.",
         "operationId": "listSpeech",
         "responses": {
           "200": {
@@ -1667,6 +1668,7 @@
         ]
       },
       "post": {
+        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
