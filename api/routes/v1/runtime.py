@@ -7,9 +7,10 @@ router = APIRouter(prefix='/v1/runtime', tags=['Runtime'])
 
 
 class RuntimeStatus(BaseModel):
-    state: Literal['unloaded', 'loading', 'ready', 'error']
+    state: Literal['unloaded', 'loading', 'ready', 'offloaded', 'unloading', 'error']
     model_id: str | None = None
     error: str | None = None
+    memory: dict | None = None
 
 
 @router.get('', operation_id='getRuntimeStatus')

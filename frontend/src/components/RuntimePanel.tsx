@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from './Controls'
 
 type RuntimeStatus = {
-  state: 'unloaded' | 'loading' | 'ready' | 'error'
+  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
   model_id: string | null
   error: string | null
 }
@@ -78,10 +78,11 @@ export default function RuntimePanel({ selectedModelId }: { selectedModelId: str
       <SectionHeading>Chat runtime</SectionHeading>
       <p role="status">{status ? `${status.state}${status.model_id ? ` · ${status.model_id}` : ''}` : 'Runtime status unavailable'}</p>
       <p className="muted">Load the selected download to use chat. To switch models, unload first, then select and load another download.</p>
+      {status?.state === 'offloaded' && <p>GPU memory was released for another workload. The next chat request restores the selected model.</p>}
       {(error || pollError || status?.error) && <p role="alert">{error || pollError || status?.error}</p>}
       <div className="row wrap">
-        <button type="button" className="button button--primary" disabled={pending || !status || !selectedModelId || status.state === 'loading' || status.state === 'ready'} onClick={() => void change('/load')}>Load selected model</button>
-        <button type="button" className="button button--secondary" disabled={pending || !status || status.state === 'unloaded'} onClick={() => void change('/unload')}>{status?.state === 'loading' ? 'Cancel loading' : 'Unload model'}</button>
+        <button type="button" className="button button--primary" disabled={pending || !status || !selectedModelId || !['unloaded', 'error'].includes(status.state)} onClick={() => void change('/load')}>Load selected model</button>
+        <button type="button" className="button button--secondary" disabled={pending || !status || status.state === 'unloaded' || status.state === 'unloading'} onClick={() => void change('/unload')}>{status?.state === 'loading' ? 'Cancel loading' : status?.state === 'unloading' ? 'Releasing memory…' : 'Unload model'}</button>
       </div>
     </Panel>
   )

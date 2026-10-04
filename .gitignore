@@ -18,7 +18,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
-.venv-freetoken/
+.venv-inference/
 venv/
 env/
 ENV/

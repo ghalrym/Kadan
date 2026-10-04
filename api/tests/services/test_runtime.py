@@ -1,148 +1,146 @@
 import asyncio
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import httpx
+from api.inference.resources import ResourceManager
 from api.pydantic_models.chat import ChatMessage
 from api.services.runtime import RuntimeFailure, RuntimeManager
 
 
+class Adapter:
+    def __init__(self):
+        self.is_resident = True
+        self.closed = False
+        self.calls = []
+
+    def generate(self, messages, max_new_tokens, cancel_event):
+        self.calls.append(messages)
+        self.is_resident = True
+        return 'Controlled adapter response'
+
+    def close(self):
+        self.closed = True
+        self.is_resident = False
+
+
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_command_enforces_partial_expert_cache_single_gpu_and_loopback(self):
-        manager = RuntimeManager()
-        command = manager.command(Path('/models/small'), 'small', 12345)
-        self.assertIn('offload', command)
-        self.assertIn('--moe-cache-auto', command)
-        self.assertEqual(command[command.index('--host') + 1], '127.0.0.1')
-        self.assertIn('moe.nvfp4=triton', command)
-        self.assertNotIn('--tp', command)
-        self.assertNotIn('--moe-cpu-layers', command)
-        with patch.dict('os.environ', {'KADAN_FT_GPU': '0,1'}):
-            with self.assertRaises(RuntimeFailure):
-                manager.command(Path('/models/small'), 'small', 12345)
+    def setUp(self):
+        self.adapter = Adapter()
+        self.factory = Mock(return_value=self.adapter)
+        self.manager = RuntimeManager(self.factory, ResourceManager(1000, {0: 1000}))
+        self.models = Mock()
+        self.models.acquire_runtime_model.return_value = (SimpleNamespace(id='medium'), Path('/models/pinned'))
+        patched = patch('api.services.model_downloads.model_manager', self.models)
+        patched.start()
+        self.addCleanup(patched.stop)
 
-    async def test_missing_runtime_and_wrong_model_fail(self):
-        manager = RuntimeManager()
+    async def ready(self):
+        await self.manager.load()
+        await self.manager.task
+        self.assertEqual(self.manager.state, 'ready')
+
+    async def test_direct_adapter_receives_owned_resources_and_selected_path(self):
+        await self.ready()
+        args, kwargs = self.factory.call_args
+        self.assertEqual(args[0].id, 'medium')
+        self.assertEqual(args[1], Path('/models/pinned'))
+        self.assertIs(args[2], self.manager.resources)
+        self.assertEqual(kwargs['device'], 'cuda:0')
+        answer = await self.manager.complete([ChatMessage(role='user', text='Hello')], None)
+        self.assertEqual(answer, 'Controlled adapter response')
+        self.assertEqual(self.adapter.calls, [[{'role': 'user', 'text': 'Hello'}]])
+        await self.manager.unload()
+        self.assertTrue(self.adapter.closed)
+        self.models.release_runtime_model.assert_called_once()
+
+    async def test_unloaded_and_wrong_model_fail(self):
         with self.assertRaises(RuntimeFailure):
-            await manager.complete([], None)
-        manager.state, manager.model_id = 'ready', 'small'
-        manager.process = SimpleNamespace(returncode=None)
+            await self.manager.complete([], None)
+        await self.ready()
         with self.assertRaises(RuntimeFailure) as error:
-            await manager.complete([], 'medium')
+            await self.manager.complete([], 'small')
         self.assertEqual(error.exception.status_code, 409)
+        await self.manager.close()
 
-    async def test_chat_translation_through_http_transport(self):
-        manager = RuntimeManager()
-        manager.state, manager.model_id, manager.port = 'ready', 'small', 12345
-        manager.process = SimpleNamespace(returncode=None)
-        def handle(request):
-            import json
-            body = json.loads(request.content)
-            self.assertEqual(body['messages'], [{'role': 'user', 'content': 'hello'}])
-            self.assertFalse(body['stream'])
-            return httpx.Response(200, json={'choices': [{'message': {'content': 'real response fixture'}}]})
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-        with patch('api.services.runtime.httpx.AsyncClient', return_value=client):
-            self.assertEqual(await manager.complete([ChatMessage(role='user', text='hello')], None), 'real response fixture')
+    async def test_load_failure_never_reports_ready_and_releases_selection(self):
+        self.factory.side_effect = ValueError('Unsupported checkpoint tensor layout')
+        await self.manager.load()
+        await self.manager.task
+        self.assertEqual(self.manager.state, 'error')
+        self.assertIn('Unsupported', self.manager.error)
+        self.models.release_runtime_model.assert_called_once()
+
+    async def test_load_cancel_waits_for_loader_before_closing(self):
+        entered = threading.Event()
+        def build(*args, cancel_event, **kwargs):
+            entered.set()
+            cancel_event.wait(2)
+            return self.adapter
+        self.factory.side_effect = build
+        await self.manager.load()
+        await asyncio.to_thread(entered.wait, 1)
+        await self.manager.unload()
+        self.assertTrue(self.adapter.closed)
+        self.assertEqual(self.manager.state, 'unloaded')
 
     async def test_concurrent_generation_rejected(self):
-        manager = RuntimeManager()
-        manager.state, manager.model_id = 'ready', 'small'
-        manager.process = SimpleNamespace(returncode=None)
-        async with manager._generation:
+        await self.ready()
+        async with self.manager._generation:
             with self.assertRaises(RuntimeFailure) as error:
-                await manager.complete([], None)
-            self.assertEqual(error.exception.status_code, 429)
+                await self.manager.complete([], None)
+        self.assertEqual(error.exception.status_code, 429)
+        await self.manager.close()
 
-    async def test_bad_upstream_unloads_instead_of_fake_success(self):
-        manager = RuntimeManager()
-        manager.state, manager.model_id, manager.port = 'ready', 'small', 12345
-        manager.process = SimpleNamespace(returncode=None)
-        manager.unload = AsyncMock()
-        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500)))
-        with patch('api.services.runtime.httpx.AsyncClient', return_value=client):
-            with self.assertRaises(RuntimeFailure):
-                await manager.complete([], None)
-        manager.unload.assert_awaited_once()
-        self.assertEqual(manager.state, 'error')
+    async def test_offloaded_model_restores_on_next_generation(self):
+        await self.ready()
+        self.adapter.is_resident = False
+        self.assertEqual(self.manager.status()['state'], 'offloaded')
+        await self.manager.complete([], None)
+        self.assertEqual(self.manager.status()['state'], 'ready')
+        await self.manager.close()
 
-    async def test_process_missing_sets_error_and_releases_lease(self):
-        manager = RuntimeManager()
-        manager.model_id, manager.state = 'small', 'loading'
-        manager._release = Mock()
-        with patch('asyncio.create_subprocess_exec', side_effect=FileNotFoundError('ft missing')):
-            await manager._run(Path('/models/small'))
-        self.assertEqual(manager.state, 'error')
-        self.assertIn('ft missing', manager.error)
-        manager._release.assert_called_once()
-
-    async def test_unload_cancels_loading_and_kills_owned_process_group(self):
-        manager = RuntimeManager()
-        process = SimpleNamespace(pid=87654, wait=AsyncMock(return_value=0))
-        manager.process = process
-        manager.task = asyncio.create_task(asyncio.sleep(3600))
-        with patch('os.killpg') as kill:
-            await manager.unload()
-        self.assertEqual(kill.call_count, 2)
-        self.assertTrue(manager.task is None)
-        self.assertEqual(manager.status(), dict(state='unloaded', model_id=None, error=None))
-
-    async def test_ready_only_after_matching_model_then_process_failure_cleans_up(self):
-        manager = RuntimeManager()
-        manager.state, manager.model_id = 'loading', 'small'
-        process = SimpleNamespace(pid=87654, returncode=None, wait=AsyncMock(return_value=1))
-        def handle(request):
-            if request.url.path == '/health':
-                return httpx.Response(200, json={'status': 'ok'})
-            return httpx.Response(200, json={'data': [{'id': 'small'}]})
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url='http://127.0.0.1')
-        async def tick(seconds):
-            self.assertEqual(manager.state, 'ready')
-            process.returncode = 1
-        with patch('asyncio.create_subprocess_exec', AsyncMock(return_value=process)), \
-             patch('api.services.runtime.httpx.AsyncClient', return_value=client), \
-             patch('asyncio.sleep', tick), patch('os.killpg'):
-            await manager._run(Path('/models/small'))
-        self.assertEqual(manager.state, 'error')
-        self.assertIsNone(manager.process)
-
-    async def test_load_blocked_until_failed_worker_cleanup_finishes(self):
-        manager = RuntimeManager()
-        manager.state = 'error'
-        manager.task = asyncio.create_task(asyncio.sleep(3600))
-        # Module may not yet be present in this independent worktree.
-        import sys
-        stub = SimpleNamespace(model_manager=Mock())
-        try:
-            with patch.dict(sys.modules, {'api.services.model_downloads': stub}):
-                with self.assertRaises(RuntimeFailure) as error:
-                    await manager.load()
-            self.assertEqual(error.exception.status_code, 409)
-            stub.model_manager.acquire_runtime_model.assert_not_called()
-        finally:
-            manager.task.cancel()
-            try:
-                await manager.task
-            except asyncio.CancelledError:
-                pass
-
-    async def test_cancellation_during_spawn_still_reaps_process(self):
-        manager = RuntimeManager()
-        manager.state, manager.model_id = 'loading', 'small'
-        entered, finish = asyncio.Event(), asyncio.Event()
-        process = SimpleNamespace(pid=87654, returncode=None, wait=AsyncMock(return_value=0))
-        async def spawn(*args, **kwargs):
+    async def test_cancelled_generation_finishes_before_close(self):
+        entered, finished = threading.Event(), threading.Event()
+        def generate(*args, cancel_event, **kwargs):
             entered.set()
-            await finish.wait()
-            return process
-        with patch('asyncio.create_subprocess_exec', spawn), patch('os.killpg') as kill:
-            task = asyncio.create_task(manager._run(Path('/models/small')))
-            await entered.wait()
-            task.cancel()
-            finish.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertEqual(kill.call_count, 2)
-        self.assertIsNone(manager.process)
+            cancel_event.wait(2)
+            finished.set()
+            return 'cancelled result must not escape'
+        self.adapter.generate = generate
+        self.adapter.close = Mock(side_effect=lambda: self.assertTrue(finished.is_set()))
+        await self.ready()
+        task = asyncio.create_task(self.manager.complete([], None))
+        await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.adapter.close.assert_called_once()
+        self.assertEqual(self.manager.state, 'unloaded')
+
+    async def test_bad_response_is_error_and_actual_adapter_is_closed(self):
+        self.adapter.generate = Mock(return_value='')
+        await self.ready()
+        with self.assertRaises(RuntimeFailure):
+            await self.manager.complete([], None)
+        self.assertEqual(self.manager.state, 'error')
+        self.assertTrue(self.adapter.closed)
+
+    async def test_cleanup_failure_retains_adapter_for_retry(self):
+        await self.ready()
+        self.adapter.close = Mock(side_effect=[ValueError('cleanup failed'), None])
+        with self.assertRaises(ValueError):
+            await self.manager.unload()
+        self.assertIs(self.manager.adapter, self.adapter)
+        self.models.release_runtime_model.assert_not_called()
+        await self.manager.unload()
+        self.assertIsNone(self.manager.adapter)
+
+    async def test_multiple_gpu_selection_rejected(self):
+        with patch.dict('os.environ', {'KADAN_GPU': '0,1'}):
+            await self.manager.load()
+            await self.manager.task
+        self.assertEqual(self.manager.state, 'error')
+        self.factory.assert_not_called()

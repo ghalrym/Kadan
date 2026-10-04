@@ -516,13 +516,19 @@ export type RuntimeStatus = {
    */
   error?: string | null
   /**
+   * Memory
+   */
+  memory?: {
+    [key: string]: unknown
+  } | null
+  /**
    * Model Id
    */
   model_id?: string | null
   /**
    * State
    */
-  state: 'unloaded' | 'loading' | 'ready' | 'error'
+  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
 }
 
 /**

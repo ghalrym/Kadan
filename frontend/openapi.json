@@ -861,6 +861,18 @@
             ],
             "title": "Error"
           },
+          "memory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
           "model_id": {
             "anyOf": [
               {
@@ -877,6 +889,8 @@
               "unloaded",
               "loading",
               "ready",
+              "offloaded",
+              "unloading",
               "error"
             ],
             "title": "State",
@@ -1422,7 +1436,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses the explicitly loaded FreeToken runtime and returns an error when no model is ready. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },

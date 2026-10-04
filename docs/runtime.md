@@ -1,98 +1,115 @@
-# Local FreeToken runtime (draft; GPU validation pending)
+# Kadan inference and shared resources (draft)
 
-Kadan owns one local `ft serve` subprocess. Settings downloads the selected,
-pinned checkpoint first; Load acquires a selection lease until unload or failure.
-There is no implicit download or mock fallback during load or chat. One model and
-one chat request run at a time; overlapping generations return HTTP 429.
+Kadan owns inference and resource lifecycles. It does not launch FreeToken or
+use its runtime as a dependency. FreeToken was studied as an architectural/weight-
+layout reference; the implementation lives in `api/inference/`.
 
-Run the API natively on the Linux GPU host with **one worker and without reload**.
-The existing API Docker image does not contain CUDA or FreeToken and is not a GPU
-runtime installation. Do not launch multiple Kadan processes against the same
-model directory/GPU. Bind the API to localhost; this is a trusted local service,
-not an authenticated public deployment.
+## Ownership and execution
 
-## Separate GPU environment
+- `resources.py` admits named workloads (`llm`, `image`, `video`, `speech`,
+  `decision`) against separate host-RAM and per-GPU byte budgets. Active leases
+  prevent eviction. An inactive owner's cleanup callback must release tensors
+  before its reservation is reclaimed. An exclusive workload can evict inactive
+  GPU residents while retaining separately reserved CPU backing. Future modality
+  adapters will use this same API; no image/video/speech inference is implemented.
+- `checkpoint.py` reads only local indexed safetensors. Model skeletons start on
+  the meta device so constructing a model does not allocate all dense experts.
+  The three adapters validate their expected checkpoint tensor mappings and
+  substitute Kadan's expert execution while preserving family-specific routing,
+  attention, recurrent state, shared experts and activations.
+- `offload.py` owns CPU packed expert banks and a byte-bounded GPU LRU cache.
+  It transfers selected experts, evicts before allocation, and waits for CUDA
+  completion before recycling storage. CPU banks are safetensors-backed mappings;
+  they are not a promise that the OS pins every model byte in physical RAM.
+  Only requested transfer staging is pinned. Disk/page-fault latency is possible.
+- `quantization.py` implements NVFP4/MXFP4 and supported FP8 reference math with
+  bounded row-wise decode workspace. It does not expand all experts into BF16.
+  These PyTorch reference paths prioritize inspectable correctness, not throughput;
+  optimized fused kernels and performance tuning remain work to do.
+- `generation.py` owns bounded greedy autoregressive generation and cancellation.
+GPU residency is restored when chat follows an inactive model's eviction. Full
+  unload releases host backing too. The API reports `offloaded` rather than
+  pretending an evicted model is still in VRAM.
 
-The optional `api/requirements-runtime.txt` pins FreeToken to
-`d3512b43affe981465e03ee28cbd88f49c39b9aa` (Apache-2.0). Its transitive dependencies
-follow upstream constraints; this is not a fully locked or hardware-validated
-environment. Upstream currently requires Linux x86_64, NVIDIA driver r580+, a
-CUDA 13 toolkit with nvcc for first-use JIT, torch >=2.11,<2.12 and
-transformers >=5.16,<5.17. Do not modify a working GPU environment in place.
+Production selects one CUDA GPU using `KADAN_GPU` (default `0`). Two 24 GiB cards
+are not pooled into 48 GiB and tensor parallelism is not implemented. The initial
+resource capacity is 80% of probed available host/CUDA memory, with another live
+availability check at admission. Adapters reserve resident parameters, cache and
+working space. Reservations cannot prevent other processes consuming memory or
+predict every PyTorch allocator peak: allocation errors remain possible and are
+reported. Only one Kadan API process/worker may own a model store/GPU.
 
-On the target host, create a separate environment and install the pinned file:
+## Models and validation boundaries
+
+| Catalog | Direct implementation | Evidence and remaining work |
+| --- | --- | --- |
+| Small: NVIDIA Qwen3.6-35B-A3B-NVFP4 | Qwen3.5-MoE text architecture with hybrid GatedDeltaNet/attention, shared expert and mixed FP8/NVFP4 projections | Tiny synthetic mixed-quantization checkpoint and architecture parity tests; actual 35B checkpoint loading and GPU parity pending |
+| Medium: OpenAI GPT-OSS-120B | Native MXFP4 experts, GPT-specific interleaving/bias/clamped activation, preserved router/attention | Tiny full-model prefill/cached-decode parity with resident reference; actual 120B checkpoint loading and GPU parity pending |
+| Large: RedHatAI GLM-5.3-Flash-NVFP4 | GLM5-next text architecture, KDA/DSA/mHC, dense-prefix/shared experts and mixed packed weights | Tiny architecture/quantization tests; actual 320B tensor mapping, memory fit and GPU parity pending |
+
+Unknown tensor layouts, missing tensors, unsupported scale shapes and inadequate
+budgets fail explicitly. A checkpoint download is not inference validation. Vision
+and MTP execution are outside this text-chat task even when those files are in a
+checkpoint. The original claim that a FreeToken integration completed Kadan's
+model-management system is superseded by this design.
+
+GLM's ordinary dense linear weights also remain in host RAM and stream in bounded
+tiles; keeping them all on GPU exceeded the target budget. A full-default meta
+geometry check calculates about 1.431 GiB of remaining resident tensors plus an
+8 GiB cache/workspace reservation, rather than treating all dense weights as
+resident. This resolves the known admission-policy failure; it does not measure
+real peak GPU usage or establish actual checkpoint compatibility.
+
+No real catalog weights were downloaded or loaded in cloud, and no CUDA inference
+was run. Tests use real CPU tensor arithmetic and tiny synthetic checkpoints for
+mathematical checks; lifecycle/HTTP/browser tests use controlled doubles. CUDA tests
+are skipped without hardware. Target validation must inspect actual checkpoint
+headers, compare logits/generation with a reference, measure RAM/VRAM peaks,
+exercise expert churn, cancellation and cross-workload eviction/restoration, and
+verify all reservations/allocations are released. No speed or OOM guarantees.
+
+## Install and run on the target Linux GPU host
+
+The API-only Compose image does not install CUDA inference dependencies. Create a
+separate environment; do not replace an existing working CUDA environment. Choose
+a PyTorch 2.11.0 CUDA wheel compatible with the host driver using PyTorch's official
+installation instructions, then install the pinned remaining runtime requirements:
 
 ```sh
-python3 -m venv .venv-freetoken
-.venv-freetoken/bin/pip install -r api/requirements-runtime.txt
-.venv-freetoken/bin/ft --version
-export KADAN_FT_EXECUTABLE="$PWD/.venv-freetoken/bin/ft"
-export KADAN_FT_GPU=0
-python3 -m venv .venv
-.venv/bin/pip install -r api/requirements.txt
-.venv/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
+python3 -m venv .venv-inference
+# Install the appropriate torch==2.11.0 CUDA wheel in this environment first.
+.venv-inference/bin/pip install -r api/requirements.txt -r api/requirements-runtime.txt
+export KADAN_GPU=0
+export KADAN_MODEL_DIR=/path/to/model/storage
+.venv-inference/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-In a second terminal run `npm ci --prefix frontend` and
-`npm --prefix frontend run dev -- --host 127.0.0.1`. Open the printed URL, download
-and select a model in Settings, click Load selected model, wait for `ready`, then
-open Chat. Do not run the Compose API on the same port at the same time.
-Chat/model storage do not access Postgres; retain the existing migration/database
-setup for other database work. No demo data is inserted.
+Do not use `--reload` or multiple API workers. In another terminal, run
+`npm ci --prefix frontend` and `npm --prefix frontend run dev -- --host 127.0.0.1`.
+Download/select a model in Settings, load it, and use Chat after readiness. If the
+load fails, inspect the error; do not treat synthetic tests as a successful model
+installation. Do not run Compose's API on the same port simultaneously.
 
-The API environment also needs its normal requirements, including httpx; the GPU
-worker environment is separate. FreeToken output inherits API logs. Startup errors
-are surfaced in Runtime status; inspect those logs for detailed kernel/weight errors.
+The Transformers dependency is pinned to source commit
+`469230357aab0f2b303b0d638c1f8d06edb14184`: release 5.16.0 lacks GLM5-next definitions.
+PyTorch 2.11.0, Accelerate 1.10.1 and Safetensors 0.8.0 are pinned too. Transitive
+packages and CUDA drivers are not a complete hardware-validated lock.
 
-NVFP4 explicitly uses the native Triton kernel, **not** the vLLM Marlin donor.
-Upstream acknowledges that donor's transformers<5 dependency conflicts with its
-current transformers>=5 requirements. We do not suggest forcing incompatible wheels
-with --no-deps. The native Triton path has pre-sm89 e4m3 emulation for Ampere;
-this is source compatibility evidence, not an RTX 3090 inference test.
+Load/generation execute in an owned thread. Cancellation sets an event checked
+between loading/generation/cache operations and waits for actual work to stop
+before freeing memory; it cannot preempt an in-flight CUDA kernel. Timeout requests
+also wait for cooperative cleanup. A hung driver/kernel can therefore delay
+shutdown. The server never releases a reservation merely because an HTTP request
+was abandoned. Load has a 30-minute deadline; generation has a five-minute deadline,
+4096-token context bound for Qwen/GPT-OSS (512 for GLM's reference path), and a
+256-token output budget. Prefill is chunked to 32 tokens to bound eager attention
+query workspace; native optimized attention/FP4 kernels remain future work.
 
-## Memory and lifecycle
+## Research and licensing
 
-`--moe-strategy offload` puts expert banks in host RAM and uses FreeToken's LRU GPU
-expert slots. `--moe-cache-auto --memory-ratio 0.8 --kv-reserve-tokens 4096` asks its
-budget policy to size slots from available VRAM after weights/KV reserves, rather
-than allocating a fixed fraction of a 198GB checkpoint. `--text-model-only` skips
-vision towers. Context is capped at 4096 and output at 1024 tokens. The model's
-tokenizer still determines whether a supplied prompt fits; token-limit errors are
-reported as generation failures. These are conservative starting limits, not an
-OOM guarantee. Host pinned-memory/working-set needs can exceed checkpoint bytes.
-
-Only GPU 0 is used by default; `KADAN_FT_GPU` selects another single index or UUID.
-The two 24GB 3090 cards are **not** treated as pooled 48GB memory; there is no tensor
-parallelism or CPU expert execution. RAM is expert storage and GPU kernels compute
-selected experts. No guaranteed fit or performance is claimed for the catalog.
-
-FreeToken binds a dynamically chosen localhost port. Readiness requires its health
-status and matching served model ID, plus a live owned process. Startup has a
-30-minute timeout for initial JIT/loading. Kadan monitors the worker after startup,
-terminates its entire process group on unload/shutdown/failure, and escalates to
-SIGKILL after ten seconds. Cancelling a chat HTTP connection unloads the worker
-because dropping a proxy request alone does not prove GPU cancellation. Generation
-transport/response errors also unload; reload explicitly after reviewing the error.
-Selection is blocked during the runtime lease. Unload then select/load to switch.
-
-## Reviewed upstream contracts
-
-All links are pinned to the reviewed source, not moving main:
-
-- [CLI flags](https://github.com/FlashML-org/FreeToken/blob/d3512b43affe981465e03ee28cbd88f49c39b9aa/docs/cli.md)
-- [Host banks and LRU strategy](https://github.com/FlashML-org/FreeToken/blob/d3512b43affe981465e03ee28cbd88f49c39b9aa/docs/models.md)
-- [Native NVFP4 kernel and Marlin donor distinction](https://github.com/FlashML-org/FreeToken/blob/d3512b43affe981465e03ee28cbd88f49c39b9aa/python/freetoken/layers/quantization/moe/nvfp4.py)
-- [Ampere e4m3 compatibility](https://github.com/FlashML-org/FreeToken/blob/d3512b43affe981465e03ee28cbd88f49c39b9aa/python/freetoken/kernel/triton/e4m3_compat.py)
-- [Dependency constraints and donor conflict](https://github.com/FlashML-org/FreeToken/blob/d3512b43affe981465e03ee28cbd88f49c39b9aa/pyproject.toml)
-
-Tests use controlled subprocess doubles and HTTP responses: they validate lifecycle,
-request translation, concurrency rejection and failure behavior. No model weights,
-GPU inference, performance, or peak RAM/VRAM behavior were tested in cloud. Target-host
-validation must check install/JIT, each checkpoint's actual load, measured memory,
-chat, cancellation and unload before treating this draft as production-ready.
-
-Cloud validation also exercised the actual API's unloaded-model HTTP 503 response
-through Chromium and the Vite proxy. Controlled browser routes covered chat
-retry without duplicate turns, cancellation suppressing late responses, download
-failure/retry/progress/cancel/selection, and runtime load/readiness/unload. These
-browser responses were fixtures, not claims of successful GPU inference or downloads.
+PyTorch (BSD-style), Transformers (Apache-2.0), Accelerate (Apache-2.0) and Safetensors
+(Apache-2.0) remain third-party dependencies. Checkpoint terms are linked from
+Settings: Qwen/GPT-OSS Apache-2.0; GLM MIT. Preserve upstream notices when redistributing.
+FreeToken's Apache-2.0 source at `d3512b43affe981465e03ee28cbd88f49c39b9aa` informed
+layout research only; it is neither installed nor invoked. Source references are
+recorded in the relevant modules. No upstream FreeToken implementation was vendored.
