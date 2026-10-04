@@ -34,10 +34,10 @@ class ContextTests(unittest.TestCase):
         self.assertFalse((self.manager.root / 'context.json').exists())
 
     def test_completed_checkpoint_architecture_maximum(self):
-        path = self.manager._path(CATALOG['small'])
+        path = self.manager._checkpoint_directory(CATALOG['small'])
         path.mkdir()
         (path / 'config.json').write_text(json.dumps({'text_config': {'max_position_embeddings': 262144}}))
-        with patch.object(self.manager, '_complete', return_value=True):
+        with patch.object(self.manager, '_checkpoint_complete', return_value=True):
             self.assertEqual(self.manager.architecture_context('small'), 262144)
             self.manager.set_context('small', 262144)
             with self.assertRaisesRegex(ValueError, 'architecture maximum'):
