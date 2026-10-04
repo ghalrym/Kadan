@@ -1,5 +1,6 @@
 // No additional test dependencies: compile the SDK adapter into an isolated temp
 // directory, then exercise its real HTTP request path with controlled fetch.
+// These contract tests do not validate browser layout or GPU/model inference.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'

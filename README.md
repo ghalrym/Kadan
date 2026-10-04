@@ -43,3 +43,18 @@ root.
    ```sh
    docker compose down
    ```
+
+## Frontend checks
+
+From the repository root, run:
+
+```sh
+npm --prefix frontend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
+```
+
+Open `/chat` after starting the development services. Vite proxies `/v1` to
+`http://127.0.0.1:8000`; set `API_PROXY_TARGET` to use another development backend.
+To check recovery manually, stop the API, send a message, restart the API and retry.
+Cancel a pending request and verify that a late reply is not appended.
