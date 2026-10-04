@@ -323,7 +323,7 @@ export type ModelSetting = {
   /**
    * Selected
    */
-  selected: string
+  selected: string | null
   /**
    * Type
    */
@@ -571,12 +571,12 @@ export type SettingsRequest = {
    * Models
    */
   models: {
-    [key: string]: string
+    [key: string]: 'small' | 'medium' | 'large'
   }
   /**
    * Whisper Formatting
    */
-  whisper_formatting?: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
@@ -589,8 +589,10 @@ export type SettingsResponse = {
   models: Array<ModelSetting>
   /**
    * Whisper Formatting
+   *
+   * Null: no transcription provider is configured.
    */
-  whisper_formatting: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**

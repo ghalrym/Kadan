@@ -556,8 +556,15 @@
             "type": "array"
           },
           "selected": {
-            "title": "Selected",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected"
           },
           "type": {
             "enum": [
@@ -971,24 +978,29 @@
         "properties": {
           "models": {
             "additionalProperties": {
+              "enum": [
+                "small",
+                "medium",
+                "large"
+              ],
               "type": "string"
             },
             "propertyNames": {
-              "enum": [
-                "LLM",
-                "Image",
-                "Video",
-                "TTS",
-                "STT"
-              ]
+              "const": "LLM"
             },
             "title": "Models",
             "type": "object"
           },
           "whisper_formatting": {
-            "default": true,
-            "title": "Whisper Formatting",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whisper Formatting"
           }
         },
         "required": [
@@ -1007,13 +1019,20 @@
             "type": "array"
           },
           "whisper_formatting": {
-            "title": "Whisper Formatting",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: no transcription provider is configured.",
+            "title": "Whisper Formatting"
           }
         },
         "required": [
-          "models",
-          "whisper_formatting"
+          "models"
         ],
         "title": "SettingsResponse",
         "type": "object"
@@ -1673,6 +1692,7 @@
     },
     "/v1/chat/messages": {
       "get": {
+        "description": "Chat is stateless on the server. Conversations are held by the calling client; no persisted messages are available.",
         "operationId": "listMessages",
         "responses": {
           "200": {
@@ -2264,7 +2284,7 @@
         ]
       },
       "put": {
-        "description": "Validates settings and returns the unchanged mock settings. Does not persist changes.",
+        "description": "Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {
