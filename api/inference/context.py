@@ -17,14 +17,19 @@ class ContextMemoryError(RuntimeError):
 
 
 def _get(config, key, default=None):
+    """Read a configuration key from either a mapping or an attribute-based object."""
     return config.get(key, default) if isinstance(config, dict) else getattr(config, key, default)
 
 
 def text_config(config):
+    """Return the nested text configuration when present, otherwise the supplied configuration."""
     return _get(config, 'text_config', None) or config
 
 
 def resolve_context(config, configured=None):
+    """Return (architecture maximum, effective limit). None selects the maximum; invalid or
+    excessive limits raise ContextLimitError without truncation.
+    """
     supported = _get(text_config(config), 'max_position_embeddings')
     if isinstance(supported, bool) or not isinstance(supported, int) or supported < 1:
         raise ContextLimitError('Checkpoint does not declare a positive architecture context limit')
@@ -34,6 +39,9 @@ def resolve_context(config, configured=None):
 
 
 def configure_context(adapter, configured=None):
+    """Validate a requested limit and set the adapter context metadata without allocating model or
+    cache memory.
+    """
     supported, effective = resolve_context(adapter.model.config, configured)
     adapter.configured_context_limit = configured
     adapter.supported_context_limit = supported
@@ -48,15 +56,21 @@ class RequestMemory:
 
     @property
     def device_bytes(self):
+        """Return estimated request cache plus workspace bytes, excluding resident model weights."""
         return self.cache_bytes + self.workspace_bytes
 
 
 def estimate_request_memory(config, total_tokens, prompt_tokens):
+    """Estimate batch-one cache, workspace and host bytes for actual prompt-plus-output tokens.
+    Reject invalid dimensions or unsupported architectures; estimates are not measured GPU
+    peaks.
+    """
     c = text_config(config)
     if (any(isinstance(v, bool) or not isinstance(v, int) for v in (total_tokens, prompt_tokens))
             or not 0 < prompt_tokens <= total_tokens):
         raise ValueError('Invalid token counts for request memory estimate')
     def integer(key, default=None):
+        """Read a positive integer architecture dimension or raise ContextMemoryError."""
         value = _get(c, key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ContextMemoryError(f'Cannot budget checkpoint: invalid {key}')

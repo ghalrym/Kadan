@@ -3,10 +3,18 @@ import { ModeNavigation } from '../components/Controls'
 import { imageHistory, requestImages, type ImageOptions } from '../api/images'
 import type { ImageSet } from '../api/generated/types.gen'
 
+/**
+ * Select generate/edit mode and remount its workspace when the mode changes.
+ */
 export default function ImagePage({ edit = false }: { edit?: boolean }) {
   return <ImageWorkspace key={String(edit)} edit={edit} />
 }
 
+/**
+ * Own mode-specific settings, API history and a single active image request.
+ * Abort history and submission work on cleanup; show provider or metadata-only
+ * errors without manufacturing image previews or claiming uploads.
+ */
 function ImageWorkspace({ edit }: { edit: boolean }) {
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<ImageOptions['aspect']>('1:1')
@@ -43,6 +51,11 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     },
     [edit],
   )
+  /**
+   * Submit normalized prompt/seed settings and optional reference/strength.
+   * Prevent overlapping submissions, surface cancellation/errors only while this
+   * controller is current, and leave results empty when no image files exist.
+   */
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (active.current) return
