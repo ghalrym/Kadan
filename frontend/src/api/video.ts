@@ -3,10 +3,17 @@ import type { VideoGenerationRequest, VideoJob } from './generated/types.gen'
 
 export type { VideoJob, VideoGenerationRequest }
 
+/**
+ * Return whether server-reported job status still requires polling.
+ */
 export function isPendingVideo(job: VideoJob) {
   return job.status === 'Queued' || job.status === 'Rendering'
 }
 
+/**
+ * Accept HTTP success or throw an actionable transport/provider/validation error.
+ * A missing response represents a failed request, including an aborted fetch.
+ */
 function checkResponse(response?: Response) {
   if (response?.ok) return
   if (response?.status === 503)
@@ -26,6 +33,10 @@ function checkResponse(response?: Response) {
   )
 }
 
+/**
+ * Return job metadata after checking a truthy ID, string prompt, status and progress.
+ * Throw for malformed metadata; a valid job does not establish a playable video URL.
+ */
 function validateJob(job: VideoJob | undefined): VideoJob {
   if (
     !job ||
@@ -40,6 +51,9 @@ function validateJob(job: VideoJob | undefined): VideoJob {
   return job
 }
 
+/**
+ * Fetch and validate the queue, forwarding cancellation and rejecting invalid lists.
+ */
 export async function loadVideos(signal: AbortSignal) {
   const result = await listVideos({ signal })
   checkResponse(result.response)
@@ -48,6 +62,9 @@ export async function loadVideos(signal: AbortSignal) {
   return result.data.jobs.map(validateJob)
 }
 
+/**
+ * Fetch one cancellable job update and reject an ID mismatch or invalid metadata.
+ */
 export async function refreshVideo(id: string, signal: AbortSignal) {
   const result = await getVideo({ path: { video_id: id }, signal })
   checkResponse(result.response)
@@ -56,6 +73,11 @@ export async function refreshVideo(id: string, signal: AbortSignal) {
   return job
 }
 
+/**
+ * Validate prompt, duration and frame rate before submitting typed settings.
+ * Forward cancellation and return validated job metadata only on API success;
+ * the current unconfigured provider instead produces a visible 503 error.
+ */
 export async function submitVideo(
   body: VideoGenerationRequest,
   signal: AbortSignal,
