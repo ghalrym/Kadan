@@ -188,3 +188,25 @@ class ModelAdapterTests(unittest.TestCase):
         actual = autoregressive_generate(model, tokenizer, [{'role': 'user', 'text': 'fixture'}],
                                          'cpu', max_new_tokens=3)
         self.assertEqual(actual, str(expected))
+
+    def test_full_size_skeleton_has_no_materialized_experts_or_meta_rope(self):
+        from api.inference.model_adapter import build_gptoss_skeleton
+        from unittest.mock import patch
+        # Default architecture dimensions are full-size, but every parameter and
+        # every temporary factory allocation must be meta, not merely moved there
+        # after nn.Parameter registration.
+        config = GptOssConfig()
+        config._attn_implementation = 'eager'
+        native_empty = torch.empty
+        def guarded_empty(*args, **kwargs):
+            import math
+            shape = args[0] if len(args) == 1 and isinstance(args[0], (tuple, list)) else args
+            if math.prod(shape) > 1_000_000:
+                actual_device = torch.device(kwargs.get('device') or torch.get_default_device())
+                self.assertEqual(actual_device.type, 'meta', 'Large constructor allocation escaped meta')
+            return native_empty(*args, **kwargs)
+        with patch('torch.empty', guarded_empty):
+            model = build_gptoss_skeleton(config)
+        self.assertTrue(all(parameter.is_meta for parameter in model.parameters()))
+        self.assertTrue(all(not buffer.is_meta for buffer in model.buffers()))
+        self.assertTrue(torch.isfinite(model.model.rotary_emb.inv_freq).all())

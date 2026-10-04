@@ -38,6 +38,17 @@ class GptOssOffloadedExperts(nn.Module):
         return output
 
 
+def build_gptoss_skeleton(config):
+    from transformers import GptOssForCausalLM
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssRotaryEmbedding
+    with torch.device('meta'):
+        model = GptOssForCausalLM(config)
+    # RoPE buffers are deterministic configuration-derived state, not checkpoint
+    # tensors. Rebuild them on CPU instead of leaving uninitialized to_empty data.
+    model.model.rotary_emb = GptOssRotaryEmbedding(config)
+    return model
+
+
 class GptOssAdapter:
     def __init__(self, entry, path, resources, device, cancel_event=None):
         self.resources, self.device = resources, torch.device(device)
@@ -57,9 +68,8 @@ class GptOssAdapter:
         if config_data.get('quantization_config', {}).get('quant_method') != 'mxfp4':
             raise ValueError('Expected native MXFP4 GPT-OSS weights')
         config_data.pop('quantization_config', None)
-        from accelerate import init_empty_weights
         from accelerate.utils import set_module_tensor_to_device
-        from transformers import AutoTokenizer, GptOssConfig, GptOssForCausalLM
+        from transformers import AutoTokenizer, GptOssConfig
         config = GptOssConfig(**config_data)
         config._attn_implementation = 'eager'
         config._experts_implementation = 'eager'
@@ -80,8 +90,7 @@ class GptOssAdapter:
         self.cache_bytes = 2 * 1024**3
         try:
             check_cancel(cancel_event)
-            with init_empty_weights(include_buffers=False):
-                self.model = GptOssForCausalLM(config)
+            self.model = build_gptoss_skeleton(config)
             banks = {}
             for layer in range(layers):
                 check_cancel(cancel_event)
@@ -154,11 +163,13 @@ class GptOssAdapter:
             self.is_resident = False
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None):
-        with self._lock:
-            if self.model is None:
-                raise RuntimeError('Model has been closed')
-            self._restore(cancel_event)
-            with self.host_reservation.lease(cancel_event=cancel_event), self.device_reservation.lease(cancel_event=cancel_event):
+        if self.model is None:
+            raise RuntimeError('Model has been closed')
+        # Admission can run eviction callbacks taking adapter locks. Never hold
+        # this adapter lock while waiting for the resource admission lock.
+        self._restore(cancel_event)
+        with self.host_reservation.lease(cancel_event=cancel_event), self.device_reservation.lease(cancel_event=cancel_event):
+            with self._lock:
                 for layer in self.model.model.layers:
                     layer.mlp.experts.cancel_event = cancel_event
                 return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
