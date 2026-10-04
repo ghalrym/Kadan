@@ -191,7 +191,9 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               type="submit"
               className="button button--primary"
               disabled={
-                !script.trim() || !(clone ? sample : description).trim()
+                loadingHistory ||
+                !script.trim() ||
+                !(clone ? sample : description).trim()
               }
             >
               {error ? 'Retry speech request' : 'Generate speech'}
