@@ -32,12 +32,7 @@ execFileSync(
 )
 writeFileSync(join(output, 'package.json'), '{"type":"commonjs"}')
 const require = createRequire(import.meta.url)
-const {
-  requestChat,
-  chatRequest,
-  MAX_MESSAGE_LENGTH,
-  MAX_HISTORY_MESSAGES,
-} = require(join(output, 'chat.js'))
+const { requestChat, chatRequest } = require(join(output, 'chat.js'))
 const { client } = require(join(output, 'generated/client.gen.js'))
 const messages = [{ role: 'user', text: 'Hello', meta: 'not sent' }]
 const signal = () => new AbortController().signal
@@ -78,7 +73,7 @@ test('unavailable, busy, validation and server errors are not successes; retry c
     mockFetch(async () => Response.json({ detail: 'failure' }, { status }))
     await assert.rejects(
       requestChat(messages, signal()),
-      status === 413 ? /Start a new chat or shorten/ : undefined,
+      status === 413 ? /failure/ : undefined,
     )
   }
   mockFetch(async () =>
@@ -123,17 +118,34 @@ test('cancellation reaches fetch and prevents a successful completion', async ()
   await assert.rejects(pending)
 })
 
-test('bounds reject empty, oversized input and oversized history before fetch', () => {
+test('empty conversations and blank messages are rejected', () => {
   assert.throws(() => chatRequest([]))
-  assert.throws(() => chatRequest([{ role: 'user', text: ' ' }]))
-  assert.throws(() =>
-    chatRequest([{ role: 'user', text: 'x'.repeat(MAX_MESSAGE_LENGTH + 1) }]),
-  )
-  assert.throws(() =>
-    chatRequest(Array(MAX_HISTORY_MESSAGES + 1).fill(messages[0])),
-  )
-  assert.equal(
-    chatRequest(Array(MAX_HISTORY_MESSAGES).fill(messages[0])).messages.length,
-    MAX_HISTORY_MESSAGES,
+  assert.throws(() => chatRequest([{ role: 'user', text: ' \n\t' }]))
+})
+
+test('large skill text and long histories are forwarded intact without product caps', async () => {
+  const skill =
+    '  # Skill\n' + 'Detailed instructions.\n'.repeat(50_000) + '\n  '
+  const history = Array.from({ length: 64 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    text: `Turn ${index}`,
+  }))
+  history.push({ role: 'user', text: skill })
+  mockFetch(async (request) => {
+    assert.deepEqual(await request.json(), { messages: history })
+    return Response.json({ message: { role: 'assistant', text: 'Received' } })
+  })
+  assert.equal((await requestChat(history, signal())).text, 'Received')
+})
+
+test('model context detail is surfaced and missing detail gives actionable context guidance', async () => {
+  const detail =
+    'Prompt uses 17000 tokens; loaded model context is 16384 tokens.'
+  mockFetch(async () => Response.json({ detail }, { status: 413 }))
+  await assert.rejects(requestChat(messages, signal()), { message: detail })
+  mockFetch(async () => Response.json({}, { status: 413 }))
+  await assert.rejects(
+    requestChat(messages, signal()),
+    /configured token context/,
   )
 })

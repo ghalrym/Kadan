@@ -74,3 +74,12 @@ process-local. Selection does not load a model or establish GPU compatibility.
 Review catalog model cards/licenses before downloading: Qwen and GPT-OSS are
 Apache 2.0; GLM is MIT. Downloader ownership and integrity details live alongside
 its implementation in `api/services/model_downloads.py`.
+
+Chat forwards the full nonblank message text and conversation history without fixed
+character or turn limits. Capacity is determined by the backend’s loaded model and
+configured token context; API context errors are shown in the chat page.
+
+Set a per-model context limit in Settings, or leave it blank to use that
+checkpoint's architecture maximum. Configuration persists across restarts.
+Unload the active model before changing context. A saved context is not a memory
+allocation or a guarantee that a request of that size fits on the target hardware.
