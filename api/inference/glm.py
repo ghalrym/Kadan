@@ -28,11 +28,16 @@ FP32_PARTS = ('forget_gate.A_log', 'forget_gate.dt_bias', '_hc.', 'conv1d',
 
 
 def dense_dtype(name):
+    """Keep named sensitive gate, convolution and mixing tensors FP32; use BF16 otherwise."""
     return torch.float32 if any(part in name for part in FP32_PARTS) else torch.bfloat16
 
 
 def source_names(name):
-    """Map a text-model tensor to original GLM checkpoint keys, before allocation."""
+    """Return original checkpoint keys for one Transformers text-model tensor.
+
+    Undo mHC and forget-gate renames. A fused convolution maps to three keys
+    in q/k/v concatenation order; the language head keeps its root key.
+    Reject parameters outside the supported text-model namespace."""
     if name == 'lm_head.weight':
         return (name,)
     if not name.startswith('model.'):
@@ -47,7 +52,12 @@ def source_names(name):
 
 
 def read_dense(reader, names, dtype):
-    """Strict dense BF16/FP32 or explicitly scaled 128x128 FP8 loading."""
+    """Read CPU nonexpert weights, cast them, and concatenate multiple keys by row.
+
+    Accept BF16, FP16 and FP32 tensors, or 2-D E4M3FN weights with explicit
+    128x128 weight_scale_inv blocks. FP8 arithmetic expands scales in FP32
+    before casting. Unsupported dtypes or missing/mismatched scales raise
+    ValueError; this may allocate a full dense host projection."""
     tensors = []
     for name in names:
         weight = reader.tensor(name)
@@ -67,6 +77,12 @@ def read_dense(reader, names, dtype):
 
 
 def validate_expert(tensors, hidden, intermediate):
+    """Check the three packed projections of one compressed-tensors GLM expert.
+
+    Gate/up matrices are [intermediate, hidden]; down is [hidden, intermediate].
+    Accept eight FP4 values per int32 or two per uint8, one E4M3FN scale per
+    16 columns, and finite positive scalar/per-row global quant scales.
+    Return None on success; malformed dimensions, dtypes or globals raise."""
     for part, shape in (('gate_proj', (intermediate, hidden)),
                         ('up_proj', (intermediate, hidden)),
                         ('down_proj', (hidden, intermediate))):
@@ -87,11 +103,18 @@ def validate_expert(tensors, hidden, intermediate):
 class GlmExperts(nn.Module):
     """Replace only routed expert matmuls; native GLM router/shared expert remain."""
     def __init__(self, cache, layer, limit):
+        """Bind a layer's cache and SwiGLU clamp limit without allocating expert weights."""
         super().__init__()
         self.cache, self.layer, self.limit = cache, layer, limit
         self.cancel_event = None
 
     def forward(self, hidden, indices, weights):
+        """Combine routed experts for hidden [tokens, hidden_size] using top-k routing.
+
+        Indices and routing weights are [tokens, top_k]. Lease one packed expert
+        at a time, apply GLM's clamped SwiGLU, then accumulate weighted outputs
+        in the input dtype. Cancellation is checked between experts; admission
+        and decoder errors propagate. Shared experts remain in the native layer."""
         result = torch.zeros_like(hidden)
         for expert in indices.unique().tolist():
             check_cancel(self.cancel_event)
@@ -99,6 +122,7 @@ class GlmExperts(nn.Module):
             with self.cache.use((self.layer, expert)) as tensors:
                 x = hidden[token]
                 def linear(value, part):
+                    """Apply a leased gate/up/down projection with reciprocal global-scale semantics."""
                     return nvfp4_linear(value, tensors[f'{part}.weight_packed'],
                                         tensors[f'{part}.weight_scale'],
                                         tensors[f'{part}.weight_global_scale'],
@@ -111,12 +135,19 @@ class GlmExperts(nn.Module):
 
 
 class TextLM(nn.Module):
+    """Expose a text decoder and language head through the owned generation-loop interface."""
     def __init__(self, model, config):
+        """Attach the supplied decoder and create its untied, bias-free vocabulary projection."""
         super().__init__()
         self.model, self.config = model, config
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, input_ids, past_key_values=None, use_cache=True, logits_to_keep=1, **kwargs):
+        """Return trailing-token logits and the decoder's updated attention cache.
+
+        Forward incoming cached KDA/DSA state to the native text decoder; project
+        only the last logits_to_keep hidden states. Vision and MTP paths are absent.
+        Extra generation-loop keywords are accepted but not forwarded."""
         output = self.model(input_ids=input_ids, past_key_values=past_key_values,
                             use_cache=use_cache, return_dict=True)
         return SimpleNamespace(logits=self.lm_head(output.last_hidden_state[:, -logits_to_keep:]),
@@ -126,11 +157,20 @@ class TextLM(nn.Module):
 class HostLinear(nn.Module):
     """Ordinary GLM projections live in host RAM and execute bounded row tiles."""
     def __init__(self, weight, keys, cache, cancellation):
+        """Retain detached CPU weights and ordered tile keys without registering GPU parameters.
+
+        The plain weight attribute also supplies the dtype expected by native GLM
+        layers. Cancellation is a callable returning the current request event."""
         super().__init__()
         self.weight = weight.detach()  # ordinary tensor: Module.to cannot move it
         self.keys, self.cache, self.cancellation = keys, cache, cancellation
 
     def forward(self, x):
+        """Return [..., output_rows] by leasing CPU-backed weight tiles onto the input device.
+
+        Each tile lease ends after its matmul; the entry may remain cached until
+        eviction. Cancellation and cache admission failures propagate. Output storage is allocated separately from cache tiles.
+        Module.to() does not relocate the retained full host weight."""
         result = torch.empty((*x.shape[:-1], self.weight.shape[0]), dtype=x.dtype, device=x.device)
         row = 0
         for key in self.keys:
@@ -143,7 +183,12 @@ class HostLinear(nn.Module):
 
 
 class GlmAdapter:
+    """Own GLM host storage, GPU residency and serialized generation lifecycle.
+
+    GPU eviction retains host banks for restoration. Explicit close releases
+    both tiers; request token/KV admission is delegated to the generation loop."""
     def __init__(self):
+        """Initialize an empty ownership handle; build_glm supplies model, device and reservations."""
         self._lock = RLock()
         self.model = self.cache = self.bank = self.reservation = None
         self.device_reservation = None
@@ -151,9 +196,14 @@ class GlmAdapter:
 
     @property
     def is_resident(self):
+        """Report whether a model and device reservation exist, without probing CUDA health."""
         return self.model is not None and self.device_reservation is not None
 
     def _restore(self, event=None):
+        """Admit resident GPU tensors and move registered model state to the selected device.
+
+        Packed experts and plain host projection weights stay in RAM. A closed
+        model raises RuntimeError; admission/copy errors propagate after rollback."""
         if self.is_resident:
             return
         if self.model is None:
@@ -169,6 +219,11 @@ class GlmAdapter:
             raise
 
     def _offload(self):
+        """Evict GPU cache entries and move registered state to RAM before releasing VRAM.
+
+        Use a nonblocking adapter lock because resource admission invokes this
+        callback while holding its own lock. Busy adapters raise ResourceBusy;
+        host banks and their reservation survive for a later restore."""
         if not self._lock.acquire(blocking=False):
             raise ResourceBusy('GLM is busy; cannot evict during restore/generation')
         try:
@@ -184,12 +239,18 @@ class GlmAdapter:
             self._lock.release()
 
     def _sync(self):
+        """Finish selected-device CUDA work and release unused allocator blocks; CPU is a no-op."""
         if self.device.type == 'cuda':
             torch.cuda.synchronize(self.device)
             with torch.cuda.device(self.device):
                 torch.cuda.empty_cache()
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None):
+        """Return greedy response text while holding host and device ownership leases.
+
+        Restore GPU residency if necessary and propagate cancellation to tiled and
+        expert operations. The shared loop validates the effective token limit and
+        admits request memory; limit/admission failures do not silently shorten input."""
         with self._lock:
             with self.reservation.lease(cancel_event):
                 self._restore(cancel_event)
@@ -207,6 +268,10 @@ class GlmAdapter:
                         self._cancel = None
 
     def close(self):
+        """Drop model/cache/bank references, synchronize CUDA, then release both reservations.
+
+        Serialize against generation. Cleanup errors propagate so callers can retain
+        this handle and retry instead of treating its memory as already released."""
         with self._lock:
             if self.cache is not None:
                 self.cache.close()
@@ -221,13 +286,18 @@ class GlmAdapter:
 
 
 def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
-    """Strict, no-network loading of the GLM text decoder with Kadan ownership.
+    """Build a locally loaded GLM text adapter with Kadan-owned memory and execution.
 
-    Eager reference kernels are slow. Exact checkpoint/GPU parity is unvalidated.
-    Only measured resident tensors and 16 MiB decode scratch remain reserved.
-    Cache entries and request KV/workspace share remaining VRAM dynamically;
-    dense projections stream from RAM. Insufficient capacity fails explicitly.
-    """
+    Validate checkpoint names, shapes and compressed-tensors packing before
+    publishing the adapter. Construct a meta skeleton, retain packed experts and
+    dense projection tiles in host RAM, and admit resident state on one CUDA
+    GPU. Vision/MTP and activation calibration tensors are explicitly excluded.
+
+    Return a ready adapter; unsupported checkpoints, missing dependencies,
+    cancellation or admission failures raise with partial ownership cleaned up.
+    Resident tensors plus 16 MiB decode scratch are reserved separately from
+    per-entry cache and request KV/workspace. CPU tests cover components only;
+    full checkpoint/GPU parity and peak memory remain unvalidated."""
     check_cancel(cancel_event)
     try:
         from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig

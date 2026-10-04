@@ -111,6 +111,8 @@ export const health = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Model Lifecycle
+ *
+ * Return current model state, context limits and shared-memory accounting without loading a model.
  */
 export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
   options?: Options<GetModelLifecycleStatusData, ThrowOnError>,
@@ -123,6 +125,9 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 
 /**
  * Load Selected Model
+ *
+ * Accept loading of the selected complete checkpoint and return its initial state; map
+ * lifecycle conflicts and validation failures to HTTP errors.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,
@@ -135,6 +140,8 @@ export const loadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * Unload Selected Model
+ *
+ * Request cooperative cancellation and wait for model cleanup before returning unloaded state.
  */
 export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<UnloadSelectedModelData, ThrowOnError>,
@@ -200,6 +207,9 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Completion
+ *
+ * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
+ * awaits cleanup; runtime failures preserve their HTTP status.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,
@@ -326,6 +336,12 @@ export const getMetrics = <ThrowOnError extends boolean = false>(
 
 /**
  * List Models
+ *
+ * Return current catalog, download progress, saved selection, and context limits.
+ *
+ * Completeness is checked from local files; this does not start downloads or
+ * load models. Context/configuration errors propagate; an unreadable or
+ * invalid saved selection is represented as no selection.
  */
 export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
   options?: Options<ListModelsV1ModelsGetData, ThrowOnError>,
@@ -338,6 +354,11 @@ export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
 
 /**
  * Select Model
+ *
+ * Save a completed model as the selection for a subsequent runtime load.
+ *
+ * Returns refreshed status, or 409 for a runtime lease, 400 for an incomplete
+ * checkpoint, and 503 for unavailable storage. Selection alone loads no tensors.
  */
 export const selectModelV1ModelsSelectionPut = <
   ThrowOnError extends boolean = false,
@@ -363,6 +384,11 @@ export const selectModelV1ModelsSelectionPut = <
 
 /**
  * Configure Context
+ *
+ * Persist the model's context limit and return refreshed catalog status.
+ *
+ * Null uses the architecture maximum on load. Returns 409 while a runtime lease
+ * is held, 400 for invalid limits/model IDs, or 503 for unavailable storage.
  */
 export const configureContextV1ModelsModelIdContextPut = <
   ThrowOnError extends boolean = false,
@@ -388,6 +414,11 @@ export const configureContextV1ModelsModelIdContextPut = <
 
 /**
  * Cancel Download
+ *
+ * Request cancellation and return status with HTTP 202 before cleanup finishes.
+ *
+ * Unknown models return 400, inactive jobs return 409, and storage errors return
+ * 503. Completed checkpoints are never deleted by this endpoint.
  */
 export const cancelDownloadV1ModelsModelIdDownloadDelete = <
   ThrowOnError extends boolean = false,
@@ -409,6 +440,12 @@ export const cancelDownloadV1ModelsModelIdDownloadDelete = <
 
 /**
  * Download Model
+ *
+ * Start a catalog checkpoint download and return status with HTTP 202.
+ *
+ * Acceptance is not completion; poll the catalog for progress or failure.
+ * Unknown models return 400; active/completed conflicts return 409 and storage
+ * failures return 503. Only pinned catalog checkpoints may be downloaded.
  */
 export const downloadModelV1ModelsModelIdDownloadPost = <
   ThrowOnError extends boolean = false,

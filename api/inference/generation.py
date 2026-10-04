@@ -8,12 +8,16 @@ from .resources import ResourceExhausted
 
 
 def check_cancel(cancel_event):
+    """Raise InterruptedError at a cooperative boundary when the optional threading event is set."""
     if cancel_event is not None and cancel_event.is_set():
         raise InterruptedError('Inference cancelled')
 
 
 @contextmanager
 def request_memory(resources, owner, config, total, prompt, device, cancel_event, expert_headroom_bytes=0):
+    """Lease estimated request memory and staging RAM until cleanup. Probe one expert slot without
+    promising future capacity; synchronize CUDA before release. Tests may omit resources.
+    """
     if resources is None:
         # Only small standalone numerical tests omit the production manager.
         yield
@@ -67,6 +71,10 @@ def request_memory(resources, owner, config, total, prompt, device, cancel_event
 @torch.inference_mode()
 def autoregressive_generate(model, tokenizer, messages, device, cancel_event=None,
                             max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0):
+    """Return greedy decoded text from role/text messages using 32-token prefill chunks. Validate
+    context and admit memory before GPU transfer; cancellation and failed forwards release
+    request references before the lease ends.
+    """
     check_cancel(cancel_event)
     if not 1 <= max_new_tokens <= 1024:
         raise ContextLimitError('Output token limit must be between 1 and 1024')
