@@ -118,6 +118,54 @@ class ContextTests(unittest.TestCase):
                 autoregressive_generate(Model(), tokenizer, [], 'cpu', resources=resources, cancel_event=event)
             self.assertEqual(resources.snapshot()['reservations'], {})
 
+    def test_working_expert_must_fit_before_forward(self):
+        import torch
+        from api.inference.generation import autoregressive_generate
+        from api.inference.resources import ResourceManager
+        budget = estimate_request_memory(self.config(), 266, 10)
+        resources = ResourceManager(10**9, {0: budget.device_bytes + 1023})
+        model = Mock()
+        model.config = SimpleNamespace(**self.config(), eos_token_id=1)
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = torch.ones((1, 10), dtype=torch.long)
+        with self.assertRaisesRegex(ContextMemoryError, 'working expert'):
+            autoregressive_generate(model, tokenizer, [], 'cuda:0', resources=resources, expert_headroom_bytes=1024)
+        model.assert_not_called()
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_preflight_evicts_idle_expert_for_request_then_working_slot(self):
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        from api.inference.generation import request_memory
+        from api.inference.resources import ResourceManager
+        budget = estimate_request_memory(self.config(), 4096, 3840)
+        resources = ResourceManager(10**9, {0: budget.device_bytes + 1024})
+        evicted = []
+        def evict():
+            evicted.append(True)
+            old.release()
+        old = resources.reserve('idle-expert', 'llm', device_bytes={0: 1024}, evict=evict)
+        with patch('torch.cuda.synchronize'), patch('torch.cuda.empty_cache'), patch('torch.cuda.device', return_value=nullcontext()):
+            with request_memory(resources, 'model', self.config(), 4096, 3840, 'cuda:0', None, 1024):
+                self.assertEqual(evicted, [True])
+                self.assertEqual(sum(r['host_bytes'] for r in resources.snapshot()['reservations'].values()), budget.host_bytes + 2048)
+                working = resources.reserve('working-expert', 'llm', device_bytes={0: 1024})
+                working.release()
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_cache_race_failure_becomes_admission_error_and_releases_request(self):
+        import torch
+        from api.inference.generation import autoregressive_generate
+        from api.inference.resources import ResourceManager, ResourceExhausted
+        resources = ResourceManager(10**9, {})
+        model = Mock(side_effect=ResourceExhausted('competing allocation'))
+        model.config = SimpleNamespace(**self.config(), eos_token_id=1)
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = torch.ones((1, 10), dtype=torch.long)
+        with self.assertRaisesRegex(ContextMemoryError, 'memory changed'):
+            autoregressive_generate(model, tokenizer, [], 'cpu', resources=resources)
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
     def test_long_input_uses_all_chunks_without_fixed_fixture_limit(self):
         import torch
         from api.inference.generation import autoregressive_generate

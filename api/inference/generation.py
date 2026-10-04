@@ -13,29 +13,51 @@ def check_cancel(cancel_event):
 
 
 @contextmanager
-def request_memory(resources, owner, config, total, prompt, device, cancel_event):
+def request_memory(resources, owner, config, total, prompt, device, cancel_event, expert_headroom_bytes=0):
     if resources is None:
         # Only small standalone numerical tests omit the production manager.
         yield
         return
     estimate = estimate_request_memory(config, total, prompt)
+    if isinstance(expert_headroom_bytes, bool) or not isinstance(expert_headroom_bytes, int) or expert_headroom_bytes < 0:
+        raise ContextMemoryError('Invalid expert transfer headroom')
+    # Hold contiguous-copy + pinned staging headroom for the entire request.
+    host_bytes = estimate.host_bytes + 2 * expert_headroom_bytes
     device = torch.device(device)
     try:
         reservation = resources.reserve(
-            f'{owner}:request:{uuid4()}', 'llm', host_bytes=estimate.host_bytes,
+            f'{owner}:request:{uuid4()}', 'llm', host_bytes=host_bytes,
             device_bytes={device.index or 0: estimate.device_bytes} if device.type == 'cuda' else {},
             cancel_event=cancel_event)
     except ResourceExhausted as exc:
         raise ContextMemoryError(
             f'Request needs approximately {estimate.device_bytes / 1024**3:.2f} GiB additional GPU memory '
-            f'for {total} prompt-plus-output tokens and does not fit available RAM/VRAM. '
+            f'and {host_bytes / 1024**2:.1f} MiB host memory for {total} prompt-plus-output tokens; '
+            'it does not fit available RAM/VRAM. '
             'Reduce the request or output budget, or free other workloads. Context was not truncated.'
         ) from exc
+    executing = False
     try:
         with reservation.lease(cancel_event):
+            # Probe a working expert/tile slot while request memory is protected.
+            # This may evict idle cache entries. It is not a future-capacity
+            # guarantee: every actual cache transfer still admits independently.
+            if expert_headroom_bytes:
+                try:
+                    headroom = resources.reserve(
+                        f'{owner}:expert-headroom:{uuid4()}', 'llm',
+                        device_bytes={device.index or 0: expert_headroom_bytes} if device.type == 'cuda' else {},
+                        cancel_event=cancel_event)
+                except ResourceExhausted as exc:
+                    raise ContextMemoryError(
+                        f'Request KV/workspace plus a {expert_headroom_bytes / 1024**2:.1f} MiB working expert '
+                        'does not fit available memory. Reduce the request or free other workloads; context was not truncated.'
+                    ) from exc
+                headroom.release()
+            executing = True
             yield
     finally:
-        if device.type == 'cuda':
+        if executing and device.type == 'cuda':
             torch.cuda.synchronize(device)
             with torch.cuda.device(device):
                 torch.cuda.empty_cache()
@@ -44,7 +66,7 @@ def request_memory(resources, owner, config, total, prompt, device, cancel_event
 
 @torch.inference_mode()
 def autoregressive_generate(model, tokenizer, messages, device, cancel_event=None,
-                            max_new_tokens=256, context_limit=None, resources=None, owner='inference'):
+                            max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0):
     check_cancel(cancel_event)
     if not 1 <= max_new_tokens <= 1024:
         raise ContextLimitError('Output token limit must be between 1 and 1024')
@@ -66,7 +88,7 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
     stops = set(eos if isinstance(eos, list) else [eos])
     generated, cache, output, token = [], None, None, None
     # Admit before moving tokens to GPU or allocating any request cache/workspace.
-    with request_memory(resources, owner, model.config, total, prompt, device, cancel_event):
+    with request_memory(resources, owner, model.config, total, prompt, device, cancel_event, expert_headroom_bytes):
         try:
             tokens = tokens.to(device)
             for start in range(0, max(0, prompt - 32), 32):
@@ -91,6 +113,12 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                 tokens = token
             check_cancel(cancel_event)
             return tokenizer.decode(generated, skip_special_tokens=True)
+        except ResourceExhausted as exc:
+            traceback.clear_frames(exc.__traceback__)
+            raise ContextMemoryError(
+                'GPU expert admission failed because available memory changed during generation. '
+                'Free other workloads or reduce the request and retry; context was not truncated.'
+            ) from exc
         except BaseException as exc:
             # Release failed-forward frame references before releasing admission.
             traceback.clear_frames(exc.__traceback__)
