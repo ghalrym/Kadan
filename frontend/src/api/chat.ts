@@ -1,23 +1,15 @@
 import { createCompletion } from './generated/sdk.gen'
 import type { ChatMessage } from './generated/types.gen'
 
-export const MAX_MESSAGE_LENGTH = 8_000
-export const MAX_HISTORY_MESSAGES = 24
 export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'>
 
 // Model selection belongs to the backend; send only the client-owned conversation.
 export function chatRequest(messages: ConversationMessage[]) {
-  if (!messages.length || messages.length > MAX_HISTORY_MESSAGES) {
-    throw new Error('Start a new chat before sending more messages.')
+  if (!messages.length) {
+    throw new Error('Enter a message before sending.')
   }
-  if (
-    messages.some(
-      ({ text }) => !text.trim() || text.length > MAX_MESSAGE_LENGTH,
-    )
-  ) {
-    throw new Error(
-      `Each message must contain 1–${MAX_MESSAGE_LENGTH} characters.`,
-    )
+  if (messages.some(({ text }) => !text.trim())) {
+    throw new Error('Messages must not be blank.')
   }
   return { messages: messages.map(({ role, text }) => ({ role, text })) }
 }
@@ -37,13 +29,23 @@ export async function requestChat(
       throw new Error(
         'The model is busy. Wait for the current operation, then retry.',
       )
-    if (status === 413 || status === 422)
+    const apiError = result.error as { detail?: unknown } | undefined
+    const detail =
+      typeof apiError?.detail === 'string' ? apiError.detail : undefined
+    if (status === 413)
       throw new Error(
-        'The API rejected this conversation. Start a new chat or shorten your message.',
+        detail ??
+          'The API rejected the conversation size. Check the loaded model’s configured token context and server request limits.',
       )
+    if (status === 422)
+      throw new Error(
+        detail ??
+          'The API rejected this conversation. Check the message format and the loaded model’s configured token context.',
+      )
+
     throw new Error(
       status
-        ? `Chat request failed (HTTP ${status}). Please retry.`
+        ? (detail ?? `Chat request failed (HTTP ${status}). Please retry.`)
         : 'Cannot reach the chat API. Check that the backend is running, then retry.',
     )
   }

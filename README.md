@@ -58,3 +58,7 @@ Open `/chat` after starting the development services. Vite proxies `/v1` to
 `http://127.0.0.1:8000`; set `API_PROXY_TARGET` to use another development backend.
 To check recovery manually, stop the API, send a message, restart the API and retry.
 Cancel a pending request and verify that a late reply is not appended.
+
+Chat forwards the full nonblank message text and conversation history without fixed
+character or turn limits. Capacity is determined by the backend’s loaded model and
+configured token context; API context errors are shown in the chat page.
