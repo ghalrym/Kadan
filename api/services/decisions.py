@@ -48,7 +48,7 @@ def load_laya():
         import laya
         from huggingface_hub import snapshot_download
     except ImportError as exc:
-        raise RuntimeFailure('Install api/requirements-runtime.txt to enable CPU Laya decisions.') from exc
+        raise RuntimeFailure(f'Decision runtime import failed: {exc}') from exc
     model = os.environ.get('KADAN_LAYA_MODEL', DEFAULT_MODEL)
     revision = os.environ.get('KADAN_LAYA_REVISION', DEFAULT_REVISION if model == DEFAULT_MODEL else '')
     path = Path(model).expanduser()
