@@ -5,6 +5,7 @@ export const MAX_MESSAGE_LENGTH = 8_000
 export const MAX_HISTORY_MESSAGES = 24
 export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'>
 
+// Model selection belongs to the backend; send only the client-owned conversation.
 export function chatRequest(messages: ConversationMessage[]) {
   if (!messages.length || messages.length > MAX_HISTORY_MESSAGES) {
     throw new Error('Start a new chat before sending more messages.')
