@@ -709,6 +709,7 @@
                 "type": "null"
               }
             ],
+            "description": "Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.",
             "title": "Context Limit"
           },
           "downloaded_bytes": {
