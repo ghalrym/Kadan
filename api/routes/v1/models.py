@@ -16,7 +16,7 @@ class ModelStatus(BaseModel):
     downloaded_bytes: int
     total_bytes: int
     error: str | None
-    context_limit: int | None
+    context_limit: int | None = Field(description="Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.")
     architecture_context_limit: int | None
 
 

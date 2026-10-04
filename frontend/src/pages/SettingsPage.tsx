@@ -31,18 +31,28 @@ async function requestModelStatus(path = '', method: 'GET' | 'PUT' | 'POST' | 'D
 /** Format bytes as decimal GB to match the upstream checkpoint size estimates. */
 const formatGigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
 
+const contextPresets = [
+  ['8k', 8192], ['16k', 16384], ['32k', 32768], ['64k', 65536],
+  ['128k', 131072], ['500k', 500000], ['1M', 1000000],
+] as const
+
 /**
- * Edit one model's saved context limit. Blank means architecture maximum;
- * validation disables saving invalid values, while save owns persistence/errors.
- * The parent keys this control by the saved limit to reset its local draft.
+ * Choose a context preset without rewriting saved custom or legacy-null limits.
+ * Known architecture bounds disable oversized choices; an unknown bound is not
+ * guessed. The parent keys this control by the saved limit to reset its draft.
  */
 function ContextControl({ model, pending, save }: { model: ModelStatus; pending: boolean; save: (limit: number | null) => void }) {
   const [value, setValue] = useState(model.context_limit?.toString() ?? '')
-  const parsed = value.trim() === '' ? null : Number(value)
+  const parsed = value === '' ? null : Number(value)
   const valid = parsed === null || (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 2147483647 && (model.architecture_context_limit === null || parsed <= model.architecture_context_limit))
+  const customLimit = model.context_limit !== null && !contextPresets.some(([, limit]) => limit === model.context_limit)
   return <div className="field model-context">
     <label htmlFor={`context-${model.id}`}>Max context length (tokens)</label>
-    <input id={`context-${model.id}`} className="input" type="number" min={1} max={model.architecture_context_limit ?? 2147483647} step={1} value={value} disabled={pending} onChange={event => setValue(event.target.value)} placeholder="Architecture maximum" />
+    <select id={`context-${model.id}`} className="input" value={value} disabled={pending} onChange={event => setValue(event.target.value)}>
+      {contextPresets.map(([label, limit]) => <option key={limit} value={limit} disabled={model.architecture_context_limit !== null && limit > model.architecture_context_limit}>{label}</option>)}
+      {customLimit && <option value={model.context_limit!} disabled={model.architecture_context_limit !== null && model.context_limit! > model.architecture_context_limit}>{model.context_limit} (saved)</option>}
+      <option value="">Architecture maximum</option>
+    </select>
     <button type="button" className="button button--secondary" disabled={pending || !valid || parsed === model.context_limit} onClick={() => save(parsed)}>Save context window</button>
   </div>
 }
@@ -191,7 +201,7 @@ export default function SettingsPage() {
               {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
               {error && <div role="alert">{error} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
               {actionError && <p role="alert">{actionError}</p>}
-              {!chosen && <div className="field"><label htmlFor="context-unselected">Max context length (tokens)</label><input id="context-unselected" className="input" placeholder="Choose a language model" disabled /></div>}
+              {!chosen && <div className="field"><label htmlFor="context-unselected">Max context length (tokens)</label><select id="context-unselected" className="input" disabled><option>Choose a language model</option></select></div>}
               {chosen && <>
                 <ContextControl key={`${chosen.id}-${chosen.context_limit}`} model={chosen} pending={pending} save={limit => void submitModelChange(`/${chosen.id}/context`, 'PUT', { context_limit: limit })} />
               </>}
