@@ -564,6 +564,102 @@
         "title": "ModelSetting",
         "type": "object"
       },
+      "ModelStatus": {
+        "properties": {
+          "downloaded_bytes": {
+            "title": "Downloaded Bytes",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "estimated_bytes": {
+            "title": "Estimated Bytes",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "license": {
+            "title": "License",
+            "type": "string"
+          },
+          "repo_id": {
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_downloaded",
+              "downloading",
+              "cancelling",
+              "cancelled",
+              "failed",
+              "complete"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "repo_id",
+          "revision",
+          "license",
+          "estimated_bytes",
+          "status",
+          "downloaded_bytes",
+          "total_bytes",
+          "error"
+        ],
+        "title": "ModelStatus",
+        "type": "object"
+      },
+      "ModelsResponse": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelStatus"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "selected_model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Model Id"
+          }
+        },
+        "required": [
+          "models",
+          "selected_model_id"
+        ],
+        "title": "ModelsResponse",
+        "type": "object"
+      },
       "NoulQuestion": {
         "properties": {
           "falseWhen": {
@@ -778,6 +874,25 @@
           "levels"
         ],
         "title": "ScoreQuestion",
+        "type": "object"
+      },
+      "SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "enum": [
+              "small",
+              "medium",
+              "large"
+            ],
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "SelectionRequest",
         "type": "object"
       },
       "SettingsRequest": {
@@ -1259,7 +1374,7 @@
     }
   },
   "info": {
-    "description": "Deterministic mock API matching the frontend fixtures. Inputs are validated, but generation responses are fixed and writes are not persisted. Media is placeholder metadata, not downloadable files. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Generation and media endpoints remain deterministic mock responses until a runtime is configured. Media is placeholder metadata, not downloadable files. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1630,6 +1745,150 @@
         "summary": "Get Metrics",
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "list_models_v1_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Models",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/v1/models/selection": {
+      "put": {
+        "operationId": "select_model_v1_models_selection_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Model",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/v1/models/{model_id}/download": {
+      "delete": {
+        "operationId": "cancel_download_v1_models__model_id__download_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Download",
+        "tags": [
+          "models"
+        ]
+      },
+      "post": {
+        "operationId": "download_model_v1_models__model_id__download_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Model",
+        "tags": [
+          "models"
         ]
       }
     },

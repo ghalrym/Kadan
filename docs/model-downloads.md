@@ -14,6 +14,10 @@ accidental concurrent writers from another process. Do not share the store
 between independently running API servers. No Hugging Face credentials are needed
 for these public checkpoints, and the service does not execute repository code.
 
+Docker Compose mounts the named `model_data` volume at `/var/lib/kadan/models`.
+It survives service/container recreation; `docker compose down -v` removes it.
+Use a bind mount instead if managing model storage on a particular host disk.
+
 Only root safetensors and listed tokenizer/config assets are downloaded. GPT-OSS
 `original/` and `metal/` are excluded to avoid redundant formats. GLM's root MTP
 weights are included. Before downloading, upstream pinned metadata supplies exact

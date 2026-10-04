@@ -9,9 +9,15 @@ import type {
 } from './client'
 import { client } from './client.gen'
 import type {
+  CancelDownloadV1ModelsModelIdDownloadDeleteData,
+  CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+  CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
+  DownloadModelV1ModelsModelIdDownloadPostData,
+  DownloadModelV1ModelsModelIdDownloadPostErrors,
+  DownloadModelV1ModelsModelIdDownloadPostResponses,
   EditImagesData,
   EditImagesErrors,
   EditImagesResponses,
@@ -45,6 +51,8 @@ import type {
   ListImagesResponses,
   ListMessagesData,
   ListMessagesResponses,
+  ListModelsV1ModelsGetData,
+  ListModelsV1ModelsGetResponses,
   ListRequestsData,
   ListRequestsErrors,
   ListRequestsResponses,
@@ -52,6 +60,9 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
+  SelectModelV1ModelsSelectionPutData,
+  SelectModelV1ModelsSelectionPutErrors,
+  SelectModelV1ModelsSelectionPutResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -267,6 +278,82 @@ export const getMetrics = <ThrowOnError extends boolean = false>(
     url: '/v1/metrics',
     ...options,
   })
+
+/**
+ * List Models
+ */
+export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
+  options?: Options<ListModelsV1ModelsGetData, ThrowOnError>,
+): RequestResult<ListModelsV1ModelsGetResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    ListModelsV1ModelsGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/models', ...options })
+
+/**
+ * Select Model
+ */
+export const selectModelV1ModelsSelectionPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<SelectModelV1ModelsSelectionPutData, ThrowOnError>,
+): RequestResult<
+  SelectModelV1ModelsSelectionPutResponses,
+  SelectModelV1ModelsSelectionPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    SelectModelV1ModelsSelectionPutResponses,
+    SelectModelV1ModelsSelectionPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/selection',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Cancel Download
+ */
+export const cancelDownloadV1ModelsModelIdDownloadDelete = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    CancelDownloadV1ModelsModelIdDownloadDeleteData,
+    ThrowOnError
+  >,
+): RequestResult<
+  CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).delete<
+    CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+    CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+    ThrowOnError
+  >({ url: '/v1/models/{model_id}/download', ...options })
+
+/**
+ * Download Model
+ */
+export const downloadModelV1ModelsModelIdDownloadPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<DownloadModelV1ModelsModelIdDownloadPostData, ThrowOnError>,
+): RequestResult<
+  DownloadModelV1ModelsModelIdDownloadPostResponses,
+  DownloadModelV1ModelsModelIdDownloadPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DownloadModelV1ModelsModelIdDownloadPostResponses,
+    DownloadModelV1ModelsModelIdDownloadPostErrors,
+    ThrowOnError
+  >({ url: '/v1/models/{model_id}/download', ...options })
 
 /**
  * List Requests
