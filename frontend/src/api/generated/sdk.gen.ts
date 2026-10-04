@@ -286,6 +286,8 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 
 /**
  * List Images
+ *
+ * Return empty image history while no image provider or stored results exist.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -297,6 +299,11 @@ export const listImages = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Image
+ *
+ * Reject a validated edit request with HTTP 503 until a provider exists.
+ *
+ * The source reference is opaque: this route does not fetch/upload images,
+ * allocate an inference model, or create a placeholder result.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -316,6 +323,10 @@ export const editImages = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Image
+ *
+ * Reject validated image-generation settings with HTTP 503.
+ *
+ * No image provider runs, GPU work starts, or synthetic result is returned.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

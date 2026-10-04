@@ -1852,6 +1852,7 @@
     },
     "/v1/images": {
       "get": {
+        "description": "Return empty image history while no image provider or stored results exist.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -1873,6 +1874,7 @@
     },
     "/v1/images/edits": {
       "post": {
+        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -1917,6 +1919,7 @@
     },
     "/v1/images/generations": {
       "post": {
+        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
