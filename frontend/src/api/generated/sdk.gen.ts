@@ -256,13 +256,11 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 /**
  * Evaluate Decisions
  *
- * Evaluate validated questions using the currently loaded shared model.
+ * Evaluate typed questions with the resident CPU Laya specialist, independent of chat.
  *
- * Returns strictly validated answers, preserves runtime HTTP error statuses,
- * and reports invalid model JSON as 502. If disconnect wins the completion race,
- * cancel inference and raise HTTP 499; pending tasks are cancelled and awaited
- * on exit. A disconnected client may not receive that response.
- * This route neither loads a second model nor persists playground results.
+ * Oversized tokenized questions/state return 422 rather than truncated answers.
+ * Disconnect cancellation waits for the CPU worker before releasing ownership.
+ * Results are not persisted; there is no fallback to a generative model.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,
