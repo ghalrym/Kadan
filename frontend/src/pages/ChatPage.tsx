@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { requestChat, type ConversationMessage } from '../api/chat'
 
+/** Keep tab-local conversation history and one cancellable request with explicit retry. */
 export default function ChatPage() {
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [draft, setDraft] = useState('')
@@ -24,6 +25,10 @@ export default function ChatPage() {
     historyEnd.current?.scrollIntoView?.({ block: 'nearest' })
   }, [messages, pending])
 
+  /**
+   * Submit a conversation snapshot once, retaining it for retry on failure.
+   * Controller ownership prevents canceled or superseded responses from updating UI.
+   */
   async function send(conversation: ConversationMessage[]) {
     if (active.current) return
     const controller = new AbortController()
@@ -53,6 +58,7 @@ export default function ChatPage() {
     }
   }
 
+  /** Stop accepting this response; retry reuses the existing user turn in this UI. */
   function cancel() {
     active.current?.abort()
     active.current = null
@@ -63,6 +69,7 @@ export default function ChatPage() {
     )
   }
 
+  /** Append a nonblank draft once; a failed request must be retried before another turn. */
   function submit() {
     const text = draft
     if (!text.trim() || pending || retryMessages) return
