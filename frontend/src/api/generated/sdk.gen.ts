@@ -111,6 +111,8 @@ export const health = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Model Lifecycle
+ *
+ * Return current model state, context limits and shared-memory accounting without loading a model.
  */
 export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
   options?: Options<GetModelLifecycleStatusData, ThrowOnError>,
@@ -123,6 +125,9 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 
 /**
  * Load Selected Model
+ *
+ * Accept loading of the selected complete checkpoint and return its initial state; map
+ * lifecycle conflicts and validation failures to HTTP errors.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,
@@ -135,6 +140,8 @@ export const loadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * Unload Selected Model
+ *
+ * Request cooperative cancellation and wait for model cleanup before returning unloaded state.
  */
 export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<UnloadSelectedModelData, ThrowOnError>,
@@ -200,6 +207,9 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Completion
+ *
+ * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
+ * awaits cleanup; runtime failures preserve their HTTP status.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,
