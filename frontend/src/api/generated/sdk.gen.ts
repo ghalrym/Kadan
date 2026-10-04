@@ -12,6 +12,9 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  ConfigureContextV1ModelsModelIdContextPutData,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ConfigureContextV1ModelsModelIdContextPutResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
@@ -37,11 +40,11 @@ import type {
   GetDecisionsResponses,
   GetMetricsData,
   GetMetricsResponses,
+  GetModelLifecycleStatusData,
+  GetModelLifecycleStatusResponses,
   GetRequestData,
   GetRequestErrors,
   GetRequestResponses,
-  GetRuntimeStatusData,
-  GetRuntimeStatusResponses,
   GetSettingsData,
   GetSettingsResponses,
   GetVideoData,
@@ -62,16 +65,16 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
-  LoadRuntimeModelData,
-  LoadRuntimeModelResponses,
+  LoadSelectedModelData,
+  LoadSelectedModelResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
-  UnloadRuntimeModelData,
-  UnloadRuntimeModelResponses,
+  UnloadSelectedModelData,
+  UnloadSelectedModelResponses,
   UpdateSettingsData,
   UpdateSettingsErrors,
   UpdateSettingsResponses,
@@ -105,6 +108,42 @@ export const health = <ThrowOnError extends boolean = false>(
     url: '/health',
     ...options,
   })
+
+/**
+ * Get Model Lifecycle
+ */
+export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
+  options?: Options<GetModelLifecycleStatusData, ThrowOnError>,
+): RequestResult<GetModelLifecycleStatusResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetModelLifecycleStatusResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/model-lifecycle', ...options })
+
+/**
+ * Load Selected Model
+ */
+export const loadSelectedModel = <ThrowOnError extends boolean = false>(
+  options?: Options<LoadSelectedModelData, ThrowOnError>,
+): RequestResult<LoadSelectedModelResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).post<
+    LoadSelectedModelResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/model-lifecycle/load', ...options })
+
+/**
+ * Unload Selected Model
+ */
+export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
+  options?: Options<UnloadSelectedModelData, ThrowOnError>,
+): RequestResult<UnloadSelectedModelResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).post<
+    UnloadSelectedModelResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/model-lifecycle/unload', ...options })
 
 /**
  * List Speech
@@ -325,6 +364,31 @@ export const selectModelV1ModelsSelectionPut = <
   })
 
 /**
+ * Configure Context
+ */
+export const configureContextV1ModelsModelIdContextPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ConfigureContextV1ModelsModelIdContextPutData, ThrowOnError>,
+): RequestResult<
+  ConfigureContextV1ModelsModelIdContextPutResponses,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    ConfigureContextV1ModelsModelIdContextPutResponses,
+    ConfigureContextV1ModelsModelIdContextPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/{model_id}/context',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
  * Cancel Download
  */
 export const cancelDownloadV1ModelsModelIdDownloadDelete = <
@@ -386,42 +450,6 @@ export const getRequest = <ThrowOnError extends boolean = false>(
     GetRequestErrors,
     ThrowOnError
   >({ url: '/v1/requests/{request_id}', ...options })
-
-/**
- * Get Runtime Status
- */
-export const getRuntimeStatus = <ThrowOnError extends boolean = false>(
-  options?: Options<GetRuntimeStatusData, ThrowOnError>,
-): RequestResult<GetRuntimeStatusResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetRuntimeStatusResponses,
-    unknown,
-    ThrowOnError
-  >({ url: '/v1/runtime', ...options })
-
-/**
- * Load Runtime Model
- */
-export const loadRuntimeModel = <ThrowOnError extends boolean = false>(
-  options?: Options<LoadRuntimeModelData, ThrowOnError>,
-): RequestResult<LoadRuntimeModelResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).post<
-    LoadRuntimeModelResponses,
-    unknown,
-    ThrowOnError
-  >({ url: '/v1/runtime/load', ...options })
-
-/**
- * Unload Runtime Model
- */
-export const unloadRuntimeModel = <ThrowOnError extends boolean = false>(
-  options?: Options<UnloadRuntimeModelData, ThrowOnError>,
-): RequestResult<UnloadRuntimeModelResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).post<
-    UnloadRuntimeModelResponses,
-    unknown,
-    ThrowOnError
-  >({ url: '/v1/runtime/unload', ...options })
 
 /**
  * Get Settings
