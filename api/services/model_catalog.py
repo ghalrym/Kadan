@@ -39,6 +39,10 @@ ASSETS = frozenset({
 
 
 def allowed_asset(name: str) -> bool:
+    """Return whether a repository-relative name is an approved root asset.
+
+    Excludes subdirectories, executable code, and duplicate checkpoint formats;
+    accepts the known configuration/tokenizer files and root safetensors shards."""
     return name in ASSETS or re.fullmatch(
         r'(?:model(?:-\d+-of-\d+|_mtp)?)\.safetensors', name
     ) is not None

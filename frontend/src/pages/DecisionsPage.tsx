@@ -5,6 +5,10 @@ import DecisionQuestionCard, {
 } from '../components/DecisionQuestionCard'
 import type { DecisionResponse } from '../api/generated'
 
+/**
+ * Edit page-local decision state and display answers from the shared model API.
+ * Only the active request may update results; leaving the page aborts that request.
+ */
 export default function DecisionsPage() {
   const [state, setState] = useState('')
   const [questions, setQuestions] = useState<Question[]>([])
@@ -20,6 +24,9 @@ export default function DecisionsPage() {
     },
     [],
   )
+  /**
+   * Append an empty question of the selected type and discard stale answers.
+   */
   function add(type: Question['type']) {
     const base = { key: '', instructions: '' }
     const question: Question =
@@ -31,6 +38,11 @@ export default function DecisionsPage() {
     setQuestions([...questions, question])
     setAnswers([])
   }
+  /**
+   * Submit the current state/questions once and display API answers or errors.
+   * Clear previous results before evaluating; ignore successful responses from
+   * abandoned requests and release pending state only for the active controller.
+   */
   async function evaluate(event: React.FormEvent) {
     event.preventDefault()
     if (active.current) return
@@ -70,6 +82,10 @@ export default function DecisionsPage() {
       }
     }
   }
+  /**
+   * Abort this browser request and invalidate its controller immediately.
+   * Runtime cleanup may outlast the UI cancellation; no replacement answer is created.
+   */
   function cancel() {
     active.current?.abort()
     active.current = null

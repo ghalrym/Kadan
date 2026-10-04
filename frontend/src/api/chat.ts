@@ -3,7 +3,10 @@ import type { ChatMessage } from './generated/types.gen'
 
 export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'>
 
-// Model selection belongs to the backend; send only the client-owned conversation.
+/**
+ * Build the API conversation without selecting a model or imposing product length caps.
+ * Rejects empty/blank turns and drops display-only metadata; the input is not mutated.
+ */
 export function chatRequest(messages: ConversationMessage[]) {
   if (!messages.length) {
     throw new Error('Enter a message before sending.')
@@ -14,6 +17,11 @@ export function chatRequest(messages: ConversationMessage[]) {
   return { messages: messages.map(({ role, text }) => ({ role, text })) }
 }
 
+/**
+ * Send the complete conversation and return one validated assistant turn.
+ * The supplied signal cancels the browser request; it does not guarantee server
+ * inference has stopped. Network, API, and malformed-response failures reject.
+ */
 export async function requestChat(
   messages: ConversationMessage[],
   signal: AbortSignal,

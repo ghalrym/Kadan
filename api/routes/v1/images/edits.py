@@ -21,4 +21,8 @@ class ImageResponse(BaseModel):
 
 @router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="editImages")
 def create_image(body: ImageRequest) -> ImageResponse:
+    """Reject a validated edit request with HTTP 503 until a provider exists.
+
+    The source reference is opaque: this route does not fetch/upload images,
+    allocate an inference model, or create a placeholder result."""
     raise HTTPException(status_code=503, detail="No image provider is configured. Image generation and editing are unavailable.")

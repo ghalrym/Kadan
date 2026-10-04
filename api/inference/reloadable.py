@@ -9,6 +9,9 @@ from api.inference.resources import ResourceBusy, ResourceCancelled
 
 
 def _check_cancel(event):
+    """Raise ResourceCancelled when the optional cancellation event requests that construction or
+    waiting stop.
+    """
     if event is not None and event.is_set():
         raise ResourceCancelled('Model reconstruction cancelled')
 
@@ -16,16 +19,21 @@ def _check_cancel(event):
 class _HostEvictionResources:
     """Attach whole-adapter cleanup to its host reservations."""
     def __init__(self, manager, on_host_evict):
+        """Retain the shared manager and whole-model cleanup callback; create no separate memory budget."""
         self._manager = manager
         self._on_host_evict = on_host_evict
 
     def reserve(self, owner, workload, host_bytes=0, device_bytes=None,
                 evict=None, cancel_event=None):
+        """Delegate admission, attaching whole-model cleanup only to host-only reservations;
+        preserve callbacks for device and request allocations.
+        """
         return self._manager.reserve(owner, workload, host_bytes=host_bytes,
             device_bytes=device_bytes, evict=self._on_host_evict if host_bytes and not device_bytes else evict,
             cancel_event=cancel_event)
 
     def __getattr__(self, name):
+        """Forward other resource-manager operations to the same shared instance."""
         return getattr(self._manager, name)
 
 
@@ -37,6 +45,9 @@ class ReloadableAdapter:
     Nonblocking eviction avoids an admission-lock/adapter-lock inversion.
     """
     def __init__(self, factory, entry, path, resources, device='cuda:0', cancel_event=None):
+        """Construct a native adapter under a nonreentrant ownership gate, retaining checkpoint
+        metadata for later idle reloads.
+        """
         self._factory, self._entry, self._path, self._device = factory, entry, path, device
         self._gate = threading.Lock()
         self._closed = False
@@ -50,6 +61,9 @@ class ReloadableAdapter:
             self._construct(cancel_event)
 
     def _construct(self, cancel_event):
+        """Build while the caller holds the ownership gate, then restore saved context metadata.
+        Native constructors own partial-allocation rollback.
+        """
         _check_cancel(cancel_event)
         # Native constructors own rollback of partially allocated tensors and
         # reservations. Publish only a completely constructed adapter.
@@ -67,10 +81,14 @@ class ReloadableAdapter:
         self._remember_context(inner)
 
     def _remember_context(self, inner):
+        """Copy context limits as scalar metadata so they survive release of model tensors."""
         for name in ('configured_context_limit', 'effective_context_limit', 'supported_context_limit'):
             setattr(self, name, getattr(inner, name, None))
 
     def configure_context(self, value):
+        """Validate and remember a limit without forcing an evicted model to reload; reject
+        explicit closure and unsupported limits.
+        """
         from api.inference.context import configure_context
         with self._gate:
             if self._closed:
@@ -90,10 +108,17 @@ class ReloadableAdapter:
 
     @property
     def is_resident(self):
+        """Report whether the current inner adapter is GPU-resident; reading status does not
+        trigger restoration.
+        """
         inner = self._inner
         return not self._closed and inner is not None and inner.is_resident
 
     def _evict_host(self):
+        """Nonblockingly claim idle ownership, close the inner adapter, and retain only metadata.
+        Busy work rejects eviction. Cleanup failure retains the inner handle for
+        retry, although that adapter may already have released some state.
+        """
         if not self._gate.acquire(blocking=False):
             raise ResourceBusy('Model is constructing, generating or closing; host memory is in use')
         try:
@@ -107,6 +132,9 @@ class ReloadableAdapter:
             self._gate.release()
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None):
+        """Serialize generation, rebuilding an idle-evicted adapter when needed. Check cancellation
+        while waiting; explicitly closed adapters never reload.
+        """
         while not self._gate.acquire(timeout=.05):
             _check_cancel(cancel_event)
         try:
@@ -121,6 +149,9 @@ class ReloadableAdapter:
             self._gate.release()
 
     def close(self):
+        """Wait for ownership, release the inner adapter and permanently close this wrapper;
+        preserve the inner handle if cleanup fails.
+        """
         with self._gate:
             if self._inner is not None:
                 self._inner.close()

@@ -11,6 +11,7 @@ type ModelLifecycleStatus = {
   max_output_tokens: number
 }
 
+/** Fetch lifecycle state with caller cancellation and a 45-second timeout; surface API errors. */
 async function modelLifecycleRequest(path: string, signal: AbortSignal, method = 'GET') {
   const response = await fetch(`/model-lifecycle${path}`, { method, signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]) })
   const data = await response.json()
@@ -20,6 +21,7 @@ async function modelLifecycleRequest(path: string, signal: AbortSignal, method =
   return data as ModelLifecycleStatus
 }
 
+/** Display server ownership and context limits, and load or unload the selected download. */
 export default function ModelLifecyclePanel({ selectedModelId }: { selectedModelId: string | null }) {
   const [status, setStatus] = useState<ModelLifecycleStatus | null>(null)
   const [error, setError] = useState('')
@@ -31,6 +33,7 @@ export default function ModelLifecyclePanel({ selectedModelId }: { selectedModel
   useEffect(() => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
+    /** Refresh serially; ignore responses and failures overtaken by a lifecycle action or unmount. */
     async function poll() {
       const before = revision.current
       try {
@@ -56,6 +59,7 @@ export default function ModelLifecyclePanel({ selectedModelId }: { selectedModel
     }
   }, [])
 
+  /** Serialize mutations and invalidate older polls; aborting HTTP does not itself unload the server model. */
   async function change(path: '/load' | '/unload') {
     if (action.current) return
     const controller = new AbortController()
