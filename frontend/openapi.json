@@ -1960,6 +1960,7 @@
     },
     "/v1/models": {
       "get": {
+        "description": "Return current catalog, download progress, saved selection, and context limits.\n\nCompleteness is checked from local files; this does not start downloads or\nload models. Context/configuration errors propagate; an unreadable or\ninvalid saved selection is represented as no selection.",
         "operationId": "list_models_v1_models_get",
         "responses": {
           "200": {
@@ -1981,6 +1982,7 @@
     },
     "/v1/models/selection": {
       "put": {
+        "description": "Save a completed model as the selection for a subsequent runtime load.\n\nReturns refreshed status, or 409 for a runtime lease, 400 for an incomplete\ncheckpoint, and 503 for unavailable storage. Selection alone loads no tensors.",
         "operationId": "select_model_v1_models_selection_put",
         "requestBody": {
           "content": {
@@ -2022,6 +2024,7 @@
     },
     "/v1/models/{model_id}/context": {
       "put": {
+        "description": "Persist the model's context limit and return refreshed catalog status.\n\nNull uses the architecture maximum on load. Returns 409 while a runtime lease\nis held, 400 for invalid limits/model IDs, or 503 for unavailable storage.",
         "operationId": "configure_context_v1_models__model_id__context_put",
         "parameters": [
           {
@@ -2074,6 +2077,7 @@
     },
     "/v1/models/{model_id}/download": {
       "delete": {
+        "description": "Request cancellation and return status with HTTP 202 before cleanup finishes.\n\nUnknown models return 400, inactive jobs return 409, and storage errors return\n503. Completed checkpoints are never deleted by this endpoint.",
         "operationId": "cancel_download_v1_models__model_id__download_delete",
         "parameters": [
           {
@@ -2114,6 +2118,7 @@
         ]
       },
       "post": {
+        "description": "Start a catalog checkpoint download and return status with HTTP 202.\n\nAcceptance is not completion; poll the catalog for progress or failure.\nUnknown models return 400; active/completed conflicts return 409 and storage\nfailures return 503. Only pinned catalog checkpoints may be downloaded.",
         "operationId": "download_model_v1_models__model_id__download_post",
         "parameters": [
           {
