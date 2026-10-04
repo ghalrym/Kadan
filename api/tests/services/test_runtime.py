@@ -16,6 +16,9 @@ class Adapter:
         self.closed = False
         self.calls = []
 
+    def configure_context(self, value):
+        self.configured_context_limit = value
+
     def generate(self, messages, max_new_tokens, cancel_event):
         self.calls.append(messages)
         self.is_resident = True
@@ -31,7 +34,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.adapter = Adapter()
         self.factory = Mock(return_value=self.adapter)
         self.manager = RuntimeManager(self.factory, ResourceManager(1000, {0: 1000}))
+        context_patch = patch('api.services.runtime.read_context_settings', return_value=dict(
+            configured_context_limit=None, effective_context_limit=131072, supported_context_limit=131072))
+        context_patch.start()
+        self.addCleanup(context_patch.stop)
         self.models = Mock()
+        self.models.configured_context.return_value = None
         self.models.acquire_runtime_model.return_value = (SimpleNamespace(id='medium'), Path('/models/pinned'))
         patched = patch('api.services.model_downloads.model_manager', self.models)
         patched.start()
@@ -41,6 +49,20 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.load()
         await self.manager.task
         self.assertEqual(self.manager.state, 'ready')
+
+    async def test_context_errors_preserve_ready_model_and_selection(self):
+        from api.inference.context import ContextLimitError, ContextMemoryError
+        await self.ready()
+        for error, status in ((ContextLimitError('too many tokens'), 422), (ContextMemoryError('does not fit'), 503)):
+            self.adapter.generate = Mock(side_effect=error)
+            with self.assertRaises(RuntimeFailure) as caught:
+                await self.manager.complete([], None)
+            self.assertEqual(caught.exception.status_code, status)
+            self.assertEqual(self.manager.state, 'ready')
+            self.assertFalse(self.adapter.closed)
+            self.models.release_runtime_model.assert_not_called()
+        self.assertEqual(self.manager.status()['effective_context_limit'], 131072)
+        await self.manager.close()
 
     async def test_direct_adapter_receives_owned_resources_and_selected_path(self):
         await self.ready()

@@ -145,7 +145,9 @@ class QwenAdapter:
                     self._cancel = cancel_event
                     try:
                         return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=4096)
+                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                       resources=self.resources, owner=self.owner,
+                                                       expert_headroom_bytes=self.bank.max_expert_bytes)
                     finally:
                         self._cancel = None
 
@@ -196,10 +198,9 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
     # Admission precedes model/tensor allocations. Reserve all checkpoint bytes
     # conservatively (including ignored vision/MTP) and bounded compute scratch.
     host_bytes = sum(reader.nbytes(key) for key in reader.keys)
-    cache_bytes = 512 * 1024**2
     dense_bytes = sum(reader.nbytes(key) * 2 for key in reader.keys
                       if (key.startswith('model.language_model.') or key.startswith('lm_head.')) and '.experts.' not in key)
-    gpu_bytes = dense_bytes + cache_bytes + 2 * 1024**3
+    gpu_bytes = dense_bytes + 16 * 1024**2
     adapter.resources, adapter.owner, adapter.gpu_bytes = resources, 'qwen:' + entry.id, gpu_bytes
     adapter.reservation = resources.reserve(adapter.owner + ':host', 'llm',
         host_bytes=host_bytes + dense_bytes + 64 * 1024**2, cancel_event=cancel_event)
@@ -236,7 +237,11 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
                     keys.append(key)
                 dense_specs.append((name, keys, rows, module.out_features))
             adapter.bank = ExpertBank(bank_parts)
-            adapter.cache = ExpertCache(adapter.bank, cache_bytes, device)
+            cache_bytes = (resources.capacity.device_bytes[adapter.device.index or 0]
+                           if adapter.device.type == 'cuda' else adapter.bank.max_expert_bytes)
+            adapter.cache = ExpertCache(adapter.bank, cache_bytes, device,
+                resources=resources if adapter.device.type == 'cuda' else None,
+                owner=adapter.owner + ':experts')
             for name, keys, rows, out_features in dense_specs:
                 model.set_submodule(name, HostLinear(keys, rows, out_features, adapter.cache, lambda: adapter._cancel))
             for layer in model.model.layers:
@@ -255,9 +260,12 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
                 set_module_tensor_to_device(model, name, 'cpu', value=buffer)
             if any(p.is_meta for p in model.parameters()):
                 raise ValueError('Unresolved Qwen meta parameters')
-            # Exact resident tensors plus cache and bounded request scratch.
-            adapter.gpu_bytes = sum(t.numel() * t.element_size() for t in list(model.parameters()) + list(model.buffers())) + cache_bytes + 2 * 1024**3
+            # Only resident tensors and bounded decode scratch stay reserved;
+            # actual expert entries and each request compete for remaining VRAM.
+            adapter.gpu_bytes = sum(t.numel() * t.element_size() for t in list(model.parameters()) + list(model.buffers())) + 16 * 1024**2
             model.eval()
+            from api.inference.context import configure_context
+            configure_context(adapter, None)
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             check_cancel(cancel_event)
             adapter._restore(cancel_event)

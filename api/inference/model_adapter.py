@@ -85,9 +85,8 @@ class GptOssAdapter:
         # Host preserves packed experts plus dense weights when GPU eviction occurs.
         self.host_reservation = resources.reserve(self.owner + ':host', 'llm',
             host_bytes=packed_bytes + 2 * dense_bytes + 512 * 1024**2)
-        kv_bytes = 2 * layers * config.num_key_value_heads * config.head_dim * 4096 * 2
-        self.device_budget = dense_bytes + kv_bytes + 2 * 1024**3 + 2 * 1024**3
-        self.cache_bytes = 2 * 1024**3
+        self.device_budget = dense_bytes + 16 * 1024**2
+        self.cache_bytes = resources.capacity.device_bytes[self.device_index]
         try:
             check_cancel(cancel_event)
             self.model = build_gptoss_skeleton(config)
@@ -112,7 +111,8 @@ class GptOssAdapter:
                     banks[layer, expert] = {name.replace('_proj', ''): tensor[expert]
                                              for name, tensor in tensors.items()}
             self.bank = ExpertBank(banks)
-            self.cache = ExpertCache(self.bank, self.cache_bytes, device=str(self.device))
+            self.cache = ExpertCache(self.bank, self.cache_bytes, device=str(self.device),
+                                     resources=resources, owner=self.owner + ':experts')
             for layer in range(layers):
                 self.model.model.layers[layer].mlp.experts = GptOssOffloadedExperts(layer, self.cache, cancel_event)
             required = dict(self.model.named_parameters())
@@ -129,6 +129,10 @@ class GptOssAdapter:
             if any(buffer.is_meta for buffer in self.model.buffers()):
                 raise ValueError('Uninitialized model buffers after meta construction')
             self.model.eval()
+            self.device_budget = sum(t.numel() * t.element_size() for t in
+                list(self.model.parameters()) + list(self.model.buffers())) + 16 * 1024**2
+            from api.inference.context import configure_context
+            configure_context(self, None)
             self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             self._restore(cancel_event)
         except BaseException:
@@ -173,7 +177,9 @@ class GptOssAdapter:
                 for layer in self.model.model.layers:
                     layer.mlp.experts.cancel_event = cancel_event
                 return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                    cancel_event=cancel_event, max_new_tokens=max_new_tokens)
+                    cancel_event=cancel_event, max_new_tokens=max_new_tokens,
+                    context_limit=self.effective_context_limit, resources=self.resources, owner=self.owner,
+                    expert_headroom_bytes=self.bank.max_expert_bytes)
 
     def close(self):
         with self._lock:
@@ -192,12 +198,17 @@ class GptOssAdapter:
 
 
 def build_runtime(entry, path, resources, device='cuda:0', cancel_event=None):
+    # All production model families share idle host eviction + lazy rebuilding.
+    # Direct constructors remain useful for architecture-level tensor tests.
+    from api.inference.reloadable import ReloadableAdapter
     if entry.id == 'medium':
-        return GptOssAdapter(entry, path, resources, device, cancel_event)
-    if entry.id == 'small':
+        factory = GptOssAdapter
+    elif entry.id == 'small':
         from api.inference.qwen import build_qwen
-        return build_qwen(entry, path, resources, device, cancel_event)
-    if entry.id == 'large':
+        factory = build_qwen
+    elif entry.id == 'large':
         from api.inference.glm import build_glm
-        return build_glm(entry, path, resources, device, cancel_event)
-    raise ValueError('No Kadan adapter exists for this model')
+        factory = build_glm
+    else:
+        raise ValueError('No Kadan adapter exists for this model')
+    return ReloadableAdapter(factory, entry, path, resources, device, cancel_event)
