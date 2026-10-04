@@ -363,6 +363,22 @@ export type ModelLifecycleStatus = {
 }
 
 /**
+ * ModelLoadRequest
+ */
+export type ModelLoadRequest = {
+  /**
+   * Context Limit
+   *
+   * Omit to retain saved/default context; explicit null uses the architecture maximum.
+   */
+  context_limit?: number | null
+  /**
+   * Model Id
+   */
+  model_id: 'small' | 'medium' | 'large'
+}
+
+/**
  * ModelSetting
  *
  * A catalog-backed selection; None means no model is selected.
@@ -1012,11 +1028,24 @@ export type GetModelLifecycleStatusResponse =
   GetModelLifecycleStatusResponses[keyof GetModelLifecycleStatusResponses]
 
 export type LoadSelectedModelData = {
-  body?: never
+  /**
+   * Body
+   */
+  body?: ModelLoadRequest | null
   path?: never
   query?: never
   url: '/model-lifecycle/load'
 }
+
+export type LoadSelectedModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type LoadSelectedModelError =
+  LoadSelectedModelErrors[keyof LoadSelectedModelErrors]
 
 export type LoadSelectedModelResponses = {
   /**

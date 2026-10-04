@@ -19,5 +19,5 @@
   .model-llm-details { grid-column: 1; }
 }
 
-.runtime-panel { padding: 20px; }
-.runtime-panel .button:disabled { opacity: .5; }
+.model-choice-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; min-width: 0; }
+.model-load { min-height: 35px; }
