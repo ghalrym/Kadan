@@ -14,6 +14,10 @@ from torch.nn import functional as F
 
 
 def _unpack(packed: Tensor) -> Tensor:
+    """Expand uint8 FP4 bytes into FP32 signed E2M1 values on the same device.
+
+    The low nibble precedes the high nibble, doubling the final dimension.
+    Reject non-byte input; this decodes canonical packing, not kernel swizzles."""
     if packed.dtype != torch.uint8:
         raise ValueError('Canonical FP4 bytes must have dtype uint8.')
     codes = torch.stack((packed & 15, packed >> 4), dim=-1).flatten(-2).long()
@@ -22,7 +26,12 @@ def _unpack(packed: Tensor) -> Tensor:
 
 
 def dequantize_mxfp4(blocks: Tensor, scales: Tensor, dtype=torch.float32) -> Tensor:
-    """GPT-OSS bytes [..., blocks, 16], E8M0 scales [..., blocks] -> [..., K]."""
+    """Decode GPT-OSS MXFP4 blocks into a dense tensor of the requested dtype.
+
+    Packed bytes have shape [..., blocks, 16]; uint8 E8M0 scales have shape
+    [..., blocks]. Each scale multiplies 32 decoded values, producing [..., K].
+    Scale byte 255 becomes NaN. Invalid shapes, scale dtype or devices raise
+    ValueError; the entire decoded result is allocated on the input device."""
     if blocks.ndim < 2 or blocks.shape[-1] != 16 or scales.shape != blocks.shape[:-1]:
         raise ValueError('MXFP4 requires 16 packed bytes and one scale per 32-value block.')
     if scales.dtype != torch.uint8 or scales.device != blocks.device:
@@ -36,12 +45,13 @@ def dequantize_mxfp4(blocks: Tensor, scales: Tensor, dtype=torch.float32) -> Ten
 
 def dequantize_nvfp4(weight: Tensor, scale: Tensor, global_scale: Tensor,
                      dtype=torch.float32, *, layout='modelopt') -> Tensor:
-    """Decode canonical NVFP4 weights with 16-value E4M3FN block scales.
+    """Decode canonical NVFP4 weights into dense rows on the weight device.
 
-    modelopt: uint8 [..., K/2], dequant global multiplier.
-    compressed-tensors: int32 [..., K/8] or uint8 bytes, quant global multiplier
-    (reciprocal). Global scale is scalar, per-row, or per-row trailing singleton.
-    """
+    ModelOpt stores uint8 [..., K/2] bytes with a global dequant multiplier.
+    Compressed-tensors also accepts int32 [..., K/8] packing and divides by its
+    global quant multiplier. Each E4M3FN block scale covers 16 values; global
+    scales may be scalar or per row. Return the requested dtype and reject
+    unsupported layouts/shapes/devices. Activation quantization is not applied."""
     if layout not in ('modelopt', 'compressed-tensors'):
         raise ValueError('Unknown NVFP4 layout; kernel-swizzled weights are unsupported.')
     if layout == 'compressed-tensors' and weight.dtype == torch.int32:
@@ -69,6 +79,12 @@ def dequantize_nvfp4(weight: Tensor, scale: Tensor, global_scale: Tensor,
 
 
 def _tiled_linear(inputs, rows, columns, decode_rows, bias, scratch_bytes):
+    """Apply a matrix supplied by decode_rows(start, end) one output tile at a time.
+
+    Return [..., rows] in the input dtype/device. Tile sizing uses a conservative
+    64-byte-per-weight scratch estimate; output and activation storage are not
+    included. Raise ValueError for incompatible input columns/dtype, or
+    MemoryError when the scratch budget cannot hold even one decoded row."""
     if inputs.shape[-1] != columns or inputs.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         raise ValueError('Linear inputs must match weight columns and use a supported float dtype.')
     # Conservative accounting for eager nibble index/scaling intermediates (FP32
@@ -89,7 +105,11 @@ def _tiled_linear(inputs, rows, columns, decode_rows, bias, scratch_bytes):
 
 def mxfp4_linear(inputs: Tensor, blocks: Tensor, scales: Tensor, bias: Tensor | None = None,
                   *, scratch_bytes=16 * 1024**2) -> Tensor:
-    """Reference linear with byte-bounded output-row decode scratch."""
+    """Apply one MXFP4 matrix using output-row tiles and optional row bias.
+
+    Expect blocks [out_features, K/32, 16] and matching E8M0 scales. Return
+    [..., out_features] for inputs [..., K], without caching dense weights.
+    Reject expert-bank tensors; decoder validation and scratch failures propagate."""
     if blocks.ndim != 3:
         raise ValueError('Linear expects one matrix, not an entire bank of experts.')
     return _tiled_linear(inputs, blocks.shape[0], blocks.shape[1] * 32,
@@ -98,11 +118,18 @@ def mxfp4_linear(inputs: Tensor, blocks: Tensor, scales: Tensor, bias: Tensor | 
 
 
 def _scale_rows(scale, start, end):
+    """Keep a shared scalar scale intact, or slice output-row scales for a tile."""
     return scale if scale.numel() == 1 else scale[start:end]
 
 
 def nvfp4_linear(inputs: Tensor, weight: Tensor, scale: Tensor, global_scale: Tensor,
                   bias: Tensor | None = None, *, layout='modelopt', scratch_bytes=16 * 1024**2) -> Tensor:
+    """Apply one NVFP4 matrix with bounded row-decode scratch and optional bias.
+
+    Inputs end in K; weight rows use uint8 K/2 or compressed-tensors int32 K/8
+    packing. Scale conventions follow dequantize_nvfp4. Return inputs.shape[:-1]
+    plus the output-row dimension. Invalid matrix layouts or insufficient scratch
+    raise instead of selecting a different format or quantizing activations."""
     if weight.ndim != 2:
         raise ValueError('Linear expects one matrix, not an entire bank of experts.')
     columns = weight.shape[1] * (8 if weight.dtype == torch.int32 else 2)
@@ -114,12 +141,17 @@ def nvfp4_linear(inputs: Tensor, weight: Tensor, scale: Tensor, global_scale: Te
 
 def fp8_linear(inputs: Tensor, weight: Tensor, scale: Tensor, bias: Tensor | None = None,
                  *, scratch_bytes=16 * 1024**2) -> Tensor:
-    """Unswizzled E4M3FN weights and dequant scalar/per-output-row scales only."""
+    """Apply canonical E4M3FN weights with scalar or per-output-row dequant scales.
+
+    Decode FP32-scaled row tiles to the input dtype before each linear operation.
+    Return [..., out_features]; reject non-matrix weights and block-scale layouts.
+    CPU/CUDA execution uses PyTorch reference operations, not a native FP8 kernel."""
     if weight.ndim != 2 or weight.dtype != torch.float8_e4m3fn:
         raise ValueError('FP8 linear requires a two-dimensional E4M3FN weight.')
     if scale.numel() != 1 and scale.shape not in ((weight.shape[0],), (weight.shape[0], 1)):
         raise ValueError('FP8 block-scaled layouts require a separate decoder.')
     def decode(start, end):
+        """Decode only the requested FP8 output rows, broadcasting their scale by column."""
         scaling = _scale_rows(scale, start, end).float()
         if scaling.numel() != 1:
             scaling = scaling.reshape(-1, 1)

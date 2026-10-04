@@ -20,10 +20,16 @@ class CompletionResponse(BaseModel):
 
 @router.post('', operation_id='createCompletion')
 async def create_completion(body: CompletionRequest, request: Request) -> CompletionResponse:
+    """Generate an assistant reply with the loaded model. Client disconnect cancels generation and
+    awaits cleanup; runtime failures preserve their HTTP status.
+    """
     async def watch_disconnect():
         # FastAPI has already consumed/validated the JSON body. Wait directly on
         # the ASGI channel: is_disconnected() uses an AnyIO cancellation scope
         # that can swallow this task's cancellation during response cleanup.
+        """Wait on the consumed request ASGI channel until the client disconnects; task
+        cancellation ends the watcher.
+        """
         while True:
             if (await request.receive())['type'] == 'http.disconnect':
                 return

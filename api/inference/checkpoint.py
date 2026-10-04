@@ -6,6 +6,10 @@ from safetensors import safe_open
 
 class SafeTensorReader:
     def __init__(self, path):
+        """Index local shard headers without decoding weights. Reject nonlocal root files,
+        invalid header lengths and index names absent from the parsed headers.
+        File/JSON errors propagate; safetensors validates tensor layout on access.
+        """
         self.path = Path(path).resolve()
         index = json.loads((self.path / 'model.safetensors.index.json').read_text())
         self.weight_map = index['weight_map']
@@ -25,16 +29,24 @@ class SafeTensorReader:
             raise ValueError('Checkpoint index references missing tensors')
 
     def shape(self, name):
+        """Return the indexed tensor dimensions; raise KeyError for an unknown name."""
         return tuple(self._headers[name]['shape'])
 
     def nbytes(self, name):
+        """Return stored byte length from the header, not decoded tensor memory."""
         start, end = self._headers[name]['data_offsets']
         return end - start
 
     def tensor(self, name):
+        """Return a CPU safetensors tensor by name without dequantizing it; file and lookup errors
+        propagate.
+        """
         with safe_open(self.path / self.weight_map[name], framework='pt', device='cpu') as shard:
             return shard.get_tensor(name)
 
     def expert(self, name, index):
+        """Return one leading-dimension expert slice on CPU; invalid names or indices propagate
+        from safetensors.
+        """
         with safe_open(self.path / self.weight_map[name], framework='pt', device='cpu') as shard:
             return shard.get_slice(name)[index]
