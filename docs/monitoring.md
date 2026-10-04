@@ -17,8 +17,8 @@ malformed payloads receive a size-only summary. Authorization headers, arbitrary
 model names, prompt text, outputs, media and exception details are not retained.
 Only explicit small/medium/large model IDs are recorded, as requested model IDs;
 these are not evidence of which model actually executed. Token rate and time to
-first token are not measured. Successful fixture endpoints are still fixtures:
-HTTP telemetry does not establish genuine generation.
+first token are not measured. HTTP telemetry measures request handling; it does not establish model quality
+or successful hardware validation.
 
 HTTP duration includes handler validation, generation and cleanup; it is not
 model-only latency. Status 499 denotes observed disconnect/cancellation before a

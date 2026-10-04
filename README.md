@@ -5,7 +5,7 @@
 Kadan aims to give local agents chat, decisions, image and video generation, and
 speech tools on one machine without an expensive home lab.
 
-The server will manage model loading for each request. Its planned FreeToken-style
+The server will manage model loading for each request. Its Kadan-owned
 mixture-of-experts loading shares GPU VRAM and system RAM across models. When an
 image, video, or speech request needs the GPU, Kadan can move the LLM entirely out
 of VRAM and reload it afterward. Agents just call the API. Kadan handles the memory.
@@ -20,8 +20,18 @@ The chat page sends real API requests. Kadan's inference code owns checkpoint
 loading, packed expert storage, a bounded GPU expert cache, memory reservations,
 generation and model eviction/restoration. It uses PyTorch and pinned Transformers
 architecture definitions; it does not run FreeToken. Settings shows loading,
-readiness, offloaded state or errors. Chat has no mock fallback. Other modalities,
-history and dashboard metrics still use fixtures.
+readiness, offloaded state or errors. Chat has no mock fallback. Decisions use the
+same loaded runtime and validate structured answers. Model selection is persisted;
+chat conversations stay in the browser. Request history and dashboard metrics now
+report bounded process-local HTTP observations and measured memory.
+
+Image generation/editing, video, speech generation/cloning and transcription forms
+send API requests, but their model providers are not implemented. They return
+explicit unavailable errors and empty media history, never fabricated results.
+These are connected forms, not working media generation. The API access page reads
+the running OpenAPI reference and does not create keys or change authentication.
+See [endpoint status and remaining decisions](docs/endpoint-status.md) and
+[monitoring limits](docs/monitoring.md).
 
 See [checkpoint storage](docs/model-downloads.md), [GPU runtime setup](docs/runtime.md),
 and [web chat testing](docs/chat-web-testing.md). The runtime uses host-RAM expert
