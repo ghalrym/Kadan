@@ -6,3 +6,7 @@ RECIPES = {
     'flux-klein-4b': ImageRecipe('flux-klein-4b', 'e7b7dc27f91deacad38e78976d1f2b499d76a294',
         'Flux2KleinPipeline', SIZES, 4, 1.0),
 }
+
+RECIPES['flux-klein-base-4b-nvfp4'] = ImageRecipe('flux-klein-base-4b-nvfp4',
+    'e655535fb8c2c148b47308cfa559a86a73273d55', 'Flux2KleinPipeline', SIZES, 50, 4.0,
+    quantization='nvfp4', weight_filename='flux-2-klein-base-4b-nvfp4.safetensors')
