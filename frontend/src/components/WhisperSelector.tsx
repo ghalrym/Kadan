@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ModelStatus } from '../api/generated'
+import { ModelPicker } from './ModelPicker'
 
 /** Persist the native Whisper choice without loading or downloading weights. */
-export function WhisperSelector() {
+export function WhisperSelector({ models, pending: downloadPending, downloading, download, cancel }: { models: ModelStatus[]; pending: boolean; downloading: boolean; download: (model: ModelStatus) => void; cancel: (model: ModelStatus) => void }) {
   const [catalog, setCatalog] = useState<{ models: string[]; selected: string | null } | null>(null)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
@@ -26,8 +28,15 @@ export function WhisperSelector() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Cannot save Whisper selection.') }
     finally { inFlight.current = false; setPending(false) }
   }
-  return <div><select id="model-STT" className="input" disabled={!catalog?.models.length || pending} value={catalog?.selected ?? ''} onChange={event => void select(event.target.value)}>
-    {!catalog?.models.length && <option value="">{catalog ? "No Whisper checkpoint enabled" : "Loading…"}</option>}
-    {catalog?.models.map(name => <option key={name} value={name}>Whisper {name}</option>)}
-  </select>{error && <p role="alert" className="error">{error}</p>}</div>
+  const current = models.find(model => model.id === `whisper-${catalog?.selected}`)
+  const job = models.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+  const active = job?.status === 'downloading' || job?.status === 'cancelling'
+  return <div className="stack compact"><ModelPicker pickerId="STT" label="Whisper model" models={models} current={current} selectedId={current?.id ?? null} pending={pending || downloadPending} downloading={downloading} choose={model => void select(model.id.slice('whisper-'.length))} download={download} />
+    {job && <div className="model-download-status">
+      <div className="model-download-heading"><p role="status">{job.display_name} · {job.status}</p><button type="button" className="button" disabled={downloadPending || job.status === 'cancelling' || (!active && downloading)} onClick={() => active ? cancel(job) : download(job)}>{active ? 'Cancel download' : 'Retry download'}</button></div>
+      {active && <progress className="progress" aria-label="Whisper download progress" value={job.total_bytes ? job.downloaded_bytes : undefined} max={job.total_bytes || 1} />}
+      {job.error && <p role="alert" className="error">{job.error}</p>}
+    </div>}
+    {error && <p role="alert" className="error">{error}</p>}
+  </div>
 }
