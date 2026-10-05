@@ -1,8 +1,10 @@
 import unittest
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from api.routes.v1.audio.speech import SpeechRequest
+from api.routes.v1.audio.speech import SpeechRequest, router
 
 
 class SpeechValidationTests(unittest.TestCase):
@@ -14,9 +16,6 @@ class SpeechValidationTests(unittest.TestCase):
 class SpeechRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-        from api.routes.v1.audio.speech import router
         app = FastAPI()
         app.include_router(router)
         cls.client = TestClient(app)
@@ -35,17 +34,25 @@ class SpeechRouteTests(unittest.TestCase):
                 self.assertNotIn('audio', response.json())
         self.assertEqual(self.client.get('/v1/audio/speech').json()['audio'], [])
 
-    def test_invalid_modes_fields_and_bounds_fail_before_provider(self):
+    def test_invalid_modes_and_blank_fields_fail_before_provider(self):
         invalid = [
             {'script': 'Hello', 'voice': {'mode': 'clone', 'description': 'Warm'}},
             {'script': 'Hello', 'voice': {'mode': 'describe', 'sample': 'sample-id'}},
             {'script': 'Hello', 'voice': {'mode': 'other', 'description': 'Warm'}},
             {'script': ' ', 'voice': {'mode': 'describe', 'description': 'Warm'}},
-            {'script': 'x' * 5001, 'voice': {'mode': 'describe', 'description': 'Warm'}},
             {'script': 'Hello', 'voice': {'mode': 'clone', 'sample': ' '}},
-            {'script': 'Hello', 'voice': {'mode': 'describe', 'description': 'x' * 2001}},
             {'script': 'Hello', 'voice': {'mode': 'describe', 'description': 'Warm', 'sample': 'other'}},
         ]
         for body in invalid:
             with self.subTest(body=body):
                 self.assertEqual(self.client.post('/v1/audio/speech', json=body).status_code, 422)
+
+    def test_long_script_and_voice_reach_provider_without_arbitrary_caps(self):
+        for voice in [
+            {'mode': 'describe', 'description': 'v' * 10000},
+            {'mode': 'clone', 'sample': 's' * 10000},
+        ]:
+            with self.subTest(mode=voice['mode']):
+                response = self.client.post('/v1/audio/speech', json={'script': 'x' * 20000, 'voice': voice})
+                self.assertEqual(response.status_code, 503)
+                self.assertIn('No speech provider', response.json()['detail'])

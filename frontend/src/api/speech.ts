@@ -3,7 +3,7 @@ import type { GeneratedSpeech, SpeechRequest } from './generated/types.gen'
 
 /**
  * Trim editor values into the discriminated describe/clone API payload.
- * Throw for blank or oversized script/voice input; clone voice text is an opaque
+ * Throw for blank script/voice input; clone voice text is an opaque
  * sample reference, not an upload or permission to fetch remote media.
  */
 export function speechRequest(
@@ -13,13 +13,13 @@ export function speechRequest(
 ): SpeechRequest {
   script = script.trim()
   voice = voice.trim()
-  if (!script || script.length > 5000)
-    throw new Error('Enter a script of 1–5,000 characters.')
-  if (!voice || voice.length > 2000)
+  if (!script)
+    throw new Error('Enter a script.')
+  if (!voice)
     throw new Error(
       mode === 'clone'
-        ? 'Enter a sample reference of 1–2,000 characters.'
-        : 'Describe the voice in 1–2,000 characters.',
+        ? 'Enter a sample reference.'
+        : 'Describe the voice.',
     )
   return {
     script,
