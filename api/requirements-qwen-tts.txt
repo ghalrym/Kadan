@@ -1,5 +1,4 @@
-# Isolated worker: this pinned upstream requires transformers==4.57.3 and
-# accelerate==1.12.0, conflicting with the main LLM environment.
-qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@022e286b98fbec7e1e916cb940cdf532cd9f488e
-torch==2.11.0
+# Standard in-process speech dependency; the local PEP 517 build applies a
+# reviewed patch to verified Qwen source and emits truthful runtime metadata.
+./api/qwen_tts_compat
 torchaudio==2.11.0

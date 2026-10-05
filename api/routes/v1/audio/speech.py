@@ -82,7 +82,7 @@ def list_speech() -> SpeechHistoryResponse:
     return SpeechHistoryResponse(audio=[], voice_description="", script="")
 
 
-@router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "Speech worker unavailable"}})
+@router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "Speech provider unavailable"}})
 async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
     """Return provider-neutral WAV audio; cancellation waits for owned cleanup."""
     cancel = threading.Event()

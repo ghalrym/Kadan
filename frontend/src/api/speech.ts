@@ -33,7 +33,7 @@ export function speechRequest(
 function speechError(status?: number): Error {
   if (status === 503)
     return new Error(
-      'Speech generation is unavailable. Check the selected checkpoint and provider environment.',
+      'Speech generation is unavailable. Check the selected checkpoint and server model setup.',
     )
   if (status === 422)
     return new Error(
