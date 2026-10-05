@@ -218,6 +218,16 @@ export type DescribedVoice = {
 }
 
 /**
+ * DownloadRequest
+ */
+export type DownloadRequest = {
+  /**
+   * License Acknowledged
+   */
+  license_acknowledged?: boolean
+}
+
+/**
  * GeneratedSpeech
  */
 export type GeneratedSpeech = {
@@ -447,6 +457,10 @@ export type ModelStatus = {
    */
   context_limit: number | null
   /**
+   * Display Name
+   */
+  display_name: string | null
+  /**
    * Downloaded Bytes
    */
   downloaded_bytes: number
@@ -463,9 +477,25 @@ export type ModelStatus = {
    */
   id: string
   /**
+   * Inference Available
+   */
+  inference_available: boolean
+  /**
+   * Kind
+   */
+  kind: 'llm' | 'video' | 'speech' | 'transcription' | 'formatting' | 'image'
+  /**
    * License
    */
   license: string
+  /**
+   * License Notice
+   */
+  license_notice: string | null
+  /**
+   * License Url
+   */
+  license_url: string | null
   /**
    * Repo Id
    */
@@ -1499,7 +1529,10 @@ export type CancelDownloadV1ModelsModelIdDownloadDeleteResponse =
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses[keyof CancelDownloadV1ModelsModelIdDownloadDeleteResponses]
 
 export type DownloadModelV1ModelsModelIdDownloadPostData = {
-  body?: never
+  /**
+   * Body
+   */
+  body?: DownloadRequest | null
   path: {
     /**
      * Model Id

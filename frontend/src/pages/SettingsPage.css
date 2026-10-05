@@ -56,3 +56,14 @@
   .model-llm-fields { grid-template-columns: minmax(0, 1fr); padding-left: 0; }
   .model-llm-details { padding-left: 0; }
 }
+
+.model-row--video > .field { min-width: 0; }
+.model-video-note { grid-column: 2; font-size: 11px; }
+.model-video-progress { grid-column: 1 / -1; }
+.model-license-dialog { width: min(440px, calc(100vw - 40px)); box-sizing: border-box; padding: 24px; color: var(--text-primary, #e7e7ec); background: var(--surface, #18181d); border: 1px solid var(--border, #34343c); border-radius: 12px; }
+.model-license-dialog::backdrop { background: #0009; }
+.model-license-dialog h2 { margin: 0 0 16px; font-size: 16px; }
+.model-license-dialog p { font-size: 13px; line-height: 1.6; }
+.model-license-dialog a { color: inherit; text-decoration: underline; }
+.model-license-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+@media (max-width: 900px) { .model-video-note { grid-column: 1; } }
