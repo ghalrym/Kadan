@@ -29,6 +29,12 @@ class VideoJobs:
             except ImportError as exc:
                 raise RuntimeError('The LTX native provider is not installed.') from exc
             return module.LTXProvider()
+        if model_id == 'wan22-t2v-a14b':
+            try:
+                module = importlib.import_module('api.inference.wan')
+            except ImportError as exc:
+                raise RuntimeError('The Wan native provider is not installed.') from exc
+            return module.WanProvider(model_id, task='t2v-A14B')
         if model_id == 'h3-fl2va':
             try:
                 module = importlib.import_module('api.inference.h3')

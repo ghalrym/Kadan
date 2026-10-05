@@ -17,10 +17,12 @@ import {
  * clears polling timers. Provider errors never create local placeholder jobs.
  */
 export default function VideoPage() {
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('wan22-t2v-a14b')
+  const wan = model === 'wan22-t2v-a14b'
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
-  const [duration, setDuration] = useState('8')
-  const [fps, setFps] = useState('24')
+  const [duration, setDuration] = useState('5')
+  const [fps, setFps] = useState('16')
   const [resolution, setResolution] =
     useState<NonNullable<VideoGenerationRequest['resolution']>>('720p')
   const [aspect, setAspect] = useState<NonNullable<VideoGenerationRequest['aspect']>>('16:9')
@@ -103,6 +105,7 @@ export default function VideoPage() {
     try {
       const job = await submitVideo(
         {
+          model,
           prompt,
           negative_prompt: negative,
           duration: Number(duration),
@@ -156,6 +159,20 @@ export default function VideoPage() {
         }}
       >
         <label className="field">
+          <span className="eyebrow">Model</span>
+          <select aria-label="Model" className="input" value={model} disabled={pending} onChange={event => {
+            const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
+            setModel(value)
+            setFps(value === 'wan22-t2v-a14b' ? '16' : '24')
+            setDuration(value === 'wan22-t2v-a14b' ? '5' : '8')
+            setResolution('720p')
+            setAspect('16:9')
+          }}>
+            <option value="wan22-t2v-a14b">Wan2.2 T2V-A14B</option>
+            <option value="ltx-2.5-distilled">LTX-2.5 Distilled</option>
+          </select>
+        </label>
+        <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
@@ -169,10 +186,10 @@ export default function VideoPage() {
         </label>
         <label className="field">
           <span className="eyebrow">Frame rate</span>
-          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending || wan} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
-        <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={wan ? ['480p', '720p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Aspect" options={wan ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
