@@ -390,6 +390,18 @@
         "title": "DescribedVoice",
         "type": "object"
       },
+      "DownloadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "license_acknowledged": {
+            "default": false,
+            "title": "License Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "title": "DownloadRequest",
+        "type": "object"
+      },
       "GeneratedSpeech": {
         "properties": {
           "meta": {
@@ -492,6 +504,13 @@
               "type": "integer"
             },
             "title": "Seeds",
+            "type": "array"
+          },
+          "urls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Urls",
             "type": "array"
           }
         },
@@ -769,6 +788,17 @@
             "description": "Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.",
             "title": "Context Limit"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
           "downloaded_bytes": {
             "title": "Downloaded Bytes",
             "type": "integer"
@@ -792,9 +822,47 @@
             "title": "Id",
             "type": "string"
           },
+          "inference_available": {
+            "title": "Inference Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "llm",
+              "video",
+              "speech",
+              "transcription",
+              "formatting",
+              "image"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "license": {
             "title": "License",
             "type": "string"
+          },
+          "license_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Notice"
+          },
+          "license_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Url"
           },
           "repo_id": {
             "title": "Repo Id",
@@ -827,6 +895,11 @@
           "revision",
           "license",
           "estimated_bytes",
+          "kind",
+          "display_name",
+          "license_url",
+          "license_notice",
+          "inference_available",
           "status",
           "downloaded_bytes",
           "total_bytes",
@@ -1603,8 +1676,8 @@
             "type": "integer"
           },
           "image": {
-            "description": "Source image reference; no image provider is configured and this reference is not fetched",
-            "maxLength": 2048,
+            "description": "Inline PNG, JPEG or WebP data URL; remote URLs are not fetched",
+            "maxLength": 28000000,
             "minLength": 1,
             "title": "Image",
             "type": "string"
@@ -1619,6 +1692,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1627,13 +1701,6 @@
               }
             ],
             "title": "Seed"
-          },
-          "strength": {
-            "default": 0.65,
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Strength",
-            "type": "number"
           }
         },
         "required": [
@@ -1677,6 +1744,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1696,7 +1764,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Image generation and editing use a completed local Qwen-Image-2.1 checkpoint and return PNG files. Other unconfigured media providers return unavailable errors. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2044,7 +2112,7 @@
     },
     "/v1/images": {
       "get": {
-        "description": "Return empty image history while no image provider or stored results exist.",
+        "description": "Return metadata for completed native image results.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -2066,7 +2134,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
+        "description": "Condition Qwen Image on the uploaded image and edit instruction.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2111,7 +2179,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
+        "description": "Generate real PNG results with Kadan-owned native inference.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -2149,6 +2217,56 @@
           }
         },
         "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/{identifier}/files/{index}": {
+      "get": {
+        "description": "Serve one published PNG without exposing arbitrary filesystem paths.",
+        "operationId": "getImageFile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Image File",
         "tags": [
           "Images"
         ]
@@ -2348,6 +2466,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DownloadRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {

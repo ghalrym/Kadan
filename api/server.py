@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Image generation and editing use a completed local Qwen-Image-2.1 checkpoint and return PNG files. Other unconfigured media providers return unavailable errors. This is not an OpenAI-compatible API.",
 )
 
 for router in (

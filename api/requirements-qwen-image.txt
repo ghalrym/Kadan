@@ -1,0 +1,4 @@
+# Optional native Qwen Image dependencies; install alongside requirements-runtime.txt.
+# Official integration PR14804, verified pipeline and callback signature.
+diffusers @ git+https://github.com/huggingface/diffusers.git@8d3c30bfda9b511c00992f40cff4170a5502814d
+Pillow>=11.3,<13

@@ -1122,3 +1122,5 @@ textarea.input[aria-invalid='true'] {
     padding-inline: 16px;
   }
 }
+
+.generated-image { display: block; width: 100%; height: auto; border-radius: 8px; }

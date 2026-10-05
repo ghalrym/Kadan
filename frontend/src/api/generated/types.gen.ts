@@ -192,6 +192,16 @@ export type DescribedVoice = {
 }
 
 /**
+ * DownloadRequest
+ */
+export type DownloadRequest = {
+  /**
+   * License Acknowledged
+   */
+  license_acknowledged?: boolean
+}
+
+/**
  * GeneratedSpeech
  */
 export type GeneratedSpeech = {
@@ -268,6 +278,10 @@ export type ImageSet = {
    * Seeds
    */
   seeds: Array<number>
+  /**
+   * Urls
+   */
+  urls?: Array<string>
 }
 
 /**
@@ -413,6 +427,10 @@ export type ModelStatus = {
    */
   context_limit: number | null
   /**
+   * Display Name
+   */
+  display_name: string | null
+  /**
    * Downloaded Bytes
    */
   downloaded_bytes: number
@@ -429,9 +447,25 @@ export type ModelStatus = {
    */
   id: string
   /**
+   * Inference Available
+   */
+  inference_available: boolean
+  /**
+   * Kind
+   */
+  kind: 'llm' | 'video' | 'speech' | 'transcription' | 'formatting' | 'image'
+  /**
    * License
    */
   license: string
+  /**
+   * License Notice
+   */
+  license_notice: string | null
+  /**
+   * License Url
+   */
+  license_url: string | null
   /**
    * Repo Id
    */
@@ -925,7 +959,7 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Image
    *
-   * Source image reference; no image provider is configured and this reference is not fetched
+   * Inline PNG, JPEG or WebP data URL; remote URLs are not fetched
    */
   image: string
   /**
@@ -936,10 +970,6 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    * Seed
    */
   seed?: number | null
-  /**
-   * Strength
-   */
-  strength?: number
 }
 
 /**
@@ -1278,6 +1308,38 @@ export type GenerateImagesResponses = {
 export type GenerateImagesResponse =
   GenerateImagesResponses[keyof GenerateImagesResponses]
 
+export type GetImageFileData = {
+  body?: never
+  path: {
+    /**
+     * Identifier
+     */
+    identifier: string
+    /**
+     * Index
+     */
+    index: number
+  }
+  query?: never
+  url: '/v1/images/{identifier}/files/{index}'
+}
+
+export type GetImageFileErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetImageFileError = GetImageFileErrors[keyof GetImageFileErrors]
+
+export type GetImageFileResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown
+}
+
 export type GetMetricsData = {
   body?: never
   path?: never
@@ -1403,7 +1465,10 @@ export type CancelDownloadV1ModelsModelIdDownloadDeleteResponse =
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses[keyof CancelDownloadV1ModelsModelIdDownloadDeleteResponses]
 
 export type DownloadModelV1ModelsModelIdDownloadPostData = {
-  body?: never
+  /**
+   * Body
+   */
+  body?: DownloadRequest | null
   path: {
     /**
      * Model Id

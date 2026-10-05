@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import threading
 from typing import IO, Literal
@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
-from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset
+from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
 
 
 DEFAULT_CONTEXT_LIMIT = 65536
@@ -80,6 +80,11 @@ class ModelStatus(TypedDict):
     revision: str
     license: str
     estimated_bytes: int
+    kind: str
+    display_name: str | None
+    license_url: str | None
+    license_notice: str | None
+    inference_available: bool
     status: DownloadStatus
     downloaded_bytes: int
     total_bytes: int
@@ -110,7 +115,7 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
     manifest: list[ManifestFile] = []
     for upstream_file in checkpoint_metadata['siblings']:
         filename = upstream_file['rfilename']
-        if not allowed_asset(filename):
+        if not allowed_asset(filename, entry):
             continue
         large_file = upstream_file.get('lfs')
         size = large_file['size'] if large_file else upstream_file.get('size')
@@ -123,10 +128,7 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
     filenames = {item['name'] for item in manifest}
     if len(filenames) != len(manifest):
         raise ValueError('Upstream checkpoint contains duplicate filenames')
-    if not {'config.json', 'tokenizer_config.json', 'model.safetensors.index.json'} <= filenames:
-        raise ValueError('Checkpoint is missing required configuration or weight index')
-    if not any(name.endswith('.safetensors') for name in filenames):
-        raise ValueError('Checkpoint has no root safetensors weights')
+    validate_assets(entry, filenames)
     return manifest
 
 
@@ -149,6 +151,25 @@ class ModelManager:
             raise ValueError('Unknown catalog model')
         return CATALOG[model_id]
 
+    def _language_entry(self, model_id: str) -> CatalogEntry:
+        """Require a language model before changing LLM lifecycle or context."""
+        entry = self._catalog_entry(model_id)
+        if entry.kind != 'llm':
+            raise ValueError('This checkpoint is not a language model')
+        return entry
+
+    def get_checkpoint(self, model_id: str) -> tuple[CatalogEntry, Path]:
+        """Resolve a complete immutable checkpoint without changing LLM selection.
+
+        Providers own memory admission and runtime cleanup. This store never
+        replaces or deletes a completed directory while a provider uses it.
+        """
+        with self._lock:
+            entry = self._catalog_entry(model_id)
+            if not self._checkpoint_complete(entry):
+                raise ValueError('Download this model completely in Settings first')
+            return entry, self._checkpoint_directory(entry)
+
     def close(self) -> None:
         """Stop a download at the next read boundary during API shutdown."""
         self._cancel.set()
@@ -169,8 +190,10 @@ class ModelManager:
         try:
             marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
             files = marker['files']
-            return (marker['revision'] == entry.revision and bool(files)
-                    and all(allowed_asset(item['name']) and not (path / item['name']).is_symlink()
+            validate_assets(entry, {item['name'] for item in files})
+            return (not path.is_symlink() and marker['revision'] == entry.revision and bool(files)
+                    and all(allowed_asset(item['name'], entry) and not any(parent.is_symlink() for parent in (path / item['name']).parents if parent != self.root)
+                            and not (path / item['name']).is_symlink()
                             and (path / item['name']).stat().st_size == item['size'] for item in files))
         except (OSError, ValueError, KeyError, TypeError):
             return False
@@ -180,7 +203,7 @@ class ModelManager:
         try:
             selection = json.loads((self.root / 'selection.json').read_text())
             model_id = selection['model_id']
-            return model_id if isinstance(model_id, str) and model_id in CATALOG else None
+            return model_id if isinstance(model_id, str) and model_id in CATALOG and CATALOG[model_id].kind == 'llm' else None
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
@@ -205,7 +228,7 @@ class ModelManager:
 
         Validates the model ID and reads persistence under the manager lock."""
         with self._lock:
-            self._catalog_entry(model_id)
+            self._language_entry(model_id)
             return self._read_context_limits().get(model_id, DEFAULT_CONTEXT_LIMIT)
 
     def architecture_context(self, model_id: str) -> int | None:
@@ -214,7 +237,7 @@ class ModelManager:
         Returns None before download or when no positive maximum is declared.
         Malformed configuration raises ValueError; filesystem errors propagate."""
         entry = self._catalog_entry(model_id)
-        if not self._checkpoint_complete(entry):
+        if entry.kind != 'llm' or not self._checkpoint_complete(entry):
             return None
         checkpoint_config = json.loads((self._checkpoint_directory(entry) / 'config.json').read_text())
         if not isinstance(checkpoint_config, dict):
@@ -233,7 +256,7 @@ class ModelManager:
         Rejects invalid/excessive limits and raises BusyError while the runtime
         holds selection. Validation and replacement share the manager lock."""
         with self._lock:
-            self._catalog_entry(model_id)
+            self._language_entry(model_id)
             if self._in_use:
                 raise BusyError('Unload the running model before changing context limits')
             if context_limit is not None and (type(context_limit) is not int or not 1 <= context_limit <= 2**31 - 1):
@@ -268,10 +291,13 @@ class ModelManager:
                 models.append({
                     'id': entry.id, 'repo_id': entry.repo_id, 'revision': entry.revision,
                     'license': entry.license, 'estimated_bytes': entry.estimated_bytes,
+                    'kind': entry.kind, 'display_name': entry.display_name,
+                    'license_url': entry.license_url, 'license_notice': entry.license_notice,
+                    'inference_available': entry.inference_available,
                     'status': status, 'downloaded_bytes': job.downloaded_bytes,
                     'total_bytes': job.total_bytes, 'error': error,
-                    'context_limit': context_limits.get(entry.id, DEFAULT_CONTEXT_LIMIT),
-                    'architecture_context_limit': self.architecture_context(entry.id),
+                    'context_limit': context_limits.get(entry.id, DEFAULT_CONTEXT_LIMIT) if entry.kind == 'llm' else None,
+                    'architecture_context_limit': self.architecture_context(entry.id) if entry.kind == 'llm' else None,
                 })
             return {'models': models, 'selected_model_id': self._read_selected_model_id()}
 
@@ -316,7 +342,7 @@ class ModelManager:
         with self._lock:
             if self._in_use:
                 raise BusyError('Unload the running model before changing selection')
-            entry = self._catalog_entry(model_id)
+            entry = self._language_entry(model_id)
             if not self._checkpoint_complete(entry):
                 raise ValueError('Download this model completely before selecting it')
             self.root.mkdir(parents=True, exist_ok=True)
@@ -324,7 +350,7 @@ class ModelManager:
             temporary.write_text(json.dumps({'model_id': model_id}))
             temporary.replace(self.root / 'selection.json')
 
-    def start(self, model_id: str) -> None:
+    def start(self, model_id: str, license_acknowledged: bool = False) -> None:
         """Start one background download after acquiring the store's OS writer lock.
 
         Rejects unknown IDs, concurrent jobs, and completed checkpoints. Returns
@@ -332,6 +358,8 @@ class ModelManager:
         Failed startup closes the writer lease. Existing model files are immutable."""
         with self._lock:
             entry = self._catalog_entry(model_id)
+            if entry.license_notice and license_acknowledged is not True:
+                raise ValueError('Read the model license notice and explicitly continue before downloading')
             if self._thread and self._thread.is_alive():
                 raise BusyError('Another download is running; wait or cancel it first')
             if self._checkpoint_complete(entry):
@@ -399,6 +427,7 @@ class ModelManager:
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
                 url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
                 with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:
                         if self._cancel.is_set():
@@ -416,9 +445,15 @@ class ModelManager:
                             self._jobs[entry.id].downloaded_bytes = downloaded
                 if size != item['size'] or digest.hexdigest() != item['digest']:
                     raise ValueError(f"Integrity verification failed: {item['name']}")
-            index = TypeAdapter(WeightIndex).validate_json((stage / 'model.safetensors.index.json').read_text(), strict=True)
-            if not set(index['weight_map'].values()) <= {item['name'] for item in files}:
-                raise ValueError('Weight index references missing or disallowed shards')
+            filenames = {item['name'] for item in files}
+            for name in filenames:
+                if not name.endswith('.safetensors.index.json'):
+                    continue
+                index = TypeAdapter(WeightIndex).validate_json((stage / name).read_text(), strict=True)
+                parent = PurePosixPath(name).parent
+                shards = {str(parent / shard) for shard in index['weight_map'].values()}
+                if not shards or not shards <= filenames:
+                    raise ValueError('Weight index references missing or disallowed shards')
             # Commit completion while holding the same lock as cancel(). A
             # cancellation accepted before publication must never become success.
             with self._lock:

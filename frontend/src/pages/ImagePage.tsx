@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ModeNavigation, SegmentedControl, UploadPlaceholder } from '../components/Controls'
+import { ModeNavigation, SegmentedControl } from '../components/Controls'
 import { MediaPlaceholder } from '../components/Media'
 import { imageHistory, requestImages, type ImageOptions } from '../api/images'
 import type { ImageSet } from '../api/generated/types.gen'
@@ -21,8 +21,9 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
   const [count, setCount] = useState<1 | 2 | 4>(4)
   const [seed, setSeed] = useState('')
-  const source = '' // Upload transport is not implemented; keep the original disabled placeholder.
-  const [strength, setStrength] = useState(65)
+  const [source, setSource] = useState('')
+  const [sourceName, setSourceName] = useState('')
+  const upload = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [historyError, setHistoryError] = useState('')
@@ -59,13 +60,13 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
    */
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (active.current || edit) return
+    if (active.current || (edit && !source)) return
     const controller = new AbortController()
     active.current = controller
     setBusy(true)
     setError('')
     try {
-      await requestImages(
+      const result = await requestImages(
         {
           prompt: prompt.trim(),
           aspect,
@@ -73,13 +74,15 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           seed: seed === '' ? null : Number(seed),
         },
         controller.signal,
-        edit ? { image: source.trim(), strength: strength / 100 } : undefined,
+        edit ? { image: source } : undefined,
       )
+      if (active.current === controller && !controller.signal.aborted)
+        setHistory(items => [result, ...items])
     } catch (error) {
       if (active.current === controller)
         setError(
           controller.signal.aborted
-            ? 'Request cancelled. Cancellation stops this browser request.'
+            ? 'Request cancelled. Native generation is being cancelled.'
             : error instanceof Error
               ? error.message
               : 'Cannot reach the image API. Check the backend and retry.',
@@ -95,7 +98,16 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     <div className="workspace">
       <form className="workspace-controls" aria-label="Image settings" onSubmit={submit}>
         <ModeNavigation label="Image mode" options={[{ label: 'Generate from text', to: '/image' }, { label: 'Edit an image', to: '/image/edit' }]} />
-        {edit && <div className="field"><span className="eyebrow">Source image</span><UploadPlaceholder title="Drop an image or click to upload" caption="PNG, JPG, WEBP · up to 20 MB" /></div>}
+        {edit && <div className="field"><span className="eyebrow">Source image</span><input hidden ref={upload} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={event => {
+          const file = event.target.files?.[0]
+          setSource(''); setSourceName('')
+          if (!file) return
+          if (file.size > 20 * 1024 * 1024) { setError('Source image exceeds 20 MB'); return }
+          const reader = new FileReader()
+          reader.onload = () => { setSource(String(reader.result)); setSourceName(file.name); setError('') }
+          reader.onerror = () => setError('Cannot read this image')
+          reader.readAsDataURL(file)
+        }} /><button type="button" className="upload-placeholder" disabled={busy} onClick={() => upload.current?.click()}><span>{sourceName || 'Click to upload an image'}</span><span className="mono faint">PNG, JPG, WEBP · up to 20 MB</span></button></div>}
         <label className="field"><span className="eyebrow">{edit ? 'Describe the edit' : 'Prompt'}</span>
           <textarea className="input" value={prompt} onChange={e => setPrompt(e.target.value)} rows={5} required maxLength={8000} disabled={busy} placeholder={edit ? 'e.g. Replace the background with a sunlit studio, keep the subject unchanged' : 'Describe the image you want…'} />
         </label>
@@ -103,9 +115,9 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           <SegmentedControl label="Aspect" options={['1:1', '4:3', '3:4', '16:9']} selected={aspect} onChange={value => setAspect(value as NonNullable<ImageOptions['aspect']>)} disabled={busy} />
           <SegmentedControl label="Images" options={['1', '2', '4']} selected={String(count)} onChange={value => setCount(Number(value) as 1 | 2 | 4)} disabled={busy} />
         </div>
-        {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
+
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
-        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        <button className="button button--primary" disabled={busy || !prompt.trim() || (edit && !source)}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>
@@ -113,7 +125,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!loading && !historyError && history.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
-        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map(seed => <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
+        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map((seed, index) => item.urls?.[index] ? <a key={seed} href={item.urls[index]} target="_blank" rel="noreferrer"><img className="generated-image" src={item.urls[index]} alt={item.prompt} /></a> : <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
       </div>
     </div>
   )

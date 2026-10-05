@@ -7,13 +7,12 @@ import type {
 export type ImageOptions = ApiRoutesV1ImagesGenerationsImageRequest
 /**
  * Send typed generation settings, or edit settings when source is supplied.
- * Forward the abort signal and reject network/HTTP failures. Even a 2xx metadata
- * response is rejected because this contract has no deliverable image URLs.
+ * Forward the abort signal and reject network/HTTP failures. Require deliverable image URLs before accepting a successful response.
  */
 export async function requestImages(
   options: ImageOptions,
   signal: AbortSignal,
-  source?: { image: string; strength: number },
+  source?: { image: string },
 ): Promise<ImageSet> {
   const response = source
     ? await editImages({ body: { ...options, ...source }, signal })
@@ -23,19 +22,13 @@ export async function requestImages(
       'Cannot reach the image API. Check that the backend is running, then retry.',
     )
   if (!response.response.ok) {
-    if (response.response?.status === 503)
-      throw new Error(
-        'No image provider is configured. Generation and editing are unavailable.',
-      )
-    throw new Error(
-      `Image request failed (HTTP ${response.response?.status}). Check your inputs and retry.`,
-    )
+    const error = response.error as { detail?: unknown } | undefined
+    throw new Error(typeof error?.detail === 'string' ? error.detail : `Image request failed (HTTP ${response.response.status}).`)
   }
-  // The current API has metadata only, with no deliverable image URLs. Never
-  // turn a successful-looking placeholder into a fabricated generated image.
-  throw new Error(
-    'The API returned metadata without image files. No generated image is available.',
-  )
+  const result = response.data?.image
+  if (!result?.urls?.length || result.urls.length !== result.seeds.length)
+    throw new Error('The API returned metadata without image files. No generated image is available.')
+  return result
 }
 /**
  * Fetch the image metadata list with caller-controlled cancellation.
