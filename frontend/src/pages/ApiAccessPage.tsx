@@ -51,7 +51,6 @@ export default function ApiAccessPage() {
     <div className="scroll-page">
       <div className="settings-layout stack">
         <h2>API access</h2>
-        <p>These operations come from the running backend’s OpenAPI schema. An endpoint being listed does not mean its model is installed or ready. Check Settings before inference.</p>
         <p><a href="/docs" target="_blank" rel="noreferrer">Interactive API reference</a> · <a href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI JSON</a></p>
         {error && <div role="alert">{error} <button type="button" onClick={() => { setError(''); setSchema(null); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!schema && !error && <p role="status">Loading API schema…</p>}
