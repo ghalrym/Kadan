@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import shutil
 import threading
+import traceback
 from uuid import UUID, uuid4
 
 from PIL import Image, UnidentifiedImageError
@@ -78,6 +79,7 @@ class ImageManager:
         stage = None
         ownership = ExitStack()
         pictures = []
+        image = None
         try:
             if model == 'flux-3-image':
                 FluxImageProvider().validate(prompt, aspect, count, seed)
@@ -123,6 +125,7 @@ class ImageManager:
         except ResourceCancelled as exc:
             raise RuntimeFailure(str(exc), 409) from exc
         except (ResourceExhausted, ImportError, OSError, RuntimeError) as exc:
+            traceback.clear_frames(exc.__traceback__)
             if isinstance(exc, RuntimeFailure):
                 raise
             raise RuntimeFailure(f'Image generation failed: {exc}') from exc
@@ -135,6 +138,8 @@ class ImageManager:
             finally:
                 for picture in pictures:
                     picture.close()
+                if image is not None:
+                    image.close()
                 ownership.close()
                 self._gate.release()
 
