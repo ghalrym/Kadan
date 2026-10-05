@@ -73,6 +73,7 @@ export type {
   DownloadModelV1ModelsModelIdDownloadPostErrors,
   DownloadModelV1ModelsModelIdDownloadPostResponse,
   DownloadModelV1ModelsModelIdDownloadPostResponses,
+  DownloadRequest,
   EditImagesData,
   EditImagesError,
   EditImagesErrors,
