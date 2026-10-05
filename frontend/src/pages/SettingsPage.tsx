@@ -157,6 +157,7 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [videoId, setVideoId] = useState<string | null>(null)
   const [speechId, setSpeechId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
@@ -249,6 +250,9 @@ export default function SettingsPage() {
   }
   const models = modelStatus?.models ?? []
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
+  const videoModels = models.filter(model => model.kind === 'video')
+  const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
+  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const speechModels = models.filter(model => model.kind === 'speech')
   const speech = speechModels.find(model => model.id === speechId) ?? speechModels[0]
   const speechDownload = speechModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
