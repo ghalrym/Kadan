@@ -392,6 +392,18 @@
         "title": "DescribedVoice",
         "type": "object"
       },
+      "DownloadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "license_acknowledged": {
+            "default": false,
+            "title": "License Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "title": "DownloadRequest",
+        "type": "object"
+      },
       "GeneratedSpeech": {
         "properties": {
           "meta": {
@@ -771,6 +783,17 @@
             "description": "Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.",
             "title": "Context Limit"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
           "downloaded_bytes": {
             "title": "Downloaded Bytes",
             "type": "integer"
@@ -794,9 +817,47 @@
             "title": "Id",
             "type": "string"
           },
+          "inference_available": {
+            "title": "Inference Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "llm",
+              "video",
+              "speech",
+              "transcription",
+              "formatting",
+              "image"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "license": {
             "title": "License",
             "type": "string"
+          },
+          "license_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Notice"
+          },
+          "license_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Url"
           },
           "repo_id": {
             "title": "Repo Id",
@@ -829,6 +890,11 @@
           "revision",
           "license",
           "estimated_bytes",
+          "kind",
+          "display_name",
+          "license_url",
+          "license_notice",
+          "inference_available",
           "status",
           "downloaded_bytes",
           "total_bytes",
@@ -2561,6 +2627,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DownloadRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
