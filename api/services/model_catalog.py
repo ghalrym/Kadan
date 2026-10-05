@@ -83,6 +83,24 @@ CATALOG['ltx-2.5-distilled'] = CatalogEntry(
     license_notice='LTX-2.5 uses the LTX community license. Some commercial uses require a paid license. Hugging Face access approval is required; continuing does not grant access or license rights.',
 )
 
+# Native image-conditioned MoE checkpoint; both noise experts are required.
+WAN_I2V_REVISION = '206a9ee1b7bfaaf8f7e4d81335650533490646a3'
+CATALOG['wan22-i2v-a14b'] = CatalogEntry(
+    'wan22-i2v-a14b', 'Wan-AI/Wan2.2-I2V-A14B', WAN_I2V_REVISION,
+    'apache-2.0', 126_000_000_000, kind='video',
+    display_name='Wan2.2 I2V-A14B', layout='components',
+    component_paths=('high_noise_model', 'low_noise_model', 'google/umt5-xxl'),
+    required_files=('configuration.json', 'Wan2.1_VAE.pth',
+        'models_t5_umt5-xxl-enc-bf16.pth',
+        'high_noise_model/config.json', 'low_noise_model/config.json',
+        'high_noise_model/diffusion_pytorch_model.safetensors.index.json',
+        'low_noise_model/diffusion_pytorch_model.safetensors.index.json',
+        'google/umt5-xxl/tokenizer_config.json', 'google/umt5-xxl/tokenizer.json',
+        'google/umt5-xxl/spiece.model', 'google/umt5-xxl/special_tokens_map.json'),
+    weight_paths=('high_noise_model', 'low_noise_model'),
+    license_url='https://github.com/Wan-Video/Wan2.2/blob/1ea34ff48f87168174e12956e200b1d908b1c5ff/LICENSE.txt',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
