@@ -69,7 +69,8 @@ class DockerTests(unittest.TestCase):
         def run(args, **kwargs):
             calls.append(args)
             return subprocess.CompletedProcess(args, 0, stdout=b'true' if 'python' in args else b'')
-        with patch.object(self.docker, 'check_volumes'), patch.object(self.docker, 'run', side_effect=run):
+        with patch.object(self.docker, 'check_volumes'), patch.object(self.docker, 'bootstrap_database'), \
+             patch.object(self.docker, 'run', side_effect=run):
             self.assertTrue(self.docker.bootstrap_migration_complete(manifest()))
         inspection = next(args for args in calls if 'python' in args)
         self.assertIn('SELECT version_num FROM alembic_version', inspection[-1])

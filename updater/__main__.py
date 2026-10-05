@@ -93,9 +93,13 @@ def bootstrap_install(root, commit, allow_migrations, docker, releases):
         if journal['stage'] == 'migrated':
             checkpoint('starting')
         if journal['stage'] == 'starting':
+            docker.bootstrap_database(release)
             docker.start_pair(release)
             checkpoint('activating')
         if journal['stage'] == 'activating':
+            docker.bootstrap_database(release)
+            if docker.api_stopped():
+                docker.start_pair(release)
             engine = Engine(root, docker, releases, state)
             checkpoint('activating')
             engine.activate(release)

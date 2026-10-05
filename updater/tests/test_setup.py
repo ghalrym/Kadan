@@ -18,7 +18,7 @@ class SetupTests(unittest.TestCase):
         self.release = manifest()
         self.releases = Mock(verified=Mock(return_value=self.release))
         self.docker = Mock(bootstrap_prepare=Mock(return_value='preserved-backup.dump'),
-                           bootstrap_migration_complete=Mock(return_value=True))
+                           bootstrap_migration_complete=Mock(return_value=True), api_stopped=Mock(return_value=False))
         self.secret = patch('updater.__main__.secrets.token_urlsafe', return_value='test-only-host-key')
         self.key_generator = self.secret.start()
         self.addCleanup(self.secret.stop)
@@ -140,3 +140,17 @@ with patch('updater.__main__.secrets.token_urlsafe', return_value='test-only-hos
         self.releases.verified.return_value = {**self.release, 'api': 'ghcr.io/ghalrym/kadan-api@sha256:' + '9' * 64}
         with self.assertRaisesRegex(ValueError, 'release changed'): self.install()
         self.assertEqual(self.state()['current'], self.release)
+
+    def test_activation_resume_after_host_power_loss_restarts_pair_without_migration(self):
+        self.docker.internal.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt): self.install()
+        self.assertEqual(self.state()['bootstrap']['stage'], 'activating')
+        self.docker.reset_mock()
+        self.docker.internal.side_effect = None
+        self.docker.api_stopped.return_value = True
+        self.install()
+        self.docker.bootstrap_database.assert_called_once_with(self.release)
+        self.docker.start_pair.assert_called_once_with(self.release)
+        self.docker.bootstrap_migrate.assert_not_called()
+        self.docker.bootstrap_prepare.assert_not_called()
+        self.assertEqual(self.state()['phase'], 'idle')

@@ -143,6 +143,12 @@ class Docker:
                     raise RuntimeError('Preserve the legacy HF cache manually before adoption; see setup instructions') from None
                 finally:
                     shutil.rmtree(transfer)
+        self.bootstrap_database(release)
+        return self.backup()
+
+    def bootstrap_database(self, release):
+        """Reopen the fixed existing DB after host power loss, without migrations."""
+        self.check_volumes()
         self.render(release)
         self.run(self.compose + ['up', '-d', '--no-recreate', '--no-deps', 'postgres'], stdout=subprocess.DEVNULL)
         def database_ready():
@@ -153,7 +159,6 @@ class Docker:
             except subprocess.CalledProcessError:
                 return False
         self.wait(database_ready)
-        return self.backup()
 
     def bootstrap_migrate(self):
         self.run(self.compose + ['run', '--rm', '--no-deps', 'api', 'alembic', '-c', 'api/alembic.ini', 'upgrade', 'head'],
@@ -167,7 +172,7 @@ class Docker:
                                 '--filter', f'label=com.docker.compose.service={service}'], stdout=subprocess.PIPE).stdout.strip()
             if running:
                 raise RuntimeError('A setup/app container is still running; inspect it before migration recovery')
-        self.render(release)
+        self.bootstrap_database(release)
         script = (
             'import json; from alembic.config import Config; from alembic.script import ScriptDirectory; '
             'from sqlalchemy import inspect, text; from api.database import get_engine; '
