@@ -338,11 +338,11 @@ export default function SettingsPage() {
               {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
             </div>}
           </div>
-          <div className="model-row model-row--speech">
+          <div className="model-row model-row--video">
             <label htmlFor="model-TTS"><ModelIcon type="TTS" />TTS</label>
-            <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setTTSId(model.id)} download={model => { setTTSId(model.id); downloadModel(model) }} /></div>
+            <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
             {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
-            {speechDownload && <div className="model-download-status model-speech-progress">
+            {speechDownload && <div className="model-download-status model-video-progress">
               <div className="model-download-heading"><p role="status">{speechDownload.display_name} · {speechDownload.status}</p>
                 <button type="button" className="button" disabled={pending || speechDownload.status === 'cancelling' || (downloading && speechDownload.status !== 'downloading')} onClick={() => {
                   if (speechDownload.status === 'downloading') void submitModelChange(`/${speechDownload.id}/download`, 'DELETE')
