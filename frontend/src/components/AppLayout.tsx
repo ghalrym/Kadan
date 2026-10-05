@@ -52,12 +52,6 @@ function ResourceMeters() {
           {message}
         </p>
       ))}
-      {data && (
-        <p className="faint">
-          Host/device usage includes other processes. RAM uses MemAvailable; GPU
-          readings require loaded inference dependencies.
-        </p>
-      )}
     </div>
   )
 }

@@ -65,11 +65,6 @@ export default function RequestDetails() {
                 <h3 className="eyebrow">Response summary</h3>
                 <p className="detail-text">{request.output}</p>
               </section>
-              <p className="faint">
-                Prompts, outputs, media and credentials are not retained.
-                Latency measures the HTTP handler including validation and
-                cleanup. Token counts and time to first token are not measured.
-              </p>
               <details>
                 <summary>Measured record</summary>
                 <pre>{JSON.stringify(request, null, 2)}</pre>
