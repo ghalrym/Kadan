@@ -26,6 +26,7 @@ class ModelStatus(BaseModel):
 
 
 class ModelsResponse(BaseModel):
+    selected_image_model_id: str | None = None
     models: list[ModelStatus]
     selected_model_id: str | None
 
@@ -33,6 +34,23 @@ class ModelsResponse(BaseModel):
 class SelectionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     model_id: Literal['small', 'medium', 'large']
+
+
+class ImageSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    model_id: str
+
+
+@router.put('/image-selection', response_model=ModelsResponse)
+def select_image_model(body: ImageSelectionRequest) -> ModelsStatus:
+    """Select a completed image model independently of the language-model runtime."""
+    try:
+        model_manager.select_image_model(body.model_id)
+        return model_manager.status()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, 'Model storage is unavailable') from exc
 
 
 class DownloadRequest(BaseModel):

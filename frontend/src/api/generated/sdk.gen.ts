@@ -71,6 +71,9 @@ import type {
   LoadSelectedModelData,
   LoadSelectedModelErrors,
   LoadSelectedModelResponses,
+  SelectImageModelV1ModelsImageSelectionPutData,
+  SelectImageModelV1ModelsImageSelectionPutErrors,
+  SelectImageModelV1ModelsImageSelectionPutResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
@@ -395,6 +398,33 @@ export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: '/v1/models', ...options })
+
+/**
+ * Select Image Model
+ *
+ * Select a completed image model independently of the language-model runtime.
+ */
+export const selectImageModelV1ModelsImageSelectionPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<SelectImageModelV1ModelsImageSelectionPutData, ThrowOnError>,
+): RequestResult<
+  SelectImageModelV1ModelsImageSelectionPutResponses,
+  SelectImageModelV1ModelsImageSelectionPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    SelectImageModelV1ModelsImageSelectionPutResponses,
+    SelectImageModelV1ModelsImageSelectionPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/image-selection',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
 
 /**
  * Select Model

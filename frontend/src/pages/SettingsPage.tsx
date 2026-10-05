@@ -9,7 +9,7 @@ import './SettingsPage.css'
  * Combines caller cancellation with the timeout; throws backend detail when
  * available, or an HTTP error for non-JSON proxy failures. Returns typed status.
  */
-async function requestModelStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean }, signal?: AbortSignal): Promise<ModelsResponse> {
+async function requestModelStatus(path = '', method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean } | { model_id: string }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -195,7 +195,7 @@ export default function SettingsPage() {
    * independently from polling. Version changes invalidate polls spanning it;
    * the controller also suppresses state updates after unmount cancellation.
    */
-  async function submitModelChange(path: string, method: 'POST' | 'DELETE', body?: { license_acknowledged: boolean }) {
+  async function submitModelChange(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: { license_acknowledged: boolean } | { model_id: string }) {
     if (actionController.current) return false
     const controller = new AbortController()
     actionController.current = controller
@@ -251,7 +251,7 @@ export default function SettingsPage() {
   const models = modelStatus?.models ?? []
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const imageModels = models.filter(model => model.kind === 'image')
-  const image = imageModels.find(model => model.id === imageId) ?? imageModels[0]
+  const image = imageModels.find(model => model.id === imageId) ?? imageModels.find(model => model.id === modelStatus?.selected_image_model_id) ?? imageModels[0]
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
@@ -331,12 +331,12 @@ export default function SettingsPage() {
             const isImage = setting.type === 'Image'
             const current = isImage ? image : video
             const choices = isImage ? imageModels : videoModels
-            const selected = isImage ? imageId : videoId
+            const selected = isImage ? modelStatus?.selected_image_model_id ?? null : videoId
             const choose = isImage ? setImageId : setVideoId
             const transfer = isImage ? imageDownload : videoDownload
             return <div className="model-row model-row--video" key={setting.type}>
               <label htmlFor={`model-${setting.type}`}><ModelIcon type={setting.type} />{setting.label}</label>
-              <div className="field"><ModelPicker pickerId={setting.type} label={`${setting.type} model`} models={choices} current={current} selectedId={selected} pending={pending} downloading={downloading} choose={model => choose(model.id)} download={model => { choose(model.id); downloadModel(model) }} /></div>
+              <div className="field"><ModelPicker pickerId={setting.type} label={`${setting.type} model`} models={choices} current={current} selectedId={selected} pending={pending} downloading={downloading} choose={async model => { if (!isImage || await submitModelChange('/image-selection', 'PUT', { model_id: model.id })) choose(model.id) }} download={model => { choose(model.id); downloadModel(model) }} /></div>
               {current && !current.inference_available && <span className="muted model-video-note">Download only</span>}
               {transfer && <div className="model-download-status model-video-progress">
                 <div className="model-download-heading"><p role="status">{transfer.display_name} · {transfer.status}</p>

@@ -9,6 +9,7 @@ router = APIRouter(prefix="/v1/images/edits", tags=["Images"])
 
 class ImageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    model: str | None = Field(default=None, description="Native checkpoint override; null uses the saved image selection")
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4

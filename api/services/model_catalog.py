@@ -81,6 +81,18 @@ CATALOG['qwen-image-2.1'] = CatalogEntry(
     license_notice='Qwen-Image-2.1 is licensed for research and evaluation only. Commercial use requires a separate license; continuing does not grant commercial rights.',
 )
 
+CATALOG['flux-klein-4b'] = CatalogEntry(
+    'flux-klein-4b', 'black-forest-labs/FLUX.2-klein-4B', 'e7b7dc27f91deacad38e78976d1f2b499d76a294',
+    'apache-2.0', 16_000_000_000, kind='image', display_name='FLUX.2 klein 4B',
+    layout='components', component_paths=('tokenizer', 'scheduler', 'text_encoder', 'transformer', 'vae'),
+    required_files=('model_index.json', 'LICENSE.md', 'tokenizer/tokenizer.json',
+        'tokenizer/tokenizer_config.json', 'scheduler/scheduler_config.json',
+        'text_encoder/config.json', 'text_encoder/model.safetensors.index.json',
+        'transformer/config.json', 'vae/config.json'),
+    weight_paths=('text_encoder', 'transformer', 'vae'),
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',

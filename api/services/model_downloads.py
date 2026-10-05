@@ -94,6 +94,7 @@ class ModelStatus(TypedDict):
 
 
 class ModelsStatus(TypedDict):
+    selected_image_model_id: str | None
     models: list[ModelStatus]
     selected_model_id: str | None
 
@@ -299,7 +300,29 @@ class ModelManager:
                     'context_limit': context_limits.get(entry.id, DEFAULT_CONTEXT_LIMIT) if entry.kind == 'llm' else None,
                     'architecture_context_limit': self.architecture_context(entry.id) if entry.kind == 'llm' else None,
                 })
-            return {'models': models, 'selected_model_id': self._read_selected_model_id()}
+            return {'models': models, 'selected_model_id': self._read_selected_model_id(),
+                    'selected_image_model_id': self.selected_image_model_id()}
+
+    def selected_image_model_id(self) -> str | None:
+        """Read a valid saved image choice without touching the language-model selection."""
+        with self._lock:
+            try:
+                selected = json.loads((self.root / 'image-selection.json').read_text())['model_id']
+                entry = self._catalog_entry(selected)
+                return selected if entry.kind == 'image' and self._checkpoint_complete(entry) else None
+            except (OSError, ValueError, KeyError, TypeError):
+                return None
+
+    def select_image_model(self, model_id: str) -> None:
+        """Persist a completed native image checkpoint for subsequent requests."""
+        with self._lock:
+            entry, _ = self.get_checkpoint(model_id)
+            if entry.kind != 'image' or not entry.inference_available:
+                raise ValueError('Select a native image checkpoint')
+            self.root.mkdir(parents=True, exist_ok=True)
+            temporary = self.root / 'image-selection.tmp'
+            temporary.write_text(json.dumps({'model_id': model_id}))
+            temporary.replace(self.root / 'image-selection.json')
 
     def get_selected(self) -> tuple[CatalogEntry, Path]:
         """Return the selected catalog entry and absolute completed directory.

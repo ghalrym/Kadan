@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from PIL import Image, UnidentifiedImageError
 
-from api.inference import qwen_image
+from api.inference import qwen_image, flux_klein, native_image
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.media import ImageSet
 from api.services.model_downloads import model_manager
@@ -40,7 +40,7 @@ def decode_source(source):
 
 
 class ImageManager:
-    def __init__(self, root=None, downloads=model_manager, runtime=runtime_manager, backend=qwen_image.generate):
+    def __init__(self, root=None, downloads=model_manager, runtime=runtime_manager, backend=None):
         self.root = Path(root or os.environ.get('KADAN_MEDIA_DIR', Path.home() / '.local/share/kadan/media')) / 'images'
         self.downloads, self.runtime, self.backend = downloads, runtime, backend
         self._gate = threading.Lock()
@@ -69,24 +69,31 @@ class ImageManager:
         except (ValueError, OSError) as exc:
             raise RuntimeFailure('Image not found', 404) from exc
 
-    def generate(self, prompt, aspect, count, seed, cancel, source=None):
+    def generate(self, prompt, aspect, count, seed, cancel, source=None, model=None):
         """Hold process ownership through generation, cleanup and atomic publication."""
         if not self._gate.acquire(blocking=False):
             raise RuntimeFailure('Image generation is already active', 409)
         stage = None
         try:
             image = decode_source(source) if source else None
+            model = model or self.downloads.selected_image_model_id() or qwen_image.MODEL_ID
+            recipe = ({qwen_image.MODEL_ID: qwen_image.RECIPE} | flux_klein.RECIPES).get(model)
+            if recipe is None:
+                raise RuntimeFailure('Unsupported image model', 422)
             try:
-                entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+                entry, path = self.downloads.get_checkpoint(model)
             except (ValueError) as exc:
-                raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
-            if entry.revision != qwen_image.REVISION:
-                raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
+                raise RuntimeFailure(f'Download {model} in Settings before generating images.', 409) from exc
+            if entry.revision != recipe.revision:
+                raise RuntimeFailure('Image checkpoint revision does not match this runtime', 409)
             seeds = [((seed if seed is not None else secrets.randbits(53)) + index) % (2 ** 53) for index in range(count)]
             device = os.environ.get('KADAN_IMAGE_DEVICE', 'cuda:' + os.environ.get('KADAN_GPU', '0'))
             if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
                 raise RuntimeFailure('KADAN_IMAGE_DEVICE must be cpu or cuda:<index>')
-            pictures = self.backend(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, device=device, image=image)
+            options = dict(device=device, image=image)
+            if self.backend is None:
+                options['recipe'] = recipe
+            pictures = (self.backend or native_image.generate)(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, **options)
             if len(pictures) != count:
                 raise RuntimeError('Image provider returned an unexpected result count')
             identifier = str(uuid4())
@@ -96,7 +103,7 @@ class ImageManager:
             for index, picture in enumerate(pictures):
                 picture.save(stage / f'{index}.png', format='PNG')
             result = ImageSet(id=identifier, mode='Edit' if source else 'Generate', prompt=prompt,
-                aspect=ASPECTS[aspect], seeds=seeds, meta=f'Qwen-Image-2.1 · {count} images',
+                aspect=ASPECTS[aspect], seeds=seeds, meta=f'{model} · {count} images',
                 urls=[f'/v1/images/{identifier}/files/{index}' for index in range(count)])
             (stage / 'result.json').write_text(result.model_dump_json())
             if cancel.is_set():
@@ -124,7 +131,7 @@ class ImageManager:
         """Forward disconnect cancellation and keep ownership until native cleanup finishes."""
         cancel = threading.Event()
         task = asyncio.create_task(asyncio.to_thread(self.generate, body.prompt, body.aspect,
-            body.count, body.seed, cancel, source))
+            body.count, body.seed, cancel, source, getattr(body, 'model', None)))
         try:
             while not task.done():
                 if await request.is_disconnected():

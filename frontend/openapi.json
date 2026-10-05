@@ -467,6 +467,20 @@
         "title": "ImageResponse",
         "type": "object"
       },
+      "ImageSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "ImageSelectionRequest",
+        "type": "object"
+      },
       "ImageSet": {
         "properties": {
           "aspect": {
@@ -918,6 +932,17 @@
             },
             "title": "Models",
             "type": "array"
+          },
+          "selected_image_model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Image Model Id"
           },
           "selected_model_id": {
             "anyOf": [
@@ -1682,6 +1707,18 @@
             "title": "Image",
             "type": "string"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Native checkpoint override; null uses the saved image selection",
+            "title": "Model"
+          },
           "prompt": {
             "maxLength": 8000,
             "minLength": 1,
@@ -1733,6 +1770,18 @@
             ],
             "title": "Count",
             "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Native checkpoint override; null uses the saved image selection",
+            "title": "Model"
           },
           "prompt": {
             "maxLength": 8000,
@@ -2310,6 +2359,48 @@
           }
         },
         "summary": "List Models",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/v1/models/image-selection": {
+      "put": {
+        "description": "Select a completed image model independently of the language-model runtime.",
+        "operationId": "select_image_model_v1_models_image_selection_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Image Model",
         "tags": [
           "models"
         ]

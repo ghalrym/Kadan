@@ -106,6 +106,7 @@ class ImageManagerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.downloads = Mock()
+        self.downloads.selected_image_model_id.return_value = None
         self.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.temp.name))
         self.backend = Mock(side_effect=lambda path, resources, prompt, aspect, seeds, cancel, **kwargs:
             [Image.new('RGBA', (3, 2), (255, 0, 0, 100)) for _ in seeds])
@@ -153,7 +154,7 @@ class ImageManagerTests(unittest.TestCase):
 
     def test_missing_checkpoint_is_actionable_before_inference(self):
         self.downloads.get_checkpoint.side_effect = ValueError('incomplete')
-        with self.assertRaisesRegex(RuntimeFailure, 'Download Qwen'):
+        with self.assertRaisesRegex(RuntimeFailure, 'Download qwen'):
             self.manager.generate('x', '1:1', 1, None, threading.Event())
         self.backend.assert_not_called()
 

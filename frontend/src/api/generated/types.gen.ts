@@ -251,6 +251,16 @@ export type ImageResponse = {
 }
 
 /**
+ * ImageSelectionRequest
+ */
+export type ImageSelectionRequest = {
+  /**
+   * Model Id
+   */
+  model_id: string
+}
+
+/**
  * ImageSet
  */
 export type ImageSet = {
@@ -498,6 +508,10 @@ export type ModelsResponse = {
    * Models
    */
   models: Array<ModelStatus>
+  /**
+   * Selected Image Model Id
+   */
+  selected_image_model_id?: string | null
   /**
    * Selected Model Id
    */
@@ -963,6 +977,12 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   image: string
   /**
+   * Model
+   *
+   * Native checkpoint override; null uses the saved image selection
+   */
+  model?: string | null
+  /**
    * Prompt
    */
   prompt: string
@@ -984,6 +1004,12 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Count
    */
   count?: 1 | 2 | 4
+  /**
+   * Model
+   *
+   * Native checkpoint override; null uses the saved image selection
+   */
+  model?: string | null
   /**
    * Prompt
    */
@@ -1372,6 +1398,33 @@ export type ListModelsV1ModelsGetResponses = {
 
 export type ListModelsV1ModelsGetResponse =
   ListModelsV1ModelsGetResponses[keyof ListModelsV1ModelsGetResponses]
+
+export type SelectImageModelV1ModelsImageSelectionPutData = {
+  body: ImageSelectionRequest
+  path?: never
+  query?: never
+  url: '/v1/models/image-selection'
+}
+
+export type SelectImageModelV1ModelsImageSelectionPutErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectImageModelV1ModelsImageSelectionPutError =
+  SelectImageModelV1ModelsImageSelectionPutErrors[keyof SelectImageModelV1ModelsImageSelectionPutErrors]
+
+export type SelectImageModelV1ModelsImageSelectionPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type SelectImageModelV1ModelsImageSelectionPutResponse =
+  SelectImageModelV1ModelsImageSelectionPutResponses[keyof SelectImageModelV1ModelsImageSelectionPutResponses]
 
 export type SelectModelV1ModelsSelectionPutData = {
   body: SelectionRequest
