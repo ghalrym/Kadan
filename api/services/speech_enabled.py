@@ -1,2 +1,2 @@
-"""Checkpoint activations are reviewed separately from the shared speech engine."""
-ENABLED_SPEECH_MODELS: frozenset[str] = frozenset()
+"""Reviewed native Qwen checkpoint integrations."""
+ENABLED_SPEECH_MODELS: frozenset[str] = frozenset(('qwen-tts-1.7b-custom',))
