@@ -32,7 +32,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(restarted.configured_context('small'), 4096)
         self.assertIsNone(restarted.configured_context('medium'))
         self.assertEqual(restarted.configured_context('large'), 65536)
-        self.assertEqual([model['context_limit'] for model in restarted.status()['models']], [4096, None, 65536])
+        self.assertEqual([model['context_limit'] for model in restarted.status()['models'] if model['kind'] == 'llm'], [4096, None, 65536])
         self.assertEqual(path.read_text(), original)
 
     def test_default_is_never_silently_clamped_to_a_smaller_verified_limit(self):

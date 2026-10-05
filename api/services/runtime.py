@@ -173,7 +173,7 @@ class RuntimeManager:
                 return self._start_load(model_manager)
 
             def validate():
-                entry = model_manager._catalog_entry(model_id)
+                entry = model_manager._language_entry(model_id)
                 if not model_manager._checkpoint_complete(entry):
                     raise RuntimeFailure('Download this model completely before loading it.', 409)
                 configured = model_manager.configured_context(model_id) if context_limit is _UNSET else context_limit
