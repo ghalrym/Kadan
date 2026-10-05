@@ -22,6 +22,13 @@ def spec(**changes):
 
 
 class H3Tests(unittest.TestCase):
+    def setUp(self):
+        # These lifecycle fixtures do not encode media. The container build
+        # executes both real binaries; the missing-tool test overrides this.
+        tools = patch('api.inference.h3.shutil.which', side_effect=lambda name: f'/usr/bin/{name}')
+        tools.start()
+        self.addCleanup(tools.stop)
+
     def test_rejects_unsupported_settings(self):
         for changes in [dict(fps=30), dict(duration=3), dict(duration=16),
                         dict(resolution='1080p'), dict(negative_prompt='blur')]:
