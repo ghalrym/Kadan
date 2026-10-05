@@ -170,6 +170,8 @@ export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * List Speech
+ *
+ * Return empty speech history and blank editor defaults, without fixture audio.
  */
 export const listSpeech = <ThrowOnError extends boolean = false>(
   options?: Options<ListSpeechData, ThrowOnError>,
@@ -181,6 +183,11 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 
 /**
  * Generate Speech
+ *
+ * Reject a validated describe/clone request with HTTP 503.
+ *
+ * No speech provider is configured, so no audio is generated or persisted and
+ * clone sample references are neither fetched nor treated as uploaded files.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -200,6 +207,11 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
 
 /**
  * Transcribe Audio
+ *
+ * Return HTTP 503 for validated requests while transcription is unconfigured.
+ *
+ * Neither audio fetching/recording/upload nor inference occurs; formatting is
+ * accepted as future-provider input, not applied to a fabricated transcript.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,
@@ -249,6 +261,8 @@ export const createCompletion = <ThrowOnError extends boolean = false>(
 
 /**
  * List Messages
+ *
+ * Chat is stateless on the server. Conversations are held by the calling client; no persisted messages are available.
  */
 export const listMessages = <ThrowOnError extends boolean = false>(
   options?: Options<ListMessagesData, ThrowOnError>,
@@ -539,6 +553,11 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Settings
+ *
+ * Read the shared model store and return the catalog selection.
+ *
+ * Raise HTTP 503 if the stored selection is outside the catalog; this read does
+ * not load a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,
@@ -551,7 +570,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Validates settings and returns the unchanged mock settings. Does not persist changes.
+ * Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

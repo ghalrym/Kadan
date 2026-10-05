@@ -1,0 +1,93 @@
+import { generateSpeech, listSpeech } from './generated/sdk.gen'
+import type { GeneratedSpeech, SpeechRequest } from './generated/types.gen'
+
+/**
+ * Trim editor values into the discriminated describe/clone API payload.
+ * Throw for blank script/voice input; clone voice text is an opaque
+ * sample reference, not an upload or permission to fetch remote media.
+ */
+export function speechRequest(
+  script: string,
+  mode: 'describe' | 'clone',
+  voice: string,
+): SpeechRequest {
+  script = script.trim()
+  voice = voice.trim()
+  if (!script)
+    throw new Error('Enter a script.')
+  if (!voice)
+    throw new Error(
+      mode === 'clone'
+        ? 'Enter a sample reference.'
+        : 'Describe the voice.',
+    )
+  return {
+    script,
+    voice:
+      mode === 'clone' ? { mode, sample: voice } : { mode, description: voice },
+  }
+}
+
+/**
+ * Translate an HTTP status or missing response into a user-facing speech error.
+ */
+function speechError(status?: number): Error {
+  if (status === 503)
+    return new Error(
+      'No speech provider is configured. Speech generation and voice cloning are unavailable.',
+    )
+  if (status === 422)
+    return new Error(
+      'The API rejected these speech settings. Check the script and voice details.',
+    )
+  return new Error(
+    status
+      ? `Speech API request failed (HTTP ${status}). Please retry.`
+      : 'Cannot reach the speech API. Check that the backend is running, then retry.',
+  )
+}
+
+/**
+ * Recognize the four-string speech metadata shape without implying playable audio.
+ */
+function validAudio(value: unknown): value is GeneratedSpeech {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    ['voice', 'meta', 'script', 'time'].every(
+      (key) => typeof (value as Record<string, unknown>)[key] === 'string',
+    )
+  )
+}
+
+/**
+ * Fetch cancellable speech history and reject transport errors or malformed metadata.
+ * The current backend returns an empty list rather than seeded audio.
+ */
+export async function fetchSpeechHistory(
+  signal: AbortSignal,
+): Promise<GeneratedSpeech[]> {
+  const result = await listSpeech({ signal })
+  if (!result.response?.ok) throw speechError(result.response?.status)
+  if (
+    !Array.isArray(result.data?.audio) ||
+    !result.data.audio.every(validAudio)
+  )
+    throw new Error('The speech API returned invalid history.')
+  return result.data.audio
+}
+
+/**
+ * Send a typed speech request with caller cancellation and validate response metadata.
+ * Reject provider/network/validation failures; returned metadata has no playback URL.
+ */
+export async function requestSpeech(
+  body: SpeechRequest,
+  signal: AbortSignal,
+): Promise<GeneratedSpeech> {
+  const result = await generateSpeech({ body, signal })
+  if (!result.response?.ok) throw speechError(result.response?.status)
+  if (!validAudio(result.data?.audio))
+    throw new Error('The speech API returned an invalid response.')
+  return result.data.audio
+}

@@ -97,7 +97,7 @@ export type ClonedVoice = {
   /**
    * Sample
    *
-   * Voice sample reference; not fetched in mock mode
+   * Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.
    */
   sample: string
 }
@@ -296,6 +296,8 @@ export type ImagesResponse = {
 
 /**
  * MessagesResponse
+ *
+ * Compatibility envelope for client-owned conversations; the server has no history.
  */
 export type MessagesResponse = {
   /**
@@ -392,6 +394,8 @@ export type ModelLoadRequest = {
 
 /**
  * ModelSetting
+ *
+ * A catalog-backed selection; None means no model is selected.
  */
 export type ModelSetting = {
   /**
@@ -405,7 +409,7 @@ export type ModelSetting = {
   /**
    * Selected
    */
-  selected: string
+  selected: string | null
   /**
    * Type
    */
@@ -713,22 +717,26 @@ export type SelectionRequest = {
 
 /**
  * SettingsRequest
+ *
+ * Accept only the supported LLM selection; reject unknown top-level fields.
  */
 export type SettingsRequest = {
   /**
    * Models
    */
   models: {
-    [key: string]: string
+    [key: string]: 'small' | 'medium' | 'large'
   }
   /**
    * Whisper Formatting
    */
-  whisper_formatting?: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
  * SettingsResponse
+ *
+ * Expose real catalog selection and null for unavailable transcription settings.
  */
 export type SettingsResponse = {
   /**
@@ -737,8 +745,10 @@ export type SettingsResponse = {
   models: Array<ModelSetting>
   /**
    * Whisper Formatting
+   *
+   * Null: no transcription provider is configured.
    */
-  whisper_formatting: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
@@ -787,13 +797,23 @@ export type SpeechResponse = {
 }
 
 /**
+ * SpeechUnavailable
+ */
+export type SpeechUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
+}
+
+/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference; not fetched in mock mode
+   * Audio reference only; no upload or fetching is implemented
    */
   audio: string
   /**
@@ -810,6 +830,16 @@ export type TranscriptionResponse = {
    * Text
    */
   text: string
+}
+
+/**
+ * TranscriptionUnavailable
+ */
+export type TranscriptionUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
 }
 
 /**
@@ -1102,6 +1132,10 @@ export type GenerateSpeechErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * No speech provider is configured
+   */
+  503: SpeechUnavailable
 }
 
 export type GenerateSpeechError =
@@ -1129,6 +1163,10 @@ export type TranscribeAudioErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Service Unavailable
+   */
+  503: TranscriptionUnavailable
 }
 
 export type TranscribeAudioError =
