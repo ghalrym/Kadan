@@ -5,7 +5,7 @@ upstream two-stage `DistilledPipeline`. Kadan owns admission, one job worker,
 RAM/VRAM reservations, cancellation, process cleanup and atomic output publication.
 No ComfyUI or external inference server is involved.
 
-Dependencies: the native video engine and completed multi-component catalog PRs.
+Depends on the native video engine. This checkpoint PR includes the generic multi-component catalog support.
 The five required artifacts total approximately 66 GiB, per the official README;
 actual download disk admission uses the immutable manifest sizes plus reserve.
 Only the distilled BF16 checkpoint is included. Dev, quantized variants and DFR

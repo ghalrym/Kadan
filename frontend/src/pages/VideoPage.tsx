@@ -168,7 +168,7 @@ export default function VideoPage() {
       >
         <label className="field">
           <span className="eyebrow">Model</span>
-          <select className="input" value={model} disabled={pending} onChange={event => {
+          <select aria-label="Model" className="input" value={model} disabled={pending} onChange={event => {
             const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
             setModel(value)
             setFps(value === 'wan22-s2v-14b' ? '16' : '24')
@@ -176,7 +176,6 @@ export default function VideoPage() {
             setAspect('16:9')
           }}>
             <option value="ltx-2.5-distilled">LTX-2.5 distilled</option>
-            <option value="h3-fl2va">MiniMax H3 FL2VA</option>
             <option value="wan22-s2v-14b">Wan2.2 S2V 14B</option>
           </select>
         </label>
