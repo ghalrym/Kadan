@@ -105,3 +105,25 @@ jobs:
           python -m pip install -r /tmp/wan-cpu-requirements.txt
       - name: Import native package and direct-script workers without model weights
         run: python scripts/check_wan_imports.py
+
+  ltx-imports:
+    name: Native LTX worker imports (CPU, no weights)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install CPU wheels and isolated LTX requirements
+        run: |
+          python -m pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r api/requirements-ltx.txt
+          python -m pip check
+      - name: Import actual direct-script worker without model weights
+        run: KADAN_LTX_SMOKE_PYTHON="$(command -v python)" python -m unittest api.tests.inference.test_ltx_imports -v
