@@ -111,16 +111,22 @@ export default function ChatPage() {
         </div>
       </div>
       <div className="chat-composer-wrap">
-        {error && <p role="alert">{error}</p>}
-        {notice && <p role="status">{notice}</p>}
-        {retryMessages && (
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={() => void send(retryMessages)}
+        {(error || notice || retryMessages) && (
+          <div
+            className={`chat-banner${error ? ' chat-banner--error' : ''}`}
           >
-            Retry last message
-          </button>
+            {error && <p role="alert">{error}</p>}
+            {notice && <p role="status">{notice}</p>}
+            {retryMessages && (
+              <button
+                type="button"
+                className="button button--secondary"
+                onClick={() => void send(retryMessages)}
+              >
+                Retry last message
+              </button>
+            )}
+          </div>
         )}
         <form
           className="chat-composer"
