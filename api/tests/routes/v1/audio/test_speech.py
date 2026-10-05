@@ -26,18 +26,18 @@ class SpeechRouteTests(unittest.TestCase):
         self.assertEqual(response.json(), {'audio': [], 'voice_description': '', 'script': ''})
 
     def test_both_modes_report_unavailable_without_fake_audio(self):
-        for voice in [{'mode': 'describe', 'description': 'Warm'}, {'mode': 'clone', 'sample': 'sample-id'}]:
+        for voice in [{'mode': 'describe', 'description': 'Warm'}, {'mode': 'clone', 'sample': 'UklGRg==', 'speaker_only': True}]:
             with self.subTest(voice=voice):
                 response = self.client.post('/v1/audio/speech', json={'script': 'Hello', 'voice': voice})
                 self.assertEqual(response.status_code, 503)
-                self.assertIn('No speech provider', response.json()['detail'])
+                self.assertIn('not enabled', response.json()['detail'])
                 self.assertNotIn('audio', response.json())
         self.assertEqual(self.client.get('/v1/audio/speech').json()['audio'], [])
 
     def test_invalid_modes_and_blank_fields_fail_before_provider(self):
         invalid = [
             {'script': 'Hello', 'voice': {'mode': 'clone', 'description': 'Warm'}},
-            {'script': 'Hello', 'voice': {'mode': 'describe', 'sample': 'sample-id'}},
+            {'script': 'Hello', 'voice': {'mode': 'describe', 'sample': 'UklGRg==', 'speaker_only': True}},
             {'script': 'Hello', 'voice': {'mode': 'other', 'description': 'Warm'}},
             {'script': ' ', 'voice': {'mode': 'describe', 'description': 'Warm'}},
             {'script': 'Hello', 'voice': {'mode': 'clone', 'sample': ' '}},
@@ -50,9 +50,17 @@ class SpeechRouteTests(unittest.TestCase):
     def test_long_script_and_voice_reach_provider_without_arbitrary_caps(self):
         for voice in [
             {'mode': 'describe', 'description': 'v' * 10000},
-            {'mode': 'clone', 'sample': 's' * 10000},
+            {'mode': 'clone', 'sample': 'c3Nz' * 10000, 'speaker_only': True},
         ]:
             with self.subTest(mode=voice['mode']):
                 response = self.client.post('/v1/audio/speech', json={'script': 'x' * 20000, 'voice': voice})
                 self.assertEqual(response.status_code, 503)
-                self.assertIn('No speech provider', response.json()['detail'])
+                self.assertIn('not enabled', response.json()['detail'])
+
+    def test_mode_mismatch_and_small_custom_instructions_are_rejected(self):
+        for body in [
+            {'script': 'hello', 'model_id': 'qwen-tts-1.7b-base', 'voice': {'mode': 'describe', 'description': 'warm'}},
+            {'script': 'hello', 'model_id': 'qwen-tts-0.6b-custom', 'voice': {'mode': 'custom', 'speaker': 'Ryan', 'instruction': 'excited'}},
+            {'script': 'hello', 'voice': {'mode': 'clone', 'sample': 'https://example.org/audio.wav', 'speaker_only': True}},
+        ]:
+            self.assertEqual(self.client.post('/v1/audio/speech', json=body).status_code, 422)

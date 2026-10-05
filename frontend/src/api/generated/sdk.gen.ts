@@ -62,6 +62,8 @@ import type {
   ListRequestsErrors,
   ListRequestsResponses,
   ListSpeechData,
+  ListSpeechModelsData,
+  ListSpeechModelsResponses,
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
@@ -181,10 +183,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Reject a validated describe/clone request with HTTP 503.
- *
- * No speech provider is configured, so no audio is generated or persisted and
- * clone sample references are neither fetched nor treated as uploaded files.
+ * Return complete WAV audio; disconnects cancel and reap the owned worker.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -201,6 +200,20 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * List Speech Models
+ *
+ * Expose only enabled native checkpoint integrations.
+ */
+export const listSpeechModels = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSpeechModelsData, ThrowOnError>,
+): RequestResult<ListSpeechModelsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    ListSpeechModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/speech/models', ...options })
 
 /**
  * Transcribe Audio

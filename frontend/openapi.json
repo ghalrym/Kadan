@@ -150,10 +150,26 @@
             "type": "string"
           },
           "sample": {
-            "description": "Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.",
+            "description": "Base64-encoded audio bytes; URLs and server paths are not accepted.",
             "minLength": 1,
             "title": "Sample",
             "type": "string"
+          },
+          "speaker_only": {
+            "default": false,
+            "title": "Speaker Only",
+            "type": "boolean"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript"
           }
         },
         "required": [
@@ -226,6 +242,31 @@
           "context_limit"
         ],
         "title": "ContextRequest",
+        "type": "object"
+      },
+      "CustomVoice": {
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "default": "",
+            "title": "Instruction",
+            "type": "string"
+          },
+          "mode": {
+            "const": "custom",
+            "title": "Mode",
+            "type": "string"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "speaker"
+        ],
+        "title": "CustomVoice",
         "type": "object"
       },
       "DecisionPlaygroundResponse": {
@@ -394,9 +435,32 @@
       },
       "GeneratedSpeech": {
         "properties": {
+          "audio_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Base64"
+          },
           "meta": {
             "title": "Meta",
             "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "const": "audio/wav",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
           },
           "script": {
             "title": "Script",
@@ -1287,9 +1351,53 @@
         "title": "SpeechHistoryResponse",
         "type": "object"
       },
+      "SpeechModelOption": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "custom",
+              "describe",
+              "clone"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mode"
+        ],
+        "title": "SpeechModelOption",
+        "type": "object"
+      },
       "SpeechRequest": {
         "additionalProperties": false,
         "properties": {
+          "language": {
+            "default": "Auto",
+            "title": "Language",
+            "type": "string"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
           "script": {
             "minLength": 1,
             "title": "Script",
@@ -1299,6 +1407,7 @@
             "discriminator": {
               "mapping": {
                 "clone": "#/components/schemas/ClonedVoice",
+                "custom": "#/components/schemas/CustomVoice",
                 "describe": "#/components/schemas/DescribedVoice"
               },
               "propertyName": "mode"
@@ -1309,6 +1418,9 @@
               },
               {
                 "$ref": "#/components/schemas/ClonedVoice"
+              },
+              {
+                "$ref": "#/components/schemas/CustomVoice"
               }
             ],
             "title": "Voice"
@@ -1852,7 +1964,7 @@
         ]
       },
       "post": {
-        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
+        "description": "Return complete WAV audio; disconnects cancel and reap the owned worker.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -1893,10 +2005,36 @@
                 }
               }
             },
-            "description": "No speech provider is configured"
+            "description": "Speech worker unavailable"
           }
         },
         "summary": "Generate Speech",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/audio/speech/models": {
+      "get": {
+        "description": "Expose only enabled native checkpoint integrations.",
+        "operationId": "listSpeechModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpeechModelOption"
+                  },
+                  "title": "Response Listspeechmodels",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Speech Models",
         "tags": [
           "Audio"
         ]

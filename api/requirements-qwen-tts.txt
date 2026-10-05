@@ -1,0 +1,4 @@
+# Isolated worker only: upstream pins conflict with the main LLM environment.
+qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@022e286b98fbec7e1e916cb940cdf532cd9f488e
+torch==2.11.0
+torchaudio==2.11.0

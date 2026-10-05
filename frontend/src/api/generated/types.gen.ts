@@ -97,9 +97,17 @@ export type ClonedVoice = {
   /**
    * Sample
    *
-   * Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.
+   * Base64-encoded audio bytes; URLs and server paths are not accepted.
    */
   sample: string
+  /**
+   * Speaker Only
+   */
+  speaker_only?: boolean
+  /**
+   * Transcript
+   */
+  transcript?: string | null
 }
 
 /**
@@ -133,6 +141,24 @@ export type ContextRequest = {
    * Total context tokens; null uses the checkpoint architecture maximum on load.
    */
   context_limit: number | null
+}
+
+/**
+ * CustomVoice
+ */
+export type CustomVoice = {
+  /**
+   * Instruction
+   */
+  instruction?: string
+  /**
+   * Mode
+   */
+  mode: 'custom'
+  /**
+   * Speaker
+   */
+  speaker: string
 }
 
 /**
@@ -196,9 +222,17 @@ export type DescribedVoice = {
  */
 export type GeneratedSpeech = {
   /**
+   * Audio Base64
+   */
+  audio_base64?: string | null
+  /**
    * Meta
    */
   meta: string
+  /**
+   * Mime Type
+   */
+  mime_type?: 'audio/wav' | null
   /**
    * Script
    */
@@ -726,9 +760,35 @@ export type SpeechHistoryResponse = {
 }
 
 /**
+ * SpeechModelOption
+ */
+export type SpeechModelOption = {
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Mode
+   */
+  mode: 'custom' | 'describe' | 'clone'
+  /**
+   * Name
+   */
+  name: string
+}
+
+/**
  * SpeechRequest
  */
 export type SpeechRequest = {
+  /**
+   * Language
+   */
+  language?: string
+  /**
+   * Model Id
+   */
+  model_id?: string | null
   /**
    * Script
    */
@@ -743,6 +803,9 @@ export type SpeechRequest = {
     | ({
         mode: 'clone'
       } & ClonedVoice)
+    | ({
+        mode: 'custom'
+      } & CustomVoice)
 }
 
 /**
@@ -1083,7 +1146,7 @@ export type GenerateSpeechErrors = {
    */
   422: HttpValidationError
   /**
-   * No speech provider is configured
+   * Speech worker unavailable
    */
   503: SpeechUnavailable
 }
@@ -1100,6 +1163,25 @@ export type GenerateSpeechResponses = {
 
 export type GenerateSpeechResponse =
   GenerateSpeechResponses[keyof GenerateSpeechResponses]
+
+export type ListSpeechModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/speech/models'
+}
+
+export type ListSpeechModelsResponses = {
+  /**
+   * Response Listspeechmodels
+   *
+   * Successful Response
+   */
+  200: Array<SpeechModelOption>
+}
+
+export type ListSpeechModelsResponse =
+  ListSpeechModelsResponses[keyof ListSpeechModelsResponses]
 
 export type TranscribeAudioData = {
   body: TranscriptionRequest
