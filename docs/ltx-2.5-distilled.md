@@ -36,3 +36,14 @@ cleanup. No weights were downloaded; actual GPU/weights inference and worker
 installation were not run. Hardware memory/performance validation remains required.
 Jobs are process-local and are not restored after restart; completed files remain
 on disk. This implementation does not claim durable history.
+
+A fresh Python 3.12 environment installed the declared LTX requirements and passed
+`pip check` and the actual direct-script worker import smoke on October 5, 2026.
+The tested runtime resolved LTX core/pipelines 1.4.2, Transformers 5.14.1,
+PyTorch/torchaudio 2.11.0 CPU and torchvision 0.26.0 CPU. No CUDA shim was used.
+The dedicated CI job repeats this dependency/import check; it does not validate
+GPU kernels or model generation. Operators can run the same weight-free check:
+
+```sh
+/path/to/ltx/python api/inference/workers/ltx.py --check-imports
+```
