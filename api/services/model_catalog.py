@@ -11,6 +11,16 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
+class CheckpointSource:
+    """An immutable, reviewed Hub source whose selected paths retain their names."""
+    repo_id: str
+    revision: str
+    files: tuple[str, ...] = ()
+    component_paths: tuple[str, ...] = ()
+    requires_auth: bool = False
+
+
+@dataclass(frozen=True)
 class CatalogEntry:
     id: str
     repo_id: str
@@ -27,6 +37,9 @@ class CatalogEntry:
     license_url: str | None = None
     license_notice: str | None = None
     inference_available: bool = True
+    requires_auth: bool = False
+    source_files: tuple[str, ...] = ()
+    auxiliary_sources: tuple[CheckpointSource, ...] = ()
 
 
 CATALOG: dict[str, CatalogEntry] = {
@@ -105,7 +118,7 @@ ASSETS = frozenset({
 })
 
 
-def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
+def _allowed_primary_asset(name: str, entry: CatalogEntry | None = None) -> bool:
     """Return whether a repository-relative name is an approved root asset.
 
     Excludes subdirectories, executable code, and duplicate checkpoint formats;
@@ -113,6 +126,8 @@ def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
     path = PurePosixPath(name)
     if path.is_absolute() or '..' in path.parts or '\\' in name or str(path) != name:
         return False
+    if entry is not None and entry.source_files:
+        return name in entry.source_files
     if entry is not None and entry.layout == 'components':
         if name in entry.required_files or name in ('LICENSE', 'LICENSE.txt', 'NOTICE', 'README.md'):
             return True
@@ -125,6 +140,24 @@ def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
     return name in ASSETS or re.fullmatch(
         r'(?:model(?:-\d+-of-\d+|_mtp)?)\.safetensors', name
     ) is not None
+
+
+def source_allows(name: str, source: CheckpointSource) -> bool:
+    """Match an approved relative path; executable and duplicate formats stay excluded."""
+    path = PurePosixPath(name)
+    if path.is_absolute() or '..' in path.parts or '\\' in name or str(path) != name:
+        return False
+    if name in source.files:
+        return True
+    return str(path.parent) in source.component_paths and (
+        path.name in ASSETS or re.fullmatch(
+            r'(?:model|diffusion_pytorch_model)(?:-\d+-of-\d+)?\.safetensors(?:\.index\.json)?', path.name) is not None)
+
+
+def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
+    """Accept the union of reviewed primary and auxiliary checkpoint paths."""
+    return _allowed_primary_asset(name, entry) or bool(entry and any(
+        source_allows(name, source) for source in entry.auxiliary_sources))
 
 
 def validate_assets(entry: CatalogEntry, filenames: set[str]) -> None:

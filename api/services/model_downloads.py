@@ -5,7 +5,7 @@ complete directory is atomically published. Completed directories are immutable.
 Run one API worker; an OS lock prevents concurrent download writers even if a
 second process is accidentally started. Interrupted staging is removed on retry.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
 import json
@@ -20,7 +20,8 @@ from urllib.request import urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
-from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
+from api.services.huggingface_access import open_gated_checkpoint
+from api.services.model_catalog import CATALOG, CatalogEntry, CheckpointSource, allowed_asset, source_allows, _allowed_primary_asset, validate_assets
 
 
 DEFAULT_CONTEXT_LIMIT = 65536
@@ -56,9 +57,12 @@ class ManifestFile(TypedDict):
     size: int
     digest: str
     algorithm: Literal['sha256', 'git-sha1']
+    repo_id: NotRequired[str]
+    revision: NotRequired[str]
 
 
 class CompletionMarker(TypedDict):
+    source_plan: NotRequired[str]
     revision: str
     files: list[ManifestFile]
 
@@ -103,32 +107,66 @@ class WeightIndex(TypedDict):
     weight_map: dict[str, str]
 
 
-def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
-    """Fetch and validate allowed assets for a catalog entry's pinned revision.
+def source_plan(entry: CatalogEntry) -> str:
+    """Bind a composed checkpoint to every source pin and approved path selection."""
+    plan = dict(repo_id=entry.repo_id, revision=entry.revision, source_files=entry.source_files,
+        sources=[asdict(source) for source in entry.auxiliary_sources],
+        required_files=entry.required_files, weight_paths=entry.weight_paths,
+        component_paths=entry.component_paths, layout=entry.layout)
+    return hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
 
-    Returns size/digest metadata without downloading weights. Network errors and
-    invalid upstream metadata propagate; duplicate or missing assets fail closed."""
-    metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
-    with urlopen(metadata_url, timeout=30) as response:
-        checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
-    if checkpoint_metadata['sha'] != entry.revision:
-        raise ValueError('Upstream revision does not match the pinned catalog')
+
+def approved_source(entry: CatalogEntry, item: ManifestFile) -> tuple[str, str, bool]:
+    """Resolve manifest provenance only against catalog-approved sources."""
+    repo = item.get('repo_id', entry.repo_id)
+    revision = item.get('revision', entry.revision)
+    if entry.auxiliary_sources and ('repo_id' not in item or 'revision' not in item):
+        raise ValueError('Composed checkpoint file is missing source provenance')
+    if repo == entry.repo_id and revision == entry.revision and _allowed_primary_asset(item['name'], entry):
+        return repo, revision, entry.requires_auth
+    for source in entry.auxiliary_sources:
+        if (repo, revision) == (source.repo_id, source.revision) and source_allows(item['name'], source):
+            return repo, revision, source.requires_auth
+    raise ValueError('Checkpoint file is not from an approved pinned source')
+
+
+def fetch_checkpoint_manifest(entry: CatalogEntry, cancel: threading.Event | None = None) -> list[ManifestFile]:
+    """Combine pinned metadata before disk admission or any weight requests."""
+    if entry.auxiliary_sources and not entry.source_files:
+        raise ValueError('Composed checkpoints require explicit primary source files')
+    sources = (CheckpointSource(entry.repo_id, entry.revision, requires_auth=entry.requires_auth),) + entry.auxiliary_sources
     manifest: list[ManifestFile] = []
-    for upstream_file in checkpoint_metadata['siblings']:
-        filename = upstream_file['rfilename']
-        if not allowed_asset(filename, entry):
-            continue
-        large_file = upstream_file.get('lfs')
-        size = large_file['size'] if large_file else upstream_file.get('size')
-        digest = large_file['sha256'] if large_file else upstream_file.get('blobId')
-        digest_length = 64 if large_file else 40
-        if size is None or size < 0 or digest is None or not re.fullmatch(f'[0-9a-f]{{{digest_length}}}', digest):
-            raise ValueError(f'Upstream omitted valid integrity metadata for {filename}')
-        manifest.append({'name': filename, 'size': size, 'digest': digest,
-                         'algorithm': 'sha256' if large_file else 'git-sha1'})
-    filenames = {item['name'] for item in manifest}
-    if len(filenames) != len(manifest):
-        raise ValueError('Upstream checkpoint contains duplicate filenames')
+    filenames: set[str] = set()
+    for index, source in enumerate(sources):
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        if not re.fullmatch(r'[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*', source.repo_id) or not re.fullmatch('[0-9a-f]{40}', source.revision):
+            raise ValueError('Checkpoint source must use an approved repository and immutable revision')
+        metadata_url = f'https://huggingface.co/api/models/{source.repo_id}/revision/{source.revision}?blobs=true'
+        with (open_gated_checkpoint(metadata_url) if source.requires_auth else urlopen(metadata_url, timeout=30)) as response:
+            metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
+        if metadata['sha'] != source.revision:
+            raise ValueError('Upstream revision does not match the pinned catalog')
+        selected: set[str] = set()
+        for upstream in metadata['siblings']:
+            name = upstream['rfilename']
+            if not (_allowed_primary_asset(name, entry) if index == 0 else source_allows(name, source)):
+                continue
+            if name in filenames:
+                raise ValueError('Checkpoint sources contain duplicate destination filenames')
+            large_file = upstream.get('lfs')
+            size = large_file['size'] if large_file else upstream.get('size')
+            digest = large_file['sha256'] if large_file else upstream.get('blobId')
+            digest_length = 64 if large_file else 40
+            if size is None or size < 0 or digest is None or not re.fullmatch(f'[0-9a-f]{{{digest_length}}}', digest):
+                raise ValueError(f'Upstream omitted valid integrity metadata for {name}')
+            manifest.append(dict(name=name, size=size, digest=digest,
+                algorithm='sha256' if large_file else 'git-sha1', repo_id=source.repo_id, revision=source.revision))
+            selected.add(name)
+            filenames.add(name)
+        required_source_files = entry.source_files if index == 0 else source.files
+        if not set(required_source_files) <= selected:
+            raise ValueError('Checkpoint source is missing explicitly selected files')
     validate_assets(entry, filenames)
     return manifest
 
@@ -179,7 +217,8 @@ class ModelManager:
 
     def _checkpoint_directory(self, entry: CatalogEntry) -> Path:
         """Return the immutable destination path for this model and revision."""
-        return self.root / f'{entry.id}-{entry.revision}'
+        suffix = f'-{source_plan(entry)[:16]}' if entry.auxiliary_sources else ''
+        return self.root / f'{entry.id}-{entry.revision}{suffix}'
 
     def _checkpoint_complete(self, entry: CatalogEntry) -> bool:
         """Check the completion marker and recorded file sizes without rehashing.
@@ -191,6 +230,16 @@ class ModelManager:
         try:
             marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
             files = marker['files']
+            if entry.auxiliary_sources and marker.get('source_plan') != source_plan(entry):
+                return False
+            filenames = {item['name'] for item in files}
+            if len(filenames) != len(files):
+                return False
+            required_source_files = set(entry.source_files).union(*(set(source.files) for source in entry.auxiliary_sources))
+            if not required_source_files <= filenames:
+                return False
+            for item in files:
+                approved_source(entry, item)
             validate_assets(entry, {item['name'] for item in files})
             return (not path.is_symlink() and marker['revision'] == entry.revision and bool(files)
                     and all(allowed_asset(item['name'], entry) and not any(parent.is_symlink() for parent in (path / item['name']).parents if parent != self.root)
@@ -433,9 +482,11 @@ class ModelManager:
             if stage.exists():
                 shutil.rmtree(stage)
             stage.mkdir()
-            files = fetch_checkpoint_manifest(entry)
+            files = fetch_checkpoint_manifest(entry, self._cancel) if entry.auxiliary_sources else fetch_checkpoint_manifest(entry)
             if self._cancel.is_set():
                 raise Cancelled()
+            for item in files:
+                approved_source(entry, item)
             total = sum(item['size'] for item in files)
             if shutil.disk_usage(self.root).free < total + 1024**3:
                 raise ValueError('Not enough disk space: checkpoint plus 1 GiB reserve required')
@@ -449,9 +500,10 @@ class ModelManager:
                 if item['algorithm'] == 'git-sha1':
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
-                url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                repo, revision, requires_auth = approved_source(entry, item)
+                url = f"https://huggingface.co/{repo}/resolve/{revision}/{item['name']}"
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
-                with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
+                with (open_gated_checkpoint(url) if requires_auth else urlopen(url, timeout=30)) as source, (stage / item['name']).open('wb') as target:
                     while True:
                         if self._cancel.is_set():
                             raise Cancelled()
@@ -483,6 +535,8 @@ class ModelManager:
                 if self._cancel.is_set():
                     raise Cancelled()
                 completion_marker: CompletionMarker = {'revision': entry.revision, 'files': files}
+                if entry.auxiliary_sources:
+                    completion_marker['source_plan'] = source_plan(entry)
                 (stage / 'complete.json').write_text(json.dumps(completion_marker))
                 destination = self._checkpoint_directory(entry)
                 if destination.exists():
