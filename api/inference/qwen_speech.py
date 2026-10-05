@@ -1,17 +1,13 @@
-"""Qwen-specific validation, checkpoint preparation and resident worker adapter."""
+"""Qwen-specific validation, checkpoint preparation and in-process resident adapter."""
 import base64
 import binascii
-from dataclasses import asdict
-import json
+import gc
+import io
 import os
-from pathlib import Path
-import tempfile
 import threading
-import time
 
 from api.inference.resources import ResourceCancelled
 from api.inference.speech import SpeechInput, SpeechModel, SpeechPlan, SpeechResult, SpeechUnavailable
-from api.inference.speech_process import OwnedSpeechProcess
 from api.services.model_downloads import model_manager
 from api.services.qwen_tts_catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
 from api.services import speech_enabled
@@ -47,9 +43,6 @@ class QwenSpeechProvider:
 
     def prepare(self, request):
         model = SPEECH_MODELS[request.model_id]
-        python = os.environ.get('KADAN_QWEN_TTS_PYTHON')
-        if not python or not Path(python).is_file():
-            raise SpeechUnavailable('Configure the isolated Qwen3-TTS worker environment before generating speech.')
         resolver = getattr(model_manager, 'get_checkpoint', None)
         if resolver is None:
             raise SpeechUnavailable('The shared checkpoint catalog integration is required for Qwen3-TTS.')
@@ -63,68 +56,86 @@ class QwenSpeechProvider:
         if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdigit()):
             raise SpeechUnavailable('Qwen speech device must be cpu or cuda:N.')
         budget = model.estimated_bytes * 3 + 2 * 1024**3
-        return SpeechPlan(('qwen', model.id, model.revision, str(checkpoint), python, device),
-            budget, lambda: QwenSpeechSession(python, checkpoint, device, model.name),
+        return SpeechPlan(('qwen', model.id, model.revision, str(checkpoint), device),
+            budget, lambda: QwenSpeechSession(checkpoint, device, model.name),
             {} if device == 'cpu' else {int(device[5:]): budget})
 
 
 class QwenSpeechSession:
-    """One loaded model per owned process, reused until eviction/unload/failure."""
-    def __init__(self, python, checkpoint, device, name):
-        self.python, self.checkpoint, self.device, self.name = python, checkpoint, device, name
-        self.worker = OwnedSpeechProcess()
-        self.directory = None
-        self.sequence = 0
+    """One in-process model, retained until Kadan evicts or explicitly unloads it.
 
-    def _wait(self, path: Path, cancel: threading.Event):
-        deadline = time.monotonic() + 1800
-        while True:
-            if cancel.is_set():
-                raise ResourceCancelled('Speech generation cancelled')
-            if self.worker.poll() is not None:
-                raise SpeechUnavailable('Qwen3-TTS worker exited; check its environment and local checkpoint.')
-            if path.exists():
-                status = json.loads(path.read_text())
-                if status.get('ok') is not True:
-                    raise SpeechUnavailable('Qwen3-TTS worker failed; its residency will be unloaded.')
-                return
-            if time.monotonic() >= deadline:
-                raise SpeechUnavailable('Qwen3-TTS worker timed out.')
-            cancel.wait(.05)
+    Cancellation is cooperative at generated-token boundaries. Loading and audio
+    decoding finish before cleanup; callers keep admission ownership until then.
+    """
+    def __init__(self, checkpoint, device, name):
+        self.checkpoint, self.device, self.name = checkpoint, device, name
+        self.model = None
+
+    @staticmethod
+    def _check_cancel(cancel):
+        if cancel.is_set():
+            raise ResourceCancelled('Speech generation cancelled')
 
     def load(self, cancel):
-        self.directory = tempfile.TemporaryDirectory(prefix='kadan-speech-resident-')
-        root = Path(self.directory.name)
-        (root / 'config.json').write_text(json.dumps(dict(checkpoint=str(self.checkpoint), device=self.device)))
-        env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-        worker = Path(__file__).parents[1] / 'workers' / 'kadan_qwen_tts_worker.py'
-        with (root / 'worker.log').open('wb') as log:
-            self.worker.start([self.python, str(worker), '--serve', str(root)], env=env, log=log)
-        self._wait(root / 'ready.json', cancel)
+        self._check_cancel(cancel)
+        # Defer heavyweight model imports until Kadan has reserved memory.
+        import torch
+        from qwen_tts import Qwen3TTSModel
+        self.model = Qwen3TTSModel.from_pretrained(str(self.checkpoint),
+            local_files_only=True, device_map=self.device,
+            dtype=torch.float32 if self.device == 'cpu' else torch.bfloat16,
+            attn_implementation='sdpa')
+        self._check_cancel(cancel)
 
     def generate(self, request, cancel):
-        self.sequence += 1
-        root = Path(self.directory.name)
-        directory = tempfile.mkdtemp(prefix='request-', dir=root)
-        job = Path(directory)
+        # Audio/model libraries are needed only while an admitted request runs.
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        class Cancelled(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                if cancel.is_set():
+                    raise ResourceCancelled('Speech generation cancelled')
+                return torch.full((input_ids.shape[0],), False,
+                                  dtype=torch.bool, device=input_ids.device)
+
+        self._check_cancel(cancel)
+        voice = request.voice
+        options = dict(text=request.script, language=request.language,
+            non_streaming_mode=True, stopping_criteria=StoppingCriteriaList([Cancelled()]))
+        audio = waves = None
         try:
-            payload = root / f'{self.sequence}.pending'
-            payload.write_text(json.dumps(dict(request=asdict(request), output=str(job / 'output.wav'),
-                                               result=str(job / 'result.json'))))
-            payload.replace(root / f'{self.sequence}.request.json')
-            self._wait(job / 'result.json', cancel)
-            result = SpeechResult((job / 'output.wav').read_bytes(), self.name)
-        except BaseException:
-            # The runtime unloads/reaps the worker before cleaning its root.
-            raise
-        else:
-            for path in job.iterdir():
-                path.unlink()
-            job.rmdir()
-            return result
+            with torch.inference_mode():
+                if voice['mode'] == 'describe':
+                    waves, rate = self.model.generate_voice_design(**options, instruct=voice['description'])
+                elif voice['mode'] == 'custom':
+                    waves, rate = self.model.generate_custom_voice(**options,
+                        speaker=voice['speaker'], instruct=voice.get('instruction', ''))
+                else:
+                    raw = base64.b64decode(voice['sample'], validate=True)
+                    audio, rate = sf.read(io.BytesIO(raw), dtype='float32')
+                    if audio.ndim > 1:
+                        audio = np.mean(audio, axis=-1)
+                    waves, rate = self.model.generate_voice_clone(**options, ref_audio=(audio, rate),
+                        ref_text=voice.get('transcript'), x_vector_only_mode=voice.get('speaker_only', False))
+            self._check_cancel(cancel)
+            if len(waves) != 1 or rate <= 0 or not len(waves[0]):
+                raise SpeechUnavailable('Qwen returned no complete waveform')
+            output = io.BytesIO()
+            sf.write(output, waves[0], rate, subtype='PCM_16', format='WAV')
+            return SpeechResult(output.getvalue(), self.name)
+        finally:
+            # Cloning samples and generated arrays do not become resident state.
+            audio = waves = None
 
     def unload(self):
-        self.worker.stop()
-        if self.directory is not None:
-            self.directory.cleanup()
-            self.directory = None
+        """Free model references and finish CUDA cleanup before admission release."""
+        import torch
+        self.model = None
+        gc.collect()
+        if self.device != 'cpu':
+            with torch.cuda.device(self.device):
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()

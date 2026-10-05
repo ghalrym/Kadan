@@ -1,0 +1,218 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index d4b6df5..cafd9de 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "qwen-tts"
+-version = "0.1.1"
++version = "0.1.1+kadan.1"
+ description = "Qwen-TTS python package"
+ readme = "README.md"
+ requires-python = ">=3.9"
+@@ -20,8 +20,8 @@ license = { text = "Apache-2.0" }
+ authors = [{ name = "Alibaba Qwen Team" }]
+ 
+ dependencies = [
+-  "transformers==4.57.3",
+-  "accelerate==1.12.0",
++  "transformers @ git+https://github.com/huggingface/transformers.git@469230357aab0f2b303b0d638c1f8d06edb14184",
++  "accelerate==1.10.1",
+   "gradio",
+   "librosa",
+   "torchaudio",
+diff --git a/qwen_tts/core/models/configuration_qwen3_tts.py b/qwen_tts/core/models/configuration_qwen3_tts.py
+index 0bd426d..b1c08f8 100644
+--- a/qwen_tts/core/models/configuration_qwen3_tts.py
++++ b/qwen_tts/core/models/configuration_qwen3_tts.py
+@@ -1,4 +1,5 @@
+ # coding=utf-8
++# Modified for Kadan: pinned Transformers 5 compatibility and cooperative stopping.
+ # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+@@ -235,7 +236,7 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
+         self.rms_norm_eps = rms_norm_eps
+         self.use_cache = use_cache
+         self.rope_theta = rope_theta
+-        self.rope_scaling = rope_scaling
++        self.rope_scaling = rope_scaling or kwargs.get('rope_parameters')
+         self.attention_bias = attention_bias
+         self.attention_dropout = attention_dropout
+         # Validate the correctness of rotary position embeddings parameters
+@@ -421,7 +422,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
+         self.rms_norm_eps = rms_norm_eps
+         self.use_cache = use_cache
+         self.rope_theta = rope_theta
+-        self.rope_scaling = rope_scaling
++        self.rope_scaling = rope_scaling or kwargs.get('rope_parameters')
+         self.attention_bias = attention_bias
+         self.attention_dropout = attention_dropout
+         # Validate the correctness of rotary position embeddings parameters
+diff --git a/qwen_tts/core/models/modeling_qwen3_tts.py b/qwen_tts/core/models/modeling_qwen3_tts.py
+index a3eb30a..bec6bf0 100644
+--- a/qwen_tts/core/models/modeling_qwen3_tts.py
++++ b/qwen_tts/core/models/modeling_qwen3_tts.py
+@@ -1,4 +1,5 @@
+ # coding=utf-8
++# Modified for Kadan: pinned Transformers 5 compatibility and cooperative stopping.
+ # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+@@ -92,6 +93,21 @@ def download_weights_from_hf_specific(
+     return hf_folder
+ 
+ 
++_causal_mask_v5 = create_causal_mask
++_sliding_mask_v5 = create_sliding_window_causal_mask
++
++def create_causal_mask(*, input_embeds, cache_position=None, **kwargs):
++    return _causal_mask_v5(inputs_embeds=input_embeds, **kwargs)
++
++def create_sliding_window_causal_mask(*, input_embeds, cache_position=None, **kwargs):
++    return _sliding_mask_v5(inputs_embeds=input_embeds, **kwargs)
++
++def _default_rope(config, device=None, **kwargs):
++    dim = getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)
++    inv_freq = 1.0 / (config.rope_theta ** (torch.arange(0, dim, 2, device=device, dtype=torch.float32) / dim))
++    return inv_freq, 1.0
++
++
+ class Res2NetBlock(torch.nn.Module):
+     def __init__(self, in_channels, out_channels, scale=8, kernel_size=3, dilation=1):
+         super().__init__()
+@@ -477,6 +493,11 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
+     _supports_attention_backend = True
+ 
+     def _init_weights(self, module):
++        if isinstance(module, (Qwen3TTSTalkerRotaryEmbedding, Qwen3TTSRotaryEmbedding)):
++            inv_freq, _ = module.rope_init_fn(module.config, module.inv_freq.device)
++            module.inv_freq.copy_(inv_freq)
++            module.original_inv_freq = module.inv_freq
++            return
+         # important: this ported version of Qwen2.5OmniThinker isn't meant for training from scratch - only
+         # inference and fine-tuning - so the proper init weights code has been removed
+         std = self.config.initializer_range if hasattr(self.config, "initializer_range") else 0.02
+@@ -510,6 +531,11 @@ class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
+     _supports_attention_backend = True
+ 
+     def _init_weights(self, module):
++        if isinstance(module, (Qwen3TTSTalkerRotaryEmbedding, Qwen3TTSRotaryEmbedding)):
++            inv_freq, _ = module.rope_init_fn(module.config, module.inv_freq.device)
++            module.inv_freq.copy_(inv_freq)
++            module.original_inv_freq = module.inv_freq
++            return
+         std = self.config.initializer_range
+         if isinstance(module, nn.Linear):
+             module.weight.data.normal_(mean=0.0, std=std)
+@@ -535,7 +561,7 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
+         self.original_max_seq_len = config.max_position_embeddings
+ 
+         self.config = config
+-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
++        self.rope_init_fn = (_default_rope if self.rope_type == 'default' else ROPE_INIT_FUNCTIONS[self.rope_type])
+ 
+         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+         self.register_buffer("inv_freq", inv_freq, persistent=False)
+@@ -570,7 +596,7 @@ class Qwen3TTSRotaryEmbedding(nn.Module):
+         self.original_max_seq_len = config.max_position_embeddings
+ 
+         self.config = config
+-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
++        self.rope_init_fn = (_default_rope if self.rope_type == 'default' else ROPE_INIT_FUNCTIONS[self.rope_type])
+ 
+         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+         self.register_buffer("inv_freq", inv_freq, persistent=False)
+@@ -1018,7 +1044,7 @@ class Qwen3TTSTalkerCodePredictorModel(Qwen3TTSPreTrainedModel):
+ 
+     def __init__(self, config: Qwen3TTSTalkerCodePredictorConfig, embedding_dim: int):
+         super().__init__(config)
+-        self.padding_idx = config.pad_token_id
++        self.padding_idx = getattr(config, 'pad_token_id', None)
+         self.vocab_size = config.vocab_size
+         self.layers = nn.ModuleList(
+             [Qwen3TTSDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+@@ -1430,7 +1456,7 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
+ 
+     def __init__(self, config):
+         super().__init__(config)
+-        self.padding_idx = config.pad_token_id
++        self.padding_idx = getattr(config, 'pad_token_id', None)
+         self.vocab_size = config.vocab_size
+         self.layers = nn.ModuleList(
+             [Qwen3TTSTalkerDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+@@ -2065,6 +2091,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
+             "return_dict_in_generate": getattr(kwargs, "return_dict_in_generate", True)
+         }
+         
++        if kwargs.get('stopping_criteria') is not None:
++            talker_kwargs['stopping_criteria'] = kwargs['stopping_criteria']
++
+         talker_input_embeds = [[] for _ in range(len(input_ids))]
+ 
+         voice_clone_spk_embeds = None
+diff --git a/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py b/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py
+index 0c00fd3..000f01e 100644
+--- a/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py
++++ b/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py
+@@ -1,4 +1,5 @@
+ # coding=utf-8
++# Modified for Kadan: pinned Transformers 5 compatibility and cooperative stopping.
+ # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+@@ -49,6 +50,21 @@ from .configuration_qwen3_tts_tokenizer_v2 import (
+ logger = logging.get_logger(__name__)
+ 
+ 
++_causal_mask_v5 = create_causal_mask
++_sliding_mask_v5 = create_sliding_window_causal_mask
++
++def create_causal_mask(*, input_embeds, cache_position=None, **kwargs):
++    return _causal_mask_v5(inputs_embeds=input_embeds, **kwargs)
++
++def create_sliding_window_causal_mask(*, input_embeds, cache_position=None, **kwargs):
++    return _sliding_mask_v5(inputs_embeds=input_embeds, **kwargs)
++
++def _default_rope(config, device=None, **kwargs):
++    dim = getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)
++    inv_freq = 1.0 / (config.rope_theta ** (torch.arange(0, dim, 2, device=device, dtype=torch.float32) / dim))
++    return inv_freq, 1.0
++
++
+ @dataclass
+ @auto_docstring
+ class Qwen3TTSTokenizerV2EncoderOutput(ModelOutput):
+@@ -146,6 +162,13 @@ def eager_attention_forward(
+ 
+ @auto_docstring
+ class Qwen3TTSTokenizerV2DecoderPreTrainedModel(PreTrainedModel):
++    def _init_weights(self, module):
++        super()._init_weights(module)
++        if isinstance(module, Qwen3TTSTokenizerV2DecoderRotatoryEmbedding):
++            inv_freq, _ = module.rope_init_fn(module.config, module.inv_freq.device)
++            module.inv_freq.copy_(inv_freq)
++            module.original_inv_freq = module.inv_freq
++
+     config: Qwen3TTSTokenizerV2DecoderConfig
+     base_model_prefix = "model"
+     supports_gradient_checkpointing = True
+@@ -257,7 +280,7 @@ class Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(nn.Module):
+         self.original_max_seq_len = config.max_position_embeddings
+ 
+         self.config = config
+-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
++        self.rope_init_fn = (_default_rope if self.rope_type == 'default' else ROPE_INIT_FUNCTIONS[self.rope_type])
+ 
+         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+         self.register_buffer("inv_freq", inv_freq, persistent=False)
+@@ -496,7 +519,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(Qwen3TTSTokenizerV2DecoderPreTr
+         # Initialize weights and apply final processing
+         self.post_init()
+ 
+-    @check_model_inputs()
++    @check_model_inputs
+     @auto_docstring
+     def forward(
+         self,
