@@ -78,10 +78,14 @@ export function SegmentedControl({
   label,
   options,
   selected,
+  onChange,
+  disabled = false,
 }: {
   label: string
   options: string[]
   selected: string
+  onChange?: (value: string) => void
+  disabled?: boolean
 }) {
   return (
     <div className="field">
@@ -91,7 +95,8 @@ export function SegmentedControl({
           <button
             type="button"
             key={option}
-            disabled
+            disabled={disabled || !onChange}
+            onClick={() => onChange?.(option)}
             aria-pressed={option === selected}
             className={option === selected ? 'selected' : ''}
           >
