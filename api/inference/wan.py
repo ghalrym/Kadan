@@ -15,7 +15,7 @@ SOURCE_REVISION = '1ea34ff48f87168174e12956e200b1d908b1c5ff'
 
 
 class WanProvider:
-    worker_script = 'wan.py'
+    worker_script = 'wan_worker.py'
 
     def __init__(self, model_id, task, manager=None, resources=None, python=None):
         self.model_id = model_id
