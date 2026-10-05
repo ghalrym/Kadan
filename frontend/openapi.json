@@ -151,7 +151,6 @@
           },
           "sample": {
             "description": "Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.",
-            "maxLength": 2000,
             "minLength": 1,
             "title": "Sample",
             "type": "string"
@@ -376,7 +375,6 @@
         "additionalProperties": false,
         "properties": {
           "description": {
-            "maxLength": 2000,
             "minLength": 1,
             "title": "Description",
             "type": "string"
@@ -1293,7 +1291,6 @@
         "additionalProperties": false,
         "properties": {
           "script": {
-            "maxLength": 5000,
             "minLength": 1,
             "title": "Script",
             "type": "string"
