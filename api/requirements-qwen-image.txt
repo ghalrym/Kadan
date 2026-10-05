@@ -1,4 +1,6 @@
-# Optional native Qwen Image dependencies; install alongside requirements-runtime.txt.
+# Native Qwen Image dependencies; included by requirements.txt.
 # Official integration PR14804, verified pipeline and callback signature.
 diffusers @ git+https://github.com/huggingface/diffusers.git@8d3c30bfda9b511c00992f40cff4170a5502814d
 Pillow>=11.3,<13
+# Official torch 2.11 pairing; Qwen3VLProcessor also constructs a video processor.
+torchvision==0.26.0
