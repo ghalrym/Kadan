@@ -77,3 +77,31 @@ jobs:
         run: npm --prefix frontend run lint
       - name: Build frontend
         run: npm --prefix frontend run build
+
+  wan-imports:
+    name: Native Wan worker imports (CPU, no weights)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install CPU wheels and pinned native source
+        run: |
+          python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-deps "$(sed -n 's/^wan @ //p' api/requirements-wan.txt)"
+      - name: Install declared dependencies without CUDA-only FlashAttention
+        run: |
+          python - <<'PY' > /tmp/wan-cpu-requirements.txt
+          from importlib.metadata import requires
+          from pathlib import Path
+          print('\n'.join(r for r in requires('wan') if not r.startswith('flash_attn') and 'extra ==' not in r))
+          print('\n'.join(r for r in Path('api/requirements-wan.txt').read_text().splitlines() if not r.startswith('wan @')))
+          PY
+          python -m pip install -r /tmp/wan-cpu-requirements.txt
+      - name: Import native package and direct-script workers without model weights
+        run: python scripts/check_wan_imports.py

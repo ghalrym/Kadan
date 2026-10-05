@@ -3,6 +3,10 @@ wan @ git+https://github.com/Wan-Video/Wan2.2.git@1ea34ff48f87168174e12956e200b1
 # Import dependencies needed even when only T2V/TI2V is requested.
 decord==0.6.0
 peft==0.17.1
+# PEFT imports HybridCache, which Transformers 5 removed.
+transformers==4.51.3
+diffusers==0.35.1
+einops==0.8.1
 librosa==0.11.0
 soundfile==0.13.1
 sentencepiece==0.2.1
