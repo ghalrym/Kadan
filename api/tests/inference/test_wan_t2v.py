@@ -32,7 +32,7 @@ class WanT2VTests(unittest.TestCase):
         payload = dict(spec=vars(VideoSpec('A river', negative_prompt='blur', duration=5,
                             fps=16, resolution='480p', seed=17)), task='t2v-A14B',
                        checkpoint='/models/local', width=832, height=480, output='/tmp/out.mp4')
-        location = Path(__file__).resolve().parents[2] / 'inference/workers/wan.py'
+        location = Path(__file__).resolve().parents[2] / 'inference/workers/wan_worker.py'
         definition = importlib.util.spec_from_file_location('wan_t2v_worker_fixture', location)
         worker = importlib.util.module_from_spec(definition)
         fixtures = {'wan': wan, 'wan.configs': SimpleNamespace(WAN_CONFIGS={'t2v-A14B': config}),
