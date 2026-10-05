@@ -1,0 +1,3 @@
+# Optional isolated H3 worker environment. Not included in the API/LLM environment.
+# No installation is performed by Kadan; KADAN_H3_PYTHON selects this interpreter.
+sglang[diffusion] @ git+https://github.com/sgl-project/sglang.git@f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a#subdirectory=python
