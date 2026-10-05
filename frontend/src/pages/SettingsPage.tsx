@@ -107,6 +107,7 @@ export default function SettingsPage() {
   const [refresh, setRefresh] = useState(0)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
+  const [videoId, setVideoId] = useState<string | null>(null)
   const [chosenId, setChosenId] = useState<string | null>(null)
   const [contextDraft, setContextDraft] = useState<{ modelId: string; limit: number | null } | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
@@ -195,6 +196,9 @@ export default function SettingsPage() {
     }
   }
   const models = modelStatus?.models ?? []
+  const videoModels = models.filter(model => model.kind === 'video')
+  const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
+  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
   const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
@@ -263,7 +267,21 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM').map(model => <div className="model-row" key={model.type}>
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
+            {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
+            {videoDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
+                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
+                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
+                  else downloadModel(videoDownload)
+                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
+            </div>}
+          </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             {model.type === 'STT' ? <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}

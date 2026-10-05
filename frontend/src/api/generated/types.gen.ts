@@ -292,6 +292,8 @@ export type ImagesResponse = {
 
 /**
  * MessagesResponse
+ *
+ * Compatibility envelope for client-owned conversations; the server has no history.
  */
 export type MessagesResponse = {
   /**
@@ -388,6 +390,8 @@ export type ModelLoadRequest = {
 
 /**
  * ModelSetting
+ *
+ * A catalog-backed selection; None means no model is selected.
  */
 export type ModelSetting = {
   /**
@@ -401,7 +405,7 @@ export type ModelSetting = {
   /**
    * Selected
    */
-  selected: string
+  selected: string | null
   /**
    * Type
    */
@@ -709,22 +713,26 @@ export type SelectionRequest = {
 
 /**
  * SettingsRequest
+ *
+ * Accept only the supported LLM selection; reject unknown top-level fields.
  */
 export type SettingsRequest = {
   /**
    * Models
    */
   models: {
-    [key: string]: string
+    [key: string]: 'small' | 'medium' | 'large'
   }
   /**
    * Whisper Formatting
    */
-  whisper_formatting?: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
  * SettingsResponse
+ *
+ * Expose real catalog selection and null for unavailable transcription settings.
  */
 export type SettingsResponse = {
   /**
@@ -733,8 +741,10 @@ export type SettingsResponse = {
   models: Array<ModelSetting>
   /**
    * Whisper Formatting
+   *
+   * Null: no transcription provider is configured.
    */
-  whisper_formatting: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
