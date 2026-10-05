@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +20,11 @@ class SpeechRouteTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         cls.client = TestClient(app)
+
+    def setUp(self):
+        disabled = patch("api.services.speech.ENABLED_SPEECH_MODELS", frozenset())
+        disabled.start()
+        self.addCleanup(disabled.stop)
 
     def test_history_is_empty_and_defaults_are_blank(self):
         response = self.client.get('/v1/audio/speech')
