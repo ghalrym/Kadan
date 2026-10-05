@@ -1,4 +1,4 @@
-"""Offline Wan2.2 worker, executed only in its isolated native environment."""
+"""Offline worker; its filename must not shadow the installed wan package."""
 import json
 import sys
 
@@ -52,4 +52,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if '--check-imports' in sys.argv:
+        print('Wan native imports OK:', wan.__file__)
+    else:
+        main()
