@@ -23,6 +23,7 @@ class ModelLifecycleRouteTests(unittest.TestCase):
             ('api.routes.model_lifecycle.runtime_manager', self.runtime),
             ('api.routes.v1.chat.completions.runtime_manager', self.runtime),
             ('api.services.model_downloads.model_manager', self.models),
+            ('api.services.runtime.model_manager', self.models),
             ('api.server.runtime_manager', self.runtime),
             ('api.server.model_manager', self.models),
         ):
