@@ -20,7 +20,9 @@ def main():
         rank=0, t5_fsdp=False, dit_fsdp=False, use_sp=False, t5_cpu=True,
         convert_model_dtype=True)
     width, height = payload['width'], payload['height']
-    padded = (((width + 31) // 32) * 32, ((height + 31) // 32) * 32)
+    alignment = 32 if task == 'ti2v-5B' else 16
+    padded = (((width + alignment - 1) // alignment) * alignment,
+              ((height + alignment - 1) // alignment) * alignment)
     frame_count = spec['duration'] * spec['fps']
     options = dict(size=padded, frame_num=((frame_count + 2) // 4) * 4 + 1,
         shift=config.sample_shift, sample_solver='unipc', sampling_steps=config.sample_steps,

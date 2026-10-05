@@ -33,7 +33,10 @@ class WanProvider:
             raise ValueError('This Wan checkpoint does not accept audio or video conditioning.')
         if self.task == 't2v-A14B' and spec.image_path:
             raise ValueError('The text-to-video checkpoint does not accept an image.')
-        spec.dimensions
+        if spec.aspect not in ('16:9', '9:16') or spec.resolution not in ('480p', '720p'):
+            raise ValueError('Wan supports landscape or portrait at 480p or 720p.')
+        if self.task == 'ti2v-5B' and spec.resolution != '720p':
+            raise ValueError('Wan TI2V-5B uses its native 720p preset.')
         if not self.python or not Path(self.python).is_file():
             raise RuntimeError('The Kadan Wan worker environment is not configured.')
         self._checkpoint()
@@ -57,8 +60,12 @@ class WanProvider:
         # Conservative CPU-offload admission, not a measured peak-memory claim.
         host_bytes = sum(file.stat().st_size for file in checkpoint.rglob('*') if file.is_file()) * 2
         worker = Path(__file__).parent / 'workers' / 'wan.py'
+        width, height = ((832, 480) if spec.resolution == '480p' else
+                         (1280, 704 if self.task == 'ti2v-5B' else 720))
+        if spec.aspect == '9:16':
+            width, height = height, width
         payload = dict(spec=vars(spec), checkpoint=str(checkpoint), task=self.task,
-                       output=str(output_path), width=spec.dimensions[0], height=spec.dimensions[1])
+                       output=str(output_path), width=width, height=height)
         env = {**os.environ, 'CUDA_VISIBLE_DEVICES': str(device), 'HF_HUB_OFFLINE': '1',
                'TRANSFORMERS_OFFLINE': '1', 'TOKENIZERS_PARALLELISM': 'false'}
         with resources.exclusive(owner, cancellation):
