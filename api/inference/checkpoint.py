@@ -1,5 +1,6 @@
 """Local safetensors access without loading/dequantizing an entire checkpoint."""
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from safetensors import safe_open
 
@@ -27,6 +28,26 @@ class SafeTensorReader:
             self._headers.update({key: value for key, value in header.items() if key != '__metadata__'})
         if not self.keys <= self._headers.keys():
             raise ValueError('Checkpoint index references missing tensors')
+        self._shards = {}
+        self._stack = ExitStack()
+
+    def _shard(self, name):
+        """Share one mapping per shard across all tensors and expert slices.
+
+        Returned tensors retain their backing storage after a reader is closed.
+        Reopening for each tensor would retain a whole-file mapping per tensor,
+        exhausting virtual address space on checkpoints with many experts.
+        """
+        filename = self.weight_map[name]
+        if filename not in self._shards:
+            self._shards[filename] = self._stack.enter_context(
+                safe_open(self.path / filename, framework='pt', device='cpu'))
+        return self._shards[filename]
+
+    def close(self):
+        """Release reader handles; tensor owners retain only the mappings they still need."""
+        self._stack.close()
+        self._shards.clear()
 
     def shape(self, name):
         """Return the indexed tensor dimensions; raise KeyError for an unknown name."""
@@ -41,12 +62,10 @@ class SafeTensorReader:
         """Return a CPU safetensors tensor by name without dequantizing it; file and lookup errors
         propagate.
         """
-        with safe_open(self.path / self.weight_map[name], framework='pt', device='cpu') as shard:
-            return shard.get_tensor(name)
+        return self._shard(name).get_tensor(name)
 
     def expert(self, name, index):
         """Return one leading-dimension expert slice on CPU; invalid names or indices propagate
         from safetensors.
         """
-        with safe_open(self.path / self.weight_map[name], framework='pt', device='cpu') as shard:
-            return shard.get_slice(name)[index]
+        return self._shard(name).get_slice(name)[index]
