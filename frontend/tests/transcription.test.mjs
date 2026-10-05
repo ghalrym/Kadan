@@ -59,9 +59,9 @@ test('unavailable, validation, network, and malformed responses never produce fi
     await assert.rejects(requestTranscription('reference', true, signal()), /invalid transcript/)
   }
 })
-test('blank or overlong reference fails before fetch', async () => {
+test('blank reference fails before fetch', async () => {
   mockFetch(async () => { assert.fail('must not fetch') })
-  for (const value of [' ', 'x'.repeat(2049)]) await assert.rejects(requestTranscription(value, true, signal()), /1–2048/)
+  await assert.rejects(requestTranscription(' ', true, signal()), /Enter an audio reference/)
 })
 test('cancel reaches SDK fetch', async () => {
   const controller = new AbortController()
@@ -72,4 +72,13 @@ test('cancel reaches SDK fetch', async () => {
   await new Promise(resolve => setImmediate(resolve))
   controller.abort()
   await assert.rejects(pending)
+})
+
+test('long references reach the API without arbitrary caps', async () => {
+  const audio = 'x'.repeat(20000)
+  mockFetch(async request => {
+    assert.deepEqual(await request.json(), { audio, formatting: true })
+    return Response.json({ detail: 'Unavailable' }, { status: 503 })
+  })
+  await assert.rejects(requestTranscription(audio, true, signal()), /no speech-to-text provider/)
 })

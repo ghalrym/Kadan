@@ -74,9 +74,7 @@ test('history fetch is empty and failures are explicit', async () => {
 
 test('validation, network and malformed success are never fake successes', async () => {
   assert.throws(() => speechRequest(' ', 'describe', 'Voice'))
-  assert.throws(() => speechRequest('x'.repeat(5001), 'describe', 'Voice'))
   assert.throws(() => speechRequest('Hello', 'clone', ' '))
-  assert.throws(() => speechRequest('Hello', 'clone', 'x'.repeat(2001)))
   const body = speechRequest('Hello', 'describe', 'Warm')
   for (const status of [422, 500]) {
     mockFetch(async () => Response.json({}, { status }))
@@ -109,4 +107,15 @@ test('abort propagates through speech SDK', async () => {
   await new Promise((resolve) => setImmediate(resolve))
   controller.abort()
   await assert.rejects(pending)
+})
+
+test('long script and voice are sent unchanged without arbitrary caps', async () => {
+  for (const mode of ['describe', 'clone']) {
+    const body = speechRequest('x'.repeat(20000), mode, 'v'.repeat(10000))
+    mockFetch(async request => {
+      assert.deepEqual(await request.json(), body)
+      return Response.json({ detail: 'No provider' }, { status: 503 })
+    })
+    await assert.rejects(requestSpeech(body, signal()), /No speech provider/)
+  }
 })
