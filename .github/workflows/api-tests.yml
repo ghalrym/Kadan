@@ -32,6 +32,27 @@ jobs:
       - name: Run backend tests
         run: python -m unittest discover -s api/tests -v
 
+  qwen-tts-worker:
+    name: Isolated Qwen TTS worker imports
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install isolated CPU worker requirements
+        run: |
+          python -m venv /tmp/kadan-qwen-tts
+          /tmp/kadan-qwen-tts/bin/python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/kadan-qwen-tts/bin/python -m pip install -r api/requirements-qwen-tts.txt
+          /tmp/kadan-qwen-tts/bin/python -m pip check
+      - name: Import the actual worker without model downloads
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: /tmp/kadan-qwen-tts/bin/python api/workers/kadan_qwen_tts_worker.py --check-install
+
   container:
     name: API container inference imports
     runs-on: ubuntu-latest
