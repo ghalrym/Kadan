@@ -323,42 +323,33 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          <div className="model-row model-row--video">
-            <label htmlFor="model-Video"><ModelIcon type="Video" />Video</label>
-            <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
-            {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
-            {videoDownload && <div className="model-download-status model-video-progress">
-              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
-                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
-                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
-                  else downloadModel(videoDownload)
-                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
-              </div>
-              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
-              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
-            </div>}
-          </div>
-          <div className="model-row model-row--video">
-            <label htmlFor="model-Image"><ModelIcon type="Image" />Image</label>
-            <div className="field"><ModelPicker pickerId="Image" label="Image model" models={imageModels} current={image} selectedId={imageId} pending={pending} downloading={downloading} choose={model => setImageId(model.id)} download={model => { setImageId(model.id); downloadModel(model) }} /></div>
-            {image && !image.inference_available && <span className="muted model-video-note">Download only</span>}
-            {imageDownload && <div className="model-download-status model-video-progress">
-              <div className="model-download-heading"><p role="status">{imageDownload.display_name} · {imageDownload.status}</p>
-                <button type="button" className="button" disabled={pending || imageDownload.status === 'cancelling' || (downloading && imageDownload.status !== 'downloading')} onClick={() => {
-                  if (imageDownload.status === 'downloading') void submitModelChange(`/${imageDownload.id}/download`, 'DELETE')
-                  else downloadModel(imageDownload)
-                }}>{imageDownload.status === 'cancelling' ? 'Cancelling…' : imageDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
-              </div>
-              {['downloading', 'cancelling'].includes(imageDownload.status) && <><progress className="progress" aria-label={`${imageDownload.id} download progress`} max={imageDownload.total_bytes || 1} value={imageDownload.total_bytes ? imageDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(imageDownload.downloaded_bytes)} / {imageDownload.total_bytes ? formatGigabytes(imageDownload.total_bytes) : 'checking checkpoint size'}</span></>}
-              {imageDownload.error && <p role="alert" className="error">{imageDownload.error}</p>}
-            </div>}
-          </div>
-          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video' && model.type !== 'Image').map(model => <div className="model-row" key={model.type}>
-            <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
-            <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
-              {model.options.map(option => <option key={option}>{option}</option>)}
-            </select>
-          </div>)}
+          {modelSettings.filter(setting => setting.type !== 'LLM').map(setting => {
+            if (setting.type !== 'Video' && setting.type !== 'Image') return <div className="model-row" key={setting.type}>
+              <label htmlFor={`model-${setting.type}`}><ModelIcon type={setting.type} />{setting.label}</label>
+              <select className="input" id={`model-${setting.type}`} value={setting.selected} disabled>{setting.options.map(option => <option key={option}>{option}</option>)}</select>
+            </div>
+            const isImage = setting.type === 'Image'
+            const current = isImage ? image : video
+            const choices = isImage ? imageModels : videoModels
+            const selected = isImage ? imageId : videoId
+            const choose = isImage ? setImageId : setVideoId
+            const transfer = isImage ? imageDownload : videoDownload
+            return <div className="model-row model-row--video" key={setting.type}>
+              <label htmlFor={`model-${setting.type}`}><ModelIcon type={setting.type} />{setting.label}</label>
+              <div className="field"><ModelPicker pickerId={setting.type} label={`${setting.type} model`} models={choices} current={current} selectedId={selected} pending={pending} downloading={downloading} choose={model => choose(model.id)} download={model => { choose(model.id); downloadModel(model) }} /></div>
+              {current && !current.inference_available && <span className="muted model-video-note">Download only</span>}
+              {transfer && <div className="model-download-status model-video-progress">
+                <div className="model-download-heading"><p role="status">{transfer.display_name} · {transfer.status}</p>
+                  <button type="button" className="button" disabled={pending || transfer.status === 'cancelling' || (downloading && transfer.status !== 'downloading')} onClick={() => {
+                    if (transfer.status === 'downloading') void submitModelChange(`/${transfer.id}/download`, 'DELETE')
+                    else downloadModel(transfer)
+                  }}>{transfer.status === 'cancelling' ? 'Cancelling…' : transfer.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+                </div>
+                {['downloading', 'cancelling'].includes(transfer.status) && <><progress className="progress" aria-label={`${transfer.id} download progress`} max={transfer.total_bytes || 1} value={transfer.total_bytes ? transfer.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(transfer.downloaded_bytes)} / {transfer.total_bytes ? formatGigabytes(transfer.total_bytes) : 'checking checkpoint size'}</span></>}
+                {transfer.error && <p role="alert" className="error">{transfer.error}</p>}
+              </div>}
+            </div>
+          })}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
             <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
