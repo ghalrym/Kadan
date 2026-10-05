@@ -5,7 +5,7 @@ ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements*.txt /app/
-RUN pip install --no-cache-dir torch==2.11.0 --index-url "$TORCH_INDEX_URL" \
+RUN pip install --no-cache-dir torch==2.11.0 torchvision==0.26.0 --index-url "$TORCH_INDEX_URL" \
     && pip install --no-cache-dir -r requirements.txt \
     && pip check
 COPY . /app/api
