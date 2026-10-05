@@ -8,10 +8,24 @@ from api.routes.v1.decisions import DecisionRequest
 
 class DecisionValidationTests(unittest.TestCase):
     def test_decision_keys_must_be_unique(self):
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(ValidationError) as caught:
             DecisionRequest(state="Incident", questions=[ScoreQuestion(
                 key="severity", instructions="Rate severity", type="Score", levels=["Low", "High"],
             )] * 2)
+        error = caught.exception.errors()[0]
+        self.assertEqual(error['type'], 'duplicate_question_key')
+        self.assertEqual(error['ctx'], {'key': 'severity'})
+        self.assertEqual(error['msg'], 'Question key "severity" is used more than once; each question must have a unique key')
+
+    def test_duplicate_option_error_identifies_question_and_option(self):
+        with self.assertRaises(ValidationError) as caught:
+            DecisionRequest(state='Incident', questions=[{
+                'key': 'cause', 'type': 'Choice', 'instructions': 'Pick cause',
+                'options': [{'key': 'capacity', 'description': 'Capacity'}] * 2,
+            }])
+        error = caught.exception.errors()[0]
+        self.assertEqual(error['type'], 'duplicate_option_key')
+        self.assertEqual(error['ctx'], {'key': 'cause', 'option': 'capacity'})
 
     def test_question_type_requires_its_own_fields(self):
         with self.assertRaises(ValidationError):
