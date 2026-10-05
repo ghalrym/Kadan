@@ -1485,6 +1485,17 @@
             "title": "Aspect",
             "type": "string"
           },
+          "audio_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Id"
+          },
           "duration": {
             "default": 8,
             "exclusiveMinimum": 0.0,
@@ -1498,6 +1509,17 @@
             "maximum": 120.0,
             "title": "Fps",
             "type": "integer"
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Id"
           },
           "model": {
             "default": "ltx-2.5-distilled",
@@ -1539,6 +1561,17 @@
             "minimum": 0.0,
             "title": "Seed",
             "type": "integer"
+          },
+          "video_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Id"
           }
         },
         "required": [
@@ -1557,6 +1590,19 @@
           "job"
         ],
         "title": "VideoGenerationResponse",
+        "type": "object"
+      },
+      "VideoInputResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "VideoInputResponse",
         "type": "object"
       },
       "VideoJob": {
@@ -2778,6 +2824,53 @@
           }
         },
         "summary": "Generate Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/inputs": {
+      "post": {
+        "operationId": "uploadVideoInput",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "image",
+                "audio",
+                "video"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoInputResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Video Input",
         "tags": [
           "Videos"
         ]

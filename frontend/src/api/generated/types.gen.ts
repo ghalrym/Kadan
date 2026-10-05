@@ -845,6 +845,10 @@ export type VideoGenerationRequest = {
    */
   aspect?: '16:9' | '9:16' | '1:1'
   /**
+   * Audio Id
+   */
+  audio_id?: string | null
+  /**
    * Duration
    */
   duration?: number
@@ -852,6 +856,10 @@ export type VideoGenerationRequest = {
    * Fps
    */
   fps?: number
+  /**
+   * Image Id
+   */
+  image_id?: string | null
   /**
    * Model
    */
@@ -872,6 +880,10 @@ export type VideoGenerationRequest = {
    * Seed
    */
   seed?: number
+  /**
+   * Video Id
+   */
+  video_id?: string | null
 }
 
 /**
@@ -879,6 +891,16 @@ export type VideoGenerationRequest = {
  */
 export type VideoGenerationResponse = {
   job: VideoJob
+}
+
+/**
+ * VideoInputResponse
+ */
+export type VideoInputResponse = {
+  /**
+   * Id
+   */
+  id: string
 }
 
 /**
@@ -1649,6 +1671,38 @@ export type GenerateVideoResponses = {
 
 export type GenerateVideoResponse =
   GenerateVideoResponses[keyof GenerateVideoResponses]
+
+export type UploadVideoInputData = {
+  body?: never
+  path?: never
+  query: {
+    /**
+     * Kind
+     */
+    kind: 'image' | 'audio' | 'video'
+  }
+  url: '/v1/videos/inputs'
+}
+
+export type UploadVideoInputErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type UploadVideoInputError =
+  UploadVideoInputErrors[keyof UploadVideoInputErrors]
+
+export type UploadVideoInputResponses = {
+  /**
+   * Successful Response
+   */
+  200: VideoInputResponse
+}
+
+export type UploadVideoInputResponse =
+  UploadVideoInputResponses[keyof UploadVideoInputResponses]
 
 export type CancelVideoData = {
   body?: never
