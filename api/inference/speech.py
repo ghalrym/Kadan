@@ -19,6 +19,20 @@ class SpeechUnavailable(RuntimeError):
     pass
 
 
+def clear_failure_frames(error: BaseException) -> None:
+    """Release failed allocations without removing traceback or exception details."""
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        traceback.clear_frames(current.__traceback__)
+        pending.extend((current.__cause__, current.__context__))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+
+
 @dataclass(frozen=True)
 class SpeechInput:
     script: str
@@ -184,7 +198,7 @@ class SpeechRuntime:
                             raise ResourceCancelled('Speech loading cancelled')
                         self._identity, self._ready = identity, True
                 except BaseException as exc:
-                    traceback.clear_frames(exc.__traceback__)
+                    clear_failure_frames(exc)
                     self._unload()
                     raise
             if not generate:
@@ -197,7 +211,7 @@ class SpeechRuntime:
                         raise ResourceCancelled('Speech generation cancelled')
                     return result
             except BaseException as exc:
-                traceback.clear_frames(exc.__traceback__)
+                clear_failure_frames(exc)
                 self._unload()
                 raise
         finally:
