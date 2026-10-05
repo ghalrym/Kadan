@@ -7,6 +7,7 @@ import signal
 import threading
 import uuid
 
+
 from api.inference.resources import ResourceCancelled
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
@@ -24,11 +25,16 @@ class WanProvider:
 
     def validate(self, spec):
         """Reject unsupported controls before creating a job or allocating memory."""
-        if self.task not in ('ti2v-5B', 't2v-A14B'):
+        if self.task not in ('ti2v-5B', 't2v-A14B', 'i2v-A14B'):
             raise ValueError('Unsupported Wan generation task.')
         required_fps = 24 if self.task == 'ti2v-5B' else 16
         if spec.fps != required_fps:
             raise ValueError(f'This Wan2.2 checkpoint generates at {required_fps} fps.')
+        if self.task == 'i2v-A14B':
+            if not spec.image_path:
+                raise ValueError('Wan I2V-A14B requires an uploaded image.')
+            if not Path(spec.image_path).is_file():
+                raise ValueError('The uploaded conditioning image is unavailable.')
         if spec.audio_path or spec.video_path:
             raise ValueError('This Wan checkpoint does not accept audio or video conditioning.')
         if self.task == 't2v-A14B' and spec.image_path:

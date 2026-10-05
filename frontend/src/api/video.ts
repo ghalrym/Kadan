@@ -110,3 +110,14 @@ export async function stopVideo(id: string) {
   checkResponse(result.response)
   return validateJob(result.data?.job)
 }
+
+/** Upload image bytes to Kadan and return only its opaque conditioning ID. */
+export async function uploadVideoImage(file: File, signal: AbortSignal): Promise<string> {
+  const response = await fetch('/v1/videos/inputs?kind=image', {
+    method: 'POST', headers: { 'Content-Type': file.type }, body: file, signal,
+  })
+  const body = await response.json()
+  if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Image upload failed.')
+  if (typeof body.id !== 'string' || !/^[0-9a-f]{32}$/.test(body.id)) throw new Error('Image upload returned an invalid ID.')
+  return body.id
+}

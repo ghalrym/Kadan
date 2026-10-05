@@ -7,6 +7,7 @@ import {
   refreshVideo,
   submitVideo,
   stopVideo,
+  uploadVideoImage,
   type VideoJob,
   type VideoGenerationRequest,
 } from '../api/video'
@@ -18,6 +19,9 @@ import {
  */
 export default function VideoPage() {
   const [prompt, setPrompt] = useState('')
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('ltx-2.5-distilled')
+  const [image, setImage] = useState<File | null>(null)
+  const imageConditioned = model === 'wan22-i2v-a14b'
   const [negative, setNegative] = useState('')
   const [duration, setDuration] = useState('8')
   const [fps, setFps] = useState('24')
@@ -101,9 +105,13 @@ export default function VideoPage() {
     setError('')
     setNotice('')
     try {
+      if (imageConditioned && !image) throw new Error('Choose an input image.')
+      const imageId = imageConditioned && image ? await uploadVideoImage(image, controller.signal) : undefined
       const job = await submitVideo(
         {
           prompt,
+          model,
+          image_id: imageId,
           negative_prompt: negative,
           duration: Number(duration),
           fps: Number(fps),
@@ -156,6 +164,15 @@ export default function VideoPage() {
         }}
       >
         <label className="field">
+          <span className="eyebrow">Model</span>
+          <select className="input" value={model} disabled={pending} onChange={event => {
+            const next = event.target.value as NonNullable<VideoGenerationRequest['model']>
+            setModel(next); setFps(next === 'wan22-i2v-a14b' ? '16' : '24')
+            if (next === 'wan22-i2v-a14b') { if (resolution === '1080p') setResolution('720p'); if (aspect === '1:1') setAspect('16:9') }
+          }}><option value="ltx-2.5-distilled">LTX-2.5 distilled</option><option value="wan22-i2v-a14b">Wan2.2 I2V-A14B</option></select>
+        </label>
+        {imageConditioned && <label className="field"><span className="eyebrow">Input image</span><input className="input" type="file" accept="image/png,image/jpeg,image/webp" required disabled={pending} onChange={event => setImage(event.target.files?.[0] ?? null)} /></label>}
+        <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
@@ -171,12 +188,12 @@ export default function VideoPage() {
           <span className="eyebrow">Frame rate</span>
           <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
-        <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={imageConditioned ? ['480p', '720p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Aspect" options={imageConditioned ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
-          disabled={pending || loading || !prompt.trim()}
+          disabled={pending || loading || !prompt.trim() || (imageConditioned && !image)}
         >
           {pending ? 'Submitting…' : 'Queue video'}
         </button>
