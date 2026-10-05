@@ -9,9 +9,18 @@ import type {
 } from './client'
 import { client } from './client.gen'
 import type {
+  CancelDownloadV1ModelsModelIdDownloadDeleteData,
+  CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+  CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  ConfigureContextV1ModelsModelIdContextPutData,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ConfigureContextV1ModelsModelIdContextPutResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
+  DownloadModelV1ModelsModelIdDownloadPostData,
+  DownloadModelV1ModelsModelIdDownloadPostErrors,
+  DownloadModelV1ModelsModelIdDownloadPostResponses,
   EditImagesData,
   EditImagesErrors,
   EditImagesResponses,
@@ -45,6 +54,8 @@ import type {
   ListImagesResponses,
   ListMessagesData,
   ListMessagesResponses,
+  ListModelsV1ModelsGetData,
+  ListModelsV1ModelsGetResponses,
   ListRequestsData,
   ListRequestsErrors,
   ListRequestsResponses,
@@ -52,6 +63,9 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
+  SelectModelV1ModelsSelectionPutData,
+  SelectModelV1ModelsSelectionPutErrors,
+  SelectModelV1ModelsSelectionPutResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -267,6 +281,134 @@ export const getMetrics = <ThrowOnError extends boolean = false>(
     url: '/v1/metrics',
     ...options,
   })
+
+/**
+ * List Models
+ *
+ * Return current catalog, download progress, saved selection, and context limits.
+ *
+ * Completeness is checked from local files; this does not start downloads or
+ * load models. Context/configuration errors propagate; an unreadable or
+ * invalid saved selection is represented as no selection.
+ */
+export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
+  options?: Options<ListModelsV1ModelsGetData, ThrowOnError>,
+): RequestResult<ListModelsV1ModelsGetResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    ListModelsV1ModelsGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/models', ...options })
+
+/**
+ * Select Model
+ *
+ * Save a completed model as the selection for a subsequent runtime load.
+ *
+ * Returns refreshed status, or 409 for a runtime lease, 400 for an incomplete
+ * checkpoint, and 503 for unavailable storage. Selection alone loads no tensors.
+ */
+export const selectModelV1ModelsSelectionPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<SelectModelV1ModelsSelectionPutData, ThrowOnError>,
+): RequestResult<
+  SelectModelV1ModelsSelectionPutResponses,
+  SelectModelV1ModelsSelectionPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    SelectModelV1ModelsSelectionPutResponses,
+    SelectModelV1ModelsSelectionPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/selection',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Configure Context
+ *
+ * Persist the model's context limit and return refreshed catalog status.
+ *
+ * Null uses the architecture maximum on load. Returns 409 while a runtime lease
+ * is held, 400 for invalid limits/model IDs, or 503 for unavailable storage.
+ */
+export const configureContextV1ModelsModelIdContextPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ConfigureContextV1ModelsModelIdContextPutData, ThrowOnError>,
+): RequestResult<
+  ConfigureContextV1ModelsModelIdContextPutResponses,
+  ConfigureContextV1ModelsModelIdContextPutErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    ConfigureContextV1ModelsModelIdContextPutResponses,
+    ConfigureContextV1ModelsModelIdContextPutErrors,
+    ThrowOnError
+  >({
+    url: '/v1/models/{model_id}/context',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Cancel Download
+ *
+ * Request cancellation and return status with HTTP 202 before cleanup finishes.
+ *
+ * Unknown models return 400, inactive jobs return 409, and storage errors return
+ * 503. Completed checkpoints are never deleted by this endpoint.
+ */
+export const cancelDownloadV1ModelsModelIdDownloadDelete = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    CancelDownloadV1ModelsModelIdDownloadDeleteData,
+    ThrowOnError
+  >,
+): RequestResult<
+  CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).delete<
+    CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+    CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
+    ThrowOnError
+  >({ url: '/v1/models/{model_id}/download', ...options })
+
+/**
+ * Download Model
+ *
+ * Start a catalog checkpoint download and return status with HTTP 202.
+ *
+ * Acceptance is not completion; poll the catalog for progress or failure.
+ * Unknown models return 400; active/completed conflicts return 409 and storage
+ * failures return 503. Only pinned catalog checkpoints may be downloaded.
+ */
+export const downloadModelV1ModelsModelIdDownloadPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<DownloadModelV1ModelsModelIdDownloadPostData, ThrowOnError>,
+): RequestResult<
+  DownloadModelV1ModelsModelIdDownloadPostResponses,
+  DownloadModelV1ModelsModelIdDownloadPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DownloadModelV1ModelsModelIdDownloadPostResponses,
+    DownloadModelV1ModelsModelIdDownloadPostErrors,
+    ThrowOnError
+  >({ url: '/v1/models/{model_id}/download', ...options })
 
 /**
  * List Requests

@@ -1,0 +1,20 @@
+.model-row--llm { align-items: start; }
+.model-row--llm > label { padding-top: 10px; }
+.model-picker { position: relative; min-width: 0; }
+.model-picker-trigger { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
+.model-picker-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-picker-options { margin-top: 8px; padding: 8px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); }
+.model-picker-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.model-picker-choice { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 6px; text-align: left; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px; overflow-wrap: anywhere; }
+.model-picker-choice[aria-pressed="true"] { border-color: var(--accent); }
+.model-picker-choice small { color: var(--muted); }
+.model-download-icon { flex: none; padding: 8px; }
+.model-llm-details { grid-column: 2; min-width: 0; }
+.model-llm-details:empty { display: none; }
+.model-context > .button, .model-download-status > .button { align-self: flex-start; }
+.model-download-status progress { width: 100%; accent-color: var(--accent); }
+@media (max-width: 900px) {
+  .model-settings .model-row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .model-row--llm > label { padding-top: 0; }
+  .model-llm-details { grid-column: 1; }
+}

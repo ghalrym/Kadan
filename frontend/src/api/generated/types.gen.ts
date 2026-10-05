@@ -96,6 +96,18 @@ export type CompletionResponse = {
 }
 
 /**
+ * ContextRequest
+ */
+export type ContextRequest = {
+  /**
+   * Context Limit
+   *
+   * Total context tokens; null uses the checkpoint architecture maximum on load.
+   */
+  context_limit: number | null
+}
+
+/**
  * DecisionAnswer
  */
 export type DecisionAnswer = {
@@ -331,6 +343,78 @@ export type ModelSetting = {
 }
 
 /**
+ * ModelStatus
+ */
+export type ModelStatus = {
+  /**
+   * Architecture Context Limit
+   */
+  architecture_context_limit: number | null
+  /**
+   * Context Limit
+   *
+   * Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.
+   */
+  context_limit: number | null
+  /**
+   * Downloaded Bytes
+   */
+  downloaded_bytes: number
+  /**
+   * Error
+   */
+  error: string | null
+  /**
+   * Estimated Bytes
+   */
+  estimated_bytes: number
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * License
+   */
+  license: string
+  /**
+   * Repo Id
+   */
+  repo_id: string
+  /**
+   * Revision
+   */
+  revision: string
+  /**
+   * Status
+   */
+  status:
+    | 'not_downloaded'
+    | 'downloading'
+    | 'cancelling'
+    | 'cancelled'
+    | 'failed'
+    | 'complete'
+  /**
+   * Total Bytes
+   */
+  total_bytes: number
+}
+
+/**
+ * ModelsResponse
+ */
+export type ModelsResponse = {
+  /**
+   * Models
+   */
+  models: Array<ModelStatus>
+  /**
+   * Selected Model Id
+   */
+  selected_model_id: string | null
+}
+
+/**
  * NoulQuestion
  */
 export type NoulQuestion = {
@@ -465,6 +549,16 @@ export type ScoreQuestion = {
    * Type
    */
   type: 'Score'
+}
+
+/**
+ * SelectionRequest
+ */
+export type SelectionRequest = {
+  /**
+   * Model Id
+   */
+  model_id: 'small' | 'medium' | 'large'
 }
 
 /**
@@ -1011,6 +1105,146 @@ export type GetMetricsResponses = {
 }
 
 export type GetMetricsResponse = GetMetricsResponses[keyof GetMetricsResponses]
+
+export type ListModelsV1ModelsGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/models'
+}
+
+export type ListModelsV1ModelsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type ListModelsV1ModelsGetResponse =
+  ListModelsV1ModelsGetResponses[keyof ListModelsV1ModelsGetResponses]
+
+export type SelectModelV1ModelsSelectionPutData = {
+  body: SelectionRequest
+  path?: never
+  query?: never
+  url: '/v1/models/selection'
+}
+
+export type SelectModelV1ModelsSelectionPutErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectModelV1ModelsSelectionPutError =
+  SelectModelV1ModelsSelectionPutErrors[keyof SelectModelV1ModelsSelectionPutErrors]
+
+export type SelectModelV1ModelsSelectionPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type SelectModelV1ModelsSelectionPutResponse =
+  SelectModelV1ModelsSelectionPutResponses[keyof SelectModelV1ModelsSelectionPutResponses]
+
+export type ConfigureContextV1ModelsModelIdContextPutData = {
+  body: ContextRequest
+  path: {
+    /**
+     * Model Id
+     */
+    model_id: string
+  }
+  query?: never
+  url: '/v1/models/{model_id}/context'
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutError =
+  ConfigureContextV1ModelsModelIdContextPutErrors[keyof ConfigureContextV1ModelsModelIdContextPutErrors]
+
+export type ConfigureContextV1ModelsModelIdContextPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelsResponse
+}
+
+export type ConfigureContextV1ModelsModelIdContextPutResponse =
+  ConfigureContextV1ModelsModelIdContextPutResponses[keyof ConfigureContextV1ModelsModelIdContextPutResponses]
+
+export type CancelDownloadV1ModelsModelIdDownloadDeleteData = {
+  body?: never
+  path: {
+    /**
+     * Model Id
+     */
+    model_id: string
+  }
+  query?: never
+  url: '/v1/models/{model_id}/download'
+}
+
+export type CancelDownloadV1ModelsModelIdDownloadDeleteErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelDownloadV1ModelsModelIdDownloadDeleteError =
+  CancelDownloadV1ModelsModelIdDownloadDeleteErrors[keyof CancelDownloadV1ModelsModelIdDownloadDeleteErrors]
+
+export type CancelDownloadV1ModelsModelIdDownloadDeleteResponses = {
+  /**
+   * Successful Response
+   */
+  202: ModelsResponse
+}
+
+export type CancelDownloadV1ModelsModelIdDownloadDeleteResponse =
+  CancelDownloadV1ModelsModelIdDownloadDeleteResponses[keyof CancelDownloadV1ModelsModelIdDownloadDeleteResponses]
+
+export type DownloadModelV1ModelsModelIdDownloadPostData = {
+  body?: never
+  path: {
+    /**
+     * Model Id
+     */
+    model_id: string
+  }
+  query?: never
+  url: '/v1/models/{model_id}/download'
+}
+
+export type DownloadModelV1ModelsModelIdDownloadPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type DownloadModelV1ModelsModelIdDownloadPostError =
+  DownloadModelV1ModelsModelIdDownloadPostErrors[keyof DownloadModelV1ModelsModelIdDownloadPostErrors]
+
+export type DownloadModelV1ModelsModelIdDownloadPostResponses = {
+  /**
+   * Successful Response
+   */
+  202: ModelsResponse
+}
+
+export type DownloadModelV1ModelsModelIdDownloadPostResponse =
+  DownloadModelV1ModelsModelIdDownloadPostResponses[keyof DownloadModelV1ModelsModelIdDownloadPostResponses]
 
 export type ListRequestsData = {
   body?: never

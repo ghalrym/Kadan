@@ -31,7 +31,11 @@ services:
     build:
       context: ./api
     init: true
-    environment: *database_environment
+    environment:
+      <<: *database_environment
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,5 +68,6 @@ services:
       - npm ci && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
 
 volumes:
+  model_data:
   postgres_data:
   frontend_node_modules:

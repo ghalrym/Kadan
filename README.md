@@ -59,9 +59,36 @@ Open `/chat` after starting the development services. Vite proxies `/v1` to
 To check recovery manually, stop the API, send a message, restart the API and retry.
 Cancel a pending request and verify that a late reply is not appended.
 
+## Checkpoint storage
+
+Settings uses `/v1/models` to download and select the three pinned catalog
+checkpoints. Set `KADAN_MODEL_DIR` to a writable disk with sufficient space
+(default `~/.local/share/kadan/models`). Docker Compose persists its `model_data`
+volume at `/var/lib/kadan/models`; `docker compose down -v` deletes that volume.
+Run one API worker and do not share its store between independent servers.
+
+Downloads verify pinned file sizes and hashes before publishing completion.
+Cancel is cooperative and retry restarts from scratch; do not edit completed
+checkpoint files externally. Selection persists, but download progress is
+process-local. Selection does not load a model or establish GPU compatibility.
+Review catalog model cards/licenses before downloading: Qwen and GPT-OSS are
+Apache 2.0; GLM is MIT. Downloader ownership and integrity details live alongside
+its implementation in `api/services/model_downloads.py`.
+
 Chat forwards the full nonblank message text and conversation history without fixed
 character or turn limits. Capacity is determined by the backend’s loaded model and
 configured token context; API context errors are shown in the chat page.
+
+Settings offers 8k, 16k, 32k, 64k, 128k, 500k and 1M context presets. The
+first five map to 8,192–131,072 tokens; 500k and 1M mean 500,000 and
+1,000,000 tokens. Unset models default to 65,536 tokens. Explicit saved numbers
+and legacy null (architecture maximum) are preserved, including custom values
+shown as an extra dropdown option. Options above a verified checkpoint limit
+are disabled and backend validation rejects them without clamping. Before a
+checkpoint is downloaded its limit is unknown; loading validates it again.
+Configuration persists across restarts.
+Unload the active model before changing context. A saved context is not a memory
+allocation or a guarantee that a request of that size fits on the target hardware.
 
 ## Publish draft pull requests as Ai Kadan
 
