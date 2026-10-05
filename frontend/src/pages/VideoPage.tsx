@@ -157,7 +157,7 @@ export default function VideoPage() {
           void submit()
         }}
       >
-        <label className="field"><span className="eyebrow">Model</span><select className="input" value={model} disabled={pending} onChange={event => { setModel(event.target.value as NonNullable<VideoGenerationRequest['model']>); setResolution('720p') }}><option value="ltx-2.5-distilled">LTX-2.5 Distilled</option><option value="h3-fl2va">MiniMax H3</option><option value="flux-3-video">FLUX 3 Video (API)</option></select></label>
+        <label className="field"><span className="eyebrow">Model</span><select aria-label="Model" className="input" value={model} disabled={pending} onChange={event => { setModel(event.target.value as NonNullable<VideoGenerationRequest['model']>); setResolution('720p') }}><option value="ltx-2.5-distilled">LTX-2.5 Distilled</option><option value="h3-fl2va">MiniMax H3</option><option value="flux-3-video">FLUX 3 Video (API)</option></select></label>
         <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />

@@ -3,7 +3,9 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from fastapi import HTTPException
+from api.routes.v1.videos.generations import VideoGenerationRequest, generate_video
 
 from api.services.flux_video import FluxVideoProvider
 
@@ -42,3 +44,10 @@ class FluxVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'invalid MP4'):
                 FluxVideoProvider(client).generate(spec(), path, threading.Event())
             self.assertFalse(path.exists())
+
+    def test_route_preserves_native_default_and_omits_hosted_seed(self):
+        for model, expected in [('ltx-2.5-distilled', 42), ('flux-3-video', None)]:
+            with patch('api.routes.v1.videos.generations.video_jobs.submit', side_effect=ValueError('fixture')) as submit:
+                with self.assertRaises(HTTPException):
+                    generate_video(VideoGenerationRequest(prompt='fox', model=model))
+            self.assertEqual(submit.call_args.args[1].seed, expected)
