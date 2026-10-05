@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import threading
+import traceback
 import types
 import unittest
 from unittest.mock import patch
@@ -16,6 +17,41 @@ from api.inference.qwen_speech import QwenSpeechProvider, QwenSpeechSession
 from api.inference.resources import ResourceCancelled, ResourceManager
 from api.inference.speech import SpeechInput, SpeechPlan, SpeechRegistry, SpeechRuntime
 from api.services.qwen_tts_catalog import SPEECH_MODELS
+
+
+def raise_tensor_failure(kind, tensors):
+    """Keep tensors only in failed frames, including nested exception branches."""
+    def allocate():
+        allocated = torch.zeros(32)
+        tensors.append(weakref.ref(allocated))
+        raise ValueError('tensor allocation failed')
+
+    def wrapped():
+        try:
+            allocate()
+        except ValueError as inner:
+            if kind == 'cause':
+                raise RuntimeError('provider failed') from inner
+            if kind == 'suppressed-context':
+                raise RuntimeError('provider failed') from None
+            raise RuntimeError('provider failed')
+
+    if kind in ('cause', 'context', 'suppressed-context'):
+        wrapped()
+    children = []
+    for _ in range(2):
+        try:
+            wrapped()
+        except RuntimeError as error:
+            children.append(error)
+    if kind == 'cycle':
+        children[0].__cause__ = children[1]
+        children[1].__cause__ = children[0]
+        raise children[0]
+    nested = ExceptionGroup('nested failure', children)
+    if kind == 'base-group':
+        raise BaseExceptionGroup('provider failed', [nested, KeyboardInterrupt('interrupted')])
+    raise ExceptionGroup('provider failed', [nested])
 
 
 class InProcessQwenTests(unittest.TestCase):
@@ -97,6 +133,71 @@ class InProcessQwenTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'tensor allocation'):
                 self.runtime.generate(self.request, self.cancel)
         self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_failure_graphs_release_tensors_before_accounting_and_keep_diagnostics(self):
+        for phase in ('load', 'generate'):
+            for kind in ('cause', 'context', 'suppressed-context', 'cycle', 'group', 'base-group'):
+                with self.subTest(phase=phase, kind=kind):
+                    tensors = []
+                    original_reserve = self.resources.reserve
+                    def reserve(*args, **kwargs):
+                        reservation = original_reserve(*args, **kwargs)
+                        original_release = reservation.release
+                        def release():
+                            self.assertTrue(tensors)
+                            self.assertTrue(all(reference() is None for reference in tensors))
+                            self.assertIsNone(self.session.model)
+                            original_release()
+                        reservation.release = release
+                        return reservation
+                    def fail(*args, **kwargs):
+                        raise_tensor_failure(kind, tensors)
+                    method = 'from_pretrained' if phase == 'load' else 'generate_voice_design'
+                    with patch.object(self.resources, 'reserve', side_effect=reserve), \
+                         patch.object(self.model_class, method, side_effect=fail):
+                        try:
+                            self.runtime.generate(self.request, self.cancel)
+                        except BaseException as error:
+                            rendered = ''.join(traceback.format_exception(error))
+                            self.assertIn('provider failed', rendered)
+                            self.assertIn('raise_tensor_failure', rendered)
+                            if kind == 'cycle':
+                                self.assertIs(error.__cause__.__cause__, error)
+                                self.assertIsInstance(error.__context__, ValueError)
+                            elif kind != 'suppressed-context':
+                                self.assertIn('tensor allocation failed', rendered)
+                            else:
+                                self.assertTrue(error.__suppress_context__)
+                                self.assertIsInstance(error.__context__, ValueError)
+                        else:
+                            self.fail('Provider failure was swallowed')
+                    self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_wrapped_failure_retains_ownership_when_cleanup_fails(self):
+        for phase in ('load', 'generate'):
+            with self.subTest(phase=phase):
+                tensors = []
+                def fail(*args, **kwargs):
+                    raise_tensor_failure('cause', tensors)
+                method = 'from_pretrained' if phase == 'load' else 'generate_voice_design'
+                with patch.object(self.model_class, method, side_effect=fail), \
+                     patch.object(self.session, 'unload', side_effect=RuntimeError('cleanup incomplete')):
+                    try:
+                        self.runtime.generate(self.request, self.cancel)
+                    except RuntimeError as error:
+                        self.assertEqual(str(error), 'cleanup incomplete')
+                        self.assertEqual(str(error.__context__), 'provider failed')
+                        self.assertEqual(str(error.__context__.__cause__), 'tensor allocation failed')
+                    else:
+                        self.fail('Cleanup failure was swallowed')
+                    self.assertTrue(all(reference() is None for reference in tensors))
+                    self.assertIs(self.runtime._session, self.session)
+                    self.assertFalse(self.runtime._ready)
+                    state = next(iter(self.resources.snapshot()['reservations'].values()))
+                    self.assertEqual(state['host_bytes'], 400)
+                    self.assertEqual(state['active_leases'], 0)
+                self.runtime.unload()
+                self.assertEqual(self.resources.snapshot()['reservations'], {})
 
     def test_all_voice_modes_and_clone_options(self):
         self.runtime.load(self.request, self.cancel)
