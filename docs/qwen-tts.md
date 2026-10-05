@@ -1,6 +1,7 @@
 # Native Qwen3-TTS
 
-The shared engine depends on the speech API PR and shared checkpoint catalog.
+The shared engine depends on the speech API PR. The first checkpoint PR extends
+the download catalog for component bundles without enabling another model.
 Individual checkpoint PRs enable each of the five official models separately.
 The engine exposes only enabled choices, and requires a complete, revision-matching
 checkpoint from Kadan's download manager. It never downloads on generation.
