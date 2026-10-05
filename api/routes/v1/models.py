@@ -1,6 +1,6 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 from api.services.model_downloads import BusyError, DownloadStatus, ModelsStatus, model_manager
 
 router = APIRouter(prefix='/v1/models', tags=['models'])
@@ -12,6 +12,11 @@ class ModelStatus(BaseModel):
     revision: str
     license: str
     estimated_bytes: int
+    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image']
+    display_name: str | None
+    license_url: str | None
+    license_notice: str | None
+    inference_available: bool
     status: DownloadStatus
     downloaded_bytes: int
     total_bytes: int
@@ -28,6 +33,11 @@ class ModelsResponse(BaseModel):
 class SelectionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     model_id: Literal['small', 'medium', 'large']
+
+
+class DownloadRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    license_acknowledged: StrictBool = False
 
 
 class ContextRequest(BaseModel):
@@ -81,14 +91,14 @@ def select_model(body: SelectionRequest) -> ModelsStatus:
 
 
 @router.post('/{model_id}/download', response_model=ModelsResponse, status_code=202)
-def download_model(model_id: str) -> ModelsStatus:
+def download_model(model_id: str, body: DownloadRequest | None = None) -> ModelsStatus:
     """Start a catalog checkpoint download and return status with HTTP 202.
 
     Acceptance is not completion; poll the catalog for progress or failure.
     Unknown models return 400; active/completed conflicts return 409 and storage
     failures return 503. Only pinned catalog checkpoints may be downloaded."""
     try:
-        model_manager.start(model_id)
+        model_manager.start(model_id, license_acknowledged=bool(body and body.license_acknowledged))
         return model_manager.status()
     except BusyError as exc:
         raise HTTPException(409, str(exc)) from exc
