@@ -48,4 +48,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--check-imports']:
+        print('ltx-worker-imports-ok')
+    else:
+        main()
