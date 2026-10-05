@@ -1,0 +1,8 @@
+# Dedicated Kadan worker only. Upstream wan.__init__ imports all model families.
+wan @ git+https://github.com/Wan-Video/Wan2.2.git@1ea34ff48f87168174e12956e200b1d908b1c5ff
+# Import dependencies needed even when only T2V/TI2V is requested.
+decord==0.6.0
+peft==0.17.1
+librosa==0.11.0
+soundfile==0.13.1
+sentencepiece==0.2.1
