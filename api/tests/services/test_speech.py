@@ -1,85 +1,225 @@
 import base64
 import io
-from pathlib import Path
-import tempfile
 import threading
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import wave
 
-from api.inference.resources import ResourceManager, ResourceCancelled
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted
+from api.inference.speech import SpeechInput, SpeechModel, SpeechPlan, SpeechRegistry, SpeechResult, SpeechRuntime, SpeechUnavailable
+from api.routes.v1.audio.speech import router
 from api.services import speech
-from api.services.qwen_tts_catalog import SPEECH_MODELS
 
 
-class SpeechWorkerTests(unittest.TestCase):
-    def run_worker(self, cancel=False, failure=False):
-        model = SPEECH_MODELS['qwen-tts-1.7b-design']
-        resources = ResourceManager(100 * 1024**3, {})
-        event = threading.Event()
-        process = SimpleNamespace(returncode=1 if failure else 0)
-        if cancel:
-            event.set()
-        def start(args, **kwargs):
-            self.assertEqual(kwargs['env']['HF_HUB_OFFLINE'], '1')
-            self.assertEqual(Path(args[1]).name, 'kadan_qwen_tts_worker.py')
-            self.assertTrue(Path(args[1]).is_file())
-            self.assertTrue(resources.snapshot()['reservations'])
-            with wave.open(args[-1], 'wb') as out:
-                out.setnchannels(1); out.setsampwidth(2); out.setframerate(24000)
-                out.writeframes(b'\0\0' * 240)
-            process.poll = lambda: process.returncode
-            return process
-        with tempfile.NamedTemporaryFile() as python, \
-             patch.dict('os.environ', KADAN_QWEN_TTS_PYTHON=python.name, KADAN_QWEN_TTS_DEVICE='cpu'), \
-             patch.object(speech, 'ENABLED_SPEECH_MODELS', {model.id}), \
-             patch.object(speech.manager, 'get_checkpoint', return_value=(model, Path('/verified')), create=True), \
-             patch.object(speech.runtime_manager, 'ensure_resources', return_value=resources), \
-             patch.object(speech.subprocess, 'Popen', side_effect=start):
+def wav_bytes():
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b'\0\0' * 240)
+    return buffer.getvalue()
+
+
+class AlternateProvider:
+    """A different architecture with no Qwen catalog, environment or subprocess."""
+    def __init__(self, resources, name='alternate', failure=None):
+        self.resources, self.name, self.failure = resources, name, failure
+        self.loads = self.calls = self.unloads = 0
+        self.started = threading.Event()
+        self.finish = threading.Event()
+        self.block = False
+
+    def models(self):
+        return (SpeechModel(self.name, 'Alternative voice', 'custom', ('Ada',), True),)
+
+    def enabled(self, model_id):
+        return True
+
+    def validate(self, request):
+        if request.voice.get('speaker') != 'Ada':
+            raise ValueError('Choose Ada')
+
+    def prepare(self, request):
+        return SpeechPlan(('revision-1',), 400, lambda: self, {0: 400})
+
+    def load(self, cancel):
+        self.assert_owned(active=True)
+        self.loads += 1
+        if self.failure == 'load':
+            raise RuntimeError('load failed after allocation')
+
+    def generate(self, request, cancel):
+        self.assert_owned(active=True)
+        self.calls += 1
+        self.started.set()
+        if self.block:
+            while not self.finish.wait(.01):
+                if cancel.is_set():
+                    raise ResourceCancelled('cancelled')
+        if self.failure == 'generate':
+            raise RuntimeError('generation failed')
+        return SpeechResult(b'broken' if self.failure == 'audio' else wav_bytes(), self.name)
+
+    def unload(self):
+        self.assert_owned(active=False)
+        self.unloads += 1
+        if self.failure == 'unload':
+            raise RuntimeError('cleanup incomplete')
+
+    def assert_owned(self, active):
+        states = list(self.resources.snapshot()['reservations'].values())
+        assert len(states) == 1
+        assert states[0]['host_bytes'] == 400
+        assert states[0]['device_bytes'] == {0: 400}
+        assert states[0]['active_leases'] == int(active)
+
+
+class SpeechLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.resources = ResourceManager(1000, {0: 1000})
+        self.provider = AlternateProvider(self.resources)
+        self.registry = SpeechRegistry()
+        self.registry.register(self.provider)
+        self.runtime = SpeechRuntime(self.registry, lambda: self.resources)
+        self.request = SpeechInput('Hello', {'mode': 'custom', 'speaker': 'Ada'}, 'Martian', 'alternate')
+        self.cancel = threading.Event()
+
+    def tearDown(self):
+        self.provider.failure = None
+        self.runtime.unload()
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_explicit_load_and_repeated_generation_keep_one_idle_resident(self):
+        self.runtime.load(self.request, self.cancel)
+        self.provider.assert_owned(active=False)
+        for _ in range(2):
+            self.assertTrue(self.runtime.generate(self.request, self.cancel).wav.startswith(b'RIFF'))
+            self.provider.assert_owned(active=False)
+        self.assertEqual((self.provider.loads, self.provider.calls, self.provider.unloads), (1, 2, 0))
+        self.runtime.unload()
+        self.assertEqual(self.provider.unloads, 1)
+        self.runtime.generate(self.request, self.cancel)
+        self.assertEqual(self.provider.loads, 2)
+
+    def test_idle_resident_is_evicted_by_other_workload_and_reloaded(self):
+        self.runtime.generate(self.request, self.cancel)
+        other = self.resources.reserve('image', 'image', 800, {0: 800})
+        self.assertEqual(self.provider.unloads, 1)
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'image'})
+        other.release()
+        self.runtime.generate(self.request, self.cancel)
+        self.assertEqual(self.provider.loads, 2)
+
+    def test_load_generation_and_invalid_audio_failures_clean_up(self):
+        for phase in ('load', 'generate', 'audio'):
+            self.provider.failure = phase
+            with self.subTest(phase=phase), self.assertRaises((RuntimeError, SpeechUnavailable)):
+                self.runtime.generate(self.request, self.cancel)
+            self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_failed_unload_retains_accounting_until_retry_succeeds(self):
+        self.runtime.load(self.request, self.cancel)
+        self.provider.failure = 'unload'
+        with self.assertRaisesRegex(RuntimeError, 'cleanup incomplete'):
+            self.runtime.unload()
+        self.provider.assert_owned(active=False)
+        with self.assertRaisesRegex(RuntimeError, 'cleanup incomplete'):
+            self.resources.reserve('image', 'image', 800, {0: 800})
+        self.provider.assert_owned(active=False)
+        self.provider.failure = None
+        self.runtime.unload()
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_active_work_cannot_be_evicted_and_unload_cancels_then_cleans(self):
+        self.provider.block = True
+        errors = []
+        def run():
             try:
-                return speech.generate_speech(dict(model_id=model.id, script='hello', language='Auto', voice={'mode': 'describe', 'description': 'warm'}), event)
-            finally:
-                self.assertEqual(resources.snapshot()['reservations'], {})
+                self.runtime.generate(self.request, self.cancel)
+            except BaseException as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=run)
+        worker.start()
+        self.assertTrue(self.provider.started.wait(2))
+        try:
+            with self.assertRaises(ResourceExhausted):
+                self.resources.reserve('image', 'image', 800, {0: 800})
+            with self.assertRaises(ResourceBusy):
+                self.runtime.generate(self.request, threading.Event())
+            self.assertEqual(self.provider.unloads, 0)
+            self.runtime.unload()
+        finally:
+            self.cancel.set()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertIsInstance(errors[0], ResourceCancelled)
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
 
-    def test_complete_waveform_and_release(self):
-        result = self.run_worker()
-        self.assertTrue(base64.b64decode(result['audio_base64']).startswith(b'RIFF'))
-
-    def test_failure_releases(self):
-        with self.assertRaises(speech.SpeechUnavailable):
-            self.run_worker(failure=True)
-
-    def test_cancel_before_allocation(self):
+    def test_cancel_before_loading_does_not_allocate(self):
+        self.cancel.set()
         with self.assertRaises(ResourceCancelled):
-            self.run_worker(cancel=True)
+            self.runtime.generate(self.request, self.cancel)
+        self.assertEqual(self.provider.loads, 0)
 
-    def test_disconnect_reaps_child_before_releasing_lease(self):
-        model = SPEECH_MODELS['qwen-tts-1.7b-design']
-        resources = ResourceManager(100 * 1024**3, {})
-        event = threading.Event()
-        class Process:
-            alive = True
-            def poll(self):
-                return None if self.alive else -15
-            def terminate(self):
-                self.assert_owned()
-            def assert_owned(self):
-                assert resources.snapshot()['reservations']
-            def wait(self, timeout=None):
-                self.assert_owned()
-                self.alive = False
-        process = Process()
-        def start(*args, **kwargs):
-            event.set()
-            return process
-        with tempfile.NamedTemporaryFile() as python, \
-             patch.dict('os.environ', KADAN_QWEN_TTS_PYTHON=python.name, KADAN_QWEN_TTS_DEVICE='cpu'), \
-             patch.object(speech, 'ENABLED_SPEECH_MODELS', {model.id}), \
-             patch.object(speech.manager, 'get_checkpoint', return_value=(model, Path('/verified')), create=True), \
-             patch.object(speech.runtime_manager, 'ensure_resources', return_value=resources), \
-             patch.object(speech.subprocess, 'Popen', side_effect=start):
-            with self.assertRaises(ResourceCancelled):
-                speech.generate_speech({'model_id': model.id}, event)
-        self.assertFalse(process.alive)
-        self.assertEqual(resources.snapshot()['reservations'], {})
+    def test_failed_admission_does_not_load(self):
+        other = self.resources.reserve('busy', 'llm', 800, {0: 800})
+        try:
+            with self.assertRaises(ResourceExhausted):
+                self.runtime.generate(self.request, self.cancel)
+            self.assertEqual(self.provider.loads, 0)
+        finally:
+            other.release()
+
+    def test_replacing_provider_only_requires_registration(self):
+        app = FastAPI()
+        app.include_router(router)
+        with patch.object(speech, 'speech_runtime', self.runtime), TestClient(app) as client:
+            models = client.get('/v1/audio/speech/models').json()
+            self.assertEqual(models, [{'id': 'alternate', 'name': 'Alternative voice',
+                'mode': 'custom', 'speakers': ['Ada'], 'supports_instruction': True, 'default_speaker': None}])
+            for _ in range(2):
+                response = client.post('/v1/audio/speech', json={'script': 'Hello', 'language': 'Martian',
+                    'voice': {'mode': 'custom', 'speaker': 'Ada', 'instruction': 'warm'}})
+                self.assertEqual(response.status_code, 200, response.text)
+                audio = response.json()['audio']
+                self.assertEqual(audio['mime_type'], 'audio/wav')
+                self.assertEqual(base64.b64decode(audio['audio_base64']), wav_bytes())
+                self.assertEqual(audio['voice'], 'alternate')
+            self.assertEqual(self.provider.loads, 1)
+            response = client.post('/v1/audio/speech', json={'script': 'Hello',
+                'voice': {'mode': 'custom', 'speaker': 'Wrong'}})
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(self.provider.calls, 2)
+
+    def test_provider_identity_prevents_accidental_resident_reuse(self):
+        second = AlternateProvider(self.resources, 'different')
+        self.registry.register(second)
+        self.runtime.generate(self.request, self.cancel)
+        request = SpeechInput('Hello', self.request.voice, model_id='different')
+        self.runtime.generate(request, self.cancel)
+        self.assertEqual((self.provider.unloads, second.loads), (1, 1))
+
+    def test_duplicate_registration_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.registry.register(self.provider)
+
+    def test_two_runtimes_share_one_process_resource_manager(self):
+        self.resources = ResourceManager(600, {0: 600})
+        self.provider.resources = self.resources
+        other = SpeechRuntime(self.registry, lambda: self.resources)
+        self.runtime.load(self.request, self.cancel)
+        other.load(self.request, self.cancel)
+        self.assertEqual(len(self.resources.snapshot()['reservations']), 1)
+        self.assertEqual((self.provider.loads, self.provider.unloads), (2, 1))
+        other.unload()
+
+    def test_busy_eviction_callback_does_not_deadlock_admission(self):
+        self.runtime.load(self.request, self.cancel)
+        with self.runtime._gate:
+            with self.assertRaises(ResourceExhausted):
+                self.resources.reserve('image', 'image', 800, {0: 800})
+        self.provider.assert_owned(active=False)
