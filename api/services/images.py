@@ -123,6 +123,7 @@ class ImageManager:
         except ResourceBusy as exc:
             raise RuntimeFailure(str(exc), 409) from exc
         except ResourceCancelled as exc:
+            traceback.clear_frames(exc.__traceback__)
             raise RuntimeFailure(str(exc), 409) from exc
         except (ResourceExhausted, ImportError, OSError, RuntimeError) as exc:
             traceback.clear_frames(exc.__traceback__)
@@ -130,6 +131,7 @@ class ImageManager:
                 raise
             raise RuntimeFailure(f'Image generation failed: {exc}') from exc
         except ValueError as exc:
+            traceback.clear_frames(exc.__traceback__)
             raise RuntimeFailure(str(exc), 422) from exc
         finally:
             try:
