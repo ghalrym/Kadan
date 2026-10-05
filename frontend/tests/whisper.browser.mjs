@@ -10,9 +10,15 @@ try {
     const context = await browser.newContext({ viewport: { width, height: 900 }, permissions: ['microphone'] })
     const page = await context.newPage()
     const errors = []; page.on('pageerror', error => errors.push(error.message))
-    let selected = 'large-v3'; let posts = 0; let fail = true
+    let selected = 'large-v3'; let posts = 0; let fail = true; let downloadCount = 0; let downloadStatus = 'not_downloaded'
     const names = ['tiny.en', 'tiny', 'base.en', 'base', 'small.en', 'small', 'medium.en', 'medium', 'large-v1', 'large-v2', 'large-v3', 'large-v3-turbo']
-    await page.route('**/v1/models', route => route.fulfill({ json: { models: [], selected_model_id: null } }))
+    const catalog = () => ({ models: names.map(name => ({ id: `whisper-${name}`, repo_id: 'openai/whisper', display_name: `Whisper ${name}`, kind: 'transcription', status: name === 'large-v3' ? downloadStatus : 'complete', estimated_bytes: 0 })), selected_model_id: null })
+    await page.route('**/v1/models', route => route.fulfill({ json: catalog() }))
+    await page.route('**/v1/models/whisper-large-v3/download', route => {
+      if (route.request().method() === 'DELETE') downloadStatus = 'cancelled'
+      else { downloadCount++; downloadStatus = downloadCount === 1 ? 'downloading' : 'complete' }
+      return route.fulfill({ status: 202, json: catalog() })
+    })
     await page.route('**/model-lifecycle', route => route.fulfill({ json: { state: 'unloaded', model_id: null } }))
     await page.route('**/v1/audio/transcriptions/models', async route => {
       if (route.request().method() === 'PUT') selected = route.request().postDataJSON().model
@@ -29,10 +35,21 @@ try {
     })
     const url = process.env.WHISPER_TEST_URL || 'http://127.0.0.1:15237'
     await page.goto(`${url}/settings`)
-    await page.locator('#model-STT').selectOption('tiny.en')
-    await page.waitForFunction(() => document.querySelector('#model-STT')?.value === 'tiny.en')
+    await page.locator('#model-STT').click()
+    await page.getByRole('button', { name: 'Download Whisper large-v3', exact: true }).click()
+    await page.getByRole('progressbar', { name: 'Whisper download progress' }).waitFor()
+    assert.equal(downloadCount, 1)
+    await page.getByRole('button', { name: 'Cancel download', exact: true }).click()
+    await page.getByRole('button', { name: 'Retry download', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Whisper download progress"]'))
+    assert.equal(downloadCount, 2)
+    await page.locator('#model-STT').click()
+    await page.getByRole('button', { name: 'Whisper tiny.en Checking size complete', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('#model-STT')?.textContent.includes('Whisper tiny.en'))
     assert.equal(selected, 'tiny.en')
-    assert.equal(await page.locator('#model-STT option').count(), 12)
+    await page.locator('#model-STT').click()
+    assert.equal(await page.locator('#STT-model-picker .model-picker-choice').count(), 12)
+    await page.keyboard.press('Escape')
     await page.screenshot({ path: `/tmp/whisper-settings-${width}.png`, fullPage: true })
     await page.goto(`${url}/stt`)
     await page.getByRole('button', { name: 'Start recording' }).click()
