@@ -12,7 +12,7 @@ class QwenDispatchTests(unittest.TestCase):
         modules = {'numpy': Mock(), 'soundfile': SimpleNamespace(read=lambda *a, **k: (audio, 24000)),
                    'torch': Mock(), 'qwen_tts': Mock()}
         with patch.dict(sys.modules, modules):
-            spec = importlib.util.spec_from_file_location('qwen_test_worker', Path(__file__).parents[2] / 'workers/qwen_tts.py')
+            spec = importlib.util.spec_from_file_location('qwen_test_worker', Path(__file__).parents[2] / 'workers/kadan_qwen_tts_worker.py')
             worker = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(worker)
         model = Mock()
