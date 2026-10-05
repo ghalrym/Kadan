@@ -167,6 +167,8 @@ export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * List Speech
+ *
+ * Return empty speech history and blank editor defaults, without fixture audio.
  */
 export const listSpeech = <ThrowOnError extends boolean = false>(
   options?: Options<ListSpeechData, ThrowOnError>,
@@ -178,6 +180,11 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 
 /**
  * Generate Speech
+ *
+ * Reject a validated describe/clone request with HTTP 503.
+ *
+ * No speech provider is configured, so no audio is generated or persisted and
+ * clone sample references are neither fetched nor treated as uploaded files.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,

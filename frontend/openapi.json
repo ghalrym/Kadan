@@ -142,6 +142,7 @@
         "type": "object"
       },
       "ClonedVoice": {
+        "additionalProperties": false,
         "properties": {
           "mode": {
             "const": "clone",
@@ -149,7 +150,7 @@
             "type": "string"
           },
           "sample": {
-            "description": "Voice sample reference; not fetched in mock mode",
+            "description": "Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.",
             "minLength": 1,
             "title": "Sample",
             "type": "string"
@@ -371,6 +372,7 @@
         "type": "object"
       },
       "DescribedVoice": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "minLength": 1,
@@ -1289,7 +1291,6 @@
         "additionalProperties": false,
         "properties": {
           "script": {
-            "maxLength": 5000,
             "minLength": 1,
             "title": "Script",
             "type": "string"
@@ -1330,6 +1331,19 @@
           "audio"
         ],
         "title": "SpeechResponse",
+        "type": "object"
+      },
+      "SpeechUnavailable": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "SpeechUnavailable",
         "type": "object"
       },
       "TranscriptionRequest": {
@@ -1696,7 +1710,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1818,6 +1832,7 @@
     },
     "/v1/audio/speech": {
       "get": {
+        "description": "Return empty speech history and blank editor defaults, without fixture audio.",
         "operationId": "listSpeech",
         "responses": {
           "200": {
@@ -1837,6 +1852,7 @@
         ]
       },
       "post": {
+        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -1868,6 +1884,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechUnavailable"
+                }
+              }
+            },
+            "description": "No speech provider is configured"
           }
         },
         "summary": "Generate Speech",
