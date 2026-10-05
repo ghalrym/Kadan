@@ -3,7 +3,7 @@ import { Panel, SectionHeading } from '../components/Controls'
 import DecisionQuestionCard, {
   type Question,
 } from '../components/DecisionQuestionCard'
-import type { DecisionResponse } from '../api/generated'
+import type { DecisionResponse, ValidationError } from '../api/generated'
 
 /**
  * Edit page-local decision state and display answers from the CPU Laya API.
@@ -60,12 +60,18 @@ export default function DecisionsPage() {
         signal: controller.signal,
       })
       const data = await response.json()
-      if (!response.ok)
-        throw new Error(
-          typeof data.detail === 'string'
-            ? data.detail
-            : 'Check question keys, options and rubric levels, then retry.',
-        )
+      if (!response.ok) {
+        const detail: string | ValidationError[] | undefined = data.detail
+        const message = Array.isArray(detail)
+          ? detail
+              .map((issue) => {
+                const field = issue.loc.filter((part) => part !== 'body').join('.')
+                return `${field ? `${field}: ` : ''}${issue.msg}`
+              })
+              .join('; ')
+          : detail
+        throw new Error(message || `Evaluation failed (HTTP ${response.status}).`)
+      }
       if (active.current === controller && !controller.signal.aborted)
         setAnswers(data.answers)
     } catch (failure) {
@@ -109,8 +115,6 @@ export default function DecisionsPage() {
                 aria-label="State"
                 className="input"
                 rows={5}
-                maxLength={8000}
-                required
                 value={state}
                 onChange={(e) => {
                   setState(e.target.value)
@@ -145,7 +149,6 @@ export default function DecisionsPage() {
                     type="button"
                     className="button"
                     key={type}
-                    disabled={questions.length >= 8}
                     onClick={() => add(type)}
                   >
                     + {type}
@@ -156,7 +159,6 @@ export default function DecisionsPage() {
             <button
               className="button button--primary"
               type="submit"
-              disabled={!questions.length}
             >
               Evaluate
             </button>

@@ -3,6 +3,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 from api.pydantic_models.decisions import ChoiceQuestion, DecisionAnswer, DecisionQuestion, ScoreQuestion
 from api.services.runtime import RuntimeFailure
 from api.services.decisions import decision_manager
@@ -19,22 +20,36 @@ class DecisionRequest(BaseModel):
     def validate_questions(self):
         """Validate request-wide keys, nonblank content and serialized size.
 
-        Returns this parsed request; raises ValueError for ambiguous question/option
+        Returns this parsed request; raises typed validation errors for ambiguous question/option
         keys, blank instructions or levels, or a request beyond the size budget."""
         keys = [question.key for question in self.questions]
-        if len(keys) != len(set(keys)) or any(not key.strip() for key in keys):
-            raise ValueError('Question keys must be nonblank and unique')
+        if any(not key.strip() for key in keys):
+            raise PydanticCustomError('blank_question_key', 'Question keys must not be blank')
+        for index, key in enumerate(keys):
+            if key in keys[:index]:
+                raise PydanticCustomError(
+                    'duplicate_question_key', 'Question key "{key}" is used more than once; each question must have a unique key',
+                    {'key': key},
+                )
         for question in self.questions:
             if not question.instructions.strip():
-                raise ValueError('Question instructions must not be blank')
+                raise PydanticCustomError('blank_instructions', 'Instructions for question "{key}" must not be blank', {'key': question.key})
             if isinstance(question, ChoiceQuestion):
                 options = [option.key for option in question.options]
-                if len(options) != len(set(options)) or any(not option.strip() for option in options):
-                    raise ValueError('Choice option keys must be nonblank and unique')
+                if any(not option.strip() for option in options):
+                    raise PydanticCustomError('blank_option_key', 'Option keys for question "{key}" must not be blank', {'key': question.key})
+                for index, option in enumerate(options):
+                    if option in options[:index]:
+                        raise PydanticCustomError(
+                            'duplicate_option_key', 'Option key "{option}" is used more than once in question "{key}"',
+                            {'option': option, 'key': question.key},
+                        )
             if isinstance(question, ScoreQuestion) and any(not level.strip() for level in question.levels):
-                raise ValueError('Score levels must not be blank')
-        if not self.state.strip() or len(self.model_dump_json()) > 16000:
-            raise ValueError('State must be nonblank and total request must fit 16000 characters')
+                raise PydanticCustomError('blank_score_level', 'Rubric levels for question "{key}" must not be blank', {'key': question.key})
+        if not self.state.strip():
+            raise PydanticCustomError('blank_state', 'State must not be blank')
+        if len(self.model_dump_json()) > 16000:
+            raise PydanticCustomError('request_too_large', 'The total request must fit 16000 characters')
         return self
 
 

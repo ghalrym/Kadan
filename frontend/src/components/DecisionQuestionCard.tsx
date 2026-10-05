@@ -38,7 +38,6 @@ export default function DecisionQuestionCard({
             className="input"
             value={question.key}
             onChange={(e) => onChange({ ...question, key: e.target.value })}
-            required
           />
         </label>
         <label>
@@ -49,7 +48,6 @@ export default function DecisionQuestionCard({
             onChange={(e) =>
               onChange({ ...question, instructions: e.target.value })
             }
-            required
           />
         </label>
         {question.type === 'Choice' && (
@@ -61,7 +59,6 @@ export default function DecisionQuestionCard({
                   className="input"
                   aria-label={`Option ${i + 1} key`}
                   value={option.key}
-                  required
                   onChange={(e) =>
                     onChange({
                       ...question,
@@ -124,7 +121,6 @@ export default function DecisionQuestionCard({
                 <span>{i}</span>
                 <input
                   className="input"
-                  required
                   aria-label={`Level ${i}`}
                   value={level}
                   onChange={(e) =>
