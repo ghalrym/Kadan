@@ -13,14 +13,32 @@ of VRAM and reload it afterward. Agents just call the API. Kadan handles the mem
 The goal is to fit all these tools in one box, accepting slower model switches
 to keep hardware requirements down.
 
+## Chat development flow
+
+Settings can download and select the three pinned language-model checkpoints.
+The chat page sends real API requests. Kadan's inference code owns checkpoint
+loading, packed expert storage, a bounded GPU expert cache, memory reservations,
+generation and model eviction/restoration. It uses PyTorch and pinned Transformers
+architecture definitions; it does not run FreeToken. Settings shows loading,
+readiness, offloaded state or errors. Chat has no mock fallback. Other modalities,
+history and dashboard metrics still use fixtures.
+
+The inference service uses host-RAM expert offload and a GPU cache on one selected
+GPU; it does not pool two cards' VRAM. Source modules in `api/inference/` describe
+ownership and execution invariants alongside the implementation.
+GPU installation, memory fit and inference remain unvalidated on target hardware.
+The standard API installation and Compose image include native inference dependencies.
+
 ![Kadan request dashboard showing AI requests, latency, and GPU and system memory usage](docs/images/requests.png)
 
 ![Kadan settings showing model selections for language, images, video, and speech](docs/images/settings.png)
 
 ## Setup with Docker Compose
 
-Install Docker with Docker Compose and run these commands from the repository
-root.
+On a Linux NVIDIA GPU host, install Docker with Docker Compose, a driver compatible
+with CUDA 12.8 and NVIDIA Container Toolkit. Run these commands from the repository
+root. The API image includes the CUDA-enabled PyTorch wheel and pinned inference
+dependencies; Compose exposes the GPUs, and Kadan uses `KADAN_GPU=0` by default.
 
 1. Build and start the services:
 
@@ -30,6 +48,7 @@ root.
 
 2. Open the app at [http://localhost:5173](http://localhost:5173).
    API docs are at [http://localhost:8000/docs](http://localhost:8000/docs).
+   In Settings, download a model, choose its context and click Load.
 
 3. Check service status or follow startup logs:
 
@@ -43,6 +62,44 @@ root.
    ```sh
    docker compose down
    ```
+
+## Native model service
+
+For a native installation on a Linux NVIDIA GPU host, the single requirements
+file includes the complete API and inference runtime. Git is needed to install
+the pinned Transformers source. The host driver must support the installed
+PyTorch CUDA build; drivers and physical GPU memory cannot be bundled by Kadan.
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r api/requirements.txt
+.venv/bin/python -m api.inference.check_install
+export KADAN_GPU=0
+export KADAN_MODEL_DIR=/path/to/model/storage
+.venv/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+Do not run multiple API workers or use `--reload` with a loaded model. The
+`/model-lifecycle` controls are Kadan management endpoints, separate from `/v1`
+inference calls. In Settings, choose a downloaded checkpoint and context, then
+click Load to save both and start loading through one lifecycle request.
+The status endpoint reports loading, ready, offloaded, unloading or errors.
+On server startup, the saved selected model loads automatically with its saved
+context setting. Loading runs in the background; status reports readiness or the
+load error while the API remains available. Do not run Compose's
+API on the same port simultaneously. Use `API_PROXY_TARGET` for another API port.
+
+Inference tests use tiny synthetic CPU checkpoints. Full catalog loading,
+CUDA correctness, memory peaks and throughput are not hardware-validated.
+Reservations cannot prevent another process from consuming memory. Validate
+repeated load/generate/cancel/evict/restore/unload cycles on the target GPU before
+relying on resource fit. Reference tensor kernels favor correctness over speed.
+
+Runtime requirements pin Transformers source because the released version lacks
+GLM5-next architecture definitions. Dependencies include PyTorch (BSD-style),
+Transformers/Accelerate/Safetensors (Apache-2.0); preserve upstream notices when
+redistributing. FreeToken Apache-2.0 source was layout research only, never an
+installed engine or vendored runtime. Source references are kept in code.
 
 ## Frontend checks
 
@@ -61,7 +118,7 @@ Cancel a pending request and verify that a late reply is not appended.
 
 ## Checkpoint storage
 
-Settings uses `/v1/models` to download and select the three pinned catalog
+Settings uses `/v1/models` to download the three pinned catalog
 checkpoints. Set `KADAN_MODEL_DIR` to a writable disk with sufficient space
 (default `~/.local/share/kadan/models`). Docker Compose persists its `model_data`
 volume at `/var/lib/kadan/models`; `docker compose down -v` deletes that volume.
@@ -71,7 +128,8 @@ Downloads verify pinned file sizes and hashes before publishing completion.
 Cancel is cooperative and retry restarts from scratch; do not edit completed
 checkpoint files externally. Selection persists, but download progress is
 process-local. Selection does not load a model or establish GPU compatibility.
-Review catalog model cards/licenses before downloading: Qwen and GPT-OSS are
+The selected model is loaded automatically when the server starts. Review catalog
+model cards/licenses before downloading: Qwen and GPT-OSS are
 Apache 2.0; GLM is MIT. Downloader ownership and integrity details live alongside
 its implementation in `api/services/model_downloads.py`.
 
@@ -86,9 +144,20 @@ and legacy null (architecture maximum) are preserved, including custom values
 shown as an extra dropdown option. Options above a verified checkpoint limit
 are disabled and backend validation rejects them without clamping. Before a
 checkpoint is downloaded its limit is unknown; loading validates it again.
-Configuration persists across restarts.
-Unload the active model before changing context. A saved context is not a memory
+Configuration persists across restarts. Load also switches an idle loaded model
+or applies a changed context; active work must finish before switching. Loading
+errors remain visible and do not imply a ready model. A saved context is not a memory
 allocation or a guarantee that a request of that size fits on the target hardware.
+
+Context memory is admitted from each request's actual prompt and output allowance,
+not preallocated at the configured ceiling. Packed GPU expert entries share that
+budget and can be evicted to make room while CPU weights remain available. RAM
+pressure can also evict an idle model's host backing; its next request reconstructs
+it from the local checkpoint. Active work is protected from either eviction.
+Linux admission respects visible cgroup limits. Estimates and working-expert
+preflight are conservative checks, not guarantees against external allocations;
+actual entry allocation is admitted again before copying. Target-GPU validation
+is still required.
 
 ## Publish draft pull requests as Ai Kadan
 

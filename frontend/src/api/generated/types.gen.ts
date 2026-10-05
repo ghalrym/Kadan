@@ -85,7 +85,7 @@ export type CompletionRequest = {
   /**
    * Model
    */
-  model?: string
+  model?: string | null
 }
 
 /**
@@ -318,6 +318,62 @@ export type MetricsResponse = {
    * Status
    */
   status: 'Online'
+}
+
+/**
+ * ModelLifecycleStatus
+ */
+export type ModelLifecycleStatus = {
+  /**
+   * Configured Context Limit
+   */
+  configured_context_limit?: number | null
+  /**
+   * Effective Context Limit
+   */
+  effective_context_limit?: number | null
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Max Output Tokens
+   */
+  max_output_tokens?: number
+  /**
+   * Memory
+   */
+  memory?: {
+    [key: string]: unknown
+  } | null
+  /**
+   * Model Id
+   */
+  model_id?: string | null
+  /**
+   * State
+   */
+  state: 'unloaded' | 'loading' | 'ready' | 'offloaded' | 'unloading' | 'error'
+  /**
+   * Supported Context Limit
+   */
+  supported_context_limit?: number | null
+}
+
+/**
+ * ModelLoadRequest
+ */
+export type ModelLoadRequest = {
+  /**
+   * Context Limit
+   *
+   * Omit to retain saved/default context; explicit null uses the architecture maximum.
+   */
+  context_limit?: number | null
+  /**
+   * Model Id
+   */
+  model_id: 'small' | 'medium' | 'large'
 }
 
 /**
@@ -863,6 +919,70 @@ export type HealthResponses = {
 }
 
 export type HealthResponse2 = HealthResponses[keyof HealthResponses]
+
+export type GetModelLifecycleStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle'
+}
+
+export type GetModelLifecycleStatusResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type GetModelLifecycleStatusResponse =
+  GetModelLifecycleStatusResponses[keyof GetModelLifecycleStatusResponses]
+
+export type LoadSelectedModelData = {
+  /**
+   * Body
+   */
+  body?: ModelLoadRequest | null
+  path?: never
+  query?: never
+  url: '/model-lifecycle/load'
+}
+
+export type LoadSelectedModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type LoadSelectedModelError =
+  LoadSelectedModelErrors[keyof LoadSelectedModelErrors]
+
+export type LoadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  202: ModelLifecycleStatus
+}
+
+export type LoadSelectedModelResponse =
+  LoadSelectedModelResponses[keyof LoadSelectedModelResponses]
+
+export type UnloadSelectedModelData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/model-lifecycle/unload'
+}
+
+export type UnloadSelectedModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: ModelLifecycleStatus
+}
+
+export type UnloadSelectedModelResponse =
+  UnloadSelectedModelResponses[keyof UnloadSelectedModelResponses]
 
 export type ListSpeechData = {
   body?: never

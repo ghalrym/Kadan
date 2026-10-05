@@ -6,8 +6,7 @@ function ResourceMeters() {
   return (
     <div className="resource-meters" aria-label="Sample server metrics">
       <div className="server-status">
-        <span className="status-dot success" />
-        Online
+        Sample metrics
       </div>
       {[
         { label: 'GPU 0 · VRAM', used: '18.6', total: 24, value: 18.6 },

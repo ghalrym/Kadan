@@ -123,9 +123,15 @@
             "type": "array"
           },
           "model": {
-            "default": "Qwen3 32B Instruct",
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -548,6 +554,132 @@
           "queued_jobs"
         ],
         "title": "MetricsResponse",
+        "type": "object"
+      },
+      "ModelLifecycleStatus": {
+        "properties": {
+          "configured_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configured Context Limit"
+          },
+          "effective_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Context Limit"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "max_output_tokens": {
+            "default": 256,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "state": {
+            "enum": [
+              "unloaded",
+              "loading",
+              "ready",
+              "offloaded",
+              "unloading",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "supported_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Context Limit"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ModelLifecycleStatus",
+        "type": "object"
+      },
+      "ModelLoadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context_limit": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit to retain saved/default context; explicit null uses the architecture maximum.",
+            "title": "Context Limit"
+          },
+          "model_id": {
+            "enum": [
+              "small",
+              "medium",
+              "large"
+            ],
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "ModelLoadRequest",
         "type": "object"
       },
       "ModelSetting": {
@@ -1423,7 +1555,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Generation and media endpoints remain deterministic mock responses until a runtime is configured. Media is placeholder metadata, not downloadable files. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1447,6 +1579,99 @@
         "summary": "Health",
         "tags": [
           "Health"
+        ]
+      }
+    },
+    "/model-lifecycle": {
+      "get": {
+        "description": "Return current model state, context limits and shared-memory accounting without loading a model.",
+        "operationId": "getModelLifecycleStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Model Lifecycle",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/load": {
+      "post": {
+        "description": "Accept a saved-selection load, or atomically configure and load the supplied target.\nValidate before switching; 202/loading is acceptance, not completed construction.\nPoll status for readiness or errors. Identical explicit requests reuse the current load.",
+        "operationId": "loadSelectedModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ModelLoadRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Load Selected Model",
+        "tags": [
+          "Model lifecycle"
+        ]
+      }
+    },
+    "/model-lifecycle/unload": {
+      "post": {
+        "description": "Request cooperative cancellation and wait for model cleanup before returning unloaded state.",
+        "operationId": "unloadSelectedModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelLifecycleStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unload Selected Model",
+        "tags": [
+          "Model lifecycle"
         ]
       }
     },
@@ -1553,6 +1778,7 @@
     },
     "/v1/chat/completions": {
       "post": {
+        "description": "Generate an assistant reply with the loaded model. Client disconnect cancels generation and\nawaits cleanup; runtime failures preserve their HTTP status.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {

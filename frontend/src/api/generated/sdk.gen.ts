@@ -40,6 +40,8 @@ import type {
   GetDecisionsResponses,
   GetMetricsData,
   GetMetricsResponses,
+  GetModelLifecycleStatusData,
+  GetModelLifecycleStatusResponses,
   GetRequestData,
   GetRequestErrors,
   GetRequestResponses,
@@ -63,12 +65,17 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
+  LoadSelectedModelData,
+  LoadSelectedModelErrors,
+  LoadSelectedModelResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
+  UnloadSelectedModelData,
+  UnloadSelectedModelResponses,
   UpdateSettingsData,
   UpdateSettingsErrors,
   UpdateSettingsResponses,
@@ -102,6 +109,61 @@ export const health = <ThrowOnError extends boolean = false>(
     url: '/health',
     ...options,
   })
+
+/**
+ * Get Model Lifecycle
+ *
+ * Return current model state, context limits and shared-memory accounting without loading a model.
+ */
+export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
+  options?: Options<GetModelLifecycleStatusData, ThrowOnError>,
+): RequestResult<GetModelLifecycleStatusResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetModelLifecycleStatusResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/model-lifecycle', ...options })
+
+/**
+ * Load Selected Model
+ *
+ * Accept a saved-selection load, or atomically configure and load the supplied target.
+ * Validate before switching; 202/loading is acceptance, not completed construction.
+ * Poll status for readiness or errors. Identical explicit requests reuse the current load.
+ */
+export const loadSelectedModel = <ThrowOnError extends boolean = false>(
+  options?: Options<LoadSelectedModelData, ThrowOnError>,
+): RequestResult<
+  LoadSelectedModelResponses,
+  LoadSelectedModelErrors,
+  ThrowOnError
+> =>
+  (options?.client ?? client).post<
+    LoadSelectedModelResponses,
+    LoadSelectedModelErrors,
+    ThrowOnError
+  >({
+    url: '/model-lifecycle/load',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  })
+
+/**
+ * Unload Selected Model
+ *
+ * Request cooperative cancellation and wait for model cleanup before returning unloaded state.
+ */
+export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
+  options?: Options<UnloadSelectedModelData, ThrowOnError>,
+): RequestResult<UnloadSelectedModelResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).post<
+    UnloadSelectedModelResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/model-lifecycle/unload', ...options })
 
 /**
  * List Speech
@@ -158,6 +220,9 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
 
 /**
  * Create Completion
+ *
+ * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
+ * awaits cleanup; runtime failures preserve their HTTP status.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,

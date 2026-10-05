@@ -149,6 +149,12 @@ class ModelManager:
             raise ValueError('Unknown catalog model')
         return CATALOG[model_id]
 
+    def close(self) -> None:
+        """Stop a download at the next read boundary during API shutdown."""
+        self._cancel.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=35)
+
     def _checkpoint_directory(self, entry: CatalogEntry) -> Path:
         """Return the immutable destination path for this model and revision."""
         return self.root / f'{entry.id}-{entry.revision}'
