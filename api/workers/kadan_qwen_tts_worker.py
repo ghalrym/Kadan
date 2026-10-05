@@ -42,4 +42,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--check-install']:
+        for method in ('from_pretrained', 'generate_custom_voice', 'generate_voice_design', 'generate_voice_clone'):
+            if not callable(getattr(Qwen3TTSModel, method, None)):
+                raise RuntimeError(f'Installed Qwen3-TTS is missing {method}')
+        print('Qwen3-TTS worker imports and official generation methods ready')
+    else:
+        main()
