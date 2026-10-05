@@ -83,6 +83,21 @@ CATALOG['ltx-2.5-distilled'] = CatalogEntry(
     license_notice='LTX-2.5 uses the LTX community license. Some commercial uses require a paid license. Hugging Face access approval is required; continuing does not grant access or license rights.',
 )
 
+CATALOG['wan22-ti2v-5b'] = CatalogEntry(
+    'wan22-ti2v-5b', 'Wan-AI/Wan2.2-TI2V-5B',
+    '921dbaf3f1674a56f47e83fb80a34bac8a8f203e', 'apache-2.0', 34_200_000_000,
+    kind='video', display_name='Wan2.2 TI2V-5B', layout='components',
+    component_paths=('.', 'google/umt5-xxl'), weight_paths=('',),
+    required_files=('config.json', 'diffusion_pytorch_model.safetensors.index.json',
+        'diffusion_pytorch_model-00001-of-00003.safetensors',
+        'diffusion_pytorch_model-00002-of-00003.safetensors',
+        'diffusion_pytorch_model-00003-of-00003.safetensors',
+        'models_t5_umt5-xxl-enc-bf16.pth', 'Wan2.2_VAE.pth',
+        'google/umt5-xxl/tokenizer.json', 'google/umt5-xxl/tokenizer_config.json',
+        'google/umt5-xxl/special_tokens_map.json', 'google/umt5-xxl/spiece.model'),
+    license_url='https://github.com/Wan-Video/Wan2.2/blob/1ea34ff48f87168174e12956e200b1d908b1c5ff/LICENSE.txt',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
