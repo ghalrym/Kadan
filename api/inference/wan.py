@@ -3,12 +3,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import signal
 import threading
 import uuid
 
 from api.inference.resources import ResourceCancelled
-from api.inference.processes import visible_cuda_device
+from api.inference.processes import stop_process_group, visible_cuda_device
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 
@@ -91,12 +90,6 @@ class WanProvider:
                         if not output_path.is_file() or output_path.stat().st_size == 0:
                             raise RuntimeError('Wan2.2 did not produce a video.')
                     finally:
-                        if process.poll() is None:
-                            os.killpg(process.pid, signal.SIGTERM)
-                            try:
-                                process.wait(timeout=10)
-                            except subprocess.TimeoutExpired:
-                                os.killpg(process.pid, signal.SIGKILL)
-                                process.wait()
+                        stop_process_group(process)
             finally:
                 reservation.release()
