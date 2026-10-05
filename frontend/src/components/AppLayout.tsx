@@ -15,6 +15,9 @@ function ResourceMeters() {
   return (
     <div className="resource-meters" aria-label="Observed server memory">
       <div className="server-status">
+        <span
+          className={`status-dot ${data ? 'success' : error ? 'error' : 'muted'}`}
+        />
         {data
           ? 'API online'
           : error

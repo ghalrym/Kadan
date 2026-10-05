@@ -185,7 +185,7 @@ try {
     'Status',
     'Latency',
   ])
-  await page.getByRole('button', { name: 'Image', exact: true }).click()
+  await page.getByRole('button', { name: /^Image\b/ }).click()
   await page.waitForResponse(
     (r) => r.url().includes('/v1/requests?') && r.url().includes('type=Image'),
   )

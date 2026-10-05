@@ -17,7 +17,7 @@ const types: RequestRecord['type'][] = [
 ]
 /** Choose display severity from the observed HTTP outcome, not model quality. */
 const statusClass = (status: number) =>
-  status >= 500 ? 'danger' : status >= 400 ? 'warning' : 'success'
+  status >= 500 ? 'error' : status >= 400 ? 'warning' : 'success'
 
 /** Show rolling retained-sample metrics and explicitly flag truncated windows. */
 function RequestStats() {
@@ -34,14 +34,16 @@ function RequestStats() {
       value:
         data?.p50_latency_seconds == null
           ? '—'
-          : `${data.p50_latency_seconds.toFixed(3)} s`,
+          : data.p50_latency_seconds.toFixed(3),
+      unit: 's',
     },
     {
       label: 'Error rate',
       value:
         data?.error_rate_percent == null
           ? '—'
-          : `${data.error_rate_percent.toFixed(1)}%`,
+          : data.error_rate_percent.toFixed(1),
+      unit: '%',
     },
     { label: 'Active requests', value: data?.active_requests ?? '—' },
   ]
@@ -51,7 +53,10 @@ function RequestStats() {
         {stats.map((stat) => (
           <div className="stat" key={stat.label}>
             <span className="eyebrow">{stat.label}</span>
-            <span className="stat-value">{stat.value}</span>
+            <span className="stat-value">
+              {stat.value}
+              <span>{stat.unit}</span>
+            </span>
           </div>
         ))}
       </div>
@@ -72,7 +77,6 @@ function RequestStats() {
  */
 export default function RequestsPage() {
   const [type, setType] = useState('')
-  const [status, setStatus] = useState('')
   const [search, setSearch] = useState('')
   const [offset, setOffset] = useState(0)
   const query = new URLSearchParams({
@@ -81,14 +85,13 @@ export default function RequestsPage() {
     search,
   })
   if (type) query.set('type', type)
-  if (status) query.set('status', status)
   const { data, error, refresh } = usePolling<RequestsResponse>(
     `/v1/requests?${query}`,
   )
   return (
     <div className="requests-page">
       <RequestStats />
-      <div className="request-filters stack compact">
+      <div className="request-filters">
         <div className="row wrap">
           {['', ...types].map((value) => (
             <button
@@ -105,10 +108,13 @@ export default function RequestsPage() {
                 className={`type-dot ${value ? `type-${value}` : 'muted'}`}
               />
               {value || 'All types'}
+              <span className="mono muted">
+                {value === type && data ? data.total : '—'}
+              </span>
             </button>
           ))}
         </div>
-        <div className="row request-search wrap">
+        <div className="row request-search">
           <input
             className="input"
             aria-label="Search requests"
@@ -120,27 +126,6 @@ export default function RequestsPage() {
               setOffset(0)
             }}
           />
-          <label>
-            HTTP status{' '}
-            <select
-              aria-label="HTTP status"
-              className="input"
-              value={status}
-              onChange={(event) => {
-                setStatus(event.target.value)
-                setOffset(0)
-              }}
-            >
-              <option value="">All</option>
-              {[200, 202, 400, 409, 413, 422, 429, 499, 500, 502, 503, 504].map(
-                (code) => (
-                  <option key={code} value={code}>
-                    {code}
-                  </option>
-                ),
-              )}
-            </select>
-          </label>
           <button
             type="button"
             className="button"
@@ -148,16 +133,11 @@ export default function RequestsPage() {
             aria-label="Refresh requests"
           >
             <span
-              className={`status-dot ${error ? 'danger' : data ? 'success' : 'muted'}`}
+              className={`status-dot ${error ? 'error' : data ? 'success' : 'muted'}`}
             />
             {error ? 'Retry' : 'Live'}
           </button>
         </div>
-        {error && <p role="alert">{error}</p>}
-        {!data && !error && <p role="status">Loading request history…</p>}
-        {data && data.requests.length === 0 && (
-          <p role="status">No requests on this page.</p>
-        )}
       </div>
       <div className="request-table-scroll">
         <table className="request-table">
@@ -176,6 +156,21 @@ export default function RequestsPage() {
             </tr>
           </thead>
           <tbody>
+            {(error || !data || data.requests.length === 0) && (
+              <tr>
+                <td colSpan={7}>
+                  {error ? (
+                    <p role="alert">{error}</p>
+                  ) : (
+                    <p role="status">
+                      {data
+                        ? 'No requests on this page.'
+                        : 'Loading request history…'}
+                    </p>
+                  )}
+                </td>
+              </tr>
+            )}
             {data?.requests.map((request) => (
               <tr key={request.id}>
                 <td className="mono muted">
@@ -213,25 +208,27 @@ export default function RequestsPage() {
           </tbody>
         </table>
       </div>
-      <div className="row wrap request-filters">
-        <button
-          type="button"
-          className="button"
-          disabled={offset === 0}
-          onClick={() => setOffset((value) => Math.max(0, value - 25))}
-        >
-          Previous
-        </button>
-        <span>Page {Math.floor(offset / 25) + 1}</span>
-        <button
-          type="button"
-          className="button"
-          disabled={!data || offset + 25 >= data.total}
-          onClick={() => setOffset((value) => value + 25)}
-        >
-          Next
-        </button>
-      </div>
+      {(offset > 0 || (data?.total ?? 0) > 25) && (
+        <div className="row wrap request-filters">
+          <button
+            type="button"
+            className="button"
+            disabled={offset === 0}
+            onClick={() => setOffset((value) => Math.max(0, value - 25))}
+          >
+            Previous
+          </button>
+          <span>Page {Math.floor(offset / 25) + 1}</span>
+          <button
+            type="button"
+            className="button"
+            disabled={!data || offset + 25 >= data.total}
+            onClick={() => setOffset((value) => value + 25)}
+          >
+            Next
+          </button>
+        </div>
+      )}
       <Outlet />
     </div>
   )
