@@ -16,7 +16,8 @@ import shutil
 import threading
 from typing import IO, Literal
 from typing_extensions import NotRequired, TypedDict
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -102,13 +103,24 @@ class WeightIndex(TypedDict):
     weight_map: dict[str, str]
 
 
+def hub_open(url: str, timeout=30):
+    """Use an existing token only on the initial Hugging Face request, never redirects."""
+    token = os.environ.get('HF_TOKEN')
+    if token and urlparse(url).hostname == 'huggingface.co' and urlparse(url).scheme == 'https':
+        request = Request(url)
+        # urllib excludes unredirected_headers when constructing redirect requests.
+        request.add_unredirected_header('Authorization', f'Bearer {token}')
+        return urlopen(request, timeout=timeout)
+    return urlopen(url, timeout=timeout)
+
+
 def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
     """Fetch and validate allowed assets for a catalog entry's pinned revision.
 
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
     metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
-    with urlopen(metadata_url, timeout=30) as response:
+    with hub_open(metadata_url, timeout=30) as response:
         checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
     if checkpoint_metadata['sha'] != entry.revision:
         raise ValueError('Upstream revision does not match the pinned catalog')
@@ -428,7 +440,7 @@ class ModelManager:
                 size = 0
                 url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
-                with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
+                with hub_open(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:
                         if self._cancel.is_set():
                             raise Cancelled()

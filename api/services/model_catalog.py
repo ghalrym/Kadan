@@ -65,6 +65,24 @@ for family in ('FL2VA',):
     )
     CATALOG[entry.id] = entry
 
+# Distilled BF16 only: exclude dev/FP8/NVFP4 and optional DFR duplicate weights.
+LTX_FILES = (
+    'diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors',
+    'text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
+    'vae/ltx-2.5-video-vae-bf16.safetensors',
+    'vae/ltx-2.5-audio-vae-bf16.safetensors',
+    'latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors',
+)
+CATALOG['ltx-2.5-distilled'] = CatalogEntry(
+    'ltx-2.5-distilled', 'Lightricks/LTX-2.5',
+    'da86602791e888542b1c755f0b5df376fdb1a3af', 'ltx-2.x-community-license-agreement',
+    66 * 1024 ** 3, kind='video', display_name='LTX-2.5 distilled BF16', layout='components',
+    required_files=LTX_FILES,
+    weight_paths=('diffusion_models', 'text_encoders', 'vae', 'latent_upscale_models'),
+    license_url='https://github.com/Lightricks/LTX-2/blob/9ec55f9f22798a3198d9c923856824821bc3317e/LICENSE-2_x',
+    license_notice='LTX-2.5 uses the LTX community license. Some commercial uses require a paid license. Hugging Face access approval is required; continuing does not grant access or license rights.',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
