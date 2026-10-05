@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from api.services.transcript_formatting import format_transcript
 from api.services.runtime import RuntimeFailure
 from api.services.transcription import transcription_manager
 from api.services.whisper_catalog import CHECKPOINTS, checkpoint
@@ -81,5 +82,7 @@ def transcribe_audio(body: TranscriptionRequest) -> TranscriptionResponse:
         result = transcription_manager.transcribe(body.audio, body.model, body.language)
     except RuntimeFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
-    result['formatting_status'] = 'unavailable' if body.formatting else 'disabled'
+    formatted = format_transcript(result['raw_text'], result['language'], body.formatting)
+    result.update(text=formatted.text, raw_text=formatted.raw_text,
+                  formatting_status=formatted.formatting_status, formatting_model=formatted.formatting_model)
     return TranscriptionResponse(**result)

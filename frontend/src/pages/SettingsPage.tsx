@@ -3,6 +3,7 @@ import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
+import { FormattingSwitch } from '../components/FormattingSwitch'
 import { WhisperSelector } from '../components/WhisperSelector'
 
 /**
@@ -297,8 +298,8 @@ export default function SettingsPage() {
             </select>}
           </div>)}
           <div className="model-row">
-            <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
-            <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
+            <span className="model-label"><ModelIcon type="STT" />S1-mini by Superwhisper formatting</span>
+            <FormattingSwitch />
           </div>
         </Panel>
       </div>

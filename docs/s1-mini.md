@@ -31,3 +31,8 @@ releasing task ownership, even after caller cancellation.
 
 Validation uses tiny tensor fixtures and fake models. Actual checkpoint inference,
 quality, peak RSS and throughput have not been measured; no model weights were fetched.
+
+The transcription endpoint applies formatting after Whisper returns and releases its
+ASR resources. The existing Settings switch persists this browser's preference; each
+recording submission sends it explicitly. API callers can set `formatting` directly.
+The response exposes `raw_text`, `text`, `formatting_status` and `formatting_model`.

@@ -327,3 +327,10 @@ input[type='range'] {
   border-radius: 50%;
   background: #101207;
 }
+
+.switch[aria-checked="false"] {
+  background: var(--border);
+}
+.switch[aria-checked="false"] > span {
+  left: 2px;
+}

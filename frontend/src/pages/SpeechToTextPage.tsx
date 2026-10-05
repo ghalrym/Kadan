@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { readFormattingPreference } from '../api/formatting'
 import { Panel } from '../components/Controls'
 import { recordingToWav, requestTranscription } from '../api/transcription'
 
@@ -52,7 +53,7 @@ export default function SpeechToTextPage() {
     try {
       const audio = await recordingToWav(clip)
       if (abort.signal.aborted) return
-      const transcript = await requestTranscription(audio, false, abort.signal)
+      const transcript = await requestTranscription(audio, readFormattingPreference(), abort.signal)
       if (!abort.signal.aborted) setText(transcript)
     } catch (reason) { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Transcription failed.') }
     finally { busy.current = false; if (mounted.current) setPending(false) }
