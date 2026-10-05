@@ -43,33 +43,71 @@ def local(root, operation):
 
 
 def bootstrap_install(root, commit, allow_migrations, docker, releases):
-    """Explicit initial setup; failed same-release attempts can retry without re-pairing."""
+    """Resume a durable setup journal, never blindly repeat uncertain migrations.
+
+    A stage is committed before each non-idempotent boundary. Process death needs
+    no exception handler to leave a resumable preparing/starting/activating stage.
+    An uncertain migration advances only after a read-only schema verification.
+    """
     control = root / 'control'
     control.mkdir(mode=0o755, exist_ok=True)
     key = control / 'host-key'
-    existing = json.loads((root / 'state.json').read_text()) if (root / 'state.json').exists() else None
-    retry = existing and existing['phase'] == 'bootstrap_failed' and existing['current']['commit'] == commit
+    path = root / 'state.json'
+    existing = json.loads(path.read_text()) if path.exists() else None
+    retry = (existing and isinstance(existing.get('bootstrap'), dict)
+             and existing['current']['commit'] == commit)
     if not commit or not allow_migrations or (existing and not retry):
-        raise ValueError('Bootstrap needs an exact release commit and explicit initial migrations; only failed same-release setup can retry')
+        raise ValueError('Bootstrap needs an exact release commit and explicit initial migrations; only journaled same-release setup can resume')
     release = releases.verified(commit)
-    # Generated only when the owner explicitly runs bootstrap on their host.
+    if existing and existing['current'] != release:
+        raise ValueError('The verified release changed; preserve setup evidence and inspect locally')
     if not key.exists():
         key.write_text(secrets.token_urlsafe(32))
         key.chmod(0o644)
     (control / 'maintenance').touch(mode=0o644)
-    state = {'current': release, 'previous': None, 'phase': 'recovery_required',
-             'message': 'Initial setup is incomplete; finish bootstrap or inspect locally.'}
-    atomic_json(root / 'state.json', state)
+    state = existing or {'current': release, 'previous': None,
+                         'bootstrap': {'stage': 'preparing', 'failures': []}}
+    journal = state['bootstrap']
+    if journal.get('stage') not in ('preparing', 'migrating', 'migrated', 'starting', 'activating'):
+        raise ValueError('Unknown bootstrap checkpoint; preserve state and inspect locally')
+
+    def checkpoint(stage, **evidence):
+        journal.update(stage=stage, **evidence)
+        state.update(phase='bootstrapping', message=f'Bootstrap {stage}; only this exact release may resume.')
+        atomic_json(path, state)
+
+    checkpoint(journal['stage'])
     try:
-        docker.bootstrap(release)
-        engine = Engine(root, docker, releases, state)
-        engine.activate(release)
-        engine.save('idle', 'Installed. Start the updater service and pair this browser.')
-    except Exception:
-        state.update(phase='bootstrap_failed', message='Setup failed. Inspect the host, then retry this exact bootstrap command.')
-        atomic_json(root / 'state.json', state)
+        if journal['stage'] == 'preparing':
+            backup = docker.bootstrap_prepare(release)
+            checkpoint('migrating', backup=backup)
+            docker.bootstrap_migrate()
+            checkpoint('migrated')
+        elif journal['stage'] == 'migrating':
+            # The prior process may have died before, during, or just after the
+            # command. Even an unchanged DB revision cannot prove that a migration
+            # with external/nontransactional effects is safe to execute again.
+            if not docker.bootstrap_migration_complete(release):
+                raise RuntimeError('Migration outcome is uncertain. Inspect/finish the exact release migration manually, then rerun bootstrap; it will not be repeated automatically.')
+            checkpoint('migrated')
+        if journal['stage'] == 'migrated':
+            checkpoint('starting')
+        if journal['stage'] == 'starting':
+            docker.start_pair(release)
+            checkpoint('activating')
+        if journal['stage'] == 'activating':
+            engine = Engine(root, docker, releases, state)
+            checkpoint('activating')
+            engine.activate(release)
+            state.pop('bootstrap')
+            state['bootstrap_history'] = journal
+            engine.save('idle', 'Installed. Start the updater service and pair this browser.')
+    except BaseException as exc:
+        journal['failures'].append({'stage': journal['stage'], 'type': type(exc).__name__})
+        state['bootstrap'] = journal
+        state.update(phase='bootstrapping', message='Setup interrupted or failed. Inspect the checkpoint, then resume this exact bootstrap command.')
+        atomic_json(path, state)
         raise
-    return
 
 
 def main():
@@ -111,7 +149,7 @@ def main():
         if not key.is_file():
             parser.error('Run one-time bootstrap before starting the service')
         state = json.loads((root / 'state.json').read_text())
-        if state['phase'] == 'bootstrap_failed':
+        if 'bootstrap' in state or state['phase'] == 'bootstrap_failed':
             parser.error('Finish the failed bootstrap before starting the updater service')
         engine = Engine(root, docker, releases, state)
         servers = []

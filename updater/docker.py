@@ -108,7 +108,7 @@ class Docker:
                 if self.config[volume] not in names:
                     raise RuntimeError('Existing project uses different storage; refusing adoption')
 
-    def bootstrap(self, release):
+    def bootstrap_prepare(self, release):
         self.check_volumes()
         for service in ('api', 'frontend', 'migrate'):
             running = self.run(['docker', 'ps', '-q', '--filter', f'label=com.docker.compose.project={self.config["project"]}',
@@ -153,10 +153,33 @@ class Docker:
             except subprocess.CalledProcessError:
                 return False
         self.wait(database_ready)
-        self.backup()
+        return self.backup()
+
+    def bootstrap_migrate(self):
         self.run(self.compose + ['run', '--rm', '--no-deps', 'api', 'alembic', '-c', 'api/alembic.ini', 'upgrade', 'head'],
                  timeout=300, stdout=subprocess.DEVNULL)
-        self.start_pair(release)
+
+    def bootstrap_migration_complete(self, release):
+        """Read the DB revision after interruption; do not execute upgrade again."""
+        self.check_volumes()
+        for service in ('api', 'frontend', 'migrate'):
+            running = self.run(['docker', 'ps', '-q', '--filter', f'label=com.docker.compose.project={self.config["project"]}',
+                                '--filter', f'label=com.docker.compose.service={service}'], stdout=subprocess.PIPE).stdout.strip()
+            if running:
+                raise RuntimeError('A setup/app container is still running; inspect it before migration recovery')
+        self.render(release)
+        script = (
+            'import json; from alembic.config import Config; from alembic.script import ScriptDirectory; '
+            'from sqlalchemy import inspect, text; from api.database import get_engine; '
+            'engine=get_engine(); expected=ScriptDirectory.from_config(Config("api/alembic.ini")).get_heads(); '
+            'connection=engine.connect(); '
+            'actual=list(connection.execute(text("SELECT version_num FROM alembic_version")).scalars()) '
+            'if inspect(connection).has_table("alembic_version") else []; '
+            'print(json.dumps(sorted(actual)==sorted(expected))); connection.close()'
+        )
+        result = self.run(self.compose + ['run', '--rm', '--no-deps', 'api', 'python', '-c', script],
+                          timeout=120, stdout=subprocess.PIPE)
+        return json.loads(result.stdout) is True
 
     def internal(self, operation, method='GET'):
         if operation not in ('drain', 'resume', 'ready', 'prepare'):
@@ -188,6 +211,7 @@ class Docker:
                 os.fsync(output.fileno())
             if not path.stat().st_size:
                 raise RuntimeError('Database backup was empty')
+            return str(path)
         except BaseException:
             path.unlink(missing_ok=True)
             raise

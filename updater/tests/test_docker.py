@@ -63,3 +63,21 @@ class DockerTests(unittest.TestCase):
         self.docker.render(manifest())
         value = json.loads((self.root / 'compose.json').read_text())
         self.assertEqual(value['services']['api']['environment']['POSTGRES_PASSWORD'], 'existing$$PASSWORD$${SECRET}')
+
+    def test_interrupted_migration_reconciliation_only_reads_revision(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout=b'true' if 'python' in args else b'')
+        with patch.object(self.docker, 'check_volumes'), patch.object(self.docker, 'run', side_effect=run):
+            self.assertTrue(self.docker.bootstrap_migration_complete(manifest()))
+        inspection = next(args for args in calls if 'python' in args)
+        self.assertIn('SELECT version_num FROM alembic_version', inspection[-1])
+        self.assertFalse(any('upgrade' in args for args in calls))
+
+    def test_migration_reconciliation_refuses_an_existing_running_setup_container(self):
+        with patch.object(self.docker, 'check_volumes'), patch.object(self.docker, 'run',
+                return_value=subprocess.CompletedProcess([], 0, stdout=b'running-id')) as run:
+            with self.assertRaisesRegex(RuntimeError, 'still running'):
+                self.docker.bootstrap_migration_complete(manifest())
+        self.assertEqual(run.call_count, 1)

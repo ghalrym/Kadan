@@ -136,6 +136,15 @@ For a Linux Docker/NVIDIA home server, with Python 3.11+ available:
    cookies are not logged. Setup generates host credentials only when the owner
    runs it; no credentials are checked into this repository.
 
+   Bootstrap persists its stage before each operation. After an interruption,
+   rerun the same command for the same verified release; it preserves the host
+   key, backup path and failure history. Interrupted preparation can safely repeat.
+   If a migration may have started, retry performs only a read-only revision
+   check. It proceeds if that exact release's schema is complete; otherwise the
+   owner must inspect/finish the migration manually before retrying. It never
+   blindly repeats a migration with an uncertain outcome. Do not delete the setup
+   journal to bypass this check. The service refuses unfinished bootstrap journals.
+
 The root host helper owns Docker access; the API receives only a fixed-operation
 Unix socket and read-only control files. It cannot submit shell commands, Compose
 files, image names, or arbitrary versions. Source/configuration and private state
