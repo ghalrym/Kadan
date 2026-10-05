@@ -1,0 +1,3 @@
+# Install only in a dedicated worker environment, never the API/LLM environment.
+ltx-core @ git+https://github.com/Lightricks/LTX-2.git@9ec55f9f22798a3198d9c923856824821bc3317e#subdirectory=packages/ltx-core
+ltx-pipelines @ git+https://github.com/Lightricks/LTX-2.git@9ec55f9f22798a3198d9c923856824821bc3317e#subdirectory=packages/ltx-pipelines
