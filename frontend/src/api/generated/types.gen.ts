@@ -823,6 +823,10 @@ export type VideoGenerationRequest = {
    */
   fps?: number
   /**
+   * Model
+   */
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va'
+  /**
    * Negative Prompt
    */
   negative_prompt?: string
@@ -833,7 +837,11 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    */
-  resolution?: '480p' | '720p' | '1080p'
+  resolution?: '480p' | '720p' | '768p' | '1080p'
+  /**
+   * Seed
+   */
+  seed?: number
 }
 
 /**
@@ -856,6 +864,10 @@ export type VideoJob = {
    */
   duration: string
   /**
+   * Error
+   */
+  error?: string | null
+  /**
    * Fps
    */
   fps: string
@@ -863,6 +875,10 @@ export type VideoJob = {
    * Id
    */
   id: string
+  /**
+   * Output Url
+   */
+  output_url?: string | null
   /**
    * Progress
    */
@@ -882,7 +898,7 @@ export type VideoJob = {
   /**
    * Status
    */
-  status: 'Rendering' | 'Queued' | 'Done'
+  status: 'Rendering' | 'Queued' | 'Done' | 'Failed' | 'Cancelled'
   /**
    * Thumbnail
    */
@@ -1601,6 +1617,37 @@ export type GenerateVideoResponses = {
 export type GenerateVideoResponse =
   GenerateVideoResponses[keyof GenerateVideoResponses]
 
+export type CancelVideoData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}'
+}
+
+export type CancelVideoErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelVideoError = CancelVideoErrors[keyof CancelVideoErrors]
+
+export type CancelVideoResponses = {
+  /**
+   * Successful Response
+   */
+  200: VideoResponse
+}
+
+export type CancelVideoResponse =
+  CancelVideoResponses[keyof CancelVideoResponses]
+
 export type GetVideoData = {
   body?: never
   path: {
@@ -1634,3 +1681,32 @@ export type GetVideoResponses = {
 }
 
 export type GetVideoResponse = GetVideoResponses[keyof GetVideoResponses]
+
+export type GetVideoContentData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}/content'
+}
+
+export type GetVideoContentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetVideoContentError =
+  GetVideoContentErrors[keyof GetVideoContentErrors]
+
+export type GetVideoContentResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown
+}
