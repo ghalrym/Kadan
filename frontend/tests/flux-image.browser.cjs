@@ -20,6 +20,10 @@ const assert=require('node:assert/strict');
   await page.screenshot({path:`/tmp/flux-image-${width}.png`,fullPage:true});
   await page.goto('http://127.0.0.1:15243/image/edit');
   await page.getByLabel('Model',{exact:true}).selectOption('flux-3-image');
+  const strength=page.getByRole('slider',{name:'Edit strength'});
+  assert.equal(await strength.isVisible(),true); assert.equal(await strength.isDisabled(),true);
+  assert.equal(await strength.getAttribute('aria-describedby'),'edit-strength-status');
+  await page.getByText('Edit strength is not supported by this model.',{exact:true}).waitFor();
   await page.locator('input[type=file]').setInputFiles({name:'fixture.png',mimeType:'image/png',buffer:png});
   await page.getByPlaceholder('e.g. Replace the background with a sunlit studio, keep the subject unchanged').fill('Blue background');
   await page.route('**/v1/images/edits',async route=>{

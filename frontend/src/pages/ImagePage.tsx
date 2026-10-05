@@ -55,7 +55,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     [edit],
   )
   /**
-   * Submit normalized prompt/seed settings and optional reference/strength.
+   * Submit normalized prompt/seed settings and an optional reference image.
    * Prevent overlapping submissions, surface cancellation/errors only while this
    * controller is current, and leave results empty when no image files exist.
    */
@@ -116,7 +116,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           <SegmentedControl label="Aspect" options={['1:1', '4:3', '3:4', '16:9']} selected={aspect} onChange={value => setAspect(value as NonNullable<ImageOptions['aspect']>)} disabled={busy} />
           <SegmentedControl label="Images" options={['1', '2', '4']} selected={String(count)} onChange={value => setCount(Number(value) as 1 | 2 | 4)} disabled={busy} />
         </div>
-
+        {edit && <label className="field" title="Edit strength is not supported by this model."><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">Unavailable</span></span><input aria-label="Edit strength" aria-describedby="edit-strength-status" type="range" min={0} max={100} value={65} disabled /><span id="edit-strength-status" className="faint">Edit strength is not supported by this model.</span></label>}
         <label className="field"><span className="eyebrow">Model</span><select aria-label="Model" className="input" value={model} disabled={busy} onChange={event => setModel(event.target.value as typeof model)}><option value="qwen-image-2.1">Qwen-Image-2.1</option><option value="flux-3-image">FLUX 3 Image (API)</option></select></label>
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={model === 'flux-3-image' ? '' : seed} onChange={e => setSeed(e.target.value)} placeholder={model === 'flux-3-image' ? 'Unavailable' : 'Random'} disabled={busy || model === 'flux-3-image'} /></label>
         <button className="button button--primary" disabled={busy || !prompt.trim() || (edit && !source)}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
