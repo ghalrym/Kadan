@@ -20,7 +20,7 @@ class ModelsRouteTests(unittest.TestCase):
     def test_catalog_and_validation(self):
         response = self.client.get('/v1/models')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item['id'] for item in response.json()['models']], ['small', 'medium', 'large', 'h3-fl2va', 'qwen-image-2.1', 'flux-klein-4b'])
+        self.assertEqual([item['id'] for item in response.json()['models']], ['small', 'medium', 'large', 'h3-fl2va', 'qwen-image-2.1', 'flux-klein-4b', 'flux-klein-9b-nvfp4'])
         self.assertEqual(self.client.put('/v1/models/selection', json={'model_id': 'small'}).status_code, 400)
         self.assertEqual(self.client.put('/v1/models/selection', json={'model_id': 'arbitrary'}).status_code, 422)
         self.assertEqual(self.client.post('/v1/models/arbitrary/download').status_code, 400)
