@@ -258,6 +258,8 @@ export const createCompletion = <ThrowOnError extends boolean = false>(
 
 /**
  * List Messages
+ *
+ * Chat is stateless on the server. Conversations are held by the calling client; no persisted messages are available.
  */
 export const listMessages = <ThrowOnError extends boolean = false>(
   options?: Options<ListMessagesData, ThrowOnError>,
@@ -532,6 +534,11 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Settings
+ *
+ * Read the shared model store and return the catalog selection.
+ *
+ * Raise HTTP 503 if the stored selection is outside the catalog; this read does
+ * not load a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,
@@ -544,7 +551,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Validates settings and returns the unchanged mock settings. Does not persist changes.
+ * Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,
