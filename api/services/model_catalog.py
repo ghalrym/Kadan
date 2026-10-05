@@ -163,3 +163,16 @@ CATALOG[_speech.id] = CatalogEntry(
         'speech_tokenizer/preprocessor_config.json', 'speech_tokenizer/model.safetensors'),
     weight_paths=('', 'speech_tokenizer'),
 )
+
+# Official complete checkpoint, including its bundled audio tokenizer.
+_speech = SPEECH_MODELS['qwen-tts-0.6b-base']
+CATALOG[_speech.id] = CatalogEntry(
+    _speech.id, 'Qwen/' + _speech.name, _speech.revision, 'apache-2.0',
+    _speech.estimated_bytes, kind='speech', display_name=_speech.name,
+    layout='components', component_paths=('.', 'speech_tokenizer'),
+    required_files=('config.json', 'generation_config.json', 'tokenizer_config.json',
+        'preprocessor_config.json', 'merges.txt', 'vocab.json', 'model.safetensors',
+        'speech_tokenizer/config.json', 'speech_tokenizer/configuration.json',
+        'speech_tokenizer/preprocessor_config.json', 'speech_tokenizer/model.safetensors'),
+    weight_paths=('', 'speech_tokenizer'),
+)
