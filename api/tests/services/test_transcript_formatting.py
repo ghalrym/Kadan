@@ -3,6 +3,7 @@ import torch
 from unittest.mock import Mock
 
 from api.inference.resources import ResourceManager
+from api.services.model_catalog import CATALOG, allowed_asset, validate_assets
 from api.services.transcript_formatting import (
     ATTRIBUTION, CONTROL, RAM_BYTES, SYSTEM, NativeNormalizer,
     TranscriptFormatter, transcript_chunks,
@@ -88,3 +89,13 @@ class FormatterTests(unittest.TestCase):
             tokenize=False, add_generation_prompt=True, enable_thinking=False)
         self.assertFalse(model.generate.call_args.kwargs['do_sample'])
         self.assertEqual(model.generate.call_args.kwargs['max_new_tokens'], 35)
+
+    def test_catalog_requires_weights_tokenizer_and_attribution_without_shard_index(self):
+        entry = CATALOG['s1-mini']
+        validate_assets(entry, set(entry.required_files))
+        self.assertEqual(entry.kind, 'formatting')
+        for missing in ('model.safetensors', 'NOTICE', 'chat_template.jinja'):
+            with self.assertRaises(ValueError):
+                validate_assets(entry, set(entry.required_files) - {missing})
+        self.assertFalse(allowed_asset('model.py', entry))
+        self.assertFalse(allowed_asset('../model.safetensors', entry))

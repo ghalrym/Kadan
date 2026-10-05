@@ -3,13 +3,12 @@ from dataclasses import dataclass
 import gc
 import json
 import math
-import os
-from pathlib import Path
 import re
 import threading
 import traceback
 
 from api.services.runtime import runtime_manager
+from api.services.model_downloads import model_manager
 
 MODEL_ID = 'superwhisper/s1-mini'
 REVISION = '88f6b15896c73bbb13a3b596e0afe8ea0d5150b4'
@@ -92,8 +91,7 @@ def load_normalizer():
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    root = Path(os.environ.get('KADAN_MODEL_DIR', '~/.local/share/kadan/models')).expanduser()
-    path = Path(os.environ.get('KADAN_S1_MODEL_DIR', str(root / f's1-mini-{REVISION}'))).expanduser()
+    _, path = model_manager.get_checkpoint('s1-mini')
     for name in ('config.json', 'model.safetensors', 'tokenizer.json', 'tokenizer_config.json',
                  'chat_template.jinja', 'LICENSE', 'NOTICE'):
         if not (path / name).is_file():

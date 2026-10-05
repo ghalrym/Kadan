@@ -3,6 +3,7 @@ import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
+import { FormattingModel } from '../components/FormattingModel'
 import { FormattingSwitch } from '../components/FormattingSwitch'
 import { WhisperSelector } from '../components/WhisperSelector'
 import { ModelPicker } from '../components/ModelPicker'
@@ -289,7 +290,7 @@ export default function SettingsPage() {
           </div>)}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />S1-mini by Superwhisper formatting</span>
-            <FormattingSwitch />
+            <div className="stack compact"><FormattingModel model={models.find(item => item.id === 's1-mini')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /><FormattingSwitch /></div>
           </div>
         </Panel>
       </div>

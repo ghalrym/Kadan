@@ -69,6 +69,15 @@ for family in ('FL2VA',):
     )
     CATALOG[entry.id] = entry
 
+CATALOG['s1-mini'] = CatalogEntry(
+    's1-mini', 'superwhisper/s1-mini', '88f6b15896c73bbb13a3b596e0afe8ea0d5150b4',
+    'apache-2.0-with-naming-clause', 1_520_000_000, kind='formatting',
+    display_name='S1-mini by Superwhisper', layout='components', component_paths=('.',),
+    required_files=('config.json', 'model.safetensors', 'tokenizer.json', 'tokenizer_config.json',
+                    'chat_template.jinja', 'LICENSE', 'NOTICE'), weight_paths=('',),
+    license_url='https://huggingface.co/superwhisper/s1-mini/blob/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/LICENSE',
+)
+
 # Only independently registered Whisper checkpoints enter the shared catalog.
 for whisper in CHECKPOINTS.values():
     entry = CatalogEntry(f'whisper-{whisper.name}', 'openai/whisper', whisper.sha256,

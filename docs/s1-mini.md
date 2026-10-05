@@ -5,8 +5,8 @@ without an inference server or llama.cpp. The official checkpoint is
 [`superwhisper/s1-mini`](https://huggingface.co/superwhisper/s1-mini) at
 `88f6b15896c73bbb13a3b596e0afe8ea0d5150b4`. The loader reads the local directory
 `KADAN_MODEL_DIR/s1-mini-<revision>` (default model root `~/.local/share/kadan/models`),
-or an explicit `KADAN_S1_MODEL_DIR`. Inference never downloads missing files.
-The existing shared catalog/download integration is a separate dependency.
+through the shared catalog completion validator. Inference never downloads missing files.
+The Settings formatting row uses the existing download picker, progress, cancel and retry flow.
 
 Retain the upstream LICENSE and NOTICE alongside any provisioned checkpoint.
 The model's license requires the exact attribution **S1-mini by Superwhisper**.

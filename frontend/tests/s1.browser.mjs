@@ -12,7 +12,13 @@ try {
     const errors = []; page.on('pageerror', error => errors.push(error.message))
     let expectedFormatting = false; let selected = 'large-v3'; let posts = 0; let fail = true
     const names = ['tiny.en', 'tiny', 'base.en', 'base', 'small.en', 'small', 'medium.en', 'medium', 'large-v1', 'large-v2', 'large-v3', 'large-v3-turbo']
-    await page.route('**/v1/models', route => route.fulfill({ json: { models: [], selected_model_id: null } }))
+    const model = { id: 's1-mini', kind: 'formatting', display_name: 'S1-mini by Superwhisper', repo_id: 'superwhisper/s1-mini', revision: 'pinned', license: 'Apache-2.0', estimated_bytes: 1520000000, status: 'not_downloaded', downloaded_bytes: 0, total_bytes: 0, error: null }
+    const catalog = () => ({ models: [model], selected_model_id: null })
+    await page.route('**/v1/models', route => route.fulfill({ json: catalog() }))
+    await page.route('**/v1/models/s1-mini/download', async route => {
+      model.status = route.request().method() === 'DELETE' ? 'cancelled' : 'downloading'
+      await route.fulfill({ json: catalog() })
+    })
     await page.route('**/model-lifecycle', route => route.fulfill({ json: { state: 'unloaded', model_id: null } }))
     await page.route('**/v1/audio/transcriptions/models', async route => {
       if (route.request().method() === 'PUT') selected = route.request().postDataJSON().model
@@ -36,10 +42,12 @@ try {
     await page.reload()
     assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     assert.equal(await toggle.locator('span').evaluate(element => getComputedStyle(element).left), '2px')
-    await page.locator('#model-STT').selectOption('tiny.en')
-    await page.waitForFunction(() => document.querySelector('#model-STT')?.value === 'tiny.en')
-    assert.equal(selected, 'tiny.en')
-    assert.equal(await page.locator('#model-STT option').count(), 12)
+    await page.locator('#model-Formatting').click()
+    await page.getByRole('button', { name: 'Download S1-mini by Superwhisper', exact: true }).click()
+    await page.getByRole('progressbar', { name: 'S1-mini download progress' }).waitFor()
+    await page.getByRole('button', { name: 'Cancel download', exact: true }).click()
+    await page.getByRole('button', { name: 'Retry download', exact: true }).click()
+    await page.getByRole('progressbar', { name: 'S1-mini download progress' }).waitFor()
     await page.screenshot({ path: `/tmp/s1-settings-${width}.png`, fullPage: true })
     await page.goto(`${url}/stt`)
     await page.getByRole('button', { name: 'Start recording' }).click()
