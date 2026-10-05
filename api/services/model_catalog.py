@@ -106,6 +106,21 @@ CATALOG['flux-klein-4b'] = CatalogEntry(
     license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md',
 )
 
+# Official FLUX.2 klein 9B KV FP8 transformer plus matching pinned companion assets.
+CATALOG['flux-klein-9b-kv-fp8'] = CatalogEntry(
+    'flux-klein-9b-kv-fp8', 'black-forest-labs/FLUX.2-klein-9b-kv-fp8', '8430c03ee457ea86907ed31a009cd56280df003d',
+    'flux-non-commercial-license', 0, kind='image', display_name='FLUX.2 klein 9B KV FP8',
+    layout='components', source_files=('flux-2-klein-9b-kv-fp8.safetensors', 'LICENSE'),
+    requires_auth=False,
+    auxiliary_sources=(CheckpointSource('black-forest-labs/FLUX.2-klein-9b-kv', 'a6dfb36eca3a3906eb2fd460795adfb844e5fcce',
+        files=('model_index.json', 'transformer/config.json'),
+        component_paths=('tokenizer', 'scheduler', 'text_encoder', 'vae'), requires_auth=True),),
+    required_files=('flux-2-klein-9b-kv-fp8.safetensors', 'LICENSE', 'model_index.json', 'transformer/config.json', 'tokenizer/tokenizer.json', 'tokenizer/tokenizer_config.json', 'scheduler/scheduler_config.json', 'text_encoder/config.json', 'text_encoder/model.safetensors.index.json', 'vae/config.json'),
+    weight_paths=('', 'text_encoder', 'vae'),
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv-fp8/blob/8430c03ee457ea86907ed31a009cd56280df003d/LICENSE',
+    license_notice='FLUX.2 klein 9B KV FP8 has a non-commercial license and usage conditions. Commercial use requires separate rights; continuing does not grant them or approve Hugging Face access.',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
