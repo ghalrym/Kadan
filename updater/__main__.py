@@ -42,6 +42,36 @@ def local(root, operation):
         return json.load(result)
 
 
+def bootstrap_install(root, commit, allow_migrations, docker, releases):
+    """Explicit initial setup; failed same-release attempts can retry without re-pairing."""
+    control = root / 'control'
+    control.mkdir(mode=0o755, exist_ok=True)
+    key = control / 'host-key'
+    existing = json.loads((root / 'state.json').read_text()) if (root / 'state.json').exists() else None
+    retry = existing and existing['phase'] == 'bootstrap_failed' and existing['current']['commit'] == commit
+    if not commit or not allow_migrations or (existing and not retry):
+        raise ValueError('Bootstrap needs an exact release commit and explicit initial migrations; only failed same-release setup can retry')
+    release = releases.verified(commit)
+    # Generated only when the owner explicitly runs bootstrap on their host.
+    if not key.exists():
+        key.write_text(secrets.token_urlsafe(32))
+        key.chmod(0o644)
+    (control / 'maintenance').touch(mode=0o644)
+    state = {'current': release, 'previous': None, 'phase': 'recovery_required',
+             'message': 'Initial setup is incomplete; finish bootstrap or inspect locally.'}
+    atomic_json(root / 'state.json', state)
+    try:
+        docker.bootstrap(release)
+        engine = Engine(root, docker, releases, state)
+        engine.activate(release)
+        engine.save('idle', 'Installed. Start the updater service and pair this browser.')
+    except Exception:
+        state.update(phase='bootstrap_failed', message='Setup failed. Inspect the host, then retry this exact bootstrap command.')
+        atomic_json(root / 'state.json', state)
+        raise
+    return
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path('/var/lib/kadan-updater'))
@@ -73,24 +103,16 @@ def main():
         control.mkdir(mode=0o755, exist_ok=True)
         key = control / 'host-key'
         if args.command == 'bootstrap':
-            if not args.commit or not args.allow_initial_migrations or (root / 'state.json').exists():
-                parser.error('Bootstrap needs an exact release commit, explicit initial migrations, and no existing state')
-            release = releases.verified(args.commit)
-            # Generated only when the owner explicitly runs bootstrap on their host.
-            key.write_text(secrets.token_urlsafe(32))
-            key.chmod(0o644)
-            (control / 'maintenance').touch(mode=0o644)
-            state = {'current': release, 'previous': None, 'phase': 'recovery_required',
-                     'message': 'Initial setup is incomplete; finish bootstrap or inspect locally.'}
-            atomic_json(root / 'state.json', state)
-            docker.bootstrap(release)
-            engine = Engine(root, docker, releases, state)
-            engine.activate(release)
-            engine.save('idle', 'Installed. Start the updater service and pair this browser.')
+            try:
+                bootstrap_install(root, args.commit, args.allow_initial_migrations, docker, releases)
+            except ValueError as exc:
+                parser.error(str(exc))
             return
         if not key.is_file():
             parser.error('Run one-time bootstrap before starting the service')
         state = json.loads((root / 'state.json').read_text())
+        if state['phase'] == 'bootstrap_failed':
+            parser.error('Finish the failed bootstrap before starting the updater service')
         engine = Engine(root, docker, releases, state)
         servers = []
         for path, admin in ((control / 'control.sock', False), (root / 'admin.sock', True)):

@@ -193,6 +193,7 @@ class Engine:
         try:
             self.cancel.clear()
             previous = self.state['current']
+            self.save('rollback', 'Local recovery is waiting for safe cleanup before restoring the previous release…')
             (self.root / 'control/maintenance').touch(mode=0o644)
             self.safe_stop()
             self.docker.start_pair(previous)

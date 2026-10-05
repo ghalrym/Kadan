@@ -10,9 +10,12 @@ import re
 import shutil
 import subprocess
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
 
 from updater.releases import validate_manifest
+
+# Host-control credentials and loopback readiness never traverse an environment proxy.
+local_open = build_opener(ProxyHandler({})).open
 
 
 def atomic_json(path, value):
@@ -161,7 +164,7 @@ class Docker:
         key = (self.root / 'control/host-key').read_text().strip()
         request = Request('http://127.0.0.1:8000/internal/updates/' + operation,
                           method=method, headers={'X-Kadan-Host': key})
-        with urlopen(request, timeout=5) as response:
+        with local_open(request, timeout=5) as response:
             return json.load(response)
 
     def wait(self, predicate, timeout=120):
@@ -211,7 +214,7 @@ class Docker:
     def ready(self, release, models=False):
         try:
             api = self.internal('ready')
-            with urlopen('http://127.0.0.1:5173/version.json', timeout=5) as response:
+            with local_open('http://127.0.0.1:5173/version.json', timeout=5) as response:
                 frontend = json.load(response)
             return (api.get('ready') is True and api['commit'] == frontend['commit'] == release['commit']
                     and all(api[key] == release[key] for key in ('migrations', 'data_epoch'))

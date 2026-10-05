@@ -42,7 +42,7 @@ def bridge(request, response, method, operation, body=None):
     if method == 'POST':
         headers['content-type'] = 'application/json'
     try:
-        with httpx.Client(transport=httpx.HTTPTransport(uds=socket), timeout=5) as client:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=socket), timeout=5, trust_env=False) as client:
             result = client.request(method, 'http://localhost/' + operation, headers=headers, json=body)
         payload = result.json()
     except (httpx.HTTPError, ValueError, OSError) as exc:

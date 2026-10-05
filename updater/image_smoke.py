@@ -4,10 +4,12 @@ import os
 import subprocess
 import time
 import uuid
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError
 
 from api.services.release import migration_fingerprint
+
+urlopen = build_opener(ProxyHandler({})).open
 
 
 def main():
