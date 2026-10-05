@@ -7,6 +7,7 @@ processes do not coordinate ownership; that requires a separate coordination lay
 from dataclasses import dataclass, field
 import io
 import threading
+import traceback
 from typing import Callable, Protocol
 import uuid
 import wave
@@ -58,7 +59,7 @@ class SpeechModel:
 class SpeechSession(Protocol):
     """Construct without allocations; load/generate only under the owner's lease.
 
-    unload must finish freeing allocations and stopping owned subprocesses before
+    unload must finish freeing allocations and pending device operations before
     returning. If cleanup fails, raise so the owner retains its accounting.
     """
     def load(self, cancel: threading.Event) -> None: ...
@@ -182,7 +183,8 @@ class SpeechRuntime:
                         if cancel.is_set():
                             raise ResourceCancelled('Speech loading cancelled')
                         self._identity, self._ready = identity, True
-                except BaseException:
+                except BaseException as exc:
+                    traceback.clear_frames(exc.__traceback__)
                     self._unload()
                     raise
             if not generate:
@@ -194,7 +196,8 @@ class SpeechRuntime:
                     if cancel.is_set():
                         raise ResourceCancelled('Speech generation cancelled')
                     return result
-            except BaseException:
+            except BaseException as exc:
+                traceback.clear_frames(exc.__traceback__)
                 self._unload()
                 raise
         finally:

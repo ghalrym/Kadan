@@ -618,22 +618,54 @@
         "type": "object"
       },
       "MetricsResponse": {
+        "description": "Process-local request statistics plus best-effort host/device memory samples.\n\nNull latency/error statistics mean no retained samples in the window. A\ntruncated window covers retained records only; Online does not imply a\nloaded model or successful GPU inference.",
         "properties": {
+          "active_requests": {
+            "title": "Active Requests",
+            "type": "integer"
+          },
+          "completed_requests": {
+            "title": "Completed Requests",
+            "type": "integer"
+          },
           "error_rate_percent": {
-            "title": "Error Rate Percent",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Rate Percent"
+          },
+          "memory_unit": {
+            "const": "GiB",
+            "default": "GiB",
+            "title": "Memory Unit",
+            "type": "string"
           },
           "p50_latency_seconds": {
-            "title": "P50 Latency Seconds",
-            "type": "number"
-          },
-          "queued_jobs": {
-            "title": "Queued Jobs",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Latency Seconds"
           },
           "requests_per_minute": {
             "title": "Requests Per Minute",
             "type": "integer"
+          },
+          "resource_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resource Errors",
+            "type": "array"
           },
           "resources": {
             "items": {
@@ -642,19 +674,46 @@
             "title": "Resources",
             "type": "array"
           },
+          "retained_requests": {
+            "title": "Retained Requests",
+            "type": "integer"
+          },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "status": {
             "const": "Online",
+            "default": "Online",
             "title": "Status",
             "type": "string"
+          },
+          "window_seconds": {
+            "default": 60,
+            "title": "Window Seconds",
+            "type": "integer"
+          },
+          "window_truncated": {
+            "title": "Window Truncated",
+            "type": "boolean"
           }
         },
         "required": [
-          "status",
           "resources",
+          "resource_errors",
+          "started_at",
+          "retention_limit",
+          "retained_requests",
+          "completed_requests",
+          "active_requests",
           "requests_per_minute",
+          "window_truncated",
           "p50_latency_seconds",
-          "error_rate_percent",
-          "queued_jobs"
+          "error_rate_percent"
         ],
         "title": "MetricsResponse",
         "type": "object"
@@ -1097,6 +1156,7 @@
         "type": "object"
       },
       "RequestRecord": {
+        "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement.",
         "properties": {
           "endpoint": {
             "title": "Endpoint",
@@ -1110,9 +1170,20 @@
             "title": "Latency",
             "type": "string"
           },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
           "model": {
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "output": {
             "title": "Output",
@@ -1122,41 +1193,23 @@
             "title": "Prompt",
             "type": "string"
           },
+          "request_bytes": {
+            "title": "Request Bytes",
+            "type": "integer"
+          },
+          "response_bytes": {
+            "title": "Response Bytes",
+            "type": "integer"
+          },
           "status": {
-            "enum": [
-              200,
-              202,
-              429,
-              500
-            ],
+            "maximum": 599.0,
+            "minimum": 100.0,
             "title": "Status",
             "type": "integer"
           },
           "time": {
             "title": "Time",
             "type": "string"
-          },
-          "tokensPerSecond": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokenspersecond"
-          },
-          "ttft": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ttft"
           },
           "type": {
             "enum": [
@@ -1175,17 +1228,20 @@
           "id",
           "time",
           "type",
-          "model",
           "status",
           "latency",
+          "latency_ms",
           "endpoint",
           "prompt",
-          "output"
+          "output",
+          "request_bytes",
+          "response_bytes"
         ],
         "title": "RequestRecord",
         "type": "object"
       },
       "RequestResponse": {
+        "description": "Wrap a single retained HTTP observation for the detail endpoint.",
         "properties": {
           "request": {
             "$ref": "#/components/schemas/RequestRecord"
@@ -1198,6 +1254,7 @@
         "type": "object"
       },
       "RequestsResponse": {
+        "description": "A page of retained observations with its filtered total and process epoch.",
         "properties": {
           "requests": {
             "items": {
@@ -1206,6 +1263,14 @@
             "title": "Requests",
             "type": "array"
           },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -1213,12 +1278,15 @@
         },
         "required": [
           "requests",
-          "total"
+          "total",
+          "retention_limit",
+          "started_at"
         ],
         "title": "RequestsResponse",
         "type": "object"
       },
       "ResourceMeter": {
+        "description": "Observed host or device-wide memory in GiB, including other processes.",
         "properties": {
           "label": {
             "title": "Label",
@@ -1947,7 +2015,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Speech generation returns provider-unavailable errors and speech history is empty. Other media generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model; invalid or oversized inputs return errors. Speech runs in process through registered providers using completed local checkpoints. Unconfigured image, video and transcription providers return unavailable errors; media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2130,7 +2198,7 @@
                 }
               }
             },
-            "description": "Speech worker unavailable"
+            "description": "Speech provider unavailable"
           }
         },
         "summary": "Generate Speech",
@@ -2457,6 +2525,7 @@
     },
     "/v1/metrics": {
       "get": {
+        "description": "Combine a fresh memory sample with the bounded telemetry snapshot.\n\nThis monitoring read is excluded from generation telemetry, so polling\ndoes not increase request counts or feed back into latency statistics.",
         "operationId": "getMetrics",
         "responses": {
           "200": {
@@ -2696,6 +2765,7 @@
     },
     "/v1/requests": {
       "get": {
+        "description": "Filter a newest-first snapshot and return the requested page.\n\nSearch matches IDs, endpoints, catalog IDs and safe summaries. Totals cover\nretained matches only; concurrent completions or eviction can move records\nbetween successive page requests. No database history is consulted.",
         "operationId": "listRequests",
         "parameters": [
           {
@@ -2729,12 +2799,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "enum": [
-                    200,
-                    202,
-                    429,
-                    500
-                  ],
+                  "maximum": 599,
+                  "minimum": 100,
                   "type": "integer"
                 },
                 {
@@ -2750,6 +2816,7 @@
             "required": false,
             "schema": {
               "default": "",
+              "maxLength": 128,
               "title": "Search",
               "type": "string"
             }
@@ -2770,7 +2837,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 100,
               "minimum": 1,
               "title": "Limit",
@@ -2808,6 +2875,7 @@
     },
     "/v1/requests/{request_id}": {
       "get": {
+        "description": "Return a retained observation by ID, or 404 after eviction or restart.\n\nThe lookup uses a snapshot, so it never holds the telemetry lock while\nserializing the response.",
         "operationId": "getRequest",
         "parameters": [
           {
