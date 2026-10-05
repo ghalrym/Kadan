@@ -2,6 +2,7 @@
 
 ## API
 
+- Keep imports at module scope. Use function-local imports only when strictly necessary, and explain why.
 - `api/routes/` owns HTTP endpoints. Mirror the URL hierarchy: `/v1/chat/completions` belongs in `api/routes/v1/chat/completions.py`.
 - Keep each route's request and response Pydantic models in that route's file.
 - `api/pydantic_models/` owns higher-level domain models, such as `ChatMessage`, that represent entities that could be stored in a database. It does not own route-specific request or response models.

@@ -310,6 +310,31 @@
 .chat-composer-wrap {
   padding: 0 24px 18px;
 }
+.chat-banner {
+  max-width: 760px;
+  margin: 0 auto 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-control);
+  border-radius: 10px;
+  padding: 8px 8px 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.chat-banner p {
+  flex: 1;
+}
+.chat-banner .button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.chat-banner--error {
+  background: #261619;
+  border-color: #5c2b2e;
+  color: var(--error);
+}
 .chat-composer {
   max-width: 760px;
   margin: 0 auto;
@@ -672,6 +697,9 @@
   }
   .chat-composer-wrap {
     padding: 0 16px 16px;
+  }
+  .chat-banner {
+    flex-wrap: wrap;
   }
   .image-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
