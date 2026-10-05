@@ -371,6 +371,11 @@ export const generateImages = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Metrics
+ *
+ * Combine a fresh memory sample with the bounded telemetry snapshot.
+ *
+ * This monitoring read is excluded from generation telemetry, so polling
+ * does not increase request counts or feed back into latency statistics.
  */
 export const getMetrics = <ThrowOnError extends boolean = false>(
   options?: Options<GetMetricsData, ThrowOnError>,
@@ -517,6 +522,12 @@ export const downloadModelV1ModelsModelIdDownloadPost = <
 
 /**
  * List Requests
+ *
+ * Filter a newest-first snapshot and return the requested page.
+ *
+ * Search matches IDs, endpoints, catalog IDs and safe summaries. Totals cover
+ * retained matches only; concurrent completions or eviction can move records
+ * between successive page requests. No database history is consulted.
  */
 export const listRequests = <ThrowOnError extends boolean = false>(
   options?: Options<ListRequestsData, ThrowOnError>,
@@ -529,6 +540,11 @@ export const listRequests = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Request
+ *
+ * Return a retained observation by ID, or 404 after eviction or restart.
+ *
+ * The lookup uses a snapshot, so it never holds the telemetry lock while
+ * serializing the response.
  */
 export const getRequest = <ThrowOnError extends boolean = false>(
   options: Options<GetRequestData, ThrowOnError>,
