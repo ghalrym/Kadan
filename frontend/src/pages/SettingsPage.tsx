@@ -123,7 +123,7 @@ function ModelPicker({ models, current, selectedId, pending, downloading, choose
       {models.map(model => <div className="model-picker-option" key={model.id}>
         <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
           <span>{(model.display_name ?? model.repo_id.split('/')[1])}</span>
-          <small><span className="model-picker-size">{formatGigabytes(model.estimated_bytes)}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
+          <small><span className="model-picker-size">{model.total_bytes > 0 ? formatGigabytes(model.total_bytes) : model.estimated_bytes > 0 ? formatGigabytes(model.estimated_bytes) : 'Checking size'}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
         </button>
         {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${(model.display_name ?? model.repo_id.split('/')[1])}`} title={`Download ${(model.display_name ?? model.repo_id.split('/')[1])}`} onClick={() => { download(model); dismiss() }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>

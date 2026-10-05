@@ -15,6 +15,8 @@ class ImageRecipe:
     sizes: dict[str, tuple[int, int]]
     steps: int
     guidance_scale: float | None = None
+    quantization: str | None = None
+    weight_filename: str | None = None
 
 
 GIB = 1024 ** 3
@@ -44,8 +46,22 @@ def generate(path: Path, resources, prompt, aspect, seeds, cancel, device='cuda:
     # Reserve all of the selected GPU budget: components/offload hooks share this
     # lease, and another workload cannot allocate alongside the image pipeline.
     host_budget = weights * (2 if cpu else 1) + 8 * GIB
+    resident_weights = weights
+    quant_loader = None
+    if recipe.quantization is not None or recipe.weight_filename is not None:
+        if recipe.quantization not in ('fp8', 'nvfp4') or not recipe.weight_filename:
+            raise ValueError('Quantized recipes require an explicit format and local weight filename')
+        quant_loader = importlib.import_module('api.inference.klein_quant')
+        quant_path = quant_loader.transformer_path(path, recipe.weight_filename)
+        dense_bytes = quant_loader.dense_size(quant_path, 4 if cpu else 2)
+        # The input mapping, decoded state and Diffusers construction can coexist.
+        # GPU placement decisions must use dense residency, not the download size.
+        host_budget += dense_bytes * 2 + quant_loader.SCRATCH_BYTES
+        resident_weights = weights - quant_path.stat().st_size + dense_bytes
     owner = recipe.model_id
     pipeline = None
+    transformer = None
+    overrides = None
     reservation = None
     results = []
     with resources.exclusive(owner, cancel):
@@ -53,11 +69,17 @@ def generate(path: Path, resources, prompt, aspect, seeds, cancel, device='cuda:
             reservation = resources.reserve(owner, 'image', host_bytes=host_budget,
                 device_bytes={} if cpu else {gpu: gpu_budget}, cancel_event=cancel)
             with reservation.lease(cancel):
+                dtype = torch.float32 if cpu else torch.bfloat16
+                overrides = {}
+                if quant_loader is not None:
+                    transformer = quant_loader.load_transformer(path, recipe.weight_filename,
+                        recipe.quantization, dtype, diffusers, cancel)
+                    overrides['transformer'] = transformer
                 pipeline = pipeline_type.from_pretrained(str(path), local_files_only=True,
-                    torch_dtype=torch.float32 if cpu else torch.bfloat16, use_safetensors=True)
+                    torch_dtype=dtype, use_safetensors=True, **overrides)
                 if cancel.is_set():
                     raise ResourceCancelled('Image generation cancelled')
-                if cpu or gpu_budget >= weights + 8 * GIB:
+                if cpu or gpu_budget >= resident_weights + 8 * GIB:
                     pipeline.to(device)
                 else:
                     # Sequential offload supports devices that cannot hold a complete
@@ -93,7 +115,7 @@ def generate(path: Path, resources, prompt, aspect, seeds, cancel, device='cuda:
         finally:
             # Dropping the pipeline also drops Accelerate hooks and component
             # tensors. Never release a reservation while these remain reachable.
-            pipeline = None
+            pipeline = transformer = overrides = None
             gc.collect()
             if not cpu:
                 with torch.cuda.device(gpu):
