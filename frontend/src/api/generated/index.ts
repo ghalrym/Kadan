@@ -181,6 +181,7 @@ export type {
   TranscribeAudioResponses,
   TranscriptionRequest,
   TranscriptionResponse,
+  TranscriptionUnavailable,
   UnloadSelectedModelData,
   UnloadSelectedModelResponse,
   UnloadSelectedModelResponses,

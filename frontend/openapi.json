@@ -1350,7 +1350,7 @@
         "additionalProperties": false,
         "properties": {
           "audio": {
-            "description": "Audio reference; not fetched in mock mode",
+            "description": "Audio reference only; no upload or fetching is implemented",
             "minLength": 1,
             "title": "Audio",
             "type": "string"
@@ -1378,6 +1378,19 @@
           "text"
         ],
         "title": "TranscriptionResponse",
+        "type": "object"
+      },
+      "TranscriptionUnavailable": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "TranscriptionUnavailable",
         "type": "object"
       },
       "ValidationError": {
@@ -1904,6 +1917,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
+        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -1935,6 +1949,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionUnavailable"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Transcribe Audio",
