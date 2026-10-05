@@ -4,7 +4,7 @@ Sources: https://huggingface.co/{repo_id}/commit/{revision} (2026-10-04).
 LLMs use root safetensors/tokenizer assets; media bundles use explicit component
 paths. Duplicate representations and repository Python code are excluded.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 from pathlib import PurePosixPath
 from typing import Literal
@@ -27,6 +27,7 @@ class CatalogEntry:
     license_url: str | None = None
     license_notice: str | None = None
     inference_available: bool = True
+    requires_auth: bool = False
 
 
 CATALOG: dict[str, CatalogEntry] = {
@@ -92,6 +93,15 @@ CATALOG['flux-klein-4b'] = CatalogEntry(
     weight_paths=('text_encoder', 'transformer', 'vae'),
     license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md',
 )
+
+CATALOG['flux-klein-9b'] = replace(CATALOG['flux-klein-4b'],
+    id='flux-klein-9b', repo_id='black-forest-labs/FLUX.2-klein-9B',
+    revision='92196c8e11f7b6cf2b7493e037d8c5345c559216', display_name='FLUX.2 klein 9B',
+    estimated_bytes=34_800_000_000, requires_auth=True,
+    required_files=CATALOG['flux-klein-4b'].required_files + ('transformer/diffusion_pytorch_model.safetensors.index.json',),
+    license='flux-non-commercial-license',
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/blob/92196c8e11f7b6cf2b7493e037d8c5345c559216/LICENSE.md',
+    license_notice='FLUX.2 klein 9B has a non-commercial license and usage conditions. Commercial use requires separate rights; continuing does not grant them or approve Hugging Face access.')
 
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',

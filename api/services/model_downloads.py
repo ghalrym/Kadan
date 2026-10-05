@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
+from api.services.huggingface_access import open_gated_checkpoint
 from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
 
 
@@ -109,7 +110,7 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
     metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
-    with urlopen(metadata_url, timeout=30) as response:
+    with (open_gated_checkpoint(metadata_url) if entry.requires_auth else urlopen(metadata_url, timeout=30)) as response:
         checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
     if checkpoint_metadata['sha'] != entry.revision:
         raise ValueError('Upstream revision does not match the pinned catalog')
@@ -451,7 +452,7 @@ class ModelManager:
                 size = 0
                 url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
-                with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
+                with (open_gated_checkpoint(url) if entry.requires_auth else urlopen(url, timeout=30)) as source, (stage / item['name']).open('wb') as target:
                     while True:
                         if self._cancel.is_set():
                             raise Cancelled()
