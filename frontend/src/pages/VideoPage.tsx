@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { SegmentedControl } from '../components/Controls'
 import VideoJobCard from '../components/VideoJobCard'
 import {
   isPendingVideo,
@@ -20,8 +21,8 @@ export default function VideoPage() {
   const [duration, setDuration] = useState('8')
   const [fps, setFps] = useState('24')
   const [resolution, setResolution] =
-    useState<VideoGenerationRequest['resolution']>('720p')
-  const [aspect, setAspect] = useState<VideoGenerationRequest['aspect']>('16:9')
+    useState<NonNullable<VideoGenerationRequest['resolution']>>('720p')
+  const [aspect, setAspect] = useState<NonNullable<VideoGenerationRequest['aspect']>>('16:9')
   const [jobs, setJobs] = useState<VideoJob[]>([])
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
@@ -154,85 +155,23 @@ export default function VideoPage() {
         }}
       >
         <label className="field">
-          Prompt
-          <textarea
-            className="input"
-            rows={6}
-            value={prompt}
-            maxLength={8000}
-            required
-            onChange={(event) => setPrompt(event.target.value)}
-          />
+          <span className="eyebrow">Prompt</span>
+          <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
         <label className="field">
-          Negative prompt
-          <input
-            className="input"
-            value={negative}
-            maxLength={8000}
-            onChange={(event) => setNegative(event.target.value)}
-          />
+          <span className="eyebrow">Negative prompt</span>
+          <input className="input" value={negative} maxLength={8000} disabled={pending} onChange={event => setNegative(event.target.value)} placeholder="Optional — things to avoid" />
         </label>
         <label className="field">
-          Duration (seconds)
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={120}
-            step={1}
-            required
-            value={duration}
-            onChange={(event) => setDuration(event.target.value)}
-          />
+          <span className="eyebrow">Duration</span>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
         </label>
         <label className="field">
-          Frame rate (fps)
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={120}
-            step={1}
-            required
-            value={fps}
-            onChange={(event) => setFps(event.target.value)}
-          />
+          <span className="eyebrow">Frame rate</span>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <label className="field">
-          Resolution
-          <select
-            className="input"
-            value={resolution}
-            onChange={(event) =>
-              setResolution(
-                event.target.value as VideoGenerationRequest['resolution'],
-              )
-            }
-          >
-            {['480p', '720p', '1080p'].map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          Aspect
-          <select
-            className="input"
-            value={aspect}
-            onChange={(event) =>
-              setAspect(event.target.value as VideoGenerationRequest['aspect'])
-            }
-          >
-            {['16:9', '9:16', '1:1'].map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <p className="muted">
-          Video generation is not available yet. No video provider is
-          configured.
-        </p>
+        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
@@ -249,6 +188,7 @@ export default function VideoPage() {
       <div className="workspace-results stack" aria-busy={loading || pending}>
         <div className="row">
           <h2 className="eyebrow">Queue</h2>
+          <span className="mono muted">{jobs.filter(isPendingVideo).length} pending · {jobs.filter(job => job.status === 'Done').length} done</span>
           <button
             className="button"
             disabled={loading || pending}
@@ -261,7 +201,7 @@ export default function VideoPage() {
             Refresh queue
           </button>
         </div>
-        {error && <p role="alert">{error}</p>}
+        {error && <p role="alert" className="error-panel">{error}</p>}
         {notice && <p role="status">{notice}</p>}
         {loading ? (
           <p role="status">Loading video jobs…</p>
