@@ -50,6 +50,8 @@ import type {
   GetVideoData,
   GetVideoErrors,
   GetVideoResponses,
+  GetWhisperModelsData,
+  GetWhisperModelsResponses,
   HealthData,
   HealthResponses,
   ListImagesData,
@@ -71,6 +73,9 @@ import type {
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
+  SelectWhisperModelData,
+  SelectWhisperModelErrors,
+  SelectWhisperModelResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -205,10 +210,7 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Transcribe Audio
  *
- * Return HTTP 503 for validated requests while transcription is unconfigured.
- *
- * Neither audio fetching/recording/upload nor inference occurs; formatting is
- * accepted as future-provider input, not applied to a fabricated transcript.
+ * Run native Whisper; preserve its raw transcript for optional formatting.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,
@@ -223,6 +225,43 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: '/v1/audio/transcriptions',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Get Models
+ *
+ * List all unique official checkpoints and the persisted selection.
+ */
+export const getWhisperModels = <ThrowOnError extends boolean = false>(
+  options?: Options<GetWhisperModelsData, ThrowOnError>,
+): RequestResult<GetWhisperModelsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetWhisperModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/transcriptions/models', ...options })
+
+/**
+ * Select Model
+ */
+export const selectWhisperModel = <ThrowOnError extends boolean = false>(
+  options: Options<SelectWhisperModelData, ThrowOnError>,
+): RequestResult<
+  SelectWhisperModelResponses,
+  SelectWhisperModelErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    SelectWhisperModelResponses,
+    SelectWhisperModelErrors,
+    ThrowOnError
+  >({
+    url: '/v1/audio/transcriptions/models',
     ...options,
     headers: {
       'Content-Type': 'application/json',

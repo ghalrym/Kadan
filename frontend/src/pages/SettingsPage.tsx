@@ -3,6 +3,7 @@ import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
+import { WhisperSelector } from '../components/WhisperSelector'
 
 /**
  * Request catalog status or a mutation under /v1/models with a 15-second timeout.
@@ -291,9 +292,9 @@ export default function SettingsPage() {
           </div>
           {modelSettings.filter(model => model.type !== 'LLM').map(model => <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
-            <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
+            {model.type === 'STT' ? <WhisperSelector /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
-            </select>
+            </select>}
           </div>)}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
