@@ -7,6 +7,7 @@ import {
   refreshVideo,
   submitVideo,
   stopVideo,
+  uploadVideoConditioning,
   type VideoJob,
   type VideoGenerationRequest,
 } from '../api/video'
@@ -17,10 +18,15 @@ import {
  * clears polling timers. Provider errors never create local placeholder jobs.
  */
 export default function VideoPage() {
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('wan22-animate-14b')
+  const [animationMode, setAnimationMode] = useState<NonNullable<VideoGenerationRequest['animation_mode']>>('animate')
+  const [image, setImage] = useState<File | null>(null)
+  const [video, setVideo] = useState<File | null>(null)
+  const animate = model === 'wan22-animate-14b'
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [duration, setDuration] = useState('8')
-  const [fps, setFps] = useState('24')
+  const [fps, setFps] = useState('30')
   const [resolution, setResolution] =
     useState<NonNullable<VideoGenerationRequest['resolution']>>('720p')
   const [aspect, setAspect] = useState<NonNullable<VideoGenerationRequest['aspect']>>('16:9')
@@ -101,8 +107,15 @@ export default function VideoPage() {
     setError('')
     setNotice('')
     try {
+      if (animate && (!image || !video)) throw new Error('Choose an image and driving video.')
+      const imageId = animate && image ? await uploadVideoConditioning(image, 'image', controller.signal) : undefined
+      const videoId = animate && video ? await uploadVideoConditioning(video, 'video', controller.signal) : undefined
       const job = await submitVideo(
         {
+          model,
+          animation_mode: animate ? animationMode : 'animate',
+          image_id: imageId,
+          video_id: videoId,
           prompt,
           negative_prompt: negative,
           duration: Number(duration),
@@ -156,6 +169,26 @@ export default function VideoPage() {
         }}
       >
         <label className="field">
+          <span className="eyebrow">Model</span>
+          <select aria-label="Video model" className="input" value={model} disabled={pending} onChange={event => {
+            const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
+            setModel(value); setFps(value === 'wan22-animate-14b' ? '30' : '24')
+            setResolution('720p'); setAspect('16:9')
+          }}>
+            <option value="wan22-animate-14b">Wan2.2 Animate-14B</option>
+            <option value="ltx-2.5-distilled">LTX-2.5 Distilled</option>
+          </select>
+        </label>
+        {animate && <>
+          <label className="field"><span className="eyebrow">Animation mode</span>
+            <select aria-label="Animation mode" className="input" value={animationMode} disabled={pending} onChange={event => setAnimationMode(event.target.value as NonNullable<VideoGenerationRequest['animation_mode']>)}>
+              <option value="animate">Animation</option><option value="replace">Replacement</option>
+            </select>
+          </label>
+          <label className="field"><span className="eyebrow">Reference image</span><input className="input" type="file" accept="image/png,image/jpeg,image/webp" required disabled={pending} onChange={event => setImage(event.target.files?.[0] ?? null)} /></label>
+          <label className="field"><span className="eyebrow">Driving video</span><input className="input" type="file" accept="video/mp4" required disabled={pending} onChange={event => setVideo(event.target.files?.[0] ?? null)} /></label>
+        </>}
+        <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
@@ -169,14 +202,14 @@ export default function VideoPage() {
         </label>
         <label className="field">
           <span className="eyebrow">Frame rate</span>
-          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending || animate} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
-        <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={animate ? ['720p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Aspect" options={animate ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
-          disabled={pending || loading || !prompt.trim()}
+          disabled={pending || loading || !prompt.trim() || (animate && (!image || !video))}
         >
           {pending ? 'Submitting…' : 'Queue video'}
         </button>

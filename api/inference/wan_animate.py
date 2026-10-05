@@ -1,5 +1,6 @@
 """Wan Animate-14B admission, sharing Kadan's native worker lifecycle."""
 from pathlib import Path
+import tempfile
 
 from api.inference.wan import WanProvider
 
@@ -26,3 +27,9 @@ class WanAnimateProvider(WanProvider):
         if not self.python or not Path(self.python).is_file():
             raise RuntimeError('The Kadan Wan Animate worker environment is not configured')
         self._checkpoint()
+
+    def generate(self, spec, output_path, cancellation):
+        """Own preprocessing scratch outside the child so cancellation always removes it."""
+        with tempfile.TemporaryDirectory(prefix='kadan-wan-animate-') as directory:
+            self.scratch_directory = directory
+            super().generate(spec, output_path, cancellation)

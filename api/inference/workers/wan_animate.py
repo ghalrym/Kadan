@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
 from decord import VideoReader
 import imageio
@@ -23,7 +22,7 @@ def prepare_inputs(payload, scratch):
     reference = scratch / 'reference.png'
     processed = scratch / 'processed'
     with Image.open(spec['image_path']) as source:
-        ImageOps.exif_transpose(source).convert('RGB').save(reference)
+        ImageOps.fit(ImageOps.exif_transpose(source).convert('RGB'), (width, height)).save(reference)
     subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-y', '-i', spec['video_path'],
         '-an', '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},fps=30',
         '-frames:v', str(frames), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(video)], check=True)
@@ -56,23 +55,24 @@ def run(payload):
     spec = payload['spec']
     config = WAN_CONFIGS['animate-14B']
     replacement = spec['animation_mode'] == 'replace'
-    with tempfile.TemporaryDirectory(prefix='kadan-wan-animate-') as directory:
-        processed = prepare_inputs(payload, Path(directory))
-        pipeline = wan.WanAnimate(config=config, checkpoint_dir=payload['checkpoint'],
-            device_id=0, rank=0, t5_fsdp=False, dit_fsdp=False, use_sp=False,
-            t5_cpu=True, convert_model_dtype=True, use_relighting_lora=replacement)
-        video = pipeline.generate(src_root_path=str(processed), replace_flag=replacement,
-            refert_num=1, clip_len=config.frame_num, shift=config.sample_shift,
-            sample_solver='unipc', sampling_steps=config.sample_steps,
-            guide_scale=config.sample_guide_scale, input_prompt=spec['prompt'],
-            n_prompt=spec['negative_prompt'], seed=spec['seed'], offload_model=True)
-        frame_count = spec['duration'] * spec['fps']
-        if video.shape[1] < frame_count:
-            raise RuntimeError('Animate returned fewer frames than requested')
-        with imageio.get_writer(payload['output'], fps=30, codec='libx264', macro_block_size=1) as writer:
-            for index in range(frame_count):
-                pixels = ((video[:, index].clamp(-1, 1) + 1) * 127.5).byte().permute(1, 2, 0).cpu().numpy()
-                writer.append_data(pixels)
+    processed = prepare_inputs(payload, Path(payload['scratch_directory']))
+    pipeline = wan.WanAnimate(config=config, checkpoint_dir=payload['checkpoint'],
+        device_id=0, rank=0, t5_fsdp=False, dit_fsdp=False, use_sp=False,
+        t5_cpu=True, convert_model_dtype=True, use_relighting_lora=replacement)
+    video = pipeline.generate(src_root_path=str(processed), replace_flag=replacement,
+        refert_num=1, clip_len=config.frame_num, shift=config.sample_shift,
+        sample_solver='unipc', sampling_steps=config.sample_steps,
+        guide_scale=config.sample_guide_scale, input_prompt=spec['prompt'],
+        n_prompt=spec['negative_prompt'], seed=spec['seed'], offload_model=True)
+    frame_count = spec['duration'] * spec['fps']
+    if tuple(video.shape[2:]) != (payload['height'], payload['width']):
+        raise RuntimeError('Animate returned a different canvas than requested')
+    if video.shape[1] < frame_count:
+        raise RuntimeError('Animate returned fewer frames than requested')
+    with imageio.get_writer(payload['output'], fps=30, codec='libx264', macro_block_size=1) as writer:
+        for index in range(frame_count):
+            pixels = ((video[:, index].clamp(-1, 1) + 1) * 127.5).byte().permute(1, 2, 0).cpu().numpy()
+            writer.append_data(pixels)
 
 
 if __name__ == '__main__':

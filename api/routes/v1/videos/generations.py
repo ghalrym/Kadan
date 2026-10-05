@@ -33,6 +33,8 @@ class VideoGenerationResponse(BaseModel):
 def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
+        if body.animation_mode != 'animate' and body.model != 'wan22-animate-14b':
+            raise ValueError('Replacement mode requires Wan Animate')
         if (body.image_id or body.audio_id or body.video_id) and not body.model.startswith('wan22-'):
             raise ValueError('This video provider currently accepts text conditioning only.')
         spec = VideoSpec(**body.model_dump(exclude={'model', 'image_id', 'audio_id', 'video_id'}),

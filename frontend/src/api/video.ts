@@ -110,3 +110,14 @@ export async function stopVideo(id: string) {
   checkResponse(result.response)
   return validateJob(result.data?.job)
 }
+
+/** Upload conditioning bytes and return their opaque Kadan input identifier. */
+export async function uploadVideoConditioning(file: File, kind: 'image' | 'video', signal: AbortSignal): Promise<string> {
+  const response = await fetch(`/v1/videos/inputs?kind=${kind}`, {
+    method: 'POST', headers: { 'Content-Type': file.type }, body: file, signal,
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Conditioning upload failed.')
+  if (typeof data.id !== 'string' || !/^[0-9a-f]{32}$/.test(data.id)) throw new Error('Conditioning upload returned an invalid ID.')
+  return data.id
+}

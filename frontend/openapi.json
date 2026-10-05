@@ -1475,6 +1475,15 @@
       "VideoGenerationRequest": {
         "additionalProperties": false,
         "properties": {
+          "animation_mode": {
+            "default": "animate",
+            "enum": [
+              "animate",
+              "replace"
+            ],
+            "title": "Animation Mode",
+            "type": "string"
+          },
           "aspect": {
             "default": "16:9",
             "enum": [
@@ -1525,7 +1534,8 @@
             "default": "ltx-2.5-distilled",
             "enum": [
               "ltx-2.5-distilled",
-              "h3-fl2va"
+              "h3-fl2va",
+              "wan22-animate-14b"
             ],
             "title": "Model",
             "type": "string"

@@ -841,6 +841,10 @@ export type ValidationError = {
  */
 export type VideoGenerationRequest = {
   /**
+   * Animation Mode
+   */
+  animation_mode?: 'animate' | 'replace'
+  /**
    * Aspect
    */
   aspect?: '16:9' | '9:16' | '1:1'
@@ -863,7 +867,7 @@ export type VideoGenerationRequest = {
   /**
    * Model
    */
-  model?: 'ltx-2.5-distilled' | 'h3-fl2va'
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va' | 'wan22-animate-14b'
   /**
    * Negative Prompt
    */

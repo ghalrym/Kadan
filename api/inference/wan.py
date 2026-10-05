@@ -67,7 +67,8 @@ class WanProvider:
         if spec.aspect == '9:16':
             width, height = height, width
         payload = dict(spec=vars(spec), checkpoint=str(checkpoint), task=self.task,
-                       output=str(output_path), width=width, height=height)
+                       output=str(output_path), width=width, height=height,
+                       scratch_directory=getattr(self, 'scratch_directory', None))
         env = {**os.environ, 'CUDA_VISIBLE_DEVICES': visible_cuda_device(device), 'HF_HUB_OFFLINE': '1',
                'TRANSFORMERS_OFFLINE': '1', 'TOKENIZERS_PARALLELISM': 'false'}
         with resources.exclusive(owner, cancellation):
