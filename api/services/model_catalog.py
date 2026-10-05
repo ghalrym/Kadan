@@ -106,6 +106,21 @@ CATALOG['flux-klein-4b'] = CatalogEntry(
     license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md',
 )
 
+# Official FLUX.2 klein base 4B FP8 transformer plus matching pinned companion assets.
+CATALOG['flux-klein-base-4b-fp8'] = CatalogEntry(
+    'flux-klein-base-4b-fp8', 'black-forest-labs/FLUX.2-klein-base-4b-fp8', '103db268c10d4d3921101b46057671f9ac460da6',
+    'apache-2.0', 0, kind='image', display_name='FLUX.2 klein base 4B FP8',
+    layout='components', source_files=('flux-2-klein-base-4b-fp8.safetensors', 'LICENSE.md'),
+    requires_auth=False,
+    auxiliary_sources=(CheckpointSource('black-forest-labs/FLUX.2-klein-base-4B', 'a3b4f4849157f664bdbc776fd7453c2783562f4d',
+        files=('model_index.json', 'transformer/config.json'),
+        component_paths=('tokenizer', 'scheduler', 'text_encoder', 'vae'), requires_auth=False),),
+    required_files=('flux-2-klein-base-4b-fp8.safetensors', 'LICENSE.md', 'model_index.json', 'transformer/config.json', 'tokenizer/tokenizer.json', 'tokenizer/tokenizer_config.json', 'scheduler/scheduler_config.json', 'text_encoder/config.json', 'text_encoder/model.safetensors.index.json', 'vae/config.json'),
+    weight_paths=('', 'text_encoder', 'vae'),
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8/blob/103db268c10d4d3921101b46057671f9ac460da6/LICENSE.md',
+    license_notice=None,
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
