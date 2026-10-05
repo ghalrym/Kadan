@@ -160,7 +160,7 @@ export default function VideoPage() {
       >
         <label className="field">
           <span className="eyebrow">Model</span>
-          <select className="input" value={model} disabled={pending} onChange={event => {
+          <select aria-label="Model" className="input" value={model} disabled={pending} onChange={event => {
             const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
             setModel(value)
             setResolution(value === 'h3-fl2va' ? '768p' : '720p')

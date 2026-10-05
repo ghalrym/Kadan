@@ -9,6 +9,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from api.inference.h3 import H3Provider, H3_REVISION, GIB, sampling_arguments
+from api.inference.video import VideoSpec
+from api.services.video_jobs import VideoJobs
 from api.inference.resources import ResourceCancelled, ResourceExhausted, ResourceManager
 
 
@@ -41,7 +43,7 @@ class H3Tests(unittest.TestCase):
     def test_memory_is_leased_until_worker_cleanup(self):
         for failure in (None, RuntimeError('worker failed'), ResourceCancelled('cancel')):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                resources = ResourceManager(400 * GIB, {0: 24 * GIB})
+                resources = ResourceManager(400 * GIB, {0: 200 * GIB})
                 entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
                 observed = []
 
@@ -66,7 +68,7 @@ class H3Tests(unittest.TestCase):
                 self.assertIsNone(resources.snapshot()['exclusive_owner'])
 
     def test_insufficient_host_memory_does_not_start_worker(self):
-        resources = ResourceManager(32 * GIB, {0: 24 * GIB})
+        resources = ResourceManager(32 * GIB, {0: 200 * GIB})
         entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
         with patch('api.inference.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path('/tmp'))), \
              patch('api.inference.h3.runtime.ensure_resources', return_value=resources), \
@@ -135,3 +137,21 @@ class H3Tests(unittest.TestCase):
         self.assertFalse(kwargs['enable_torch_compile'])
         generator.generate.assert_called_once_with(sampling_params_kwargs=arguments)
         generator.shutdown.assert_called_once_with()
+
+    def test_shared_video_queue_executes_h3_and_publishes_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resources = ResourceManager(400 * GIB, {0: 200 * GIB})
+            entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
+            def run(settings, checkpoint, output, cancellation, device):
+                output.write_bytes(b'audiovisual-fixture')
+            jobs = VideoJobs(root=root)
+            with patch('api.inference.h3.model_manager.get_checkpoint', return_value=(entry, root)), \
+                 patch('api.inference.h3.runtime.ensure_resources', return_value=resources), \
+                 patch.object(H3Provider, '_run', side_effect=run):
+                submitted = jobs.submit('h3-fl2va', VideoSpec(prompt='A river', resolution='768p'))
+                jobs._thread.join(timeout=5)
+            completed = jobs.get(submitted.id)
+            self.assertEqual(completed.status, 'Done')
+            self.assertEqual((root / f'{submitted.id}.mp4').read_bytes(), b'audiovisual-fixture')
+            self.assertEqual(resources.snapshot()['reservations'], {})

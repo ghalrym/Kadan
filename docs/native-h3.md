@@ -23,8 +23,11 @@ children of Kadan's job process; no HTTP inference server is launched. Kadan hol
 exclusive shared RAM/VRAM admission and an active reservation until process-group
 cleanup, including cancellation/failure. Completed output remains owned by the
 shared video job store. The provider reserves twice the checkpoint estimate plus
-16 GiB host staging, and 18 GiB on one GPU. This is conservative admission, not a
-measured peak guarantee. It rejects insufficient capacity rather than pooling
+16 GiB host staging, and the full checkpoint estimate plus 16 GiB on one GPU.
+`KADAN_H3_RAM_BYTES` and `KADAN_H3_VRAM_BYTES` allow an operator to supply
+measured workload budgets for layerwise offload. The conservative defaults reject
+24 GiB cards; no 3090-compatible budget has been measured. Accounting is admission,
+not a hard allocation limit or measured peak guarantee. It rejects insufficient capacity rather than pooling
 multiple GPUs into fictional combined VRAM.
 
 The baseline uses 50 evaluations, video shift 12 and audio shift 3. Torch compilation

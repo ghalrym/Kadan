@@ -61,7 +61,7 @@ for family in ('FL2VA',):
             'text_encoder', 'transformer', 'audio_vae', 'video_vae/source')),
         license_url=f'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/{H3_REVISION}/LICENSE',
         license_notice="MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
-        inference_available=False,
+        inference_available=True,
     )
     CATALOG[entry.id] = entry
 

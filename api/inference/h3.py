@@ -75,10 +75,13 @@ class H3Provider:
         device = max(devices, key=devices.get)
         owner = 'video:h3'
         # Conservative host budget includes staging of the full unpruned checkpoint.
-        host_bytes = entry.estimated_bytes * 2 + 16 * GIB
+        host_bytes = int(os.getenv('KADAN_H3_RAM_BYTES', str(entry.estimated_bytes * 2 + 16 * GIB)))
+        device_bytes = int(os.getenv('KADAN_H3_VRAM_BYTES', str(entry.estimated_bytes + 16 * GIB)))
+        if host_bytes <= 0 or device_bytes <= 0:
+            raise ValueError('H3 RAM/VRAM admission budgets must be positive byte counts')
         with resources.exclusive(owner, cancellation):
             reservation = resources.reserve(owner, 'video', host_bytes,
-                                             {device: 18 * GIB}, cancel_event=cancellation)
+                                             {device: device_bytes}, cancel_event=cancellation)
             try:
                 with reservation.lease(cancellation):
                     self._run(spec, checkpoint, output_path, cancellation, device)
