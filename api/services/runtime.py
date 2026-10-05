@@ -52,6 +52,7 @@ class RuntimeManager:
         self.error = None
         self.adapter = None
         self.resources = resources
+        self._resources_lock = threading.Lock()
         self._factory = factory
         self._leased = False
         self._cancel = threading.Event()
@@ -70,6 +71,15 @@ class RuntimeManager:
             state = 'offloaded'
         return dict(state=state, model_id=self.model_id, error=self.error, max_output_tokens=256, **self.context_settings,
                     memory=self.resources.snapshot() if self.resources else None)
+
+    def ensure_resources(self):
+        """Initialize shared budgets once, including when CPU decisions load before chat."""
+        with self._resources_lock:
+            if self.resources is None:
+                available = probe_memory()
+                self.resources = ResourceManager(int(available.host_bytes * .8),
+                    {index: int(size * .8) for index, size in available.device_bytes.items()}, probe=probe_memory)
+            return self.resources
 
     async def start(self):
         """Restore the saved selection in the background, exposing failures through status."""
@@ -97,10 +107,7 @@ class RuntimeManager:
                           else f'Inference runtime import failed: {exc}')
                 raise RuntimeFailure(detail) from exc
             factory = build_runtime
-        if self.resources is None:
-            available = probe_memory()
-            self.resources = ResourceManager(int(available.host_bytes * .8),
-                {index: int(size * .8) for index, size in available.device_bytes.items()}, probe=probe_memory)
+        self.ensure_resources()
         gpu = os.environ.get('KADAN_GPU', '0')
         if not gpu.isdecimal():
             raise RuntimeFailure('KADAN_GPU must be one nonnegative GPU index; VRAM is not pooled.')

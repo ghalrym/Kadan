@@ -101,6 +101,37 @@ Transformers/Accelerate/Safetensors (Apache-2.0); preserve upstream notices when
 redistributing. FreeToken Apache-2.0 source was layout research only, never an
 installed engine or vendored runtime. Source references are kept in code.
 
+## CPU decisions
+
+`POST /v1/decisions` lazy-loads embedded Laya on CPU, independently of the chat
+model. The standard API requirements and Compose image include Laya. CPU-only
+native installations can use the CPU PyTorch wheel; chat still requires a GPU.
+Run one API worker. No Laya server, GPU allocation or generative-model fallback
+is involved.
+
+The default is `convaiinnovations/laya` pinned to
+`7b928d828b7b0e022f929d9bd2e44165aa270148`. This is the public general checkpoint,
+not a verified match for an existing local Laya deployment. Set `KADAN_LAYA_MODEL`
+and `KADAN_LAYA_REVISION` (a full Hub commit SHA), or point `KADAN_LAYA_MODEL` at a
+complete local checkpoint directory. Hub files use the usual Hugging Face cache;
+provision them beforehand for offline operation. Only compatible ModernBERT
+checkpoints within the validated size/context limits are admitted.
+
+Laya remains in RAM between requests, but shared-manager pressure can evict idle
+residency; the next request reloads it. `KADAN_LAYA_RAM_BYTES` defaults to 4 GiB
+and cannot be reduced below that floor. This conservative reservation includes
+FP32 parameters, checkpoint loading and single-question workspace; it is not a
+measured RSS or a hard memory cap. Full public-checkpoint CPU memory and latency
+still require target-host validation. Concurrent evaluations return 429;
+cancellation waits for the synchronous worker to finish before releasing its lease.
+
+Choice returns a supplied label. Score returns the expected zero-based ordinal
+index, which may be fractional. Noul returns P(true), not a boolean. Confidence
+uses Laya's `answer_confidence`. State, instructions and options that would be
+truncated return 422; the specialist's token budget is independent of chat context.
+Tests exercise the pinned Laya package using a tiny synthetic local CPU checkpoint,
+not downloaded model weights or an accuracy benchmark.
+
 ## Frontend checks
 
 From the repository root, run:

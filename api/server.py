@@ -10,6 +10,7 @@ from api.routes.v1.videos import generations as video_generations
 from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
+from api.services.decisions import decision_manager
 
 
 @asynccontextmanager
@@ -19,13 +20,18 @@ async def lifespan(app: FastAPI):
         await runtime_manager.start()
         yield
     finally:
-        await runtime_manager.close()
-        await asyncio.to_thread(model_manager.close)
+        try:
+            await decision_manager.close()
+        finally:
+            try:
+                await runtime_manager.close()
+            finally:
+                await asyncio.to_thread(model_manager.close)
 
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
 )
 
 for router in (

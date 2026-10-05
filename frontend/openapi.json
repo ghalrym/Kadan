@@ -36,6 +36,57 @@
         "title": "ChatMessage",
         "type": "object"
       },
+      "ChoiceAnswer": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "probabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probabilities"
+          },
+          "type": {
+            "const": "Choice",
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "value"
+        ],
+        "title": "ChoiceAnswer",
+        "type": "object"
+      },
       "ChoiceOption": {
         "properties": {
           "description": {
@@ -176,76 +227,29 @@
         "title": "ContextRequest",
         "type": "object"
       },
-      "DecisionAnswer": {
-        "properties": {
-          "confidence": {
-            "anyOf": [
-              {
-                "maximum": 1.0,
-                "minimum": 0.0,
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Confidence"
-          },
-          "key": {
-            "title": "Key",
-            "type": "string"
-          },
-          "probabilities": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "number"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Probabilities"
-          },
-          "type": {
-            "enum": [
-              "Choice",
-              "Score",
-              "Noul"
-            ],
-            "title": "Type",
-            "type": "string"
-          },
-          "value": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              }
-            ],
-            "title": "Value"
-          }
-        },
-        "required": [
-          "key",
-          "type",
-          "value"
-        ],
-        "title": "DecisionAnswer",
-        "type": "object"
-      },
       "DecisionPlaygroundResponse": {
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/DecisionAnswer"
+              "discriminator": {
+                "mapping": {
+                  "Choice": "#/components/schemas/ChoiceAnswer",
+                  "Noul": "#/components/schemas/NoulAnswer",
+                  "Score": "#/components/schemas/ScoreAnswer"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulAnswer"
+                }
+              ]
             },
             "title": "Answers",
             "type": "array"
@@ -313,11 +317,13 @@
                 }
               ]
             },
+            "maxItems": 8,
             "minItems": 1,
             "title": "Questions",
             "type": "array"
           },
           "state": {
+            "maxLength": 8000,
             "minLength": 1,
             "title": "State",
             "type": "string"
@@ -334,7 +340,25 @@
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/DecisionAnswer"
+              "discriminator": {
+                "mapping": {
+                  "Choice": "#/components/schemas/ChoiceAnswer",
+                  "Noul": "#/components/schemas/NoulAnswer",
+                  "Score": "#/components/schemas/ScoreAnswer"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulAnswer"
+                }
+              ]
             },
             "title": "Answers",
             "type": "array"
@@ -841,6 +865,60 @@
         "title": "ModelsResponse",
         "type": "object"
       },
+      "NoulAnswer": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "probabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probabilities"
+          },
+          "type": {
+            "const": "Noul",
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "description": "Probability that the criterion is true.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "value"
+        ],
+        "title": "NoulAnswer",
+        "type": "object"
+      },
       "NoulQuestion": {
         "properties": {
           "falseWhen": {
@@ -1020,6 +1098,59 @@
           "total"
         ],
         "title": "ResourceMeter",
+        "type": "object"
+      },
+      "ScoreAnswer": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "probabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probabilities"
+          },
+          "type": {
+            "const": "Score",
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "description": "Expected zero-based ordinal rubric index; may be fractional.",
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "value"
+        ],
+        "title": "ScoreAnswer",
         "type": "object"
       },
       "ScoreQuestion": {
@@ -1555,7 +1686,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Other generation, history and metrics endpoints remain mock fixtures; media is placeholder metadata. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1841,6 +1972,7 @@
     },
     "/v1/decisions": {
       "get": {
+        "description": "Return blank playground state; no saved questions or model answers are loaded.",
         "operationId": "getDecisions",
         "responses": {
           "200": {
@@ -1860,6 +1992,7 @@
         ]
       },
       "post": {
+        "description": "Evaluate typed questions with the resident CPU Laya specialist, independent of chat.\n\nOversized tokenized questions/state return 422 rather than truncated answers.\nDisconnect cancellation waits for the CPU worker before releasing ownership.\nResults are not persisted; there is no fallback to a generative model.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {

@@ -256,6 +256,8 @@ export const listMessages = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Decisions
+ *
+ * Return blank playground state; no saved questions or model answers are loaded.
  */
 export const getDecisions = <ThrowOnError extends boolean = false>(
   options?: Options<GetDecisionsData, ThrowOnError>,
@@ -266,6 +268,12 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 
 /**
  * Evaluate Decisions
+ *
+ * Evaluate typed questions with the resident CPU Laya specialist, independent of chat.
+ *
+ * Oversized tokenized questions/state return 422 rather than truncated answers.
+ * Disconnect cancellation waits for the CPU worker before releasing ownership.
+ * Results are not persisted; there is no fallback to a generative model.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,
