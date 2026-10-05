@@ -7,3 +7,4 @@ psycopg[binary]==3.3.6
 pydantic-settings==2.15.0
 httpx==0.28.1
 -r requirements-runtime.txt
+-r requirements-qwen-tts.txt
