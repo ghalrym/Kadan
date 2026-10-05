@@ -9,8 +9,9 @@ from api.routes.v1.images import edits, generations as image_generations
 from api.routes.v1.videos import generations as video_generations
 from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
-from api.services.runtime import runtime_manager
+from api.services.runtime import runtime_manager, finish_cleanup
 from api.services.decisions import decision_manager
+from api.services.speech import speech_runtime
 
 
 @asynccontextmanager
@@ -21,7 +22,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         try:
-            await decision_manager.close()
+            try:
+                await finish_cleanup(asyncio.create_task(asyncio.to_thread(speech_runtime.unload)))
+            finally:
+                await decision_manager.close()
         finally:
             try:
                 await runtime_manager.close()
