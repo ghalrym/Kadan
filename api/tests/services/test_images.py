@@ -7,6 +7,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+import weakref
 from unittest.mock import Mock
 
 from PIL import Image
@@ -60,6 +61,44 @@ class NativeImageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'broken load'):
                 generate(path, resources, 'x', '1:1', [1], threading.Event(), device='cpu', modules=modules)
             self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_exception_frames_release_allocations_before_memory_lease(self):
+        class Allocation:
+            pass
+        for during_load in (True, False):
+            references = []
+            class Pipeline:
+                vae = SimpleNamespace(enable_tiling=lambda: None)
+                def to(self, device):
+                    return self
+                def __call__(self, **kwargs):
+                    allocation = Allocation()
+                    references.append(weakref.ref(allocation))
+                    raise RuntimeError('generation failed')
+            def factory(*args, **kwargs):
+                if during_load:
+                    allocation = Allocation()
+                    references.append(weakref.ref(allocation))
+                    try:
+                        raise ValueError('inner allocation failure')
+                    except ValueError as exc:
+                        raise RuntimeError('load failed') from exc
+                return Pipeline()
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder)
+                (path / 'weights.safetensors').write_bytes(b'x')
+                resources = ResourceManager(100 * 1024**3, {})
+                release = resources._release
+                def checked_release(owner, token):
+                    self.assertTrue(references)
+                    self.assertTrue(all(reference() is None for reference in references))
+                    release(owner, token)
+                resources._release = checked_release
+                torch = SimpleNamespace(float32='fp32', bfloat16='bf16', Generator=Mock())
+                modules = lambda: (torch, SimpleNamespace(QwenImage21Pipeline=SimpleNamespace(from_pretrained=factory)))
+                with self.assertRaises(RuntimeError):
+                    generate(path, resources, 'x', '1:1', [1], threading.Event(), device='cpu', modules=modules)
+                self.assertEqual(resources.snapshot()['reservations'], {})
 
 
 class ImageManagerTests(unittest.TestCase):

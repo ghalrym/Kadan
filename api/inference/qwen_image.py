@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 
 from api.inference.resources import ResourceCancelled, ResourceExhausted
+from api.services.decisions import clear_failure_frames
 
 MODEL_ID = 'qwen-image-2.1'
 REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
@@ -76,6 +77,9 @@ def generate(path: Path, resources, prompt, aspect, seeds, cancel, device='cuda:
                 if cancel.is_set():
                     raise ResourceCancelled('Image generation cancelled')
                 return results
+        except BaseException as exc:
+            clear_failure_frames(exc)
+            raise
         finally:
             # Dropping the pipeline also drops Accelerate hooks and component
             # tensors. Never release a reservation while these remain reachable.
