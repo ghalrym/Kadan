@@ -37,13 +37,29 @@ class WanTests(unittest.TestCase):
             self.assertTrue(kwargs['start_new_session'])
             event.set()
             return process
-        with patch('api.inference.wan.subprocess.Popen', side_effect=start), patch('api.inference.wan.os.killpg') as kill:
+        with patch('api.inference.wan.subprocess.Popen', side_effect=start), patch('api.inference.processes.os.killpg') as kill:
             with self.assertRaises(ResourceCancelled):
                 self.provider.generate(VideoSpec('hello', fps=16), self.root / 'out.mp4', event)
-        kill.assert_called_once()
-        process.wait.assert_called_once()
+        self.assertEqual(kill.call_count, 2)
+        self.assertEqual(process.wait.call_count, 2)
         self.assertEqual(self.resources.snapshot()['reservations'], {})
 
     def test_text_checkpoint_rejects_image_conditioning(self):
         with self.assertRaisesRegex(ValueError, 'does not accept an image'):
             self.provider.validate(VideoSpec('hello', fps=16, image_path='source.png'))
+
+    def test_exited_parent_does_not_leave_encoder_unowned(self):
+        output = self.root / 'output.mp4'
+        output.write_bytes(b'fixture')
+        process = Mock(pid=123, returncode=0)
+        process.poll.return_value = 0
+        child_alive = True
+        def signal_group(pid, signal):
+            nonlocal child_alive
+            self.assertTrue(self.resources.snapshot()['reservations'])
+            if signal == 9:
+                child_alive = False
+        with patch('api.inference.wan.subprocess.Popen', return_value=process), patch('api.inference.processes.os.killpg', side_effect=signal_group):
+            self.provider.generate(VideoSpec('hello', fps=16), output, threading.Event())
+        self.assertFalse(child_alive)
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
