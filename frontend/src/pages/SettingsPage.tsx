@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
+import { Updates } from '../components/Updates'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
@@ -344,6 +345,7 @@ export default function SettingsPage() {
             <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
           </div>
         </Panel>
+        <Updates />
       </div>
     </div>
   )

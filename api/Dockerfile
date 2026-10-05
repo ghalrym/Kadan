@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir torch==2.11.0 --index-url "$TORCH_INDEX_URL" \
     && pip install --no-cache-dir -r requirements.txt \
     && pip check
 COPY . /app/api
+ARG KADAN_COMMIT=development
+ENV KADAN_COMMIT=$KADAN_COMMIT
+LABEL org.opencontainers.image.revision=$KADAN_COMMIT
 RUN python -m api.inference.check_install
 EXPOSE 8000
 CMD ["python", "-m", "api"]

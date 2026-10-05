@@ -291,6 +291,16 @@ export type ImagesResponse = {
 }
 
 /**
+ * InstallRequest
+ */
+export type InstallRequest = {
+  /**
+   * Commit
+   */
+  commit: string
+}
+
+/**
  * MessagesResponse
  *
  * Compatibility envelope for client-owned conversations; the server has no history.
@@ -599,6 +609,16 @@ export type NoulQuestion = {
 }
 
 /**
+ * PairRequest
+ */
+export type PairRequest = {
+  /**
+   * Code
+   */
+  code: string
+}
+
+/**
  * RequestRecord
  *
  * Completed HTTP-handler observation retained only in the current API process.
@@ -898,6 +918,44 @@ export type TranscriptionUnavailable = {
    * Detail
    */
   detail: string
+}
+
+/**
+ * UpdateStatus
+ */
+export type UpdateStatus = {
+  /**
+   * Authorized
+   */
+  authorized?: boolean
+  /**
+   * Available
+   */
+  available?: string | null
+  /**
+   * Can Cancel
+   */
+  can_cancel?: boolean
+  /**
+   * Configured
+   */
+  configured?: boolean
+  /**
+   * Current
+   */
+  current: string
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Message
+   */
+  message?: string
+  /**
+   * Phase
+   */
+  phase?: string
 }
 
 /**
@@ -1687,6 +1745,94 @@ export type UpdateSettingsResponses = {
 
 export type UpdateSettingsResponse =
   UpdateSettingsResponses[keyof UpdateSettingsResponses]
+
+export type GetUpdatesV1UpdatesGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/updates'
+}
+
+export type GetUpdatesV1UpdatesGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: UpdateStatus
+}
+
+export type GetUpdatesV1UpdatesGetResponse =
+  GetUpdatesV1UpdatesGetResponses[keyof GetUpdatesV1UpdatesGetResponses]
+
+export type CancelUpdateV1UpdatesCancelPostData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/updates/cancel'
+}
+
+export type CancelUpdateV1UpdatesCancelPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: UpdateStatus
+}
+
+export type CancelUpdateV1UpdatesCancelPostResponse =
+  CancelUpdateV1UpdatesCancelPostResponses[keyof CancelUpdateV1UpdatesCancelPostResponses]
+
+export type InstallUpdateV1UpdatesInstallPostData = {
+  body: InstallRequest
+  path?: never
+  query?: never
+  url: '/v1/updates/install'
+}
+
+export type InstallUpdateV1UpdatesInstallPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type InstallUpdateV1UpdatesInstallPostError =
+  InstallUpdateV1UpdatesInstallPostErrors[keyof InstallUpdateV1UpdatesInstallPostErrors]
+
+export type InstallUpdateV1UpdatesInstallPostResponses = {
+  /**
+   * Successful Response
+   */
+  202: UpdateStatus
+}
+
+export type InstallUpdateV1UpdatesInstallPostResponse =
+  InstallUpdateV1UpdatesInstallPostResponses[keyof InstallUpdateV1UpdatesInstallPostResponses]
+
+export type PairUpdatesV1UpdatesPairPostData = {
+  body: PairRequest
+  path?: never
+  query?: never
+  url: '/v1/updates/pair'
+}
+
+export type PairUpdatesV1UpdatesPairPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type PairUpdatesV1UpdatesPairPostError =
+  PairUpdatesV1UpdatesPairPostErrors[keyof PairUpdatesV1UpdatesPairPostErrors]
+
+export type PairUpdatesV1UpdatesPairPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: UpdateStatus
+}
+
+export type PairUpdatesV1UpdatesPairPostResponse =
+  PairUpdatesV1UpdatesPairPostResponses[keyof PairUpdatesV1UpdatesPairPostResponses]
 
 export type ListVideosData = {
   body?: never

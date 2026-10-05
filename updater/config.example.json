@@ -1,0 +1,11 @@
+{
+  "project": "kadan",
+  "model_volume": "kadan_model_data",
+  "postgres_volume": "kadan_postgres_data",
+  "hf_volume": "kadan_hf_data",
+  "POSTGRES_DB": "kadan",
+  "POSTGRES_USER": "kadan",
+  "POSTGRES_PASSWORD": "REPLACE_WITH_EXISTING_DATABASE_PASSWORD",
+  "gpu": "0",
+  "origin": "http://localhost:5173"
+}

@@ -1,0 +1,59 @@
+name: Publish tested Kadan release
+
+on:
+  workflow_run:
+    workflows: [API tests]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kadan-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Owner opt-in only. This PR does not enable publishing or grant permissions.
+    if: >-
+      vars.KADAN_RELEASES_ENABLED == 'true' &&
+      github.repository == 'ghalrym/Kadan' &&
+      github.event.workflow_run.repository.full_name == 'ghalrym/Kadan' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.sha == github.event.workflow_run.head_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      packages: write
+    env:
+      KADAN_COMMIT: ${{ github.event.workflow_run.head_sha }}
+      KADAN_CI_RUN: ${{ github.event.workflow_run.id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$KADAN_COMMIT"
+          python -c 'import os,re; assert re.fullmatch("[0-9a-f]{40}",os.environ["KADAN_COMMIT"])'
+      - name: Build the paired images
+        run: |
+          docker build --build-arg KADAN_COMMIT="$KADAN_COMMIT" -t "ghcr.io/ghalrym/kadan-api:$KADAN_COMMIT" api
+          docker build --build-arg KADAN_COMMIT="$KADAN_COMMIT" -t "ghcr.io/ghalrym/kadan-frontend:$KADAN_COMMIT" frontend
+      - name: Test the actual release images before publishing
+        run: |
+          docker run --rm "ghcr.io/ghalrym/kadan-api:$KADAN_COMMIT" python -m api.inference.check_install
+          python -m updater.image_smoke
+      - name: Publish exact-commit images and paired digest manifest
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "ghcr.io/ghalrym/kadan-api:$KADAN_COMMIT"
+          docker push "ghcr.io/ghalrym/kadan-frontend:$KADAN_COMMIT"
+          python -m updater.manifest > kadan-release.json
+          gh release create "kadan-$KADAN_COMMIT" kadan-release.json --target "$KADAN_COMMIT" --title "Kadan $KADAN_COMMIT" --notes 'Paired API/frontend images from successful master CI. Owner setup is required for website updates.'

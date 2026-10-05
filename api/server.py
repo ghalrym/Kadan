@@ -1,4 +1,6 @@
 import asyncio
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from api.routes import health
@@ -12,13 +14,21 @@ from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 from api.services.telemetry import TelemetryMiddleware
 from api.services.decisions import decision_manager
+from api.services.maintenance import MaintenanceBusy, MaintenanceMiddleware, admission
+from api.routes.internal import updates as host_updates
+from api.routes.v1 import updates
+from starlette.responses import JSONResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Restore the selected model on startup and release inference before downloads on shutdown."""
     try:
-        await runtime_manager.start()
+        marker = os.environ.get('KADAN_MAINTENANCE_FILE')
+        if marker and Path(marker).exists():
+            admission.seal()
+        else:
+            await runtime_manager.start()
         yield
     finally:
         try:
@@ -37,11 +47,18 @@ app = FastAPI(
 
 # Observe only generation POST handlers; dashboard polling is excluded.
 app.add_middleware(TelemetryMiddleware)
+app.add_middleware(MaintenanceMiddleware)
+
+
+@app.exception_handler(MaintenanceBusy)
+async def maintenance_busy(request, error):
+    return JSONResponse({'detail': str(error)}, status_code=503)
 
 for router in (
     health.router, messages.router, completions.router, decisions.router,
     images.router, image_generations.router, edits.router,
     video_generations.router, videos.router, speech.router, transcriptions.router,
     metrics.router, requests.router, settings.router, models.router, model_lifecycle.router,
+    updates.router, host_updates.router,
 ):
     app.include_router(router)

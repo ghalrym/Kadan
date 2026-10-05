@@ -12,6 +12,8 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelUpdateV1UpdatesCancelPostData,
+  CancelUpdateV1UpdatesCancelPostResponses,
   ConfigureContextV1ModelsModelIdContextPutData,
   ConfigureContextV1ModelsModelIdContextPutErrors,
   ConfigureContextV1ModelsModelIdContextPutResponses,
@@ -47,11 +49,16 @@ import type {
   GetRequestResponses,
   GetSettingsData,
   GetSettingsResponses,
+  GetUpdatesV1UpdatesGetData,
+  GetUpdatesV1UpdatesGetResponses,
   GetVideoData,
   GetVideoErrors,
   GetVideoResponses,
   HealthData,
   HealthResponses,
+  InstallUpdateV1UpdatesInstallPostData,
+  InstallUpdateV1UpdatesInstallPostErrors,
+  InstallUpdateV1UpdatesInstallPostResponses,
   ListImagesData,
   ListImagesResponses,
   ListMessagesData,
@@ -68,6 +75,9 @@ import type {
   LoadSelectedModelData,
   LoadSelectedModelErrors,
   LoadSelectedModelResponses,
+  PairUpdatesV1UpdatesPairPostData,
+  PairUpdatesV1UpdatesPairPostErrors,
+  PairUpdatesV1UpdatesPairPostResponses,
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
@@ -585,6 +595,86 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: '/v1/settings',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Get Updates
+ */
+export const getUpdatesV1UpdatesGet = <ThrowOnError extends boolean = false>(
+  options?: Options<GetUpdatesV1UpdatesGetData, ThrowOnError>,
+): RequestResult<GetUpdatesV1UpdatesGetResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetUpdatesV1UpdatesGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/updates', ...options })
+
+/**
+ * Cancel Update
+ */
+export const cancelUpdateV1UpdatesCancelPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<CancelUpdateV1UpdatesCancelPostData, ThrowOnError>,
+): RequestResult<
+  CancelUpdateV1UpdatesCancelPostResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).post<
+    CancelUpdateV1UpdatesCancelPostResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/updates/cancel', ...options })
+
+/**
+ * Install Update
+ */
+export const installUpdateV1UpdatesInstallPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<InstallUpdateV1UpdatesInstallPostData, ThrowOnError>,
+): RequestResult<
+  InstallUpdateV1UpdatesInstallPostResponses,
+  InstallUpdateV1UpdatesInstallPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    InstallUpdateV1UpdatesInstallPostResponses,
+    InstallUpdateV1UpdatesInstallPostErrors,
+    ThrowOnError
+  >({
+    url: '/v1/updates/install',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Pair Updates
+ */
+export const pairUpdatesV1UpdatesPairPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<PairUpdatesV1UpdatesPairPostData, ThrowOnError>,
+): RequestResult<
+  PairUpdatesV1UpdatesPairPostResponses,
+  PairUpdatesV1UpdatesPairPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PairUpdatesV1UpdatesPairPostResponses,
+    PairUpdatesV1UpdatesPairPostErrors,
+    ThrowOnError
+  >({
+    url: '/v1/updates/pair',
     ...options,
     headers: {
       'Content-Type': 'application/json',

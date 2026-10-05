@@ -31,6 +31,8 @@ jobs:
           python -m api.inference.check_install
       - name: Run backend tests
         run: python -m unittest discover -s api/tests -v
+      - name: Test constrained host updater
+        run: python -m unittest discover -s updater/tests -v
 
   container:
     name: API container inference imports
@@ -39,7 +41,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build the default CUDA-enabled API image
-        run: docker build -t kadan-api:test api
+        run: |
+          docker build --build-arg KADAN_COMMIT="$GITHUB_SHA" -t kadan-api:test api
+          docker build --build-arg KADAN_COMMIT="$GITHUB_SHA" -t kadan-frontend:test frontend
+      - name: Test disposable production frontend and API
+        env:
+          KADAN_COMMIT: ${{ github.sha }}
+          KADAN_TEST_API_IMAGE: kadan-api:test
+          KADAN_TEST_FRONTEND_IMAGE: kadan-frontend:test
+        run: python -m updater.image_smoke
       - name: Verify installed native runtime and API startup imports
         run: |
           docker run --rm kadan-api:test python -m api.inference.check_install

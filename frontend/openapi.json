@@ -536,6 +536,21 @@
         "title": "ImagesResponse",
         "type": "object"
       },
+      "InstallRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Commit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit"
+        ],
+        "title": "InstallRequest",
+        "type": "object"
+      },
       "MessagesResponse": {
         "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
@@ -1091,6 +1106,22 @@
         "title": "NoulQuestion",
         "type": "object"
       },
+      "PairRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 32,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "PairRequest",
+        "type": "object"
+      },
       "RequestRecord": {
         "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement.",
         "properties": {
@@ -1548,6 +1579,66 @@
           "detail"
         ],
         "title": "TranscriptionUnavailable",
+        "type": "object"
+      },
+      "UpdateStatus": {
+        "properties": {
+          "authorized": {
+            "default": false,
+            "title": "Authorized",
+            "type": "boolean"
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available"
+          },
+          "can_cancel": {
+            "default": false,
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "configured": {
+            "default": false,
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "current": {
+            "title": "Current",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "message": {
+            "default": "Updates require one-time server setup.",
+            "title": "Message",
+            "type": "string"
+          },
+          "phase": {
+            "default": "disabled",
+            "title": "Phase",
+            "type": "string"
+          }
+        },
+        "required": [
+          "current"
+        ],
+        "title": "UpdateStatus",
         "type": "object"
       },
       "ValidationError": {
@@ -2814,6 +2905,130 @@
         "summary": "Update Settings",
         "tags": [
           "Settings"
+        ]
+      }
+    },
+    "/v1/updates": {
+      "get": {
+        "operationId": "get_updates_v1_updates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Updates",
+        "tags": [
+          "Updates"
+        ]
+      }
+    },
+    "/v1/updates/cancel": {
+      "post": {
+        "operationId": "cancel_update_v1_updates_cancel_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cancel Update",
+        "tags": [
+          "Updates"
+        ]
+      }
+    },
+    "/v1/updates/install": {
+      "post": {
+        "operationId": "install_update_v1_updates_install_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Install Update",
+        "tags": [
+          "Updates"
+        ]
+      }
+    },
+    "/v1/updates/pair": {
+      "post": {
+        "operationId": "pair_updates_v1_updates_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pair Updates",
+        "tags": [
+          "Updates"
         ]
       }
     },

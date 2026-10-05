@@ -73,6 +73,107 @@ dependencies; Compose exposes the GPUs, and Kadan uses `KADAN_GPU=0` by default.
    docker compose down
    ```
 
+## Owner-triggered website updates
+
+Settings checks availability automatically; installation requires a deliberate
+**Update** click from an owner-paired browser. Updates are disabled until the
+following one-time host setup is complete. Merging this code does not install a
+host service, publish a release, or authorize any browser.
+
+Release publishing is opt-in: the repository owner must review the `release.yml`
+workflow's Contents-write and Packages-write permissions, then set repository
+variable `KADAN_RELEASES_ENABLED=true`. It publishes only after successful exact
+`master` API CI and production-image smoke checks. The paired manifest references
+immutable API/frontend image digests, never a `latest` image tag. New GHCR packages
+default to private even for public repositories: the owner must make both
+`kadan-api` and `kadan-frontend` public, or configure registry authentication on
+the host. Neither permissions, visibility nor credentials are changed by this PR.
+The first eligible master build must publish successfully before installation.
+
+For a Linux Docker/NVIDIA home server, with Python 3.11+ available:
+
+1. Install a reviewed checkout of that exact released commit at `/opt/kadan`,
+   owned by root and not writable by the web containers. Keep the current Compose
+   project name and actual `model_data`/`postgres_data` volume names; inspect the
+   existing containers' Compose labels and mounts rather than guessing from a new
+   checkout directory. Finish/cancel existing work and wait for downloads and model
+   cleanup before stopping the legacy API/frontend. Bootstrap refuses a running
+   legacy app; it does not infer safety from the dashboard's request count.
+2. Create `/var/lib/kadan-updater` with owner root and mode `0700`. Copy
+   `updater/config.example.json` there as `config.json`, mode `0600`, and edit it
+   locally with the existing project, volume names, database credentials and GPU.
+   Set `origin` to the exact browser origin you will use. HTTP is accepted only
+   for localhost/loopback (including an SSH tunnel); remote access requires an
+   explicitly configured HTTPS origin and an owner-managed TLS proxy. Host and
+   forwarded headers are never treated as authorization. All exposed container
+   ports remain bound to loopback; the updater has no TCP listener.
+3. Ensure the named model/Postgres volumes already exist. Create a dedicated
+   Hugging Face cache volume, or name the existing one in `hf_volume`.
+   Bootstrap copies the default legacy `/root/.cache/huggingface` cache from the
+   stopped API container before replacing it. Custom cache paths require manual
+   preservation first. Only after verifying the cache is already preserved (or
+   confirming no legacy cache exists), set `legacy_cache_already_preserved: true`
+   in the local config. Do not remove the old container before preserving its
+   cache. Checkpoints, selection and context files stay in the original model
+   volume. The development Compose configuration now also persists `HF_HOME`;
+   preserve any old container-local cache before recreating that API container.
+4. From `/opt/kadan`, run the explicit initial installation, substituting the
+   exact 40-character published commit:
+
+   ```sh
+   sudo python3 -m updater bootstrap --commit RELEASE_COMMIT --allow-initial-migrations
+   sudo install -m 0644 updater/kadan-updater.service /etc/systemd/system/kadan-updater.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now kadan-updater
+   sudo python3 -m updater pair
+   ```
+
+   Bootstrap downloads and verifies both images, preserves storage, takes a
+   database dump, explicitly runs initial migrations, and verifies the paired
+   app and selected model. It never removes volumes. Enter the short-lived
+   one-time pairing code in Settings on the configured origin. A new pairing
+   revokes the previous browser; authorization expires after 12 hours. Codes and
+   cookies are not logged. Setup generates host credentials only when the owner
+   runs it; no credentials are checked into this repository.
+
+The root host helper owns Docker access; the API receives only a fixed-operation
+Unix socket and read-only control files. It cannot submit shell commands, Compose
+files, image names, or arbitrary versions. Source/configuration and private state
+must remain host-owned. The update path pulls both images before maintenance,
+atomically rejects new mutations, and waits for real requests/background work and
+model cleanup. A deadline produces an error, not a forced kill. It preserves the
+Postgres container and named volumes, backs up the DB under the private state
+directory, gracefully replaces only the API/frontend pair, checks database and
+version readiness, restores the selected model, then reopens admission. Settings
+reconnects and reloads after success.
+
+Website updates require the **same migration fingerprint and data-format epoch**.
+Changed migrations or storage formats show “manual upgrade required” before any
+restart. The previous compatible image pair is retained and restored if the new
+pair fails readiness. Rollback never runs database downgrade commands or restores
+a dump automatically. Database backups are retained for owner-managed recovery;
+monitor their disk use and copy important backups off-host. A manual incompatible
+upgrade needs an independently verified backup and migration/recovery procedure.
+Do not run another deployment tool against this Compose project concurrently.
+
+After an interrupted helper or an unsafe cleanup, the host keeps maintenance
+closed and requires explicit local inspection:
+
+```sh
+cd /opt/kadan
+sudo python3 -m updater status
+sudo journalctl -u kadan-updater
+# Only after inspecting the failure; retries compatible recovery without force-kill:
+sudo python3 -m updater recover
+```
+
+The helper itself and its fixed deployment template are updated manually from a
+reviewed checkout; a website release cannot replace privileged host code.
+CPU/fake-engine tests run with `python3 -m unittest discover -s updater/tests -v`.
+CI additionally uses disposable Postgres/API/frontend containers; no real model
+weights, host installation, registry publishing from PR branches, or GPU readiness
+claim is part of those tests.
+
 ## Native model service
 
 For a native installation on a Linux NVIDIA GPU host, the single requirements

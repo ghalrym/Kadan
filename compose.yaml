@@ -35,6 +35,7 @@ services:
       <<: *database_environment
       KADAN_MODEL_DIR: /var/lib/kadan/models
       KADAN_GPU: ${KADAN_GPU:-0}
+      HF_HOME: /var/lib/kadan/huggingface
     deploy:
       resources:
         reservations:
@@ -44,6 +45,8 @@ services:
               capabilities: [gpu]
     volumes:
       - model_data:/var/lib/kadan/models
+      - hf_data:/var/lib/kadan/huggingface
+    stop_grace_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,3 +82,4 @@ volumes:
   model_data:
   postgres_data:
   frontend_node_modules:
+  hf_data:

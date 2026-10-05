@@ -1,0 +1,18 @@
+[Unit]
+Description=Kadan owner-triggered updater
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/kadan
+ExecStart=/usr/bin/python3 -m updater serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+# Root/Docker access is confined to this owner-installed host helper. The API
+# receives only the fixed-operation socket and a read-only maintenance marker.
+
+[Install]
+WantedBy=multi-user.target

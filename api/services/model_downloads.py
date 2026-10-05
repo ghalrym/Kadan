@@ -6,6 +6,7 @@ Run one API worker; an OS lock prevents concurrent download writers even if a
 second process is accidentally started. Interrupted staging is removed on retry.
 """
 from dataclasses import dataclass
+
 import fcntl
 import hashlib
 import json
@@ -20,6 +21,7 @@ from urllib.request import urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
+from api.services.maintenance import admission
 from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
 
 
@@ -374,15 +376,27 @@ class ModelManager:
             except OSError:
                 lease.close()
                 raise
+            try:
+                ticket = admission.enter()
+            except BaseException:
+                lease.close()
+                raise
             self._cancel.clear()
             self._jobs[model_id] = DownloadJob()
-            self._thread = threading.Thread(target=self._download, args=(entry, lease), daemon=True)
+            self._thread = threading.Thread(target=self._download_tracked, args=(entry, lease, ticket), daemon=True)
             try:
                 self._thread.start()
             except Exception:
+                ticket.close()
                 lease.close()
                 self._jobs[model_id] = DownloadJob(status='failed', error='Could not start download worker')
                 raise
+
+    def _download_tracked(self, entry, lease, ticket):
+        try:
+            self._download(entry, lease)
+        finally:
+            ticket.close()
 
     def cancel(self, model_id: str) -> None:
         """Request cooperative cancellation of this model's active download.

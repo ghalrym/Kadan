@@ -1,4 +1,5 @@
 """Kadan-owned model lifecycle; no external inference server or engine process."""
+
 import asyncio
 from contextlib import suppress
 import os
@@ -7,6 +8,7 @@ import threading
 
 from api.inference.resources import ResourceManager, probe_memory
 from api.inference.context import ContextLimitError, ContextMemoryError, resolve_context
+from api.services.maintenance import admission
 from api.services.model_downloads import BusyError, model_manager
 
 
@@ -142,6 +144,16 @@ class RuntimeManager:
         self._release()
 
     def _start_load(self, model_manager):
+        ticket = admission.enter()
+        try:
+            result = self._start_load_owned(model_manager)
+        except BaseException:
+            ticket.close()
+            raise
+        self.task.add_done_callback(lambda task: ticket.close())
+        return result
+
+    def _start_load_owned(self, model_manager):
         """Acquire selection and schedule construction; caller owns the transition lock."""
         try:
             entry, path = model_manager.acquire_runtime_model()
