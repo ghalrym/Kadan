@@ -1,13 +1,11 @@
 import base64
 from pathlib import Path
 import tempfile
-import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from api.inference.wan import WanProvider
 from api.server import app
 from api.services.video_inputs import VideoInputs
 

@@ -31,7 +31,7 @@ try {
       } } })
     })
     await page.goto(process.env.WAN_I2V_TEST_URL || 'http://127.0.0.1:15247/video')
-    await page.getByLabel('Model', { exact: true }).selectOption('wan22-i2v-a14b')
+    await page.getByLabel('Video model', { exact: true }).selectOption('wan22-i2v-a14b')
     await page.getByLabel('Prompt', { exact: true }).fill('A bird begins to fly')
     assert.equal(await page.getByRole('button', { name: 'Queue video', exact: true }).isDisabled(), true)
     await page.getByLabel('Input image', { exact: true }).setInputFiles({ name: 'input.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64') })

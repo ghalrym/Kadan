@@ -165,7 +165,7 @@ export default function VideoPage() {
       >
         <label className="field">
           <span className="eyebrow">Model</span>
-          <select className="input" value={model} disabled={pending} onChange={event => {
+          <select aria-label="Video model" className="input" value={model} disabled={pending} onChange={event => {
             const next = event.target.value as NonNullable<VideoGenerationRequest['model']>
             setModel(next); setFps(next === 'wan22-i2v-a14b' ? '16' : '24')
             if (next === 'wan22-i2v-a14b') { if (resolution === '1080p') setResolution('720p'); if (aspect === '1:1') setAspect('16:9') }

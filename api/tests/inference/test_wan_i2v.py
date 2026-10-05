@@ -4,7 +4,6 @@ from pathlib import Path
 import runpy
 import sys
 import tempfile
-import threading
 import types
 import unittest
 from unittest.mock import Mock, MagicMock, patch
