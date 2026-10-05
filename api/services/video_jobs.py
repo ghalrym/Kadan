@@ -7,6 +7,7 @@ import threading
 import uuid
 
 from api.inference.resources import ResourceCancelled
+from api.services.flux_video import FluxVideoProvider
 from api.pydantic_models.media import VideoJob
 
 
@@ -23,6 +24,8 @@ class VideoJobs:
     @staticmethod
     def _provider(model_id):
         """Resolve native providers without importing their worker dependencies into the API."""
+        if model_id == 'flux-3-video':
+            return FluxVideoProvider()
         if model_id == 'ltx-2.5-distilled':
             try:
                 module = importlib.import_module('api.inference.ltx')

@@ -17,6 +17,8 @@ import {
  * clears polling timers. Provider errors never create local placeholder jobs.
  */
 export default function VideoPage() {
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('ltx-2.5-distilled')
+  const hosted = model === 'flux-3-video'
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [duration, setDuration] = useState('8')
@@ -103,10 +105,10 @@ export default function VideoPage() {
     try {
       const job = await submitVideo(
         {
-          prompt,
-          negative_prompt: negative,
+          prompt, model,
+          negative_prompt: hosted ? '' : negative,
           duration: Number(duration),
-          fps: Number(fps),
+          fps: hosted ? 24 : Number(fps),
           resolution,
           aspect,
         },
@@ -155,23 +157,24 @@ export default function VideoPage() {
           void submit()
         }}
       >
+        <label className="field"><span className="eyebrow">Model</span><select className="input" value={model} disabled={pending} onChange={event => { setModel(event.target.value as NonNullable<VideoGenerationRequest['model']>); setResolution('720p') }}><option value="ltx-2.5-distilled">LTX-2.5 Distilled</option><option value="h3-fl2va">MiniMax H3</option><option value="flux-3-video">FLUX 3 Video (API)</option></select></label>
         <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
         <label className="field">
           <span className="eyebrow">Negative prompt</span>
-          <input className="input" value={negative} maxLength={8000} disabled={pending} onChange={event => setNegative(event.target.value)} placeholder="Optional — things to avoid" />
+          <input className="input" value={hosted ? '' : negative} maxLength={8000} disabled={pending || hosted} onChange={event => setNegative(event.target.value)} placeholder="Optional — things to avoid" />
         </label>
         <label className="field">
           <span className="eyebrow">Duration</span>
-          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={hosted ? 5 : 1} max={hosted ? 20 : 120} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
         </label>
         <label className="field">
           <span className="eyebrow">Frame rate</span>
-          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={hosted ? '24' : fps} disabled={pending || hosted} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={hosted ? ['720p', '1080p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
         <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"

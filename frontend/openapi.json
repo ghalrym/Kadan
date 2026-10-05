@@ -1437,7 +1437,8 @@
             "default": "ltx-2.5-distilled",
             "enum": [
               "ltx-2.5-distilled",
-              "h3-fl2va"
+              "h3-fl2va",
+              "flux-3-video"
             ],
             "title": "Model",
             "type": "string"
@@ -1467,11 +1468,17 @@
             "type": "string"
           },
           "seed": {
-            "default": 42,
-            "maximum": 4294967295.0,
-            "minimum": 0.0,
-            "title": "Seed",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 4294967295.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
           }
         },
         "required": [

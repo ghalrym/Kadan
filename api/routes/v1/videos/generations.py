@@ -9,8 +9,8 @@ router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
 class VideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: Literal["ltx-2.5-distilled", "h3-fl2va"] = "ltx-2.5-distilled"
-    seed: int = Field(default=42, ge=0, le=4294967295)
+    model: Literal["ltx-2.5-distilled", "h3-fl2va", "flux-3-video"] = "ltx-2.5-distilled"
+    seed: int | None = Field(default=None, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     negative_prompt: str = Field(default="", max_length=8000)
     duration: int = Field(default=8, gt=0, le=120)
@@ -28,7 +28,10 @@ class VideoGenerationResponse(BaseModel):
 def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
-        spec = VideoSpec(**body.model_dump(exclude={'model'}))
+        values = body.model_dump(exclude={'model'})
+        if body.model != 'flux-3-video' and values['seed'] is None:
+            values['seed'] = 42
+        spec = VideoSpec(**values)
         return VideoGenerationResponse(job=video_jobs.submit(body.model, spec))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

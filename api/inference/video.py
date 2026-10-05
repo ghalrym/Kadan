@@ -10,7 +10,7 @@ class VideoSpec:
     fps: int = 24
     resolution: str = '720p'
     aspect: str = '16:9'
-    seed: int = 42
+    seed: int | None = 42
 
     @property
     def dimensions(self):

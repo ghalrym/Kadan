@@ -825,7 +825,7 @@ export type VideoGenerationRequest = {
   /**
    * Model
    */
-  model?: 'ltx-2.5-distilled' | 'h3-fl2va'
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va' | 'flux-3-video'
   /**
    * Negative Prompt
    */
@@ -841,7 +841,7 @@ export type VideoGenerationRequest = {
   /**
    * Seed
    */
-  seed?: number
+  seed?: number | null
 }
 
 /**
