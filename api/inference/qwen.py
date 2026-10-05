@@ -342,3 +342,5 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
     except BaseException:
         adapter.close()
         raise
+    finally:
+        reader.close()

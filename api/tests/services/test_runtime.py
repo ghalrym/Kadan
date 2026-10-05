@@ -1,4 +1,5 @@
 import asyncio
+import builtins
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from api.inference.resources import ResourceManager
+from api.inference.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
 from api.services.runtime import RuntimeFailure, RuntimeManager
 
@@ -41,7 +43,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.models = Mock()
         self.models.configured_context.return_value = None
         self.models.acquire_runtime_model.return_value = (SimpleNamespace(id='medium'), Path('/models/pinned'))
-        patched = patch('api.services.model_downloads.model_manager', self.models)
+        patched = patch('api.services.runtime.model_manager', self.models)
         patched.start()
         self.addCleanup(patched.stop)
 
@@ -51,7 +53,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.state, 'ready')
 
     async def test_context_errors_preserve_ready_model_and_selection(self):
-        from api.inference.context import ContextLimitError, ContextMemoryError
         await self.ready()
         for error, status in ((ContextLimitError('too many tokens'), 422), (ContextMemoryError('does not fit'), 503)):
             self.adapter.generate = Mock(side_effect=error)
@@ -168,7 +169,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.factory.assert_not_called()
 
     async def test_native_import_errors_identify_missing_modules_and_preserve_cause(self):
-        import builtins
         original_import = builtins.__import__
         self.manager._factory = None
         failures = (
