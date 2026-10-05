@@ -7,6 +7,7 @@ import torch
 import wan
 from PIL import Image, ImageOps
 from wan.configs import WAN_CONFIGS
+from wan_s2v import render as render_s2v
 
 
 @torch.inference_mode()
@@ -14,6 +15,9 @@ def main():
     """Use the checkpoint's native sampler/shift/guidance and encode real frames."""
     payload = json.load(sys.stdin)
     spec, task = payload['spec'], payload['task']
+    if task == 's2v-14B':
+        render_s2v(payload)
+        return
     config = WAN_CONFIGS[task]
     factory = wan.WanTI2V if task == 'ti2v-5B' else wan.WanT2V
     pipeline = factory(config=config, checkpoint_dir=payload['checkpoint'], device_id=0,

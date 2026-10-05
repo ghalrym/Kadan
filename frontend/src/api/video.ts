@@ -110,3 +110,15 @@ export async function stopVideo(id: string) {
   checkResponse(result.response)
   return validateJob(result.data?.job)
 }
+
+/** Upload local conditioning bytes and return the server's opaque media ID. */
+export async function uploadVideoInput(kind: 'image' | 'audio', file: File, signal: AbortSignal): Promise<string> {
+  const response = await fetch(`/v1/videos/inputs?kind=${kind}`, {
+    method: 'POST', headers: { 'Content-Type': file.type || (kind === 'audio' ? 'audio/wav' : 'application/octet-stream') },
+    body: file, signal,
+  })
+  checkResponse(response)
+  const result = await response.json()
+  if (typeof result.id !== 'string' || !/^[0-9a-f]{32}$/.test(result.id)) throw new Error('The API returned an invalid upload ID.')
+  return result.id
+}

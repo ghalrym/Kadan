@@ -23,6 +23,9 @@ class VideoJobs:
     @staticmethod
     def _provider(model_id):
         """Resolve native providers without importing their worker dependencies into the API."""
+        if model_id == 'wan22-s2v-14b':
+            module = importlib.import_module('api.inference.wan')
+            return module.WanProvider(model_id, 's2v-14B')
         if model_id == 'ltx-2.5-distilled':
             try:
                 module = importlib.import_module('api.inference.ltx')

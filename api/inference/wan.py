@@ -6,6 +6,7 @@ import subprocess
 import signal
 import threading
 import uuid
+import wave
 
 from api.inference.resources import ResourceCancelled
 from api.services.model_downloads import model_manager
@@ -24,12 +25,23 @@ class WanProvider:
 
     def validate(self, spec):
         """Reject unsupported controls before creating a job or allocating memory."""
-        if self.task not in ('ti2v-5B', 't2v-A14B'):
+        if self.task not in ('ti2v-5B', 't2v-A14B', 's2v-14B'):
             raise ValueError('Unsupported Wan generation task.')
         required_fps = 24 if self.task == 'ti2v-5B' else 16
         if spec.fps != required_fps:
             raise ValueError(f'This Wan2.2 checkpoint generates at {required_fps} fps.')
-        if spec.audio_path or spec.video_path:
+        if self.task == 's2v-14B':
+            if not spec.image_path or not spec.audio_path:
+                raise ValueError('Wan S2V requires a reference image and PCM WAV audio.')
+            if spec.video_path:
+                raise ValueError('Pose video conditioning is not supported by this integration.')
+            try:
+                with wave.open(spec.audio_path, 'rb') as audio:
+                    if audio.getcomptype() != 'NONE' or audio.getnframes() < audio.getframerate() * spec.duration:
+                        raise ValueError('Provide PCM WAV audio at least as long as the requested video.')
+            except (OSError, EOFError, wave.Error) as exc:
+                raise ValueError('Wan S2V requires valid PCM WAV audio.') from exc
+        elif spec.audio_path or spec.video_path:
             raise ValueError('This Wan checkpoint does not accept audio or video conditioning.')
         if self.task == 't2v-A14B' and spec.image_path:
             raise ValueError('The text-to-video checkpoint does not accept an image.')

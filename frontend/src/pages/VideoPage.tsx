@@ -6,6 +6,7 @@ import {
   loadVideos,
   refreshVideo,
   submitVideo,
+  uploadVideoInput,
   stopVideo,
   type VideoJob,
   type VideoGenerationRequest,
@@ -17,6 +18,10 @@ import {
  * clears polling timers. Provider errors never create local placeholder jobs.
  */
 export default function VideoPage() {
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('ltx-2.5-distilled')
+  const [reference, setReference] = useState<File | null>(null)
+  const [audio, setAudio] = useState<File | null>(null)
+  const speechVideo = model === 'wan22-s2v-14b'
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [duration, setDuration] = useState('8')
@@ -101,8 +106,14 @@ export default function VideoPage() {
     setError('')
     setNotice('')
     try {
+      if (speechVideo && (!reference || !audio)) throw new Error('Choose a reference image and WAV audio.')
+      const imageId = speechVideo && reference ? await uploadVideoInput('image', reference, controller.signal) : undefined
+      const audioId = speechVideo && audio ? await uploadVideoInput('audio', audio, controller.signal) : undefined
       const job = await submitVideo(
         {
+          model,
+          image_id: imageId,
+          audio_id: audioId,
           prompt,
           negative_prompt: negative,
           duration: Number(duration),
@@ -156,6 +167,24 @@ export default function VideoPage() {
         }}
       >
         <label className="field">
+          <span className="eyebrow">Model</span>
+          <select className="input" value={model} disabled={pending} onChange={event => {
+            const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
+            setModel(value)
+            setFps(value === 'wan22-s2v-14b' ? '16' : '24')
+            setResolution('720p')
+            setAspect('16:9')
+          }}>
+            <option value="ltx-2.5-distilled">LTX-2.5 distilled</option>
+            <option value="h3-fl2va">MiniMax H3 FL2VA</option>
+            <option value="wan22-s2v-14b">Wan2.2 S2V 14B</option>
+          </select>
+        </label>
+        {speechVideo && <>
+          <label className="field"><span className="eyebrow">Reference image</span><input type="file" accept="image/png,image/jpeg,image/webp" disabled={pending} onChange={event => setReference(event.target.files?.[0] ?? null)} /></label>
+          <label className="field"><span className="eyebrow">Speech audio (WAV)</span><input type="file" accept="audio/wav,audio/x-wav,.wav" disabled={pending} onChange={event => setAudio(event.target.files?.[0] ?? null)} /></label>
+        </>}
+        <label className="field">
           <span className="eyebrow">Prompt</span>
           <textarea className="input" rows={6} value={prompt} maxLength={8000} required disabled={pending} onChange={event => setPrompt(event.target.value)} placeholder="Describe the shot: subject, motion, camera, lighting…" />
         </label>
@@ -171,12 +200,12 @@ export default function VideoPage() {
           <span className="eyebrow">Frame rate</span>
           <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
-        <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={speechVideo ? ['480p', '720p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Aspect" options={speechVideo ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
-          disabled={pending || loading || !prompt.trim()}
+          disabled={pending || loading || !prompt.trim() || (speechVideo && (!reference || !audio))}
         >
           {pending ? 'Submitting…' : 'Queue video'}
         </button>

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 from pathlib import PurePosixPath
 from typing import Literal
+from api.services.wan_s2v_catalog import MODEL_ID as S2V_ID, REVISION as S2V_REVISION, REQUIRED_FILES as S2V_FILES
 
 
 @dataclass(frozen=True)
@@ -128,3 +129,9 @@ def validate_assets(entry: CatalogEntry, filenames: set[str]) -> None:
         if not any(str(PurePosixPath(name).parent) == (prefix or '.')
                    and name.endswith('.safetensors') for name in filenames):
             raise ValueError(f'Checkpoint has no safetensors weights in {prefix or "root"}')
+
+
+CATALOG[S2V_ID] = CatalogEntry(S2V_ID, 'Wan-AI/Wan2.2-S2V-14B', S2V_REVISION,
+    'apache-2.0', 45_800_000_000, kind='video', display_name='Wan2.2 S2V 14B',
+    layout='components', component_paths=('.', 'google/umt5-xxl', 'wav2vec2-large-xlsr-53-english'),
+    required_files=S2V_FILES, weight_paths=('', 'wav2vec2-large-xlsr-53-english'))
