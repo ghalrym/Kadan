@@ -45,6 +45,15 @@ CATALOG: dict[str, CatalogEntry] = {
 }
 
 
+# Only independently registered Whisper checkpoints enter the shared catalog.
+for whisper in CHECKPOINTS.values():
+    entry = CatalogEntry(f'whisper-{whisper.name}', 'openai/whisper', whisper.sha256,
+        'mit', 0, kind='transcription', display_name=f'Whisper {whisper.name}',
+        layout='single_file', asset_url=whisper.url, asset_name=f'{whisper.name}.pt',
+        required_files=(f'{whisper.name}.pt',),
+        license_url='https://github.com/openai/whisper/blob/main/LICENSE')
+    CATALOG[entry.id] = entry
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
