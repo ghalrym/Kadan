@@ -323,8 +323,8 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          <div className="model-row model-row--video">
-            <label htmlFor="model-Video"><ModelIcon type="Video" />Video</label>
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
             {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
             {videoDownload && <div className="model-download-status model-video-progress">
@@ -337,9 +337,8 @@ export default function SettingsPage() {
               {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
               {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
             </div>}
-          </div>
-          <div className="model-row model-row--video">
-            <label htmlFor="model-TTS"><ModelIcon type="TTS" />TTS</label>
+          </div> : model.type === 'TTS' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-TTS"><ModelIcon type="TTS" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
             {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
             {speechDownload && <div className="model-download-status model-video-progress">
@@ -352,8 +351,7 @@ export default function SettingsPage() {
               {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
               {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
             </div>}
-          </div>
-          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video' && model.type !== 'TTS').map(model => <div className="model-row" key={model.type}>
+          </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
