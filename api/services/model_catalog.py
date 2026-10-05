@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 from pathlib import PurePosixPath
 from typing import Literal
+from api.services.qwen_tts_catalog import SPEECH_MODELS
 
 
 @dataclass(frozen=True)
@@ -110,3 +111,16 @@ def validate_assets(entry: CatalogEntry, filenames: set[str]) -> None:
         if not any(str(PurePosixPath(name).parent) == (prefix or '.')
                    and name.endswith('.safetensors') for name in filenames):
             raise ValueError(f'Checkpoint has no safetensors weights in {prefix or "root"}')
+
+# Official complete checkpoint, including its bundled audio tokenizer.
+_speech = SPEECH_MODELS['qwen-tts-1.7b-custom']
+CATALOG[_speech.id] = CatalogEntry(
+    _speech.id, 'Qwen/' + _speech.name, _speech.revision, 'apache-2.0',
+    _speech.estimated_bytes, kind='speech', display_name=_speech.name,
+    layout='components', component_paths=('.', 'speech_tokenizer'),
+    required_files=('config.json', 'generation_config.json', 'tokenizer_config.json',
+        'preprocessor_config.json', 'merges.txt', 'vocab.json', 'model.safetensors',
+        'speech_tokenizer/config.json', 'speech_tokenizer/configuration.json',
+        'speech_tokenizer/preprocessor_config.json', 'speech_tokenizer/model.safetensors'),
+    weight_paths=('', 'speech_tokenizer'),
+)

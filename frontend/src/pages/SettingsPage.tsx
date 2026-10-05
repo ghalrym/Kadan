@@ -157,6 +157,7 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [speechId, setSpeechId] = useState<string | null>(null)
   const [videoId, setVideoId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
@@ -249,6 +250,9 @@ export default function SettingsPage() {
   }
   const models = modelStatus?.models ?? []
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
+  const speechModels = models.filter(model => model.kind === 'speech')
+  const speech = speechModels.find(model => model.id === speechId) ?? speechModels[0]
+  const speechDownload = speechModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
@@ -334,7 +338,22 @@ export default function SettingsPage() {
               {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
             </div>}
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video').map(model => <div className="model-row" key={model.type}>
+          <div className="model-row model-row--speech">
+            <label htmlFor="model-TTS"><ModelIcon type="TTS" />TTS</label>
+            <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setTTSId(model.id)} download={model => { setTTSId(model.id); downloadModel(model) }} /></div>
+            {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
+            {speechDownload && <div className="model-download-status model-speech-progress">
+              <div className="model-download-heading"><p role="status">{speechDownload.display_name} · {speechDownload.status}</p>
+                <button type="button" className="button" disabled={pending || speechDownload.status === 'cancelling' || (downloading && speechDownload.status !== 'downloading')} onClick={() => {
+                  if (speechDownload.status === 'downloading') void submitModelChange(`/${speechDownload.id}/download`, 'DELETE')
+                  else downloadModel(speechDownload)
+                }}>{speechDownload.status === 'cancelling' ? 'Cancelling…' : speechDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
+            </div>}
+          </div>
+          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video' && model.type !== 'TTS').map(model => <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}

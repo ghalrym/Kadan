@@ -50,12 +50,12 @@ class H3DownloadTests(unittest.TestCase):
             self.manager.select(entry.id)
         with self.assertRaises(ValueError): self.manager.set_context(entry.id, 8192)
         with self.assertRaises(ValueError): self.manager.configured_context(entry.id)
-        self.assertIsNone(self.manager.status()['models'][-1]['context_limit'])
+        self.assertIsNone(next(item for item in self.manager.status()['models'] if item['id'] == 'h3-fl2va')['context_limit'])
 
     def test_nested_index_missing_shards_fail_before_publish(self):
         self.payloads['FL2VA/transformer/model.safetensors.index.json'] = b'{"weight_map":{"w":"../../outside.safetensors"}}'
         self.download()
-        self.assertEqual(self.manager.status()['models'][-1]['status'], 'failed')
+        self.assertEqual(next(item for item in self.manager.status()['models'] if item['id'] == 'h3-fl2va')['status'], 'failed')
         self.assertFalse(self.manager._checkpoint_directory(self.entry).exists())
 
     def test_nested_directory_symlink_invalidates_completed_checkpoint(self):
