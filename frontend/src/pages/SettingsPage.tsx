@@ -9,7 +9,7 @@ import './SettingsPage.css'
  * Combines caller cancellation with the timeout; throws backend detail when
  * available, or an HTTP error for non-JSON proxy failures. Returns typed status.
  */
-async function requestModelStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: undefined, signal?: AbortSignal): Promise<ModelsResponse> {
+async function requestModelStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -87,8 +87,8 @@ function ModelIcon({ type }: { type: string }) {
  * interactive children inside native options. Escape restores trigger focus;
  * arrows/Home/End move between enabled controls, Tab and outside clicks dismiss.
  */
-function ModelPicker({ models, current, selectedId, pending, downloading, choose, download }: {
-  models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
+function ModelPicker({ models, current, selectedId, pending, downloading, choose, download, pickerId = 'LLM', label = 'Language model' }: {
+  pickerId?: string; label?: string; models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
   choose: (model: ModelStatus) => void; download: (model: ModelStatus) => void;
 }) {
   const [open, setOpen] = useState(false)
@@ -114,18 +114,18 @@ function ModelPicker({ models, current, selectedId, pending, downloading, choose
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + controls.length) % controls.length
     controls[next]?.focus()
   }}>
-    <button type="button" id="model-LLM" className="input model-picker-trigger" ref={trigger} aria-expanded={open} aria-controls="language-model-picker" disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
+    <button type="button" id={`model-${pickerId}`} className="input model-picker-trigger" ref={trigger} aria-expanded={open} aria-controls={`${pickerId}-model-picker`} disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
       if (!open && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true) }
     }}>
-      <span>{current?.repo_id.split('/')[1] ?? 'Choose a language model'}</span><Chevron />
+      <span>{current ? (current.display_name ?? current.repo_id.split('/')[1]) : `Choose a ${label.toLowerCase()}`}</span><Chevron />
     </button>
-    {open && <div id="language-model-picker" role="group" aria-label="Language model options" className="model-picker-options" ref={popup}>
+    {open && <div id={`${pickerId}-model-picker`} role="group" aria-label={`${label} options`} className="model-picker-options" ref={popup}>
       {models.map(model => <div className="model-picker-option" key={model.id}>
         <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
-          <span>{model.repo_id.split('/')[1]}</span>
+          <span>{(model.display_name ?? model.repo_id.split('/')[1])}</span>
           <small><span className="model-picker-size">{formatGigabytes(model.estimated_bytes)}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
         </button>
-        {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${model.repo_id.split('/')[1]}`} title={`Download ${model.repo_id.split('/')[1]}`} onClick={() => { download(model); dismiss() }}>
+        {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${(model.display_name ?? model.repo_id.split('/')[1])}`} title={`Download ${(model.display_name ?? model.repo_id.split('/')[1])}`} onClick={() => { download(model); dismiss() }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
         </button>}
       </div>)}
@@ -138,6 +138,16 @@ function ModelPicker({ models, current, selectedId, pending, downloading, choose
  * Polling and mutations have separate error state; request generations prevent
  * older polls from overwriting mutations. Unmount aborts outstanding requests.
  */
+function LicenseNotice({ model, close, proceed }: { model: ModelStatus; close: () => void; proceed: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => { dialog.current?.showModal() }, [])
+  return <dialog className="model-license-dialog" ref={dialog} aria-labelledby="model-license-title" onCancel={event => { event.preventDefault(); close() }}>
+    <h2 id="model-license-title">{model.display_name ?? model.repo_id} license</h2>
+    <p>{model.license_notice} {model.license_url && <a href={model.license_url} target="_blank" rel="noreferrer">License</a>}</p>
+    <div className="model-license-actions"><button type="button" className="button" autoFocus onClick={close}>Cancel</button><button type="button" className="button button--primary" onClick={proceed}>Continue</button></div>
+  </dialog>
+}
+
 export default function SettingsPage() {
   const mutationVersion = useRef(0)
   const actionController = useRef<AbortController | null>(null)
@@ -147,6 +157,9 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [videoId, setVideoId] = useState<string | null>(null)
+  const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
+  const licenseAction = useRef(false)
   const [chosenId, setChosenId] = useState<string | null>(null)
   const [contextDraft, setContextDraft] = useState<{ modelId: string; limit: number | null } | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
@@ -181,7 +194,7 @@ export default function SettingsPage() {
    * independently from polling. Version changes invalidate polls spanning it;
    * the controller also suppresses state updates after unmount cancellation.
    */
-  async function submitModelChange(path: string, method: 'POST' | 'DELETE') {
+  async function submitModelChange(path: string, method: 'POST' | 'DELETE', body?: { license_acknowledged: boolean }) {
     if (actionController.current) return false
     const controller = new AbortController()
     actionController.current = controller
@@ -189,7 +202,7 @@ export default function SettingsPage() {
     setPending(true)
     setActionError('')
     try {
-      const next = await requestModelStatus(path, method, undefined, controller.signal)
+      const next = await requestModelStatus(path, method, body, controller.signal)
       if (!controller.signal.aborted) { setModelStatus(next); setError(''); return true }
       return false
     } catch (failure) {
@@ -200,6 +213,12 @@ export default function SettingsPage() {
       actionController.current = null
       if (!controller.signal.aborted) setPending(false)
     }
+  }
+  /** Require a fresh explicit acknowledgement for each licensed download or retry. */
+  function downloadModel(model: ModelStatus) {
+    if (actionController.current) return
+    if (model.license_notice) { licenseAction.current = false; setLicenseModel(model) }
+    else void submitModelChange(`/${model.id}/download`, 'POST')
   }
   /** Save selection/context and request actual loading as one guarded server action. */
   async function loadModel(model: ModelStatus, limit: number | null) {
@@ -229,8 +248,11 @@ export default function SettingsPage() {
     }
   }
   const models = modelStatus?.models ?? []
+  const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
+  const videoModels = models.filter(model => model.kind === 'video')
+  const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
-  const chosen = models.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
+  const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
   const contextLimit = chosen && contextDraft?.modelId === chosen.id ? contextDraft.limit : chosen?.context_limit ?? null
   const validContext = contextLimit === null || (Number.isSafeInteger(contextLimit) && contextLimit > 0 && contextLimit <= 2147483647 && (chosen?.architecture_context_limit == null || contextLimit <= chosen.architecture_context_limit))
   const loading = loadPending || lifecycle?.state === 'loading'
@@ -246,10 +268,18 @@ export default function SettingsPage() {
     : lifecycle.state === 'ready' || lifecycle.state === 'offloaded' ? { tone: lifecycle.state === 'ready' ? 'ready' : 'idle', text: `${runtimeModel} ${lifecycle.state === 'ready' ? 'running' : 'offloaded'}${runtimeContext ? ` · ${formatContext(runtimeContext)} context` : ''}` }
     : lifecycle.state === 'error' ? { tone: 'error', text: 'Load failed' }
     : { tone: 'idle', text: 'No model loaded' }
-  const downloadStatus = models.find(model => model.status === 'downloading' || model.status === 'cancelling')
+  const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
+  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   return (
     <div className="scroll-page">
+      {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : 'LLM'}`)?.focus() }} proceed={() => {
+        if (licenseAction.current) return
+        licenseAction.current = true
+        const model = licenseModel
+        setLicenseModel(null)
+        void submitModelChange(`/${model.id}/download`, 'POST', { license_acknowledged: true })
+      }} />}
       <div className="settings-layout stack">
         <SectionHeading>Models</SectionHeading>
         <Panel className="model-settings">
@@ -264,9 +294,9 @@ export default function SettingsPage() {
             <div className="model-llm-fields">
               <div className="field">
                 <span className="field-label" aria-hidden="true">Model</span>
-                <ModelPicker models={models} current={chosen} selectedId={chosen?.id ?? null} pending={busy} downloading={downloading}
+                <ModelPicker models={languageModels} current={chosen} selectedId={chosen?.id ?? null} pending={busy} downloading={downloading}
                   choose={model => { setChosenId(model.id); setContextDraft(null) }}
-                  download={model => { setChosenId(model.id); setContextDraft(null); void submitModelChange(`/${model.id}/download`, 'POST') }} />
+                  download={model => { setChosenId(model.id); setContextDraft(null); downloadModel(model) }} />
               </div>
               {chosen
                 ? <ContextControl model={chosen} pending={busy} value={contextLimit} change={limit => setContextDraft({ modelId: chosen.id, limit })} />
@@ -280,8 +310,8 @@ export default function SettingsPage() {
                 const active = model.status === 'downloading' || model.status === 'cancelling'
                 return <div className="model-download-status" key={model.id}>
                   <div className="model-download-heading">
-                    <p role="status"><span>{model.repo_id.split('/')[1]}</span> · <span className="muted">{model.status}</span></p>
-                    <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); void submitModelChange(`/${model.id}/download`, active ? 'DELETE' : 'POST') }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
+                    <p role="status"><span>{(model.display_name ?? model.repo_id.split('/')[1])}</span> · <span className="muted">{model.status}</span></p>
+                    <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); if (active) void submitModelChange(`/${model.id}/download`, 'DELETE'); else downloadModel(model) }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
                   </div>
                   {active && <><progress className="progress" aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span></>}
                   {model.error && <p role="alert" className="error">{model.error}</p>}
@@ -289,7 +319,21 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM').map(model => <div className="model-row" key={model.type}>
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
+            {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
+            {videoDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
+                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
+                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
+                  else downloadModel(videoDownload)
+                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
+            </div>}
+          </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
