@@ -1,10 +1,12 @@
 """H3 native contract and resource ownership without model weights."""
+import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from api.inference.h3 import H3Provider, H3_REVISION, GIB, sampling_arguments
 from api.inference.resources import ResourceCancelled, ResourceExhausted, ResourceManager
@@ -109,3 +111,27 @@ class H3Tests(unittest.TestCase):
                     H3Provider()._run(spec(), Path(directory), output, cancelled, 0)
                 cleanup.assert_called_once_with(process)
                 self.assertFalse(output.exists())
+
+    def test_native_generator_contract_and_shutdown_on_failure(self):
+        # Load the optional worker against a tiny native API fixture, never SGLang/weights.
+        module_name = 'sglang.multimodal_gen.runtime.entrypoints.diffusion_generator'
+        generator = MagicMock()
+        generator.generate.side_effect = RuntimeError('native failure')
+        factory = MagicMock()
+        factory.from_pretrained.return_value = generator
+        fixture = SimpleNamespace(DiffGenerator=factory)
+        location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
+        definition = importlib.util.spec_from_file_location('h3_worker_contract', location)
+        worker = importlib.util.module_from_spec(definition)
+        with patch.dict(sys.modules, {module_name: fixture}):
+            definition.loader.exec_module(worker)
+        arguments = sampling_arguments(spec(), Path('/tmp/out.mp4'))
+        with self.assertRaisesRegex(RuntimeError, 'native failure'):
+            worker.run(dict(checkpoint='/models/local', sampling=arguments))
+        kwargs = factory.from_pretrained.call_args.kwargs
+        self.assertEqual(kwargs['model_path'], '/models/local')
+        self.assertTrue(kwargs['local_mode'])
+        self.assertEqual(kwargs['model_variant'], 'fl2va')
+        self.assertFalse(kwargs['enable_torch_compile'])
+        generator.generate.assert_called_once_with(sampling_params_kwargs=arguments)
+        generator.shutdown.assert_called_once_with()
