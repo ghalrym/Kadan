@@ -29,11 +29,12 @@ def get_settings() -> SettingsResponse:
     Raise HTTP 503 if the stored selection is outside the catalog; this read does
     not load a model or configure another modality."""
     status = model_manager.status()
-    if status['selected_model_id'] is not None and status['selected_model_id'] not in CATALOG:
+    llm_options = [model_id for model_id, entry in CATALOG.items() if entry.kind == 'llm']
+    if status['selected_model_id'] is not None and status['selected_model_id'] not in llm_options:
         raise HTTPException(503, 'Stored model selection is invalid. Select a catalog model in Settings.')
     return SettingsResponse(models=[ModelSetting(
         label='Language model', type='LLM', selected=status['selected_model_id'],
-        options=list(CATALOG),
+        options=llm_options,
     )])
 
 

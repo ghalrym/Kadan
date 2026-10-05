@@ -1,8 +1,13 @@
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
+
+from fastapi import HTTPException
 
 from pydantic import ValidationError
 
-from api.routes.v1.settings import SettingsRequest
+from api.routes.v1.settings import SettingsRequest, get_settings
+from api.services.model_catalog import CATALOG
 
 
 class SettingsValidationTests(unittest.TestCase):
@@ -21,6 +26,28 @@ class LiveSettingsTests(unittest.TestCase):
         self.assertIsNone(result.models[0].selected)
         self.assertEqual(result.models[0].options, ['small', 'medium', 'large'])
         self.assertIsNone(result.whisper_formatting)
+
+    def test_all_non_llm_kinds_are_excluded(self):
+        catalog = {'small': CATALOG['small']}
+        for kind in ('video', 'speech', 'transcription', 'formatting', 'image'):
+            catalog[kind] = replace(CATALOG['small'], id=kind, kind=kind)
+        with patch('api.routes.v1.settings.CATALOG', catalog), patch(
+            'api.routes.v1.settings.model_manager'
+        ) as manager:
+            manager.status.return_value = {'selected_model_id': 'small'}
+            result = get_settings()
+        self.assertEqual(result.models[0].options, ['small'])
+        self.assertEqual(result.models[0].selected, 'small')
+
+    def test_non_llm_or_unknown_stored_selection_is_unavailable(self):
+        for selected in ('h3-fl2va', 'unknown'):
+            with self.subTest(selected=selected), patch(
+                'api.routes.v1.settings.model_manager'
+            ) as manager:
+                manager.status.return_value = {'selected_model_id': selected}
+                with self.assertRaises(HTTPException) as raised:
+                    get_settings()
+                self.assertEqual(raised.exception.status_code, 503)
 
     def test_update_uses_model_store(self):
         from unittest.mock import patch
