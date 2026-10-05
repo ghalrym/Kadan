@@ -183,7 +183,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Return complete WAV audio; disconnects cancel and reap the owned worker.
+ * Return provider-neutral WAV audio; cancellation waits for owned cleanup.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,

@@ -1353,6 +1353,17 @@
       },
       "SpeechModelOption": {
         "properties": {
+          "default_speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Speaker"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1369,6 +1380,18 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "speakers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Speakers",
+            "type": "array"
+          },
+          "supports_instruction": {
+            "default": false,
+            "title": "Supports Instruction",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1964,7 +1987,7 @@
         ]
       },
       "post": {
-        "description": "Return complete WAV audio; disconnects cancel and reap the owned worker.",
+        "description": "Return provider-neutral WAV audio; cancellation waits for owned cleanup.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {

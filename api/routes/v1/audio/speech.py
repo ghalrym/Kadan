@@ -1,14 +1,12 @@
 import asyncio
-import base64
-import binascii
+from dataclasses import asdict
 import threading
 from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from api.pydantic_models.media import GeneratedSpeech
-from api.services.speech import generate_speech as synthesize, SpeechUnavailable as ProviderUnavailable
-from api.services.qwen_tts_catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
-from api.services.speech_enabled import ENABLED_SPEECH_MODELS
+from api.services.speech import generate_speech as synthesize, SpeechUnavailable as ProviderUnavailable, validate_request, speech_models
+from api.services.runtime import finish_cleanup
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 
 router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
@@ -44,26 +42,8 @@ class SpeechRequest(BaseModel):
 
     @model_validator(mode='after')
     def validate_model(self):
-        """Reject unsupported model/mode combinations before any worker allocation."""
-        defaults = {'describe': 'qwen-tts-1.7b-design', 'clone': 'qwen-tts-1.7b-base', 'custom': 'qwen-tts-1.7b-custom'}
-        self.model_id = self.model_id or defaults[self.voice.mode]
-        if self.model_id not in SPEECH_MODELS or SPEECH_MODELS[self.model_id].mode != self.voice.mode:
-            raise ValueError('Choose a Qwen3-TTS model supporting this voice mode')
-        if self.language not in LANGUAGES:
-            raise ValueError('Unsupported speech language')
-        if self.voice.mode == 'custom':
-            if self.voice.speaker not in SPEAKERS:
-                raise ValueError('Unsupported speaker')
-            if self.model_id == 'qwen-tts-0.6b-custom' and self.voice.instruction:
-                raise ValueError('Instruction control requires the 1.7B CustomVoice model')
-        if self.voice.mode == 'clone':
-            if not self.voice.speaker_only and not (self.voice.transcript or '').strip():
-                raise ValueError('Provide the reference transcript or select speaker-only cloning')
-            try:
-                if not base64.b64decode(self.voice.sample, validate=True):
-                    raise ValueError('Empty reference audio')
-            except binascii.Error as exc:
-                raise ValueError('Reference audio must be base64-encoded audio bytes') from exc
+        """Adapter validation runs before allocation; the route has no model rules."""
+        self.model_id = validate_request(self.model_dump())
         return self
 
 
@@ -85,13 +65,15 @@ class SpeechModelOption(BaseModel):
     id: str
     name: str
     mode: Literal['custom', 'describe', 'clone']
+    speakers: list[str] = Field(default_factory=list)
+    supports_instruction: bool = False
+    default_speaker: str | None = None
 
 
 @router.get('/models', operation_id='listSpeechModels')
 def list_speech_models() -> list[SpeechModelOption]:
     """Expose only enabled native checkpoint integrations."""
-    return [SpeechModelOption(id=item.id, name=item.name, mode=item.mode)
-            for item in SPEECH_MODELS.values() if item.id in ENABLED_SPEECH_MODELS]
+    return [SpeechModelOption(**asdict(item)) for item in speech_models()]
 
 
 @router.get("", operation_id="listSpeech")
@@ -102,7 +84,7 @@ def list_speech() -> SpeechHistoryResponse:
 
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "Speech worker unavailable"}})
 async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
-    """Return complete WAV audio; disconnects cancel and reap the owned worker."""
+    """Return provider-neutral WAV audio; cancellation waits for owned cleanup."""
     cancel = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(synthesize, body.model_dump(), cancel))
     try:
@@ -120,4 +102,4 @@ async def generate_speech(body: SpeechRequest, request: Request) -> SpeechRespon
     finally:
         cancel.set()
         if not task.done():
-            await asyncio.shield(task)
+            await finish_cleanup(task)
