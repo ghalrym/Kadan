@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ModeNavigation } from '../components/Controls'
+import { ModeNavigation, UploadPlaceholder } from '../components/Controls'
+import { AudioCard } from '../components/Media'
+import { speechScript, voiceDescription } from '../data/playground'
 import { fetchSpeechHistory, requestSpeech, speechRequest } from '../api/speech'
 import type { GeneratedSpeech } from '../api/generated/types.gen'
 
@@ -16,13 +18,13 @@ export default function TextToSpeechPage({
 
 /**
  * Own editable speech fields, cancellable history and one active submission.
- * Show the unconfigured-provider state and metadata only; no upload or fabricated
- * playback controls are provided. Unmount aborts reads and invalidates submissions.
+ * Preserve the original upload and audio layout with disabled media controls
+ * until a transport and playable files are available. Unmount aborts reads and invalidates submissions.
  */
 function SpeechWorkspace({ clone }: { clone: boolean }) {
-  const [script, setScript] = useState('')
-  const [description, setDescription] = useState('')
-  const [sample, setSample] = useState('')
+  const [script, setScript] = useState(speechScript)
+  const [description, setDescription] = useState(voiceDescription)
+  const sample = '' // Await the upload transport; keep the original placeholder.
   const [audio, setAudio] = useState<GeneratedSpeech[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -75,7 +77,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
    * from the still-active controller; cancellation cannot create a local audio result.
    */
   async function submit() {
-    if (active.current || loadingHistory) return
+    if (active.current || loadingHistory || clone) return
     setError(null)
     setNotice('')
     let body
@@ -126,10 +128,6 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
             ]}
           />
         </div>
-        <p className="muted">
-          No speech provider is configured. You can edit and submit settings to
-          test API validation; audio generation is unavailable.
-        </p>
         <form
           className="stack"
           onSubmit={(event) => {
@@ -138,31 +136,12 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
           }}
         >
           {clone ? (
-            <div className="field">
-              <label htmlFor="speech-sample" className="eyebrow">
-                Voice sample reference
-              </label>
-              <input
-                id="speech-sample"
-                className="input"
-                value={sample}
-                maxLength={2000}
-                disabled={pending}
-                onChange={(event) => setSample(event.target.value)}
-                aria-describedby="sample-help"
-              />
-              <p id="sample-help" className="faint">
-                Reference text only. No file upload service exists, and the
-                backend does not fetch this reference.
-              </p>
-            </div>
+            <UploadPlaceholder title="Upload a voice sample" caption="WAV or MP3 · 10–30 s of clean speech" />
           ) : (
             <div className="field">
-              <label htmlFor="speech-description" className="eyebrow">
-                Voice description
-              </label>
               <textarea
                 id="speech-description"
+                aria-label="Voice description"
                 className="input"
                 rows={3}
                 value={description}
@@ -189,7 +168,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               {script.length} / 5,000
             </span>
           </div>
-          {error && <p role="alert">{error}</p>}
+          {error && <p role="alert" className="error-panel">{error}</p>}
           {notice && <p role="status">{notice}</p>}
           {pending ? (
             <>
@@ -207,7 +186,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               type="submit"
               className="button button--primary"
               disabled={
-                loadingHistory ||
+                loadingHistory || clone ||
                 !script.trim() ||
                 !(clone ? sample : description).trim()
               }
@@ -218,11 +197,11 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
         </form>
       </aside>
       <div className="workspace-results stack" aria-busy={loadingHistory}>
-        <h2 className="eyebrow">Speech history</h2>
+        <h2 className="eyebrow">Generated audio</h2>
         {loadingHistory && <p role="status">Loading speech history…</p>}
         {historyError && (
           <>
-            <p role="alert">{historyError}</p>
+            <p role="alert" className="error-panel">{historyError}</p>
             <button
               type="button"
               className="button button--secondary"
@@ -238,16 +217,10 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
           </>
         )}
         {!loadingHistory && !historyError && audio.length === 0 && (
-          <p className="muted">No generated speech.</p>
+          <AudioCard voice="No generated audio" meta="—" script="" time="—" />
         )}
         {audio.map((item, index) => (
-          <article className="panel" key={index}>
-            <h3>{item.voice}</h3>
-            <p>{item.script}</p>
-            <p className="faint">
-              {item.meta} · {item.time}
-            </p>
-          </article>
+          <AudioCard key={index} voice={item.voice} meta={item.meta} script={item.script} time={item.time} />
         ))}
       </div>
     </div>
