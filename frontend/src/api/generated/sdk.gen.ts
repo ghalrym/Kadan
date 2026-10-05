@@ -552,6 +552,8 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
 
 /**
  * List Videos
+ *
+ * Return an empty queue because no video jobs are persisted or scheduled.
  */
 export const listVideos = <ThrowOnError extends boolean = false>(
   options?: Options<ListVideosData, ThrowOnError>,
@@ -563,6 +565,11 @@ export const listVideos = <ThrowOnError extends boolean = false>(
 
 /**
  * Generate Video
+ *
+ * Reject validated generation settings with HTTP 503 without queuing a job.
+ *
+ * The declared 202 response is the future job contract, not evidence that a
+ * provider ran or that GPU rendering has started.
  */
 export const generateVideo = <ThrowOnError extends boolean = false>(
   options: Options<GenerateVideoData, ThrowOnError>,
@@ -582,6 +589,8 @@ export const generateVideo = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Video
+ *
+ * Report HTTP 404 for the requested ID; no provider-backed video jobs exist.
  */
 export const getVideo = <ThrowOnError extends boolean = false>(
   options: Options<GetVideoData, ThrowOnError>,

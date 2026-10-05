@@ -1,7 +1,10 @@
-import { ActionButton } from './Controls'
 import { MediaPlaceholder } from './Media'
-import type { VideoJob } from '../data/playground'
+import type { VideoJob } from '../api/video'
 
+/**
+ * Display API job metadata and reported progress with a labeled placeholder.
+ * This card does not synthesize progress or provide a generated video file.
+ */
 export default function VideoJobCard({ job }: { job: VideoJob }) {
   return (
     <article className="panel video-job">
@@ -19,8 +22,12 @@ export default function VideoJobCard({ job }: { job: VideoJob }) {
         <p className="job-prompt">{job.prompt}</p>
         <p className="mono muted">
           {job.duration} · {job.resolution} ·{' '}
-          {job.aspect === 'wide' ? '16:9' : '9:16'} · {job.fps} fps · Wan 2.2
-          T2V 14B
+          {job.aspect === 'wide'
+            ? '16:9'
+            : job.aspect === 'square'
+              ? '1:1'
+              : '9:16'}{' '}
+          · {job.fps} fps
         </p>
         <div className="job-progress row">
           <progress
@@ -31,12 +38,6 @@ export default function VideoJobCard({ job }: { job: VideoJob }) {
           />
           <span className="mono">{job.progressText}</span>
         </div>
-        {job.status === 'Done' && (
-          <div className="row">
-            <ActionButton>▶ Play</ActionButton>
-            <ActionButton>Download MP4</ActionButton>
-          </div>
-        )}
       </div>
     </article>
   )

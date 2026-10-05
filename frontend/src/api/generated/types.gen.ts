@@ -1583,6 +1583,10 @@ export type GenerateVideoErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Video provider unavailable
+   */
+  503: unknown
 }
 
 export type GenerateVideoError = GenerateVideoErrors[keyof GenerateVideoErrors]
@@ -1610,6 +1614,10 @@ export type GetVideoData = {
 }
 
 export type GetVideoErrors = {
+  /**
+   * Video not found
+   */
+  404: unknown
   /**
    * Validation Error
    */
