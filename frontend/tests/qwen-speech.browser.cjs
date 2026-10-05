@@ -29,6 +29,15 @@ const {
               id: 'qwen-tts-0.6b-custom',
               name: 'Qwen3-TTS 0.6B CustomVoice',
               mode: 'custom',
+              speakers: ['Ryan'],
+              supports_instruction: false,
+            },
+            {
+              id: 'alternate-architecture',
+              name: 'Alternative provider fixture',
+              mode: 'custom',
+              speakers: ['Ada'],
+              supports_instruction: true,
             },
           ],
         })
@@ -63,6 +72,20 @@ const {
     await page.locator('audio').waitFor()
     if (posted.length !== 1) throw Error('duplicate')
     await page.screenshot({ path: `/tmp/qwen-${width}.png` })
+    await page.locator('#speech-model').selectOption('alternate-architecture')
+    await page.locator('#speech-description').fill('quiet')
+    if (await page.locator('#speech-speaker').inputValue() !== 'Ada')
+      throw Error('provider speaker metadata ignored')
+    await page.getByRole('button', { name: 'Generate speech', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('audio').length === 2)
+    if (posted[1].model_id !== 'alternate-architecture' || posted[1].voice.mode !== 'custom'
+      || posted[1].voice.speaker !== 'Ada' || posted[1].voice.instruction !== 'quiet')
+      throw Error('provider-neutral custom payload')
+    await page.locator('#speech-model').selectOption('qwen-tts-0.6b-custom')
+    if (await page.locator('#speech-description').count()) throw Error('unsupported instruction shown')
+    await page.getByRole('button', { name: 'Generate speech', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('audio').length === 3)
+    if (posted[2].voice.instruction !== '') throw Error('unsupported instruction submitted')
     await page.goto(
       `${process.env.KADAN_BROWSER_URL || 'http://localhost:15236'}/tts/clone`,
     )
@@ -81,8 +104,8 @@ const {
       .click()
     await page.locator('audio').waitFor()
     if (
-      posted[1].voice.sample !== 'UklGRg==' ||
-      posted[1].voice.transcript !== 'reference'
+      posted[3].voice.sample !== 'UklGRg==' ||
+      posted[3].voice.transcript !== 'reference'
     )
       throw Error('clone payload')
     if (
@@ -94,7 +117,7 @@ const {
     await page.close()
   }
   await browser.close()
-  console.log('Desktop/mobile describe + clone upload/playback passed')
+  console.log('Desktop/mobile describe, clone and provider-neutral custom capabilities passed')
 })().catch((e) => {
   console.error(e)
   process.exit(1)

@@ -794,6 +794,10 @@ export type SpeechHistoryResponse = {
  */
 export type SpeechModelOption = {
   /**
+   * Default Speaker
+   */
+  default_speaker?: string | null
+  /**
    * Id
    */
   id: string
@@ -805,6 +809,14 @@ export type SpeechModelOption = {
    * Name
    */
   name: string
+  /**
+   * Speakers
+   */
+  speakers?: Array<string>
+  /**
+   * Supports Instruction
+   */
+  supports_instruction?: boolean
 }
 
 /**
