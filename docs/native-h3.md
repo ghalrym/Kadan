@@ -30,6 +30,21 @@ measured workload budgets for layerwise offload. The conservative defaults rejec
 not a hard allocation limit or measured peak guarantee. It rejects insufficient capacity rather than pooling
 multiple GPUs into fictional combined VRAM.
 
+The standard API container installs FFmpeg and checks both `ffmpeg` and `ffprobe`
+during its build. A host installation also needs the operating system's FFmpeg
+package on PATH. H3 checks both executables before reserving any model memory.
+The renderer writes `video.mp4` in a private directory on the job store's
+filesystem. After the worker and its descendants exit, Kadan atomically moves
+that file to the queue's hidden staging path. This avoids SGLang's removal of
+leading dots from output filenames. The private directory, including sidecar
+files, is removed on success, failure and cancellation.
+The worker requires a `GenerationResult` from SGLang and accepts only its
+validated, nonempty output path inside that private directory. A `None` return
+(including swallowed audiovisual validation errors) fails the job even when an
+invalid MP4 has already been written. Tests execute the exact pinned upstream
+filename sanitizer separately from its GPU dependencies and exercise failure and
+cancellation cleanup with nonempty files.
+
 The baseline uses 50 evaluations, video shift 12 and audio shift 3. Torch compilation
 is disabled; DiT and encoder use layerwise offload. No 3090 performance claim is
 made. Actual weights/GPU tests, output quality, timing, and peak memory measurements

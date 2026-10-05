@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,13 @@ from api.services.runtime import runtime_manager as runtime
 H3_REVISION = '42ed227ee7df40d41602854ae760620d6eb651fe'
 SGLANG_REVISION = 'f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a'
 GIB = 1024 ** 3
+
+
+def check_media_tools():
+    """Reject missing native media executables before reserving model memory."""
+    missing = [name for name in ('ffmpeg', 'ffprobe') if shutil.which(name) is None]
+    if missing:
+        raise RuntimeError(f'H3 requires {", ".join(missing)}; install FFmpeg before generation')
 
 
 def sampling_arguments(spec, output: Path) -> dict:
@@ -65,6 +73,7 @@ class H3Provider:
     def generate(self, spec, output_path: Path, cancellation: threading.Event):
         """Hold exclusive RAM/VRAM admission until the isolated generation process exits."""
         self.validate(spec)
+        check_media_tools()
         entry, checkpoint = model_manager.get_checkpoint(self.model_id)
         if entry.revision != H3_REVISION:
             raise ValueError('H3 checkpoint revision does not match the native provider')
@@ -92,13 +101,17 @@ class H3Provider:
         """Pass local paths only; cancellation terminates the worker's entire process group."""
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(checkpoint=str(checkpoint.resolve()), sampling=sampling_arguments(spec, output))
         env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
                    HF_DATASETS_OFFLINE='1')
         visible = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',')
         env['CUDA_VISIBLE_DEVICES'] = visible[device] if visible != [''] else str(device)
         python = os.environ.get('KADAN_H3_PYTHON', sys.executable)
-        with tempfile.TemporaryDirectory(prefix='kadan-h3-') as scratch:
+        # Keep the renderer's sanitizer-safe filename separate from the queue's
+        # hidden staging name. The same filesystem permits atomic publication.
+        with tempfile.TemporaryDirectory(prefix='.kadan-h3-', dir=output.parent) as scratch:
+            rendered = Path(scratch) / 'video.mp4'
+            payload = dict(checkpoint=str(checkpoint.resolve()),
+                           sampling=sampling_arguments(spec, rendered))
             request = Path(scratch) / 'request.json'
             request.write_text(json.dumps(payload))
             with (Path(scratch) / 'worker.log').open('w+b') as log:
@@ -115,10 +128,13 @@ class H3Provider:
                         raise ResourceCancelled('H3 generation cancelled')
                     if process.returncode:
                         raise RuntimeError('H3 native worker failed; verify the pinned optional runtime and GPU capacity')
-                    if not output.is_file() or output.stat().st_size == 0:
+                    if not rendered.is_file() or rendered.stat().st_size == 0:
                         raise RuntimeError('H3 worker produced no audiovisual output')
                 except BaseException:
                     output.unlink(missing_ok=True)
                     raise
                 finally:
                     stop_process_group(process)
+                if cancellation.is_set():
+                    raise ResourceCancelled('H3 generation cancelled')
+                rendered.replace(output)

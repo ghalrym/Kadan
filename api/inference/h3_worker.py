@@ -4,6 +4,21 @@ from pathlib import Path
 import sys
 
 from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import DiffGenerator
+from sglang.multimodal_gen.runtime.entrypoints.utils import GenerationResult
+
+
+def accept_result(result, sampling):
+    """Accept only upstream-validated output confined to this job's private directory."""
+    if not isinstance(result, GenerationResult) or not result.output_file_path:
+        raise RuntimeError('H3 generation or audiovisual validation failed')
+    root = Path(sampling['output_path']).resolve()
+    actual = Path(result.output_file_path)
+    if (actual.is_symlink() or actual.resolve().parent != root
+            or not actual.is_file() or actual.stat().st_size == 0):
+        raise RuntimeError('H3 returned an invalid validated output path')
+    expected = root / sampling['output_file_name']
+    if actual.resolve() != expected:
+        actual.replace(expected)
 
 
 def run(payload):
@@ -16,7 +31,8 @@ def run(payload):
         enable_torch_compile=False,
     )
     try:
-        generator.generate(sampling_params_kwargs=payload['sampling'])
+        result = generator.generate(sampling_params_kwargs=payload['sampling'])
+        accept_result(result, payload['sampling'])
     finally:
         generator.shutdown()
 

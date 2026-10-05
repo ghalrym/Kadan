@@ -1,5 +1,6 @@
 """H3 native contract and resource ownership without model weights."""
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,30 +81,46 @@ class H3Tests(unittest.TestCase):
 
     def test_worker_is_offline_and_reaped_on_success(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / 'out.mp4'
+            output = Path(directory) / '.job.partial.mp4'
             process = SimpleNamespace(pid=123456, returncode=0, poll=lambda: 0, wait=lambda **kwargs: 0)
+            staging = []
 
             def launch(command, **kwargs):
                 self.assertEqual(kwargs['env']['HF_HUB_OFFLINE'], '1')
                 self.assertEqual(kwargs['env']['TRANSFORMERS_OFFLINE'], '1')
                 self.assertTrue(kwargs['start_new_session'])
                 self.assertEqual(command[1:3], ['-m', 'api.inference.h3_worker'])
-                output.write_bytes(b'fixture-output')
+                payload = json.loads(Path(command[-1]).read_text())
+                args = payload['sampling']
+                self.assertEqual(args['output_file_name'], 'video.mp4')
+                rendered = Path(args['output_path']) / args['output_file_name']
+                self.assertNotEqual(rendered, output)
+                self.assertEqual(rendered.parent.parent, output.parent)
+                rendered.write_bytes(b'fixture-output')
+                (rendered.parent / 'sidecar.wav').write_bytes(b'audio')
+                staging.append(rendered.parent)
                 return process
 
             with patch('api.inference.h3.subprocess.Popen', side_effect=launch), \
                  patch('api.inference.h3.stop_process_group') as cleanup:
                 H3Provider()._run(spec(), Path(directory), output, threading.Event(), 0)
                 cleanup.assert_called_once_with(process)
+            self.assertEqual(output.read_bytes(), b'fixture-output')
+            self.assertFalse(staging[0].exists())
 
     def test_cancellation_removes_partial_and_reaps_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'out.mp4'
             cancelled = threading.Event()
             process = SimpleNamespace(pid=123456, returncode=None, poll=lambda: None)
+            staging = []
 
-            def launch(*args, **kwargs):
-                output.write_bytes(b'partial')
+            def launch(command, **kwargs):
+                args = json.loads(Path(command[-1]).read_text())['sampling']
+                root = Path(args['output_path'])
+                (root / args['output_file_name']).write_bytes(b'partial')
+                (root / 'sidecar.wav').write_bytes(b'partial')
+                staging.append(root)
                 cancelled.set()
                 return process
 
@@ -113,6 +130,7 @@ class H3Tests(unittest.TestCase):
                     H3Provider()._run(spec(), Path(directory), output, cancelled, 0)
                 cleanup.assert_called_once_with(process)
                 self.assertFalse(output.exists())
+                self.assertFalse(staging[0].exists())
 
     def test_native_generator_contract_and_shutdown_on_failure(self):
         # Load the optional worker against a tiny native API fixture, never SGLang/weights.
@@ -125,7 +143,8 @@ class H3Tests(unittest.TestCase):
         location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
         definition = importlib.util.spec_from_file_location('h3_worker_contract', location)
         worker = importlib.util.module_from_spec(definition)
-        with patch.dict(sys.modules, {module_name: fixture}):
+        with patch.dict(sys.modules, {module_name: fixture,
+             'sglang.multimodal_gen.runtime.entrypoints.utils': SimpleNamespace(GenerationResult=SimpleNamespace)}):
             definition.loader.exec_module(worker)
         arguments = sampling_arguments(spec(), Path('/tmp/out.mp4'))
         with self.assertRaisesRegex(RuntimeError, 'native failure'):
@@ -137,6 +156,58 @@ class H3Tests(unittest.TestCase):
         self.assertFalse(kwargs['enable_torch_compile'])
         generator.generate.assert_called_once_with(sampling_params_kwargs=arguments)
         generator.shutdown.assert_called_once_with()
+
+    def test_missing_media_tools_fails_before_memory_admission(self):
+        with patch('api.inference.h3.shutil.which', return_value=None), \
+             patch('api.inference.h3.runtime.ensure_resources') as resources:
+            with self.assertRaisesRegex(RuntimeError, 'ffmpeg, ffprobe'):
+                H3Provider().generate(spec(), Path('/tmp/unused.mp4'), threading.Event())
+            resources.assert_not_called()
+
+    def test_nonempty_failed_worker_output_and_sidecars_are_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / '.job.partial.mp4'
+            staging = []
+            process = SimpleNamespace(pid=123456, returncode=1, poll=lambda: 1)
+            def launch(command, **kwargs):
+                args = json.loads(Path(command[-1]).read_text())['sampling']
+                root = Path(args['output_path'])
+                (root / args['output_file_name']).write_bytes(b'invalid-av')
+                (root / 'sidecar.wav').write_bytes(b'invalid-audio')
+                staging.append(root)
+                return process
+            with patch('api.inference.h3.subprocess.Popen', side_effect=launch), \
+                 patch('api.inference.h3.stop_process_group'):
+                with self.assertRaisesRegex(RuntimeError, 'native worker failed'):
+                    H3Provider()._run(spec(), Path(directory), output, threading.Event(), 0)
+            self.assertFalse(output.exists())
+            self.assertFalse(staging[0].exists())
+
+    def test_native_none_result_rejects_nonempty_invalid_video(self):
+        generator = MagicMock()
+        generator.generate.return_value = None
+        factory = MagicMock()
+        factory.from_pretrained.return_value = generator
+        location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
+        definition = importlib.util.spec_from_file_location('h3_none_result', location)
+        worker = importlib.util.module_from_spec(definition)
+        with patch.dict(sys.modules, {
+            'sglang.multimodal_gen.runtime.entrypoints.diffusion_generator': SimpleNamespace(DiffGenerator=factory),
+            'sglang.multimodal_gen.runtime.entrypoints.utils': SimpleNamespace(GenerationResult=SimpleNamespace),
+        }):
+            definition.loader.exec_module(worker)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'video.mp4'
+            output.write_bytes(b'invalid-but-nonempty')
+            with self.assertRaisesRegex(RuntimeError, 'audiovisual validation failed'):
+                worker.run(dict(checkpoint='/models/local', sampling=sampling_arguments(spec(), output)))
+            generator.shutdown.assert_called_once_with()
+            with self.assertRaisesRegex(RuntimeError, 'invalid validated output path'):
+                worker.accept_result(SimpleNamespace(output_file_path='/outside.mp4'), sampling_arguments(spec(), output))
+            validated = output.with_name('validated.mp4')
+            validated.write_bytes(b'validated')
+            worker.accept_result(SimpleNamespace(output_file_path=str(validated)), sampling_arguments(spec(), output))
+            self.assertEqual(output.read_bytes(), b'validated')
 
     def test_shared_video_queue_executes_h3_and_publishes_output(self):
         with tempfile.TemporaryDirectory() as directory:
