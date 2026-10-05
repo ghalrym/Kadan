@@ -44,7 +44,7 @@ test('real typed POST preserves editable settings and reports unavailable provid
     assert.deepEqual(await request.json(), { ...body, prompt: 'A mountain' })
     return Response.json({ detail: 'Unavailable' }, { status: 503 })
   })
-  await assert.rejects(submitVideo(body, signal()), /No job was queued/)
+  await assert.rejects(submitVideo(body, signal()), /worker configuration/)
 })
 
 test('empty history stays empty and malformed success is rejected', async () => {

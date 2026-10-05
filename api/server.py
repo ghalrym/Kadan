@@ -11,6 +11,7 @@ from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 from api.services.decisions import decision_manager
+from api.services.video_jobs import video_jobs
 
 
 @asynccontextmanager
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
         await runtime_manager.start()
         yield
     finally:
+        await asyncio.to_thread(video_jobs.close)
         try:
             await decision_manager.close()
         finally:

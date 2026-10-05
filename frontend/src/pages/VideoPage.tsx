@@ -6,6 +6,7 @@ import {
   loadVideos,
   refreshVideo,
   submitVideo,
+  stopVideo,
   type VideoJob,
   type VideoGenerationRequest,
 } from '../api/video'
@@ -209,7 +210,10 @@ export default function VideoPage() {
           !jobs.length && <p>No video jobs.</p>
         )}
         {jobs.map((job) => (
-          <VideoJobCard key={job.id} job={job} />
+          <VideoJobCard key={job.id} job={job} onCancel={() => {
+            void stopVideo(job.id).then(() => setRefresh(value => value + 1))
+              .catch(failure => setError(failure instanceof Error ? failure.message : 'Cancellation failed.'))
+          }} />
         ))}
       </div>
     </div>
