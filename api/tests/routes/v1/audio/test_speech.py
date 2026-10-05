@@ -22,7 +22,7 @@ class SpeechRouteTests(unittest.TestCase):
         cls.client = TestClient(app)
 
     def setUp(self):
-        disabled = patch("api.services.speech.ENABLED_SPEECH_MODELS", frozenset())
+        disabled = patch("api.services.speech_enabled.ENABLED_SPEECH_MODELS", frozenset())
         disabled.start()
         self.addCleanup(disabled.stop)
 

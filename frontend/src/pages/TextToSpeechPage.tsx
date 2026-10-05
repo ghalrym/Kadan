@@ -30,10 +30,13 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
   const [sample, setSample] = useState('')
   const [transcript, setTranscript] = useState('')
   const [speakerOnly, setSpeakerOnly] = useState(false)
-  const [speaker, setSpeaker] = useState('Ryan')
+  const [speaker, setSpeaker] = useState('')
   const [model, setModel] = useState('')
   const [models, setModels] = useState<SpeechModelOption[]>([])
-  const custom = model.endsWith('-custom')
+  const selectedModel = models.find((item) => item.id === model)
+  const custom = selectedModel?.mode === 'custom'
+  const chosenSpeaker = selectedModel?.speakers?.includes(speaker)
+    ? speaker : selectedModel?.default_speaker ?? selectedModel?.speakers?.[0] ?? ''
   const [audio, setAudio] = useState<GeneratedSpeech[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -116,8 +119,8 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
             model_id: model,
             voice: {
               mode: 'custom' as const,
-              speaker,
-              instruction: model === 'qwen-tts-1.7b-custom' ? description : '',
+              speaker: chosenSpeaker,
+              instruction: selectedModel?.supports_instruction ? description : '',
             },
           }
         : speechRequest(
@@ -205,21 +208,11 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               <select
                 id="speech-speaker"
                 className="input"
-                value={speaker}
+                value={chosenSpeaker}
                 disabled={pending}
                 onChange={(event) => setSpeaker(event.target.value)}
               >
-                {[
-                  'Vivian',
-                  'Serena',
-                  'Uncle_Fu',
-                  'Dylan',
-                  'Eric',
-                  'Ryan',
-                  'Aiden',
-                  'Ono_Anna',
-                  'Sohee',
-                ].map((name) => (
+                {(selectedModel?.speakers ?? []).map((name) => (
                   <option key={name}>{name}</option>
                 ))}
               </select>
@@ -269,7 +262,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
                 Speaker only
               </label>
             </div>
-          ) : model !== 'qwen-tts-0.6b-custom' ? (
+          ) : !custom || selectedModel?.supports_instruction ? (
             <div className="field">
               <textarea
                 id="speech-description"

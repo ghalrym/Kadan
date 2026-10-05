@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import soundfile as sf
@@ -28,17 +29,41 @@ def generate(model, request):
                                      x_vector_only_mode=voice.get('speaker_only', False))
 
 
-def main():
-    """Load a verified local checkpoint and write a PCM WAV after generation completes."""
-    payload = json.loads(Path(sys.argv[1]).read_text())
+def publish(path, value):
+    temporary = path.with_suffix('.pending')
+    temporary.write_text(json.dumps(value))
+    temporary.replace(path)
+
+
+def serve(root):
+    """Load once; process serial requests until the Kadan owner unloads this group."""
+    payload = json.loads((root / 'config.json').read_text())
     device = payload['device']
     model = Qwen3TTSModel.from_pretrained(payload['checkpoint'], local_files_only=True,
         device_map=device, dtype=torch.float32 if device == 'cpu' else torch.bfloat16,
         attn_implementation='sdpa')
-    waves, rate = generate(model, payload['request'])
-    if len(waves) != 1 or rate <= 0 or not len(waves[0]):
-        raise ValueError('Qwen returned no complete waveform')
-    sf.write(sys.argv[2], waves[0], rate, subtype='PCM_16', format='WAV')
+    publish(root / 'ready.json', {'ok': True})
+    while True:
+        requests = list(root.glob('*.request.json'))
+        if not requests:
+            time.sleep(.05)
+            continue
+        request_path = requests[0]
+        payload = json.loads(request_path.read_text())
+        request_path.unlink()
+        try:
+            waves, rate = generate(model, payload['request'])
+            if len(waves) != 1 or rate <= 0 or not len(waves[0]):
+                raise ValueError('Qwen returned no complete waveform')
+            sf.write(payload['output'], waves[0], rate, subtype='PCM_16', format='WAV')
+            waves = None
+            publish(Path(payload['result']), {'ok': True})
+        except Exception:
+            publish(Path(payload['result']), {'ok': False})
+            raise
+        finally:
+            # Do not retain cloning samples or generated waveforms while idle.
+            payload = waves = None
 
 
 if __name__ == '__main__':
@@ -47,5 +72,7 @@ if __name__ == '__main__':
             if not callable(getattr(Qwen3TTSModel, method, None)):
                 raise RuntimeError(f'Installed Qwen3-TTS is missing {method}')
         print('Qwen3-TTS worker imports and official generation methods ready')
+    elif len(sys.argv) == 3 and sys.argv[1] == '--serve':
+        serve(Path(sys.argv[2]))
     else:
-        main()
+        raise SystemExit('Expected --serve DIRECTORY or --check-install')
