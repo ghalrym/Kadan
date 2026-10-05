@@ -2,7 +2,7 @@ import { transcribeAudio } from './generated/sdk.gen'
 import type { TranscriptionRequest } from './generated/types.gen'
 
 /** Submit inline audio; preserve backend errors and valid silent transcripts. */
-export async function requestTranscription(audio: string, formatting: boolean, signal: AbortSignal): Promise<string> {
+export async function requestTranscription(audio: string, formatting: boolean, signal: AbortSignal, onFormattingStatus?: (status: string) => void): Promise<string> {
   const reference = audio.trim()
   if (!reference) throw new Error('Enter an audio reference.')
   const body: TranscriptionRequest = { audio: reference, formatting }
@@ -12,6 +12,7 @@ export async function requestTranscription(audio: string, formatting: boolean, s
     throw new Error(typeof detail === 'string' ? detail : 'Transcription failed. Check the backend and selected checkpoint.')
   }
   if (typeof result.data?.text !== 'string') throw new Error('The API returned an invalid transcript.')
+  if (typeof result.data.formatting_status === 'string') onFormattingStatus?.(result.data.formatting_status)
   return result.data.text
 }
 

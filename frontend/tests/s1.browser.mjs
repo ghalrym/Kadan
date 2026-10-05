@@ -32,7 +32,7 @@ try {
       const wav = Buffer.from(body.audio.split(',')[1], 'base64')
       assert.equal(wav.readUInt32LE(24), 16000)
       assert.equal(wav.readUInt16LE(22), 1)
-      await route.fulfill(fail ? { status: 503, json: { detail: 'Download this Whisper checkpoint.' } } : { json: { text: 'A controlled transcript.' } })
+      await route.fulfill(fail ? { status: 503, json: { detail: 'Download this Whisper checkpoint.' } } : { json: { text: 'A controlled transcript.', formatting_status: 'unsupported_language' } })
     })
     const url = process.env.WHISPER_TEST_URL || 'http://127.0.0.1:15237'
     await page.goto(`${url}/settings`)
@@ -63,6 +63,7 @@ try {
     await page.getByRole('button', { name: 'Submit', exact: true }).click()
     await page.getByRole('status').filter({ hasText: 'A controlled transcript.' }).waitFor()
     assert.equal(posts, 2)
+    await page.getByRole('status').filter({ hasText: 'S1-mini supports English only' }).waitFor()
     await page.screenshot({ path: `/tmp/s1-recording-${width}.png`, fullPage: true })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
     await page.getByRole('button', { name: 'Discard' }).click()

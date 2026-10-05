@@ -10,6 +10,7 @@ export default function SpeechToTextPage() {
   const [clip, setClip] = useState<Blob | null>(null)
   const [text, setText] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [formattingNote, setFormattingNote] = useState('')
   const [seconds, setSeconds] = useState(0)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
@@ -48,12 +49,15 @@ export default function SpeechToTextPage() {
   }
   async function submit() {
     if (!clip || busy.current) return
-    busy.current = true; setPending(true); setError('')
+    busy.current = true; setPending(true); setError(''); setFormattingNote('')
     const abort = new AbortController(); controller.current = abort
     try {
       const audio = await recordingToWav(clip)
       if (abort.signal.aborted) return
-      const transcript = await requestTranscription(audio, readFormattingPreference(), abort.signal)
+      const transcript = await requestTranscription(audio, readFormattingPreference(), abort.signal, status => {
+        if (abort.signal.aborted) return
+        setFormattingNote(status === 'unsupported_language' ? 'S1-mini supports English only; showing the raw transcript.' : ['unavailable', 'busy'].includes(status) ? 'S1-mini formatting is unavailable; showing the raw transcript.' : '')
+      })
       if (!abort.signal.aborted) setText(transcript)
     } catch (reason) { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Transcription failed.') }
     finally { busy.current = false; if (mounted.current) setPending(false) }
@@ -62,10 +66,11 @@ export default function SpeechToTextPage() {
     <button type="button" className="record-button" disabled={pending} aria-label={recording ? 'Stop recording' : 'Start recording'} aria-pressed={recording} onClick={() => void toggleRecording()}><span /></button>
     <span className="recording-timer">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}.0</span>
     <div className="row">
-      <button type="button" className="button" disabled={recording || pending || !clip} onClick={() => { setClip(null); setText(null); setSeconds(0); setError('') }}>Discard</button>
+      <button type="button" className="button" disabled={recording || pending || !clip} onClick={() => { setClip(null); setText(null); setSeconds(0); setError(''); setFormattingNote('') }}>Discard</button>
       <button type="button" className="button button--muted" disabled={recording || pending || !clip} onClick={() => void submit()}>{pending ? 'Working…' : 'Submit'}</button>
     </div>
     {error && <p role="alert" className="error">{error}</p>}
+    {formattingNote && <p role="status" className="muted">{formattingNote}</p>}
     {text !== null && <p role="status">{text || 'No speech detected.'}</p>}
   </Panel></div></div>
 }
