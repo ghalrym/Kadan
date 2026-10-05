@@ -218,6 +218,16 @@ export type DescribedVoice = {
 }
 
 /**
+ * DownloadRequest
+ */
+export type DownloadRequest = {
+  /**
+   * License Acknowledged
+   */
+  license_acknowledged?: boolean
+}
+
+/**
  * GeneratedSpeech
  */
 export type GeneratedSpeech = {
@@ -316,6 +326,8 @@ export type ImagesResponse = {
 
 /**
  * MessagesResponse
+ *
+ * Compatibility envelope for client-owned conversations; the server has no history.
  */
 export type MessagesResponse = {
   /**
@@ -412,6 +424,8 @@ export type ModelLoadRequest = {
 
 /**
  * ModelSetting
+ *
+ * A catalog-backed selection; None means no model is selected.
  */
 export type ModelSetting = {
   /**
@@ -425,7 +439,7 @@ export type ModelSetting = {
   /**
    * Selected
    */
-  selected: string
+  selected: string | null
   /**
    * Type
    */
@@ -447,6 +461,10 @@ export type ModelStatus = {
    */
   context_limit: number | null
   /**
+   * Display Name
+   */
+  display_name: string | null
+  /**
    * Downloaded Bytes
    */
   downloaded_bytes: number
@@ -463,9 +481,25 @@ export type ModelStatus = {
    */
   id: string
   /**
+   * Inference Available
+   */
+  inference_available: boolean
+  /**
+   * Kind
+   */
+  kind: 'llm' | 'video' | 'speech' | 'transcription' | 'formatting' | 'image'
+  /**
    * License
    */
   license: string
+  /**
+   * License Notice
+   */
+  license_notice: string | null
+  /**
+   * License Url
+   */
+  license_url: string | null
   /**
    * Repo Id
    */
@@ -713,22 +747,26 @@ export type SelectionRequest = {
 
 /**
  * SettingsRequest
+ *
+ * Accept only the supported LLM selection; reject unknown top-level fields.
  */
 export type SettingsRequest = {
   /**
    * Models
    */
   models: {
-    [key: string]: string
+    [key: string]: 'small' | 'medium' | 'large'
   }
   /**
    * Whisper Formatting
    */
-  whisper_formatting?: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
  * SettingsResponse
+ *
+ * Expose real catalog selection and null for unavailable transcription settings.
  */
 export type SettingsResponse = {
   /**
@@ -737,8 +775,10 @@ export type SettingsResponse = {
   models: Array<ModelSetting>
   /**
    * Whisper Formatting
+   *
+   * Null: no transcription provider is configured.
    */
-  whisper_formatting: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
@@ -844,7 +884,7 @@ export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference; not fetched in mock mode
+   * Audio reference only; no upload or fetching is implemented
    */
   audio: string
   /**
@@ -861,6 +901,16 @@ export type TranscriptionResponse = {
    * Text
    */
   text: string
+}
+
+/**
+ * TranscriptionUnavailable
+ */
+export type TranscriptionUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
 }
 
 /**
@@ -1207,6 +1257,10 @@ export type TranscribeAudioErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Service Unavailable
+   */
+  503: TranscriptionUnavailable
 }
 
 export type TranscribeAudioError =
@@ -1511,7 +1565,10 @@ export type CancelDownloadV1ModelsModelIdDownloadDeleteResponse =
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses[keyof CancelDownloadV1ModelsModelIdDownloadDeleteResponses]
 
 export type DownloadModelV1ModelsModelIdDownloadPostData = {
-  body?: never
+  /**
+   * Body
+   */
+  body?: DownloadRequest | null
   path: {
     /**
      * Model Id
