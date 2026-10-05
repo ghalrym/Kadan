@@ -176,6 +176,9 @@ try {
   assert.equal(await page.getByRole('textbox').count(), 0)
   await page.goto(root + '/requests')
   await page.getByText('No requests on this page.', { exact: true }).waitFor()
+  const emptyRow = page.locator('tbody td[colspan]')
+  assert.equal(await emptyRow.evaluate(e => getComputedStyle(e).textAlign), 'left', 'Spanning status cells must not inherit numeric-column alignment')
+
   assert.deepEqual(await page.locator('thead th').allTextContents(), [
     'Time',
     'Type',
@@ -210,6 +213,18 @@ try {
     ]) {
       await page.goto(root + path)
       await page.locator('h1').waitFor()
+      if (path === '/requests') {
+        const message = page.getByText('No requests on this page.', { exact: true })
+        await message.waitFor()
+        const alignment = await message.evaluate(e => {
+          const cell = e.closest('td')
+          const range = document.createRange()
+          range.selectNodeContents(e)
+          return { text: range.getBoundingClientRect().left, cell: cell.getBoundingClientRect().left, padding: parseFloat(getComputedStyle(cell).paddingLeft) }
+        })
+        assert(Math.abs(alignment.text - alignment.cell - alignment.padding) <= 1, `Empty message must start at the row's left padding at ${width}px`)
+      }
+
       await page.screenshot({
         path: `${screenshots}/${width}-${path.slice(1).replaceAll('/', '-')}.png`,
         fullPage: true,

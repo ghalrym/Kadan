@@ -73,6 +73,7 @@ try {
   await page.goto(root + '/requests')
   await page.getByRole('link', { name: 'View request observed-0' }).waitFor()
   assert.equal(await page.locator('tbody tr').count(), 6)
+  assert.equal(await page.locator('tbody tr').first().locator('td').last().evaluate(e => getComputedStyle(e).textAlign), 'right', 'Latency cells must retain numeric alignment')
   assert.equal(
     await page.getByRole('combobox', { name: 'HTTP status' }).count(),
     0,
