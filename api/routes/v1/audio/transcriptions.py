@@ -6,7 +6,7 @@ router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
 class TranscriptionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    audio: str = Field(min_length=1, max_length=2048, description="Audio reference only; no upload or fetching is implemented")
+    audio: str = Field(min_length=1, description="Audio reference only; no upload or fetching is implemented")
     formatting: bool = True
 
     @field_validator("audio")

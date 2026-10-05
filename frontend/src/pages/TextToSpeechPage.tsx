@@ -145,7 +145,6 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
                 className="input"
                 rows={3}
                 value={description}
-                maxLength={2000}
                 disabled={pending}
                 onChange={(event) => setDescription(event.target.value)}
               />
@@ -160,12 +159,11 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               className="input"
               rows={6}
               value={script}
-              maxLength={5000}
               disabled={pending}
               onChange={(event) => setScript(event.target.value)}
             />
             <span className="mono faint character-count">
-              {script.length} / 5,000
+              {script.length} characters
             </span>
           </div>
           {error && <p role="alert" className="error-panel">{error}</p>}

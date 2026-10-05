@@ -8,18 +8,18 @@ router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
 class DescribedVoice(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     mode: Literal["describe"]
-    description: str = Field(min_length=1, max_length=2000)
+    description: str = Field(min_length=1)
 
 
 class ClonedVoice(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     mode: Literal["clone"]
-    sample: str = Field(min_length=1, max_length=2000, description="Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.")
+    sample: str = Field(min_length=1, description="Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.")
 
 
 class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    script: str = Field(min_length=1, max_length=5000)
+    script: str = Field(min_length=1)
     voice: Annotated[DescribedVoice | ClonedVoice, Field(discriminator="mode")]
 
 
