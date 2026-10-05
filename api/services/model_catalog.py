@@ -1,11 +1,14 @@
 """Reviewed public checkpoints, pinned to immutable Hugging Face revisions.
 
 Sources: https://huggingface.co/{repo_id}/commit/{revision} (2026-10-04).
-Only root safetensors and tokenizer/configuration assets are downloaded; notably
-GPT-OSS's original/ and metal/ duplicate representations are excluded.
+LLMs use root safetensors/tokenizer assets; media bundles use explicit component
+paths. Duplicate representations and repository Python code are excluded.
 """
 from dataclasses import dataclass
 import re
+from pathlib import PurePosixPath
+from typing import Literal
+from api.services.qwen_tts_catalog import SPEECH_MODELS
 
 
 @dataclass(frozen=True)
@@ -15,6 +18,16 @@ class CatalogEntry:
     revision: str
     license: str
     estimated_bytes: int
+    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image'] = 'llm'
+    display_name: str | None = None
+    layout: Literal['root', 'components', 'single_file'] = 'root'
+    subfolder: str = ''
+    component_paths: tuple[str, ...] = ()
+    required_files: tuple[str, ...] = ()
+    weight_paths: tuple[str, ...] = ()
+    license_url: str | None = None
+    license_notice: str | None = None
+    inference_available: bool = True
 
 
 CATALOG: dict[str, CatalogEntry] = {
@@ -28,21 +41,86 @@ CATALOG: dict[str, CatalogEntry] = {
     )
 }
 
+# Original-format bundles; do not also download the duplicate Diffusers layout.
+H3_REVISION = '42ed227ee7df40d41602854ae760620d6eb651fe'
+for family in ('FL2VA',):
+    entry = CatalogEntry(
+        f'h3-{family.lower()}', 'MiniMaxAI/MiniMax-H3', H3_REVISION,
+        'minimax-h3-community-license-agreement', 144_000_000_000,
+        kind='video', display_name=f'MiniMax H3 {family}', layout='components',
+        subfolder=family,
+        component_paths=tuple(f'{family}/{part}' for part in (
+            'processor', 'tokenizer', 'text_encoder', 'transformer',
+            'audio_vae', 'video_vae', 'video_vae/source')),
+        required_files=('model_index.json', f'{family}/model_index.json',
+            f'{family}/processor/preprocessor_config.json',
+            f'{family}/tokenizer/tokenizer_config.json',
+            f'{family}/text_encoder/config.json', f'{family}/transformer/config.json',
+            f'{family}/audio_vae/config.json', f'{family}/video_vae/config.json',
+            f'{family}/video_vae/source/config.json'),
+        weight_paths=tuple(f'{family}/{part}' for part in (
+            'text_encoder', 'transformer', 'audio_vae', 'video_vae/source')),
+        license_url=f'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/{H3_REVISION}/LICENSE',
+        license_notice="MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+        inference_available=False,
+    )
+    CATALOG[entry.id] = entry
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
     'tokenizer_config.json', 'special_tokens_map.json', 'tokenizer.model',
     'vocab.json', 'merges.txt', 'chat_template.jinja', 'preprocessor_config.json',
     'processor_config.json', 'video_preprocessor_config.json', 'LICENSE',
-    'LICENSE.txt', 'README.md', 'USAGE_POLICY',
+    'LICENSE.txt', 'README.md', 'USAGE_POLICY', 'NOTICE',
+    'model_index.json', 'chat_template.json', 'config.yaml', 'metadata.json',
+    'added_tokens.json', 'scheduler_config.json',
 })
 
 
-def allowed_asset(name: str) -> bool:
+def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
     """Return whether a repository-relative name is an approved root asset.
 
     Excludes subdirectories, executable code, and duplicate checkpoint formats;
     accepts the known configuration/tokenizer files and root safetensors shards."""
+    path = PurePosixPath(name)
+    if path.is_absolute() or '..' in path.parts or '\\' in name or str(path) != name:
+        return False
+    if entry is not None and entry.layout == 'components':
+        if name in entry.required_files or name in ('LICENSE', 'LICENSE.txt', 'NOTICE', 'README.md'):
+            return True
+        if str(path.parent) not in entry.component_paths:
+            return False
+        name = path.name
+        return name in ASSETS or re.fullmatch(
+            r'(?:model|diffusion_pytorch_model)(?:-\d+-of-\d+)?\.safetensors(?:\.index\.json)?', name
+        ) is not None
     return name in ASSETS or re.fullmatch(
         r'(?:model(?:-\d+-of-\d+|_mtp)?)\.safetensors', name
     ) is not None
+
+
+def validate_assets(entry: CatalogEntry, filenames: set[str]) -> None:
+    """Reject incomplete bundles before downloading or marking them complete."""
+    required = set(entry.required_files) if entry.layout == 'components' else {
+        'config.json', 'tokenizer_config.json', 'model.safetensors.index.json'}
+    if not required <= filenames:
+        raise ValueError('Checkpoint is missing required configuration or weight index')
+    weight_paths = entry.weight_paths if entry.layout == 'components' else ('',)
+    for prefix in weight_paths:
+        if not any(str(PurePosixPath(name).parent) == (prefix or '.')
+                   and name.endswith('.safetensors') for name in filenames):
+            raise ValueError(f'Checkpoint has no safetensors weights in {prefix or "root"}')
+
+# Official complete checkpoint, including its bundled audio tokenizer.
+_speech = SPEECH_MODELS['qwen-tts-1.7b-custom']
+CATALOG[_speech.id] = CatalogEntry(
+    _speech.id, 'Qwen/' + _speech.name, _speech.revision, 'apache-2.0',
+    _speech.estimated_bytes, kind='speech', display_name=_speech.name,
+    layout='components', component_paths=('.', 'speech_tokenizer'),
+    required_files=('config.json', 'generation_config.json', 'tokenizer_config.json',
+        'preprocessor_config.json', 'merges.txt', 'vocab.json', 'model.safetensors',
+        'speech_tokenizer/config.json', 'speech_tokenizer/configuration.json',
+        'speech_tokenizer/preprocessor_config.json', 'speech_tokenizer/model.safetensors'),
+    weight_paths=('', 'speech_tokenizer'),
+)
