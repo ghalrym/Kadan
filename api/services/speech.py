@@ -56,7 +56,7 @@ def generate_speech(request: dict, cancel: threading.Event) -> dict:
                 input_path, output_path = root / 'input.json', root / 'output.wav'
                 input_path.write_text(json.dumps(dict(request=request, checkpoint=str(checkpoint), device=device)))
                 env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-                worker = Path(__file__).parents[1] / 'workers' / 'qwen_tts.py'
+                worker = Path(__file__).parents[1] / 'workers' / 'kadan_qwen_tts_worker.py'
                 with (root / 'worker.log').open('wb') as log:
                     process = subprocess.Popen([python, str(worker), str(input_path), str(output_path)],
                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env)
