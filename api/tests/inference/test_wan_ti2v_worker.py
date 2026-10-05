@@ -32,7 +32,7 @@ class TI2VWorkerTests(unittest.TestCase):
             payload = dict(task='ti2v-5B', checkpoint='local-checkpoint', output='out.mp4', width=32, height=16,
                 spec=dict(prompt='forest', negative_prompt='blur', duration=1, fps=24, seed=19, image_path=str(source)))
             with patch.dict('sys.modules', modules), patch('sys.stdin', io.StringIO(json.dumps(payload))):
-                worker = runpy.run_path(str(Path(__file__).parents[2] / 'inference/workers/wan.py'))
+                worker = runpy.run_path(str(Path(__file__).parents[2] / 'inference/workers/wan_worker.py'))
                 worker['main']()
         kwargs = pipeline.generate.call_args.kwargs
         self.assertEqual(kwargs['img'].size, (32, 32))
