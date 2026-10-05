@@ -6,3 +6,6 @@ RECIPES = {
     'flux-klein-4b': ImageRecipe('flux-klein-4b', 'e7b7dc27f91deacad38e78976d1f2b499d76a294',
         'Flux2KleinPipeline', SIZES, 4, 1.0),
 }
+
+RECIPES['flux-klein-base-4b'] = ImageRecipe('flux-klein-base-4b',
+    'a3b4f4849157f664bdbc776fd7453c2783562f4d', 'Flux2KleinPipeline', SIZES, 50, 4.0)

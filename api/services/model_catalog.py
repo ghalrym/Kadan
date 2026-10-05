@@ -4,7 +4,7 @@ Sources: https://huggingface.co/{repo_id}/commit/{revision} (2026-10-04).
 LLMs use root safetensors/tokenizer assets; media bundles use explicit component
 paths. Duplicate representations and repository Python code are excluded.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 from pathlib import PurePosixPath
 from typing import Literal
@@ -92,6 +92,11 @@ CATALOG['flux-klein-4b'] = CatalogEntry(
     weight_paths=('text_encoder', 'transformer', 'vae'),
     license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md',
 )
+
+CATALOG['flux-klein-base-4b'] = replace(CATALOG['flux-klein-4b'],
+    id='flux-klein-base-4b', repo_id='black-forest-labs/FLUX.2-klein-base-4B',
+    revision='a3b4f4849157f664bdbc776fd7453c2783562f4d', display_name='FLUX.2 klein base 4B',
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B/blob/a3b4f4849157f664bdbc776fd7453c2783562f4d/LICENSE.md')
 
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
