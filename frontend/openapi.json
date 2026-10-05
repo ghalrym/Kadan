@@ -1351,7 +1351,6 @@
         "properties": {
           "audio": {
             "description": "Audio reference only; no upload or fetching is implemented",
-            "maxLength": 2048,
             "minLength": 1,
             "title": "Audio",
             "type": "string"
