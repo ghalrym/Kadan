@@ -39,7 +39,7 @@ function mockFetch(handler) {
 }
 
 test('generate and edit send controls to typed endpoints and expose provider failure', async () => {
-  for (const source of [undefined, { image: 'source.png', strength: 0.25 }]) {
+  for (const source of [undefined, { image: 'data:image/png;base64,eA==' }]) {
     mockFetch(async (request) => {
       assert.equal(
         request.url,
@@ -88,4 +88,10 @@ test('request cancellation reaches fetch without a success fallback', async () =
     throw new DOMException('Cancelled', 'AbortError')
   })
   await assert.rejects(requestImages({ prompt: 'Tree' }, controller.signal))
+})
+
+test('successful native image files are delivered to the gallery', async () => {
+  const image = { id: 'real', seeds: [1], urls: ['/v1/images/real/files/0'] }
+  mockFetch(async () => Response.json({ image }))
+  assert.deepEqual(await requestImages({ prompt: 'Tree' }, signal()), image)
 })

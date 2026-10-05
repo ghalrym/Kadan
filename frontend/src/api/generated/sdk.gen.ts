@@ -38,6 +38,9 @@ import type {
   GenerateVideoResponses,
   GetDecisionsData,
   GetDecisionsResponses,
+  GetImageFileData,
+  GetImageFileErrors,
+  GetImageFileResponses,
   GetMetricsData,
   GetMetricsResponses,
   GetModelLifecycleStatusData,
@@ -298,7 +301,7 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 /**
  * List Images
  *
- * Return empty image history while no image provider or stored results exist.
+ * Return metadata for completed native image results.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -311,10 +314,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Reject a validated edit request with HTTP 503 until a provider exists.
- *
- * The source reference is opaque: this route does not fetch/upload images,
- * allocate an inference model, or create a placeholder result.
+ * Condition Qwen Image on the uploaded image and edit instruction.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -335,9 +335,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Reject validated image-generation settings with HTTP 503.
- *
- * No image provider runs, GPU work starts, or synthetic result is returned.
+ * Generate real PNG results with Kadan-owned native inference.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,
@@ -354,6 +352,20 @@ export const generateImages = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * Image File
+ *
+ * Serve one published PNG without exposing arbitrary filesystem paths.
+ */
+export const getImageFile = <ThrowOnError extends boolean = false>(
+  options: Options<GetImageFileData, ThrowOnError>,
+): RequestResult<GetImageFileResponses, GetImageFileErrors, ThrowOnError> =>
+  (options.client ?? client).get<
+    GetImageFileResponses,
+    GetImageFileErrors,
+    ThrowOnError
+  >({ url: '/v1/images/{identifier}/files/{index}', ...options })
 
 /**
  * Get Metrics

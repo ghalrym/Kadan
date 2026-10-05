@@ -493,6 +493,13 @@
             },
             "title": "Seeds",
             "type": "array"
+          },
+          "urls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Urls",
+            "type": "array"
           }
         },
         "required": [
@@ -1603,8 +1610,8 @@
             "type": "integer"
           },
           "image": {
-            "description": "Source image reference; no image provider is configured and this reference is not fetched",
-            "maxLength": 2048,
+            "description": "Inline PNG, JPEG or WebP data URL; remote URLs are not fetched",
+            "maxLength": 28000000,
             "minLength": 1,
             "title": "Image",
             "type": "string"
@@ -1619,6 +1626,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1627,13 +1635,6 @@
               }
             ],
             "title": "Seed"
-          },
-          "strength": {
-            "default": 0.65,
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Strength",
-            "type": "number"
           }
         },
         "required": [
@@ -1677,6 +1678,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2044,7 +2046,7 @@
     },
     "/v1/images": {
       "get": {
-        "description": "Return empty image history while no image provider or stored results exist.",
+        "description": "Return metadata for completed native image results.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -2066,7 +2068,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
+        "description": "Condition Qwen Image on the uploaded image and edit instruction.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2111,7 +2113,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
+        "description": "Generate real PNG results with Kadan-owned native inference.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -2149,6 +2151,56 @@
           }
         },
         "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/{identifier}/files/{index}": {
+      "get": {
+        "description": "Serve one published PNG without exposing arbitrary filesystem paths.",
+        "operationId": "getImageFile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Image File",
         "tags": [
           "Images"
         ]
