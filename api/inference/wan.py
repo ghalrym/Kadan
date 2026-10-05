@@ -59,7 +59,7 @@ class WanProvider:
         owner = f'video-wan-{uuid.uuid4().hex}'
         # Conservative CPU-offload admission, not a measured peak-memory claim.
         host_bytes = sum(file.stat().st_size for file in checkpoint.rglob('*') if file.is_file()) * 2
-        worker = Path(__file__).parent / 'workers' / 'wan.py'
+        worker = Path(__file__).parent / 'workers' / 'wan_worker.py'
         width, height = ((832, 480) if spec.resolution == '480p' else
                          (1280, 704 if self.task == 'ti2v-5B' else 720))
         if spec.aspect == '9:16':
