@@ -335,6 +335,20 @@ export default function SettingsPage() {
               {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
               {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
             </div>}
+          </div> : model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
+            {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
+            {videoDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
+                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
+                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
+                  else downloadModel(videoDownload)
+                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
+            </div>}
           </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
