@@ -44,30 +44,6 @@ CATALOG: dict[str, CatalogEntry] = {
     )
 }
 
-# Original-format bundles; do not also download the duplicate Diffusers layout.
-H3_REVISION = '42ed227ee7df40d41602854ae760620d6eb651fe'
-for family in ('FL2VA',):
-    entry = CatalogEntry(
-        f'h3-{family.lower()}', 'MiniMaxAI/MiniMax-H3', H3_REVISION,
-        'minimax-h3-community-license-agreement', 144_000_000_000,
-        kind='video', display_name=f'MiniMax H3 {family}', layout='components',
-        subfolder=family,
-        component_paths=tuple(f'{family}/{part}' for part in (
-            'processor', 'tokenizer', 'text_encoder', 'transformer',
-            'audio_vae', 'video_vae', 'video_vae/source')),
-        required_files=('model_index.json', f'{family}/model_index.json',
-            f'{family}/processor/preprocessor_config.json',
-            f'{family}/tokenizer/tokenizer_config.json',
-            f'{family}/text_encoder/config.json', f'{family}/transformer/config.json',
-            f'{family}/audio_vae/config.json', f'{family}/video_vae/config.json',
-            f'{family}/video_vae/source/config.json'),
-        weight_paths=tuple(f'{family}/{part}' for part in (
-            'text_encoder', 'transformer', 'audio_vae', 'video_vae/source')),
-        license_url=f'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/{H3_REVISION}/LICENSE',
-        license_notice="MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
-        inference_available=False,
-    )
-    CATALOG[entry.id] = entry
 
 CATALOG['s1-mini'] = CatalogEntry(
     's1-mini', 'superwhisper/s1-mini', '88f6b15896c73bbb13a3b596e0afe8ea0d5150b4',
