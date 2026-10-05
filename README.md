@@ -83,8 +83,10 @@ Do not run multiple API workers or use `--reload` with a loaded model. The
 `/model-lifecycle` controls are Kadan management endpoints, separate from `/v1`
 inference calls. In Settings, choose a downloaded checkpoint and context, then
 click Load to save both and start loading through one lifecycle request.
-The status endpoint reports loading, ready, offloaded, unloading or errors;
-selection/download alone does not mean inference is ready. Do not run Compose's
+The status endpoint reports loading, ready, offloaded, unloading or errors.
+On server startup, the saved selected model loads automatically with its saved
+context setting. Loading runs in the background; status reports readiness or the
+load error while the API remains available. Do not run Compose's
 API on the same port simultaneously. Use `API_PROXY_TARGET` for another API port.
 
 Inference tests use tiny synthetic CPU checkpoints. Full catalog loading,
@@ -126,7 +128,8 @@ Downloads verify pinned file sizes and hashes before publishing completion.
 Cancel is cooperative and retry restarts from scratch; do not edit completed
 checkpoint files externally. Selection persists, but download progress is
 process-local. Selection does not load a model or establish GPU compatibility.
-Review catalog model cards/licenses before downloading: Qwen and GPT-OSS are
+The selected model is loaded automatically when the server starts. Review catalog
+model cards/licenses before downloading: Qwen and GPT-OSS are
 Apache 2.0; GLM is MIT. Downloader ownership and integrity details live alongside
 its implementation in `api/services/model_downloads.py`.
 

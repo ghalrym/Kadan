@@ -159,6 +159,8 @@ class GptOssAdapter:
         except BaseException:
             self.close()
             raise
+        finally:
+            reader.close()
 
     def _restore(self, cancel_event=None):
         """Acquire device admission and transfer retained dense parameters to CUDA.

@@ -7,6 +7,7 @@ import threading
 
 from api.inference.resources import ResourceManager, probe_memory
 from api.inference.context import ContextLimitError, ContextMemoryError, resolve_context
+from api.services.model_downloads import BusyError, model_manager
 
 
 _UNSET = object()
@@ -70,13 +71,24 @@ class RuntimeManager:
         return dict(state=state, model_id=self.model_id, error=self.error, max_output_tokens=256, **self.context_settings,
                     memory=self.resources.snapshot() if self.resources else None)
 
+    async def start(self):
+        """Restore the saved selection in the background, exposing failures through status."""
+        selected = model_manager._read_selected_model_id()
+        if selected is None:
+            return
+        try:
+            await self.load()
+        except (RuntimeFailure, OSError, ValueError) as exc:
+            self.model_id, self.state, self.error = selected, 'error', str(exc)
+
     def _construct(self, entry, path, cancel):
-        # Native model dependencies are imported only on a requested load.
         """Build on a worker thread using the selected single GPU and shared budgets, then apply
         context settings; close the adapter if configuration fails.
         """
         factory = self._factory
         if factory is None:
+            # Keep the API available when native dependencies are broken so Settings
+            # can report the import failure instead of preventing server startup.
             try:
                 from api.inference.model_adapter import build_runtime
             except ImportError as exc:
@@ -105,7 +117,6 @@ class RuntimeManager:
     def _release(self):
         """Release the model-selection lease once, allowing selection changes after cleanup."""
         if self._leased:
-            from api.services.model_downloads import model_manager
             model_manager.release_runtime_model()
             self._leased = False
 
@@ -147,7 +158,6 @@ class RuntimeManager:
         requests are idempotent; conflicting construction or generation returns 409.
         A 202/loading result accepts construction, whose failure remains visible in status.
         """
-        from api.services.model_downloads import model_manager, BusyError
         async with self._transition:
             if model_id is None:
                 if (self.state in ('loading', 'ready', 'unloading') or self._generation.locked()

@@ -14,10 +14,9 @@ from api.services.runtime import runtime_manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """On shutdown, release inference ownership first, then cooperatively stop the downloader on a
-    worker thread.
-    """
+    """Restore the selected model on startup and release inference before downloads on shutdown."""
     try:
+        await runtime_manager.start()
         yield
     finally:
         await runtime_manager.close()
