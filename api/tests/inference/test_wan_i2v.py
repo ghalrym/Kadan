@@ -55,7 +55,7 @@ class WanI2VTests(unittest.TestCase):
                                 fps=16, resolution='480p', image_path=str(self.image))}
         modules = {'wan': wan, 'wan.configs': configs, 'PIL': pil, 'imageio': imageio}
         with patch.dict(sys.modules, modules), patch('sys.stdin', io.StringIO(json.dumps(payload))):
-            namespace = runpy.run_path(str(Path(__file__).parents[2] / 'inference/workers/wan.py'))
+            namespace = runpy.run_path(str(Path(__file__).parents[2] / 'inference/workers/wan_worker.py'))
             namespace['main']()
         factory.assert_called_once()
         wan.WanT2V.assert_not_called()
