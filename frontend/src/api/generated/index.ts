@@ -31,6 +31,7 @@ export {
   transcribeAudio,
   unloadSelectedModel,
   updateSettings,
+  uploadVideoInput,
 } from './sdk.gen'
 export type {
   ApiRoutesV1ImagesEditsImageRequest,
@@ -200,9 +201,15 @@ export type {
   UpdateSettingsErrors,
   UpdateSettingsResponse,
   UpdateSettingsResponses,
+  UploadVideoInputData,
+  UploadVideoInputError,
+  UploadVideoInputErrors,
+  UploadVideoInputResponse,
+  UploadVideoInputResponses,
   ValidationError,
   VideoGenerationRequest,
   VideoGenerationResponse,
+  VideoInputResponse,
   VideoJob,
   VideoResponse,
   VideosResponse,
