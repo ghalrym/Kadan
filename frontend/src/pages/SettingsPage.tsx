@@ -65,6 +65,14 @@ function ContextControl({ model, pending, value, change }: { model: ModelStatus;
   </div>
 }
 
+/** Match the native select chevron so the custom picker sits flush with other model rows. */
+function Chevron() {
+  return <svg className="model-picker-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg>
+}
+
+/** Format a token count with the preset label when one matches, else a grouped number. */
+const formatContext = (limit: number) => contextPresets.find(([, preset]) => preset === limit)?.[0] ?? limit.toLocaleString()
+
 /** Preserve the original modality icons alongside the compact settings rows. */
 function ModelIcon({ type }: { type: string }) {
   return <svg className={`model-icon type-${type}`} width="13" height="13" viewBox="0 0 12 12" aria-hidden="true">
@@ -109,12 +117,13 @@ function ModelPicker({ models, current, selectedId, pending, downloading, choose
     <button type="button" id="model-LLM" className="input model-picker-trigger" ref={trigger} aria-expanded={open} aria-controls="language-model-picker" disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
       if (!open && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true) }
     }}>
-      <span>{current?.repo_id.split('/')[1] ?? 'Choose a language model'}</span><span aria-hidden="true">▾</span>
+      <span>{current?.repo_id.split('/')[1] ?? 'Choose a language model'}</span><Chevron />
     </button>
     {open && <div id="language-model-picker" role="group" aria-label="Language model options" className="model-picker-options" ref={popup}>
       {models.map(model => <div className="model-picker-option" key={model.id}>
         <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
-          <span>{model.repo_id.split('/')[1]}</span><small>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</small>
+          <span>{model.repo_id.split('/')[1]}</span>
+          <small><span className="model-picker-size">{formatGigabytes(model.estimated_bytes)}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
         </button>
         {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${model.repo_id.split('/')[1]}`} title={`Download ${model.repo_id.split('/')[1]}`} onClick={() => { download(model); dismiss() }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
@@ -227,6 +236,16 @@ export default function SettingsPage() {
   const loading = loadPending || lifecycle?.state === 'loading'
   const busy = pending || loading || lifecycle?.state === 'unloading'
   const loaded = (lifecycle?.state === 'ready' || lifecycle?.state === 'offloaded') && lifecycle.model_id === chosen?.id && lifecycle.configured_context_limit === contextLimit
+  const loadable = !busy && !!chosen && chosen.status === 'complete' && validContext && !loaded && !!lifecycle
+  const runtimeModel = models.find(model => model.id === lifecycle?.model_id)?.repo_id.split('/')[1] ?? lifecycle?.model_id
+  const runtimeContext = lifecycle?.effective_context_limit ?? lifecycle?.configured_context_limit
+  const runtime: { tone: string; text: string } =
+    !lifecycle ? { tone: 'idle', text: modelStatus || error ? 'Status unavailable' : 'Checking status…' }
+    : lifecycle.state === 'loading' ? { tone: 'busy', text: `Loading ${runtimeModel ?? 'model'}…` }
+    : lifecycle.state === 'unloading' ? { tone: 'busy', text: `Unloading ${runtimeModel ?? 'model'}…` }
+    : lifecycle.state === 'ready' || lifecycle.state === 'offloaded' ? { tone: lifecycle.state === 'ready' ? 'ready' : 'idle', text: `${runtimeModel} ${lifecycle.state === 'ready' ? 'running' : 'offloaded'}${runtimeContext ? ` · ${formatContext(runtimeContext)} context` : ''}` }
+    : lifecycle.state === 'error' ? { tone: 'error', text: 'Load failed' }
+    : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = models.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
   return (
@@ -235,28 +254,37 @@ export default function SettingsPage() {
         <SectionHeading>Models</SectionHeading>
         <Panel className="model-settings">
           <div className="model-row model-row--llm">
-            <label htmlFor="model-LLM"><ModelIcon type="LLM" />Language model</label>
-            <div className="model-choice-actions">
-              <ModelPicker models={models} current={chosen} selectedId={chosen?.id ?? null} pending={busy} downloading={downloading}
-                choose={model => { setChosenId(model.id); setContextDraft(null) }}
-                download={model => { setChosenId(model.id); setContextDraft(null); void submitModelChange(`/${model.id}/download`, 'POST') }} />
-              <button type="button" className="button button--secondary model-load" disabled={busy || !chosen || chosen.status !== 'complete' || !validContext || loaded || !lifecycle} onClick={() => { if (chosen) void loadModel(chosen, contextLimit) }}>{loading ? 'Loading…' : loaded ? 'Loaded' : 'Load'}</button>
+            <div className="model-llm-header">
+              <div className="model-llm-title">
+                <label htmlFor="model-LLM"><ModelIcon type="LLM" />Language model</label>
+                <p className={`model-runtime model-runtime--${runtime.tone}`} aria-live="polite"><span className="model-runtime-dot" aria-hidden="true" />{runtime.text}</p>
+              </div>
+              <button type="button" className={`button model-load ${loadable ? 'button--primary' : 'button--secondary'}`} disabled={!loadable} onClick={() => { if (chosen) void loadModel(chosen, contextLimit) }}>{loading ? 'Loading…' : loaded ? 'Loaded' : 'Load'}</button>
             </div>
-            <div className="model-llm-details stack">
-              {!modelStatus && !error && <p role="status">Loading model catalog…</p>}
-              {error && <div role="alert">{error} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
-              {(actionError || lifecycle?.error) && <p role="alert">{actionError || lifecycle?.error}</p>}
-              {!chosen && <div className="field"><label htmlFor="context-unselected">Max context length (tokens)</label><select id="context-unselected" className="input" disabled><option>Choose a language model</option></select></div>}
-              {chosen && <>
-                <ContextControl model={chosen} pending={busy} value={contextLimit} change={limit => setContextDraft({ modelId: chosen.id, limit })} />
-              </>}
+            <div className="model-llm-fields">
+              <div className="field">
+                <span className="field-label" aria-hidden="true">Model</span>
+                <ModelPicker models={models} current={chosen} selectedId={chosen?.id ?? null} pending={busy} downloading={downloading}
+                  choose={model => { setChosenId(model.id); setContextDraft(null) }}
+                  download={model => { setChosenId(model.id); setContextDraft(null); void submitModelChange(`/${model.id}/download`, 'POST') }} />
+              </div>
+              {chosen
+                ? <ContextControl model={chosen} pending={busy} value={contextLimit} change={limit => setContextDraft({ modelId: chosen.id, limit })} />
+                : <div className="field model-context"><label htmlFor="context-unselected">Max context length (tokens)</label><select id="context-unselected" className="input" disabled><option>Choose a language model</option></select></div>}
+            </div>
+            <div className="model-llm-details stack compact">
+              {!modelStatus && !error && <p role="status" className="muted">Loading model catalog…</p>}
+              {error && <div role="alert" className="error-panel model-alert"><span>{error}</span><button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>}
+              {(actionError || lifecycle?.error) && <p role="alert" className="error-panel">{actionError || lifecycle?.error}</p>}
               {(downloadStatus ? [downloadStatus] : []).map(model => {
                 const active = model.status === 'downloading' || model.status === 'cancelling'
-                return <div className="model-download-status stack compact" key={model.id}>
-                  <p role="status">{model.repo_id.split('/')[1]} · {model.status}</p>
-                  {active && <><progress aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} /><span className="faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span></>}
-                  {model.error && <p role="alert">{model.error}</p>}
-                  <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); void submitModelChange(`/${model.id}/download`, active ? 'DELETE' : 'POST') }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
+                return <div className="model-download-status" key={model.id}>
+                  <div className="model-download-heading">
+                    <p role="status"><span>{model.repo_id.split('/')[1]}</span> · <span className="muted">{model.status}</span></p>
+                    <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); void submitModelChange(`/${model.id}/download`, active ? 'DELETE' : 'POST') }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
+                  </div>
+                  {active && <><progress className="progress" aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span></>}
+                  {model.error && <p role="alert" className="error">{model.error}</p>}
                 </div>
               })}
             </div>

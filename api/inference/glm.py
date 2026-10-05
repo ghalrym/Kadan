@@ -433,3 +433,5 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
             parent = None
         adapter.close()
         raise
+    finally:
+        reader.close()
