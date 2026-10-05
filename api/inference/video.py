@@ -11,6 +11,7 @@ class VideoSpec:
     resolution: str = '720p'
     aspect: str = '16:9'
     seed: int = 42
+    animation_mode: str = 'animate'
     image_path: str | None = None
     audio_path: str | None = None
     video_path: str | None = None

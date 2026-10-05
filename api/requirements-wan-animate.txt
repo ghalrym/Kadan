@@ -1,0 +1,11 @@
+# Optional isolated native Animate environment; no automatic installation.
+-r requirements-wan.txt
+onnxruntime==1.22.1
+pandas==2.3.1
+matplotlib==3.10.5
+loguru==0.7.3
+moviepy==1.0.3
+# Matches the official Wan Animate preprocessing requirement.
+SAM-2 @ git+https://github.com/facebookresearch/sam2.git@0e78a118995e66bb27d78518c4bd9a3e95b4e266
+# Supplies FluxKontextPipeline's import; FLUX weights and generation are disabled.
+diffusers==0.35.1

@@ -58,6 +58,27 @@ CATALOG['ltx-2.5-distilled'] = CatalogEntry(
     license_notice='LTX-2.5 uses the LTX community license. Some commercial uses require a paid license. Hugging Face access approval is required; continuing does not grant access or license rights.',
 )
 
+# Original Animate bundle including native pose/detection/SAM2 preprocessing.
+WAN_ANIMATE_REVISION = 'cb93a225fbaf1ca100f54e79da8f994995b689b3'
+CATALOG['wan22-animate-14b'] = CatalogEntry(
+    'wan22-animate-14b', 'Wan-AI/Wan2.2-Animate-14B', WAN_ANIMATE_REVISION,
+    'apache-2.0', 58_000_000_000, kind='video', display_name='Wan2.2 Animate-14B',
+    layout='components', component_paths=('.', 'google/umt5-xxl'),
+    required_files=('config.json', 'configuration.json',
+        'diffusion_pytorch_model.safetensors.index.json',
+        'Wan2.1_VAE.pth', 'models_t5_umt5-xxl-enc-bf16.pth',
+        'models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth', 'relighting_lora.ckpt',
+        'google/umt5-xxl/tokenizer.json', 'google/umt5-xxl/tokenizer_config.json',
+        'google/umt5-xxl/special_tokens_map.json', 'google/umt5-xxl/spiece.model',
+        'xlm-roberta-large/config.json', 'xlm-roberta-large/tokenizer.json',
+        'xlm-roberta-large/sentencepiece.bpe.model',
+        'process_checkpoint/det/yolov10m.onnx',
+        'process_checkpoint/pose2d/vitpose_h_wholebody.onnx',
+        'process_checkpoint/sam2/sam2_hiera_large.pt'),
+    weight_paths=('.',),
+    license_url=f'https://huggingface.co/Wan-AI/Wan2.2-Animate-14B/blob/{WAN_ANIMATE_REVISION}/README.md',
+)
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
