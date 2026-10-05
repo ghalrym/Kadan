@@ -181,6 +181,8 @@ class Docker:
                 path.chmod(0o600)
                 self.run(self.compose + ['exec', '-T', 'postgres', 'pg_dump', '-Fc',
                     '-U', self.config['POSTGRES_USER'], '-d', self.config['POSTGRES_DB']], stdout=output)
+                output.flush()
+                os.fsync(output.fileno())
             if not path.stat().st_size:
                 raise RuntimeError('Database backup was empty')
         except BaseException:

@@ -3,6 +3,8 @@ import hashlib
 import os
 from pathlib import Path
 
+# Bump for incompatible checkpoint selection/context/cache or other persisted
+# formats. Website updates and rollback must not cross this boundary.
 DATA_EPOCH = 1
 
 

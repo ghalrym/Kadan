@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
+import httpx
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -46,3 +47,20 @@ class UpdateRoutesTests(unittest.TestCase):
                  patch.object(updates, 'get_engine', side_effect=RuntimeError('database down')):
                 response = self.client.get('/internal/updates/ready', headers={'X-Kadan-Host': 'test-only-host-key'})
                 self.assertEqual(response.status_code, 503)
+
+    def test_cancel_bridge_keeps_json_csrf_and_cookie_headers_without_execution_input(self):
+        response = httpx.Response(200, json={'current': 'a' * 40, 'configured': True, 'phase': 'draining'})
+        transport = Mock()
+        transport.__enter__ = Mock(return_value=transport)
+        transport.__exit__ = Mock(return_value=False)
+        transport.request.return_value = response
+        with patch.dict(os.environ, KADAN_UPDATER_SOCKET='/unused/test.sock'), \
+             patch.object(public.httpx, 'Client', return_value=transport):
+            result = self.client.post('/v1/updates/cancel', json=None,
+                headers={'Origin': 'http://localhost:5173', 'X-Kadan-Update': '1', 'Cookie': 'kadan_updater=fixture'})
+        self.assertEqual(result.status_code, 200)
+        arguments = transport.request.call_args.kwargs
+        self.assertEqual(arguments['headers']['content-type'], 'application/json')
+        self.assertEqual(arguments['headers']['x-kadan-update'], '1')
+        self.assertEqual(arguments['headers']['cookie'], 'kadan_updater=fixture')
+        self.assertIsNone(arguments['json'])

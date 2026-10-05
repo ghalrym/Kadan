@@ -167,7 +167,14 @@ class Engine:
                         pass
                     self.docker.wait(lambda: self.docker.internal('drain')['state'] in
                                      ('drained', 'cancelled', 'busy'), timeout=150)
-                    self.activate(previous)
+                    if self.docker.internal('drain')['state'] in ('cancelled', 'busy'):
+                        # No cleanup began: preserve the original loading/active
+                        # state rather than turning a cancelled update into a new
+                        # model-readiness wait.
+                        (self.root / 'control/maintenance').unlink(missing_ok=True)
+                        self.docker.internal('resume', 'POST')
+                    else:
+                        self.activate(previous)
                     self.save('failed', 'Update cancelled.' if isinstance(exc, Cancelled)
                               else 'Update stopped before restart; Kadan is still on its previous version.')
                 else:

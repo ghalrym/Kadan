@@ -39,6 +39,8 @@ def bridge(request, response, method, operation, body=None):
         raise HTTPException(503, 'Updates require one-time server setup.')
     headers = {name: request.headers.get(name, '') for name in
                ('origin', 'cookie', 'x-kadan-update', 'sec-fetch-site')}
+    if method == 'POST':
+        headers['content-type'] = 'application/json'
     try:
         with httpx.Client(transport=httpx.HTTPTransport(uds=socket), timeout=5) as client:
             result = client.request(method, 'http://localhost/' + operation, headers=headers, json=body)

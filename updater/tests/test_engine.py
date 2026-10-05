@@ -93,6 +93,8 @@ class EngineTests(unittest.TestCase):
                 self.assertNotIn('stop', self.docker.calls)
                 self.assertEqual(self.state['current']['commit'], 'a' * 40)
                 self.assertEqual(self.state['phase'], 'failed')
+                if failure == 'drain':
+                    self.assertNotIn('prepare:POST', self.docker.calls)
 
     def test_bad_application_or_model_readiness_restores_previous_pair(self):
         for failure in ('readiness', 'model'):
