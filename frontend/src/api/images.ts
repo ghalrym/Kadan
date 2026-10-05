@@ -26,7 +26,7 @@ export async function requestImages(
     throw new Error(typeof error?.detail === 'string' ? error.detail : `Image request failed (HTTP ${response.response.status}).`)
   }
   const result = response.data?.image
-  if (!result?.urls?.length || result.urls.length !== result.seeds.length)
+  if (!result?.urls?.length || (result.seeds.length !== 0 && result.urls.length !== result.seeds.length))
     throw new Error('The API returned metadata without image files. No generated image is available.')
   return result
 }

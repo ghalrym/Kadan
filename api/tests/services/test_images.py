@@ -177,7 +177,7 @@ class ImageManagerTests(unittest.TestCase):
         async def run():
             with self.assertRaises(RuntimeFailure):
                 await self.manager.run(SimpleNamespace(is_disconnected=disconnect),
-                    SimpleNamespace(prompt='x', aspect='1:1', count=1, seed=0))
+                    SimpleNamespace(prompt='x', aspect='1:1', count=1, seed=0, model='qwen-image-2.1'))
         asyncio.run(run())
         self.assertTrue(stopped.is_set())
         self.assertFalse(self.manager._gate.locked())

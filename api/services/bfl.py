@@ -96,6 +96,9 @@ class BflClient:
                         output.write(chunk)
             if total == 0:
                 raise BflFailure('BFL returned an empty result.')
+        except httpx.HTTPError:
+            path.unlink(missing_ok=True)
+            raise BflFailure('BFL output download failed.') from None
         except BaseException:
             path.unlink(missing_ok=True)
             raise

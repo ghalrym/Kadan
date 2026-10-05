@@ -963,6 +963,10 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   image: string
   /**
+   * Model
+   */
+  model?: 'qwen-image-2.1' | 'flux-3-image'
+  /**
    * Prompt
    */
   prompt: string
@@ -984,6 +988,10 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Count
    */
   count?: 1 | 2 | 4
+  /**
+   * Model
+   */
+  model?: 'qwen-image-2.1' | 'flux-3-image'
   /**
    * Prompt
    */

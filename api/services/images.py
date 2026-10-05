@@ -1,4 +1,5 @@
 """Generate and atomically publish native images; never expose partial results."""
+from contextlib import ExitStack
 import asyncio
 import base64
 import binascii
@@ -16,6 +17,7 @@ from api.inference import qwen_image
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.media import ImageSet
 from api.services.model_downloads import model_manager
+from api.services.flux_image import FluxImageProvider
 from api.services.runtime import RuntimeFailure, runtime_manager, finish_cleanup
 
 ASPECTS = {'1:1': 'square', '4:3': 'landscape', '3:4': 'portrait', '16:9': 'wide'}
@@ -60,7 +62,7 @@ class ImageManager:
         try:
             identifier = str(UUID(identifier))
             result = ImageSet.model_validate_json((self.root / identifier / 'result.json').read_text())
-            if not 0 <= index < len(result.seeds):
+            if not 0 <= index < len(result.urls):
                 raise ValueError('Unknown image index')
             path = self.root / identifier / f'{index}.png'
             if not path.is_file():
@@ -69,24 +71,37 @@ class ImageManager:
         except (ValueError, OSError) as exc:
             raise RuntimeFailure('Image not found', 404) from exc
 
-    def generate(self, prompt, aspect, count, seed, cancel, source=None):
+    def generate(self, prompt, aspect, count, seed, cancel, source=None, model='qwen-image-2.1'):
         """Hold process ownership through generation, cleanup and atomic publication."""
         if not self._gate.acquire(blocking=False):
             raise RuntimeFailure('Image generation is already active', 409)
         stage = None
+        ownership = ExitStack()
+        pictures = []
         try:
+            if model == 'flux-3-image':
+                FluxImageProvider().validate(prompt, aspect, count, seed)
+                reservation = self.runtime.ensure_resources().reserve(f'flux-image:{id(self)}', 'image', host_bytes=1024 ** 3)
+                ownership.callback(reservation.release)
+                ownership.enter_context(reservation.lease(cancel))
             image = decode_source(source) if source else None
-            try:
-                entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
-            except (ValueError) as exc:
-                raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
-            if entry.revision != qwen_image.REVISION:
-                raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
-            seeds = [((seed if seed is not None else secrets.randbits(53)) + index) % (2 ** 53) for index in range(count)]
-            device = os.environ.get('KADAN_IMAGE_DEVICE', 'cuda:' + os.environ.get('KADAN_GPU', '0'))
-            if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
-                raise RuntimeFailure('KADAN_IMAGE_DEVICE must be cpu or cuda:<index>')
-            pictures = self.backend(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, device=device, image=image)
+            if model == 'flux-3-image':
+                seeds = []
+                pictures = FluxImageProvider().generate(prompt, aspect, count, cancel, source=image, seed=seed)
+            elif model == 'qwen-image-2.1':
+                try:
+                    entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+                except (ValueError) as exc:
+                    raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
+                if entry.revision != qwen_image.REVISION:
+                    raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
+                seeds = [((seed if seed is not None else secrets.randbits(53)) + index) % (2 ** 53) for index in range(count)]
+                device = os.environ.get('KADAN_IMAGE_DEVICE', 'cuda:' + os.environ.get('KADAN_GPU', '0'))
+                if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
+                    raise RuntimeFailure('KADAN_IMAGE_DEVICE must be cpu or cuda:<index>')
+                pictures = self.backend(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, device=device, image=image)
+            else:
+                raise ValueError('Unknown image provider')
             if len(pictures) != count:
                 raise RuntimeError('Image provider returned an unexpected result count')
             identifier = str(uuid4())
@@ -96,7 +111,7 @@ class ImageManager:
             for index, picture in enumerate(pictures):
                 picture.save(stage / f'{index}.png', format='PNG')
             result = ImageSet(id=identifier, mode='Edit' if source else 'Generate', prompt=prompt,
-                aspect=ASPECTS[aspect], seeds=seeds, meta=f'Qwen-Image-2.1 · {count} images',
+                aspect=ASPECTS[aspect], seeds=seeds, meta=f"{'FLUX 3 Image' if model == 'flux-3-image' else 'Qwen-Image-2.1'} · {count} images",
                 urls=[f'/v1/images/{identifier}/files/{index}' for index in range(count)])
             (stage / 'result.json').write_text(result.model_dump_json())
             if cancel.is_set():
@@ -118,13 +133,16 @@ class ImageManager:
                 if stage is not None and stage.exists():
                     shutil.rmtree(stage)
             finally:
+                for picture in pictures:
+                    picture.close()
+                ownership.close()
                 self._gate.release()
 
     async def run(self, request, body, source=None):
         """Forward disconnect cancellation and keep ownership until native cleanup finishes."""
         cancel = threading.Event()
         task = asyncio.create_task(asyncio.to_thread(self.generate, body.prompt, body.aspect,
-            body.count, body.seed, cancel, source))
+            body.count, body.seed, cancel, source, body.model))
         try:
             while not task.done():
                 if await request.is_disconnected():

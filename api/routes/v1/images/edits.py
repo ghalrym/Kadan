@@ -9,6 +9,7 @@ router = APIRouter(prefix="/v1/images/edits", tags=["Images"])
 
 class ImageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    model: Literal["qwen-image-2.1", "flux-3-image"] = "qwen-image-2.1"
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4

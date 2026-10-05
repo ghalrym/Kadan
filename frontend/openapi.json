@@ -1682,6 +1682,15 @@
             "title": "Image",
             "type": "string"
           },
+          "model": {
+            "default": "qwen-image-2.1",
+            "enum": [
+              "qwen-image-2.1",
+              "flux-3-image"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
           "prompt": {
             "maxLength": 8000,
             "minLength": 1,
@@ -1733,6 +1742,15 @@
             ],
             "title": "Count",
             "type": "integer"
+          },
+          "model": {
+            "default": "qwen-image-2.1",
+            "enum": [
+              "qwen-image-2.1",
+              "flux-3-image"
+            ],
+            "title": "Model",
+            "type": "string"
           },
           "prompt": {
             "maxLength": 8000,

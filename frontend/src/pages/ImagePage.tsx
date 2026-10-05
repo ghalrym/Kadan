@@ -20,6 +20,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
   const [count, setCount] = useState<1 | 2 | 4>(4)
+  const [model, setModel] = useState<'qwen-image-2.1' | 'flux-3-image'>('qwen-image-2.1')
   const [seed, setSeed] = useState('')
   const [source, setSource] = useState('')
   const [sourceName, setSourceName] = useState('')
@@ -71,7 +72,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           prompt: prompt.trim(),
           aspect,
           count,
-          seed: seed === '' ? null : Number(seed),
+          model, seed: model === 'flux-3-image' || seed === '' ? null : Number(seed),
         },
         controller.signal,
         edit ? { image: source } : undefined,
@@ -116,7 +117,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           <SegmentedControl label="Images" options={['1', '2', '4']} selected={String(count)} onChange={value => setCount(Number(value) as 1 | 2 | 4)} disabled={busy} />
         </div>
 
-        <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
+        <label className="field"><span className="eyebrow">Model</span><select aria-label="Model" className="input" value={model} disabled={busy} onChange={event => setModel(event.target.value as typeof model)}><option value="qwen-image-2.1">Qwen-Image-2.1</option><option value="flux-3-image">FLUX 3 Image (API)</option></select></label>
+        <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={model === 'flux-3-image' ? '' : seed} onChange={e => setSeed(e.target.value)} placeholder={model === 'flux-3-image' ? 'Unavailable' : 'Random'} disabled={busy || model === 'flux-3-image'} /></label>
         <button className="button button--primary" disabled={busy || !prompt.trim() || (edit && !source)}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
@@ -125,7 +127,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!loading && !historyError && history.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
-        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map((seed, index) => item.urls?.[index] ? <a key={seed} href={item.urls[index]} target="_blank" rel="noreferrer"><img className="generated-image" src={item.urls[index]} alt={item.prompt} /></a> : <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
+        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.urls?.map((url, index) => item.urls?.[index] ? <a key={url} href={item.urls[index]} target="_blank" rel="noreferrer"><img className="generated-image" src={item.urls[index]} alt={item.prompt} /></a> : <MediaPlaceholder key={url} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
       </div>
     </div>
   )
