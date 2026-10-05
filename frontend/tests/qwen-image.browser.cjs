@@ -18,6 +18,12 @@ const assert=require('node:assert/strict');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.screenshot({path:`/tmp/qwen-image-${width}.png`,fullPage:true});
   await page.goto('http://127.0.0.1:15238/image/edit');
+  const strength=page.getByRole('slider',{name:'Edit strength',exact:true});
+  assert.equal(await strength.isVisible(),true); assert.equal(await strength.isDisabled(),true);
+  assert.equal(await strength.getAttribute('aria-describedby'),'edit-strength-status');
+  assert.match(await page.locator('#edit-strength-status').innerText(),/not supported/);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.screenshot({path:`/tmp/qwen-edit-strength-${width}.png`,fullPage:true});
   await page.locator('input[type=file]').setInputFiles({name:'fixture.png',mimeType:'image/png',buffer:png});
   await page.getByPlaceholder('e.g. Replace the background with a sunlit studio, keep the subject unchanged').fill('Blue background');
   await page.route('**/v1/images/edits',async route=>{
