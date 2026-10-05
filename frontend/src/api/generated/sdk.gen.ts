@@ -543,7 +543,14 @@ export const downloadModelV1ModelsModelIdDownloadPost = <
     DownloadModelV1ModelsModelIdDownloadPostResponses,
     DownloadModelV1ModelsModelIdDownloadPostErrors,
     ThrowOnError
-  >({ url: '/v1/models/{model_id}/download', ...options })
+  >({
+    url: '/v1/models/{model_id}/download',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
 
 /**
  * List Requests
