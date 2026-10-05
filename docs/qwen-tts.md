@@ -43,3 +43,11 @@ shard index is assumed. Official repositories specify Apache-2.0.
 Validation uses synthetic audio, fake workers and API/browser fixtures. No model
 weights were downloaded, no actual Qwen inference was run, and CUDA behavior,
 quality and measured memory/latency remain unverified.
+
+Verify the isolated environment using the same script launched by the speech service:
+
+```sh
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "$KADAN_QWEN_TTS_PYTHON" api/workers/kadan_qwen_tts_worker.py --check-install
+```
+
+This imports the real installed Qwen package and checks its official generation methods without loading weights. The worker filename deliberately differs from `qwen_tts` so direct script execution cannot shadow the upstream package. CI installs the worker requirements in a fresh virtual environment and runs this check.

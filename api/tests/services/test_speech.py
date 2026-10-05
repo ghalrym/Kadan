@@ -23,6 +23,8 @@ class SpeechWorkerTests(unittest.TestCase):
             event.set()
         def start(args, **kwargs):
             self.assertEqual(kwargs['env']['HF_HUB_OFFLINE'], '1')
+            self.assertEqual(Path(args[1]).name, 'kadan_qwen_tts_worker.py')
+            self.assertTrue(Path(args[1]).is_file())
             self.assertTrue(resources.snapshot()['reservations'])
             with wave.open(args[-1], 'wb') as out:
                 out.setnchannels(1); out.setsampwidth(2); out.setframerate(24000)
