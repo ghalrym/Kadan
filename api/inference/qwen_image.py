@@ -46,6 +46,8 @@ def generate(path: Path, resources, prompt, aspect, seeds, cancel, device='cuda:
             with reservation.lease(cancel):
                 pipeline = pipeline_type.from_pretrained(str(path), local_files_only=True,
                     torch_dtype=torch.float32 if cpu else torch.bfloat16, use_safetensors=True)
+                if cancel.is_set():
+                    raise ResourceCancelled('Image generation cancelled')
                 if cpu or gpu_budget >= weights + 8 * GIB:
                     pipeline.to(device)
                 else:

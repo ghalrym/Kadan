@@ -62,7 +62,10 @@ class ImageManager:
             result = ImageSet.model_validate_json((self.root / identifier / 'result.json').read_text())
             if not 0 <= index < len(result.seeds):
                 raise ValueError('Unknown image index')
-            return self.root / identifier / f'{index}.png'
+            path = self.root / identifier / f'{index}.png'
+            if not path.is_file():
+                raise ValueError('Missing image file')
+            return path
         except (ValueError, OSError) as exc:
             raise RuntimeFailure('Image not found', 404) from exc
 
@@ -111,9 +114,11 @@ class ImageManager:
         except ValueError as exc:
             raise RuntimeFailure(str(exc), 422) from exc
         finally:
-            if stage is not None and stage.exists():
-                shutil.rmtree(stage)
-            self._gate.release()
+            try:
+                if stage is not None and stage.exists():
+                    shutil.rmtree(stage)
+            finally:
+                self._gate.release()
 
     async def run(self, request, body, source=None):
         """Forward disconnect cancellation and keep ownership until native cleanup finishes."""

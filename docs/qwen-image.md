@@ -1,6 +1,6 @@
 # Qwen-Image-2.1
 
-The image generation and edit routes use the native `QwenImage21Pipeline` from the [official Diffusers integration](https://github.com/huggingface/diffusers/pull/14804), pinned to `8d3c30bfda9b511c00992f40cff4170a5502814d`. Install `api/requirements-qwen-image.txt` alongside the API requirements to enable this optional provider. The existing Transformers pin is 5.19.0.dev0, satisfying the official >=5.17 requirement.
+The image generation and edit routes use the native `QwenImage21Pipeline` from the [official Diffusers integration](https://github.com/huggingface/diffusers/pull/14804), pinned to `8d3c30bfda9b511c00992f40cff4170a5502814d`. The API requirements include `api/requirements-qwen-image.txt` to enable this provider. The existing Transformers pin is 5.19.0.dev0, satisfying the official >=5.17 requirement.
 
 The [official model](https://huggingface.co/Qwen/Qwen-Image-2.1) is pinned to `d26bb61231c349cf6b7896fa83353113880e1ba3`. Its approximately 33.1 GB bundle includes the processor, Qwen3-VL text encoder, image transformer, VAE and scheduler. Generation only loads Kadan's completed download; it never downloads weights implicitly or executes checkpoint Python code. The research license permits research/evaluation only; commercial use requires a separate license. Download acknowledgement is not a commercial grant.
 

@@ -157,6 +157,7 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [imageId, setImageId] = useState<string | null>(null)
   const [videoId, setVideoId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
@@ -249,6 +250,8 @@ export default function SettingsPage() {
   }
   const models = modelStatus?.models ?? []
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
+  const imageModels = models.filter(model => model.kind === 'image')
+  const image = imageModels.find(model => model.id === imageId) ?? imageModels[0]
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
@@ -270,10 +273,11 @@ export default function SettingsPage() {
     : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
+  const imageDownload = imageModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   return (
     <div className="scroll-page">
-      {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : 'LLM'}`)?.focus() }} proceed={() => {
+      {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : licenseModel.kind === 'image' ? 'Image' : 'LLM'}`)?.focus() }} proceed={() => {
         if (licenseAction.current) return
         licenseAction.current = true
         const model = licenseModel
@@ -334,7 +338,22 @@ export default function SettingsPage() {
               {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
             </div>}
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video').map(model => <div className="model-row" key={model.type}>
+          <div className="model-row model-row--video">
+            <label htmlFor="model-Image"><ModelIcon type="Image" />Image</label>
+            <div className="field"><ModelPicker pickerId="Image" label="Image model" models={imageModels} current={image} selectedId={imageId} pending={pending} downloading={downloading} choose={model => setImageId(model.id)} download={model => { setImageId(model.id); downloadModel(model) }} /></div>
+            {image && !image.inference_available && <span className="muted model-video-note">Download only</span>}
+            {imageDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{imageDownload.display_name} · {imageDownload.status}</p>
+                <button type="button" className="button" disabled={pending || imageDownload.status === 'cancelling' || (downloading && imageDownload.status !== 'downloading')} onClick={() => {
+                  if (imageDownload.status === 'downloading') void submitModelChange(`/${imageDownload.id}/download`, 'DELETE')
+                  else downloadModel(imageDownload)
+                }}>{imageDownload.status === 'cancelling' ? 'Cancelling…' : imageDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(imageDownload.status) && <><progress className="progress" aria-label={`${imageDownload.id} download progress`} max={imageDownload.total_bytes || 1} value={imageDownload.total_bytes ? imageDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(imageDownload.downloaded_bytes)} / {imageDownload.total_bytes ? formatGigabytes(imageDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {imageDownload.error && <p role="alert" className="error">{imageDownload.error}</p>}
+            </div>}
+          </div>
+          {modelSettings.filter(model => model.type !== 'LLM' && model.type !== 'Video' && model.type !== 'Image').map(model => <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
