@@ -55,7 +55,7 @@ class H3DownloadTests(unittest.TestCase):
     def test_nested_index_missing_shards_fail_before_publish(self):
         self.payloads['FL2VA/transformer/model.safetensors.index.json'] = b'{"weight_map":{"w":"../../outside.safetensors"}}'
         self.download()
-        self.assertEqual(self.manager.status()['models'][-1]['status'], 'failed')
+        self.assertEqual(next(model for model in self.manager.status()['models'] if model['id'] == 'h3-fl2va')['status'], 'failed')
         self.assertFalse(self.manager._checkpoint_directory(self.entry).exists())
 
     def test_nested_directory_symlink_invalidates_completed_checkpoint(self):
