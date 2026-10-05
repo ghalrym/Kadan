@@ -6,7 +6,7 @@ from api.routes.v1 import decisions, images, metrics, requests, settings, videos
 from api.routes.v1.audio import speech, transcriptions
 from api.routes.v1.chat import completions, messages
 from api.routes.v1.images import edits, generations as image_generations
-from api.routes.v1.videos import generations as video_generations
+from api.routes.v1.videos import generations as video_generations, inputs as video_inputs
 from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
@@ -39,7 +39,7 @@ app = FastAPI(
 for router in (
     health.router, messages.router, completions.router, decisions.router,
     images.router, image_generations.router, edits.router,
-    video_generations.router, videos.router, speech.router, transcriptions.router,
+    video_generations.router, video_inputs.router, videos.router, speech.router, transcriptions.router,
     metrics.router, requests.router, settings.router, models.router, model_lifecycle.router,
 ):
     app.include_router(router)

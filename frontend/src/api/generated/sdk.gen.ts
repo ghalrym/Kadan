@@ -85,6 +85,9 @@ import type {
   UpdateSettingsData,
   UpdateSettingsErrors,
   UpdateSettingsResponses,
+  UploadVideoInputData,
+  UploadVideoInputErrors,
+  UploadVideoInputResponses,
 } from './types.gen'
 
 export type Options<
@@ -596,6 +599,22 @@ export const generateVideo = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * Upload Video Input
+ */
+export const uploadVideoInput = <ThrowOnError extends boolean = false>(
+  options: Options<UploadVideoInputData, ThrowOnError>,
+): RequestResult<
+  UploadVideoInputResponses,
+  UploadVideoInputErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    UploadVideoInputResponses,
+    UploadVideoInputErrors,
+    ThrowOnError
+  >({ url: '/v1/videos/inputs', ...options })
 
 /**
  * Cancel Video
