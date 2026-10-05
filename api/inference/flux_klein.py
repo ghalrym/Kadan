@@ -9,3 +9,6 @@ RECIPES = {
 
 RECIPES['flux-klein-9b'] = ImageRecipe('flux-klein-9b',
     '92196c8e11f7b6cf2b7493e037d8c5345c559216', 'Flux2KleinPipeline', SIZES, 4, 1.0)
+
+RECIPES['flux-klein-9b-kv'] = ImageRecipe('flux-klein-9b-kv', 'a6dfb36eca3a3906eb2fd460795adfb844e5fcce',
+    'Flux2KleinKVPipeline', SIZES, 4, None)

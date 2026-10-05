@@ -103,6 +103,11 @@ CATALOG['flux-klein-9b'] = replace(CATALOG['flux-klein-4b'],
     license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/blob/92196c8e11f7b6cf2b7493e037d8c5345c559216/LICENSE.md',
     license_notice='FLUX.2 klein 9B has a non-commercial license and usage conditions. Commercial use requires separate rights; continuing does not grant them or approve Hugging Face access.')
 
+CATALOG['flux-klein-9b-kv'] = replace(CATALOG['flux-klein-9b'],
+    id='flux-klein-9b-kv', repo_id='black-forest-labs/FLUX.2-klein-9b-kv', revision='a6dfb36eca3a3906eb2fd460795adfb844e5fcce', display_name='FLUX.2 klein 9B KV',
+    license_url='https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv/blob/a6dfb36eca3a3906eb2fd460795adfb844e5fcce/LICENSE.md',
+    license_notice='FLUX.2 klein 9B KV has a non-commercial license and usage conditions. Commercial use requires separate rights; continuing does not grant them or approve Hugging Face access.')
+
 ASSETS = frozenset({
     'config.json', 'configuration.json', 'generation_config.json',
     'hf_quant_config.json', 'model.safetensors.index.json', 'tokenizer.json',
