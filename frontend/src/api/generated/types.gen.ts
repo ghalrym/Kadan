@@ -1208,7 +1208,7 @@ export type GenerateSpeechErrors = {
    */
   422: HttpValidationError
   /**
-   * Speech worker unavailable
+   * Speech provider unavailable
    */
   503: SpeechUnavailable
 }

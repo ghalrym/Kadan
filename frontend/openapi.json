@@ -2130,7 +2130,7 @@
                 }
               }
             },
-            "description": "Speech worker unavailable"
+            "description": "Speech provider unavailable"
           }
         },
         "summary": "Generate Speech",
