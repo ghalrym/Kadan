@@ -56,6 +56,7 @@ class ManifestFile(TypedDict):
     size: int
     digest: str
     algorithm: Literal['sha256', 'git-sha1']
+    url: NotRequired[str]
 
 
 class CompletionMarker(TypedDict):
@@ -107,6 +108,10 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
 
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
+    if entry.layout == 'composite':
+        manifest = TypeAdapter(list[ManifestFile]).validate_python(list(entry.manifest), strict=True)
+        validate_assets(entry, {item['name'] for item in manifest})
+        return manifest
     if entry.layout == 'single_file':
         if (not entry.asset_url or not entry.asset_url.startswith('https://')
                 or not entry.asset_name or not allowed_asset(entry.asset_name, entry)
@@ -201,6 +206,8 @@ class ModelManager:
         try:
             marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
             files = marker['files']
+            if entry.layout == 'composite' and files != list(entry.manifest):
+                return False
             validate_assets(entry, {item['name'] for item in files})
             return (not path.is_symlink() and marker['revision'] == entry.revision and bool(files)
                     and all(allowed_asset(item['name'], entry) and not any(parent.is_symlink() for parent in (path / item['name']).parents if parent != self.root)
@@ -437,7 +444,9 @@ class ModelManager:
                 if item['algorithm'] == 'git-sha1':
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
-                url = entry.asset_url if entry.layout == 'single_file' else f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                url = (item['url'] if entry.layout == 'composite' else entry.asset_url
+                       if entry.layout == 'single_file' else
+                       f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}")
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
                 with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:

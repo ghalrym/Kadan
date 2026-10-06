@@ -1,15 +1,16 @@
 import { MediaPlaceholder } from './Media'
-import type { VideoJob } from '../api/video'
+import { isPendingVideo, type VideoJob } from '../api/video'
 
 /**
- * Display API job metadata and reported progress with a labeled placeholder.
- * This card does not synthesize progress or provide a generated video file.
+ * Display actual job state and completed native media.
  */
-export default function VideoJobCard({ job }: { job: VideoJob }) {
+export default function VideoJobCard({ job, onCancel }: { job: VideoJob; onCancel?: () => void }) {
   return (
     <article className="panel video-job">
       <div className="video-thumbnail">
-        <MediaPlaceholder aspect={job.aspect} label={job.thumbnail} />
+        {job.status === 'Done' && job.output_url
+          ? <video controls preload="metadata" src={job.output_url} aria-label="Generated video" style={{ width: '100%' }} />
+          : <MediaPlaceholder aspect={job.aspect} label={job.thumbnail} />}
       </div>
       <div className="stack compact">
         <div className="row wrap">
@@ -29,6 +30,8 @@ export default function VideoJobCard({ job }: { job: VideoJob }) {
               : '9:16'}{' '}
           · {job.fps} fps
         </p>
+        {job.error && <p role="alert">{job.error}</p>}
+        {isPendingVideo(job) && onCancel && <button type="button" className="ghost" onClick={onCancel}>Cancel</button>}
         <div className="job-progress row">
           <progress
             className="progress progress--video"

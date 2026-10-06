@@ -1,0 +1,3 @@
+# Native H3 dependencies share the standard API environment and runtime pins.
+sglang[diffusion] @ git+https://github.com/sgl-project/sglang.git@f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a#subdirectory=python
+comfy-kitchen==0.2.37

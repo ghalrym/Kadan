@@ -1677,6 +1677,15 @@
             "title": "Fps",
             "type": "integer"
           },
+          "model": {
+            "default": "ltx-2.5-distilled",
+            "enum": [
+              "ltx-2.5-distilled",
+              "h3-fl2va-int8-turbo"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
           "negative_prompt": {
             "default": "",
             "maxLength": 8000,
@@ -1695,10 +1704,18 @@
             "enum": [
               "480p",
               "720p",
+              "768p",
               "1080p"
             ],
             "title": "Resolution",
             "type": "string"
+          },
+          "seed": {
+            "default": 42,
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "title": "Seed",
+            "type": "integer"
           }
         },
         "required": [
@@ -1734,6 +1751,17 @@
             "title": "Duration",
             "type": "string"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
           "fps": {
             "title": "Fps",
             "type": "string"
@@ -1741,6 +1769,17 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "output_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Url"
           },
           "progress": {
             "maximum": 100.0,
@@ -1764,7 +1803,9 @@
             "enum": [
               "Rendering",
               "Queued",
-              "Done"
+              "Done",
+              "Failed",
+              "Cancelled"
             ],
             "title": "Status",
             "type": "string"
@@ -2982,7 +3023,7 @@
     },
     "/v1/videos": {
       "get": {
-        "description": "Return an empty queue because no video jobs are persisted or scheduled.",
+        "description": "Return jobs submitted to this API process.",
         "operationId": "listVideos",
         "responses": {
           "200": {
@@ -3004,7 +3045,7 @@
     },
     "/v1/videos/generations": {
       "post": {
-        "description": "Reject validated generation settings with HTTP 503 without queuing a job.\n\nThe declared 202 response is the future job contract, not evidence that a\nprovider ran or that GPU rendering has started.",
+        "description": "Queue a validated native generation and return its actual job identifier.",
         "operationId": "generateVideo",
         "requestBody": {
           "content": {
@@ -3048,8 +3089,48 @@
       }
     },
     "/v1/videos/{video_id}": {
+      "delete": {
+        "operationId": "cancelVideo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Video",
+        "tags": [
+          "Videos"
+        ]
+      },
       "get": {
-        "description": "Report HTTP 404 for the requested ID; no provider-backed video jobs exist.",
+        "description": "Return the real worker state, including errors and cancellation.",
         "operationId": "getVideo",
         "parameters": [
           {
@@ -3088,6 +3169,46 @@
           }
         },
         "summary": "Get Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/{video_id}/content": {
+      "get": {
+        "operationId": "getVideoContent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video Content",
         "tags": [
           "Videos"
         ]

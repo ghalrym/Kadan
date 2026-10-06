@@ -94,7 +94,7 @@ class GlmTests(unittest.TestCase):
             hidden_size=32, intermediate_size=64, moe_intermediate_size=32,
             num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=2,
             n_routed_experts=4, num_experts_per_tok=2, n_shared_experts=1,
-            n_group=1, topk_group=1, layer_types=['linear_attention', 'indexed_attention'],
+            n_group=1, topk_group=1, layer_types=['linear_attention', 'deepseek_sparse_attention'],
             mlp_layer_types=['dense', 'sparse'], linear_num_heads=2, linear_head_dim=16,
             vocab_size=64, pad_token_id=0, eos_token_id=63, q_lora_rank=16,
             kv_lora_rank=16, qk_nope_head_dim=16, qk_rope_head_dim=0,

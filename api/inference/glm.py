@@ -303,7 +303,7 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
         from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig
         from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
     except ImportError as exc:
-        raise RuntimeError('GLM requires the pinned Transformers source with glm5_next; released 5.16.0 lacks this architecture') from exc
+        raise RuntimeError('GLM requires the pinned Transformers release with glm5_next') from exc
     from accelerate import init_empty_weights
     from transformers import AutoTokenizer
     from accelerate.utils import set_module_tensor_to_device
@@ -316,8 +316,8 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
         raise ValueError('Expected GLM glm5_next compressed-tensors checkpoint')
     text = dict(raw['text_config'])
     text.pop('model_type', None)
-    text['layer_types'] = ['indexed_attention' if x == 'deepseek_sparse_attention' else x for x in text['layer_types']]
-    if set(text['layer_types']) - {'indexed_attention', 'linear_attention'}:
+    text['layer_types'] = ['deepseek_sparse_attention' if x == 'indexed_attention' else x for x in text['layer_types']]
+    if set(text['layer_types']) - {'deepseek_sparse_attention', 'linear_attention'}:
         raise ValueError('Unknown GLM attention architecture')
     config = Glm5NextTextConfig(**text)
     config._attn_implementation = 'eager'

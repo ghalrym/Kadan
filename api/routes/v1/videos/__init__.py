@@ -1,6 +1,8 @@
-"""Video job queries. No video provider or persisted jobs are available yet."""
+"""Native video job queries, cancellation, and completed media."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from api.services.video_jobs import video_jobs
 from api.pydantic_models.media import VideoJob
 
 router = APIRouter(prefix="/v1/videos", tags=["Videos"])
@@ -16,11 +18,31 @@ class VideoResponse(BaseModel):
 
 @router.get("", operation_id="listVideos")
 def list_videos() -> VideosResponse:
-    """Return an empty queue because no video jobs are persisted or scheduled."""
-    return VideosResponse(jobs=[])
+    """Return jobs submitted to this API process."""
+    return VideosResponse(jobs=video_jobs.list())
 
 
 @router.get("/{video_id}", operation_id="getVideo", responses={404: {"description": "Video not found"}})
 def get_video(video_id: str) -> VideoResponse:
-    """Report HTTP 404 for the requested ID; no provider-backed video jobs exist."""
-    raise HTTPException(status_code=404, detail="Video not found")
+    """Return the real worker state, including errors and cancellation."""
+    try:
+        return VideoResponse(job=video_jobs.get(video_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+
+
+@router.delete("/{video_id}", operation_id="cancelVideo")
+def cancel_video(video_id: str) -> VideoResponse:
+    try:
+        return VideoResponse(job=video_jobs.cancel(video_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+
+
+@router.get("/{video_id}/content", operation_id="getVideoContent")
+def get_video_content(video_id: str):
+    try:
+        path = video_jobs.content(video_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Completed video not found") from exc
+    return FileResponse(path, media_type="video/mp4", filename=f"{video_id}.mp4")

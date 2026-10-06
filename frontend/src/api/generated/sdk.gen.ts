@@ -12,6 +12,9 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelVideoData,
+  CancelVideoErrors,
+  CancelVideoResponses,
   ConfigureContextV1ModelsModelIdContextPutData,
   ConfigureContextV1ModelsModelIdContextPutErrors,
   ConfigureContextV1ModelsModelIdContextPutResponses,
@@ -47,6 +50,9 @@ import type {
   GetRequestResponses,
   GetSettingsData,
   GetSettingsResponses,
+  GetVideoContentData,
+  GetVideoContentErrors,
+  GetVideoContentResponses,
   GetVideoData,
   GetVideoErrors,
   GetVideoResponses,
@@ -634,7 +640,7 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
 /**
  * List Videos
  *
- * Return an empty queue because no video jobs are persisted or scheduled.
+ * Return jobs submitted to this API process.
  */
 export const listVideos = <ThrowOnError extends boolean = false>(
   options?: Options<ListVideosData, ThrowOnError>,
@@ -647,10 +653,7 @@ export const listVideos = <ThrowOnError extends boolean = false>(
 /**
  * Generate Video
  *
- * Reject validated generation settings with HTTP 503 without queuing a job.
- *
- * The declared 202 response is the future job contract, not evidence that a
- * provider ran or that GPU rendering has started.
+ * Queue a validated native generation and return its actual job identifier.
  */
 export const generateVideo = <ThrowOnError extends boolean = false>(
   options: Options<GenerateVideoData, ThrowOnError>,
@@ -669,9 +672,21 @@ export const generateVideo = <ThrowOnError extends boolean = false>(
   })
 
 /**
+ * Cancel Video
+ */
+export const cancelVideo = <ThrowOnError extends boolean = false>(
+  options: Options<CancelVideoData, ThrowOnError>,
+): RequestResult<CancelVideoResponses, CancelVideoErrors, ThrowOnError> =>
+  (options.client ?? client).delete<
+    CancelVideoResponses,
+    CancelVideoErrors,
+    ThrowOnError
+  >({ url: '/v1/videos/{video_id}', ...options })
+
+/**
  * Get Video
  *
- * Report HTTP 404 for the requested ID; no provider-backed video jobs exist.
+ * Return the real worker state, including errors and cancellation.
  */
 export const getVideo = <ThrowOnError extends boolean = false>(
   options: Options<GetVideoData, ThrowOnError>,
@@ -681,3 +696,19 @@ export const getVideo = <ThrowOnError extends boolean = false>(
     GetVideoErrors,
     ThrowOnError
   >({ url: '/v1/videos/{video_id}', ...options })
+
+/**
+ * Get Video Content
+ */
+export const getVideoContent = <ThrowOnError extends boolean = false>(
+  options: Options<GetVideoContentData, ThrowOnError>,
+): RequestResult<
+  GetVideoContentResponses,
+  GetVideoContentErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetVideoContentResponses,
+    GetVideoContentErrors,
+    ThrowOnError
+  >({ url: '/v1/videos/{video_id}/content', ...options })
