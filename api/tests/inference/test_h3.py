@@ -103,6 +103,7 @@ class H3Tests(unittest.TestCase):
             staging = []
 
             def launch(command, **kwargs):
+                self.assertEqual(kwargs['env']['PATH'].split(':')[0], str(Path(command[0]).parent))
                 self.assertEqual(kwargs['env']['HF_HUB_OFFLINE'], '1')
                 self.assertEqual(kwargs['env']['TRANSFORMERS_OFFLINE'], '1')
                 self.assertTrue(kwargs['start_new_session'])

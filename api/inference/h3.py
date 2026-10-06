@@ -113,6 +113,8 @@ class H3Provider:
         python = os.environ.get('KADAN_H3_PYTHON', '/opt/kadan-h3/bin/python')
         if not Path(python).is_file():
             raise RuntimeError('The installed H3 runtime is missing; rebuild the standard Kadan API image')
+        # The isolated runtime supplies executables such as ninja for kernel JIT.
+        env['PATH'] = str(Path(python).parent) + os.pathsep + env.get('PATH', '')
         # Keep the renderer's sanitizer-safe filename separate from the queue's
         # hidden staging name. The same filesystem permits atomic publication.
         with tempfile.TemporaryDirectory(prefix='.kadan-h3-', dir=output.parent) as scratch:

@@ -23,6 +23,6 @@ class H3UpstreamTests(unittest.TestCase):
         exec(compile(ast.Module(body=[function], type_ignores=[]), '<pinned-sglang-sanitizer>', 'exec'), namespace)
         sanitize = namespace['_sanitize_filename']
         self.assertEqual(sanitize('.job.partial.mp4'), 'job.partial.mp4')
-        spec = SimpleNamespace(prompt='test', aspect='16:9', duration=4, seed=42)
+        spec = SimpleNamespace(prompt='test', aspect='16:9', duration=4, seed=42, resolution='480p')
         arguments = sampling_arguments(spec, Path('/private/job/video.mp4'))
         self.assertEqual(sanitize(arguments['output_file_name']), arguments['output_file_name'])
