@@ -16,7 +16,7 @@ import shutil
 import threading
 from typing import IO, Literal
 from typing_extensions import NotRequired, TypedDict
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -107,6 +107,17 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
 
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
+    if entry.layout == 'single_file':
+        if (not entry.asset_url or not entry.asset_url.startswith('https://')
+                or not entry.asset_name or not allowed_asset(entry.asset_name, entry)
+                or not re.fullmatch('[0-9a-f]{64}', entry.revision)):
+            raise ValueError('Invalid pinned single-file checkpoint metadata')
+        with urlopen(Request(entry.asset_url, method='HEAD'), timeout=30) as response:
+            value = response.headers.get('Content-Length', '')
+        if not value.isdecimal() or int(value) <= 0:
+            raise ValueError('Upstream omitted valid checkpoint size metadata')
+        return [{'name': entry.asset_name, 'size': int(value),
+                 'digest': entry.revision, 'algorithm': 'sha256'}]
     metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
     with urlopen(metadata_url, timeout=30) as response:
         checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
@@ -426,7 +437,7 @@ class ModelManager:
                 if item['algorithm'] == 'git-sha1':
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
-                url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                url = entry.asset_url if entry.layout == 'single_file' else f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
                 with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:

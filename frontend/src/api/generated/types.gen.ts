@@ -871,19 +871,47 @@ export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference only; no upload or fetching is implemented
+   * Base64 mono 16-bit PCM WAV data URL at 16000 Hz
    */
   audio: string
   /**
    * Formatting
    */
   formatting?: boolean
+  /**
+   * Language
+   */
+  language?: string | null
+  /**
+   * Model
+   */
+  model?: string | null
 }
 
 /**
  * TranscriptionResponse
  */
 export type TranscriptionResponse = {
+  /**
+   * Formatting Model
+   */
+  formatting_model?: string | null
+  /**
+   * Formatting Status
+   */
+  formatting_status: string
+  /**
+   * Language
+   */
+  language: string | null
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Raw Text
+   */
+  raw_text: string
   /**
    * Text
    */
@@ -1030,6 +1058,30 @@ export type VideosResponse = {
    * Jobs
    */
   jobs: Array<VideoJob>
+}
+
+/**
+ * WhisperModels
+ */
+export type WhisperModels = {
+  /**
+   * Models
+   */
+  models: Array<string>
+  /**
+   * Selected
+   */
+  selected: string | null
+}
+
+/**
+ * WhisperSelection
+ */
+export type WhisperSelection = {
+  /**
+   * Model
+   */
+  model: string
 }
 
 /**
@@ -1243,6 +1295,50 @@ export type TranscribeAudioResponses = {
 
 export type TranscribeAudioResponse =
   TranscribeAudioResponses[keyof TranscribeAudioResponses]
+
+export type GetWhisperModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type GetWhisperModelsResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type GetWhisperModelsResponse =
+  GetWhisperModelsResponses[keyof GetWhisperModelsResponses]
+
+export type SelectWhisperModelData = {
+  body: WhisperSelection
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type SelectWhisperModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectWhisperModelError =
+  SelectWhisperModelErrors[keyof SelectWhisperModelErrors]
+
+export type SelectWhisperModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type SelectWhisperModelResponse =
+  SelectWhisperModelResponses[keyof SelectWhisperModelResponses]
 
 export type CreateCompletionData = {
   body: CompletionRequest

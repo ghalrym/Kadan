@@ -1507,7 +1507,7 @@
         "additionalProperties": false,
         "properties": {
           "audio": {
-            "description": "Audio reference only; no upload or fetching is implemented",
+            "description": "Base64 mono 16-bit PCM WAV data URL at 16000 Hz",
             "minLength": 1,
             "title": "Audio",
             "type": "string"
@@ -1516,6 +1516,28 @@
             "default": true,
             "title": "Formatting",
             "type": "boolean"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -1526,13 +1548,51 @@
       },
       "TranscriptionResponse": {
         "properties": {
+          "formatting_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatting Model"
+          },
+          "formatting_status": {
+            "title": "Formatting Status",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
           "text": {
             "title": "Text",
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "text",
+          "raw_text",
+          "language",
+          "model",
+          "formatting_status"
         ],
         "title": "TranscriptionResponse",
         "type": "object"
@@ -1760,6 +1820,48 @@
           "jobs"
         ],
         "title": "VideosResponse",
+        "type": "object"
+      },
+      "WhisperModels": {
+        "properties": {
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "selected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected"
+          }
+        },
+        "required": [
+          "models",
+          "selected"
+        ],
+        "title": "WhisperModels",
+        "type": "object"
+      },
+      "WhisperSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "WhisperSelection",
         "type": "object"
       },
       "api__routes__v1__images__edits__ImageRequest": {
@@ -2074,7 +2176,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
+        "description": "Run native Whisper; preserve its raw transcript for optional formatting.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -2119,6 +2221,67 @@
           }
         },
         "summary": "Transcribe Audio",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/audio/transcriptions/models": {
+      "get": {
+        "description": "List all unique official checkpoints and the persisted selection.",
+        "operationId": "getWhisperModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Models",
+        "tags": [
+          "Audio"
+        ]
+      },
+      "put": {
+        "operationId": "selectWhisperModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhisperSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Model",
         "tags": [
           "Audio"
         ]

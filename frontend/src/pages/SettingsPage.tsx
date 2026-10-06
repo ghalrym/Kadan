@@ -3,6 +3,8 @@ import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
+import { WhisperSelector } from '../components/WhisperSelector'
+import { ModelPicker } from '../components/ModelPicker'
 
 /**
  * Request catalog status or a mutation under /v1/models with a 15-second timeout.
@@ -65,11 +67,6 @@ function ContextControl({ model, pending, value, change }: { model: ModelStatus;
   </div>
 }
 
-/** Match the native select chevron so the custom picker sits flush with other model rows. */
-function Chevron() {
-  return <svg className="model-picker-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg>
-}
-
 /** Format a token count with the preset label when one matches, else a grouped number. */
 const formatContext = (limit: number) => contextPresets.find(([, preset]) => preset === limit)?.[0] ?? limit.toLocaleString()
 
@@ -80,57 +77,6 @@ function ModelIcon({ type }: { type: string }) {
     <circle cx="7.76" cy="8.43" r="2.5" /><circle cx="4.24" cy="8.43" r="2.5" />
     <circle cx="3.15" cy="5.07" r="2.5" /><circle className="model-icon-center" cx="6" cy="6" r="1.5" />
   </svg>
-}
-
-/**
- * An in-flow dropdown group with sibling choice/download controls, rather than
- * interactive children inside native options. Escape restores trigger focus;
- * arrows/Home/End move between enabled controls, Tab and outside clicks dismiss.
- */
-function ModelPicker({ models, current, selectedId, pending, downloading, choose, download, pickerId = 'LLM', label = 'Language model' }: {
-  pickerId?: string; label?: string; models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
-  choose: (model: ModelStatus) => void; download: (model: ModelStatus) => void;
-}) {
-  const [open, setOpen] = useState(false)
-  const wrapper = useRef<HTMLDivElement>(null)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const popup = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    popup.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-    const outside = (event: PointerEvent) => { if (!wrapper.current?.contains(event.target as Node)) setOpen(false) }
-    document.addEventListener('pointerdown', outside)
-    return () => document.removeEventListener('pointerdown', outside)
-  }, [open])
-  function dismiss() { setOpen(false); trigger.current?.focus() }
-  return <div className="model-picker" ref={wrapper} onBlur={event => {
-    if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false)
-  }} onKeyDown={event => {
-    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss() }
-    if (!open || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    const controls = Array.from(popup.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
-    const index = controls.indexOf(document.activeElement as HTMLButtonElement)
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + controls.length) % controls.length
-    controls[next]?.focus()
-  }}>
-    <button type="button" id={`model-${pickerId}`} className="input model-picker-trigger" ref={trigger} aria-expanded={open} aria-controls={`${pickerId}-model-picker`} disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
-      if (!open && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true) }
-    }}>
-      <span>{current ? (current.display_name ?? current.repo_id.split('/')[1]) : `Choose a ${label.toLowerCase()}`}</span><Chevron />
-    </button>
-    {open && <div id={`${pickerId}-model-picker`} role="group" aria-label={`${label} options`} className="model-picker-options" ref={popup}>
-      {models.map(model => <div className="model-picker-option" key={model.id}>
-        <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
-          <span>{(model.display_name ?? model.repo_id.split('/')[1])}</span>
-          <small><span className="model-picker-size">{formatGigabytes(model.estimated_bytes)}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
-        </button>
-        {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${(model.display_name ?? model.repo_id.split('/')[1])}`} title={`Download ${(model.display_name ?? model.repo_id.split('/')[1])}`} onClick={() => { download(model); dismiss() }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
-        </button>}
-      </div>)}
-    </div>}
-  </div>
 }
 
 /**
@@ -157,9 +103,9 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
-  const [videoId, setVideoId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
+  const [videoId, setVideoId] = useState<string | null>(null)
   const [chosenId, setChosenId] = useState<string | null>(null)
   const [contextDraft, setContextDraft] = useState<{ modelId: string; limit: number | null } | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
@@ -248,9 +194,10 @@ export default function SettingsPage() {
     }
   }
   const models = modelStatus?.models ?? []
-  const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
+  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+  const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
   const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
   const contextLimit = chosen && contextDraft?.modelId === chosen.id ? contextDraft.limit : chosen?.context_limit ?? null
@@ -270,7 +217,6 @@ export default function SettingsPage() {
     : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
-  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   return (
     <div className="scroll-page">
       {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : 'LLM'}`)?.focus() }} proceed={() => {
@@ -335,9 +281,9 @@ export default function SettingsPage() {
             </div>}
           </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
-            <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
+            {model.type === 'STT' ? <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
               {model.options.map(option => <option key={option}>{option}</option>)}
-            </select>
+            </select>}
           </div>)}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>

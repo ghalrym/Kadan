@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from api.server import app
 from api.services.model_downloads import BusyError, ModelManager
+from api.services.model_catalog import CATALOG
 
 
 class ModelsRouteTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class ModelsRouteTests(unittest.TestCase):
     def test_catalog_and_validation(self):
         response = self.client.get('/v1/models')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item['id'] for item in response.json()['models']], ['small', 'medium', 'large', 'h3-fl2va'])
+        self.assertEqual([item['id'] for item in response.json()['models']], list(CATALOG))
         self.assertEqual(self.client.put('/v1/models/selection', json={'model_id': 'small'}).status_code, 400)
         self.assertEqual(self.client.put('/v1/models/selection', json={'model_id': 'arbitrary'}).status_code, 422)
         self.assertEqual(self.client.post('/v1/models/arbitrary/download').status_code, 400)
