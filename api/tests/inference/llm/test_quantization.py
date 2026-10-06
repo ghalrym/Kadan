@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from api.inference.quantization import (
+from api.inference.llm.quantization import (
     dequantize_mxfp4, dequantize_nvfp4, mxfp4_linear, nvfp4_linear, fp8_linear,
 )
 

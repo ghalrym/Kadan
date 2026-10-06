@@ -7,10 +7,10 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from api.inference.checkpoint import SafeTensorReader
-from api.inference.generation import autoregressive_generate, check_cancel
-from api.inference.offload import ExpertBank, ExpertCache
-from api.inference.quantization import mxfp4_linear
+from api.inference.llm.checkpoint import SafeTensorReader
+from api.inference.llm.generation import autoregressive_generate, check_cancel
+from api.inference.llm.offload import ExpertBank, ExpertCache
+from api.inference.llm.quantization import mxfp4_linear
 
 
 class GptOssOffloadedExperts(nn.Module):
@@ -152,7 +152,7 @@ class GptOssAdapter:
             self.model.eval()
             self.device_budget = sum(t.numel() * t.element_size() for t in
                 list(self.model.parameters()) + list(self.model.buffers())) + 16 * 1024**2
-            from api.inference.context import configure_context
+            from api.inference.llm.context import configure_context
             configure_context(self, None)
             self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             self._restore(cancel_event)
@@ -250,14 +250,14 @@ def build_runtime(entry, path, resources, device='cuda:0', cancel_event=None):
     the supplied resource manager. Unknown catalog IDs raise ValueError;
     this factory does not start an external inference service.
     """
-    from api.inference.reloadable import ReloadableAdapter
+    from api.inference.llm.reloadable import ReloadableAdapter
     if entry.id == 'medium':
         factory = GptOssAdapter
     elif entry.id == 'small':
-        from api.inference.qwen import build_qwen
+        from api.inference.llm.qwen import build_qwen
         factory = build_qwen
     elif entry.id == 'large':
-        from api.inference.glm import build_glm
+        from api.inference.llm.glm import build_glm
         factory = build_glm
     else:
         raise ValueError('No Kadan adapter exists for this model')

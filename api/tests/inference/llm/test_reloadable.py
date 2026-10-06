@@ -7,7 +7,7 @@ import weakref
 
 import torch
 
-from api.inference.reloadable import ReloadableAdapter
+from api.inference.llm.reloadable import ReloadableAdapter
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted, ResourceManager
 
 

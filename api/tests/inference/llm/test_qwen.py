@@ -6,8 +6,8 @@ from torch import nn
 from transformers import Qwen3_5MoeTextConfig
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeSparseMoeBlock
 
-from api.inference.offload import ExpertBank, ExpertCache
-from api.inference.qwen import HostLinear, QwenExperts, checkpoint_name, project, read_projection
+from api.inference.llm.offload import ExpertBank, ExpertCache
+from api.inference.llm.qwen import HostLinear, QwenExperts, checkpoint_name, project, read_projection
 
 
 def packed(rows, columns):
@@ -18,7 +18,7 @@ def packed(rows, columns):
 class QwenTests(unittest.TestCase):
     def test_full_size_skeleton_never_allocates_expert_storage(self):
         from torch.utils._python_dispatch import TorchDispatchMode
-        from api.inference.qwen import qwen_skeleton
+        from api.inference.llm.qwen import qwen_skeleton
         devices = []
         class RecordEmpty(TorchDispatchMode):
             def __torch_dispatch__(self, func, types, args=(), kwargs=None):
@@ -34,7 +34,7 @@ class QwenTests(unittest.TestCase):
         self.assertTrue(all(not b.is_meta for b in model.buffers()))
 
     def test_eviction_never_waits_on_adapter_lock(self):
-        from api.inference.qwen import QwenAdapter
+        from api.inference.llm.qwen import QwenAdapter
         from api.inference.resources import ResourceBusy
         adapter = QwenAdapter('cpu')
         locked, release = threading.Event(), threading.Event()
@@ -116,7 +116,7 @@ class QwenTests(unittest.TestCase):
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
         from transformers import PreTrainedTokenizerFast, Qwen3_5MoeForCausalLM
-        from api.inference.qwen import build_qwen
+        from api.inference.llm.qwen import build_qwen
         from api.inference.resources import ResourceManager
         config = Qwen3_5MoeTextConfig(vocab_size=32, hidden_size=32, num_hidden_layers=2,
             num_attention_heads=2, num_key_value_heads=1, head_dim=16,

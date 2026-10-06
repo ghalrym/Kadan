@@ -72,7 +72,7 @@ class ReloadableAdapter:
         self._inner = inner
         try:
             if self._context_was_configured:
-                from api.inference.context import configure_context
+                from api.inference.llm.context import configure_context
                 configure_context(inner, self.configured_context_limit)
         except BaseException:
             inner.close()
@@ -89,7 +89,7 @@ class ReloadableAdapter:
         """Validate and remember a limit without forcing an evicted model to reload; reject
         explicit closure and unsupported limits.
         """
-        from api.inference.context import configure_context
+        from api.inference.llm.context import configure_context
         with self._gate:
             if self._closed:
                 raise RuntimeError('Model has been explicitly closed')

@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from api.inference.context import ContextLimitError, ContextMemoryError, configure_context, estimate_request_memory, resolve_context
+from api.inference.llm.context import ContextLimitError, ContextMemoryError, configure_context, estimate_request_memory, resolve_context
 
 
 class ContextTests(unittest.TestCase):
@@ -62,7 +62,7 @@ class ContextTests(unittest.TestCase):
 
     def test_long_prompt_not_truncated_and_admission_precedes_forward(self):
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         from api.inference.resources import ResourceManager
         model = Mock()
         model.config = SimpleNamespace(**self.config(), eos_token_id=2)
@@ -79,7 +79,7 @@ class ContextTests(unittest.TestCase):
 
     def test_prefill_chunk_boundaries_keep_every_token(self):
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         for length in (32, 33, 64, 65):
             seen = []
             class Model:
@@ -96,7 +96,7 @@ class ContextTests(unittest.TestCase):
     def test_failure_and_cancellation_release_request_reservation(self):
         import threading
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         from api.inference.resources import ResourceManager
         for fails in (True, False):
             event = threading.Event()
@@ -120,7 +120,7 @@ class ContextTests(unittest.TestCase):
 
     def test_working_expert_must_fit_before_forward(self):
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         from api.inference.resources import ResourceManager
         budget = estimate_request_memory(self.config(), 266, 10)
         resources = ResourceManager(10**9, {0: budget.device_bytes + 1023})
@@ -136,7 +136,7 @@ class ContextTests(unittest.TestCase):
     def test_preflight_evicts_idle_expert_for_request_then_working_slot(self):
         from contextlib import nullcontext
         from unittest.mock import patch
-        from api.inference.generation import request_memory
+        from api.inference.llm.generation import request_memory
         from api.inference.resources import ResourceManager
         budget = estimate_request_memory(self.config(), 4096, 3840)
         resources = ResourceManager(10**9, {0: budget.device_bytes + 1024})
@@ -155,7 +155,7 @@ class ContextTests(unittest.TestCase):
 
     def test_cache_race_failure_becomes_admission_error_and_releases_request(self):
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         from api.inference.resources import ResourceManager, ResourceExhausted
         resources = ResourceManager(10**9, {})
         model = Mock(side_effect=ResourceExhausted('competing allocation'))
@@ -168,7 +168,7 @@ class ContextTests(unittest.TestCase):
 
     def test_long_input_uses_all_chunks_without_fixed_fixture_limit(self):
         import torch
-        from api.inference.generation import autoregressive_generate
+        from api.inference.llm.generation import autoregressive_generate
         lengths = []
         class Model:
             config = SimpleNamespace(max_position_embeddings=20000, eos_token_id=1)
