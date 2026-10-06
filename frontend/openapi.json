@@ -2023,7 +2023,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model; invalid or oversized inputs return errors. Image, video, speech and transcription providers are not implemented; those generation endpoints return unavailable errors and media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2165,7 +2165,7 @@
         ]
       },
       "post": {
-        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
+        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -2217,7 +2217,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Run native Whisper; preserve its raw transcript for optional formatting.",
+        "description": "Queue native Whisper and preserve its raw transcript and formatting status.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -2330,7 +2330,7 @@
     },
     "/v1/chat/completions": {
       "post": {
-        "description": "Generate an assistant reply with the loaded model. Client disconnect cancels generation and\nawaits cleanup; runtime failures preserve their HTTP status.",
+        "description": "Queue a reply; disconnect waits for native cancellation and cleanup.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {
@@ -2414,7 +2414,7 @@
         ]
       },
       "post": {
-        "description": "Evaluate typed questions with the resident CPU Laya specialist, independent of chat.\n\nOversized tokenized questions/state return 422 rather than truncated answers.\nDisconnect cancellation waits for the CPU worker before releasing ownership.\nResults are not persisted; there is no fallback to a generative model.",
+        "description": "Queue typed CPU decisions, preserving validation and disconnect cleanup.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
@@ -2478,7 +2478,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
+        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2523,7 +2523,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
+        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {

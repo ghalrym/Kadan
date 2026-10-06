@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from api.services.transcription import transcription, whisper_catalog
+from api.inference.stt import model as transcription, catalog as whisper_catalog
 
 
 class LazyManagerTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class LazyManagerTests(unittest.TestCase):
 
     def test_import_does_not_construct_manager(self):
         subprocess.run([sys.executable, '-c',
-            'from api.services.transcription.transcription import _cached_transcription_manager; '
+            'from api.inference.stt.model import _cached_transcription_manager; '
             'assert _cached_transcription_manager.cache_info().currsize == 0'], check=True)
 
     def test_concurrent_first_requests_share_one_manager_and_admission_lock(self):
@@ -68,16 +68,16 @@ class LazyCatalogTests(unittest.TestCase):
             'from unittest.mock import patch; '
             'guard = patch("pathlib.Path.glob", side_effect=AssertionError("eager scan")); '
             'guard.start(); '
-            'from api.services.transcription.whisper_catalog import get_whisper_checkpoints; '
+            'from api.inference.stt.catalog import get_whisper_checkpoints; '
             'assert get_whisper_checkpoints.cache_info().currsize == 0'], check=True)
 
     def test_existing_registration_path_is_cached_until_explicit_clear(self):
         with tempfile.TemporaryDirectory() as directory:
             services = Path(directory)
-            registrations = services / 'whisper_checkpoints'
+            registrations = services / 'checkpoints'
             registrations.mkdir()
             (registrations / 'tiny.json').write_text('{"name":"tiny"}')
-            with patch.object(whisper_catalog, '__file__', str(services / 'transcription' / 'whisper_catalog.py')):
+            with patch.object(whisper_catalog, '__file__', str(services / 'catalog.py')):
                 first = whisper_catalog.get_whisper_checkpoints()
                 self.assertEqual(list(first), ['tiny'])
                 (registrations / 'base.json').write_text('{"name":"base"}')

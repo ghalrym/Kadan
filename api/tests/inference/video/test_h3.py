@@ -7,10 +7,13 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
+import torch
+from api.inference.video.h3_pipeline import H3Session
+
 from api.inference.video.h3 import H3Provider, H3_REVISION, GIB, sampling_arguments
 from api.inference.video import VideoSpec
 from api.services.video_jobs import VideoJobs
-from api.inference.resources import ResourceCancelled, ResourceExhausted, ResourceManager
+from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted, ResourceManager
 
 
 def spec(**changes):
@@ -56,9 +59,11 @@ class H3Tests(unittest.TestCase):
                 def run(*args):
                     state = resources.snapshot()
                     observed.append(state)
-                    self.assertEqual(state['exclusive_owner'], 'video:h3')
-                    self.assertEqual(state['reservations']['video:h3']['active_leases'], 1)
-                    self.assertEqual(state['reservations']['video:h3']['device_bytes'], {0: 18 * GIB})
+                    self.assertIsNone(state['exclusive_owner'])
+                    for name in ('host', 'context', 'device'):
+                        self.assertEqual(state['reservations']['video:h3:' + name]['active_leases'], 1)
+                    self.assertEqual(state['reservations']['video:h3:device']['device_bytes'], {0: 17 * GIB})
+                    self.assertEqual(state['reservations']['video:h3:context']['device_bytes'], {0: GIB})
                     if failure:
                         raise failure
 
@@ -69,7 +74,10 @@ class H3Tests(unittest.TestCase):
                         with self.assertRaises(type(failure)):
                             H3Provider().generate(spec(), Path(directory) / 'out.mp4', threading.Event())
                     else:
-                        H3Provider().generate(spec(), Path(directory) / 'out.mp4', threading.Event())
+                        provider = H3Provider()
+                        provider.generate(spec(), Path(directory) / 'out.mp4', threading.Event())
+                        self.assertIn('video:h3:host', resources.snapshot()['reservations'])
+                        provider.close()
                 self.assertTrue(observed)
                 self.assertEqual(resources.snapshot()['reservations'], {})
                 self.assertIsNone(resources.snapshot()['exclusive_owner'])
@@ -91,7 +99,7 @@ class H3Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / '.job.partial.mp4'
             caller_pid = os.getpid()
-            def render(checkpoint, sampling, device, cancel):
+            def render(checkpoint, sampling, device, cancel, session=None):
                 self.assertEqual(os.getpid(), caller_pid)
                 self.assertEqual(device, 0)
                 target = Path(sampling['output_path']) / sampling['output_file_name']
@@ -108,7 +116,7 @@ class H3Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             event = threading.Event()
             output = Path(directory) / 'out.mp4'
-            def render(checkpoint, sampling, device, cancel):
+            def render(checkpoint, sampling, device, cancel, session=None):
                 (Path(sampling['output_path']) / sampling['output_file_name']).write_bytes(b'partial')
                 cancel.set()
             with patch.object(h3_pipeline, 'render', side_effect=render):
@@ -129,7 +137,7 @@ class H3Tests(unittest.TestCase):
     def test_renderer_failure_cleans_staging_before_return(self):
         from api.inference.video import h3_pipeline
         with tempfile.TemporaryDirectory() as directory:
-            def fail(checkpoint, sampling, device, cancel):
+            def fail(checkpoint, sampling, device, cancel, session=None):
                 (Path(sampling['output_path']) / sampling['output_file_name']).write_bytes(b'partial')
                 raise RuntimeError('native failure')
             with patch.object(h3_pipeline, 'render', side_effect=fail):
@@ -193,3 +201,55 @@ class H3Tests(unittest.TestCase):
              patch.object(h3_pipeline.ctypes, 'CDLL') as load:
             h3_pipeline.trim_cpu_heap()
             load.assert_not_called()
+
+    def test_retained_session_parks_and_reuses_same_host_object_then_pressure_evicts(self):
+        resources = ResourceManager(400 * GIB, {0: 18 * GIB})
+        entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=69_000_000_000)
+        session = MagicMock()
+        provider = H3Provider()
+        def run(*args):
+            provider._session = session
+        with patch('api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
+                'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
+            provider.generate(spec(), Path('/unused'), threading.Event())
+            host = provider._host
+            resources.offload_inactive_devices('speech')
+            session.park.assert_called_once_with(GIB)
+            session.close.assert_not_called()
+            self.assertEqual(set(resources.snapshot()['reservations']), {'video:h3:host', 'video:h3:context'})
+            provider.generate(spec(), Path('/unused'), threading.Event())
+            self.assertIs(provider._host, host)
+            self.assertIs(provider._session, session)
+            resources.offload_inactive_devices('llm')
+            pressure = resources.reserve('large', 'llm', host_bytes=400 * GIB)
+            session.close.assert_called_once()
+            self.assertEqual(set(resources.snapshot()['reservations']), {'large'})
+            pressure.release()
+
+    def test_active_h3_reservations_cannot_be_parked_or_pressure_evicted(self):
+        resources = ResourceManager(400 * GIB, {0: 18 * GIB})
+        entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=69_000_000_000)
+        provider = H3Provider()
+        def run(*args):
+            with self.assertRaises(ResourceBusy):
+                resources.offload_inactive_devices('speech')
+            with self.assertRaises(ResourceExhausted):
+                resources.reserve('large', 'llm', host_bytes=400 * GIB)
+        with patch('api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
+                'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
+            provider.generate(spec(), Path('/unused'), threading.Event())
+            provider.close()
+
+    def test_parking_moves_unregistered_turbo_cache_to_host(self):
+        session = H3Session('/fixture', 0)
+        component = torch.nn.Linear(2, 2)
+        tensor = MagicMock(spec=torch.Tensor)
+        tensor.device.type = 'cuda'
+        tensor.to.return_value = torch.ones(2)
+        session.pipeline = SimpleNamespace(modules={'transformer': component}, lora_adapters={'turbo': {'a': tensor}})
+        with patch('torch.cuda.device'), patch('torch.cuda.synchronize'), patch('torch.cuda.empty_cache'), patch(
+                'torch.cuda.memory_allocated', return_value=128 * 1024**2):
+            session.park(GIB)
+        tensor.to.assert_called_once_with('cpu')
+        self.assertIs(session.pipeline.lora_adapters['turbo']['a'], tensor.to.return_value)
+        self.assertTrue(session.parked)

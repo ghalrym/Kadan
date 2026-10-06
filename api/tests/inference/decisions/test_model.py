@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from api.inference.resources import ResourceManager, ResourceExhausted
 from api.routes.v1.decisions import DecisionRequest
-from api.services.decisions import DecisionManager, parse_answer, translate_questions
+from api.inference.decisions.model import DecisionManager, parse_answer, translate_questions
 from api.services.runtime import RuntimeFailure, RuntimeManager
 
 
@@ -64,7 +64,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.evaluate('state', self.qs)
         self.loader.assert_called_once()
         state = next(iter(self.resources.snapshot()['reservations'].values()))
-        self.assertEqual(state, dict(workload='decision', host_bytes=60, device_bytes={}, active_leases=0, evicting=False))
+        self.assertEqual(state, dict(workload='decision', host_bytes=60, device_bytes={}, active_leases=0, evicting=False, offload_on_handoff=True))
         other = self.resources.reserve('chat', 'llm', host_bytes=60)
         self.assertIsNone(self.manager.agent)
         other.release()
@@ -112,7 +112,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_chat_load_required_and_shared_manager_initialized_once(self):
         runtime = RuntimeManager(resources=self.resources)
         self.manager.resources = None
-        with patch('api.services.decisions.runtime_manager', runtime):
+        with patch('api.inference.decisions.model.runtime_manager', runtime):
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(runtime.state, 'unloaded')
         self.assertIs(self.manager.resources, runtime.ensure_resources())

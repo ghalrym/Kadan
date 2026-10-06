@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 from api.routes import health
 from api.routes.v1 import decisions, images, metrics, requests, settings, videos, models
@@ -11,30 +11,25 @@ from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 from api.services.telemetry import TelemetryMiddleware
-from api.services.decisions import decision_manager
 from api.services.video_jobs import video_jobs
+from api.memory_manager import memory_manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Restore the selected model on startup and release inference before downloads on shutdown."""
-    try:
-        await runtime_manager.start()
+    async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(asyncio.to_thread, model_manager.close)
+        cleanup.push_async_callback(asyncio.to_thread, video_jobs.close)
+        cleanup.push_async_callback(memory_manager.close)
+        if await memory_manager.start():
+            await runtime_manager.start()
         yield
-    finally:
-        await asyncio.to_thread(video_jobs.close)
-        try:
-            await decision_manager.close()
-        finally:
-            try:
-                await runtime_manager.close()
-            finally:
-                await asyncio.to_thread(model_manager.close)
 
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model; invalid or oversized inputs return errors. Image, video, speech and transcription providers are not implemented; those generation endpoints return unavailable errors and media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
 )
 
 # Observe only generation POST handlers; dashboard polling is excluded.

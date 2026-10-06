@@ -1,3 +1,6 @@
+from unittest.mock import patch
+from api.memory_manager import memory_manager
+from api.tests.memory_manager.helpers import direct_feature
 import unittest
 
 from fastapi import FastAPI
@@ -14,6 +17,9 @@ class SpeechValidationTests(unittest.TestCase):
 
 
 class SpeechRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(memory_manager, 'submit', direct_feature(memory_manager, 'tts')))
+
     @classmethod
     def setUpClass(cls):
         app = FastAPI()

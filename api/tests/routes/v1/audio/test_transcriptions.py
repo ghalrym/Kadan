@@ -1,9 +1,9 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from api.server import app
 from api.services.runtime import RuntimeFailure
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints
+from api.inference.stt.catalog import get_whisper_checkpoints
 
 
 class TranscriptionTests(unittest.TestCase):
@@ -11,10 +11,10 @@ class TranscriptionTests(unittest.TestCase):
         self.client = TestClient(app)
 
     def test_references_are_not_fetched(self):
-        with patch('api.services.transcription.transcription.get_whisper_checkpoints', return_value={'tiny': object()}):
+        with patch('api.inference.stt.model.get_whisper_checkpoints', return_value={'tiny': object()}):
             response = self.client.post('/v1/audio/transcriptions', json={'audio': 'https://example.com/audio.wav'})
         self.assertEqual(response.status_code, 422)
-        self.assertIn('not fetched', response.json()['detail'])
+        self.assertIn('not fetched', str(response.json()['detail']))
 
     def test_invalid_input_and_models(self):
         for body in ({}, {'audio': ''}, {'audio': '   '}, {'audio': 'ref', 'file': 'fake'}, {'audio': 'ref', 'model': 'distil'}):
@@ -22,16 +22,16 @@ class TranscriptionTests(unittest.TestCase):
 
     def test_native_output_and_raw_transcript(self):
         output = dict(text='hello', raw_text='hello', language='en', model='tiny', formatting_status='disabled')
-        with patch('api.services.transcription.transcription.TranscriptionManager.transcribe', return_value=output) as native:
-            response = self.client.post('/v1/audio/transcriptions', json={'audio': 'data', 'model': 'turbo', 'formatting': False})
+        with patch('api.routes.v1.audio.transcriptions.memory_manager.submit', AsyncMock(return_value=output)) as native:
+            response = self.client.post('/v1/audio/transcriptions', json={'audio': 'data:audio/wav;base64,fixture', 'model': 'turbo', 'formatting': False})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['raw_text'], 'hello')
-        native.assert_called_once_with('data', 'large-v3-turbo', None)
+        self.assertEqual(native.call_args.args[0].model, 'large-v3-turbo')
 
     def test_unavailable_and_busy_are_not_transcripts(self):
         for status in (409, 503):
-            with patch('api.services.transcription.transcription.TranscriptionManager.transcribe', side_effect=RuntimeFailure('Not ready', status)):
-                response = self.client.post('/v1/audio/transcriptions', json={'audio': 'data'})
+            with patch('api.routes.v1.audio.transcriptions.memory_manager.submit', AsyncMock(side_effect=RuntimeFailure('Not ready', status))):
+                response = self.client.post('/v1/audio/transcriptions', json={'audio': 'data:audio/wav;base64,fixture'})
             self.assertEqual(response.status_code, status)
             self.assertNotIn('text', response.json())
 

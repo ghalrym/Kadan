@@ -1,5 +1,7 @@
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
 from typing import Annotated, Literal
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import GeneratedSpeech
 
@@ -44,9 +46,6 @@ def list_speech() -> SpeechHistoryResponse:
 
 
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "No speech provider is configured"}})
-def generate_speech(body: SpeechRequest) -> SpeechResponse:
-    """Reject a validated describe/clone request with HTTP 503.
-
-    No speech provider is configured, so no audio is generated or persisted and
-    clone sample references are neither fetched nor treated as uploaded files."""
-    raise HTTPException(status_code=503, detail="No speech provider is configured. Speech generation and voice cloning are unavailable.")
+async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
+    """Queue validated inference; unavailable providers still return HTTP 503."""
+    return await infer(request, memory_manager.submit(body, feature='tts', operation='generate'))

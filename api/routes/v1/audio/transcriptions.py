@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from api.services.runtime import RuntimeFailure
-from api.services.transcription.transcription import get_transcription_manager
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
+from api.inference.stt.model import get_transcription_manager
+from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
@@ -75,11 +76,8 @@ def select_model(body: WhisperSelection) -> WhisperModels:
 
 
 @router.post("", operation_id="transcribeAudio", responses={503: {"model": TranscriptionUnavailable}})
-def transcribe_audio(body: TranscriptionRequest) -> TranscriptionResponse:
-    """Run native Whisper; preserve its raw transcript for optional formatting."""
-    try:
-        result = get_transcription_manager().transcribe(body.audio, body.model, body.language)
-    except RuntimeFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
-    result['formatting_status'] = 'unavailable' if body.formatting else 'disabled'
-    return TranscriptionResponse(**result)
+async def transcribe_audio(body: TranscriptionRequest, request: Request) -> TranscriptionResponse:
+    """Queue native Whisper and preserve its raw transcript and formatting status."""
+    if not body.audio.startswith('data:audio/wav;base64,'):
+        raise HTTPException(422, 'Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.')
+    return TranscriptionResponse(**await infer(request, memory_manager.submit(body, feature='stt')))

@@ -7,6 +7,7 @@ import unittest
 from api.inference.video import VideoSpec
 from api.inference.resources import ResourceCancelled
 from api.services.video_jobs import VideoJobs
+from api.services.runtime import RuntimeFailure
 
 
 class Provider:
@@ -34,32 +35,30 @@ class VideoJobsTests(unittest.TestCase):
         self.directory.cleanup()
 
     def test_output_published_only_after_success(self):
-        job = self.jobs.submit('test', VideoSpec('hello'))
-        self.jobs._thread.join(2)
-        finished = self.jobs.get(job.id)
+        self.jobs.run('a' * 32, 'test', VideoSpec('hello'), threading.Event())
+        finished = self.jobs.get('a' * 32)
         self.assertEqual(finished.status, 'Done')
         self.assertEqual(finished.progress, 100)
-        self.assertEqual(self.jobs.content(job.id).read_bytes(), b'test MP4 fixture')
-        self.assertEqual(finished.output_url, f'/v1/videos/{job.id}/content')
+        self.assertEqual(self.jobs.content(finished.id).read_bytes(), b'test MP4 fixture')
+        self.assertEqual(finished.output_url, f'/v1/videos/{finished.id}/content')
 
     def test_failure_cleans_partial_and_allows_retry(self):
-        job = self.jobs.submit('test', VideoSpec('fail'))
-        self.jobs._thread.join(2)
-        self.assertEqual(self.jobs.get(job.id).status, 'Failed')
+        with self.assertRaises(RuntimeFailure):
+            self.jobs.run('a' * 32, 'test', VideoSpec('fail'), threading.Event())
+        self.assertEqual(self.jobs.get('a' * 32).status, 'Failed')
         self.assertEqual(list(Path(self.directory.name).iterdir()), [])
-        self.jobs.submit('test', VideoSpec('retry'))
+        self.jobs.run('b' * 32, 'test', VideoSpec('retry'), threading.Event())
 
-    def test_cancel_waits_for_worker_and_rejects_overlap(self):
-        job = self.jobs.submit('test', VideoSpec('wait'))
-        with self.assertRaises(ValueError):
-            self.jobs.submit('test', VideoSpec('overlap'))
+    def test_cancel_before_execution_does_not_publish(self):
+        job = self.jobs.prepare('a' * 32, VideoSpec('wait'))
         self.jobs.cancel(job.id)
-        self.jobs._thread.join(2)
+        with self.assertRaises(ResourceCancelled):
+            self.jobs.run(job.id, 'test', VideoSpec('wait'), threading.Event())
         self.assertEqual(self.jobs.get(job.id).status, 'Cancelled')
         with self.assertRaises(KeyError):
             self.jobs.content(job.id)
 
     def test_invalid_request_does_not_create_job(self):
         with self.assertRaises(ValueError):
-            self.jobs.submit('test', VideoSpec('invalid'))
+            self.jobs.validate('test', VideoSpec('invalid'))
         self.assertEqual(self.jobs.list(), [])

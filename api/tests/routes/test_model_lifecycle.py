@@ -2,12 +2,13 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 from fastapi import HTTPException, Request
 
 from api.server import app
+import api.server as server
 from api.services.model_downloads import ModelManager
 from api.services.runtime import RuntimeManager
 from api.routes.v1.chat.completions import CompletionRequest, create_completion
@@ -21,7 +22,8 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         self.runtime = RuntimeManager()
         for target, value in (
             ('api.routes.model_lifecycle.runtime_manager', self.runtime),
-            ('api.routes.v1.chat.completions.runtime_manager', self.runtime),
+            ('api.routes.v1.chat.completions.memory_manager.submit', self.complete),
+            ('api.server.memory_manager', Mock(start=AsyncMock(), close=AsyncMock())),
             ('api.services.model_downloads.model_manager', self.models),
             ('api.services.runtime.model_manager', self.models),
             ('api.server.runtime_manager', self.runtime),
@@ -31,6 +33,9 @@ class ModelLifecycleRouteTests(unittest.TestCase):
             patched.start()
             self.addCleanup(patched.stop)
         self.client = TestClient(app)
+
+    async def complete(self, body, **kwargs):
+        return await self.runtime.complete(body.messages, body.model)
 
     def test_chat_never_falls_back_to_mock_when_unloaded(self):
         response = self.client.post('/v1/chat/completions', json={
@@ -130,7 +135,7 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         self.runtime.close = AsyncMock()
         with patch.object(self.models, 'close') as close, TestClient(app) as client:
             self.assertEqual(client.get('/health').status_code, 200)
-        self.runtime.close.assert_awaited_once()
+        server.memory_manager.close.assert_awaited_once()
         close.assert_called_once()
 
 
@@ -138,7 +143,7 @@ class ChatDisconnectTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnected_client_cancels_and_awaits_generation_cleanup(self):
         started, cleaned = asyncio.Event(), asyncio.Event()
 
-        async def complete(*args):
+        async def complete(*args, **kwargs):
             started.set()
             try:
                 await asyncio.Future()
@@ -151,7 +156,7 @@ class ChatDisconnectTests(unittest.IsolatedAsyncioTestCase):
 
         request = Request({'type': 'http'}, receive=receive)
         body = CompletionRequest(messages=[{'role': 'user', 'text': 'Hello'}])
-        with patch('api.routes.v1.chat.completions.runtime_manager.complete', complete):
+        with patch('api.routes.v1.chat.completions.memory_manager.submit', complete):
             with self.assertRaises(HTTPException) as error:
                 await asyncio.wait_for(create_completion(body, request), timeout=2)
         self.assertEqual(error.exception.status_code, 499)
