@@ -116,6 +116,7 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
         provider = H3Provider()
         session = Mock()
         with tempfile.TemporaryDirectory() as directory, patch(
+                'api.inference.video.h3.check_media_tools'), patch(
                 'api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
                 'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch(
                 'api.inference.video.h3_pipeline.H3Session', return_value=session) as construct:
