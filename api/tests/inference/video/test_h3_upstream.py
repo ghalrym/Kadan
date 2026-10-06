@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unicodedata
 import unittest
 
-from api.inference.h3 import sampling_arguments
+from api.inference.video.h3 import sampling_arguments
 
 
 @unittest.skipUnless(os.getenv('KADAN_H3_SAMPLING_SOURCE'), 'Pinned SGLang source supplied by CI')

@@ -25,13 +25,13 @@ class VideoJobs:
         """Resolve native providers without importing their worker dependencies into the API."""
         if model_id == 'ltx-2.5-distilled':
             try:
-                module = importlib.import_module('api.inference.ltx')
+                module = importlib.import_module('api.inference.video.ltx')
             except ImportError as exc:
                 raise RuntimeError('The LTX native provider is not installed.') from exc
             return module.LTXProvider()
         if model_id == 'h3-fl2va-int8-turbo':
             try:
-                module = importlib.import_module('api.inference.h3')
+                module = importlib.import_module('api.inference.video.h3')
             except ImportError as exc:
                 raise RuntimeError('The H3 native provider is not installed.') from exc
             return module.H3Provider(model_id)

@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from api.inference.h3 import H3Provider, H3_REVISION, GIB, sampling_arguments
+from api.inference.video.h3 import H3Provider, H3_REVISION, GIB, sampling_arguments
 from api.inference.video import VideoSpec
 from api.services.video_jobs import VideoJobs
 from api.inference.resources import ResourceCancelled, ResourceExhausted, ResourceManager
@@ -23,7 +23,7 @@ class H3Tests(unittest.TestCase):
     def setUp(self):
         # These lifecycle fixtures do not encode media. The container build
         # executes both real binaries; the missing-tool test overrides this.
-        tools = patch('api.inference.h3.shutil.which', side_effect=lambda name: f'/usr/bin/{name}')
+        tools = patch('api.inference.video.h3.shutil.which', side_effect=lambda name: f'/usr/bin/{name}')
         tools.start()
         self.addCleanup(tools.stop)
 
@@ -62,8 +62,8 @@ class H3Tests(unittest.TestCase):
                     if failure:
                         raise failure
 
-                with patch('api.inference.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path(directory))), \
-                     patch('api.inference.h3.runtime.ensure_resources', return_value=resources), \
+                with patch('api.inference.video.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path(directory))), \
+                     patch('api.inference.video.h3.runtime.ensure_resources', return_value=resources), \
                      patch.object(H3Provider, '_run', side_effect=run):
                     if failure:
                         with self.assertRaises(type(failure)):
@@ -77,8 +77,8 @@ class H3Tests(unittest.TestCase):
     def test_insufficient_host_memory_does_not_start_worker(self):
         resources = ResourceManager(32 * GIB, {0: 200 * GIB})
         entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
-        with patch('api.inference.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path('/tmp'))), \
-             patch('api.inference.h3.runtime.ensure_resources', return_value=resources), \
+        with patch('api.inference.video.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path('/tmp'))), \
+             patch('api.inference.video.h3.runtime.ensure_resources', return_value=resources), \
              patch.object(H3Provider, '_run') as run:
             with self.assertRaises(ResourceExhausted):
                 H3Provider().generate(spec(), Path('/tmp/out.mp4'), threading.Event())
@@ -86,7 +86,7 @@ class H3Tests(unittest.TestCase):
         self.assertIsNone(resources.snapshot()['exclusive_owner'])
 
     def test_direct_renderer_stays_in_process_and_publishes_atomically(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
         import os
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / '.job.partial.mp4'
@@ -104,7 +104,7 @@ class H3Tests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [output])
 
     def test_cooperative_cancellation_cleans_private_output(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
         with tempfile.TemporaryDirectory() as directory:
             event = threading.Event()
             output = Path(directory) / 'out.mp4'
@@ -117,7 +117,7 @@ class H3Tests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_turbo_must_remain_dynamic(self):
-        from api.inference.h3_pipeline import require_turbo
+        from api.inference.video.h3_pipeline import require_turbo
         pipeline = MagicMock()
         for active in ({}, {'transformer': []}, {'transformer': [{'merged': True, 'strengths': [1.0]}]}):
             pipeline.get_lora_status.return_value = {'active': active}
@@ -127,7 +127,7 @@ class H3Tests(unittest.TestCase):
         require_turbo(pipeline)
 
     def test_renderer_failure_cleans_staging_before_return(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
         with tempfile.TemporaryDirectory() as directory:
             def fail(checkpoint, sampling, device, cancel):
                 (Path(sampling['output_path']) / sampling['output_file_name']).write_bytes(b'partial')
@@ -138,7 +138,7 @@ class H3Tests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_precancelled_request_never_enters_native_pipeline(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
         event = threading.Event()
         event.set()
         with tempfile.TemporaryDirectory() as directory, patch.object(h3_pipeline, 'render') as render:
@@ -147,7 +147,7 @@ class H3Tests(unittest.TestCase):
             render.assert_not_called()
 
     def test_native_frames_release_before_cuda_cache_and_lease_return(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
 
         class TensorOwner:
             pass
@@ -179,7 +179,7 @@ class H3Tests(unittest.TestCase):
                 trim.assert_called_once_with()
 
     def test_heap_trim_is_optional_and_uses_process_allocator(self):
-        from api.inference import h3_pipeline
+        from api.inference.video import h3_pipeline
         library = SimpleNamespace(malloc_trim=MagicMock())
         with patch.object(h3_pipeline.sys, 'platform', 'linux'), \
              patch.object(h3_pipeline.ctypes, 'CDLL', return_value=library) as load:

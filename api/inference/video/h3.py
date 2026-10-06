@@ -80,7 +80,7 @@ class H3Provider:
     def _run(self, spec, checkpoint, output, cancellation, devices):
         """Render synchronously; keep the lease until in-process cleanup completes."""
         # Native imports must follow platform activation, and remain lazy for API startup.
-        from api.inference.h3_pipeline import render, check_cancel
+        from api.inference.video.h3_pipeline import render, check_cancel
 
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
