@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import traceback
 from types import SimpleNamespace
 
 from api.inference.resources import ResourceCancelled
@@ -22,6 +23,36 @@ def require_turbo(pipeline):
 
 
 def render(checkpoint, sampling, device, cancellation):
+    """Release native frames before collection, including cancelled forwards."""
+    # CUDA is optional until this provider is selected.
+    import torch
+
+    failure = None
+    try:
+        _render(checkpoint, sampling, device, cancellation)
+    except BaseException as error:
+        # Native forward frames own model tensors. Keeping their traceback while
+        # collecting would retain those tensors after Kadan releases its lease.
+        error.add_note('Native H3 traceback:\n' + ''.join(traceback.format_exception(error)))
+        seen = set()
+        current = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            traceback.clear_frames(current.__traceback__)
+            current.__traceback__ = None
+            current = current.__cause__ or current.__context__
+        failure = error
+    finally:
+        # _render's successful locals and failed native frames are now gone.
+        gc.collect()
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+            torch.accelerator.memory.empty_host_cache()
+    if failure is not None:
+        raise failure
+
+
+def _render(checkpoint, sampling, device, cancellation):
     """Run the pinned native pipeline synchronously under Kadan's resource lease.
 
     Imports follow platform activation and remain lazy so a broken optional
@@ -78,40 +109,40 @@ def render(checkpoint, sampling, device, cancellation):
     pipeline = req = result = None
     hooks = []
     original_device = torch.cuda.current_device()
+    rendezvous = tempfile.TemporaryDirectory(prefix='kadan-h3-rendezvous-')
     try:
         torch.cuda.set_device(device)
         set_global_server_args(args)
-        with tempfile.TemporaryDirectory(prefix='kadan-h3-rendezvous-') as rendezvous:
-            init_distributed_environment(world_size=1, rank=0, local_rank=device,
-                distributed_init_method=Path(rendezvous, 'group').as_uri(),
-                device_id=torch.device('cuda', device), timeout=60)
-            initialize_model_parallel(tensor_parallel_degree=1, sequence_parallel_degree=1)
-            pipeline = MiniMaxH3Pipeline(args.model_path, args, executor=CancellableExecutor(args))
+        init_distributed_environment(world_size=1, rank=0, local_rank=device,
+            distributed_init_method=Path(rendezvous.name, 'group').as_uri(),
+            device_id=torch.device('cuda', device), timeout=60)
+        initialize_model_parallel(tensor_parallel_degree=1, sequence_parallel_degree=1)
+        pipeline = MiniMaxH3Pipeline(args.model_path, args, executor=CancellableExecutor(args))
+        check_cancel(cancellation)
+        require_turbo(pipeline)
+        manager = get_global_component_residency_manager(pipeline, args)
+        configure_layerwise_offload_modules(pipeline.modules, args,
+            component_names=args.layerwise_offload_components, pin_budget=manager.host_pin_budget)
+        def guard(module, inputs):
             check_cancel(cancellation)
-            require_turbo(pipeline)
-            manager = get_global_component_residency_manager(pipeline, args)
-            configure_layerwise_offload_modules(pipeline.modules, args,
-                component_names=args.layerwise_offload_components, pin_budget=manager.host_pin_budget)
-            def guard(module, inputs):
-                check_cancel(cancellation)
-            for component in pipeline.modules.values():
-                if isinstance(component, torch.nn.Module):
-                    for module in component.modules():
-                        hooks.append(module.register_forward_pre_hook(guard))
-            params = SamplingParams.from_user_sampling_params_args(args.model_path, server_args=args, **sampling)
-            params._set_output_file_name()
-            req = prepare_request(args, params)
-            params.prepare_video_request_for_queue(req)
-            with torch.inference_mode():
-                result = pipeline.forward(req, args)
-            check_cancel(cancellation)
-            if result.error or result.output is None or len(result.output) != 1:
-                raise RuntimeError(result.error or 'H3 produced no single audiovisual output')
-            output = Path(sampling['output_path']) / sampling['output_file_name']
-            paths = save_outputs(result.output, req.data_type, req.fps, True, lambda _: str(output),
-                                 audio=result.audio, audio_sample_rate=result.audio_sample_rate)
-            params.validate_video_final_outputs(paths, req)
-            check_cancel(cancellation)
+        for component in pipeline.modules.values():
+            if isinstance(component, torch.nn.Module):
+                for module in component.modules():
+                    hooks.append(module.register_forward_pre_hook(guard))
+        params = SamplingParams.from_user_sampling_params_args(args.model_path, server_args=args, **sampling)
+        params._set_output_file_name()
+        req = prepare_request(args, params)
+        params.prepare_video_request_for_queue(req)
+        with torch.inference_mode():
+            result = pipeline.forward(req, args)
+        check_cancel(cancellation)
+        if result.error or result.output is None or len(result.output) != 1:
+            raise RuntimeError(result.error or 'H3 produced no single audiovisual output')
+        output = Path(sampling['output_path']) / sampling['output_file_name']
+        paths = save_outputs(result.output, req.data_type, req.fps, True, lambda _: str(output),
+                             audio=result.audio, audio_sample_rate=result.audio_sample_rate)
+        params.validate_video_final_outputs(paths, req)
+        check_cancel(cancellation)
     finally:
         if req is not None:
             req.sampling_params.cleanup_video_request(req)
@@ -131,8 +162,11 @@ def render(checkpoint, sampling, device, cancellation):
         if manager is not None:
             manager.refresh_pipeline(SimpleNamespace(component_residency_strategies={}, _stage_name_mapping={}))
         pipeline = retained_pipeline = req = result = None
-        gc.collect()
-        torch.cuda.synchronize(device)
-        cleanup_dist_env_and_memory()
-        torch.cuda.empty_cache()
-        torch.cuda.set_device(original_device)
+        try:
+            torch.cuda.synchronize(device)
+        finally:
+            try:
+                cleanup_dist_env_and_memory()
+            finally:
+                rendezvous.cleanup()
+                torch.cuda.set_device(original_device)

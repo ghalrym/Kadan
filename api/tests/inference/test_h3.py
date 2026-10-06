@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import weakref
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -144,3 +145,33 @@ class H3Tests(unittest.TestCase):
             with self.assertRaises(ResourceCancelled):
                 H3Provider()._run(spec(), Path(directory), Path(directory) / 'out.mp4', event, [0])
             render.assert_not_called()
+
+    def test_native_frames_release_before_cuda_cache_and_lease_return(self):
+        from api.inference import h3_pipeline
+
+        class TensorOwner:
+            pass
+
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                retained = []
+                def native(*args):
+                    owner = TensorOwner()
+                    owner.cycle = owner
+                    retained.append(weakref.ref(owner))
+                    if cancelled:
+                        raise ResourceCancelled('cancel inside native forward')
+
+                def empty_cache():
+                    self.assertIsNone(retained[0]())
+
+                with patch.object(h3_pipeline, '_render', side_effect=native), \
+                     patch('torch.cuda.device'), \
+                     patch('torch.cuda.empty_cache', side_effect=empty_cache), \
+                     patch('torch.accelerator.memory.empty_host_cache', side_effect=empty_cache) as host_cache:
+                    if cancelled:
+                        with self.assertRaises(ResourceCancelled):
+                            h3_pipeline.render(None, None, 0, threading.Event())
+                    else:
+                        h3_pipeline.render(None, None, 0, threading.Event())
+                host_cache.assert_called_once_with()
