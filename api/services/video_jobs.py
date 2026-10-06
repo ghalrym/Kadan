@@ -29,7 +29,7 @@ class VideoJobs:
             except ImportError as exc:
                 raise RuntimeError('The LTX native provider is not installed.') from exc
             return module.LTXProvider()
-        if model_id == 'h3-fl2va':
+        if model_id == 'h3-fl2va-int8-turbo':
             try:
                 module = importlib.import_module('api.inference.h3')
             except ImportError as exc:

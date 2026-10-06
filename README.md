@@ -76,7 +76,8 @@ dependencies; Compose exposes the GPUs, and Kadan uses `KADAN_GPU=0` by default.
 ## Native model service
 
 For a native installation on a Linux NVIDIA GPU host, the single requirements
-file includes the complete API and inference runtime. Git is needed to install
+file includes the API and language/audio inference runtime. H3 uses the
+isolated runtime described below, bundled in the standard Docker image. Git is needed to install
 the pinned Transformers source. The host driver must support the installed
 PyTorch CUDA build; drivers and physical GPU memory cannot be bundled by Kadan.
 
@@ -110,6 +111,45 @@ GLM5-next architecture definitions. Dependencies include PyTorch (BSD-style),
 Transformers/Accelerate/Safetensors (Apache-2.0); preserve upstream notices when
 redistributing. FreeToken Apache-2.0 source was layout research only, never an
 installed engine or vendored runtime. Source references are kept in code.
+
+## Native MiniMax H3 video
+
+The standard API image bundles an isolated, pinned SGLang H3 runtime, standalone
+ConvRot INT8 kernels, FFmpeg and the C++ compiler needed for CUDA kernel compilation.
+It does not install or launch ComfyUI, and image builds do not download models.
+The H3 runtime uses CUDA 13.0 wheels; the host NVIDIA driver must support them.
+
+In Settings, download **MiniMax H3 FL2VA INT8 + Turbo** after reviewing its license.
+The 68.97 GB composite manifest pins release configuration/tokenizers, full INT8
+ConvRot diffusion and Qwen3VL text weights, FP16 video VAE, FP32 audio VAE, and the
+8-step Turbo adapter used at strength 1. Each file is verified before publication.
+Existing 144 GB BF16 downloads remain intact and are not marked complete for this
+separate checkpoint. The original bundle is retained as download-only.
+
+Select that model on the Video page. Supported requests are 4–15 seconds, 24 fps,
+480p or 768p, with 16:9, 9:16 or square aspect ratios. H3 aligns canvas and frame
+counts to its native grid; 480p is a smaller preview setting. Negative prompts
+are unsupported by the CFG-distilled checkpoint. Turbo uses four denoiser forwards
+(five sigma points), with video/audio shifts 12/3 and joint audio/video output.
+
+Kadan owns exclusive admission and independent GPU budgets. The adapter uses up
+to two sufficiently large visible GPUs with native tensor parallelism, streams
+DiT/encoder layers from CPU memory, and offloads both VAEs between uses. Host
+admission reserves twice the serialized bundle size plus 8 GiB for staging.
+Cancellation reaps the complete job process group before releasing reservations.
+A failed worker leaves a `.worker.log` beside the job's output staging path.
+The isolated process is necessary because the API/LLM and H3 runtimes require
+different Torch/Transformers versions; it exposes no separate inference API.
+
+For a non-Docker installation, create a Python 3.12 environment for
+`api/requirements-h3.txt`, set `SGLANG_BUILD_RUST_EXTS=none` during installation,
+and set `KADAN_H3_PYTHON` to that environment's interpreter. Install FFmpeg and a
+C++ compiler, and keep the API's environment separate. Model downloads still
+happen only through Settings or the model management API.
+
+SGLang and the standalone `comfy-kitchen` kernel package use Apache-2.0 licenses.
+The model and Turbo artifacts retain the MiniMax H3 license notice shown in
+Settings. The native adapter consumes their published tensor format directly.
 
 ## CPU decisions
 

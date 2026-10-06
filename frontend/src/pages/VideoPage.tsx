@@ -17,8 +17,8 @@ import {
  * clears polling timers. Provider errors never create local placeholder jobs.
  */
 export default function VideoPage() {
-  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('h3-fl2va')
-  const h3 = model === 'h3-fl2va'
+  const [model, setModel] = useState<NonNullable<VideoGenerationRequest['model']>>('h3-fl2va-int8-turbo')
+  const h3 = model === 'h3-fl2va-int8-turbo'
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [duration, setDuration] = useState('8')
@@ -163,12 +163,12 @@ export default function VideoPage() {
           <select aria-label="Model" className="input" value={model} disabled={pending} onChange={event => {
             const value = event.target.value as NonNullable<VideoGenerationRequest['model']>
             setModel(value)
-            setResolution(value === 'h3-fl2va' ? '768p' : '720p')
+            setResolution(value === 'h3-fl2va-int8-turbo' ? '768p' : '720p')
             setFps('24')
             setDuration('8')
-            if (value === 'h3-fl2va') setNegative('')
+            if (value === 'h3-fl2va-int8-turbo') setNegative('')
           }}>
-            <option value="h3-fl2va">MiniMax H3 FL2VA</option>
+            <option value="h3-fl2va-int8-turbo">MiniMax H3 FL2VA INT8 + Turbo</option>
             <option value="ltx-2.5-distilled">LTX-2.5 Distilled</option>
           </select>
         </label>
@@ -188,7 +188,7 @@ export default function VideoPage() {
           <span className="eyebrow">Frame rate</span>
           <div className="input-unit"><input className="input mono" type="number" min={1} max={120} step={1} required value={fps} disabled={pending || h3} onChange={event => setFps(event.target.value)} /><span className="muted mono">fps</span></div>
         </label>
-        <SegmentedControl label="Resolution" options={h3 ? ['768p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={h3 ? ['480p', '768p'] : ['480p', '720p', '1080p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
         <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"

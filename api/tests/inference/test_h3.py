@@ -28,6 +28,15 @@ class H3Tests(unittest.TestCase):
         tools = patch('api.inference.h3.shutil.which', side_effect=lambda name: f'/usr/bin/{name}')
         tools.start()
         self.addCleanup(tools.stop)
+        interpreter = patch.dict('os.environ', {'KADAN_H3_PYTHON': sys.executable})
+        interpreter.start()
+        self.addCleanup(interpreter.stop)
+        config = SimpleNamespace(MiniMaxH3PipelineConfig=lambda: SimpleNamespace(
+            dit_config=SimpleNamespace(arch_config=SimpleNamespace())))
+        native_config = patch.dict(sys.modules, {
+            'sglang.multimodal_gen.configs.pipeline_configs.minimax_h3': config})
+        native_config.start()
+        self.addCleanup(native_config.stop)
 
     def test_rejects_unsupported_settings(self):
         for changes in [dict(fps=30), dict(duration=3), dict(duration=16),
@@ -39,7 +48,7 @@ class H3Tests(unittest.TestCase):
         args = sampling_arguments(spec(), Path('/tmp/video.mp4'))
         self.assertEqual(args['task'], 't2va')
         self.assertEqual(args['conditions'], [])
-        self.assertEqual(args['num_inference_steps'], 50)
+        self.assertEqual(args['num_inference_steps'], 5)
         self.assertEqual((args['flow_shift'], args['audio_flow_shift']), (12.0, 3.0))
         self.assertEqual(args['target'], dict(short_edge=768, aspect_ratio='16:9', duration_seconds=8))
         self.assertNotIn('negative_prompt', args)
@@ -51,7 +60,7 @@ class H3Tests(unittest.TestCase):
     def test_memory_is_leased_until_worker_cleanup(self):
         for failure in (None, RuntimeError('worker failed'), ResourceCancelled('cancel')):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                resources = ResourceManager(400 * GIB, {0: 200 * GIB})
+                resources = ResourceManager(400 * GIB, {0: 18 * GIB, 1: 17 * GIB})
                 entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
                 observed = []
 
@@ -60,6 +69,7 @@ class H3Tests(unittest.TestCase):
                     observed.append(state)
                     self.assertEqual(state['exclusive_owner'], 'video:h3')
                     self.assertEqual(state['reservations']['video:h3']['active_leases'], 1)
+                    self.assertEqual(state['reservations']['video:h3']['device_bytes'], {0: 18 * GIB, 1: 17 * GIB})
                     if failure:
                         raise failure
 
@@ -110,7 +120,7 @@ class H3Tests(unittest.TestCase):
 
             with patch('api.inference.h3.subprocess.Popen', side_effect=launch), \
                  patch('api.inference.h3.stop_process_group') as cleanup:
-                H3Provider()._run(spec(), Path(directory), output, threading.Event(), 0)
+                H3Provider()._run(spec(), Path(directory), output, threading.Event(), [0])
                 cleanup.assert_called_once_with(process)
             self.assertEqual(output.read_bytes(), b'fixture-output')
             self.assertFalse(staging[0].exists())
@@ -134,7 +144,7 @@ class H3Tests(unittest.TestCase):
             with patch('api.inference.h3.subprocess.Popen', side_effect=launch), \
                  patch('api.inference.h3.stop_process_group') as cleanup:
                 with self.assertRaises(ResourceCancelled):
-                    H3Provider()._run(spec(), Path(directory), output, cancelled, 0)
+                    H3Provider()._run(spec(), Path(directory), output, cancelled, [0])
                 cleanup.assert_called_once_with(process)
                 self.assertFalse(output.exists())
                 self.assertFalse(staging[0].exists())
@@ -143,6 +153,7 @@ class H3Tests(unittest.TestCase):
         # Load the optional worker against a tiny native API fixture, never SGLang/weights.
         module_name = 'sglang.multimodal_gen.runtime.entrypoints.diffusion_generator'
         generator = MagicMock()
+        generator.list_loras.return_value = {'active': {'transformer': [{'merged': False, 'strengths': [1.0]}]}}
         generator.generate.side_effect = RuntimeError('native failure')
         factory = MagicMock()
         factory.from_pretrained.return_value = generator
@@ -150,19 +161,38 @@ class H3Tests(unittest.TestCase):
         location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
         definition = importlib.util.spec_from_file_location('h3_worker_contract', location)
         worker = importlib.util.module_from_spec(definition)
-        with patch.dict(sys.modules, {module_name: fixture,
-             'sglang.multimodal_gen.runtime.entrypoints.utils': SimpleNamespace(GenerationResult=SimpleNamespace)}):
-            definition.loader.exec_module(worker)
+        modules = patch.dict(sys.modules, {module_name: fixture,
+             'sglang.multimodal_gen.runtime.entrypoints.utils': SimpleNamespace(GenerationResult=SimpleNamespace)})
+        modules.start()
+        self.addCleanup(modules.stop)
+        definition.loader.exec_module(worker)
         arguments = sampling_arguments(spec(), Path('/tmp/out.mp4'))
         with self.assertRaisesRegex(RuntimeError, 'native failure'):
-            worker.run(dict(checkpoint='/models/local', sampling=arguments))
+            worker.run(dict(checkpoint='/models/local', num_gpus=2, sampling=arguments))
         kwargs = factory.from_pretrained.call_args.kwargs
-        self.assertEqual(kwargs['model_path'], '/models/local')
+        self.assertEqual(kwargs['model_path'], '/models/local/FL2VA')
         self.assertTrue(kwargs['local_mode'])
-        self.assertEqual(kwargs['model_variant'], 'fl2va')
+        self.assertEqual(kwargs['backend'], 'sglang')
         self.assertFalse(kwargs['enable_torch_compile'])
+        self.assertFalse(kwargs['pipeline_config'].dit_config.arch_config.qkv_checkpoint_grouped)
         generator.generate.assert_called_once_with(sampling_params_kwargs=arguments)
         generator.shutdown.assert_called_once_with()
+
+    def test_turbo_must_match_layers_and_remain_dynamic(self):
+        location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
+        definition = importlib.util.spec_from_file_location('h3_turbo_contract', location)
+        worker = importlib.util.module_from_spec(definition)
+        definition.loader.exec_module(worker)
+        generator = MagicMock()
+        for active in ({}, {'transformer': []},
+                       {'transformer': [{'merged': True, 'strengths': [1.0]}]},
+                       {'transformer': [{'merged': False, 'strengths': [0.0]}]}):
+            generator.list_loras.return_value = {'active': active}
+            with self.subTest(active=active), self.assertRaisesRegex(RuntimeError, 'Turbo'):
+                worker.require_turbo(generator)
+        generator.list_loras.return_value = {'active': {
+            'transformer': [{'merged': False, 'strengths': [1.0]}]}}
+        worker.require_turbo(generator)
 
     def test_missing_media_tools_fails_before_memory_admission(self):
         with patch('api.inference.h3.shutil.which', return_value=None), \
@@ -186,28 +216,31 @@ class H3Tests(unittest.TestCase):
             with patch('api.inference.h3.subprocess.Popen', side_effect=launch), \
                  patch('api.inference.h3.stop_process_group'):
                 with self.assertRaisesRegex(RuntimeError, 'native worker failed'):
-                    H3Provider()._run(spec(), Path(directory), output, threading.Event(), 0)
+                    H3Provider()._run(spec(), Path(directory), output, threading.Event(), [0])
             self.assertFalse(output.exists())
             self.assertFalse(staging[0].exists())
 
     def test_native_none_result_rejects_nonempty_invalid_video(self):
         generator = MagicMock()
+        generator.list_loras.return_value = {'active': {'transformer': [{'merged': False, 'strengths': [1.0]}]}}
         generator.generate.return_value = None
         factory = MagicMock()
         factory.from_pretrained.return_value = generator
         location = Path(__file__).resolve().parents[2] / 'inference' / 'h3_worker.py'
         definition = importlib.util.spec_from_file_location('h3_none_result', location)
         worker = importlib.util.module_from_spec(definition)
-        with patch.dict(sys.modules, {
+        modules = patch.dict(sys.modules, {
             'sglang.multimodal_gen.runtime.entrypoints.diffusion_generator': SimpleNamespace(DiffGenerator=factory),
             'sglang.multimodal_gen.runtime.entrypoints.utils': SimpleNamespace(GenerationResult=SimpleNamespace),
-        }):
-            definition.loader.exec_module(worker)
+        })
+        modules.start()
+        self.addCleanup(modules.stop)
+        definition.loader.exec_module(worker)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'video.mp4'
             output.write_bytes(b'invalid-but-nonempty')
             with self.assertRaisesRegex(RuntimeError, 'audiovisual validation failed'):
-                worker.run(dict(checkpoint='/models/local', sampling=sampling_arguments(spec(), output)))
+                worker.run(dict(checkpoint='/models/local', num_gpus=2, sampling=sampling_arguments(spec(), output)))
             generator.shutdown.assert_called_once_with()
             with self.assertRaisesRegex(RuntimeError, 'invalid validated output path'):
                 worker.accept_result(SimpleNamespace(output_file_path='/outside.mp4'), sampling_arguments(spec(), output))
@@ -219,7 +252,7 @@ class H3Tests(unittest.TestCase):
     def test_shared_video_queue_executes_h3_and_publishes_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            resources = ResourceManager(400 * GIB, {0: 200 * GIB})
+            resources = ResourceManager(400 * GIB, {0: 18 * GIB, 1: 17 * GIB})
             entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
             def run(settings, checkpoint, output, cancellation, device):
                 output.write_bytes(b'audiovisual-fixture')
@@ -227,7 +260,7 @@ class H3Tests(unittest.TestCase):
             with patch('api.inference.h3.model_manager.get_checkpoint', return_value=(entry, root)), \
                  patch('api.inference.h3.runtime.ensure_resources', return_value=resources), \
                  patch.object(H3Provider, '_run', side_effect=run):
-                submitted = jobs.submit('h3-fl2va', VideoSpec(prompt='A river', resolution='768p'))
+                submitted = jobs.submit('h3-fl2va-int8-turbo', VideoSpec(prompt='A river', resolution='768p'))
                 jobs._thread.join(timeout=5)
             completed = jobs.get(submitted.id)
             self.assertEqual(completed.status, 'Done')

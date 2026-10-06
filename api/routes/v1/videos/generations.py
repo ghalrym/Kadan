@@ -9,7 +9,7 @@ router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
 class VideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: Literal["ltx-2.5-distilled", "h3-fl2va"] = "ltx-2.5-distilled"
+    model: Literal["ltx-2.5-distilled", "h3-fl2va-int8-turbo"] = "ltx-2.5-distilled"
     seed: int = Field(default=42, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     negative_prompt: str = Field(default="", max_length=8000)

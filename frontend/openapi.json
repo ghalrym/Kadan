@@ -1681,7 +1681,7 @@
             "default": "ltx-2.5-distilled",
             "enum": [
               "ltx-2.5-distilled",
-              "h3-fl2va"
+              "h3-fl2va-int8-turbo"
             ],
             "title": "Model",
             "type": "string"

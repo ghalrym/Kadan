@@ -975,7 +975,7 @@ export type VideoGenerationRequest = {
   /**
    * Model
    */
-  model?: 'ltx-2.5-distilled' | 'h3-fl2va'
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va-int8-turbo'
   /**
    * Negative Prompt
    */
