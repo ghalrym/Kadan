@@ -1,12 +1,9 @@
-import asyncio
-from contextlib import suppress
-
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 from api.pydantic_models.decisions import ChoiceQuestion, DecisionAnswer, DecisionQuestion, ScoreQuestion
-from api.services.runtime import RuntimeFailure
-from api.services.decisions import decision_manager
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
 
 router = APIRouter(prefix='/v1/decisions', tags=['Decisions'])
 
@@ -71,33 +68,8 @@ def get_decisions() -> DecisionPlaygroundResponse:
 
 @router.post('', operation_id='evaluateDecisions')
 async def evaluate_decisions(body: DecisionRequest, request: Request) -> DecisionResponse:
-    """Evaluate typed questions with the resident CPU Laya specialist, independent of chat.
-
-    Oversized tokenized questions/state return 422 rather than truncated answers.
-    Disconnect cancellation waits for the CPU worker before releasing ownership.
-    Results are not persisted; there is no fallback to a generative model.
-    """
-    async def disconnect():
-        """Wait for the ASGI client-disconnect event so inference can be cancelled."""
-        while True:
-            if (await request.receive())['type'] == 'http.disconnect':
-                return
-    generation = asyncio.create_task(decision_manager.evaluate(body.state, body.questions))
-    disconnected = asyncio.create_task(disconnect())
+    """Queue typed CPU decisions, preserving validation and disconnect cleanup."""
     try:
-        done, _ = await asyncio.wait([generation, disconnected], return_when=asyncio.FIRST_COMPLETED)
-        if generation not in done:
-            generation.cancel()
-            raise HTTPException(499, 'Client disconnected; evaluation cancelled.')
-        try:
-            return DecisionResponse(answers=await generation)
-        except (ValueError, TypeError, KeyError) as exc:
-            raise HTTPException(502, 'Laya returned an invalid typed decision response.') from exc
-    except RuntimeFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
-    finally:
-        for task in (generation, disconnected):
-            if not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+        return DecisionResponse(answers=await infer(request, memory_manager.submit(body, feature='decisions')))
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(502, 'Laya returned an invalid typed decision response.') from exc

@@ -16,7 +16,7 @@ import shutil
 import threading
 from typing import IO, Literal
 from typing_extensions import NotRequired, TypedDict
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -56,6 +56,7 @@ class ManifestFile(TypedDict):
     size: int
     digest: str
     algorithm: Literal['sha256', 'git-sha1']
+    url: NotRequired[str]
 
 
 class CompletionMarker(TypedDict):
@@ -107,6 +108,21 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
 
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
+    if entry.layout == 'composite':
+        manifest = TypeAdapter(list[ManifestFile]).validate_python(list(entry.manifest), strict=True)
+        validate_assets(entry, {item['name'] for item in manifest})
+        return manifest
+    if entry.layout == 'single_file':
+        if (not entry.asset_url or not entry.asset_url.startswith('https://')
+                or not entry.asset_name or not allowed_asset(entry.asset_name, entry)
+                or not re.fullmatch('[0-9a-f]{64}', entry.revision)):
+            raise ValueError('Invalid pinned single-file checkpoint metadata')
+        with urlopen(Request(entry.asset_url, method='HEAD'), timeout=30) as response:
+            value = response.headers.get('Content-Length', '')
+        if not value.isdecimal() or int(value) <= 0:
+            raise ValueError('Upstream omitted valid checkpoint size metadata')
+        return [{'name': entry.asset_name, 'size': int(value),
+                 'digest': entry.revision, 'algorithm': 'sha256'}]
     metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
     with urlopen(metadata_url, timeout=30) as response:
         checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
@@ -190,6 +206,8 @@ class ModelManager:
         try:
             marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
             files = marker['files']
+            if entry.layout == 'composite' and files != list(entry.manifest):
+                return False
             validate_assets(entry, {item['name'] for item in files})
             return (not path.is_symlink() and marker['revision'] == entry.revision and bool(files)
                     and all(allowed_asset(item['name'], entry) and not any(parent.is_symlink() for parent in (path / item['name']).parents if parent != self.root)
@@ -426,7 +444,9 @@ class ModelManager:
                 if item['algorithm'] == 'git-sha1':
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
-                url = f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                url = (item['url'] if entry.layout == 'composite' else entry.asset_url
+                       if entry.layout == 'single_file' else
+                       f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}")
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
                 with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:

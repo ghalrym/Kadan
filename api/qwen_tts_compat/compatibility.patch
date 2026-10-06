@@ -1,5 +1,5 @@
 diff --git a/pyproject.toml b/pyproject.toml
-index d4b6df5..cafd9de 100644
+index d4b6df5..bfcc888 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
 @@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
@@ -7,7 +7,7 @@ index d4b6df5..cafd9de 100644
  [project]
  name = "qwen-tts"
 -version = "0.1.1"
-+version = "0.1.1+kadan.1"
++version = "0.1.1+kadan.2"
  description = "Qwen-TTS python package"
  readme = "README.md"
  requires-python = ">=3.9"
@@ -17,7 +17,7 @@ index d4b6df5..cafd9de 100644
  dependencies = [
 -  "transformers==4.57.3",
 -  "accelerate==1.12.0",
-+  "transformers @ git+https://github.com/huggingface/transformers.git@469230357aab0f2b303b0d638c1f8d06edb14184",
++  "transformers==5.17.0",
 +  "accelerate==1.10.1",
    "gradio",
    "librosa",
@@ -51,7 +51,7 @@ index 0bd426d..b1c08f8 100644
          self.attention_dropout = attention_dropout
          # Validate the correctness of rotary position embeddings parameters
 diff --git a/qwen_tts/core/models/modeling_qwen3_tts.py b/qwen_tts/core/models/modeling_qwen3_tts.py
-index a3eb30a..bec6bf0 100644
+index a3eb30a..e514218 100644
 --- a/qwen_tts/core/models/modeling_qwen3_tts.py
 +++ b/qwen_tts/core/models/modeling_qwen3_tts.py
 @@ -1,4 +1,5 @@
@@ -142,7 +142,20 @@ index a3eb30a..bec6bf0 100644
          self.vocab_size = config.vocab_size
          self.layers = nn.ModuleList(
              [Qwen3TTSTalkerDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-@@ -2065,6 +2091,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
+@@ -1661,6 +1687,12 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel,
+             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+         ```"""
++        # Transformers 5.17 no longer supplies cache_position to generation.
++        # Preserve Qwen's per-token multimodal RoPE offsets from the actual cache.
++        if cache_position is None:
++            past_length = past_key_values.get_seq_length() if past_key_values is not None else 0
++            current = inputs_embeds if inputs_embeds is not None else input_ids
++            cache_position = torch.arange(past_length, past_length + current.shape[1], device=current.device)
+         # Prefill
+         if inputs_embeds is not None and inputs_embeds.shape[1] > 1:
+             generation_step = -1
+@@ -2065,6 +2097,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
              "return_dict_in_generate": getattr(kwargs, "return_dict_in_generate", True)
          }
          

@@ -1,5 +1,7 @@
-import unittest
 from unittest.mock import patch
+from api.memory_manager import memory_manager
+from api.tests.memory_manager.helpers import direct_feature
+import unittest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,7 +24,8 @@ class SpeechRouteTests(unittest.TestCase):
         cls.client = TestClient(app)
 
     def setUp(self):
-        disabled = patch("api.services.speech_enabled.ENABLED_SPEECH_MODELS", frozenset())
+        self.enterContext(patch.object(memory_manager, 'submit', direct_feature(memory_manager, 'tts')))
+        disabled = patch("api.inference.tts.enabled.ENABLED_SPEECH_MODELS", frozenset())
         disabled.start()
         self.addCleanup(disabled.stop)
 

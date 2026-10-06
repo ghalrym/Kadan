@@ -1,13 +1,11 @@
-import asyncio
 from dataclasses import asdict
-import threading
 from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from api.pydantic_models.media import GeneratedSpeech
-from api.services.speech import generate_speech as synthesize, SpeechUnavailable as ProviderUnavailable, validate_request, speech_models
-from api.services.runtime import finish_cleanup
-from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
+from api.services.speech import validate_request, speech_models
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
 
 router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
 
@@ -84,22 +82,6 @@ def list_speech() -> SpeechHistoryResponse:
 
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "Speech provider unavailable"}})
 async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
-    """Return provider-neutral WAV audio; cancellation waits for owned cleanup."""
-    cancel = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(synthesize, body.model_dump(), cancel))
-    try:
-        while not task.done():
-            if await request.is_disconnected():
-                cancel.set()
-            await asyncio.sleep(.05)
-        return SpeechResponse(audio=await task)
-    except (ProviderUnavailable, ResourceExhausted) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ResourceBusy as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ResourceCancelled as exc:
-        raise HTTPException(status_code=499, detail=str(exc)) from exc
-    finally:
-        cancel.set()
-        if not task.done():
-            await finish_cleanup(task)
+    """Queue native speech; cancellation waits for owned cleanup."""
+    result = await infer(request, memory_manager.submit(body, feature='tts'))
+    return SpeechResponse(audio=result)

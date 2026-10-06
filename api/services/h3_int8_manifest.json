@@ -1,0 +1,170 @@
+[
+  {
+    "name": "FL2VA/audio_vae/config.json",
+    "size": 1973,
+    "digest": "bc2a8dc3bfe9037e1f0e82e97f309019b6a398e6",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/audio_vae/config.json"
+  },
+  {
+    "name": "FL2VA/model_index.json",
+    "size": 719,
+    "digest": "ed4dfb751d8417e5ab8cf58a6915214bda6ba676",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/model_index.json"
+  },
+  {
+    "name": "FL2VA/processor/chat_template.json",
+    "size": 5499,
+    "digest": "1081bacf1af7c7c6de4a585ce02cd0fd34e382da",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/chat_template.json"
+  },
+  {
+    "name": "FL2VA/processor/merges.txt",
+    "size": 1671839,
+    "digest": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/merges.txt"
+  },
+  {
+    "name": "FL2VA/processor/preprocessor_config.json",
+    "size": 390,
+    "digest": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/preprocessor_config.json"
+  },
+  {
+    "name": "FL2VA/processor/tokenizer.json",
+    "size": 7032403,
+    "digest": "c6cc1014128b19d1fc46b1d30a23e3b1d35db421",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/tokenizer.json"
+  },
+  {
+    "name": "FL2VA/processor/tokenizer_config.json",
+    "size": 11003,
+    "digest": "204d76f78dac6dedc820418c30bf01145de78a21",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/tokenizer_config.json"
+  },
+  {
+    "name": "FL2VA/processor/video_preprocessor_config.json",
+    "size": 385,
+    "digest": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/video_preprocessor_config.json"
+  },
+  {
+    "name": "FL2VA/processor/vocab.json",
+    "size": 2776833,
+    "digest": "4783fe10ac3adce15ac8f358ef5462739852c569",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/processor/vocab.json"
+  },
+  {
+    "name": "FL2VA/text_encoder/config.json",
+    "size": 1474,
+    "digest": "29e925092dee9f14278c53e7e7d876cea8a997bc",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/text_encoder/config.json"
+  },
+  {
+    "name": "FL2VA/tokenizer/merges.txt",
+    "size": 1671839,
+    "digest": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/tokenizer/merges.txt"
+  },
+  {
+    "name": "FL2VA/tokenizer/tokenizer.json",
+    "size": 7032403,
+    "digest": "c6cc1014128b19d1fc46b1d30a23e3b1d35db421",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/tokenizer/tokenizer.json"
+  },
+  {
+    "name": "FL2VA/tokenizer/tokenizer_config.json",
+    "size": 11003,
+    "digest": "204d76f78dac6dedc820418c30bf01145de78a21",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/tokenizer/tokenizer_config.json"
+  },
+  {
+    "name": "FL2VA/tokenizer/vocab.json",
+    "size": 2776833,
+    "digest": "4783fe10ac3adce15ac8f358ef5462739852c569",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/tokenizer/vocab.json"
+  },
+  {
+    "name": "FL2VA/transformer/config.json",
+    "size": 604,
+    "digest": "94cc6ca1254d9d04b3f7cc06a8c9fc05d0ded065",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/transformer/config.json"
+  },
+  {
+    "name": "FL2VA/video_vae/config.json",
+    "size": 1807,
+    "digest": "20f91e40ea9bc24c21a0e757715f93acf49eb841",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/video_vae/config.json"
+  },
+  {
+    "name": "FL2VA/video_vae/source/config.json",
+    "size": 1164,
+    "digest": "fb5105116e094aface836f5182b126bb4fbdc699",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA/video_vae/source/config.json"
+  },
+  {
+    "name": "LICENSE",
+    "size": 17604,
+    "digest": "c389b45855337ccec8ddeb389f4fe902abcd0b19",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE"
+  },
+  {
+    "name": "model_index.json",
+    "size": 2936,
+    "digest": "454be19164878173a962c39c81633e4377880fca",
+    "algorithm": "git-sha1",
+    "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/42ed227ee7df40d41602854ae760620d6eb651fe/model_index.json"
+  },
+  {
+    "name": "FL2VA/transformer/model.safetensors",
+    "size": 34038892334,
+    "digest": "7ad4c73e6e378b822ffd1629f27f632d3787d95f5e468e3af958f98c58df96a5",
+    "algorithm": "sha256",
+    "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors"
+  },
+  {
+    "name": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+    "size": 1956193000,
+    "digest": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e",
+    "algorithm": "sha256",
+    "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+  },
+  {
+    "name": "FL2VA/text_encoder/model.safetensors",
+    "size": 27141342152,
+    "digest": "bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923",
+    "algorithm": "sha256",
+    "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+  },
+  {
+    "name": "FL2VA/audio_vae/model.safetensors",
+    "size": 605254808,
+    "digest": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+    "algorithm": "sha256",
+    "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_audio_vae_fp32.safetensors"
+  },
+  {
+    "name": "FL2VA/video_vae/model.safetensors",
+    "size": 5207808496,
+    "digest": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+    "algorithm": "sha256",
+    "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_video_vae_fp16.safetensors"
+  }
+]

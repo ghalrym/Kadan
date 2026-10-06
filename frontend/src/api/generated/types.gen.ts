@@ -946,19 +946,47 @@ export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference only; no upload or fetching is implemented
+   * Base64 mono 16-bit PCM WAV data URL at 16000 Hz
    */
   audio: string
   /**
    * Formatting
    */
   formatting?: boolean
+  /**
+   * Language
+   */
+  language?: string | null
+  /**
+   * Model
+   */
+  model?: string | null
 }
 
 /**
  * TranscriptionResponse
  */
 export type TranscriptionResponse = {
+  /**
+   * Formatting Model
+   */
+  formatting_model?: string | null
+  /**
+   * Formatting Status
+   */
+  formatting_status: string
+  /**
+   * Language
+   */
+  language: string | null
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Raw Text
+   */
+  raw_text: string
   /**
    * Text
    */
@@ -1020,6 +1048,10 @@ export type VideoGenerationRequest = {
    */
   fps?: number
   /**
+   * Model
+   */
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va-int8-turbo'
+  /**
    * Negative Prompt
    */
   negative_prompt?: string
@@ -1030,7 +1062,11 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    */
-  resolution?: '480p' | '720p' | '1080p'
+  resolution?: '480p' | '720p' | '768p' | '1080p'
+  /**
+   * Seed
+   */
+  seed?: number
 }
 
 /**
@@ -1053,6 +1089,10 @@ export type VideoJob = {
    */
   duration: string
   /**
+   * Error
+   */
+  error?: string | null
+  /**
    * Fps
    */
   fps: string
@@ -1060,6 +1100,10 @@ export type VideoJob = {
    * Id
    */
   id: string
+  /**
+   * Output Url
+   */
+  output_url?: string | null
   /**
    * Progress
    */
@@ -1079,7 +1123,7 @@ export type VideoJob = {
   /**
    * Status
    */
-  status: 'Rendering' | 'Queued' | 'Done'
+  status: 'Rendering' | 'Queued' | 'Done' | 'Failed' | 'Cancelled'
   /**
    * Thumbnail
    */
@@ -1105,6 +1149,30 @@ export type VideosResponse = {
    * Jobs
    */
   jobs: Array<VideoJob>
+}
+
+/**
+ * WhisperModels
+ */
+export type WhisperModels = {
+  /**
+   * Models
+   */
+  models: Array<string>
+  /**
+   * Selected
+   */
+  selected: string | null
+}
+
+/**
+ * WhisperSelection
+ */
+export type WhisperSelection = {
+  /**
+   * Model
+   */
+  model: string
 }
 
 /**
@@ -1337,6 +1405,50 @@ export type TranscribeAudioResponses = {
 
 export type TranscribeAudioResponse =
   TranscribeAudioResponses[keyof TranscribeAudioResponses]
+
+export type GetWhisperModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type GetWhisperModelsResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type GetWhisperModelsResponse =
+  GetWhisperModelsResponses[keyof GetWhisperModelsResponses]
+
+export type SelectWhisperModelData = {
+  body: WhisperSelection
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type SelectWhisperModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectWhisperModelError =
+  SelectWhisperModelErrors[keyof SelectWhisperModelErrors]
+
+export type SelectWhisperModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type SelectWhisperModelResponse =
+  SelectWhisperModelResponses[keyof SelectWhisperModelResponses]
 
 export type CreateCompletionData = {
   body: CompletionRequest
@@ -1828,6 +1940,37 @@ export type GenerateVideoResponses = {
 export type GenerateVideoResponse =
   GenerateVideoResponses[keyof GenerateVideoResponses]
 
+export type CancelVideoData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}'
+}
+
+export type CancelVideoErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelVideoError = CancelVideoErrors[keyof CancelVideoErrors]
+
+export type CancelVideoResponses = {
+  /**
+   * Successful Response
+   */
+  200: VideoResponse
+}
+
+export type CancelVideoResponse =
+  CancelVideoResponses[keyof CancelVideoResponses]
+
 export type GetVideoData = {
   body?: never
   path: {
@@ -1861,3 +2004,32 @@ export type GetVideoResponses = {
 }
 
 export type GetVideoResponse = GetVideoResponses[keyof GetVideoResponses]
+
+export type GetVideoContentData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}/content'
+}
+
+export type GetVideoContentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetVideoContentError =
+  GetVideoContentErrors[keyof GetVideoContentErrors]
+
+export type GetVideoContentResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown
+}

@@ -47,14 +47,14 @@ test('typed endpoint sends reference and formatting without uploading files', as
 })
 test('unavailable, validation, network, and malformed responses never produce fixture text', async () => {
   mockFetch(async () => Response.json({ detail: 'Unavailable' }, { status: 503 }))
-  await assert.rejects(requestTranscription('reference', true, signal()), /no speech-to-text provider/)
+  await assert.rejects(requestTranscription('reference', true, signal()), /Unavailable/)
   for (const status of [422, 500]) {
     mockFetch(async () => Response.json({}, { status }))
     await assert.rejects(requestTranscription('reference', true, signal()))
   }
   mockFetch(async () => { throw new Error('offline') })
   await assert.rejects(requestTranscription('reference', true, signal()))
-  for (const value of [{}, { text: '' }, { text: 42 }]) {
+  for (const value of [{}, { text: 42 }]) {
     mockFetch(async () => Response.json(value))
     await assert.rejects(requestTranscription('reference', true, signal()), /invalid transcript/)
   }
@@ -80,5 +80,10 @@ test('long references reach the API without arbitrary caps', async () => {
     assert.deepEqual(await request.json(), { audio, formatting: true })
     return Response.json({ detail: 'Unavailable' }, { status: 503 })
   })
-  await assert.rejects(requestTranscription(audio, true, signal()), /no speech-to-text provider/)
+  await assert.rejects(requestTranscription(audio, true, signal()), /Unavailable/)
+})
+
+test("silence remains a valid empty transcript", async () => {
+  mockFetch(async () => Response.json({ text: "" }))
+  assert.equal(await requestTranscription("data:audio/wav;base64,fixture", false, signal()), "")
 })

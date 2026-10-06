@@ -1642,7 +1642,7 @@
         "additionalProperties": false,
         "properties": {
           "audio": {
-            "description": "Audio reference only; no upload or fetching is implemented",
+            "description": "Base64 mono 16-bit PCM WAV data URL at 16000 Hz",
             "minLength": 1,
             "title": "Audio",
             "type": "string"
@@ -1651,6 +1651,28 @@
             "default": true,
             "title": "Formatting",
             "type": "boolean"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -1661,13 +1683,51 @@
       },
       "TranscriptionResponse": {
         "properties": {
+          "formatting_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatting Model"
+          },
+          "formatting_status": {
+            "title": "Formatting Status",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
           "text": {
             "title": "Text",
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "text",
+          "raw_text",
+          "language",
+          "model",
+          "formatting_status"
         ],
         "title": "TranscriptionResponse",
         "type": "object"
@@ -1752,6 +1812,15 @@
             "title": "Fps",
             "type": "integer"
           },
+          "model": {
+            "default": "ltx-2.5-distilled",
+            "enum": [
+              "ltx-2.5-distilled",
+              "h3-fl2va-int8-turbo"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
           "negative_prompt": {
             "default": "",
             "maxLength": 8000,
@@ -1770,10 +1839,18 @@
             "enum": [
               "480p",
               "720p",
+              "768p",
               "1080p"
             ],
             "title": "Resolution",
             "type": "string"
+          },
+          "seed": {
+            "default": 42,
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "title": "Seed",
+            "type": "integer"
           }
         },
         "required": [
@@ -1809,6 +1886,17 @@
             "title": "Duration",
             "type": "string"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
           "fps": {
             "title": "Fps",
             "type": "string"
@@ -1816,6 +1904,17 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "output_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Url"
           },
           "progress": {
             "maximum": 100.0,
@@ -1839,7 +1938,9 @@
             "enum": [
               "Rendering",
               "Queued",
-              "Done"
+              "Done",
+              "Failed",
+              "Cancelled"
             ],
             "title": "Status",
             "type": "string"
@@ -1895,6 +1996,48 @@
           "jobs"
         ],
         "title": "VideosResponse",
+        "type": "object"
+      },
+      "WhisperModels": {
+        "properties": {
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "selected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected"
+          }
+        },
+        "required": [
+          "models",
+          "selected"
+        ],
+        "title": "WhisperModels",
+        "type": "object"
+      },
+      "WhisperSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "WhisperSelection",
         "type": "object"
       },
       "api__routes__v1__images__edits__ImageRequest": {
@@ -2015,7 +2158,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model; invalid or oversized inputs return errors. Speech runs in process through registered providers using completed local checkpoints. Unconfigured image, video and transcription providers return unavailable errors; media history is empty. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2157,7 +2300,7 @@
         ]
       },
       "post": {
-        "description": "Return provider-neutral WAV audio; cancellation waits for owned cleanup.",
+        "description": "Queue native speech; cancellation waits for owned cleanup.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -2235,7 +2378,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
+        "description": "Queue native Whisper and preserve its raw transcript and formatting status.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -2285,9 +2428,70 @@
         ]
       }
     },
+    "/v1/audio/transcriptions/models": {
+      "get": {
+        "description": "List all unique official checkpoints and the persisted selection.",
+        "operationId": "getWhisperModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Models",
+        "tags": [
+          "Audio"
+        ]
+      },
+      "put": {
+        "operationId": "selectWhisperModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhisperSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Model",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
     "/v1/chat/completions": {
       "post": {
-        "description": "Generate an assistant reply with the loaded model. Client disconnect cancels generation and\nawaits cleanup; runtime failures preserve their HTTP status.",
+        "description": "Queue a reply; disconnect waits for native cancellation and cleanup.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {
@@ -2371,7 +2575,7 @@
         ]
       },
       "post": {
-        "description": "Evaluate typed questions with the resident CPU Laya specialist, independent of chat.\n\nOversized tokenized questions/state return 422 rather than truncated answers.\nDisconnect cancellation waits for the CPU worker before releasing ownership.\nResults are not persisted; there is no fallback to a generative model.",
+        "description": "Queue typed CPU decisions, preserving validation and disconnect cleanup.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
@@ -2435,7 +2639,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Reject a validated edit request with HTTP 503 until a provider exists.\n\nThe source reference is opaque: this route does not fetch/upload images,\nallocate an inference model, or create a placeholder result.",
+        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2480,7 +2684,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Reject validated image-generation settings with HTTP 503.\n\nNo image provider runs, GPU work starts, or synthetic result is returned.",
+        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -2980,7 +3184,7 @@
     },
     "/v1/videos": {
       "get": {
-        "description": "Return an empty queue because no video jobs are persisted or scheduled.",
+        "description": "Return jobs submitted to this API process.",
         "operationId": "listVideos",
         "responses": {
           "200": {
@@ -3002,7 +3206,7 @@
     },
     "/v1/videos/generations": {
       "post": {
-        "description": "Reject validated generation settings with HTTP 503 without queuing a job.\n\nThe declared 202 response is the future job contract, not evidence that a\nprovider ran or that GPU rendering has started.",
+        "description": "Queue a validated native generation and return its actual job identifier.",
         "operationId": "generateVideo",
         "requestBody": {
           "content": {
@@ -3046,8 +3250,48 @@
       }
     },
     "/v1/videos/{video_id}": {
+      "delete": {
+        "operationId": "cancelVideo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Video",
+        "tags": [
+          "Videos"
+        ]
+      },
       "get": {
-        "description": "Report HTTP 404 for the requested ID; no provider-backed video jobs exist.",
+        "description": "Return the real worker state, including errors and cancellation.",
         "operationId": "getVideo",
         "parameters": [
           {
@@ -3086,6 +3330,46 @@
           }
         },
         "summary": "Get Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/{video_id}/content": {
+      "get": {
+        "operationId": "getVideoContent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video Content",
         "tags": [
           "Videos"
         ]
