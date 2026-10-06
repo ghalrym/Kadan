@@ -1,10 +1,6 @@
-"""Offline H3 generation in a Kadan-owned, isolated native worker."""
-import json
-import os
+"""Offline H3 generation inside the API, under Kadan resource ownership."""
 from pathlib import Path
-import signal
 import shutil
-import subprocess
 import tempfile
 import threading
 
@@ -36,24 +32,6 @@ def sampling_arguments(spec, output: Path) -> dict:
                 output_file_name=output.name)
 
 
-def stop_process_group(process):
-    """Reap the worker and stop its native scheduler children before releasing memory."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        pass
-    # The main worker may exit before its scheduler children; kill the entire group.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
-
-
 class H3Provider:
     def __init__(self, model_id='h3-fl2va-int8-turbo'):
         """Select a checkpoint without loading tensors or starting processes."""
@@ -71,7 +49,7 @@ class H3Provider:
             raise ValueError('The CFG-distilled H3 checkpoint does not support negative prompts')
 
     def generate(self, spec, output_path: Path, cancellation: threading.Event):
-        """Hold exclusive RAM/VRAM admission until the isolated generation process exits."""
+        """Hold shared RAM/VRAM admission until synchronous pipeline cleanup completes."""
         self.validate(spec)
         check_media_tools()
         entry, checkpoint = model_manager.get_checkpoint(self.model_id)
@@ -83,10 +61,8 @@ class H3Provider:
             raise ResourceExhausted('H3 native inference requires a CUDA GPU')
         # Each CUDA device has an independent budget. INT8 weights live on the
         # host; layerwise streaming bounds residency independently of disk size.
-        # TP=2 is valid for both H3 and Qwen3VL ConvRot group dimensions.
-        selected = sorted(devices, key=devices.get, reverse=True)[:2]
-        if any(devices[device] < 12 * GIB for device in selected):
-            selected = selected[:1]
+        # A direct pipeline uses one GPU; no tensor-parallel worker processes.
+        selected = sorted(devices, key=devices.get, reverse=True)[:1]
         if devices[selected[0]] < 12 * GIB:
             raise ResourceExhausted('H3 needs at least 12 GiB of available GPU budget')
         host_bytes = entry.estimated_bytes * 2 + 8 * GIB
@@ -102,52 +78,17 @@ class H3Provider:
                 reservation.release()
 
     def _run(self, spec, checkpoint, output, cancellation, devices):
-        """Pass local paths only; cancellation terminates the worker's entire process group."""
+        """Render synchronously; keep the lease until in-process cleanup completes."""
+        # Native imports must follow platform activation, and remain lazy for API startup.
+        from api.inference.h3_pipeline import render, check_cancel
+
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
-                   HF_DATASETS_OFFLINE='1')
-        visible = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',')
-        env['CUDA_VISIBLE_DEVICES'] = ','.join(visible[device] if visible != [''] else str(device)
-                                              for device in devices)
-        python = os.environ.get('KADAN_H3_PYTHON', '/opt/kadan-h3/bin/python')
-        if not Path(python).is_file():
-            raise RuntimeError('The installed H3 runtime is missing; rebuild the standard Kadan API image')
-        # The isolated runtime supplies executables such as ninja for kernel JIT.
-        env['PATH'] = str(Path(python).parent) + os.pathsep + env.get('PATH', '')
-        # Keep the renderer's sanitizer-safe filename separate from the queue's
-        # hidden staging name. The same filesystem permits atomic publication.
         with tempfile.TemporaryDirectory(prefix='.kadan-h3-', dir=output.parent) as scratch:
             rendered = Path(scratch) / 'video.mp4'
-            payload = dict(checkpoint=str(checkpoint.resolve()), num_gpus=len(devices),
-                           sampling=sampling_arguments(spec, rendered))
-            request = Path(scratch) / 'request.json'
-            request.write_text(json.dumps(payload))
-            with (Path(scratch) / 'worker.log').open('w+b') as log:
-                if cancellation.is_set():
-                    raise ResourceCancelled('H3 generation cancelled')
-                process = subprocess.Popen([python, '-m', 'api.inference.h3_worker', str(request)],
-                                           cwd=Path(__file__).resolve().parents[2], env=env,
-                                           stdout=log, stderr=log, start_new_session=True)
-                try:
-                    while process.poll() is None:
-                        if cancellation.wait(.1):
-                            raise ResourceCancelled('H3 generation cancelled')
-                    if cancellation.is_set():
-                        raise ResourceCancelled('H3 generation cancelled')
-                    if process.returncode:
-                        log.seek(0)
-                        diagnostic = output.with_suffix('.worker.log')
-                        diagnostic.write_bytes(log.read())
-                        raise RuntimeError(f'H3 native worker failed (exit {process.returncode}); '
-                                           f'diagnostics: {diagnostic.name}')
-                    if not rendered.is_file() or rendered.stat().st_size == 0:
-                        raise RuntimeError('H3 worker produced no audiovisual output')
-                except BaseException:
-                    output.unlink(missing_ok=True)
-                    raise
-                finally:
-                    stop_process_group(process)
-                if cancellation.is_set():
-                    raise ResourceCancelled('H3 generation cancelled')
-                rendered.replace(output)
+            check_cancel(cancellation)
+            render(checkpoint, sampling_arguments(spec, rendered), devices[0], cancellation)
+            check_cancel(cancellation)
+            if rendered.is_symlink() or not rendered.is_file() or not rendered.stat().st_size:
+                raise RuntimeError('H3 produced no validated audiovisual output')
+            rendered.replace(output)

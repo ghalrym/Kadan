@@ -1,7 +1,7 @@
 # Core native inference dependencies, included by requirements.txt.
 # The container installs the CUDA wheel first; CPU wheels are for tests only.
-torch==2.11.0
-transformers @ git+https://github.com/huggingface/transformers.git@469230357aab0f2b303b0d638c1f8d06edb14184
+torch==2.14.1
+transformers==5.17.0
 accelerate==1.10.1
 safetensors==0.8.0
 # Embedded CPU decisions; no Laya HTTP server or GPU extras.
