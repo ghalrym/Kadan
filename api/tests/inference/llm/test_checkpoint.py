@@ -7,7 +7,7 @@ import unittest
 import torch
 from safetensors.torch import save_file
 
-from api.inference.checkpoint import SafeTensorReader
+from api.inference.llm.checkpoint import SafeTensorReader
 
 
 class SafeTensorReaderTests(unittest.TestCase):

@@ -6,7 +6,7 @@ import json
 import threading
 
 from api.inference.resources import ResourceManager, probe_memory
-from api.inference.context import ContextLimitError, ContextMemoryError, resolve_context
+from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
 from api.services.model_downloads import BusyError, model_manager
 
 
@@ -100,7 +100,7 @@ class RuntimeManager:
             # Keep the API available when native dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.
             try:
-                from api.inference.model_adapter import build_runtime
+                from api.inference.llm.model_adapter import build_runtime
             except ImportError as exc:
                 detail = (f'Inference dependency is missing: {exc.name}.'
                           if isinstance(exc, ModuleNotFoundError) and exc.name

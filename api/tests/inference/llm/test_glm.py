@@ -4,8 +4,8 @@ import threading
 
 try:
     import torch
-    from api.inference.glm import GlmExperts, read_dense, source_names, TextLM, validate_expert, HostLinear, GlmAdapter
-    from api.inference.offload import ExpertBank, ExpertCache
+    from api.inference.llm.glm import GlmExperts, read_dense, source_names, TextLM, validate_expert, HostLinear, GlmAdapter
+    from api.inference.llm.offload import ExpertBank, ExpertCache
 except ImportError:
     torch = None
 

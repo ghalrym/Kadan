@@ -19,7 +19,7 @@ from .checkpoint import SafeTensorReader
 from .generation import autoregressive_generate, check_cancel
 from .offload import ExpertBank, ExpertCache
 from .quantization import nvfp4_linear
-from .resources import ResourceBusy
+from ..resources import ResourceBusy
 
 
 PREFIX = 'model.language_model.'
@@ -418,7 +418,7 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
             adapter.gpu_bytes = sum(p.numel() * p.element_size() for p in list(model.parameters()) + list(model.buffers())) + 16 * 1024**2
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             adapter.model = model.eval()
-            from api.inference.context import configure_context
+            from api.inference.llm.context import configure_context
             configure_context(adapter, None)
             adapter._restore(cancel_event)
             check_cancel(cancel_event)

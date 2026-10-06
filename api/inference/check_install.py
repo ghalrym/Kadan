@@ -9,9 +9,9 @@ def main():
     import laya
     from transformers import AutoTokenizer, GptOssForCausalLM, Qwen3_5MoeForCausalLM
     from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
-    from api.inference.model_adapter import build_runtime
-    from api.inference.qwen import build_qwen
-    from api.inference.glm import build_glm
+    from api.inference.llm.model_adapter import build_runtime
+    from api.inference.llm.qwen import build_qwen
+    from api.inference.llm.glm import build_glm
 
     assert all((accelerate, safetensors, laya, AutoTokenizer, GptOssForCausalLM,
                 Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))

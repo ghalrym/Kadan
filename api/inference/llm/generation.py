@@ -4,7 +4,7 @@ import traceback
 from uuid import uuid4
 import torch
 from .context import ContextLimitError, ContextMemoryError, estimate_request_memory, resolve_context
-from .resources import ResourceExhausted
+from ..resources import ResourceExhausted
 
 
 def check_cancel(cancel_event):

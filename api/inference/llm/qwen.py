@@ -18,7 +18,7 @@ from .checkpoint import SafeTensorReader
 from .generation import autoregressive_generate, check_cancel
 from .offload import ExpertBank, ExpertCache
 from .quantization import nvfp4_linear
-from .resources import ResourceBusy
+from ..resources import ResourceBusy
 
 
 def checkpoint_name(name):
@@ -333,7 +333,7 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
             # actual expert entries and each request compete for remaining VRAM.
             adapter.gpu_bytes = sum(t.numel() * t.element_size() for t in list(model.parameters()) + list(model.buffers())) + 16 * 1024**2
             model.eval()
-            from api.inference.context import configure_context
+            from api.inference.llm.context import configure_context
             configure_context(adapter, None)
             adapter.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=False)
             check_cancel(cancel_event)

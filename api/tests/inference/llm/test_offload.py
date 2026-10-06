@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from api.inference.offload import ExpertBank, ExpertCache
+from api.inference.llm.offload import ExpertBank, ExpertCache
 
 
 class OffloadTests(unittest.TestCase):

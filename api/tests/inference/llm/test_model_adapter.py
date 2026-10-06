@@ -7,10 +7,10 @@ import torch
 from transformers import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts
 
-from api.inference.model_adapter import GptOssOffloadedExperts
-from api.inference.offload import ExpertBank, ExpertCache, tensor_bytes
-from api.inference.quantization import dequantize_mxfp4
-from api.inference.generation import autoregressive_generate
+from api.inference.llm.model_adapter import GptOssOffloadedExperts
+from api.inference.llm.offload import ExpertBank, ExpertCache, tensor_bytes
+from api.inference.llm.quantization import dequantize_mxfp4
+from api.inference.llm.generation import autoregressive_generate
 
 
 class ModelAdapterTests(unittest.TestCase):
@@ -126,7 +126,7 @@ class ModelAdapterTests(unittest.TestCase):
         from unittest.mock import patch
         from safetensors.torch import save_file
         from transformers import GptOssForCausalLM
-        from api.inference.model_adapter import GptOssAdapter
+        from api.inference.llm.model_adapter import GptOssAdapter
         config = GptOssConfig(hidden_size=32, intermediate_size=32, num_local_experts=2,
             num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
             head_dim=16, num_experts_per_tok=2, vocab_size=64)
@@ -151,7 +151,7 @@ class ModelAdapterTests(unittest.TestCase):
             (path / 'config.json').write_text(json.dumps(data))
             resources = Mock()
             resources.capacity = SimpleNamespace(device_bytes={0: 2**30})
-            with patch('api.inference.model_adapter.ExpertCache', side_effect=lambda bank, size, device, **kwargs: ExpertCache(bank, size, 'cpu')) as cache_factory, \
+            with patch('api.inference.llm.model_adapter.ExpertCache', side_effect=lambda bank, size, device, **kwargs: ExpertCache(bank, size, 'cpu')) as cache_factory, \
                  patch.object(GptOssAdapter, '_restore'), patch('transformers.AutoTokenizer.from_pretrained', return_value=Mock()):
                 adapter = GptOssAdapter(SimpleNamespace(id='medium'), path, resources, 'cuda:0')
             try:
@@ -197,7 +197,7 @@ class ModelAdapterTests(unittest.TestCase):
         self.assertEqual(actual, str(expected))
 
     def test_full_size_skeleton_has_no_materialized_experts_or_meta_rope(self):
-        from api.inference.model_adapter import build_gptoss_skeleton
+        from api.inference.llm.model_adapter import build_gptoss_skeleton
         from unittest.mock import patch
         # Default architecture dimensions are full-size, but every parameter and
         # every temporary factory allocation must be meta, not merely moved there
