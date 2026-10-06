@@ -1,6 +1,7 @@
 """Native Whisper inference with Kadan-owned memory and no implicit downloads."""
 import base64
 import binascii
+from functools import lru_cache
 import gc
 import hashlib
 import io
@@ -15,7 +16,7 @@ import numpy as np
 from api.inference.resources import ResourceBusy, ResourceExhausted
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
-from api.services.whisper_catalog import CHECKPOINTS, checkpoint
+from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
 from api.services.decisions import clear_failure_frames
 
 
@@ -31,14 +32,14 @@ class TranscriptionManager:
         """Restore a canonical selection without loading model weights."""
         try:
             name = checkpoint(json.loads((self.store.root / 'whisper-selection.json').read_text())['model']).name
-            return name if name in CHECKPOINTS else next(iter(CHECKPOINTS), None)
+            return name if name in get_whisper_checkpoints() else next(iter(get_whisper_checkpoints()), None)
         except (OSError, ValueError, KeyError, TypeError):
-            return next(iter(CHECKPOINTS), None)
+            return next(iter(get_whisper_checkpoints()), None)
 
     def select(self, name):
         """Persist a validated checkpoint name atomically, without downloading it."""
         name = checkpoint(name).name
-        if name not in CHECKPOINTS:
+        if name not in get_whisper_checkpoints():
             raise ValueError("Whisper checkpoint is not enabled in this version")
         with self.lock:
             self.store.root.mkdir(parents=True, exist_ok=True)
@@ -53,7 +54,7 @@ class TranscriptionManager:
         if name is None:
             raise RuntimeFailure("No Whisper checkpoint is enabled in this version.", 503)
         entry = checkpoint(name)
-        if entry.name not in CHECKPOINTS:
+        if entry.name not in get_whisper_checkpoints():
             raise RuntimeFailure("Whisper checkpoint is not enabled in this version.", 422)
         if entry.name.endswith('.en') and language not in (None, 'en'):
             raise RuntimeFailure('This Whisper checkpoint supports English only.', 422)
@@ -130,4 +131,19 @@ def load_whisper(path, device):
     return whisper.load_model(path, device=device)
 
 
-transcription_manager = TranscriptionManager()
+_manager_lock = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def _cached_transcription_manager():
+    return TranscriptionManager()
+
+
+def get_transcription_manager():
+    """Lazily share one coordinator, including concurrent first requests.
+
+    Hold the lock outside lru_cache so the first result is cached before another
+    caller can construct a manager with a separate admission lock.
+    """
+    with _manager_lock:
+        return _cached_transcription_manager()

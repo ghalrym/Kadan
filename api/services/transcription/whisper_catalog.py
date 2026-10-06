@@ -1,5 +1,6 @@
 """Official OpenAI Whisper checkpoints; aliases never create duplicate storage."""
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 from pathlib import Path
 
@@ -40,10 +41,11 @@ def checkpoint(name):
         raise ValueError("Unknown Whisper checkpoint") from None
 
 
-def enabled_checkpoints():
+@lru_cache(maxsize=1)
+def get_whisper_checkpoints():
     """Enable only checkpoint registrations shipped with this version of Kadan."""
     enabled = {}
-    for path in sorted((Path(__file__).parent / "whisper_checkpoints").glob("*.json")):
+    for path in sorted((Path(__file__).parents[1] / "whisper_checkpoints").glob("*.json")):
         name = json.loads(path.read_text())["name"]
         entry = checkpoint(name)
         if entry.name != name:
@@ -51,5 +53,3 @@ def enabled_checkpoints():
         enabled[name] = entry
     return enabled
 
-
-CHECKPOINTS = enabled_checkpoints()

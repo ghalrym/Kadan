@@ -10,8 +10,8 @@ import wave
 
 from api.inference.resources import ResourceManager
 from api.services.runtime import RuntimeFailure
-from api.services.transcription import TranscriptionManager
-from api.services.whisper_catalog import OFFICIAL_CHECKPOINTS, checkpoint
+from api.services.transcription.transcription import TranscriptionManager, get_transcription_manager, _cached_transcription_manager
+from api.services.transcription.whisper_catalog import OFFICIAL_CHECKPOINTS, checkpoint
 
 
 def audio_url():
@@ -36,10 +36,10 @@ class TranscriptionTests(unittest.TestCase):
         self.native.transcribe.return_value = {'text': 'hello', 'language': 'en'}
         self.factory = Mock(return_value=self.native)
         self.manager = TranscriptionManager(self.factory, self.resources, self.store)
-        patcher = patch('api.services.transcription.checkpoint', return_value=self.entry)
+        patcher = patch('api.services.transcription.transcription.checkpoint', return_value=self.entry)
         patcher.start()
         self.addCleanup(patcher.stop)
-        enabled = patch.dict("api.services.transcription.CHECKPOINTS", {"tiny": self.entry})
+        enabled = patch("api.services.transcription.transcription.get_whisper_checkpoints", return_value={"tiny": self.entry})
         enabled.start()
         self.addCleanup(enabled.stop)
 
@@ -104,3 +104,23 @@ class TranscriptionTests(unittest.TestCase):
         self.assertTrue(self.native.transcribe.call_args.kwargs['fp16'])
         self.assertEqual(self.factory.call_args.kwargs['device'], 'cuda:0')
         self.assertEqual(self.resources.snapshot()['reservations'], {})
+
+    def test_cached_manager_retains_ownership_through_failure_and_retry(self):
+        _cached_transcription_manager.cache_clear()
+        self.addCleanup(_cached_transcription_manager.cache_clear)
+        with patch('api.services.transcription.transcription.TranscriptionManager', return_value=self.manager):
+            owner = get_transcription_manager()
+            def fail(samples, **kwargs):
+                self.assertIs(get_transcription_manager(), owner)
+                with self.assertRaises(RuntimeFailure) as busy:
+                    get_transcription_manager().transcribe(audio_url())
+                self.assertEqual(busy.exception.status_code, 409)
+                self.assertEqual(self.resources.snapshot()['reservations']['whisper']['active_leases'], 1)
+                raise RuntimeError('native failure')
+            self.native.transcribe.side_effect = fail
+            with self.assertRaisesRegex(RuntimeFailure, 'native failure'):
+                owner.transcribe(audio_url())
+            self.assertEqual(self.resources.snapshot()['reservations'], {})
+            self.native.transcribe.side_effect = None
+            self.assertEqual(get_transcription_manager().transcribe(audio_url())['text'], 'hello')
+            self.assertEqual(self.resources.snapshot()['reservations'], {})

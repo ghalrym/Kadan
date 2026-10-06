@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.services.runtime import RuntimeFailure
-from api.services.transcription import transcription_manager
-from api.services.whisper_catalog import CHECKPOINTS, checkpoint
+from api.services.transcription.transcription import get_transcription_manager
+from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
@@ -60,13 +60,13 @@ class WhisperSelection(BaseModel):
 @router.get('/models', operation_id='getWhisperModels')
 def get_models() -> WhisperModels:
     """List all unique official checkpoints and the persisted selection."""
-    return WhisperModels(models=list(CHECKPOINTS), selected=transcription_manager.selected())
+    return WhisperModels(models=list(get_whisper_checkpoints()), selected=get_transcription_manager().selected())
 
 
 @router.put('/models', operation_id='selectWhisperModel')
 def select_model(body: WhisperSelection) -> WhisperModels:
     try:
-        transcription_manager.select(body.model)
+        get_transcription_manager().select(body.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:
@@ -78,7 +78,7 @@ def select_model(body: WhisperSelection) -> WhisperModels:
 def transcribe_audio(body: TranscriptionRequest) -> TranscriptionResponse:
     """Run native Whisper; preserve its raw transcript for optional formatting."""
     try:
-        result = transcription_manager.transcribe(body.audio, body.model, body.language)
+        result = get_transcription_manager().transcribe(body.audio, body.model, body.language)
     except RuntimeFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     result['formatting_status'] = 'unavailable' if body.formatting else 'disabled'

@@ -9,7 +9,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Literal
 
-from api.services.whisper_catalog import CHECKPOINTS
+from api.services.transcription.whisper_catalog import get_whisper_checkpoints
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ for family in ('FL2VA',):
     CATALOG[entry.id] = entry
 
 # Only independently registered Whisper checkpoints enter the shared catalog.
-for whisper in CHECKPOINTS.values():
+for whisper in get_whisper_checkpoints().values():
     entry = CatalogEntry(f'whisper-{whisper.name}', 'openai/whisper', whisper.sha256,
         'mit', 0, kind='transcription', display_name=f'Whisper {whisper.name}',
         layout='single_file', asset_url=whisper.url, asset_name=f'{whisper.name}.pt',
