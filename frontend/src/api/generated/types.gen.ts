@@ -97,7 +97,7 @@ export type ClonedVoice = {
   /**
    * Sample
    *
-   * Voice sample reference; not fetched in mock mode
+   * Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.
    */
   sample: string
 }
@@ -292,6 +292,8 @@ export type ImagesResponse = {
 
 /**
  * MessagesResponse
+ *
+ * Compatibility envelope for client-owned conversations; the server has no history.
  */
 export type MessagesResponse = {
   /**
@@ -302,32 +304,70 @@ export type MessagesResponse = {
 
 /**
  * MetricsResponse
+ *
+ * Process-local request statistics plus best-effort host/device memory samples.
+ *
+ * Null latency/error statistics mean no retained samples in the window. A
+ * truncated window covers retained records only; Online does not imply a
+ * loaded model or successful GPU inference.
  */
 export type MetricsResponse = {
   /**
+   * Active Requests
+   */
+  active_requests: number
+  /**
+   * Completed Requests
+   */
+  completed_requests: number
+  /**
    * Error Rate Percent
    */
-  error_rate_percent: number
+  error_rate_percent: number | null
+  /**
+   * Memory Unit
+   */
+  memory_unit?: 'GiB'
   /**
    * P50 Latency Seconds
    */
-  p50_latency_seconds: number
-  /**
-   * Queued Jobs
-   */
-  queued_jobs: number
+  p50_latency_seconds: number | null
   /**
    * Requests Per Minute
    */
   requests_per_minute: number
   /**
+   * Resource Errors
+   */
+  resource_errors: Array<string>
+  /**
    * Resources
    */
   resources: Array<ResourceMeter>
   /**
+   * Retained Requests
+   */
+  retained_requests: number
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
+  /**
    * Status
    */
-  status: 'Online'
+  status?: 'Online'
+  /**
+   * Window Seconds
+   */
+  window_seconds?: number
+  /**
+   * Window Truncated
+   */
+  window_truncated: boolean
 }
 
 /**
@@ -388,6 +428,8 @@ export type ModelLoadRequest = {
 
 /**
  * ModelSetting
+ *
+ * A catalog-backed selection; None means no model is selected.
  */
 export type ModelSetting = {
   /**
@@ -401,7 +443,7 @@ export type ModelSetting = {
   /**
    * Selected
    */
-  selected: string
+  selected: string | null
   /**
    * Type
    */
@@ -558,6 +600,12 @@ export type NoulQuestion = {
 
 /**
  * RequestRecord
+ *
+ * Completed HTTP-handler observation retained only in the current API process.
+ *
+ * The legacy prompt/output fields contain structural and HTTP summaries, not
+ * user text or model output. Latency includes validation and cleanup; it is
+ * not a token throughput or time-to-first-token measurement.
  */
 export type RequestRecord = {
   /**
@@ -573,9 +621,13 @@ export type RequestRecord = {
    */
   latency: string
   /**
+   * Latency Ms
+   */
+  latency_ms: number
+  /**
    * Model
    */
-  model: string
+  model?: string | null
   /**
    * Output
    */
@@ -585,21 +637,21 @@ export type RequestRecord = {
    */
   prompt: string
   /**
+   * Request Bytes
+   */
+  request_bytes: number
+  /**
+   * Response Bytes
+   */
+  response_bytes: number
+  /**
    * Status
    */
-  status: 200 | 202 | 429 | 500
+  status: number
   /**
    * Time
    */
   time: string
-  /**
-   * Tokenspersecond
-   */
-  tokensPerSecond?: number | null
-  /**
-   * Ttft
-   */
-  ttft?: string | null
   /**
    * Type
    */
@@ -608,6 +660,8 @@ export type RequestRecord = {
 
 /**
  * RequestResponse
+ *
+ * Wrap a single retained HTTP observation for the detail endpoint.
  */
 export type RequestResponse = {
   request: RequestRecord
@@ -615,12 +669,22 @@ export type RequestResponse = {
 
 /**
  * RequestsResponse
+ *
+ * A page of retained observations with its filtered total and process epoch.
  */
 export type RequestsResponse = {
   /**
    * Requests
    */
   requests: Array<RequestRecord>
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
   /**
    * Total
    */
@@ -629,6 +693,8 @@ export type RequestsResponse = {
 
 /**
  * ResourceMeter
+ *
+ * Observed host or device-wide memory in GiB, including other processes.
  */
 export type ResourceMeter = {
   /**
@@ -709,22 +775,26 @@ export type SelectionRequest = {
 
 /**
  * SettingsRequest
+ *
+ * Accept only the supported LLM selection; reject unknown top-level fields.
  */
 export type SettingsRequest = {
   /**
    * Models
    */
   models: {
-    [key: string]: string
+    [key: string]: 'small' | 'medium' | 'large'
   }
   /**
    * Whisper Formatting
    */
-  whisper_formatting?: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
  * SettingsResponse
+ *
+ * Expose real catalog selection and null for unavailable transcription settings.
  */
 export type SettingsResponse = {
   /**
@@ -733,8 +803,10 @@ export type SettingsResponse = {
   models: Array<ModelSetting>
   /**
    * Whisper Formatting
+   *
+   * Null: no transcription provider is configured.
    */
-  whisper_formatting: boolean
+  whisper_formatting?: boolean | null
 }
 
 /**
@@ -783,19 +855,37 @@ export type SpeechResponse = {
 }
 
 /**
+ * SpeechUnavailable
+ */
+export type SpeechUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
+}
+
+/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference; not fetched in mock mode
+   * Base64 mono 16-bit PCM WAV data URL at 16000 Hz
    */
   audio: string
   /**
    * Formatting
    */
   formatting?: boolean
+  /**
+   * Language
+   */
+  language?: string | null
+  /**
+   * Model
+   */
+  model?: string | null
 }
 
 /**
@@ -803,9 +893,39 @@ export type TranscriptionRequest = {
  */
 export type TranscriptionResponse = {
   /**
+   * Formatting Model
+   */
+  formatting_model?: string | null
+  /**
+   * Formatting Status
+   */
+  formatting_status: string
+  /**
+   * Language
+   */
+  language: string | null
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Raw Text
+   */
+  raw_text: string
+  /**
    * Text
    */
   text: string
+}
+
+/**
+ * TranscriptionUnavailable
+ */
+export type TranscriptionUnavailable = {
+  /**
+   * Detail
+   */
+  detail: string
 }
 
 /**
@@ -954,6 +1074,30 @@ export type VideosResponse = {
    * Jobs
    */
   jobs: Array<VideoJob>
+}
+
+/**
+ * WhisperModels
+ */
+export type WhisperModels = {
+  /**
+   * Models
+   */
+  models: Array<string>
+  /**
+   * Selected
+   */
+  selected: string | null
+}
+
+/**
+ * WhisperSelection
+ */
+export type WhisperSelection = {
+  /**
+   * Model
+   */
+  model: string
 }
 
 /**
@@ -1118,6 +1262,10 @@ export type GenerateSpeechErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * No speech provider is configured
+   */
+  503: SpeechUnavailable
 }
 
 export type GenerateSpeechError =
@@ -1145,6 +1293,10 @@ export type TranscribeAudioErrors = {
    * Validation Error
    */
   422: HttpValidationError
+  /**
+   * Service Unavailable
+   */
+  503: TranscriptionUnavailable
 }
 
 export type TranscribeAudioError =
@@ -1159,6 +1311,50 @@ export type TranscribeAudioResponses = {
 
 export type TranscribeAudioResponse =
   TranscribeAudioResponses[keyof TranscribeAudioResponses]
+
+export type GetWhisperModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type GetWhisperModelsResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type GetWhisperModelsResponse =
+  GetWhisperModelsResponses[keyof GetWhisperModelsResponses]
+
+export type SelectWhisperModelData = {
+  body: WhisperSelection
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type SelectWhisperModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectWhisperModelError =
+  SelectWhisperModelErrors[keyof SelectWhisperModelErrors]
+
+export type SelectWhisperModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type SelectWhisperModelResponse =
+  SelectWhisperModelResponses[keyof SelectWhisperModelResponses]
 
 export type CreateCompletionData = {
   body: CompletionRequest
@@ -1494,7 +1690,7 @@ export type ListRequestsData = {
     /**
      * Status
      */
-    status?: 200 | 202 | 429 | 500 | null
+    status?: number | null
     /**
      * Search
      */

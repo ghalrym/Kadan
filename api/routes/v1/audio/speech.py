@@ -1,35 +1,25 @@
 from typing import Annotated, Literal
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import GeneratedSpeech
 
 router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
 
-MOCK_SPEECH = GeneratedSpeech(
-    voice='Described · warm, low, calm',
-    meta='F5-TTS · 3.6 s · WAV · 14:11',
-    script='Your order has shipped and will arrive on Thursday.',
-    time='0:03',
-)
-
-MOCK_VOICE_DESCRIPTION = 'Warm, low female voice, mid-40s, calm and unhurried'
-MOCK_SCRIPT = ('Welcome back. Your server has been up for twelve days, and everything is running '
- 'normally.')
-
-
 class DescribedVoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     mode: Literal["describe"]
     description: str = Field(min_length=1)
 
 
 class ClonedVoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     mode: Literal["clone"]
-    sample: str = Field(min_length=1, description="Voice sample reference; not fetched in mock mode")
+    sample: str = Field(min_length=1, description="Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.")
 
 
 class SpeechRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    script: str = Field(min_length=1, max_length=5000)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    script: str = Field(min_length=1)
     voice: Annotated[DescribedVoice | ClonedVoice, Field(discriminator="mode")]
 
 
@@ -43,11 +33,20 @@ class SpeechHistoryResponse(BaseModel):
     script: str
 
 
+class SpeechUnavailable(BaseModel):
+    detail: str
+
+
 @router.get("", operation_id="listSpeech")
 def list_speech() -> SpeechHistoryResponse:
-    return SpeechHistoryResponse(audio=[MOCK_SPEECH], voice_description=MOCK_VOICE_DESCRIPTION, script=MOCK_SCRIPT)
+    """Return empty speech history and blank editor defaults, without fixture audio."""
+    return SpeechHistoryResponse(audio=[], voice_description="", script="")
 
 
-@router.post("", operation_id="generateSpeech")
+@router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "No speech provider is configured"}})
 def generate_speech(body: SpeechRequest) -> SpeechResponse:
-    return SpeechResponse(audio=MOCK_SPEECH)
+    """Reject a validated describe/clone request with HTTP 503.
+
+    No speech provider is configured, so no audio is generated or persisted and
+    clone sample references are neither fetched nor treated as uploaded files."""
+    raise HTTPException(status_code=503, detail="No speech provider is configured. Speech generation and voice cloning are unavailable.")

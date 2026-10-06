@@ -5,7 +5,7 @@
 Kadan aims to give local agents chat, decisions, image and video generation, and
 speech tools on one machine without an expensive home lab.
 
-The server will manage model loading for each request. Its planned FreeToken-style
+The server will manage model loading for each request. Its Kadan-owned
 mixture-of-experts loading shares GPU VRAM and system RAM across models. When an
 image, video, or speech request needs the GPU, Kadan can move the LLM entirely out
 of VRAM and reload it afterward. Agents just call the API. Kadan handles the memory.
@@ -20,8 +20,18 @@ The chat page sends real API requests. Kadan's inference code owns checkpoint
 loading, packed expert storage, a bounded GPU expert cache, memory reservations,
 generation and model eviction/restoration. It uses PyTorch and pinned Transformers
 architecture definitions; it does not run FreeToken. Settings shows loading,
-readiness, offloaded state or errors. Chat has no mock fallback. Other modalities,
-history and dashboard metrics still use fixtures.
+readiness, offloaded state or errors. Chat has no mock fallback. Decisions use the
+same loaded runtime and validate structured answers. Model selection is persisted;
+chat conversations stay in the browser. Request history and dashboard metrics now
+report bounded process-local HTTP observations and measured memory.
+
+Image generation/editing, video, speech generation/cloning and transcription forms
+send API requests, but their model providers are not implemented. They return
+explicit unavailable errors and empty media history, never fabricated results.
+These are connected forms, not working media generation. The API access page reads
+the running OpenAPI reference and does not create keys or change authentication.
+Media checkpoints/licenses, input ingestion, artifacts and resource-managed
+adapters remain to be selected and implemented.
 
 The inference service uses host-RAM expert offload and a GPU cache on one selected
 GPU; it does not pool two cards' VRAM. Source modules in `api/inference/` describe
@@ -190,6 +200,19 @@ preflight are conservative checks, not guarantees against external allocations;
 actual entry allocation is admitted again before copying. Target-GPU validation
 is still required.
 
+## Request monitoring
+
+Request history retains the latest 1,000 completed inference HTTP requests in the
+API process and resets on restart. Run one worker. It stores status, elapsed time,
+byte counts and structural summaries, not prompt/output text or credentials.
+Metrics cover the last 60 seconds of retained requests and flag truncated windows.
+Memory meters include other processes; missing GPU measurements are explicit.
+These are observations of HTTP handling, not proof of model quality or performance.
+
+For the optional browser smoke, start a disposable API with empty history and
+its Vite proxy, then run `node frontend/tests/monitoring.browser.cjs`. The script
+accepts `MONITORING_TEST_URL`, `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` to use existing
+local browser tooling; it does not install dependencies or load a model.
 ## Publish draft pull requests as Ai Kadan
 
 The manual **Publish draft PR as Ai Kadan** workflow opens a draft against
