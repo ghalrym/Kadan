@@ -2,6 +2,7 @@
 import base64
 import binascii
 from functools import lru_cache
+from contextlib import ExitStack
 import gc
 import hashlib
 import io
@@ -13,7 +14,7 @@ import wave
 
 import numpy as np
 
-from api.inference.resources import ResourceBusy, ResourceExhausted
+from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCancelled
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
 from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
@@ -27,6 +28,10 @@ class TranscriptionManager:
         self.resources = resources
         self.store = store or model_manager
         self.lock = threading.Lock()
+        self.native = None
+        self.name = None
+        self.host_reservation = self.device_reservation = None
+        self.device = 'cpu'
 
     def selected(self):
         """Restore a canonical selection without loading model weights."""
@@ -48,41 +53,100 @@ class TranscriptionManager:
             temporary.replace(self.store.root / 'whisper-selection.json')
         return name
 
-    def transcribe(self, audio, model=None, language=None):
-        """Decode PCM WAV and run one native request; ownership lasts through cleanup."""
+    def _offload_locked(self):
+        if self.device != 'cpu' and self.native is not None:
+            self.native.to('cpu')
+            self.device = 'cpu'
+            torch = sys.modules.get('torch')
+            if torch is not None and torch.cuda.is_initialized():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        if self.device_reservation is not None:
+            self.device_reservation.release()
+            self.device_reservation = None
+
+    def _clear_locked(self):
+        # Pressure eviction disposes weights directly. Copying CUDA weights to
+        # RAM immediately before disposal would require avoidable host headroom.
+        self.native = self.name = None
+        gc.collect()
+        torch = sys.modules.get('torch')
+        if self.device != 'cpu' and torch is not None and torch.cuda.is_initialized():
+            with torch.cuda.device(self.device):
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        self.device = 'cpu'
+        if self.device_reservation is not None:
+            self.device_reservation.release()
+            self.device_reservation = None
+        if self.host_reservation is not None:
+            self.host_reservation.release()
+            self.host_reservation = None
+
+    def _offload(self):
+        if not self.lock.acquire(blocking=False):
+            raise ResourceBusy('Whisper is active')
+        try:
+            self._offload_locked()
+        finally:
+            self.lock.release()
+
+    def _evict(self):
+        if not self.lock.acquire(blocking=False):
+            raise ResourceBusy('Whisper is active')
+        try:
+            self._clear_locked()
+        finally:
+            self.lock.release()
+
+    def close(self):
+        with self.lock:
+            self._clear_locked()
+
+    def transcribe(self, audio, model=None, language=None, cancel=None):
+        """Retain idle CPU weights; leased device state is independently evictable."""
+        cancel = cancel or threading.Event()
         name = model or self.selected()
         if name is None:
-            raise RuntimeFailure("No Whisper checkpoint is enabled in this version.", 503)
+            raise RuntimeFailure('No Whisper checkpoint is enabled in this version.', 503)
         entry = checkpoint(name)
         if entry.name not in get_whisper_checkpoints():
-            raise RuntimeFailure("Whisper checkpoint is not enabled in this version.", 422)
+            raise RuntimeFailure('Whisper checkpoint is not enabled in this version.', 422)
         if entry.name.endswith('.en') and language not in (None, 'en'):
             raise RuntimeFailure('This Whisper checkpoint supports English only.', 422)
         if not audio.startswith('data:audio/wav;base64,'):
             raise RuntimeFailure('Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.', 422)
         if not self.lock.acquire(blocking=False):
             raise RuntimeFailure('A transcription is already running.', 409)
-        reservation = None
-        native = samples = payload = frames = None
+        audio_reservation = None
+        samples = payload = frames = None
+        hooks = []
+
+        def check_cancel(*_):
+            if cancel.is_set():
+                raise ResourceCancelled('Transcription cancelled')
+
         try:
-            # Resolve only Kadan's completed store; native Whisper never sees a model alias.
-            _, directory = self.store.get_checkpoint(f'whisper-{entry.name}')
-            path = directory / f'{entry.name}.pt'
-            if not path.is_file() or path.is_symlink():
-                raise RuntimeFailure('Download this Whisper checkpoint completely in Settings.', 409)
-            with path.open('rb') as source:
-                if hashlib.file_digest(source, 'sha256').hexdigest() != entry.sha256:
-                    raise RuntimeFailure('Whisper checkpoint integrity verification failed.', 409)
+            check_cancel()
             device = os.environ.get('KADAN_WHISPER_DEVICE', 'cpu')
             if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
                 raise RuntimeFailure('KADAN_WHISPER_DEVICE must be cpu or cuda:<index>.')
             resources = self.resources or runtime_manager.ensure_resources()
-            # Include encoded/decoded audio and full-clip mel workspace before decoding.
-            audio_budget = len(audio) * 16
             budget = entry.memory_gib * 1024**3
-            reservation = resources.reserve('whisper', 'speech', host_bytes=budget + audio_budget,
-                device_bytes={} if device == 'cpu' else {int(device[5:]): budget + audio_budget})
-            with reservation.lease():
+            device_budget = entry.device_memory_gib * 1024**3
+            if device != 'cpu' and device_budget > resources.capacity.device_bytes.get(int(device[5:]), 0):
+                raise ResourceExhausted('Whisper exceeds the selected GPU budget')
+            if self.name != name:
+                self._clear_locked()
+            if self.host_reservation is None:
+                self.host_reservation = resources.reserve('whisper:host', 'speech', host_bytes=budget,
+                    evict=self._evict, cancel_event=cancel)
+            with ExitStack() as leases:
+                leases.enter_context(self.host_reservation.lease(cancel))
+                audio_budget = len(audio) * 16
+                audio_reservation = resources.reserve('whisper:audio', 'speech', host_bytes=audio_budget,
+                    device_bytes={} if device == 'cpu' else {int(device[5:]): audio_budget}, cancel_event=cancel)
+                leases.enter_context(audio_reservation.lease(cancel))
                 try:
                     payload = base64.b64decode(audio.split(',', 1)[1], validate=True)
                     with wave.open(io.BytesIO(payload), 'rb') as wav:
@@ -94,10 +158,40 @@ class TranscriptionManager:
                         samples = np.frombuffer(frames, dtype='<i2').astype(np.float32) / 32768.0
                 except (ValueError, EOFError, wave.Error, binascii.Error) as exc:
                     raise RuntimeFailure(f'Invalid audio: {exc}', 422) from exc
-                factory = self.factory or load_whisper
-                native = factory(str(path), device=device)
-                result = native.transcribe(samples, language='en' if entry.name.endswith('.en') else language,
+                if self.native is None:
+                    _, directory = self.store.get_checkpoint(f'whisper-{entry.name}')
+                    path = directory / f'{entry.name}.pt'
+                    if not path.is_file() or path.is_symlink():
+                        raise RuntimeFailure('Download this Whisper checkpoint completely in Settings.', 409)
+                    with path.open('rb') as source:
+                        if hashlib.file_digest(source, 'sha256').hexdigest() != entry.sha256:
+                            raise RuntimeFailure('Whisper checkpoint integrity verification failed.', 409)
+                    check_cancel()
+                    self.native = (self.factory or load_whisper)(str(path), device='cpu')
+                    self.name = name
+                if self.device != device:
+                    self._offload_locked()
+                    if device != 'cpu':
+                        self.device_reservation = resources.reserve('whisper:device', 'speech',
+                            device_bytes={int(device[5:]): device_budget}, evict=self._offload, cancel_event=cancel)
+                        try:
+                            self.native.to(device)
+                            self.device = device
+                        except BaseException:
+                            self.native.to('cpu')
+                            self.device_reservation.release()
+                            self.device_reservation = None
+                            raise
+                if self.device_reservation is not None:
+                    leases.enter_context(self.device_reservation.lease(cancel))
+                # Native Whisper has no cancellation argument. Module boundaries
+                # provide cooperative interruption without freeing live tensors.
+                if hasattr(self.native, 'modules'):
+                    hooks = [module.register_forward_pre_hook(check_cancel) for module in self.native.modules()]
+                check_cancel()
+                result = self.native.transcribe(samples, language='en' if entry.name.endswith('.en') else language,
                     task='transcribe', fp16=device != 'cpu', verbose=None)
+                check_cancel()
                 if not isinstance(result, dict) or not isinstance(result.get('text'), str):
                     raise RuntimeFailure('Whisper returned an invalid transcript.', 502)
                 return {'text': result['text'], 'raw_text': result['text'],
@@ -105,19 +199,25 @@ class TranscriptionManager:
                         'formatting_status': 'disabled'}
         except Exception as exc:
             clear_failure_frames(exc)
-            if isinstance(exc, RuntimeFailure):
+            if not isinstance(exc, (RuntimeFailure, ResourceCancelled)):
+                self._clear_locked()
+            if isinstance(exc, (RuntimeFailure, ResourceCancelled)):
                 raise
             status = 503 if isinstance(exc, (ResourceBusy, ResourceExhausted, ValueError, OSError)) else 502
             raise RuntimeFailure(f'Transcription failed: {exc}', status) from exc
         finally:
-            # Release real allocations before returning their accounting budget.
-            native = samples = payload = frames = None
+            for hook in hooks:
+                hook.remove()
+            samples = payload = frames = None
             gc.collect()
             torch = sys.modules.get('torch')
             if torch is not None and torch.cuda.is_initialized():
                 torch.cuda.empty_cache()
-            if reservation is not None:
-                reservation.release()
+            if audio_reservation is not None:
+                audio_reservation.release()
+            if self.native is None and self.host_reservation is not None:
+                self.host_reservation.release()
+                self.host_reservation = None
             self.lock.release()
 
 

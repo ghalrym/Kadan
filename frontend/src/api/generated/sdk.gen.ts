@@ -192,10 +192,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Reject a validated describe/clone request with HTTP 503.
- *
- * No speech provider is configured, so no audio is generated or persisted and
- * clone sample references are neither fetched nor treated as uploaded files.
+ * Queue validated inference; unavailable providers still return HTTP 503.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -216,7 +213,7 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Transcribe Audio
  *
- * Run native Whisper; preserve its raw transcript for optional formatting.
+ * Queue native Whisper and preserve its raw transcript and formatting status.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,
@@ -278,8 +275,7 @@ export const selectWhisperModel = <ThrowOnError extends boolean = false>(
 /**
  * Create Completion
  *
- * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
- * awaits cleanup; runtime failures preserve their HTTP status.
+ * Queue a reply; disconnect waits for native cancellation and cleanup.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,
@@ -328,11 +324,7 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 /**
  * Evaluate Decisions
  *
- * Evaluate typed questions with the resident CPU Laya specialist, independent of chat.
- *
- * Oversized tokenized questions/state return 422 rather than truncated answers.
- * Disconnect cancellation waits for the CPU worker before releasing ownership.
- * Results are not persisted; there is no fallback to a generative model.
+ * Queue typed CPU decisions, preserving validation and disconnect cleanup.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,
@@ -370,10 +362,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Reject a validated edit request with HTTP 503 until a provider exists.
- *
- * The source reference is opaque: this route does not fetch/upload images,
- * allocate an inference model, or create a placeholder result.
+ * Queue validated inference; unavailable providers still return HTTP 503.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -394,9 +383,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Reject validated image-generation settings with HTTP 503.
- *
- * No image provider runs, GPU work starts, or synthetic result is returned.
+ * Queue validated inference; unavailable providers still return HTTP 503.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

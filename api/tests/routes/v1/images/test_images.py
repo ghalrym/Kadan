@@ -1,10 +1,17 @@
+from unittest.mock import patch
+from api.memory_manager import memory_manager
+from api.tests.memory_manager.helpers import direct_feature
 import unittest
 from fastapi.testclient import TestClient
 from api.server import app
 
 
 class ImageEndpointsTest(unittest.TestCase):
+    def setUpFeature(self):
+        self.enterContext(patch.object(memory_manager, 'image', direct_feature(memory_manager, 'image')))
+
     def setUp(self):
+        self.setUpFeature()
         self.client = TestClient(app)
 
     def test_no_fixture_history(self):

@@ -64,7 +64,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.evaluate('state', self.qs)
         self.loader.assert_called_once()
         state = next(iter(self.resources.snapshot()['reservations'].values()))
-        self.assertEqual(state, dict(workload='decision', host_bytes=60, device_bytes={}, active_leases=0, evicting=False))
+        self.assertEqual(state, dict(workload='decision', host_bytes=60, device_bytes={}, active_leases=0, evicting=False, offload_on_handoff=True))
         other = self.resources.reserve('chat', 'llm', host_bytes=60)
         self.assertIsNone(self.manager.agent)
         other.release()

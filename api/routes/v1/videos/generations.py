@@ -2,8 +2,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import VideoJob
-from api.inference.video import VideoSpec
-from api.services.video_jobs import video_jobs
+from api.memory_manager import memory_manager
+from api.services.runtime import RuntimeFailure
 
 router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
@@ -25,11 +25,12 @@ class VideoGenerationResponse(BaseModel):
 
 @router.post("", status_code=202, operation_id="generateVideo",
              responses={503: {"description": "Video provider unavailable"}})
-def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
+async def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
-        spec = VideoSpec(**body.model_dump(exclude={'model'}))
-        return VideoGenerationResponse(job=video_jobs.submit(body.model, spec))
+        return VideoGenerationResponse(job=await memory_manager.video(body))
+    except RuntimeFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (RuntimeError, OSError) as exc:

@@ -146,6 +146,7 @@ class _Resident:
     device_bytes: dict[int, int]
     evict: Callable[[], None] | None
     token: object
+    offload_on_handoff: bool = True
     active: int = 0
     evicting: bool = False
 
@@ -267,10 +268,14 @@ class ResourceManager:
     def reserve(self, owner: str, workload: Workload, host_bytes: int = 0,
                 device_bytes: dict[int, int] | None = None,
                 evict: Callable[[], None] | None = None,
-                cancel_event: threading.Event | None = None) -> Reservation:
+                cancel_event: threading.Event | None = None,
+                offload_on_handoff: bool = True) -> Reservation:
         """Return an ownership handle after logical and physical admission. Evict eligible idle
         owners if needed; reject busy owners, cancellation or insufficient capacity. Callers
         allocate only afterward and provide callbacks that free actual tensors.
+        offload_on_handoff=False is for bounded framework contexts, not model
+        weights. Such contexts still count against GPU capacity and remain
+        pressure-evictable through their cleanup callback.
         """
         devices = dict(device_bytes or {})
         self._validate(host_bytes, devices)
@@ -322,7 +327,7 @@ class ResourceManager:
                 if not self._physical_fits(host_bytes, devices):
                     raise ResourceExhausted('Physical available memory is below the requested reservation')
                 token = object()
-                self._residents[owner] = _Resident(workload, host_bytes, devices, evict, token)
+                self._residents[owner] = _Resident(workload, host_bytes, devices, evict, token, offload_on_handoff)
                 return Reservation(self, owner, token)
 
     def _release(self, owner, token):
@@ -373,6 +378,20 @@ class ResourceManager:
             with self._lock:
                 self._exclusive = None
 
+    def offload_inactive_devices(self, workload: Workload, cancel_event=None):
+        """Offload through existing callbacks; preserve host banks and active leases."""
+        with self._transaction(cancel_event):
+            with self._lock:
+                if self._exclusive is not None:
+                    raise ResourceBusy('Another workload holds exclusive GPU access')
+                victims = [key for key, state in self._residents.items()
+                           if state.workload != workload and state.offload_on_handoff and any(state.device_bytes.values())]
+                if any(self._residents[key].active or self._residents[key].evict is None for key in victims):
+                    raise ResourceBusy('Other GPU workloads are active or not evictable')
+            for victim in victims:
+                self._cancelled(cancel_event)
+                self._evict(victim)
+
     def snapshot(self) -> dict:
         """Return a lock-consistent copy of budgets and reservation metadata, not a measurement of
         allocated tensors.
@@ -385,7 +404,7 @@ class ResourceManager:
                 'reservations': {
                     owner: {'workload': state.workload, 'host_bytes': state.host_bytes,
                             'device_bytes': dict(state.device_bytes), 'active_leases': state.active,
-                            'evicting': state.evicting}
+                            'evicting': state.evicting, 'offload_on_handoff': state.offload_on_handoff}
                     for owner, state in self._residents.items()
                 },
             }

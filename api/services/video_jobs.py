@@ -4,10 +4,10 @@ import importlib
 import os
 from pathlib import Path
 import threading
-import uuid
 
 from api.inference.resources import ResourceCancelled
 from api.pydantic_models.media import VideoJob
+from api.services.runtime import RuntimeFailure
 
 
 class VideoJobs:
@@ -17,7 +17,7 @@ class VideoJobs:
         self._lock = threading.RLock()
         self._jobs = {}
         self._cancel = {}
-        self._thread = None
+        self._providers = {}
         self._closed = False
 
     @staticmethod
@@ -37,32 +37,36 @@ class VideoJobs:
             return module.H3Provider(model_id)
         raise ValueError('Unknown native video model')
 
-    def submit(self, model_id, spec):
-        """Validate before queueing; allow one native video worker per API process."""
-        provider = self.factory(model_id)
-        provider.validate(spec)
+    def validate(self, model_id, spec):
+        if model_id not in self._providers:
+            self._providers[model_id] = self.factory(model_id)
+        self._providers[model_id].validate(spec)
+
+    def prepare(self, job_id, spec):
         with self._lock:
-            if self._closed:
-                raise RuntimeError('Video service is shutting down.')
-            if self._thread and self._thread.is_alive():
-                raise ValueError('A video job is already running. Cancel it or wait for completion.')
+            if job_id not in self._jobs:
+                self._jobs[job_id] = VideoJob(id=job_id, prompt=spec.prompt, duration=f'{spec.duration}s',
+                    resolution=spec.resolution, aspect={'16:9': 'wide', '9:16': 'portrait', '1:1': 'square'}[spec.aspect],
+                    fps=str(spec.fps), progress=0, time=datetime.now(timezone.utc).isoformat(),
+                    status='Queued', thumbnail='', progressText='Queued')
+            return self.get(job_id)
+
+    def run(self, job_id, model_id, spec, event):
+        """Run only inside the shared API consumer; no independent video worker."""
+        self.validate(model_id, spec)
+        self.prepare(job_id, spec)
+        with self._lock:
+            if self._closed or self._jobs[job_id].status == 'Cancelled':
+                raise ResourceCancelled('Video generation cancelled')
             self.root.mkdir(parents=True, exist_ok=True)
-            job_id = uuid.uuid4().hex
-            job = VideoJob(id=job_id, prompt=spec.prompt, duration=f'{spec.duration}s',
-                resolution=spec.resolution, aspect={'16:9': 'wide', '9:16': 'portrait', '1:1': 'square'}[spec.aspect],
-                fps=str(spec.fps), progress=0, time=datetime.now(timezone.utc).isoformat(),
-                status='Queued', thumbnail='', progressText='Queued')
-            event = threading.Event()
-            self._jobs[job_id] = job
             self._cancel[job_id] = event
-            self._thread = threading.Thread(target=self._run, args=(job_id, provider, spec, event), daemon=True)
-            try:
-                self._thread.start()
-            except BaseException:
-                del self._jobs[job_id]
-                del self._cancel[job_id]
-                raise
-            return job.model_copy(deep=True)
+        self._run(job_id, self._providers[model_id], spec, event)
+        job = self.get(job_id)
+        if job.status == 'Failed':
+            raise RuntimeFailure(job.error, 502)
+        if job.status == 'Cancelled':
+            raise ResourceCancelled('Video generation cancelled')
+        return job.model_dump(mode='json')
 
     def _update(self, job_id, **values):
         with self._lock:
@@ -107,6 +111,8 @@ class VideoJobs:
             event = self._cancel.get(job_id)
             if event:
                 event.set()
+            elif job.status == 'Queued':
+                self._update(job_id, status='Cancelled', progress_text='Cancelled')
             return job
 
     def content(self, job_id):
@@ -116,14 +122,15 @@ class VideoJobs:
         return self.root / f'{job.id}.mp4'
 
     def close(self):
-        """Stop workers before allowing their owning API process to finish shutdown."""
+        """The shared consumer closes before this service during API shutdown."""
         with self._lock:
             self._closed = True
             for event in self._cancel.values():
                 event.set()
-            thread = self._thread
-        if thread:
-            thread.join()
+            for provider in self._providers.values():
+                close = getattr(provider, 'close', None)
+                if close is not None:
+                    close()
 
 
 video_jobs = VideoJobs()

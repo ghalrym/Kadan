@@ -33,9 +33,11 @@ class TranscriptionTests(unittest.TestCase):
         self.store.get_checkpoint.return_value = (None, root)
         self.resources = ResourceManager(8 * 1024**3, {0: 8 * 1024**3})
         self.native = Mock()
+        self.native.modules.return_value = []
         self.native.transcribe.return_value = {'text': 'hello', 'language': 'en'}
         self.factory = Mock(return_value=self.native)
         self.manager = TranscriptionManager(self.factory, self.resources, self.store)
+        self.addCleanup(self.manager.close)
         patcher = patch('api.services.transcription.transcription.checkpoint', return_value=self.entry)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -50,7 +52,7 @@ class TranscriptionTests(unittest.TestCase):
 
     def test_native_input_and_resource_lease(self):
         def infer(samples, **kwargs):
-            self.assertEqual(self.resources.snapshot()['reservations']['whisper']['active_leases'], 1)
+            self.assertEqual(self.resources.snapshot()['reservations']['whisper:host']['active_leases'], 1)
             self.assertEqual(samples.shape, (160,))
             self.assertEqual(kwargs['task'], 'transcribe')
             self.assertFalse(kwargs['fp16'])
@@ -59,7 +61,7 @@ class TranscriptionTests(unittest.TestCase):
         result = self.manager.transcribe(audio_url(), 'tiny')
         self.assertEqual(result['raw_text'], '')
         self.factory.assert_called_once_with(str(Path(self.temp.name) / 'tiny.pt'), device='cpu')
-        self.assertEqual(self.resources.snapshot()['reservations'], {})
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host'})
 
     def test_integrity_failure_never_loads(self):
         (Path(self.temp.name) / 'tiny.pt').write_bytes(b'corrupted')
@@ -102,8 +104,11 @@ class TranscriptionTests(unittest.TestCase):
         with patch.dict('os.environ', {'KADAN_WHISPER_DEVICE': 'cuda:0'}):
             self.manager.transcribe(audio_url())
         self.assertTrue(self.native.transcribe.call_args.kwargs['fp16'])
-        self.assertEqual(self.factory.call_args.kwargs['device'], 'cuda:0')
-        self.assertEqual(self.resources.snapshot()['reservations'], {})
+        self.assertEqual(self.factory.call_args.kwargs['device'], 'cpu')
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host', 'whisper:device'})
+        self.resources.offload_inactive_devices('llm')
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host'})
+        self.native.to.assert_called_with('cpu')
 
     def test_cached_manager_retains_ownership_through_failure_and_retry(self):
         _cached_transcription_manager.cache_clear()
@@ -115,7 +120,7 @@ class TranscriptionTests(unittest.TestCase):
                 with self.assertRaises(RuntimeFailure) as busy:
                     get_transcription_manager().transcribe(audio_url())
                 self.assertEqual(busy.exception.status_code, 409)
-                self.assertEqual(self.resources.snapshot()['reservations']['whisper']['active_leases'], 1)
+                self.assertEqual(self.resources.snapshot()['reservations']['whisper:host']['active_leases'], 1)
                 raise RuntimeError('native failure')
             self.native.transcribe.side_effect = fail
             with self.assertRaisesRegex(RuntimeFailure, 'native failure'):
@@ -123,4 +128,14 @@ class TranscriptionTests(unittest.TestCase):
             self.assertEqual(self.resources.snapshot()['reservations'], {})
             self.native.transcribe.side_effect = None
             self.assertEqual(get_transcription_manager().transcribe(audio_url())['text'], 'hello')
-            self.assertEqual(self.resources.snapshot()['reservations'], {})
+            self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host'})
+
+    def test_ram_pressure_disposes_gpu_weights_without_copying_them_to_host(self):
+        with patch.dict('os.environ', {'KADAN_WHISPER_DEVICE': 'cuda:0'}):
+            self.manager.transcribe(audio_url())
+        self.native.to.reset_mock()
+        pressure = self.resources.reserve('pressure', 'video', host_bytes=8 * 1024**3)
+        self.assertIsNone(self.manager.native)
+        self.native.to.assert_not_called()
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'pressure'})
+        pressure.release()
