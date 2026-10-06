@@ -1,5 +1,6 @@
 """Direct H3 tensor execution in the API process; no scheduler or worker service."""
 import gc
+import ctypes
 import os
 from pathlib import Path
 import sys
@@ -20,6 +21,17 @@ def require_turbo(pipeline):
     if (len(active) != 1 or active[0].get('merged') is not False
             or active[0].get('strengths') != [1.0]):
         raise RuntimeError('H3 Turbo must be active in dynamic mode at strength 1')
+
+
+def trim_cpu_heap():
+    """Return free glibc arena pages after model disposal on Linux."""
+    if sys.platform != 'linux':
+        return
+    trim = getattr(ctypes.CDLL(None), 'malloc_trim', None)
+    if trim is not None:
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        trim(0)
 
 
 def render(checkpoint, sampling, device, cancellation):
@@ -48,6 +60,7 @@ def render(checkpoint, sampling, device, cancellation):
         with torch.cuda.device(device):
             torch.cuda.empty_cache()
             torch.accelerator.memory.empty_host_cache()
+        trim_cpu_heap()
     if failure is not None:
         raise failure
 

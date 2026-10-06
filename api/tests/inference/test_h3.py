@@ -168,10 +168,28 @@ class H3Tests(unittest.TestCase):
                 with patch.object(h3_pipeline, '_render', side_effect=native), \
                      patch('torch.cuda.device'), \
                      patch('torch.cuda.empty_cache', side_effect=empty_cache), \
-                     patch('torch.accelerator.memory.empty_host_cache', side_effect=empty_cache) as host_cache:
+                     patch('torch.accelerator.memory.empty_host_cache', side_effect=empty_cache) as host_cache, \
+                     patch.object(h3_pipeline, 'trim_cpu_heap', side_effect=empty_cache) as trim:
                     if cancelled:
                         with self.assertRaises(ResourceCancelled):
                             h3_pipeline.render(None, None, 0, threading.Event())
                     else:
                         h3_pipeline.render(None, None, 0, threading.Event())
                 host_cache.assert_called_once_with()
+                trim.assert_called_once_with()
+
+    def test_heap_trim_is_optional_and_uses_process_allocator(self):
+        from api.inference import h3_pipeline
+        library = SimpleNamespace(malloc_trim=MagicMock())
+        with patch.object(h3_pipeline.sys, 'platform', 'linux'), \
+             patch.object(h3_pipeline.ctypes, 'CDLL', return_value=library) as load:
+            h3_pipeline.trim_cpu_heap()
+            load.assert_called_once_with(None)
+            library.malloc_trim.assert_called_once_with(0)
+        with patch.object(h3_pipeline.sys, 'platform', 'linux'), \
+             patch.object(h3_pipeline.ctypes, 'CDLL', return_value=SimpleNamespace()):
+            h3_pipeline.trim_cpu_heap()
+        with patch.object(h3_pipeline.sys, 'platform', 'darwin'), \
+             patch.object(h3_pipeline.ctypes, 'CDLL') as load:
+            h3_pipeline.trim_cpu_heap()
+            load.assert_not_called()
