@@ -11,7 +11,7 @@ import uuid
 
 from redis.asyncio import Redis
 
-from api.memory_manager import native_call
+from api.inference.feature import native_call
 from api.memory_manager.queue import InferenceQueue
 from api.services.runtime import RuntimeFailure
 

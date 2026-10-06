@@ -87,6 +87,9 @@ class H3Session:
         self.loads = 0
         self.baseline_cuda = 0
 
+    def load(self, cancellation):
+        render(self.checkpoint, None, self.device, cancellation, self)
+
     def render(self, sampling, cancellation):
         render(self.checkpoint, sampling, self.device, cancellation, self)
 
@@ -279,6 +282,10 @@ def _render(checkpoint, sampling, device, cancellation, session=None):
         else:
             session.resume()
             require_turbo(pipeline)
+        if sampling is None:
+            check_cancel(cancellation)
+            succeeded = True
+            return
         def guard(module, inputs):
             check_cancel(cancellation)
         for component in pipeline.modules.values():

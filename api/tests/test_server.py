@@ -8,9 +8,10 @@ class LifespanTests(unittest.IsolatedAsyncioTestCase):
     async def test_startup_restores_model_and_shutdown_closes_owners(self):
         runtime = Mock(start=AsyncMock(), close=AsyncMock())
         downloads = Mock()
-        with patch('api.server.runtime_manager', runtime), patch('api.server.model_manager', downloads), patch('api.server.memory_manager', Mock(start=AsyncMock(), close=AsyncMock())):
+        manager = Mock(start=AsyncMock(), close=AsyncMock())
+        with patch('api.server.runtime_manager', runtime), patch('api.server.model_manager', downloads), patch('api.server.memory_manager', manager):
             async with lifespan(app):
                 runtime.start.assert_awaited_once()
                 runtime.close.assert_not_awaited()
-            runtime.close.assert_awaited_once()
+            manager.close.assert_awaited_once()
             downloads.close.assert_called_once()

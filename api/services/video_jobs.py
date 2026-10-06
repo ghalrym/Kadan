@@ -37,6 +37,27 @@ class VideoJobs:
             return module.H3Provider(model_id)
         raise ValueError('Unknown native video model')
 
+    def provider(self, model_id):
+        if model_id not in self._providers:
+            self._providers[model_id] = self.factory(model_id)
+        return self._providers[model_id]
+
+    def load(self, model_id, cancel):
+        self.provider(model_id).load(cancel)
+
+    def offload_to_ram(self, cancel=None):
+        for provider in self._providers.values():
+            provider.offload_to_ram(cancel)
+
+    def unload(self):
+        """Release model adapters while preserving job metadata and output history."""
+        with self._lock:
+            for provider in self._providers.values():
+                close = getattr(provider, 'close', None)
+                if close is not None:
+                    close()
+            self._providers.clear()
+
     def validate(self, model_id, spec):
         if model_id not in self._providers:
             self._providers[model_id] = self.factory(model_id)

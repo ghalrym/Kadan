@@ -70,6 +70,6 @@ def get_decisions() -> DecisionPlaygroundResponse:
 async def evaluate_decisions(body: DecisionRequest, request: Request) -> DecisionResponse:
     """Queue typed CPU decisions, preserving validation and disconnect cleanup."""
     try:
-        return DecisionResponse(answers=await infer(request, memory_manager.decisions(body)))
+        return DecisionResponse(answers=await infer(request, memory_manager.submit(body, feature='decisions')))
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(502, 'Laya returned an invalid typed decision response.') from exc

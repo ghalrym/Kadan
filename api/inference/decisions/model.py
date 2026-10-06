@@ -222,6 +222,8 @@ class DecisionManager:
                     self.agent = self.loader()
                 if cancel.is_set():
                     raise ResourceCancelled('Decision cancelled')
+                if questions is None:
+                    return self.agent
                 definitions = translate_questions(questions)
                 self.check(self.agent, state, definitions)
                 answers = []
@@ -257,6 +259,22 @@ class DecisionManager:
             if self.agent is None and self.reservation is not None:
                 self.reservation.release()
                 self.reservation = None
+
+    async def load(self):
+        """Acquire the same generation gate and host lease without making a prediction."""
+        async with self._generation:
+            cancel = threading.Event()
+            worker = asyncio.create_task(asyncio.to_thread(self._run, None, None, cancel))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancel.set()
+                while not worker.done():
+                    with suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(worker)
+                with suppress(Exception):
+                    worker.result()
+                raise
 
     async def evaluate(self, state, questions):
         """Reject overlap and wait for synchronous CPU work after cancellation."""

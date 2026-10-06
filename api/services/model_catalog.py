@@ -12,7 +12,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Literal
 
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints
+from api.inference.stt.catalog import get_whisper_checkpoints
 
 
 @dataclass(frozen=True)

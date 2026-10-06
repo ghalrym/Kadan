@@ -11,7 +11,6 @@ from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
 from api.services.runtime import runtime_manager
 from api.services.telemetry import TelemetryMiddleware
-from api.services.decisions import decision_manager
 from api.services.video_jobs import video_jobs
 from api.memory_manager import memory_manager
 
@@ -21,8 +20,6 @@ async def lifespan(app: FastAPI):
     """Restore the selected model on startup and release inference before downloads on shutdown."""
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(asyncio.to_thread, model_manager.close)
-        cleanup.push_async_callback(runtime_manager.close)
-        cleanup.push_async_callback(decision_manager.close)
         cleanup.push_async_callback(asyncio.to_thread, video_jobs.close)
         cleanup.push_async_callback(memory_manager.close)
         if await memory_manager.start():

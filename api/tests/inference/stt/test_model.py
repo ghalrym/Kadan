@@ -10,8 +10,8 @@ import wave
 
 from api.inference.resources import ResourceManager
 from api.services.runtime import RuntimeFailure
-from api.services.transcription.transcription import TranscriptionManager, get_transcription_manager, _cached_transcription_manager
-from api.services.transcription.whisper_catalog import OFFICIAL_CHECKPOINTS, checkpoint
+from api.inference.stt.model import TranscriptionManager, get_transcription_manager, _cached_transcription_manager
+from api.inference.stt.catalog import OFFICIAL_CHECKPOINTS, checkpoint
 
 
 def audio_url():
@@ -38,12 +38,19 @@ class TranscriptionTests(unittest.TestCase):
         self.factory = Mock(return_value=self.native)
         self.manager = TranscriptionManager(self.factory, self.resources, self.store)
         self.addCleanup(self.manager.close)
-        patcher = patch('api.services.transcription.transcription.checkpoint', return_value=self.entry)
+        patcher = patch('api.inference.stt.model.checkpoint', return_value=self.entry)
         patcher.start()
         self.addCleanup(patcher.stop)
-        enabled = patch("api.services.transcription.transcription.get_whisper_checkpoints", return_value={"tiny": self.entry})
+        enabled = patch("api.inference.stt.model.get_whisper_checkpoints", return_value={"tiny": self.entry})
         enabled.start()
         self.addCleanup(enabled.stop)
+
+    def test_explicit_load_failure_releases_host_admission(self):
+        self.factory.side_effect = RuntimeError('constructor failed')
+        with self.assertRaisesRegex(RuntimeError, 'constructor failed'):
+            self.manager.load('tiny')
+        self.assertIsNone(self.manager.native)
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
 
     def test_all_official_choices_and_aliases(self):
         self.assertEqual(len(OFFICIAL_CHECKPOINTS), 12)
@@ -113,7 +120,7 @@ class TranscriptionTests(unittest.TestCase):
     def test_cached_manager_retains_ownership_through_failure_and_retry(self):
         _cached_transcription_manager.cache_clear()
         self.addCleanup(_cached_transcription_manager.cache_clear)
-        with patch('api.services.transcription.transcription.TranscriptionManager', return_value=self.manager):
+        with patch('api.inference.stt.model.TranscriptionManager', return_value=self.manager):
             owner = get_transcription_manager()
             def fail(samples, **kwargs):
                 self.assertIs(get_transcription_manager(), owner)

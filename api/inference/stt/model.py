@@ -17,8 +17,8 @@ import numpy as np
 from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCancelled
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
-from api.services.decisions import clear_failure_frames
+from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
+from api.inference.decisions.model import clear_failure_frames
 
 
 class TranscriptionManager:
@@ -103,6 +103,67 @@ class TranscriptionManager:
         with self.lock:
             self._clear_locked()
 
+    def _load_locked(self, entry, name, resources, device, device_budget, cancel):
+        if self.native is None:
+            _, directory = self.store.get_checkpoint(f'whisper-{entry.name}')
+            path = directory / f'{entry.name}.pt'
+            if not path.is_file() or path.is_symlink():
+                raise RuntimeFailure('Download this Whisper checkpoint completely in Settings.', 409)
+            with path.open('rb') as source:
+                if hashlib.file_digest(source, 'sha256').hexdigest() != entry.sha256:
+                    raise RuntimeFailure('Whisper checkpoint integrity verification failed.', 409)
+            if cancel.is_set():
+                raise ResourceCancelled('Transcription cancelled')
+            self.native = (self.factory or load_whisper)(str(path), device='cpu')
+            self.name = name
+        if self.device != device:
+            self._offload_locked()
+            if device != 'cpu':
+                self.device_reservation = resources.reserve('whisper:device', 'speech',
+                    device_bytes={int(device[5:]): device_budget}, evict=self._offload, cancel_event=cancel)
+                try:
+                    self.native.to(device)
+                    self.device = device
+                except BaseException:
+                    self.native.to('cpu')
+                    self.device_reservation.release()
+                    self.device_reservation = None
+                    raise
+
+    def load(self, model=None, cancel=None):
+        """Load/promote one selected checkpoint under the existing host lease."""
+        cancel = cancel or threading.Event()
+        name = model or self.selected()
+        entry = checkpoint(name)
+        if entry.name not in get_whisper_checkpoints():
+            raise RuntimeFailure('Whisper checkpoint is not enabled in this version.', 422)
+        with self.lock:
+            resources = self.resources or runtime_manager.ensure_resources()
+            device = os.environ.get('KADAN_WHISPER_DEVICE', 'cpu')
+            if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
+                raise RuntimeFailure('KADAN_WHISPER_DEVICE must be cpu or cuda:<index>.')
+            if self.name != name:
+                self._clear_locked()
+            try:
+                if self.host_reservation is None:
+                    self.host_reservation = resources.reserve('whisper:host', 'speech',
+                        host_bytes=entry.memory_gib * 1024**3, evict=self._evict, cancel_event=cancel)
+                with self.host_reservation.lease(cancel):
+                    self._load_locked(entry, name, resources, device, entry.device_memory_gib * 1024**3, cancel)
+            except BaseException as exc:
+                clear_failure_frames(exc)
+                if self.native is None:
+                    self._clear_locked()
+                raise
+            finally:
+                if self.native is None and self.host_reservation is not None:
+                    self.host_reservation.release()
+                    self.host_reservation = None
+
+    def offload_to_ram(self, cancel=None):
+        resources = self.resources or runtime_manager.ensure_resources()
+        resources.offload_workload_devices('speech', cancel)
+
     def transcribe(self, audio, model=None, language=None, cancel=None):
         """Retain idle CPU weights; leased device state is independently evictable."""
         cancel = cancel or threading.Event()
@@ -158,30 +219,7 @@ class TranscriptionManager:
                         samples = np.frombuffer(frames, dtype='<i2').astype(np.float32) / 32768.0
                 except (ValueError, EOFError, wave.Error, binascii.Error) as exc:
                     raise RuntimeFailure(f'Invalid audio: {exc}', 422) from exc
-                if self.native is None:
-                    _, directory = self.store.get_checkpoint(f'whisper-{entry.name}')
-                    path = directory / f'{entry.name}.pt'
-                    if not path.is_file() or path.is_symlink():
-                        raise RuntimeFailure('Download this Whisper checkpoint completely in Settings.', 409)
-                    with path.open('rb') as source:
-                        if hashlib.file_digest(source, 'sha256').hexdigest() != entry.sha256:
-                            raise RuntimeFailure('Whisper checkpoint integrity verification failed.', 409)
-                    check_cancel()
-                    self.native = (self.factory or load_whisper)(str(path), device='cpu')
-                    self.name = name
-                if self.device != device:
-                    self._offload_locked()
-                    if device != 'cpu':
-                        self.device_reservation = resources.reserve('whisper:device', 'speech',
-                            device_bytes={int(device[5:]): device_budget}, evict=self._offload, cancel_event=cancel)
-                        try:
-                            self.native.to(device)
-                            self.device = device
-                        except BaseException:
-                            self.native.to('cpu')
-                            self.device_reservation.release()
-                            self.device_reservation = None
-                            raise
+                self._load_locked(entry, name, resources, device, device_budget, cancel)
                 if self.device_reservation is not None:
                     leases.enter_context(self.device_reservation.lease(cancel))
                 # Native Whisper has no cancellation argument. Module boundaries

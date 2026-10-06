@@ -8,7 +8,7 @@ from api.server import app
 
 class ImageEndpointsTest(unittest.TestCase):
     def setUpFeature(self):
-        self.enterContext(patch.object(memory_manager, 'image', direct_feature(memory_manager, 'image')))
+        self.enterContext(patch.object(memory_manager, 'submit', direct_feature(memory_manager, 'image')))
 
     def setUp(self):
         self.setUpFeature()

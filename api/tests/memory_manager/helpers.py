@@ -5,7 +5,7 @@ from api.memory_manager.queue import Job
 
 
 def direct_feature(manager, feature):
-    async def call(body, operation='generate'):
+    async def call(body, operation='generate', **kwargs):
         model = getattr(body, 'model', None)
         if feature == 'llm':
             model = model or manager.runtime.model_id

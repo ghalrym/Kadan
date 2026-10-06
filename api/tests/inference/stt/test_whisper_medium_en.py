@@ -1,6 +1,6 @@
 import unittest
 
-from api.tests.services.whisper_contract import assert_checkpoint_contract
+from api.tests.inference.stt.whisper_contract import assert_checkpoint_contract
 
 
 class CheckpointTests(unittest.TestCase):

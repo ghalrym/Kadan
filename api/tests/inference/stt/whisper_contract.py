@@ -15,9 +15,9 @@ from api.tests.memory_manager.helpers import direct_feature
 from api.server import app
 from api.services.model_catalog import CATALOG
 from api.services.model_downloads import ModelManager
-from api.services.transcription.transcription import TranscriptionManager
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
-from api.tests.services.transcription.test_transcription import audio_url
+from api.inference.stt.model import TranscriptionManager
+from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
+from api.tests.inference.stt.test_model import audio_url
 
 
 def assert_checkpoint_contract(case, name, digest):
@@ -43,10 +43,10 @@ def assert_checkpoint_contract(case, name, digest):
         factory = Mock(return_value=native)
         manager = TranscriptionManager(factory, resources, store)
         memory = MemoryManager(runtime=RuntimeManager(resources=resources), transcription=manager)
-        with patch('api.routes.v1.audio.transcriptions.memory_manager.stt', direct_feature(memory, 'stt')), patch.dict(CATALOG, {model_id: fixture_entry}), patch(
+        with patch('api.routes.v1.audio.transcriptions.memory_manager.submit', direct_feature(memory, 'stt')), patch.dict(CATALOG, {model_id: fixture_entry}), patch(
                 'api.routes.v1.models.model_manager', store), patch(
                 'api.routes.v1.audio.transcriptions.get_transcription_manager', return_value=manager), patch(
-                'api.services.transcription.transcription.checkpoint', return_value=replace(entry, sha256=fixture_digest)), patch(
+                'api.inference.stt.model.checkpoint', return_value=replace(entry, sha256=fixture_digest)), patch(
                 'api.services.model_downloads.urlopen', side_effect=source):
             client = TestClient(app)
             case.assertIn(name, client.get('/v1/audio/transcriptions/models').json()['models'])

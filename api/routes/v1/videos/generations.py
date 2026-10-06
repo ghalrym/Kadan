@@ -28,7 +28,7 @@ class VideoGenerationResponse(BaseModel):
 async def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
-        return VideoGenerationResponse(job=await memory_manager.video(body))
+        return VideoGenerationResponse(job=await memory_manager.submit(body, feature='video'))
     except RuntimeFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except ValueError as exc:

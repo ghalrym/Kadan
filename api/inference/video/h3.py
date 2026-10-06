@@ -10,7 +10,7 @@ from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExh
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
 from api.services.runtime import runtime_manager as runtime
-from api.services.decisions import clear_failure_frames
+from api.inference.decisions.model import clear_failure_frames
 
 H3_REVISION = H3_INT8_REVISION
 SGLANG_REVISION = 'f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a'
@@ -100,9 +100,19 @@ class H3Provider:
         finally:
             self._lock.release()
 
+    def load(self, cancellation):
+        self._use(None, None, cancellation)
+
+    def offload_to_ram(self, cancellation=None):
+        runtime.ensure_resources().offload_workload_devices('video', cancellation)
+
     def generate(self, spec, output_path: Path, cancellation: threading.Event):
+        self._use(spec, output_path, cancellation)
+
+    def _use(self, spec, output_path, cancellation):
         """Lease retained host weights, bounded native context and streamed GPU work."""
-        self.validate(spec)
+        if spec is not None:
+            self.validate(spec)
         check_media_tools()
         if not self._lock.acquire(blocking=False):
             raise ResourceBusy('H3 is active')
@@ -139,7 +149,14 @@ class H3Provider:
                         evict=self._park, cancel_event=cancellation)
                 leases.enter_context(self._device.lease(cancellation))
                 self._selected_device = selected
-                self._run(spec, checkpoint, output_path, cancellation, [selected])
+                if spec is None:
+                    # Optional native dependencies remain lazy until explicitly loaded.
+                    from api.inference.video.h3_pipeline import H3Session
+                    if self._session is None:
+                        self._session = H3Session(checkpoint, selected)
+                    self._session.load(cancellation)
+                else:
+                    self._run(spec, checkpoint, output_path, cancellation, [selected])
         except BaseException:
             self._dispose_locked()
             raise

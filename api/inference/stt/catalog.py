@@ -49,7 +49,7 @@ def checkpoint(name):
 def get_whisper_checkpoints():
     """Enable only checkpoint registrations shipped with this version of Kadan."""
     enabled = {}
-    for path in sorted((Path(__file__).parents[1] / "whisper_checkpoints").glob("*.json")):
+    for path in sorted((Path(__file__).parent / "checkpoints").glob("*.json")):
         name = json.loads(path.read_text())["name"]
         entry = checkpoint(name)
         if entry.name != name:

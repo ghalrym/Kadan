@@ -48,4 +48,4 @@ def list_speech() -> SpeechHistoryResponse:
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "No speech provider is configured"}})
 async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
     """Queue validated inference; unavailable providers still return HTTP 503."""
-    return await infer(request, memory_manager.tts(body, operation='generate'))
+    return await infer(request, memory_manager.submit(body, feature='tts', operation='generate'))

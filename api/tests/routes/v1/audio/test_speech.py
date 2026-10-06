@@ -18,7 +18,7 @@ class SpeechValidationTests(unittest.TestCase):
 
 class SpeechRouteTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch.object(memory_manager, 'tts', direct_feature(memory_manager, 'tts')))
+        self.enterContext(patch.object(memory_manager, 'submit', direct_feature(memory_manager, 'tts')))
 
     @classmethod
     def setUpClass(cls):

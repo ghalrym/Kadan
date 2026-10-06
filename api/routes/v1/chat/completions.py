@@ -20,5 +20,5 @@ class CompletionResponse(BaseModel):
 @router.post('', operation_id='createCompletion')
 async def create_completion(body: CompletionRequest, request: Request) -> CompletionResponse:
     """Queue a reply; disconnect waits for native cancellation and cleanup."""
-    text = await infer(request, memory_manager.llm(body))
+    text = await infer(request, memory_manager.submit(body, feature='llm'))
     return CompletionResponse(message=ChatMessage(role='assistant', text=text))

@@ -392,6 +392,20 @@ class ResourceManager:
                 self._cancelled(cancel_event)
                 self._evict(victim)
 
+    def offload_workload_devices(self, workload: Workload, cancel_event=None):
+        """Park one wrapper's device allocations using the same admission ownership."""
+        with self._transaction(cancel_event):
+            with self._lock:
+                if self._exclusive is not None:
+                    raise ResourceBusy('Another workload holds exclusive GPU access')
+                victims = [key for key, state in self._residents.items()
+                           if state.workload == workload and state.offload_on_handoff and any(state.device_bytes.values())]
+                if any(self._residents[key].active or self._residents[key].evict is None for key in victims):
+                    raise ResourceBusy('GPU workload is active or not evictable')
+            for victim in victims:
+                self._cancelled(cancel_event)
+                self._evict(victim)
+
     def snapshot(self) -> dict:
         """Return a lock-consistent copy of budgets and reservation metadata, not a measurement of
         allocated tensors.

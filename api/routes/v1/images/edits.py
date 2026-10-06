@@ -24,4 +24,4 @@ class ImageResponse(BaseModel):
 @router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="editImages")
 async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
     """Queue validated inference; unavailable providers still return HTTP 503."""
-    return await infer(request, memory_manager.image(body, operation='edit'))
+    return await infer(request, memory_manager.submit(body, feature='image', operation='edit'))

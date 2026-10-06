@@ -3,8 +3,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.memory_manager import memory_manager
 from api.memory_manager.http import infer
-from api.services.transcription.transcription import get_transcription_manager
-from api.services.transcription.whisper_catalog import get_whisper_checkpoints, checkpoint
+from api.inference.stt.model import get_transcription_manager
+from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
@@ -80,4 +80,4 @@ async def transcribe_audio(body: TranscriptionRequest, request: Request) -> Tran
     """Queue native Whisper and preserve its raw transcript and formatting status."""
     if not body.audio.startswith('data:audio/wav;base64,'):
         raise HTTPException(422, 'Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.')
-    return TranscriptionResponse(**await infer(request, memory_manager.stt(body)))
+    return TranscriptionResponse(**await infer(request, memory_manager.submit(body, feature='stt')))
