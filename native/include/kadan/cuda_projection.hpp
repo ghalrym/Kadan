@@ -30,4 +30,28 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+// Same ownership/runtime contract as Nvfp4Projection. FP8 scalar/per-row scales
+// and all decoded-weight range checks are validated once at admission. Host
+// spans must remain immutable through construction, then may be released.
+class Fp8Projection {
+public:
+    Fp8Projection(const quantization::Matrix& host, int device,
+                    std::shared_ptr<Resources> admitted_resources);
+    ~Fp8Projection();
+    Fp8Projection(const Fp8Projection&) = delete;
+    Fp8Projection& operator=(const Fp8Projection&) = delete;
+    Fp8Projection(Fp8Projection&&) = delete;
+    Fp8Projection& operator=(Fp8Projection&&) = delete;
+    const Fp8Plan& plan() const;
+    // Caller-owned RAM spans; no hidden host or dense-weight allocation.
+    // Output must be discarded if an exception is thrown. Input/output may alias
+    // because input upload and kernel completion precede the output copy.
+    void matvec(std::span<const float> input, std::span<float> output);
+    // Explicit close reports cleanup failures. Failed/uncertain cleanup retains
+    // the resource reservation; no automatic retry or device reset is attempted.
+    void close();
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 } // namespace kadan::cuda
