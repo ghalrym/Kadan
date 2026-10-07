@@ -105,54 +105,38 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
     streamer = TextEvents(tokenizer, on_event) if on_event else None
     finish_reason = "length"
     retained = conversation_cache if conversation_id else None
-    identity, target, reused = None, 0, 0
+    identity, reused = None, 0
+    input_ids = tokens[0].tolist()
+    consumed = prompt
     reason = 'disabled'
     success = False
     if retained is not None:
-        identity = hashlib.sha256(repr((limit, max_new_tokens, sorted(str(s) for s in stops),
+        identity = hashlib.sha256(repr((id(model), limit, max_new_tokens, sorted(str(s) for s in stops),
             getattr(tokenizer, 'chat_template', None), chat_template_kwargs)).encode()).hexdigest()
-        # A historical assistant turn may omit the empty thinking prefix used
-        # during generation. Snapshot only verified tokens BEFORE that suffix.
-        base = tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=False,
-                                            return_tensors='pt', **(chat_template_kwargs or {}))
-        if not isinstance(base, torch.Tensor):
-            base = base['input_ids']
-        base_ids = base[0].tolist()
-        input_ids = tokens[0].tolist()
-        stable = min(len(base_ids), prompt - 1) if input_ids[:len(base_ids)] == base_ids else 0
-        del base, base_ids
     started = time.monotonic()
     # Admit before moving tokens to GPU or allocating any request cache/workspace.
     with request_memory(resources, owner, model.config, total, prompt, device, cancel_event, expert_headroom_bytes):
         try:
             if retained is not None:
-                cache, reused, reason = retained.restore(conversation_id, input_ids, identity, device, stable, history=chat)
-                # Extend hits only at an already required prefill chunk boundary.
-                # Initial short prompts need one stable-boundary forward; this
-                # cost is explicit rather than pretending recurrent state rewinds.
-                target = reused + ((stable - reused) // 32) * 32
-                if not reused and not target:
-                    target = stable
+                cache, reused, reason = retained.restore(conversation_id, input_ids, identity, device,
+                                                          prompt - 1, history=chat)
             tokens = tokens.to(device)
             cursor = reused
-            while prompt - cursor > 32 or cursor < target:
+            while prompt - cursor > 32:
                 check_cancel(cancel_event)
                 end = min(cursor + 32, prompt)
-                if cursor < target < end:
-                    end = target
                 output = model(input_ids=tokens[:, cursor:end], past_key_values=cache,
                                use_cache=True, return_dict=True, logits_to_keep=1)
                 cache = output.past_key_values
                 output = None
                 cursor = end
-                if retained is not None and cursor == target and target > reused:
-                    retained.capture(conversation_id, input_ids[:target], identity, cache)
             tokens = tokens[:, cursor:]
             for step in range(max_new_tokens):
                 check_cancel(cancel_event)
                 output = model(input_ids=tokens, past_key_values=cache, use_cache=True,
                                return_dict=True, logits_to_keep=1)
                 cache = output.past_key_values
+                consumed = prompt + len(generated)
                 token = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 value = token.item()
                 if step == 0:
@@ -170,10 +154,25 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
             if streamer is not None:
                 streamer.end()
             if retained is not None:
+                # Cache describes inputs already consumed, never the sampled next
+                # token. On EOS all answer tokens were consumed; on length stop
+                # the last answer token is intentionally left for the next prefill.
+                # Hybrid recurrence cannot be cropped or rewound to fix a mismatch.
+                completed = chat + [{'role': 'assistant', 'content': text}]
+                canonical = tokenizer.apply_chat_template(completed, tokenize=True,
+                    add_generation_prompt=False, return_tensors='pt', **(chat_template_kwargs or {}))
+                if not isinstance(canonical, torch.Tensor):
+                    canonical = canonical['input_ids']
+                consumed_ids = (input_ids + generated)[:consumed]
+                if canonical[0].tolist()[:consumed] == consumed_ids:
+                    retention_reason = retained.capture(conversation_id, consumed_ids, identity, cache, adopt=True)
+                else:
+                    retained.invalidate(conversation_id)
+                    retention_reason = 'noncanonical_completed_tokens'
+                check_cancel(cancel_event)
                 usage = {'hit': reused > 0, 'reused_tokens': reused, 'reason': reason,
-                         **retained.commit(conversation_id, history=chat)}
-                log.info('LLM prefix cache hit=%s reused_tokens=%d stored_tokens=%d host_bytes=%d',
-                         usage['hit'], reused, usage['stored_tokens'], usage['host_bytes'])
+                         **retained.commit(conversation_id, history=completed, retention_reason=retention_reason)}
+                log.info('LLM conversation cache: %s', usage)
                 if on_event is not None:
                     on_event({'cache': usage})
             if on_event is not None:

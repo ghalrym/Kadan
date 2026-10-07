@@ -37,9 +37,17 @@ export type CacheUsage = {
    */
   host_bytes: number
   /**
+   * Limit Bytes
+   */
+  limit_bytes?: number
+  /**
    * Reason
    */
   reason: string
+  /**
+   * Retention Reason
+   */
+  retention_reason?: string
   /**
    * Reused Tokens
    */

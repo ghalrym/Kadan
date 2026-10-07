@@ -1,8 +1,8 @@
-"""Bounded immutable CPU snapshots of complete attention/recurrent prefix state.
+"""Bounded complete conversation state, owned by the LLM wrapper.
 
-The LLM wrapper owns this cache. ResourceManager owns admission and eviction.
-Working GPU copies exist only inside the generation request's KV/workspace lease.
-No state is shared between conversation IDs or mutated in place across requests.
+Retain an admitted device state when headroom permits; otherwise copy to CPU
+only after generation. Restores are isolated working copies under the request
+lease. No hybrid state is cropped or rewound.
 """
 from collections import OrderedDict
 import copy
@@ -89,6 +89,8 @@ class PrefixEntry:
     state: object = None
     reservation: object = None
     live: bool = True
+    host_bytes: int = 0
+    device_bytes: dict | None = None
     history_count: int = 0
     history_digest: str | None = None
 
@@ -98,7 +100,7 @@ def history_digest(history):
 
 
 class ConversationCache:
-    def __init__(self, resources, *, max_bytes=512 * 1024**2, max_entries=4):
+    def __init__(self, resources, *, max_bytes=2 * 1024**3, max_entries=4):
         if max_bytes < 1 or max_entries < 1:
             raise ValueError('Conversation cache limits must be positive')
         self.resources, self.max_bytes, self.max_entries = resources, max_bytes, max_entries
@@ -154,32 +156,46 @@ class ConversationCache:
             return None, 0, 'evicted'
 
     @locked
-    def capture(self, conversation, tokens, identity, state):
-        size = sum(t.numel() * t.element_size() for t in tensors_in(state)) + len(tokens) * 40 + 65536
-        if size > self.max_bytes:
-            return None
+    def capture(self, conversation, tokens, identity, state, *, adopt=False):
+        tensors = list(tensors_in(state))
+        tensor_bytes = sum(t.numel() * t.element_size() for t in tensors)
+        metadata_bytes = len(tokens) * 40 + 65536
+        size = tensor_bytes + metadata_bytes
         self.invalidate(conversation)
+        if size > self.max_bytes:
+            return 'limit_exceeded'
         retained = lambda: list(self.entries.values()) + list(self.pending.values())
         while retained() and (len(retained()) >= self.max_entries or
                 sum(entry.size for entry in retained()) + size > self.max_bytes):
             self._drop(retained()[0])
-        entry = PrefixEntry(conversation, identity, tuple(tokens), size)
-        try:
-            entry.reservation = self.resources.reserve(self.owner + ':' + uuid4().hex, 'llm', host_bytes=size,
-                evict=lambda: self._drop(entry))
-            with entry.reservation.lease():
-                entry.state = clone_state(state, 'cpu')
-                self.pending[conversation] = entry
-            return entry
-        except (ResourceBusy, ResourceExhausted):
-            self._drop(entry)
-            return None
-        except BaseException:
-            self._drop(entry)
-            raise
+        devices = {t.device for t in tensors}
+        device = next(iter(devices)) if len(devices) == 1 else torch.device('cpu')
+        # Prefer already allocated device state only when conservative admission
+        # fits alongside the still-active request. Admission rechecks the sampled
+        # headroom. CPU fallback happens after the last token.
+        keep_device = (adopt and device.type == 'cuda' and
+            self.resources.available_devices().get(device.index or 0, 0) >= tensor_bytes)
+        destinations = [device, torch.device('cpu')] if keep_device else [torch.device('cpu')]
+        for destination in destinations:
+            entry = PrefixEntry(conversation, identity, tuple(tokens), size)
+            entry.host_bytes = metadata_bytes if destination.type == 'cuda' else size
+            entry.device_bytes = {destination.index or 0: tensor_bytes} if destination.type == 'cuda' else {}
+            try:
+                entry.reservation = self.resources.reserve(self.owner + ':' + uuid4().hex, 'llm',
+                    host_bytes=entry.host_bytes, device_bytes=entry.device_bytes, evict=lambda e=entry: self._drop(e))
+                with entry.reservation.lease():
+                    entry.state = state if adopt and devices == {destination} else clone_state(state, destination)
+                    self.pending[conversation] = entry
+                return 'retained'
+            except (ResourceBusy, ResourceExhausted):
+                self._drop(entry)
+            except BaseException:
+                self._drop(entry)
+                raise
+        return 'memory_pressure'
 
     @locked
-    def commit(self, conversation, history=None):
+    def commit(self, conversation, history=None, retention_reason=None):
         entry = self.pending.pop(conversation, None)
         if entry is not None and entry.live:
             self.entries[conversation] = entry
@@ -187,4 +203,8 @@ class ConversationCache:
         if entry is not None and history is not None:
             entry.history_count, entry.history_digest = len(history), history_digest(history)
         return {'stored_tokens': len(entry.tokens) if entry else 0,
-                'host_bytes': entry.size if entry else 0, 'device_bytes': {}}
+                'host_bytes': entry.host_bytes if entry else 0,
+                'device_bytes': entry.device_bytes if entry else {},
+                'retention_reason': ('evicted' if retention_reason == 'retained' and entry is None
+                                     else retention_reason or ('retained' if entry else 'miss')),
+                'limit_bytes': self.max_bytes}

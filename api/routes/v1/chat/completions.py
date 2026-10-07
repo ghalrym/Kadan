@@ -47,6 +47,8 @@ class CacheUsage(BaseModel):
     host_bytes: int
     device_bytes: dict[str, int]
     reason: str
+    retention_reason: str = "unknown"
+    limit_bytes: int = 0
 
 
 class CompletionResponse(BaseModel):

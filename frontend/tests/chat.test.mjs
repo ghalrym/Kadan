@@ -230,3 +230,21 @@ test('SSE accepts length terminal and rejects malformed chunks', async () => {
     /invalid chat stream/,
   )
 })
+
+
+test('JSON and SSE preserve terminal cache diagnostics without sending them as history', async () => {
+  const cache = { hit: true, reused_tokens: 24, stored_tokens: 48, host_bytes: 65536,
+    device_bytes: { '0': 4096 }, reason: 'hit', retention_reason: 'retained', limit_bytes: 2147483648 }
+  mockFetch(async () => Response.json({ message: { role: 'assistant', text: 'Four.' }, cache }))
+  const json = await requestChat(messages, signal())
+  assert.deepEqual(json.cache, cache)
+  const terminal = JSON.parse(frame({}, 'stop').slice(6).trim())
+  terminal.cache = cache
+  globalThis.fetch = async () => new Response(
+    frame({ content: 'Four.' }) + 'data: ' + JSON.stringify(terminal) + '\n\n' + 'data: [DONE]\n\n',
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  )
+  const streamed = await streamChat(messages, signal(), () => {}, 'conversation')
+  assert.deepEqual(streamed.cache, cache)
+  assert.deepEqual(chatRequest([streamed]), { messages: [{ role: 'assistant', text: 'Four.' }] })
+})

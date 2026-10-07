@@ -37,8 +37,18 @@
             "title": "Host Bytes",
             "type": "integer"
           },
+          "limit_bytes": {
+            "default": 0,
+            "title": "Limit Bytes",
+            "type": "integer"
+          },
           "reason": {
             "title": "Reason",
+            "type": "string"
+          },
+          "retention_reason": {
+            "default": "unknown",
+            "title": "Retention Reason",
             "type": "string"
           },
           "reused_tokens": {

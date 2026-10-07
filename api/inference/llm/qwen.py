@@ -203,7 +203,7 @@ class QwenAdapter:
                                                            cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
                                                            resources=self.resources, owner=self.owner,
                                                            expert_headroom_bytes=self.bank.max_expert_bytes,
-                                                           chat_template_kwargs={"enable_thinking": False}, on_event=on_event,
+                                                           chat_template_kwargs={"enable_thinking": False, "preserve_thinking": True}, on_event=on_event,
                                                            conversation_cache=conversation_cache, conversation_id=conversation_id)
                     finally:
                         self._cancel = None
