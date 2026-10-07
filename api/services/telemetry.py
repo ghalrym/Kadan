@@ -133,6 +133,8 @@ class TelemetryMiddleware:
         if scope['type'] != 'http' or scope.get('method') != 'POST' or path not in GENERATION_PATHS:
             return await self.app(scope, receive, send)
         start = time.monotonic()
+        measurement = scope.setdefault('kadan_measurement', {})
+        scope['kadan_request_started'] = start
         timestamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
         body = bytearray()
         received = sent = 0
@@ -189,4 +191,8 @@ class TelemetryMiddleware:
                 latency_ms=round(elapsed, 3), endpoint=path, prompt=summary,
                 output=f'HTTP {status}; {sent} response bytes' + ('' if response_complete else '; response incomplete'),
                 request_bytes=received, response_bytes=sent,
+                **{key: value for key, value in measurement.items() if key in {
+                    "generation_ttft_ms", "stream_ttft_ms", "prefill_ms", "decode_tokens_per_second",
+                    "output_tokens", "prefill_tokens", "conversation_key", "cache_hit", "reused_tokens",
+                    "stored_tokens", "cache_reason", "retention_reason", "cached_prefix_sha256"}},
             ))

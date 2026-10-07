@@ -1,6 +1,7 @@
 import threading
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -8,7 +9,7 @@ from api.inference.llm.generation import autoregressive_generate
 
 
 class StreamingGenerationTests(unittest.TestCase):
-    def run_generation(self, budget=8, emit=None):
+    def run_generation(self, budget=8, emit=None, clock=None):
         class Tokenizer:
             def apply_chat_template(self, *args, **kwargs):
                 return torch.tensor([[7]])
@@ -19,6 +20,8 @@ class StreamingGenerationTests(unittest.TestCase):
             count = 0
             def __call__(self, **kwargs):
                 self.count += 1
+                if clock is not None:
+                    clock[0] += 2 if self.count == 1 else .5
                 logits = torch.zeros(1,1,8)
                 logits[0,0,self.count] = 10
                 return SimpleNamespace(logits=logits,past_key_values='cache')
@@ -44,3 +47,15 @@ class StreamingGenerationTests(unittest.TestCase):
             raise InterruptedError('disconnected')
         with self.assertRaises(InterruptedError):
             self.run_generation(emit=disconnected)
+
+    def test_native_timing_excludes_eos_and_prefill_from_decode_rate(self):
+        clock = [0.0]
+        events = []
+        with patch('api.inference.llm.generation.time.monotonic', side_effect=lambda: clock[0]):
+            self.run_generation(emit=events.append, clock=clock)
+        timing = next(e['timing'] for e in events if 'timing' in e)
+        self.assertEqual(timing, {'generation_ttft_ms': 2000, 'prefill_ms': 2000,
+            'decode_tokens_per_second': 2, 'output_tokens': 3, 'prefill_tokens': 1})
+        events.clear()
+        self.run_generation(budget=1, emit=events.append)
+        self.assertIsNone(next(e['timing']['decode_tokens_per_second'] for e in events if 'timing' in e))

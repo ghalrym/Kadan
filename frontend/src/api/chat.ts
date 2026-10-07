@@ -1,7 +1,9 @@
 import { createCompletion } from './generated/sdk.gen'
-import type { ChatMessage } from './generated/types.gen'
+import type { CacheUsage, ChatMessage } from './generated/types.gen'
 
-export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'>
+export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'> & {
+  cache?: CacheUsage
+}
 
 /**
  * Build the API conversation without selecting a model or imposing product length caps.
@@ -66,7 +68,7 @@ export async function requestChat(
   ) {
     throw new Error('The API returned an invalid chat response. Please retry.')
   }
-  return message
+  return { ...message, ...(result.data?.cache ? { cache: result.data.cache } : {}) }
 }
 
 /** Read SSE incrementally; an EOF without the terminal chunk and [DONE] is a failure. */
@@ -74,6 +76,7 @@ export async function streamChat(
   messages: ConversationMessage[],
   signal: AbortSignal,
   onText: (text: string) => void,
+  conversationId?: string,
 ): Promise<ConversationMessage> {
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
@@ -81,7 +84,11 @@ export async function streamChat(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...chatRequest(messages), stream: true }),
+    body: JSON.stringify({
+      ...chatRequest(messages),
+      stream: true,
+      conversation_id: conversationId,
+    }),
     signal,
   })
   if (!response.ok) {
@@ -97,6 +104,7 @@ export async function streamChat(
     throw new Error('The API did not return a chat stream.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+  let cache: CacheUsage | undefined
   let buffer = '',
     text = '',
     terminal = false,
@@ -145,6 +153,7 @@ export async function streamChat(
         if (choice.finish_reason != null) {
           if (!['stop', 'length'].includes(choice.finish_reason))
             throw new Error('Unsupported chat completion status.')
+          cache = event.cache ?? undefined
           terminal = true
         }
       }
@@ -155,7 +164,7 @@ export async function streamChat(
     }
     if (!text.trim())
       throw new Error('The API returned an empty chat response.')
-    return { role: 'assistant', text }
+    return { role: 'assistant', text, ...(cache ? { cache } : {}) }
   } finally {
     await reader.cancel().catch(() => {})
     reader.releaseLock()

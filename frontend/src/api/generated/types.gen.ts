@@ -19,6 +19,46 @@ export type AssistantMessage = {
 }
 
 /**
+ * CacheUsage
+ */
+export type CacheUsage = {
+  /**
+   * Device Bytes
+   */
+  device_bytes: {
+    [key: string]: number
+  }
+  /**
+   * Hit
+   */
+  hit: boolean
+  /**
+   * Host Bytes
+   */
+  host_bytes: number
+  /**
+   * Limit Bytes
+   */
+  limit_bytes?: number
+  /**
+   * Reason
+   */
+  reason: string
+  /**
+   * Retention Reason
+   */
+  retention_reason?: string
+  /**
+   * Reused Tokens
+   */
+  reused_tokens: number
+  /**
+   * Stored Tokens
+   */
+  stored_tokens: number
+}
+
+/**
  * ChatMessage
  */
 export type ChatMessage = {
@@ -162,6 +202,12 @@ export type CompletionMessage = {
  */
 export type CompletionRequest = {
   /**
+   * Conversation Id
+   *
+   * Client-owned opaque conversation ID; omitted IDs never retain prefix state.
+   */
+  conversation_id?: string | null
+  /**
    * Messages
    */
   messages: Array<CompletionMessage>
@@ -169,6 +215,12 @@ export type CompletionRequest = {
    * Model
    */
   model?: string | null
+  /**
+   * Reuse Prefix
+   *
+   * Disable to compare against full prefill.
+   */
+  reuse_prefix?: boolean
   /**
    * Stream
    */
@@ -179,6 +231,7 @@ export type CompletionRequest = {
  * CompletionResponse
  */
 export type CompletionResponse = {
+  cache?: CacheUsage | null
   /**
    * Choices
    */
@@ -710,13 +763,40 @@ export type NoulQuestion = {
  *
  * The legacy prompt/output fields contain structural and HTTP summaries, not
  * user text or model output. Latency includes validation and cleanup; it is
- * not a token throughput or time-to-first-token measurement.
+ * not a token throughput or time-to-first-token measurement. Optional native
+ * timings measure admission/prefill to the first generated token, prefill-only
+ * work, and decode after that token. Stream TTFT measures HTTP arrival to the
+ * first content event passed to ASGI (not browser receipt). Missing data is null.
  */
 export type RequestRecord = {
+  /**
+   * Cache Hit
+   */
+  cache_hit?: boolean | null
+  /**
+   * Cache Reason
+   */
+  cache_reason?: string | null
+  /**
+   * Cached Prefix Sha256
+   */
+  cached_prefix_sha256?: string | null
+  /**
+   * Conversation Key
+   */
+  conversation_key?: string | null
+  /**
+   * Decode Tokens Per Second
+   */
+  decode_tokens_per_second?: number | null
   /**
    * Endpoint
    */
   endpoint: string
+  /**
+   * Generation Ttft Ms
+   */
+  generation_ttft_ms?: number | null
   /**
    * Id
    */
@@ -738,6 +818,18 @@ export type RequestRecord = {
    */
   output: string
   /**
+   * Output Tokens
+   */
+  output_tokens?: number | null
+  /**
+   * Prefill Ms
+   */
+  prefill_ms?: number | null
+  /**
+   * Prefill Tokens
+   */
+  prefill_tokens?: number | null
+  /**
    * Prompt
    */
   prompt: string
@@ -750,9 +842,25 @@ export type RequestRecord = {
    */
   response_bytes: number
   /**
+   * Retention Reason
+   */
+  retention_reason?: string | null
+  /**
+   * Reused Tokens
+   */
+  reused_tokens?: number | null
+  /**
    * Status
    */
   status: number
+  /**
+   * Stored Tokens
+   */
+  stored_tokens?: number | null
+  /**
+   * Stream Ttft Ms
+   */
+  stream_ttft_ms?: number | null
   /**
    * Time
    */

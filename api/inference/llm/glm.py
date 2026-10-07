@@ -246,7 +246,7 @@ class GlmAdapter:
             with torch.cuda.device(self.device):
                 torch.cuda.empty_cache()
 
-    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None):
+    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None, conversation_cache=None, conversation_id=None):
         """Return greedy response text while holding host and device ownership leases.
 
         Restore GPU residency if necessary and propagate cancellation to tiled and
@@ -265,7 +265,8 @@ class GlmAdapter:
                             return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
                                                            cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
                                                            resources=self.resources, owner=self.owner,
-                                                           expert_headroom_bytes=self.bank.max_expert_bytes, on_event=on_event)
+                                                           expert_headroom_bytes=self.bank.max_expert_bytes, on_event=on_event,
+                                                           conversation_cache=conversation_cache, conversation_id=conversation_id)
                     finally:
                         self._cancel = None
 

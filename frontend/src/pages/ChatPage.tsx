@@ -13,6 +13,7 @@ export default function ChatPage() {
   const [notice, setNotice] = useState('')
   const active = useRef<AbortController | null>(null)
   const activeConversation = useRef<ConversationMessage[]>([])
+  const conversationId = useRef<string | null>(null)
   const historyEnd = useRef<HTMLDivElement | null>(null)
 
   useEffect(
@@ -33,6 +34,12 @@ export default function ChatPage() {
   async function send(conversation: ConversationMessage[]) {
     if (active.current) return
     const controller = new AbortController()
+    if (!conversationId.current) {
+      const bytes = crypto.getRandomValues(new Uint8Array(16))
+      conversationId.current = Array.from(bytes, (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join('')
+    }
     active.current = controller
     activeConversation.current = conversation
     setPending(true)
@@ -48,6 +55,7 @@ export default function ChatPage() {
           if (active.current === controller && !controller.signal.aborted)
             setMessages([...conversation, { role: 'assistant', text }])
         },
+        conversationId.current,
       )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])

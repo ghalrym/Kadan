@@ -5,6 +5,8 @@ manager; it does not introduce an engine, worker, or separate memory accountant.
 """
 import threading
 
+from .conversation import ConversationCache
+
 from api.inference.resources import ResourceBusy, ResourceCancelled
 
 
@@ -29,7 +31,7 @@ class _HostEvictionResources:
         preserve callbacks for device and request allocations.
         """
         return self._manager.reserve(owner, workload, host_bytes=host_bytes,
-            device_bytes=device_bytes, evict=self._on_host_evict if host_bytes and not device_bytes else evict,
+            device_bytes=device_bytes, evict=self._on_host_evict if host_bytes and not device_bytes and evict is None else evict,
             cancel_event=cancel_event)
 
     def __getattr__(self, name):
@@ -56,6 +58,7 @@ class ReloadableAdapter:
         self.configured_context_limit = None
         self.effective_context_limit = None
         self.supported_context_limit = None
+        self.conversations = ConversationCache(resources)
         self._resources = _HostEvictionResources(resources, self._evict_host)
         with self._gate:
             self._construct(cancel_event)
@@ -104,6 +107,7 @@ class ReloadableAdapter:
             else:
                 configure_context(self._inner, value)
                 self._remember_context(self._inner)
+            self.conversations.clear()
             self._context_was_configured = True
 
     @property
@@ -122,6 +126,7 @@ class ReloadableAdapter:
         if not self._gate.acquire(blocking=False):
             raise ResourceBusy('Model is constructing, generating or closing; host memory is in use')
         try:
+            self.conversations.clear()
             if self._inner is not None:
                 # close() frees actual banks/caches/model state and synchronizes
                 # device use before releasing its resource reservations. Preserve
@@ -131,7 +136,7 @@ class ReloadableAdapter:
         finally:
             self._gate.release()
 
-    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None):
+    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None, conversation_id=None):
         """Serialize generation, rebuilding an idle-evicted adapter when needed. Check cancellation
         while waiting; explicitly closed adapters never reload.
         """
@@ -144,7 +149,13 @@ class ReloadableAdapter:
             if self._inner is None:
                 self._construct(cancel_event)
             return self._inner.generate(messages, max_new_tokens=max_new_tokens,
-                                        cancel_event=cancel_event, **({"on_event": on_event} if on_event else {}))
+                                        cancel_event=cancel_event, **({"on_event": on_event} if on_event else {}),
+                                        **({"conversation_cache": self.conversations, "conversation_id": conversation_id}
+                                           if conversation_id else {}))
+        except BaseException:
+            if conversation_id:
+                self.conversations.invalidate(conversation_id)
+            raise
         finally:
             self._gate.release()
 
@@ -153,6 +164,7 @@ class ReloadableAdapter:
         preserve the inner handle if cleanup fails.
         """
         with self._gate:
+            self.conversations.clear()
             if self._inner is not None:
                 self._inner.close()
                 self._inner = None
