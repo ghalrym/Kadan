@@ -2,6 +2,7 @@
 
 #include "kadan/quantization.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,6 +19,7 @@ class MemoryBudget final : public std::pmr::memory_resource {
 public:
     explicit MemoryBudget(std::size_t bytes) : limit_(bytes) {}
     std::size_t used() const;
+    std::size_t limit() const { return limit_; }
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override;
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override;
@@ -30,6 +32,16 @@ private:
 struct Limits {
     std::size_t header_bytes = 16 * 1024 * 1024;
     std::size_t tensors = 65536;
+};
+
+enum class Dtype { u8, fp8, fp32, bf16 };
+// Borrowed name remains valid for the Shard lifetime; dimensions/byte count copied.
+struct TensorInfo {
+    std::string_view name;
+    Dtype dtype;
+    std::array<std::uint64_t, 8> shape;
+    std::size_t rank;
+    std::uint64_t bytes;
 };
 
 class Projection {
@@ -61,11 +73,17 @@ public:
     Shard(const Shard&) = delete;
     Shard& operator=(const Shard&) = delete;
     std::size_t tensor_count() const;
+    TensorInfo tensor(std::string_view name) const;
+    void check_unchanged() const;
+    // Caller owns/admitted destination; no hidden payload allocation.
+    void read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const;
     // Explicit ModelOpt contract. All companion tensors must be in this shard.
     // Reads only selected rows plus their block/row scales and scalar multiplier.
     // payload_budget caps final owned tensor bytes, separately from allocator quota.
+    // Optional payload_memory separates staging/host-bank admission from metadata.
     Projection load_modelopt_rows(std::string_view prefix, std::size_t first,
-                                  std::size_t count, std::size_t payload_budget) const;
+                                  std::size_t count, std::size_t payload_budget,
+                                  std::shared_ptr<MemoryBudget> payload_memory = {}) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

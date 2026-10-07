@@ -11,6 +11,10 @@ explicitly chosen safetensors shard into owned quantized projection buffers.
 A separate [quantized projection reference](QUANTIZATION.md) now provides original
 CPU NVFP4/FP8 format decoding and matrix-vector execution for future loaders and
 CUDA kernels. The worker executable does not call that library yet.
+The [text manifest and explicit placement planner](MANIFEST.md) now bind the full
+installed index and text-decoder tensor roles with bounded metadata reads, plus
+selected payload loading and caller-supplied placement budgets. They do not yet
+execute a full model.
 Existing Python/API/UI execution is unchanged; other modalities are not migrated.
 
 ## Build and test without GPU access
