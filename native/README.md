@@ -2,8 +2,8 @@
 
 This is original Kadan C++20 code. It does not copy, wrap, vendor or port
 Strata/FreeToken code. The first milestone implements an accounting library and
-a standalone development worker boundary, not model inference. There are no
-CUDA kernels or production API adapters. The separate
+a standalone development worker boundary, not model inference. The optional [original SM86 fused projection](CUDA.md) now includes a compiled,
+but GPU-unverified, NVFP4 CUDA kernel. There are no production API adapters. The separate
 [bounded checkpoint reader](CHECKPOINT.md) now loads selected rows from one
 explicitly chosen safetensors shard into owned quantized projection buffers.
 A separate [quantized projection reference](QUANTIZATION.md) now provides original
@@ -22,11 +22,11 @@ ctest --test-dir /tmp/kadan-native --output-on-failure
 Requirements: CMake >= 3.24, a C++20 compiler, threads, and Python 3 for protocol
 tests. Tests allocate only tiny CPU accounting structures. No CUDA detection,
 CUDA driver initialization, inference, benchmark, or database access occurs.
-`KADAN_ENABLE_CUDA=ON` optionally checks the CUDA toolchain and defines the
-`kadan_cuda` interface target for future kernels. It is not linked by the current
-worker and has not been validated here. Future RTX 3090 kernel builds must set
-`CMAKE_CUDA_ARCHITECTURES=86`; NVFP4 checkpoint encoding does not imply hardware
-FP4 arithmetic support on SM86. Kernel design and GPU validation are later work.
+`KADAN_ENABLE_CUDA=ON` builds the original fused NVFP4 projection and an opt-in
+GPU parity executable for SM86; see [CUDA.md](CUDA.md) for compile-only commands,
+verified toolchain, lifetime/error contracts and the unexecuted validation plan.
+The worker still does not call this GPU library. The CUDA target has been compiled
+locally, but no device tests or benchmarks have been run.
 Do not run GPU workloads until Andrew explicitly authorizes them. Do not restart
 or deploy services as part of these development commands.
 
@@ -114,7 +114,7 @@ KV management, and graph-safe scheduling on that foundation. Do not import an
 external inference implementation to fill gaps.
 
 The target is `nvidia/Qwen3.6-35B-A3B-NVFP4` at 50+ decode tokens/sec on two RTX
-3090s. No throughput, GPU numerical correctness, CUDA build success, memory-fit,
+3090s. No throughput, GPU numerical correctness, full-model memory-fit,
 or other-modality migration is claimed by this milestone. CPU accounting tests
 cannot establish any of those results. GPU tests/benchmarks require separate
 explicit authorization after the breaker trip.
