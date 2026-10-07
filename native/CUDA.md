@@ -25,7 +25,8 @@ before FP32 rounding, matching the CPU decoded-weight contract.
 
 The supported layout is exactly #99/#100's canonical unswizzled ModelOpt NVFP4
 2D view with one positive finite global multiplier. Input and output are FP32.
-FP8 projections, BF16 output/activation rounding, activation quantization, bias,
+A separate [FP8 projection milestone](FP8.md) now shares the resource owner.
+BF16 output/activation rounding, activation quantization, bias,
 batching, expert routing, graph capture, tensor cores and model integration are
 not implemented. Host validation rejects unsupported layouts and bad scales.
 GPU accumulation is FP32 rather than the CPU reference's double sum, so reduction
@@ -80,7 +81,10 @@ reusing that memory budget. Fault-injection/real CUDA error paths remain unteste
 Installed tools inspected without device probing: CUDA 12.0, nvcc 12.0.140,
 CUDART 12.0.146, GCC 12 (NVCC host compiler), GCC 13.3 (ordinary C++), CMake 3.28.3.
 The kernel, owning wrapper and parity executable compile and link for SM86 with
-these tools. No CUDA/device executable was run. No tool installation was needed.
+these tools. No tool installation was needed. Revision `9e4161d` later passed
+the six explicitly authorized tiny NVFP4 GPU cases below. That approval is
+consumed; it does not validate or authorize the subsequent FP8/shared-owner
+revision. See [FP8.md](FP8.md) for the proposed combined validation batch.
 
 CPU-only tests remain the default and require no CUDA toolkit:
 
@@ -131,8 +135,9 @@ FP32 range before rounding yet round to finite FLT_MAX in magnitude, using zero
 input. It replaces the ordinary `(1,16)` case, keeping exactly six launches.
 Each projection
 closes and verifies that its reservation was released. This harness has been
-compiled but **not executed**; GPU correctness and cleanup behavior remain
-unverified. Do not interpret a later parity pass as a throughput benchmark.
+executed once successfully at `9e4161d`, including normal reservation cleanup.
+The later shared-owner revision has only CPU/build validation. Runtime-failure
+cleanup remains unverified. Do not interpret a later parity pass as a throughput benchmark.
 
 CUDA API/warp semantics reference: [NVIDIA CUDA Programming Guide](https://docs.nvidia.com/cuda/cuda-programming-guide/index.html).
 Weight-format references and the CPU numerical contract are in

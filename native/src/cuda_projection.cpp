@@ -3,6 +3,7 @@
 #endif
 #include "kadan/cuda_projection.hpp"
 #include "nvfp4_kernel.cuh"
+#include "fp8_kernel.cuh"
 
 #include <algorithm>
 #include <cmath>
@@ -16,10 +17,42 @@ void check(cudaError_t status, const char* operation) {
     if (status != cudaSuccess)
         throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
 }
-}
-struct Nvfp4Projection::Impl {
+struct Nvfp4Operations {
+    using Plan = Nvfp4Plan;
+    static Plan plan(const quantization::Matrix& host, std::size_t budget) { return plan_nvfp4(host, budget); }
+    static void upload_scales(void* storage, const Plan& layout, const quantization::Matrix& host) {
+        auto* bytes = static_cast<std::uint8_t*>(storage);
+        check(cudaMemcpy(bytes + layout.block_offset, host.block_scales.data(), layout.block_bytes,
+                         cudaMemcpyHostToDevice), "upload_scales");
+    }
+    static cudaError_t launch(void* storage, const Plan& layout, float global,
+                              const float* input, float* output, unsigned* status) {
+        auto* bytes = static_cast<std::uint8_t*>(storage);
+        return kadan_launch_nvfp4(bytes, bytes + layout.block_offset, global,
+                                  input, output, status, layout.rows, layout.columns);
+    }
+};
+struct Fp8Operations {
+    using Plan = Fp8Plan;
+    static Plan plan(const quantization::Matrix& host, std::size_t budget) { return plan_fp8(host, budget); }
+    static void upload_scales(void* storage, const Plan& layout, const quantization::Matrix& host) {
+        auto* bytes = static_cast<std::uint8_t*>(storage);
+        check(cudaMemcpy(bytes + layout.scale_offset, host.multipliers.data(), layout.scale_bytes,
+                         cudaMemcpyHostToDevice), "upload_scales");
+    }
+    static cudaError_t launch(void* storage, const Plan& layout, float,
+                              const float* input, float* output, unsigned* status) {
+        auto* bytes = static_cast<std::uint8_t*>(storage);
+        return kadan_launch_fp8(bytes, reinterpret_cast<const float*>(bytes + layout.scale_offset),
+                               layout.scale_count != 1, input, output, status, layout.rows, layout.columns);
+    }
+};
+// One resource/runtime owner for both encodings. Operations only choose layout,
+// immutable scale upload and kernel; pinning/error/quarantine semantics are shared.
+template<class Operations>
+struct ProjectionImpl {
     std::shared_ptr<Resources> resources;
-    Nvfp4Plan layout{};
+    typename Operations::Plan layout{};
     std::thread::id owner = std::this_thread::get_id();
     int device;
     Handle handle = 0;
@@ -27,12 +60,12 @@ struct Nvfp4Projection::Impl {
     float global = 0;
     bool loaded = false, pinned = false, poisoned = false, cleanup_failed = false;
 
-    Impl(const quantization::Matrix& host, int ordinal, std::shared_ptr<Resources> manager)
+    ProjectionImpl(const quantization::Matrix& host, int ordinal, std::shared_ptr<Resources> manager)
         : resources(std::move(manager)), device(ordinal) {
         if (!resources || device < 0) throw std::invalid_argument("invalid_cuda_resource_owner");
         auto request = resources->snapshot().capacity;
         if (static_cast<std::size_t>(device) + 1 >= request.size()) throw std::invalid_argument("unbudgeted_cuda_device");
-        layout = plan_nvfp4(host, request[device + 1]);
+        layout = Operations::plan(host, request[device + 1]);
         global = host.multipliers[0];
         std::fill(request.begin(), request.end(), 0); request[device + 1] = layout.device_bytes;
         handle = resources->reserve(Workload::llm, std::move(request));
@@ -46,7 +79,7 @@ struct Nvfp4Projection::Impl {
             check(cudaMalloc(&allocation, layout.device_bytes), "cudaMalloc");
             storage = allocation;
             check(cudaMemcpy(storage, host.weights.data(), layout.weight_bytes, cudaMemcpyHostToDevice), "upload_weights");
-            check(cudaMemcpy(bytes(layout.block_offset), host.block_scales.data(), layout.block_bytes, cudaMemcpyHostToDevice), "upload_scales");
+            Operations::upload_scales(storage, layout, host);
             check(cudaStreamSynchronize(cudaStreamLegacy), "upload_synchronize");
             resources->loaded(handle); loaded = true;
         } catch (...) { cleanup(); throw; }
@@ -88,8 +121,8 @@ struct Nvfp4Projection::Impl {
             // No caller host buffers are referenced by the kernel itself.
             check(cudaMemcpy(floats(layout.input_offset), input.data(), input.size_bytes(), cudaMemcpyHostToDevice), "upload_input");
             check(cudaMemsetAsync(status(), 0, sizeof(unsigned), cudaStreamLegacy), "clear_status");
-            check(kadan_launch_nvfp4(bytes(0), bytes(layout.block_offset), global,
-                floats(layout.input_offset), floats(layout.output_offset), status(), layout.rows, layout.columns), "launch_nvfp4");
+            check(Operations::launch(storage, layout, global,
+                floats(layout.input_offset), floats(layout.output_offset), status()), "launch_projection");
             check(cudaStreamSynchronize(cudaStreamLegacy), "matvec_synchronize");
             check(cudaMemcpy(&flags, status(), sizeof(flags), cudaMemcpyDeviceToHost), "read_status");
             if (flags == 0)
@@ -105,12 +138,27 @@ struct Nvfp4Projection::Impl {
         if (flags != 0) throw std::overflow_error("nonfinite_cuda_projection");
     }
 };
+} // namespace
+struct Nvfp4Projection::Impl : ProjectionImpl<Nvfp4Operations> {
+    using ProjectionImpl::ProjectionImpl;
+};
+struct Fp8Projection::Impl : ProjectionImpl<Fp8Operations> {
+    using ProjectionImpl::ProjectionImpl;
+};
 Nvfp4Projection::Nvfp4Projection(const quantization::Matrix& host, int device, std::shared_ptr<Resources> resources)
     : impl_(std::make_unique<Impl>(host, device, std::move(resources))) {}
 Nvfp4Projection::~Nvfp4Projection() { impl_->cleanup(); }
 const Nvfp4Plan& Nvfp4Projection::plan() const { return impl_->layout; }
 void Nvfp4Projection::matvec(std::span<const float> input, std::span<float> output) { impl_->matvec(input, output); }
 void Nvfp4Projection::close() {
+    if (!impl_->cleanup()) throw std::runtime_error("cuda_cleanup_failed_reservation_retained");
+}
+Fp8Projection::Fp8Projection(const quantization::Matrix& host, int device, std::shared_ptr<Resources> resources)
+    : impl_(std::make_unique<Impl>(host, device, std::move(resources))) {}
+Fp8Projection::~Fp8Projection() { impl_->cleanup(); }
+const Fp8Plan& Fp8Projection::plan() const { return impl_->layout; }
+void Fp8Projection::matvec(std::span<const float> input, std::span<float> output) { impl_->matvec(input, output); }
+void Fp8Projection::close() {
     if (!impl_->cleanup()) throw std::runtime_error("cuda_cleanup_failed_reservation_retained");
 }
 } // namespace kadan::cuda
