@@ -59,7 +59,6 @@ void basename(std::string_view name) {
         require((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-', "invalid_shard_name");
 }
-enum class Dtype { u8, fp8, fp32, bf16 };
 struct Tensor {
     explicit Tensor(std::pmr::memory_resource* resource) : name(resource) {}
     std::pmr::string name;
@@ -272,8 +271,17 @@ Shard::Shard(const char* root, std::string_view shard_name, std::shared_ptr<Memo
 }
 Shard::~Shard() = default;
 std::size_t Shard::tensor_count() const { return impl_->tensors.size(); }
+TensorInfo Shard::tensor(std::string_view name) const {
+    const auto& t = impl_->find(name);
+    return {t.name, t.dtype, t.shape, t.rank, t.end - t.begin};
+}
+void Shard::check_unchanged() const { impl_->unchanged(); }
+void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const {
+    const auto& t = impl_->find(name);
+    impl_->unchanged(); impl_->read(t, offset, destination); impl_->unchanged();
+}
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
-                                    std::size_t count, std::size_t payload_budget) const {
+                                    std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory) const {
     require(!prefix.empty() && prefix.size() <= 480 && count != 0, "projection_range_or_name");
     auto name = [&](std::string_view suffix) { std::pmr::string n(prefix, impl_->budget.get()); n += suffix; return n; };
     const auto& weight = impl_->find(name(".weight"));
@@ -299,7 +307,7 @@ Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
     const auto weight_bytes = mul(count, weight.shape[1]);
     const auto total = add(add(weight_bytes, scale_rows), mul(multiplier_count, sizeof(float)));
     require(total <= payload_budget && total <= SIZE_MAX && columns <= SIZE_MAX, "payload_budget");
-    Projection result(impl_->budget);
+    Projection result(payload_memory ? std::move(payload_memory) : impl_->budget);
     result.encoding_ = fp4 ? quantization::Encoding::modelopt_nvfp4 : quantization::Encoding::modelopt_fp8;
     result.rows_ = count; result.columns_ = columns;
     result.weights_.resize(weight_bytes); result.blocks_.resize(scale_rows); result.multipliers_.resize(multiplier_count);
