@@ -5,11 +5,12 @@ import threading
 from pathlib import Path
 
 import torch
+from .placed_cache import make_cache, cache_execution
 from torch import nn
 
 from api.inference.llm.checkpoint import SafeTensorReader
 from api.inference.llm.generation import autoregressive_generate, check_cancel
-from api.inference.llm.offload import ExpertBank, ExpertCache
+from api.inference.llm.offload import ExpertBank
 from api.inference.llm.quantization import mxfp4_linear
 
 
@@ -34,7 +35,7 @@ class GptOssOffloadedExperts(nn.Module):
             token_idx, topk_idx = torch.where(router_indices == expert)
             with self.cache.use((self.layer, expert)) as tensors:
                 # Decode only the selected projection; never all experts or layers.
-                projected = mxfp4_linear(hidden_states[token_idx], tensors['gate_up_blocks'],
+                projected = mxfp4_linear(hidden_states[token_idx].to(tensors['gate_up_blocks'].device), tensors['gate_up_blocks'],
                     tensors['gate_up_scales'], tensors['gate_up_bias'].to(hidden_states.dtype), scratch_bytes=16 * 1024**2)
                 gate, up = projected[..., ::2], projected[..., 1::2]
                 gate = gate.clamp(max=7.0)
@@ -42,7 +43,7 @@ class GptOssOffloadedExperts(nn.Module):
                 activation = (up + 1) * gate * torch.sigmoid(1.702 * gate)
                 result = mxfp4_linear(activation, tensors['down_blocks'],
                     tensors['down_scales'], tensors['down_bias'].to(hidden_states.dtype), scratch_bytes=16 * 1024**2)
-                output.index_add_(0, token_idx, (result * routing_weights[token_idx, topk_idx, None]).to(output.dtype))
+                output.index_add_(0, token_idx, (result.to(hidden_states.device) * routing_weights[token_idx, topk_idx, None]).to(output.dtype))
         return output
 
 
@@ -132,7 +133,7 @@ class GptOssAdapter:
                     banks[layer, expert] = {name.replace('_proj', ''): tensor[expert]
                                              for name, tensor in tensors.items()}
             self.bank = ExpertBank(banks)
-            self.cache = ExpertCache(self.bank, self.cache_bytes, device=str(self.device),
+            self.cache = make_cache(self.bank, self.cache_bytes, device=str(self.device),
                                      resources=resources, owner=self.owner + ':experts')
             for layer in range(layers):
                 self.model.model.layers[layer].mlp.experts = GptOssOffloadedExperts(layer, self.cache, cancel_event)
@@ -215,10 +216,11 @@ class GptOssAdapter:
             with self._lock:
                 for layer in self.model.model.layers:
                     layer.mlp.experts.cancel_event = cancel_event
-                return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                    cancel_event=cancel_event, max_new_tokens=max_new_tokens,
-                    context_limit=self.effective_context_limit, resources=self.resources, owner=self.owner,
-                    expert_headroom_bytes=self.bank.max_expert_bytes)
+                with cache_execution(self.cache, cancel_event):
+                    return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
+                        cancel_event=cancel_event, max_new_tokens=max_new_tokens,
+                        context_limit=self.effective_context_limit, resources=self.resources, owner=self.owner,
+                        expert_headroom_bytes=self.bank.max_expert_bytes)
 
     def close(self):
         """Drop model, tokenizer and cache ownership, then release memory reservations.

@@ -11,12 +11,13 @@ import threading
 from pathlib import Path
 
 import torch
+from .placed_cache import make_cache, cache_execution
 from torch import nn
 from torch.nn import functional as F
 
 from .checkpoint import SafeTensorReader
 from .generation import autoregressive_generate, check_cancel
-from .offload import ExpertBank, ExpertCache
+from .offload import ExpertBank
 from .quantization import nvfp4_linear
 from ..resources import ResourceBusy
 
@@ -59,11 +60,13 @@ def project(x, part):
     reference linear helper; FP8 weights multiply by scales in FP32 before casting
     to the input dtype. This is weight-only reference execution.
     """
+    origin = x.device
+    x = x.to(part['weight'].device)
     if 'global' in part:
-        return nvfp4_linear(x, part['weight'], part['scale'], part['global'])
+        return nvfp4_linear(x, part['weight'], part['scale'], part['global']).to(origin)
     # Dense FP8 rows are tiled before transfer. Accumulate scaling in FP32.
     scale = part['scale'].float().reshape(-1, 1)
-    return F.linear(x, (part['weight'].float() * scale).to(x.dtype))
+    return F.linear(x, (part['weight'].float() * scale).to(x.dtype)).to(origin)
 
 
 class HostLinear(nn.Module):
@@ -195,11 +198,12 @@ class QwenAdapter:
                 with self.device_reservation.lease(cancel_event):
                     self._cancel = cancel_event
                     try:
-                        return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
-                                                       resources=self.resources, owner=self.owner,
-                                                       expert_headroom_bytes=self.bank.max_expert_bytes,
-                                                       chat_template_kwargs={"enable_thinking": False})
+                        with cache_execution(self.cache, cancel_event):
+                            return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
+                                                           cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                           resources=self.resources, owner=self.owner,
+                                                           expert_headroom_bytes=self.bank.max_expert_bytes,
+                                                           chat_template_kwargs={"enable_thinking": False})
                     finally:
                         self._cancel = None
 
@@ -318,7 +322,7 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
             adapter.bank = ExpertBank(bank_parts)
             cache_bytes = (resources.capacity.device_bytes[adapter.device.index or 0]
                            if adapter.device.type == 'cuda' else adapter.bank.max_expert_bytes)
-            adapter.cache = ExpertCache(adapter.bank, cache_bytes, device,
+            adapter.cache = make_cache(adapter.bank, cache_bytes, device,
                 resources=resources if adapter.device.type == 'cuda' else None,
                 owner=adapter.owner + ':experts')
             for name, keys, rows, out_features in dense_specs:

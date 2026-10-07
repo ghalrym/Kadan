@@ -12,12 +12,13 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import torch
+from .placed_cache import make_cache, cache_execution
 from torch import nn
 from torch.nn import functional as F
 
 from .checkpoint import SafeTensorReader
 from .generation import autoregressive_generate, check_cancel
-from .offload import ExpertBank, ExpertCache
+from .offload import ExpertBank
 from .quantization import nvfp4_linear
 from ..resources import ResourceBusy
 
@@ -120,7 +121,7 @@ class GlmExperts(nn.Module):
             check_cancel(self.cancel_event)
             token, slot = torch.where(indices == expert)
             with self.cache.use((self.layer, expert)) as tensors:
-                x = hidden[token]
+                x = hidden[token].to(tensors['gate_proj.weight_packed'].device)
                 def linear(value, part):
                     """Apply a leased gate/up/down projection with reciprocal global-scale semantics."""
                     return nvfp4_linear(value, tensors[f'{part}.weight_packed'],
@@ -130,7 +131,7 @@ class GlmExperts(nn.Module):
                 gate = linear(x, 'gate_proj').clamp(max=self.limit)
                 up = linear(x, 'up_proj').clamp(-self.limit, self.limit)
                 out = linear(F.silu(gate) * up, 'down_proj')
-                result.index_add_(0, token, (out * weights[token, slot, None]).to(hidden.dtype))
+                result.index_add_(0, token, (out.to(hidden.device) * weights[token, slot, None]).to(hidden.dtype))
         return result
 
 
@@ -177,7 +178,7 @@ class HostLinear(nn.Module):
             check_cancel(self.cancellation())
             with self.cache.use(key) as part:
                 size = part['weight'].shape[0]
-                result[..., row:row + size] = F.linear(x, part['weight'].to(x.dtype), part.get('bias'))
+                result[..., row:row + size] = F.linear(x.to(part['weight'].device), part['weight'].to(x.dtype), part.get('bias')).to(x.device)
                 row += size
         return result
 
@@ -260,10 +261,11 @@ class GlmAdapter:
                         if isinstance(getattr(layer.mlp, 'experts', None), GlmExperts):
                             layer.mlp.experts.cancel_event = cancel_event
                     try:
-                        return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
-                                                       cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
-                                                       resources=self.resources, owner=self.owner,
-                                                       expert_headroom_bytes=self.bank.max_expert_bytes)
+                        with cache_execution(self.cache, cancel_event):
+                            return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
+                                                           cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
+                                                           resources=self.resources, owner=self.owner,
+                                                           expert_headroom_bytes=self.bank.max_expert_bytes)
                     finally:
                         self._cancel = None
 
@@ -407,7 +409,7 @@ def build_glm(entry, path, resources, device='cuda:0', cancel_event=None):
                         experts[key]['bias'] = module.bias.detach()[start:start + 1024]
                 tiles[name] = tile_keys
             adapter.bank = ExpertBank(experts)
-            adapter.cache = ExpertCache(adapter.bank, resources.capacity.device_bytes[device.index or 0],
+            adapter.cache = make_cache(adapter.bank, resources.capacity.device_bytes[device.index or 0],
                                         device=device, resources=resources, owner=adapter.owner + ':experts')
             for name, module in linears:
                 parent_name, _, leaf = name.rpartition('.')

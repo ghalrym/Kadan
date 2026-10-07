@@ -5,14 +5,12 @@ import os
 
 from pydantic import ValidationError
 
-from api.inference.feature import UnsupportedFeature
 from api.inference.llm.feature import LLMFeature
 from api.inference.video.feature import VideoFeature
 from api.inference.image.feature import ImageFeature
 from api.inference.stt.feature import STTFeature
 from api.inference.tts.feature import TTSFeature
 from api.inference.decisions.feature import DecisionsFeature
-from api.inference.resources import ResourceBusy, ResourceExhausted
 from api.memory_manager.queue import InferenceQueue, Job
 from api.inference.decisions.model import decision_manager
 from api.services.model_downloads import model_manager
@@ -103,13 +101,6 @@ class MemoryManager:
             raise RuntimeFailure('Invalid queued inference payload.', 422) from exc
         if getattr(body, 'model', None) is not None and body.model != job.model:
             raise RuntimeFailure('Queued model selection does not match the request.', 422)
-        if not isinstance(wrapper, UnsupportedFeature):
-            try:
-                for inactive in self.features.values():
-                    if inactive is not wrapper:
-                        await inactive.offload_to_ram()
-            except (ResourceBusy, ResourceExhausted) as exc:
-                raise RuntimeFailure(str(exc)) from exc
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         return await wrapper(body, model=job.model, operation=job.operation, job_id=job.id)

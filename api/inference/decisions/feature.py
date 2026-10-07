@@ -1,5 +1,6 @@
-"""CPU-only Decisions wrapper over the retained Laya adapter."""
+"""Device-aware Decisions wrapper over the retained Laya adapter."""
 import asyncio
+from api.inference.feature import native_call
 from api.services.runtime import finish_cleanup
 
 
@@ -21,7 +22,8 @@ class DecisionsFeature:
         await self.service.load()
         return self.adapter
     async def offload_to_ram(self):
-        return None  # Laya is already CPU-only; preserve the same agent.
+        if hasattr(self.service, 'offload_to_ram'):
+            await native_call(self.service.offload_to_ram)
     async def unload(self):
         await finish_cleanup(asyncio.create_task(self.service.close()))
     async def __call__(self, request, *, model=None, operation='generate', job_id=None):
