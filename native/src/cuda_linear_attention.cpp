@@ -53,12 +53,15 @@ struct LinearAttention::Impl {
     void current(){require(std::this_thread::get_id()==owner,"linear_thread_changed");int actual=-1;check(cudaGetDevice(&actual));require(actual==device,"linear_device_changed");}
     void available(){require(handle&&!poisoned,"linear_unavailable");try{current();}catch(const std::runtime_error&){poisoned=true;throw;}}
     void status(){check(cudaStreamSynchronize(cudaStreamLegacy));unsigned flags=0;check(cudaMemcpy(&flags,b.status,sizeof(flags),cudaMemcpyDeviceToHost));if(flags)throw std::overflow_error("linear_numeric_failure");}
-    void invalidate(StateStep token)noexcept{
-        invalid=true;try{state->abort(token);if(pinned){resources->unpin(handle);pinned=false;}}catch(...){poisoned=true;}
+    bool invalidate(StateStep token)noexcept{
+        invalid=true;
+        try{state->abort(token);if(pinned){resources->unpin(handle);pinned=false;}return true;}
+        catch(...){poisoned=true;return false;}
     }
     void step(std::span<const float> input,std::span<float> output){
         available();require(!invalid,"linear_reset_required");
-        const auto token=state->begin();
+        StateStep token;
+        try { token=state->begin(); } catch(const std::runtime_error&) { poisoned=true;throw; }
         try {
             require(input.size()==c.hidden&&output.size()==c.hidden,"linear_input_shape");math::detail::output_alias(input,output,true);
             require(reinterpret_cast<std::uintptr_t>(input.data())%alignof(float)==0 && reinterpret_cast<std::uintptr_t>(output.data())%alignof(float)==0,"linear_alignment");
@@ -68,8 +71,17 @@ struct LinearAttention::Impl {
             check(detail::linear_core(c,b));status();out->matvec_device({b.gated,p.values},{b.projected,c.hidden});
             check(detail::linear_residual(c,b,input.data(),output.data()));status();state->written(token,0);state->commit(token);
             resources->unpin(handle);pinned=false;
-        }catch(const std::invalid_argument&){invalidate(token);throw;}catch(const std::overflow_error&){invalidate(token);throw;}
-        catch(...){invalidate(token);poisoned=true;throw;}
+        }catch(const std::invalid_argument&){
+            if(!invalidate(token))throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
+            throw;
+        }catch(const std::overflow_error&){
+            if(!invalidate(token))throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
+            throw;
+        }catch(...){
+            const bool quiet=invalidate(token);poisoned=true;
+            if(!quiet)throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
+            throw;
+        }
     }
     bool cleanup()noexcept{
         if(!handle)return true;
@@ -89,14 +101,27 @@ struct LinearAttention::Impl {
 LinearAttention::LinearAttention(linear::Config c,const linear::Weights& w,int d,std::shared_ptr<Resources> r):impl_(std::make_unique<Impl>(c,w,d,std::move(r))){}
 LinearAttention::~LinearAttention(){impl_->cleanup();}
 void LinearAttention::step_device(std::span<const float> x,std::span<float> y){impl_->step(x,y);}
-void LinearAttention::reset(){auto& i=*impl_;i.available();i.state->reset();i.invalid=false;}
-bool LinearAttention::valid()const{return impl_->handle&&!impl_->invalid&&!impl_->poisoned;}
+void LinearAttention::reset(){
+    auto& i=*impl_;i.available();
+    try {i.state->reset();i.invalid=false;} catch(const std::runtime_error&) {i.poisoned=true;throw;}
+}
+bool LinearAttention::valid()const{return impl_->handle&&!impl_->invalid&&!impl_->poisoned&&impl_->state&&impl_->state->valid();}
 std::size_t LinearAttention::tokens()const{return impl_->state->committed_tokens();}
 void LinearAttention::read_state(std::span<std::uint16_t> conv,std::span<float> recurrent){
     auto& i=*impl_;i.available();require(!i.invalid && conv.size()==i.p.conv_elements && recurrent.size()==i.p.recurrent_elements,"linear_state_read");
     const auto& l=i.state->plan().layer[0];
-    i.state->read_bytes(l.conv_offset,{reinterpret_cast<std::uint8_t*>(conv.data()),conv.size_bytes()});
-    i.state->read_bytes(l.recurrent_offset,{reinterpret_cast<std::uint8_t*>(recurrent.data()),recurrent.size_bytes()});
+    try {
+        i.state->read_bytes(l.conv_offset,{reinterpret_cast<std::uint8_t*>(conv.data()),conv.size_bytes()});
+        i.state->read_bytes(l.recurrent_offset,{reinterpret_cast<std::uint8_t*>(recurrent.data()),recurrent.size_bytes()});
+    } catch(const std::runtime_error&) {i.poisoned=true;throw;}
+}
+void LinearAttention::read_intermediates(std::span<float> core,std::span<float> gated){
+    auto& i=*impl_;i.available();
+    require(valid() && tokens()>0 && core.size()==i.p.values && gated.size()==i.p.values,"linear_intermediate_read");
+    try {
+        check(cudaMemcpy(core.data(),i.b.core,core.size_bytes(),cudaMemcpyDeviceToHost));
+        check(cudaMemcpy(gated.data(),i.b.gated,gated.size_bytes(),cudaMemcpyDeviceToHost));
+    } catch(const std::runtime_error&) {i.poisoned=true;throw;}
 }
 void LinearAttention::close(){if(!impl_->cleanup())throw std::runtime_error("linear_cleanup_failed_reservation_retained");}
 } // namespace kadan::cuda

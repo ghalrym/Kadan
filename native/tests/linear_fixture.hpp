@@ -25,3 +25,18 @@ struct LinearFixture {
                 {Encoding::modelopt_fp8,config.hidden,p.values,out,{},std::span(&scale,1)},norm,conv,a,b,logs,dt,gate};
     }
 };
+
+#include "linear_golden.hpp"
+struct AsymmetricLinearFixture : LinearFixture {
+    AsymmetricLinearFixture(){
+        config={3,2,4,2,3,3,8,1e-6f};
+        using namespace linear_golden;
+        this->qkv.assign(linear_golden::qkv.begin(),linear_golden::qkv.end());
+        this->z.assign(linear_golden::z.begin(),linear_golden::z.end());
+        this->out.assign(linear_golden::out.begin(),linear_golden::out.end());
+        this->norm.assign(linear_golden::norm.begin(),linear_golden::norm.end());
+        this->conv.assign(linear_golden::conv.begin(),linear_golden::conv.end());
+        this->a.assign(linear_golden::a.begin(),linear_golden::a.end());this->b.assign(linear_golden::b.begin(),linear_golden::b.end());
+        this->logs.assign(linear_golden::logs.begin(),linear_golden::logs.end());this->dt.assign(linear_golden::dt.begin(),linear_golden::dt.end());this->gate.assign(linear_golden::gate.begin(),linear_golden::gate.end());
+    }
+};

@@ -123,7 +123,16 @@ struct ProjectionImpl {
             check(cudaStreamSynchronize(cudaStreamLegacy),"device_matvec_synchronize");
             check(cudaMemcpy(&flags,status(),sizeof(flags),cudaMemcpyDeviceToHost),"read_status");
             resources->unpin(handle);pinned=false;
-        } catch (...) {poisoned=true;throw;}
+        } catch (...) {
+            poisoned=true;
+            // A failed enqueue/sync may leave borrowed input/output in use.
+            // One recovery synchronization establishes a safe return boundary;
+            // failure transfers an explicit quarantine obligation to the caller.
+            if(cudaStreamSynchronize(cudaStreamLegacy)!=cudaSuccess)
+                throw DeviceBufferQuarantine("cuda_projection_borrowed_buffers_quarantined");
+            resources->unpin(handle);pinned=false;
+            throw;
+        }
         if (flags) throw std::overflow_error("nonfinite_cuda_projection");
     }
     void matvec(std::span<const float> input, std::span<float> output) {

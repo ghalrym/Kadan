@@ -38,6 +38,9 @@ public:
     std::size_t tokens() const;
     std::span<const std::uint16_t> convolution() const;
     std::span<const float> recurrent() const;
+    // Last completed step intermediates, for small deterministic correctness tests.
+    std::span<const float> core() const;
+    std::span<const float> gated() const;
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };

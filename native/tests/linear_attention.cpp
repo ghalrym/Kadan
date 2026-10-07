@@ -36,6 +36,22 @@ void vector_state(){
     check(std::abs(s[4]-1.429686188697815f)<2e-6 && std::abs(s[5]-1.9609355926513672f)<2e-6);
     check(y[0]>1 && y[1]>1);for(float value:y)check(kadan::linear::bf16_round(value)==value);
 }
+void asymmetric_sequence(){
+    AsymmetricLinearFixture f;const auto p=kadan::linear::plan(f.config);
+    check(p.conv_elements==60 && p.recurrent_elements==24 && p.host_state_workspace_bytes==496);
+    kadan::linear::Reference r(f.config,f.weights(),p.host_state_workspace_bytes);
+    for(int replay=0;replay<2;++replay){
+        for(std::size_t t=0;t<4;++t){
+            std::array<float,3> output{};r.step(linear_golden::inputs[t],output);
+            check(output==linear_golden::residual[t]);
+            for(std::size_t j=0;j<24;++j)check(std::abs(r.recurrent()[j]-linear_golden::state[t][j])<=2e-6f);
+            for(std::size_t j=0;j<60;++j)check(r.convolution()[j]==linear_golden::history[t][j]);
+            for(std::size_t j=0;j<12;++j){check(r.core()[j]==linear_golden::core[t][j]);check(r.gated()[j]==linear_golden::gated[t][j]);}
+        }
+        r.reset();check(r.valid()&&r.tokens()==0);
+        for(auto v:r.convolution())check(v==0);for(auto v:r.recurrent())check(v==0);
+    }
+}
 void sequence(){
     LinearFixture fixture;const auto p=kadan::linear::plan(fixture.config);check(p.conv_elements==16 && p.recurrent_elements==4);
     fails([&]{kadan::linear::Reference r(fixture.config,fixture.weights(),p.host_state_workspace_bytes-1);},"linear_host_budget");
@@ -69,4 +85,4 @@ void sequence(){
     auto c=fixture.config;c.value_heads=3;fails([&]{kadan::linear::plan(c);},"linear_shape");
 }
 }
-int main(){try{rounding();sequence();vector_state();learned_gates();}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
+int main(){try{rounding();asymmetric_sequence();sequence();vector_state();learned_gates();}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

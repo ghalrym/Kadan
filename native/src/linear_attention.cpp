@@ -111,4 +111,6 @@ bool Reference::valid()const{return impl_->cursor.valid();}
 std::size_t Reference::tokens()const{return impl_->cursor.committed_tokens();}
 std::span<const std::uint16_t> Reference::convolution()const{return impl_->conv;}
 std::span<const float> Reference::recurrent()const{return impl_->state;}
+std::span<const float> Reference::core()const{return impl_->span(impl_->p.core_offset,impl_->p.values);}
+std::span<const float> Reference::gated()const{return impl_->span(impl_->p.gate_offset,impl_->p.values);}
 } // namespace kadan::linear

@@ -29,6 +29,8 @@ public:
     SequenceState& operator=(const SequenceState&) = delete;
     const SequenceStatePlan& plan() const;
     std::size_t committed_tokens() const;
+    // Host-only health query; false after invalidation, runtime poison or close.
+    bool valid() const;
     StateStep begin();
     LayerStateView layer(StateStep step,std::size_t index);
     // Trusted producer acknowledgement, not proof of buffer initialization.

@@ -77,6 +77,7 @@ SequenceState::SequenceState(const checkpoint::TextArchitecture& a,std::size_t c
 SequenceState::~SequenceState() { impl_->cleanup(); }
 const SequenceStatePlan& SequenceState::plan() const { return impl_->layout; }
 std::size_t SequenceState::committed_tokens() const { return impl_->cursor.committed_tokens(); }
+bool SequenceState::valid() const { return impl_->handle && !impl_->poisoned && !impl_->cleanup_failed && impl_->cursor.valid(); }
 StateStep SequenceState::begin() {
     auto& i=*impl_; i.available();
     const auto step=i.cursor.begin();

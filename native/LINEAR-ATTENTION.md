@@ -97,7 +97,8 @@ establish state/rounding correctness before optimization. No speed claim is made
 It retains/pins immutable projection storage, executes on the legacy stream,
 synchronizes and checks its status word before returning. It never stages
 activations through host RAM or allocates per call. Caller pins borrowed buffers
-until return; allocation provenance and current-device ownership are trusted
+until return, except `DeviceBufferQuarantine` requires retaining them through
+successful owner close or context teardown; allocation provenance and current-device ownership are trusted
 native caller obligations, as for the existing borrowed math primitives.
 
 `cuda::LinearAttention` owns three FP8 projection owners, one `SequenceState` arena,
@@ -136,7 +137,7 @@ already written. `read_state` is diagnostic and refuses invalid state.
 
 ## CPU evidence and staged GPU proposal
 
-All twelve CPU CTest cases pass with ASan, LSan and nonrecovering UBSan; the complete
+All thirteen CPU CTest cases pass with ASan, LSan and nonrecovering UBSan; the complete
 SM86 CUDA build/link passes with CUDA12/GCC12 and compile parallelism two. No new
 GPU execution occurred. Tests cover BF16 ties, subnormals and overflow; exact budget
 rejection; scalar closed-form multi-token recurrence with separate value heads;
@@ -162,6 +163,29 @@ case detects transposed state axes and checks zero-key-coordinate state remains
 zero. A nonzero a/b/A_log/dt_bias case independently checks beta .26953125 and
 decay approximately .084056817, including accumulated two-token state. These tiny cases do not validate actual-model parameter values.
 
+The asymmetric independent fixture has hidden size 3, two key heads, four value
+heads, key width 2, value width 3 and three convolution taps. Four signed tokens
+exercise both Q/K coordinates, distinct Q/K projections, two grouped head pairs,
+all value columns, nonuniform learned gates/norms, and a dense output projection.
+`tests/linear_golden.py` derives constants using scalar equations and the expanded
+matrix identity `S' = decay*(I-beta*k*k^T)*S + beta*k*v^T`, holding the old state
+immutable. It uses no native/model imports. Float64 recurrence arithmetic differs
+from the production FP32 update order. Frozen `linear_golden.hpp` stores all 24
+state entries, all 60 convolution BF16 bit patterns, 12 core values, 12 gated
+values and 3 residual values per token. CPU tests require exact BF16/history
+matches and absolute state error <=2e-6, then reset/replay all four tokens.
+Regenerate with `python3 native/tests/linear_golden.py > /tmp/linear_golden.hpp`
+and compare against the committed header. The unrelated #103 fixture is unchanged.
+
+A CPU-only CUDA shim compiles the real projection/state/sublayer owner sources.
+It checks reset/read/begin failure health propagation, launch/synchronization
+failure recovery and explicit borrowed-buffer quarantine when recovery also
+fails. Ordinary errors after enqueue return only after successful quiescence;
+quarantine errors require the caller to retain admitted/pinned input/output.
+`valid()` includes child sequence health. The shim refuses frees while simulated
+work is outstanding; these are lifecycle tests, not claims about real CUDA
+failure behavior. Diagnostics reject unavailable state and poison on copy errors.
+
 Only after independent exact-head review and explicit clearance, the opt-in
 `kadan-linear-attention-parity --allow-gpu-validation --device 0 --stage N` can run
 in three separately gated stages, stopping at any unexpected failure:
@@ -169,18 +193,38 @@ in three separately gated stages, stopping at any unexpected failure:
 | Stage | Work | Kernel launches |
 | --- | --- | ---: |
 | 1 | One complete token, CPU output/state comparison, reset/zero and cleanup | 10 |
-| 2 | Three-token evolution with nonzero learned decay/update gates, then reset/replay | 60 |
+| 2 | Asymmetric four-token evolution, frozen intermediate/state/output goldens, then reset/replay | 80 |
 | 3 | Expected overflow after history mutation, invalid-step rejection, physical reset and cleanup | 8 |
 
-Each process uses the same tiny shape above: **5,376 peak requested device bytes**
-(three 1,280-byte projection slabs, 512 state bytes, 768 auxiliary/workspace/status
-bytes, 256 caller IO bytes), under a 64 KiB device cap. Host fixture/reference
-numeric buffers are below 16 KiB; context/runtime overhead is additional. Finite
-outputs must match the designed BF16 goldens exactly, convolution bytes exactly,
-and recurrence within absolute 2e-5. The harness checks zero-ledger cleanup and
-never registers as a CTest. Unexpected failures terminate the dedicated process
-without automatic reruns, resets of the GPU, or service/power changes. None of
-these stages loads a checkpoint, generates text or benchmarks throughput.
+Stages 1/3 use the original scalar-width fixture: **5,376 peak requested device
+bytes** (three 1,280-byte projection slabs, 512 state bytes, 768 workspace bytes,
+256 caller IO bytes). Stage 2 uses the asymmetric shape: **5,632 bytes**, with
+workspace increasing to 1,024 bytes. All stages enforce a 64 KiB cap. The CPU shim
+asserts stage 2's actual peak allocation, six malloc/free pairs, 80 compute
+launches, 35 async memsets, 68 explicit synchronizations and 113 copies. These
+counts cover setup, eight successful token calls, intermediate/state inspection,
+two physical resets and close, not hidden CUDA runtime work. Stage 1 has 10
+compute launches / 6 memsets / 18 syncs; stage 3 has 8 / 5 / 16. Recovery on an
+unexpected runtime failure may add one projection synchronization and an abort
+synchronization; the harness stops, retaining quarantined buffers until process
+context teardown rather than automatically retrying.
+
+Stage 2 setup uploads 340 bytes in 13 copies (packed FP8 projections/scales and
+BF16 auxiliary weights), initializes 512 state bytes, and explicitly synchronizes
+five times. Each successful token uses four status memsets, seven synchronizations,
+six scalar status copies (24 bytes), a 12-byte input and output copy, 216 bytes of
+state inspection and 96 bytes of core/gated inspection. Each reset performs one
+512-byte memset and one sync, followed by 216-byte state inspection; close performs
+five syncs. The fixed peak admission is asserted in the GPU harness too.
+
+Host fixture/reference numeric buffers are below 16 KiB; context/runtime overhead
+is additional. Designed BF16 outputs/intermediates and convolution bits must match
+exactly; GPU recurrence must be within absolute 2e-5 of independent constants and
+CPU recurrence. The harness checks zero-ledger cleanup and never registers as a
+CTest. Unexpected failures terminate the dedicated process without automatic
+reruns, GPU resets, or service/power changes. No checkpoint loading, generation or
+throughput measurement is performed. Revised GPU stages remain unexecuted pending
+independent exact-head review and explicit clearance.
 
 After review and validation, the next coherent milestones are the full-attention
 KV sublayer, MoE/shared-expert execution, and a decoder loop with global sequence
