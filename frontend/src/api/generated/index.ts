@@ -38,6 +38,7 @@ export {
 export type {
   ApiRoutesV1ImagesEditsImageRequest,
   ApiRoutesV1ImagesGenerationsImageRequest,
+  AssistantMessage,
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteError,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
@@ -54,6 +55,8 @@ export type {
   ChoiceQuestion,
   ClientOptions,
   ClonedVoice,
+  CompletionChoice,
+  CompletionMessage,
   CompletionRequest,
   CompletionResponse,
   ConfigureContextV1ModelsModelIdContextPutData,

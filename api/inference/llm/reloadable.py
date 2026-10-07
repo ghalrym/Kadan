@@ -131,7 +131,7 @@ class ReloadableAdapter:
         finally:
             self._gate.release()
 
-    def generate(self, messages, max_new_tokens=256, cancel_event=None):
+    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None):
         """Serialize generation, rebuilding an idle-evicted adapter when needed. Check cancellation
         while waiting; explicitly closed adapters never reload.
         """
@@ -144,7 +144,7 @@ class ReloadableAdapter:
             if self._inner is None:
                 self._construct(cancel_event)
             return self._inner.generate(messages, max_new_tokens=max_new_tokens,
-                                        cancel_event=cancel_event)
+                                        cancel_event=cancel_event, **({"on_event": on_event} if on_event else {}))
         finally:
             self._gate.release()
 

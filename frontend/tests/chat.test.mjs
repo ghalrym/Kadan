@@ -149,3 +149,84 @@ test('model context detail is surfaced and missing detail gives actionable conte
     /configured token context/,
   )
 })
+
+const { streamChat } = require(join(output, 'chat.js'))
+const originalFetch = globalThis.fetch
+after(() => {
+  globalThis.fetch = originalFetch
+})
+const frame = (delta, finish_reason = null) =>
+  'data: ' +
+  JSON.stringify({
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta, finish_reason }],
+  }) +
+  '\n\n'
+
+test('SSE renders before completion, survives byte-fragmented Unicode and CRLF', async () => {
+  let controller
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, '/v1/chat/completions')
+    assert.equal(JSON.parse(options.body).stream, true)
+    return new Response(
+      new ReadableStream({
+        start(c) {
+          controller = c
+        },
+      }),
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }
+  const updates = []
+  let finished = false
+  const request = streamChat(messages, signal(), (text) =>
+    updates.push(text),
+  ).then((x) => {
+    finished = true
+    return x
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  const bytes = new TextEncoder().encode(
+    frame({ content: '你好 ' }).replaceAll('\n', '\r\n'),
+  )
+  for (const byte of bytes) controller.enqueue(new Uint8Array([byte]))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(updates, ['你好 '])
+  assert.equal(finished, false)
+  controller.enqueue(
+    new TextEncoder().encode(
+      frame({ content: 'world' }) + frame({}, 'stop') + 'data: [DONE]\n\n',
+    ),
+  )
+  controller.close()
+  assert.equal((await request).text, '你好 world')
+})
+
+test('SSE errors, premature EOF and missing terminal chunk cannot become success', async () => {
+  for (const data of [
+    frame({ content: 'partial' }),
+    frame({ content: 'partial' }) + 'data: [DONE]\n\n',
+    'data: {"error":{"message":"native failed"}}\n\n' + 'data: [DONE]\n\n',
+  ]) {
+    globalThis.fetch = async () =>
+      new Response(data, { headers: { 'Content-Type': 'text/event-stream' } })
+    await assert.rejects(streamChat(messages, signal(), () => {}))
+  }
+})
+
+test('SSE accepts length terminal and rejects malformed chunks', async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      frame({ content: 'answer' }) + frame({}, 'length') + 'data: [DONE]\n\n',
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  assert.equal((await streamChat(messages, signal(), () => {})).text, 'answer')
+  globalThis.fetch = async () =>
+    new Response('data: {}\n\n', {
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  await assert.rejects(
+    streamChat(messages, signal(), () => {}),
+    /invalid chat stream/,
+  )
+})

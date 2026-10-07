@@ -283,7 +283,7 @@ class RuntimeManager:
         """Run the same cooperative unload path during application shutdown."""
         await self.unload()
 
-    async def complete(self, messages, model: str | None):
+    async def complete(self, messages, model: str | None, on_event=None):
         """Return text from one bounded-output generation, rejecting concurrent calls.
         Context/admission errors preserve the model; cancellation waits for cleanup and unloads,
         while other inference failures dispose it.
@@ -299,7 +299,8 @@ class RuntimeManager:
             self._cancel = threading.Event()
             worker = asyncio.create_task(asyncio.to_thread(adapter.generate,
                 [{'role': message.role, 'text': message.text} for message in messages],
-                max_new_tokens=256, cancel_event=self._cancel))
+                max_new_tokens=256, cancel_event=self._cancel,
+                **({"on_event": on_event} if on_event else {})))
             self._worker = worker
             try:
                 try:

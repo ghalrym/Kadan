@@ -4,7 +4,7 @@ from api.services.runtime import RuntimeFailure, finish_cleanup
 
 
 class LLMFeature:
-    operations = ('generate',)
+    operations = ('generate', 'completion')
     name, workload = 'llm', 'llm'
     def __init__(self, service):
         self.service = service
@@ -34,8 +34,20 @@ class LLMFeature:
         self.service.ensure_resources().offload_workload_devices(self.workload, cancel)
     async def unload(self):
         await self.service.unload()
-    async def __call__(self, request, *, model=None, operation='generate', job_id=None):
+    async def __call__(self, request, *, model=None, operation='generate', job_id=None, on_event=None):
         model = model or self.select(request)
         if model is None:
             raise RuntimeFailure('No model is ready. Load a model in Settings.')
-        return await self.service.complete(request.messages, model)
+        if operation == 'generate':
+            return await self.service.complete(request.messages, model,
+                **({"on_event": on_event} if on_event else {}))
+        finish = {}
+        def emit(event):
+            if 'finish_reason' in event:
+                finish.update(event)
+            if on_event is not None:
+                on_event(event)
+        text = await self.service.complete(request.messages, model, on_event=emit)
+        if finish.get('finish_reason') not in ('stop', 'length'):
+            raise RuntimeFailure('Generation ended without a terminal event.', 502)
+        return {'text': text, 'finish_reason': finish['finish_reason']}

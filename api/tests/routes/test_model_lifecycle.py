@@ -35,7 +35,7 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         self.client = TestClient(app)
 
     async def complete(self, body, **kwargs):
-        return await self.runtime.complete(body.messages, body.model)
+        return {'text': await self.runtime.complete(body.messages, body.model), 'finish_reason': 'stop'}
 
     def test_chat_never_falls_back_to_mock_when_unloaded(self):
         response = self.client.post('/v1/chat/completions', json={

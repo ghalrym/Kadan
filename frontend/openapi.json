@@ -1,6 +1,25 @@
 {
   "components": {
     "schemas": {
+      "AssistantMessage": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "const": "assistant",
+            "default": "assistant",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "AssistantMessage",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
           "meta": {
@@ -179,12 +198,73 @@
         "title": "ClonedVoice",
         "type": "object"
       },
+      "CompletionChoice": {
+        "properties": {
+          "finish_reason": {
+            "default": "stop",
+            "enum": [
+              "stop",
+              "length"
+            ],
+            "title": "Finish Reason",
+            "type": "string"
+          },
+          "index": {
+            "default": 0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "message": {
+            "$ref": "#/components/schemas/AssistantMessage"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "CompletionChoice",
+        "type": "object"
+      },
+      "CompletionMessage": {
+        "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "CompletionMessage",
+        "type": "object"
+      },
       "CompletionRequest": {
         "additionalProperties": false,
         "properties": {
           "messages": {
             "items": {
-              "$ref": "#/components/schemas/ChatMessage"
+              "$ref": "#/components/schemas/CompletionMessage"
             },
             "minItems": 1,
             "title": "Messages",
@@ -200,6 +280,11 @@
               }
             ],
             "title": "Model"
+          },
+          "stream": {
+            "default": false,
+            "title": "Stream",
+            "type": "boolean"
           }
         },
         "required": [
@@ -210,12 +295,41 @@
       },
       "CompletionResponse": {
         "properties": {
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/CompletionChoice"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
           "message": {
             "$ref": "#/components/schemas/ChatMessage"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "object": {
+            "const": "chat.completion",
+            "default": "chat.completion",
+            "title": "Object",
+            "type": "string"
           }
         },
         "required": [
-          "message"
+          "message",
+          "id",
+          "created",
+          "model",
+          "choices"
         ],
         "title": "CompletionResponse",
         "type": "object"
@@ -2491,7 +2605,7 @@
     },
     "/v1/chat/completions": {
       "post": {
-        "description": "Queue a reply; disconnect waits for native cancellation and cleanup.",
+        "description": "Queue JSON or incremental SSE chat; disconnect waits for native cleanup.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {
@@ -2509,6 +2623,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CompletionResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
                 }
               }
             },

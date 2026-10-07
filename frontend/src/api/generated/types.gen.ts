@@ -5,6 +5,20 @@ export type ClientOptions = {
 }
 
 /**
+ * AssistantMessage
+ */
+export type AssistantMessage = {
+  /**
+   * Content
+   */
+  content: string
+  /**
+   * Role
+   */
+  role?: 'assistant'
+}
+
+/**
  * ChatMessage
  */
 export type ChatMessage = {
@@ -111,24 +125,81 @@ export type ClonedVoice = {
 }
 
 /**
+ * CompletionChoice
+ */
+export type CompletionChoice = {
+  /**
+   * Finish Reason
+   */
+  finish_reason?: 'stop' | 'length'
+  /**
+   * Index
+   */
+  index?: number
+  message: AssistantMessage
+}
+
+/**
+ * CompletionMessage
+ */
+export type CompletionMessage = {
+  /**
+   * Meta
+   */
+  meta?: string | null
+  /**
+   * Role
+   */
+  role: 'system' | 'user' | 'assistant'
+  /**
+   * Text
+   */
+  text: string
+}
+
+/**
  * CompletionRequest
  */
 export type CompletionRequest = {
   /**
    * Messages
    */
-  messages: Array<ChatMessage>
+  messages: Array<CompletionMessage>
   /**
    * Model
    */
   model?: string | null
+  /**
+   * Stream
+   */
+  stream?: boolean
 }
 
 /**
  * CompletionResponse
  */
 export type CompletionResponse = {
+  /**
+   * Choices
+   */
+  choices: Array<CompletionChoice>
+  /**
+   * Created
+   */
+  created: number
+  /**
+   * Id
+   */
+  id: string
   message: ChatMessage
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Object
+   */
+  object?: 'chat.completion'
 }
 
 /**
