@@ -1,10 +1,15 @@
 """Kadan-owned cancellable decoding with explicit token and memory admission."""
 from contextlib import contextmanager
 import traceback
+import logging
+import time
 from uuid import uuid4
 import torch
 from .context import ContextLimitError, ContextMemoryError, estimate_request_memory, resolve_context
 from ..resources import ResourceExhausted
+
+
+log = logging.getLogger(__name__)
 
 
 def check_cancel(cancel_event):
@@ -70,7 +75,7 @@ def request_memory(resources, owner, config, total, prompt, device, cancel_event
 
 @torch.inference_mode()
 def autoregressive_generate(model, tokenizer, messages, device, cancel_event=None,
-                            max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0):
+                            max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0, chat_template_kwargs=None):
     """Return greedy decoded text from role/text messages using 32-token prefill chunks. Validate
     context and admit memory before GPU transfer; cancellation and failed forwards release
     request references before the lease ends.
@@ -80,7 +85,7 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
         raise ContextLimitError('Output token limit must be between 1 and 1024')
     _, limit = resolve_context(model.config, context_limit)
     chat = [{'role': item['role'], 'content': item.get('text', item.get('content', ''))} for item in messages]
-    tokens = tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True, return_tensors='pt')
+    tokens = tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True, return_tensors='pt', **(chat_template_kwargs or {}))
     if not isinstance(tokens, torch.Tensor):
         tokens = tokens['input_ids']
     prompt = tokens.shape[-1]
@@ -95,6 +100,7 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
         eos = tokenizer.eos_token_id
     stops = set(eos if isinstance(eos, list) else [eos])
     generated, cache, output, token = [], None, None, None
+    started = time.monotonic()
     # Admit before moving tokens to GPU or allocating any request cache/workspace.
     with request_memory(resources, owner, model.config, total, prompt, device, cancel_event, expert_headroom_bytes):
         try:
@@ -107,13 +113,15 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                 output = None
             tail_start = ((prompt - 1) // 32) * 32
             tokens = tokens[:, tail_start:]
-            for _ in range(max_new_tokens):
+            for step in range(max_new_tokens):
                 check_cancel(cancel_event)
                 output = model(input_ids=tokens, past_key_values=cache, use_cache=True,
                                return_dict=True, logits_to_keep=1)
                 cache = output.past_key_values
                 token = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 value = token.item()
+                if step == 0:
+                    log.info("LLM first token after %.3fs; prompt_tokens=%d", time.monotonic()-started, prompt)
                 output = None
                 if value in stops:
                     break
@@ -132,4 +140,5 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
             traceback.clear_frames(exc.__traceback__)
             raise
         finally:
+            log.info("LLM generation ended after %.3fs; output_tokens=%d", time.monotonic()-started, len(generated))
             tokens = cache = output = token = None

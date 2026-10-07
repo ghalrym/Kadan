@@ -198,7 +198,8 @@ class QwenAdapter:
                         return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
                                                        cancel_event, max_new_tokens, context_limit=self.effective_context_limit,
                                                        resources=self.resources, owner=self.owner,
-                                                       expert_headroom_bytes=self.bank.max_expert_bytes)
+                                                       expert_headroom_bytes=self.bank.max_expert_bytes,
+                                                       chat_template_kwargs={"enable_thinking": False})
                     finally:
                         self._cancel = None
 
@@ -258,6 +259,12 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
     if raw.get('model_type') != 'qwen3_5_moe' or raw.get('quantization_config', {}).get('quant_method') != 'modelopt':
         raise ValueError('Qwen adapter requires the reviewed Qwen3.5 MoE ModelOpt checkpoint')
     config = Qwen3_5MoeTextConfig(**raw['text_config'])
+    generation_path = path / 'generation_config.json'
+    if generation_path.is_file():
+        # The architecture config omits the chat end-of-turn token. Honor the
+        # checkpoint's generation stops so a finished answer does not run to the budget.
+        generation = json.loads(generation_path.read_text())
+        config.eos_token_id = generation.get('eos_token_id', config.eos_token_id)
     config._attn_implementation = 'eager'
     if config.hidden_act != 'silu':
         raise ValueError('Qwen expert activation must be SiLU')
@@ -297,7 +304,10 @@ def build_qwen(entry, path, resources, device, cancel_event=None):
                 if module.bias is not None:
                     raise ValueError(f'{prefix}: quantized bias is unsupported')
                 part = read_projection(reader, prefix)
-                rows = list(range(0, module.out_features, 128)) + [module.out_features]
+                # Bound each packed transfer while avoiding thousands of tiny cache
+                # reservations for large dense matrices such as the vocabulary head.
+                tile_rows = max(128, min(2048, (4 * 1024**2) // module.in_features))
+                rows = list(range(0, module.out_features, tile_rows)) + [module.out_features]
                 keys = []
                 for start, stop in zip(rows[:-1], rows[1:]):
                     key = (name, start)

@@ -13,6 +13,7 @@ from contextlib import suppress
 import gc
 import math
 import json
+import logging
 import sys
 import traceback
 import os
@@ -23,6 +24,9 @@ import threading
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.decisions import ChoiceAnswer, ScoreAnswer, NoulAnswer
 from api.services.runtime import RuntimeFailure, runtime_manager
+from api.services.model_downloads import model_manager
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = 'convaiinnovations/laya'
 DEFAULT_REVISION = '7b928d828b7b0e022f929d9bd2e44165aa270148'
@@ -47,6 +51,7 @@ def load_laya():
     try:
         import laya
         from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import LocalEntryNotFoundError
     except ImportError as exc:
         raise RuntimeFailure(f'Decision runtime import failed: {exc}') from exc
     model = os.environ.get('KADAN_LAYA_MODEL', DEFAULT_MODEL)
@@ -55,8 +60,12 @@ def load_laya():
     if not path.is_dir():
         if not re.fullmatch(r'[0-9a-f]{40}', revision):
             raise RuntimeFailure('KADAN_LAYA_REVISION must pin the selected Hub model to a commit SHA.')
-        path = Path(snapshot_download(model, revision=revision, allow_patterns=[
-            'rl_agent_config.json', 'model.safetensors', 'tokenizer/*', 'encoder/*']))
+        try:
+            path = Path(snapshot_download(model, revision=revision, cache_dir=model_manager.root / 'hub',
+                allow_patterns=['rl_agent_config.json', 'model.safetensors', 'tokenizer/*', 'encoder/*']))
+        except LocalEntryNotFoundError as exc:
+            raise RuntimeFailure('Laya checkpoint is unavailable in the persistent model cache. '
+                'Download the pinned checkpoint or configure KADAN_LAYA_MODEL with its complete local directory.') from exc
     # Laya otherwise falls back to the encoder named in its training config.
     for name in ('rl_agent_config.json', 'model.safetensors', 'tokenizer/tokenizer.json', 'encoder/config.json'):
         if not (path / name).is_file():
@@ -251,6 +260,7 @@ class DecisionManager:
         except Exception as exc:
             # A failed constructor's traceback can own its partially loaded model.
             # Clear completed frames before returning the reservation to the pool.
+            log.exception('Native Laya evaluation failed')
             clear_failure_frames(exc)
             gc.collect()
             raise RuntimeFailure('CPU Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc

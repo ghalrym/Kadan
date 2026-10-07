@@ -66,6 +66,17 @@ class LayaContractTests(unittest.TestCase):
             self.assertIs(load_laya(), self.agent)
         self.assertEqual(download.call_args.kwargs['revision'], '7b928d828b7b0e022f929d9bd2e44165aa270148')
         self.assertEqual(loader.call_args.kwargs, dict(device='cpu', fast=False, compile=False))
+        from api.services.model_downloads import model_manager
+        self.assertEqual(download.call_args.kwargs['cache_dir'], model_manager.root / 'hub')
+
+    def test_offline_missing_checkpoint_reports_download_action(self):
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        with patch.dict('os.environ', {}, clear=True), \
+                patch('huggingface_hub.snapshot_download', side_effect=LocalEntryNotFoundError('not cached')), \
+                patch('laya.load') as loader:
+            with self.assertRaisesRegex(RuntimeFailure, 'persistent model cache'):
+                load_laya()
+            loader.assert_not_called()
 
     def test_oversized_configuration_rejected_before_model_allocation(self):
         path = Path(self.directory.name)

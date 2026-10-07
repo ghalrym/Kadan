@@ -48,6 +48,7 @@ services:
       KADAN_REDIS_URL: redis://redis:6379/0
       KADAN_MODEL_DIR: /var/lib/kadan/models
       KADAN_GPU: ${KADAN_GPU:-0}
+      KADAN_WHISPER_DEVICE: ${KADAN_WHISPER_DEVICE:-cuda:0}
     deploy:
       resources:
         reservations:

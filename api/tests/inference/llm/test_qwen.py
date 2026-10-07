@@ -145,10 +145,12 @@ class QwenTests(unittest.TestCase):
             save_file(tensors, path / 'model.safetensors')
             (path / 'model.safetensors.index.json').write_text(json.dumps({'weight_map': {key: 'model.safetensors' for key in tensors}}))
             (path / 'config.json').write_text(json.dumps({'model_type': 'qwen3_5_moe', 'text_config': config.to_dict(), 'quantization_config': {'quant_method': 'modelopt'}}))
+            (path / 'generation_config.json').write_text(json.dumps({'eos_token_id': [1, 2]}))
             tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel({'x': 0, '[UNK]': 1}, unk_token='[UNK]')), unk_token='[UNK]')
             tokenizer.save_pretrained(path)
             resources = ResourceManager(1024**3, {})
             adapter = build_qwen(SimpleNamespace(id='small'), path, resources, 'cpu')
+            self.assertEqual(adapter.model.config.eos_token_id, [1, 2])
             with torch.inference_mode():
                 output = adapter.model(torch.tensor([[0, 1]]), use_cache=True)
                 self.assertTrue(torch.isfinite(output.logits).all())

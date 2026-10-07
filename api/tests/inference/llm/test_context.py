@@ -90,7 +90,8 @@ class ContextTests(unittest.TestCase):
             tokenizer = Mock()
             tokenizer.apply_chat_template.return_value = torch.arange(length).reshape(1, -1)
             tokenizer.decode.return_value = ''
-            autoregressive_generate(Model(), tokenizer, [], 'cpu')
+            autoregressive_generate(Model(), tokenizer, [], 'cpu', chat_template_kwargs={'enable_thinking': False})
+            self.assertIs(tokenizer.apply_chat_template.call_args.kwargs['enable_thinking'], False)
             self.assertEqual(seen, list(range(length)))
 
     def test_failure_and_cancellation_release_request_reservation(self):
@@ -178,7 +179,8 @@ class ContextTests(unittest.TestCase):
         tokenizer = Mock()
         tokenizer.apply_chat_template.return_value = torch.ones((1, 10001), dtype=torch.long)
         tokenizer.decode.return_value = ''
-        autoregressive_generate(Model(), tokenizer, [], 'cpu')
+        autoregressive_generate(Model(), tokenizer, [], 'cpu', chat_template_kwargs={'enable_thinking': False})
+        self.assertIs(tokenizer.apply_chat_template.call_args.kwargs['enable_thinking'], False)
         self.assertEqual(sum(lengths), 10001)
         self.assertLessEqual(max(lengths), 32)
 
