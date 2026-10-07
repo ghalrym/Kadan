@@ -134,3 +134,8 @@ The native placement API supports per-layer fully resident routed experts or a
 host-backed shared slot cache, with separate state/workspace and residual headroom
 pools. See [MANIFEST.md](MANIFEST.md#placement-contract) for accounting and loading
 contracts; this is planning only, without runtime migration or model-fit claims.
+
+Original FP32 layer prerequisites (offset/direct RMSNorm, sigmoid/SiLU gates and
+text partial RoPE) are available as CPU references and borrowed-buffer CUDA
+launches. [LAYER-MATH.md](LAYER-MATH.md) records checkpoint semantics, numerical
+limits, admission/stream contracts and the unexecuted parity scope.
