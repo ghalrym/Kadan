@@ -2,7 +2,6 @@ import hashlib
 import os
 from pathlib import Path
 from unittest.mock import Mock, patch
-import threading
 import unittest
 
 import torch
@@ -109,7 +108,8 @@ class ConversationTests(unittest.TestCase):
                 self.cache.clear()
                 answer, _, first_lengths, _, _ = self.generate(self.question, 'a', stream=streaming)
                 entry = self.cache.entries['a']
-                saved = [t.clone() for t in tensors_in(entry.state)]
+                original_state = entry.state
+                saved = [t.clone() for t in tensors_in(original_state)]
                 self.assertTrue(entry.state.layers[0].conv_states)
                 self.assertTrue(entry.state.layers[0].recurrent_states)
                 expected = self.ids(self.question, True) + self.tokenizer.encode(answer, add_special_tokens=False)
@@ -124,7 +124,7 @@ class ConversationTests(unittest.TestCase):
                 torch.testing.assert_close(cached[3], full[3], rtol=1e-4, atol=1e-5)
                 self.assert_state_equal(cached[4], full[4])
                 # Restore copied state; saved tensors themselves were not mutated.
-                self.assert_state_equal(list(tensors_in(entry.state)) if entry.state else saved, saved)
+                self.assert_state_equal(list(tensors_in(original_state)), saved)
                 if streaming:
                     self.assertEqual(''.join(e.get('content', '') for e in cached[1]), cached[0])
                     usage = next(e['cache'] for e in cached[1] if 'cache' in e)
@@ -298,3 +298,13 @@ class ConversationTests(unittest.TestCase):
         self.assertGreater(usage['host_bytes'], 512 * 1024**2)
         self.assertLess(usage['host_bytes'], usage['limit_bytes'])
         self.assertEqual(sum(r['host_bytes'] for r in resources.snapshot()['reservations'].values()), usage['host_bytes'])
+
+    def test_busy_ram_declines_retention_without_leaking_reservations(self):
+        busy = self.resources.reserve('busy', 'tts', host_bytes=16 * 1024**2)
+        with busy.lease():
+            reason = self.cache.capture('a', [1], 'id', {'state': torch.zeros(4)}, adopt=True)
+        self.assertEqual(reason, 'memory_pressure')
+        self.assertFalse(self.cache.entries)
+        self.assertFalse(self.cache.pending)
+        self.assertEqual(list(self.resources.snapshot()['reservations']), ['busy'])
+        busy.release()
