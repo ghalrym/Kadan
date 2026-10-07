@@ -1,4 +1,4 @@
-"""Lazy, process-local Laya CPU residency under Kadan's shared RAM admission.
+"""Lazy, process-local Laya residency under Kadan's shared RAM admission.
 
 KADAN_LAYA_MODEL and KADAN_LAYA_REVISION select an immutable Hub checkpoint;
 custom Hub IDs require an explicit commit SHA. A local model directory may also
@@ -9,6 +9,7 @@ It stays reserved while idle, covering FP32 weights, load transients, tokenizer
 and a single question's workspace. Idle models may be evicted and lazy-reloaded.
 """
 import asyncio
+from contextlib import ExitStack
 from contextlib import suppress
 import gc
 import math
@@ -21,6 +22,7 @@ from pathlib import Path
 import re
 import threading
 
+from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.decisions import ChoiceAnswer, ScoreAnswer, NoulAnswer
 from api.services.runtime import RuntimeFailure, runtime_manager
@@ -196,6 +198,8 @@ class DecisionManager:
         self.ram_bytes = ram_bytes
         self.agent = None
         self.reservation = None
+        self.device_reservation = None
+        self.device = 'cpu'
         self._generation = asyncio.Lock()
         self._owner = f'decisions:{id(self)}'
 
@@ -204,7 +208,60 @@ class DecisionManager:
         if self.agent is not None:
             clear_tokenizer_cache(tokenizer=getattr(self.agent, 'tok', None))
         self.agent = None
+        self._release_device()
         gc.collect()
+
+    def _release_device(self):
+        torch = sys.modules.get('torch')
+        if self.device != 'cpu' and torch is not None:
+            with torch.cuda.device(self.device):
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        self.device = 'cpu'
+        if self.device_reservation is not None:
+            self.device_reservation.release()
+            self.device_reservation = None
+
+    def _park(self):
+        if self._generation.locked():
+            raise ResourceBusy('Laya is active')
+        if self.agent is not None and self.device != 'cpu':
+            self.agent.model.to('cpu')
+            self.agent.device = next(self.agent.model.parameters()).device
+        self._release_device()
+
+    def offload_to_ram(self, cancel=None):
+        (self.resources or runtime_manager.ensure_resources()).offload_workload_devices('decision', cancel)
+
+    def _place(self, resources, cancel):
+        # Injected lightweight test agents have no native model; never claim GPU residency for them.
+        if self.loader is not load_laya:
+            return
+        budget = self.ram_bytes or int(os.environ.get('KADAN_LAYA_RAM_BYTES', DEFAULT_RAM_BYTES))
+        retained = (int(self.device[5:]), budget) if self.device_reservation is not None else None
+        device = select_device(resources, budget, os.environ.get('KADAN_LAYA_DEVICE', 'auto'),
+                               allow_cpu=True, retained=retained)
+        if device == self.device:
+            return
+        # Transition while this request owns the generation gate and host lease.
+        if self.device != 'cpu':
+            self.agent.model.to('cpu')
+            self._release_device()
+        if device == 'cpu':
+            self.agent.device = next(self.agent.model.parameters()).device
+            return
+        self.device_reservation = resources.reserve(self._owner + ':device', 'decision',
+            device_bytes={int(device[5:]): budget}, evict=self._park, cancel_event=cancel)
+        self.device = device
+        try:
+            self.agent.model.to(device)
+            self.agent.device = next(self.agent.model.parameters()).device
+            self.agent.amp_enabled = False
+        except BaseException:
+            self.agent.model.to('cpu')
+            self.agent.device = next(self.agent.model.parameters()).device
+            self._release_device()
+            raise
 
     def _run(self, state, questions, cancel):
         """Keep loading and each prediction leased until the worker truly finishes."""
@@ -226,9 +283,13 @@ class DecisionManager:
                                                     evict=self._evict, cancel_event=cancel)
             # Eviction between reserve() and lease() safely rejects this attempt;
             # no allocation occurs before the lease is acquired.
-            with self.reservation.lease(cancel):
+            with ExitStack() as leases:
+                leases.enter_context(self.reservation.lease(cancel))
                 if self.agent is None:
                     self.agent = self.loader()
+                self._place(resources, cancel)
+                if self.device_reservation is not None:
+                    leases.enter_context(self.device_reservation.lease(cancel))
                 if cancel.is_set():
                     raise ResourceCancelled('Decision cancelled')
                 if questions is None:
@@ -263,7 +324,7 @@ class DecisionManager:
             log.exception('Native Laya evaluation failed')
             clear_failure_frames(exc)
             gc.collect()
-            raise RuntimeFailure('CPU Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
+            raise RuntimeFailure('Native Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
         finally:
             # Failed construction must not retain an empty, non-evictable budget.
             if self.agent is None and self.reservation is not None:
@@ -289,7 +350,7 @@ class DecisionManager:
     async def evaluate(self, state, questions):
         """Reject overlap and wait for synchronous CPU work after cancellation."""
         if self._generation.locked():
-            raise RuntimeFailure('A CPU decision evaluation is already active.', 429)
+            raise RuntimeFailure('A decision evaluation is already active.', 429)
         async with self._generation:
             cancel = threading.Event()
             worker = asyncio.create_task(asyncio.to_thread(self._run, state, questions, cancel))

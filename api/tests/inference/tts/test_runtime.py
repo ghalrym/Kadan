@@ -51,6 +51,7 @@ class AlternateProvider:
         return SpeechPlan(('revision-1',), 400, lambda: self, {0: 400})
 
     def load(self, cancel):
+        self.parked = False
         self.assert_owned(active=True)
         self.loads += 1
         if self.failure == 'load':

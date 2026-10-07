@@ -5,7 +5,8 @@ import os
 import json
 import threading
 
-from api.inference.resources import ResourceManager, probe_memory
+from api.inference.placement import select_device
+from api.inference.resources import ResourceManager, ResourceExhausted, probe_memory
 from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
 from api.services.model_downloads import BusyError, model_manager
 
@@ -108,12 +109,21 @@ class RuntimeManager:
                 raise RuntimeFailure(detail) from exc
             factory = build_runtime
         self.ensure_resources()
-        gpu = os.environ.get('KADAN_GPU', '0')
-        if not gpu.isdecimal():
-            raise RuntimeFailure('KADAN_GPU must be one nonnegative GPU index; VRAM is not pooled.')
-        if self._factory is None and int(gpu) not in self.resources.capacity.device_bytes:
-            raise RuntimeFailure('The selected CUDA GPU is unavailable. Check GPU access and driver compatibility.')
-        adapter = factory(entry, path, self.resources, device=f'cuda:{gpu}', cancel_event=cancel)
+        gpu = os.environ.get('KADAN_GPU', 'auto')
+        if gpu != 'auto' and not gpu.isdecimal():
+            raise RuntimeFailure('KADAN_GPU must be auto or one primary GPU index.')
+        if self._factory is not None:
+            device = f'cuda:{gpu if gpu != "auto" else 0}'
+        else:
+            # Prefer whole-checkpoint residency when possible. Packed adapters
+            # distribute expert/projection entries if no one card fits the bank.
+            floor = 2 * 1024**3
+            required = getattr(entry, 'estimated_bytes', 0) + floor
+            try:
+                device = select_device(self.resources, required, 'auto' if gpu == 'auto' else f'cuda:{gpu}')
+            except ResourceExhausted:
+                device = select_device(self.resources, floor, 'auto' if gpu == 'auto' else f'cuda:{gpu}')
+        adapter = factory(entry, path, self.resources, device=device, cancel_event=cancel)
         try:
             adapter.configure_context(self.context_settings['configured_context_limit'])
         except BaseException:

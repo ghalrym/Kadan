@@ -62,13 +62,13 @@ class TranscriptionTests(unittest.TestCase):
             self.assertEqual(self.resources.snapshot()['reservations']['whisper:host']['active_leases'], 1)
             self.assertEqual(samples.shape, (160,))
             self.assertEqual(kwargs['task'], 'transcribe')
-            self.assertFalse(kwargs['fp16'])
+            self.assertTrue(kwargs['fp16'])
             return {'text': '', 'language': 'en'}
         self.native.transcribe.side_effect = infer
         result = self.manager.transcribe(audio_url(), 'tiny')
         self.assertEqual(result['raw_text'], '')
         self.factory.assert_called_once_with(str(Path(self.temp.name) / 'tiny.pt'), device='cpu')
-        self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host'})
+        self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host', 'whisper:device'})
 
     def test_integrity_failure_never_loads(self):
         (Path(self.temp.name) / 'tiny.pt').write_bytes(b'corrupted')
@@ -135,7 +135,7 @@ class TranscriptionTests(unittest.TestCase):
             self.assertEqual(self.resources.snapshot()['reservations'], {})
             self.native.transcribe.side_effect = None
             self.assertEqual(get_transcription_manager().transcribe(audio_url())['text'], 'hello')
-            self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host'})
+            self.assertEqual(set(self.resources.snapshot()['reservations']), {'whisper:host', 'whisper:device'})
 
     def test_ram_pressure_disposes_gpu_weights_without_copying_them_to_host(self):
         with patch.dict('os.environ', {'KADAN_WHISPER_DEVICE': 'cuda:0'}):

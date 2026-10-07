@@ -151,7 +151,7 @@ class ModelAdapterTests(unittest.TestCase):
             (path / 'config.json').write_text(json.dumps(data))
             resources = Mock()
             resources.capacity = SimpleNamespace(device_bytes={0: 2**30})
-            with patch('api.inference.llm.model_adapter.ExpertCache', side_effect=lambda bank, size, device, **kwargs: ExpertCache(bank, size, 'cpu')) as cache_factory, \
+            with patch('api.inference.llm.model_adapter.make_cache', side_effect=lambda bank, size, device, **kwargs: ExpertCache(bank, size, 'cpu')) as cache_factory, \
                  patch.object(GptOssAdapter, '_restore'), patch('transformers.AutoTokenizer.from_pretrained', return_value=Mock()):
                 adapter = GptOssAdapter(SimpleNamespace(id='medium'), path, resources, 'cuda:0')
             try:

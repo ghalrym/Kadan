@@ -86,6 +86,7 @@ class H3Session:
         self.parked = False
         self.loads = 0
         self.baseline_cuda = 0
+        self.full_resident = False
 
     def load(self, cancellation):
         render(self.checkpoint, None, self.device, cancellation, self)
@@ -149,7 +150,7 @@ class H3Session:
             for component in self.pipeline.modules.values():
                 if not isinstance(component, torch.nn.Module):
                     continue
-                if getattr(component, 'layerwise_offload_managers', None):
+                if self.full_resident or getattr(component, 'layerwise_offload_managers', None):
                     # Only placeholders, non-layer parameters and buffers move;
                     # the real INT8 layers remain in the native CPU host stores.
                     tables = detach_host_resident_tables(component)
@@ -246,10 +247,10 @@ def _render(checkpoint, sampling, device, cancellation, session=None):
         component_precisions={'text_encoder': 'fp16', 'video_vae': 'fp16', 'audio_vae': 'fp32'},
         lora_path=str(root / 'loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors'),
         lora_merge_mode='dynamic', lora_scale=1.0,
-        cpu_offload_components=['video_vae', 'audio_vae'],
+        cpu_offload_components=[] if session.full_resident else ['video_vae', 'audio_vae'],
         layerwise_resident_layers={'text_encoder': 0}, layerwise_prefetch_size={'text_encoder': 1},
-        attention_backend='torch_sdpa', performance_mode='memory',
-        layerwise_offload_components=['dit', 'text_encoder'],
+        attention_backend='torch_sdpa', performance_mode='manual' if session.full_resident else 'memory',
+        layerwise_offload_components=[] if session.full_resident else ['dit', 'text_encoder'],
         dit_offload_prefetch_size=1, dit_layerwise_resident_layers=0,
         enable_torch_compile=False, disable_conditioning_cache=True,
     )

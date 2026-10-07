@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 
+from api.inference.placement import select_device
 from api.inference.resources import ResourceCancelled
 from api.inference.tts.runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechResult, SpeechUnavailable
 from api.services.model_downloads import model_manager
@@ -45,7 +46,10 @@ class QwenSpeechProvider:
             except binascii.Error as exc:
                 raise ValueError('Reference audio must be base64-encoded audio bytes') from exc
 
-    def prepare(self, request):
+    def prepare_placement(self, request, resources, retained=None):
+        return self.prepare(request, resources, retained)
+
+    def prepare(self, request, resources=None, retained=None):
         model = SPEECH_MODELS[request.model_id]
         resolver = getattr(model_manager, 'get_checkpoint', None)
         if resolver is None:
@@ -56,10 +60,17 @@ class QwenSpeechProvider:
             raise SpeechUnavailable(str(exc)) from exc
         if entry.revision != model.revision:
             raise SpeechUnavailable('The selected Qwen checkpoint revision does not match the adapter.')
-        device = os.environ.get('KADAN_QWEN_TTS_DEVICE', 'cuda:0')
-        if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdigit()):
-            raise SpeechUnavailable('Qwen speech device must be cpu or cuda:N.')
+        device = os.environ.get('KADAN_QWEN_TTS_DEVICE', 'auto')
         budget = model.estimated_bytes * 3 + 2 * 1024**3
+        if resources is not None:
+            credit = None
+            if retained is not None and retained.identity[:4] == ('qwen', model.id, model.revision, str(checkpoint)):
+                credit = next(iter(retained.device_bytes.items()), None)
+            device = select_device(resources, budget, device, allow_cpu=True, retained=credit)
+        elif device == 'auto':
+            raise SpeechUnavailable('Automatic speech placement requires the shared resource manager.')
+        elif device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdigit()):
+            raise SpeechUnavailable('Qwen speech device must be auto, cpu or cuda:N.')
         return SpeechPlan(('qwen', model.id, model.revision, str(checkpoint), device),
             budget, lambda: QwenSpeechSession(checkpoint, device, model.name),
             {} if device == 'cpu' else {int(device[5:]): budget})
