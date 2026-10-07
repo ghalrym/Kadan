@@ -88,36 +88,89 @@ These operations read payloads only when explicitly invoked, not in the inspecto
 ## Placement contract
 
 The library requires explicit per-layer device ordinals, an IO device, device
-capacities, positive headroom allowances, expert slot counts and host/staging
-budgets. No device discovery, eviction, implicit capacity defaults or reservation
-occurs. Returned item-to-device assignments refer to the retained manifest.
+capacities, positive residual headroom allowances, expert slot counts and
+host/staging budgets. No device discovery, eviction, implicit capacity defaults,
+automatic fallback or reservation occurs. `ModelManifest::place` checks pinned
+shards and supplies validated descriptors to `plan_model_placement`; the latter is
+an arithmetic-only API and does not establish tensor completeness or provenance.
+Returned item-to-device assignments and copied per-layer expert policies describe
+the plan. They do not indicate that anything has been loaded.
 
-- Dense/non-routed items are resident on their assigned layer device; embedding,
-  final norm and output head use the IO device. Dense byte sizes are padded to
-  256 bytes. Quantized resident estimates match the current projection owner's
-  aligned weights/scales/input/output/status slab; NVFP4 global scale is by value.
-- All routed-expert packed payloads (including calibration scalars) are retained
-  in a host bank. Each device reserves the largest gate/up/down expert group
-  assigned to it times its explicit slot count (1 through experts-per-layer when
-  routed layers are assigned). Slots are a proposed bounded shared cache across
-  layers, not actual residency or an eviction implementation.
-- Caller-supplied device headroom covers context/driver, layer/state/KV/activation
-  and future executor workspace outside those slabs. The planner checks arithmetic
-  and capacity but cannot certify that a chosen allowance is sufficient. Context-
-  length-dependent state accounting remains a follow-on prerequisite.
-- Host total is the full metadata allocator envelope plus all expert backing plus
-  one explicit staging pool. Staging must fit the largest complete item transfer,
-  including dense embeddings; future finer-grained loaders can reduce this after
-  an explicit policy change. Transfers are serialized through this single pool;
-  simultaneous independent loads would need additional admitted staging.
+`PlacementOptions::layer_expert_policy` is either empty (legacy `host_cached` for
+every layer), or exactly one `ExpertPolicy` per logical layer. Arbitrary layer maps
+are supported, including noncontiguous assignments such as `[0,1,0,1]`. Policies
+may differ between layers on the same device:
+
+- `fully_resident`: charge every routed expert projection's device slab on its
+  assigned device in `expert_resident_bytes`. No retained host expert bank and no
+  cache slot are charged for these layers. The count is every expert in every
+  assigned resident layer, not one layer's expert count reused across layers.
+- `host_cached`: retain all routed expert packed payloads (including calibration
+  scalars) in `expert_host_bytes`. Each device charges the largest complete cached
+  gate/up/down group assigned to it times its slot count in `expert_cache_bytes`.
+  Groups are accumulated by logical layer/expert, independent of descriptor order.
+  Resident layers cannot inflate this cache maximum. Slots remain a shared cache
+  across cached layers, not per-layer reservations or an implemented cache.
+- A device with cached expert payloads requires 1 through experts-per-layer slots;
+  a device without them requires zero. Invalid settings and insufficient capacity
+  fail; resident requests are never silently converted to host-backed execution.
+
+Dense/non-routed items remain in `resident_bytes`; embedding, final norm and output
+head use the IO device. Dense sizes are padded to 256 bytes. Quantized estimates
+match current aligned weight/scale/input/output/status slabs. Shared experts stay
+non-routed residents. NVFP4 global scale is passed by value; input calibration is
+bound in the checkpoint but calibrated activation execution remains unimplemented.
+The planner does not promise that current weight-only primitives execute the full
+checkpoint contract.
+
+Device accounting is a checked sum of **disjoint** pools:
+
+```
+total_bytes = resident_bytes + expert_resident_bytes + expert_cache_bytes
+            + state_workspace_bytes + headroom_bytes
+```
+
+`device_state_workspace` may be empty (zero) or one amount per device. A caller can
+supply sequence-state bytes plus separately sized executor workspace here.
+`device_headroom` must then cover only the residual driver/context/allocator and
+other unmodeled allowance. Do not also leave the same state/workspace bytes in
+headroom. Legacy callers can continue putting all unmodeled state/workspace in
+headroom with the new pool empty. The planner cannot determine whether caller
+allowances suffice or detect overlapping conceptual pools. Unused devices still
+charge their explicit allowances. No model runtime fit is certified.
+
+Host accounting is likewise disjoint:
+
+```
+host_bytes = metadata_bytes + expert_host_bytes + staging_bytes + host_headroom_bytes
+```
+
+`metadata_bytes` is the full shared metadata allocator limit, not current usage
+plus that limit. Returned vectors and temporary group accounting use that budget;
+fixed objects and runtime overhead require explicit `host_headroom` (default zero
+for compatibility). An allocation quota failure releases temporary metadata.
+`staging_bytes` is one serialized pool and must fit the largest complete item
+payload, including initial transfers for **both** expert policies and dense
+embeddings. It never becomes zero merely because all experts are resident. The
+host bank is charged once separately; any staging copy is already covered by the
+one staging pool. Concurrent independent loads require additional admitted space.
+
+A future loader must upload resident items directly from the pinned checkpoint
+through this pool, synchronize/acknowledge the upload, then reuse/release staging.
+It must not build an uncharged permanent host copy of resident experts. Switching
+an already loaded cached model to resident mode requires a separately admitted
+transition envelope; this steady policy plan does not authorize releasing backing
+before uploads succeed. Failed or incomplete uploads must retain the appropriate
+reservations until cleanup. Resident eviction/reload likewise needs coordinated
+admission and valid pinned checkpoint ownership. No loader/scheduler behavior is
+implemented or changed here.
 
 Every arithmetic sum/product/alignment is checked; undersized budgets fail before
-any model allocation. Planning is not global admission. A future Python supervisor
-must grant/retain one host/VRAM envelope from Kadan's existing global authority,
-then pass the admitted capacities to the native worker. It must not count these
-native plans as a second independently available pool or release an envelope
-before cleanup/worker termination. Separating payload and metadata budgets makes
-that later integration possible without production Python changes in this PR.
+model allocation. Planning is not global admission. A future supervisor must grant
+and retain one host/VRAM envelope from Kadan's global authority, then pass those
+capacities to native code. It must not treat plans as an independent extra pool or
+release an envelope before cleanup/worker termination. The existing inspector CLI
+continues to request host-cached placement; the extended policy is a native API.
 
 ## Actual metadata evidence and CPU verification
 
@@ -150,7 +203,7 @@ and 1 GiB staging is 19,461,816,320 bytes. Largest whole-item transfer is
 1,017,118,720 bytes. These are arithmetic plans under the stated policy, not model
 allocations, observed execution peaks, sufficient KV sizing or proof of runtime fit.
 
-All eight CPU CTest cases pass with ASan, LSan and nonrecovering UBSan. New tiny
+The original eight CPU CTest cases pass with ASan, LSan and nonrecovering UBSan. New tiny
 fixtures exercise both attention layer families, all binding roles, multi-shard
 index coverage, missing/extra/wrong-format/split companions, quantization conflicts,
 malformed/duplicate/deep/oversized JSON, symlink rejection, quota failures, placement
@@ -171,7 +224,7 @@ ctest --test-dir /tmp/kadan-manifest-cpu --output-on-failure
 
 ## Remaining gaps
 
-Device-resident layer math, validated recurrent/KV sizing, expert cache execution
+Device-resident layer math, integrated state/workspace admission, expert cache execution
 and transfers, full native model/decode/sampling, tokenizer integration and the
 versioned worker supervisor remain unimplemented. The next useful milestone can
 bind CPU layer-state/activation shapes and implement a small original layer
@@ -180,3 +233,27 @@ Production runtime/LLM adapter/memory-manager changes require a separate reviewe
 PR. Existing video/audio/Decisions execution stays unchanged. No full-model
 allocation, generation, deployment, service/power change or performance claim is
 part of this milestone.
+
+## Resident-policy CPU evidence
+
+The separate `placement` CTest uses four layers, two experts/layer, three projection
+descriptors/expert and a noncontiguous `[0,1,0,1]` device map. Each baseline group
+is 60 packed host bytes / 768 device bytes. Exact expected totals are written
+independently of the planner. With resident layers 0 and 3, cached layers 1 and 2,
+slot counts `[1,2,0]`, state/workspace `[512,1024,0]`, residual device headroom
+`[128,256,512]`, 65,536 metadata bytes, 100 staging bytes and 200 host headroom:
+
+| Policy | Device 0 | Device 1 | Unused device 2 | Host total | Expert host |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed | 3,712 | 4,864 | 512 | 66,076 | 240 |
+| All resident, zero slots | 4,480 | 4,864 | 512 | 65,836 | 0 |
+| All cached | 2,176 | 3,328 | 512 | 66,316 | 480 |
+
+Additional cases interleave unequal cached groups, validate copied policies and
+item mappings, accept exact-fit budgets, reject one-byte-short device/host/staging
+budgets, reject invalid spans/policies/maps/slots, and exercise overflow/quota
+cleanup. The existing tiny validated manifest also checks six 1,280-byte routed
+projection slabs per layer, zero resident host backing, and mixed-policy totals.
+Its Python fixture generator is unchanged. These are CPU arithmetic/metadata
+checks; no actual-model loading, GPU execution or performance measurement belongs
+to this placement change.

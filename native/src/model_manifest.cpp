@@ -228,41 +228,57 @@ TensorInfo ModelManifest::primary_tensor(std::size_t item) const {
     if (entry.kind==ItemKind::dense) return impl_->shards[entry.shard]->tensor(entry.name);
     return impl_->shards[entry.shard]->tensor(impl_->name(entry.name,".weight"));
 }
-Placement::Placement(std::shared_ptr<MemoryBudget> budget):budget_(std::move(budget)),devices_(budget_.get()),item_devices_(budget_.get()) {}
+Placement::Placement(std::shared_ptr<MemoryBudget> budget):budget_(std::move(budget)),devices_(budget_.get()),item_devices_(budget_.get()),layer_policy_(budget_.get()) {}
 Placement ModelManifest::place(const PlacementOptions& options) const {
-    const auto devices=options.device_capacity.size();
-    require(devices>0 && devices<=64 && options.device_headroom.size()==devices && options.expert_slots.size()==devices &&
-        options.layer_devices.size()==impl_->arch.layers && options.io_device<devices,"placement_shape");
-    for (auto device:options.layer_devices) require(device<devices,"placement_device");
     for (const auto& shard:impl_->shards) shard->check_unchanged();
-    Placement out(impl_->budget); out.devices_.resize(devices); out.item_devices_.reserve(impl_->items.size());
+    return plan_model_placement(impl_->items,impl_->arch.layers,impl_->arch.experts,impl_->budget,options);
+}
+Placement plan_model_placement(std::span<const ModelItem> items,std::size_t layers,std::size_t experts,
+                               std::shared_ptr<MemoryBudget> metadata,const PlacementOptions& options) {
+    const auto devices=options.device_capacity.size();
+    require(metadata && layers>0 && layers<=256 && experts>0 && experts<=1024,"placement_shape");
+    require(devices>0 && devices<=64 && options.device_headroom.size()==devices && options.expert_slots.size()==devices &&
+        options.layer_devices.size()==layers && options.io_device<devices &&
+        (options.layer_expert_policy.empty() || options.layer_expert_policy.size()==layers) &&
+        (options.device_state_workspace.empty() || options.device_state_workspace.size()==devices),"placement_shape");
+    for (auto device:options.layer_devices) require(device<devices,"placement_device");
+    Placement out(metadata); out.devices_.resize(devices); out.item_devices_.reserve(items.size());
+    out.layer_policy_.resize(layers,ExpertPolicy::host_cached);
+    for (std::size_t l=0;l<layers;++l) {
+        if (!options.layer_expert_policy.empty()) out.layer_policy_[l]=options.layer_expert_policy[l];
+        require(out.layer_policy_[l]==ExpertPolicy::host_cached || out.layer_policy_[l]==ExpertPolicy::fully_resident,"placement_policy");
+    }
+    // Index by logical layer/expert, independent of descriptor order and device map.
+    std::pmr::vector<std::uint64_t> groups(metadata.get()); groups.resize(mul(layers,experts));
     std::array<std::uint64_t,64> expert_max{};
-    std::uint64_t group=0; int last_layer=-1,last_expert=-1;
-    std::size_t last_device=0;
-    for (const auto& item:impl_->items) {
+    for (const auto& item:items) {
+        require(item.layer>=-1 && (item.layer<0 || std::size_t(item.layer)<layers) && item.expert>=-1 &&
+            (item.expert<0 || (item.layer>=0 && std::size_t(item.expert)<experts)),"placement_item");
         const auto device=item.layer<0?options.io_device:options.layer_devices[item.layer]; out.item_devices_.push_back(device);
         out.max_transfer_bytes=std::max(out.max_transfer_bytes,item.payload_bytes);
-        if (item.expert<0) out.devices_[device].resident_bytes=add(out.devices_[device].resident_bytes,item.device_bytes);
+        auto& target=out.devices_[device];
+        if (item.expert<0) target.resident_bytes=add(target.resident_bytes,item.device_bytes);
+        else if (out.layer_policy_[item.layer]==ExpertPolicy::fully_resident)
+            target.expert_resident_bytes=add(target.expert_resident_bytes,item.device_bytes);
         else {
             out.expert_host_bytes=add(out.expert_host_bytes,item.payload_bytes);
-            if (item.layer!=last_layer || item.expert!=last_expert) {
-                expert_max[last_device]=std::max(expert_max[last_device],group); group=0;
-                last_layer=item.layer; last_expert=item.expert; last_device=device;
-            }
-            group=add(group,item.device_bytes);
+            auto& group=groups[std::size_t(item.layer)*experts+item.expert]; group=add(group,item.device_bytes);
+            expert_max[device]=std::max(expert_max[device],group);
         }
     }
-    expert_max[last_device]=std::max(expert_max[last_device],group);
     for (std::size_t d=0;d<devices;++d) {
-        require(options.device_headroom[d]>0 && options.expert_slots[d]<=impl_->arch.experts && (!expert_max[d] || options.expert_slots[d]>0),"placement_headroom_or_slots");
+        require(options.device_headroom[d]>0 && options.expert_slots[d]<=experts &&
+            (expert_max[d]?options.expert_slots[d]>0:options.expert_slots[d]==0),"placement_headroom_or_slots");
         auto& target=out.devices_[d]; target.headroom_bytes=options.device_headroom[d];
+        target.state_workspace_bytes=options.device_state_workspace.empty()?0:options.device_state_workspace[d];
         target.expert_cache_bytes=mul(expert_max[d],options.expert_slots[d]);
-        target.total_bytes=add(add(target.resident_bytes,target.expert_cache_bytes),target.headroom_bytes);
+        target.total_bytes=add(add(add(add(target.resident_bytes,target.expert_resident_bytes),target.expert_cache_bytes),
+                                  target.state_workspace_bytes),target.headroom_bytes);
         require(target.total_bytes<=options.device_capacity[d],"placement_device_budget");
     }
     require(options.staging_bytes>=out.max_transfer_bytes,"placement_staging_budget");
-    out.staging_bytes=options.staging_bytes; out.metadata_bytes=impl_->budget->limit();
-    out.host_bytes=add(add(out.expert_host_bytes,out.metadata_bytes),out.staging_bytes);
+    out.staging_bytes=options.staging_bytes; out.metadata_bytes=metadata->limit(); out.host_headroom_bytes=options.host_headroom;
+    out.host_bytes=add(add(add(out.expert_host_bytes,out.metadata_bytes),out.staging_bytes),out.host_headroom_bytes);
     require(out.host_bytes<=options.host_capacity,"placement_host_budget");
     return out;
 }

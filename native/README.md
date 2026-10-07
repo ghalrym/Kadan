@@ -129,3 +129,8 @@ The target is `nvidia/Qwen3.6-35B-A3B-NVFP4` at 50+ decode tokens/sec on two RTX
 or other-modality migration is claimed by this milestone. CPU accounting tests
 cannot establish any of those results. GPU tests/benchmarks require separate
 explicit authorization after the breaker trip.
+
+The native placement API supports per-layer fully resident routed experts or a
+host-backed shared slot cache, with separate state/workspace and residual headroom
+pools. See [MANIFEST.md](MANIFEST.md#placement-contract) for accounting and loading
+contracts; this is planning only, without runtime migration or model-fit claims.
