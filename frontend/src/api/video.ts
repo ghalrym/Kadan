@@ -1,4 +1,4 @@
-import { generateVideo, getVideo, listVideos } from './generated/sdk.gen'
+import { cancelVideo, generateVideo, getVideo, listVideos } from './generated/sdk.gen'
 import type { VideoGenerationRequest, VideoJob } from './generated/types.gen'
 
 export type { VideoJob, VideoGenerationRequest }
@@ -18,7 +18,7 @@ function checkResponse(response?: Response) {
   if (response?.ok) return
   if (response?.status === 503)
     throw new Error(
-      'Video generation is unavailable: no provider is configured. No job was queued.',
+      'Video generation is unavailable. Check the downloaded model and worker configuration.',
     )
   if (response?.status === 404)
     throw new Error('This video job does not exist. Refresh the queue.')
@@ -42,7 +42,7 @@ function validateJob(job: VideoJob | undefined): VideoJob {
     !job ||
     !job.id ||
     typeof job.prompt !== 'string' ||
-    !['Queued', 'Rendering', 'Done'].includes(job.status) ||
+    !['Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'].includes(job.status) ||
     !Number.isFinite(job.progress) ||
     job.progress < 0 ||
     job.progress > 100
@@ -76,7 +76,7 @@ export async function refreshVideo(id: string, signal: AbortSignal) {
 /**
  * Validate prompt, duration and frame rate before submitting typed settings.
  * Forward cancellation and return validated job metadata only on API success;
- * the current unconfigured provider instead produces a visible 503 error.
+ * unavailable models or workers produce a visible error.
  */
 export async function submitVideo(
   body: VideoGenerationRequest,
@@ -100,6 +100,13 @@ export async function submitVideo(
     body: { ...body, prompt: body.prompt.trim() },
     signal,
   })
+  checkResponse(result.response)
+  return validateJob(result.data?.job)
+}
+
+/** Stop the Kadan-owned worker; polling confirms cancellation after cleanup. */
+export async function stopVideo(id: string) {
+  const result = await cancelVideo({ path: { video_id: id } })
   checkResponse(result.response)
   return validateJob(result.data?.job)
 }

@@ -1,7 +1,7 @@
-const {chromium}=require('/opt/codex/runtimes/cua/lib/node_modules/playwright');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE ?? '/opt/codex/runtimes/cua/lib/node_modules/playwright');
 const assert=require('node:assert/strict');
 (async()=>{
- const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-gpu']});
  for (const width of [1440,390]) {
   const page=await browser.newPage({viewport:{width,height:900}}); let calls=[];
   await page.route('**/v1/images',route=>route.fulfill({json:{images:[]}}));

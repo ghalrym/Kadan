@@ -1,0 +1,4 @@
+# Standard in-process speech dependency; the local PEP 517 build applies a
+# reviewed patch to verified Qwen source and emits truthful runtime metadata.
+./api/qwen_tts_compat
+torchaudio==2.11.0

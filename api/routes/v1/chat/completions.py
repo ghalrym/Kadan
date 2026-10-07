@@ -1,9 +1,8 @@
-import asyncio
-from contextlib import suppress
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
-from api.services.runtime import RuntimeFailure, runtime_manager
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
 
 router = APIRouter(prefix='/v1/chat/completions', tags=['Chat'])
 
@@ -20,34 +19,6 @@ class CompletionResponse(BaseModel):
 
 @router.post('', operation_id='createCompletion')
 async def create_completion(body: CompletionRequest, request: Request) -> CompletionResponse:
-    """Generate an assistant reply with the loaded model. Client disconnect cancels generation and
-    awaits cleanup; runtime failures preserve their HTTP status.
-    """
-    async def watch_disconnect():
-        # FastAPI has already consumed/validated the JSON body. Wait directly on
-        # the ASGI channel: is_disconnected() uses an AnyIO cancellation scope
-        # that can swallow this task's cancellation during response cleanup.
-        """Wait on the consumed request ASGI channel until the client disconnects; task
-        cancellation ends the watcher.
-        """
-        while True:
-            if (await request.receive())['type'] == 'http.disconnect':
-                return
-
-    generation = asyncio.create_task(runtime_manager.complete(body.messages, body.model))
-    disconnected = asyncio.create_task(watch_disconnect())
-    try:
-        done, _ = await asyncio.wait([generation, disconnected], return_when=asyncio.FIRST_COMPLETED)
-        if generation not in done:
-            generation.cancel()
-            raise HTTPException(499, 'Client disconnected; generation cancelled.')
-        text = await generation
-        return CompletionResponse(message=ChatMessage(role='assistant', text=text))
-    except RuntimeFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
-    finally:
-        for task in (generation, disconnected):
-            if not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+    """Queue a reply; disconnect waits for native cancellation and cleanup."""
+    text = await infer(request, memory_manager.submit(body, feature='llm'))
+    return CompletionResponse(message=ChatMessage(role='assistant', text=text))

@@ -7,5 +7,9 @@ psycopg[binary]==3.3.6
 pydantic-settings==2.15.0
 httpx==0.28.1
 -r requirements-runtime.txt
-Pillow==12.3.0
+
+redis==6.4.0
+
+-r requirements-qwen-tts.txt
+
 -r requirements-qwen-image.txt

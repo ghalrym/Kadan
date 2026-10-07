@@ -1,104 +1,20 @@
 import asyncio
 import base64
-from contextlib import nullcontext
 from io import BytesIO
 from pathlib import Path
 import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-import weakref
 from unittest.mock import Mock
 
 from PIL import Image
 
-from api.inference.qwen_image import generate, REVISION
+from api.inference.image.model import REVISION
+from api.inference.image.feature import ImageFeature
 from api.inference.resources import ResourceManager, ResourceCancelled
 from api.services.images import ImageManager, decode_source
 from api.services.runtime import RuntimeFailure
-
-
-class NativeImageTests(unittest.TestCase):
-    def test_native_arguments_admission_cleanup_and_cancellation(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder)
-            (path / 'weights.safetensors').write_bytes(b'fixture')
-            resources = ResourceManager(100 * 1024**3, {0: 4 * 1024**3})
-            cancel = threading.Event()
-            output = Image.new('RGBA', (2, 2))
-            pipeline = Mock(return_value=SimpleNamespace(images=[output]))
-            def construct(*args, **kwargs):
-                self.assertEqual(args, (folder,))
-                self.assertTrue(kwargs['local_files_only'])
-                self.assertTrue(resources.snapshot()['reservations']['qwen-image-2.1']['active_leases'])
-                return pipeline
-            pipeline_type = SimpleNamespace(from_pretrained=Mock(side_effect=construct))
-            torch = SimpleNamespace(float32='fp32', bfloat16='bf16', Generator=Mock(),
-                cuda=SimpleNamespace(device=lambda _: nullcontext(), empty_cache=Mock()))
-            modules = lambda: (torch, SimpleNamespace(QwenImage21Pipeline=pipeline_type))
-            result = generate(path, resources, 'Tree', '16:9', [10, 11], cancel, modules=modules)
-            self.assertEqual(len(result), 2)
-            pipeline.enable_sequential_cpu_offload.assert_called_once_with(gpu_id=0)
-            kwargs = pipeline.call_args.kwargs
-            self.assertEqual((kwargs['width'], kwargs['height'], kwargs['num_inference_steps']), (2752, 1536, 40))
-            self.assertEqual(resources.snapshot()['reservations'], {})
-            def cancelled(**kwargs):
-                cancel.set()
-                kwargs['callback_on_step_end'](pipeline, 0, 0, {})
-            pipeline.side_effect = cancelled
-            with self.assertRaises(ResourceCancelled):
-                generate(path, resources, 'Tree', '1:1', [10], cancel, modules=modules)
-            self.assertEqual(resources.snapshot()['reservations'], {})
-
-    def test_pipeline_failure_releases_resources(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder)
-            (path / 'weights.safetensors').write_bytes(b'x')
-            resources = ResourceManager(100 * 1024**3, {})
-            factory = Mock(side_effect=RuntimeError('broken load'))
-            torch = SimpleNamespace(float32='fp32', bfloat16='bf16')
-            modules = lambda: (torch, SimpleNamespace(QwenImage21Pipeline=SimpleNamespace(from_pretrained=factory)))
-            with self.assertRaisesRegex(RuntimeError, 'broken load'):
-                generate(path, resources, 'x', '1:1', [1], threading.Event(), device='cpu', modules=modules)
-            self.assertEqual(resources.snapshot()['reservations'], {})
-
-    def test_exception_frames_release_allocations_before_memory_lease(self):
-        class Allocation:
-            pass
-        for during_load in (True, False):
-            references = []
-            class Pipeline:
-                vae = SimpleNamespace(enable_tiling=lambda: None)
-                def to(self, device):
-                    return self
-                def __call__(self, **kwargs):
-                    allocation = Allocation()
-                    references.append(weakref.ref(allocation))
-                    raise RuntimeError('generation failed')
-            def factory(*args, **kwargs):
-                if during_load:
-                    allocation = Allocation()
-                    references.append(weakref.ref(allocation))
-                    try:
-                        raise ValueError('inner allocation failure')
-                    except ValueError as exc:
-                        raise RuntimeError('load failed') from exc
-                return Pipeline()
-            with tempfile.TemporaryDirectory() as folder:
-                path = Path(folder)
-                (path / 'weights.safetensors').write_bytes(b'x')
-                resources = ResourceManager(100 * 1024**3, {})
-                release = resources._release
-                def checked_release(owner, token):
-                    self.assertTrue(references)
-                    self.assertTrue(all(reference() is None for reference in references))
-                    release(owner, token)
-                resources._release = checked_release
-                torch = SimpleNamespace(float32='fp32', bfloat16='bf16', Generator=Mock())
-                modules = lambda: (torch, SimpleNamespace(QwenImage21Pipeline=SimpleNamespace(from_pretrained=factory)))
-                with self.assertRaises(RuntimeError):
-                    generate(path, resources, 'x', '1:1', [1], threading.Event(), device='cpu', modules=modules)
-                self.assertEqual(resources.snapshot()['reservations'], {})
 
 
 class ImageManagerTests(unittest.TestCase):
@@ -165,19 +81,36 @@ class ImageManagerTests(unittest.TestCase):
         finally:
             self.manager._gate.release()
 
+    def test_output_scratch_is_admitted_until_publication_returns_or_fails(self):
+        self.manager.backend = None
+        resources = ResourceManager(2 * 1024**3, {})
+        self.manager.runtime.ensure_resources.return_value = resources
+        def publish(*args):
+            rows = resources.snapshot()['reservations']
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(next(iter(rows.values()))['active_leases'])
+            raise RuntimeFailure('publication failed')
+        self.manager._generate = publish
+        with self.assertRaisesRegex(RuntimeFailure, 'publication failed'):
+            self.manager.generate('x', '1:1', 1, 0, threading.Event())
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
     def test_disconnect_waits_for_native_cleanup(self):
         stopped = threading.Event()
+        started = threading.Event()
         def backend(path, resources, prompt, aspect, seeds, cancel, **kwargs):
+            started.set()
             cancel.wait(2)
             stopped.set()
             raise ResourceCancelled('cancelled')
         self.backend.side_effect = backend
-        async def disconnect():
-            return True
         async def run():
-            with self.assertRaises(RuntimeFailure):
-                await self.manager.run(SimpleNamespace(is_disconnected=disconnect),
-                    SimpleNamespace(prompt='x', aspect='1:1', count=1, seed=0))
+            feature = ImageFeature(self.manager)
+            task = asyncio.create_task(feature(SimpleNamespace(prompt='x', aspect='1:1', count=1, seed=0)))
+            await asyncio.to_thread(started.wait, 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
         asyncio.run(run())
         self.assertTrue(stopped.is_set())
         self.assertFalse(self.manager._gate.locked())

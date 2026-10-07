@@ -21,8 +21,10 @@ class VideoJob(BaseModel):
     fps: str
     progress: int = Field(ge=0, le=100)
     time: str
-    status: Literal["Rendering", "Queued", "Done"]
+    status: Literal["Rendering", "Queued", "Done", "Failed", "Cancelled"]
     thumbnail: str
+    output_url: str | None = None
+    error: str | None = None
     progress_text: str = Field(alias="progressText")
 
 
@@ -31,3 +33,5 @@ class GeneratedSpeech(BaseModel):
     meta: str
     script: str
     time: str
+    audio_base64: str | None = None
+    mime_type: Literal["audio/wav"] | None = None

@@ -1,37 +1,65 @@
 import { Fragment } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router'
 import { navigation } from '../data/navigation'
+import type { MetricsResponse } from '../api/generated/types.gen'
+import { usePolling } from '../hooks/usePolling'
 
+/** Poll observed host/device memory; unavailable probes remain explicit.
+ * Values include other processes and do not establish model or GPU readiness.
+ */
 function ResourceMeters() {
+  const { data, error, refresh } = usePolling<MetricsResponse>(
+    '/v1/metrics',
+    5000,
+  )
   return (
-    <div className="resource-meters" aria-label="Sample server metrics">
+    <div className="resource-meters" aria-label="Observed server memory">
       <div className="server-status">
-        Sample metrics
+        <span
+          className={`status-dot ${data ? 'success' : error ? 'error' : 'muted'}`}
+        />
+        {data
+          ? 'API online'
+          : error
+            ? 'Metrics unavailable'
+            : 'Loading metrics…'}
       </div>
-      {[
-        { label: 'GPU 0 · VRAM', used: '18.6', total: 24, value: 18.6 },
-        { label: 'GPU 1 · VRAM', used: '14.8', total: 24, value: 14.8 },
-        { label: 'RAM', used: '196.0', total: 512, value: 196 },
-      ].map((meter) => (
+      {error && (
+        <div role="alert">
+          {error}{' '}
+          <button type="button" onClick={refresh}>
+            Retry
+          </button>
+        </div>
+      )}
+      {data?.resources.map((meter) => (
         <div className="resource-meter" key={meter.label}>
           <div className="resource-label">
             <span>{meter.label}</span>
-            <span>{meter.used}</span>
-            <span className="faint">/ {meter.total} GB</span>
+            <span>{meter.used.toFixed(1)}</span>
+            <span className="faint">/ {meter.total.toFixed(1)} GiB</span>
           </div>
           <meter
-            className={meter.label === 'RAM' ? 'meter meter--blue' : 'meter'}
+            className={
+              meter.label === 'Host RAM' ? 'meter meter--blue' : 'meter'
+            }
             min={0}
             max={meter.total}
-            value={meter.value}
+            value={meter.used}
             aria-label={meter.label}
           />
         </div>
+      ))}
+      {data?.resource_errors.map((message) => (
+        <p className="faint" key={message}>
+          {message}
+        </p>
       ))}
     </div>
   )
 }
 
+/** Render shared navigation and the route outlet alongside live memory samples. */
 export default function AppLayout() {
   const { pathname } = useLocation()
   const page = navigation.find(

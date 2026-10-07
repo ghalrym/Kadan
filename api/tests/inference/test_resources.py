@@ -9,6 +9,35 @@ class ResourceTests(unittest.TestCase):
     def setUp(self):
         self.manager = ResourceManager(448, {0: 24, 1: 24})
 
+    def test_unpressured_admission_does_not_scan_existing_residents(self):
+        class NoScan(dict):
+            def values(self):
+                raise AssertionError('Unpressured admission scanned all residents')
+            def items(self):
+                raise AssertionError('Unpressured admission built eviction candidates')
+        probes = []
+        manager = ResourceManager(10000, {0: 10000},
+            probe=lambda: (probes.append(1) or MemoryCapacity(10000, {0: 10000})))
+        manager._residents = NoScan()
+        handles = [manager.reserve(str(i), 'llm', 1, {0: 1}) for i in range(1000)]
+        self.assertEqual(len(probes), 1000)
+        self.assertEqual(manager._used_host, 1000)
+        for handle in handles:
+            handle.release()
+            handle.release()
+        self.assertEqual(manager._used_host, 0)
+        self.assertEqual(manager._used_devices[0], 0)
+
+    def test_eviction_callback_release_updates_totals_once(self):
+        manager = ResourceManager(100, {0: 100})
+        resident = manager.reserve('old', 'llm', 80, {0: 80}, lambda: resident.release())
+        replacement = manager.reserve('new', 'speech', 90, {0: 90})
+        resident.release()
+        self.assertEqual(manager._used_host, 90)
+        self.assertEqual(manager._used_devices[0], 90)
+        replacement.release()
+        self.assertEqual(manager._used_host, 0)
+
     def test_gpu_budgets_never_pool(self):
         with self.assertRaises(ResourceExhausted):
             self.manager.reserve('llm', 'llm', device_bytes={0: 25})

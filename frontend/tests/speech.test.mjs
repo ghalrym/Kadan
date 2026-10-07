@@ -47,7 +47,7 @@ test('describe and clone use discriminated payloads through generated SDK', asyn
       script: 'Hello',
       voice:
         mode === 'clone'
-          ? { mode, sample: 'Voice' }
+          ? { mode, sample: 'Voice', speaker_only: false }
           : { mode, description: 'Voice' },
     })
     mockFetch(async (request) => {
@@ -56,7 +56,7 @@ test('describe and clone use discriminated payloads through generated SDK', asyn
       assert.deepEqual(await request.json(), body)
       return Response.json({ detail: 'No provider' }, { status: 503 })
     })
-    await assert.rejects(requestSpeech(body, signal()), /No speech provider/)
+    await assert.rejects(requestSpeech(body, signal()), /Speech generation is unavailable/)
   }
 })
 
@@ -116,6 +116,6 @@ test('long script and voice are sent unchanged without arbitrary caps', async ()
       assert.deepEqual(await request.json(), body)
       return Response.json({ detail: 'No provider' }, { status: 503 })
     })
-    await assert.rejects(requestSpeech(body, signal()), /No speech provider/)
+    await assert.rejects(requestSpeech(body, signal()), /Speech generation is unavailable/)
   }
 })

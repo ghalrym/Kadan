@@ -97,9 +97,17 @@ export type ClonedVoice = {
   /**
    * Sample
    *
-   * Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.
+   * Base64-encoded audio bytes; URLs and server paths are not accepted.
    */
   sample: string
+  /**
+   * Speaker Only
+   */
+  speaker_only?: boolean
+  /**
+   * Transcript
+   */
+  transcript?: string | null
 }
 
 /**
@@ -133,6 +141,24 @@ export type ContextRequest = {
    * Total context tokens; null uses the checkpoint architecture maximum on load.
    */
   context_limit: number | null
+}
+
+/**
+ * CustomVoice
+ */
+export type CustomVoice = {
+  /**
+   * Instruction
+   */
+  instruction?: string
+  /**
+   * Mode
+   */
+  mode: 'custom'
+  /**
+   * Speaker
+   */
+  speaker: string
 }
 
 /**
@@ -206,9 +232,17 @@ export type DownloadRequest = {
  */
 export type GeneratedSpeech = {
   /**
+   * Audio Base64
+   */
+  audio_base64?: string | null
+  /**
    * Meta
    */
   meta: string
+  /**
+   * Mime Type
+   */
+  mime_type?: 'audio/wav' | null
   /**
    * Script
    */
@@ -308,32 +342,70 @@ export type MessagesResponse = {
 
 /**
  * MetricsResponse
+ *
+ * Process-local request statistics plus best-effort host/device memory samples.
+ *
+ * Null latency/error statistics mean no retained samples in the window. A
+ * truncated window covers retained records only; Online does not imply a
+ * loaded model or successful GPU inference.
  */
 export type MetricsResponse = {
   /**
+   * Active Requests
+   */
+  active_requests: number
+  /**
+   * Completed Requests
+   */
+  completed_requests: number
+  /**
    * Error Rate Percent
    */
-  error_rate_percent: number
+  error_rate_percent: number | null
+  /**
+   * Memory Unit
+   */
+  memory_unit?: 'GiB'
   /**
    * P50 Latency Seconds
    */
-  p50_latency_seconds: number
-  /**
-   * Queued Jobs
-   */
-  queued_jobs: number
+  p50_latency_seconds: number | null
   /**
    * Requests Per Minute
    */
   requests_per_minute: number
   /**
+   * Resource Errors
+   */
+  resource_errors: Array<string>
+  /**
    * Resources
    */
   resources: Array<ResourceMeter>
   /**
+   * Retained Requests
+   */
+  retained_requests: number
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
+  /**
    * Status
    */
-  status: 'Online'
+  status?: 'Online'
+  /**
+   * Window Seconds
+   */
+  window_seconds?: number
+  /**
+   * Window Truncated
+   */
+  window_truncated: boolean
 }
 
 /**
@@ -566,6 +638,12 @@ export type NoulQuestion = {
 
 /**
  * RequestRecord
+ *
+ * Completed HTTP-handler observation retained only in the current API process.
+ *
+ * The legacy prompt/output fields contain structural and HTTP summaries, not
+ * user text or model output. Latency includes validation and cleanup; it is
+ * not a token throughput or time-to-first-token measurement.
  */
 export type RequestRecord = {
   /**
@@ -581,9 +659,13 @@ export type RequestRecord = {
    */
   latency: string
   /**
+   * Latency Ms
+   */
+  latency_ms: number
+  /**
    * Model
    */
-  model: string
+  model?: string | null
   /**
    * Output
    */
@@ -593,21 +675,21 @@ export type RequestRecord = {
    */
   prompt: string
   /**
+   * Request Bytes
+   */
+  request_bytes: number
+  /**
+   * Response Bytes
+   */
+  response_bytes: number
+  /**
    * Status
    */
-  status: 200 | 202 | 429 | 500
+  status: number
   /**
    * Time
    */
   time: string
-  /**
-   * Tokenspersecond
-   */
-  tokensPerSecond?: number | null
-  /**
-   * Ttft
-   */
-  ttft?: string | null
   /**
    * Type
    */
@@ -616,6 +698,8 @@ export type RequestRecord = {
 
 /**
  * RequestResponse
+ *
+ * Wrap a single retained HTTP observation for the detail endpoint.
  */
 export type RequestResponse = {
   request: RequestRecord
@@ -623,12 +707,22 @@ export type RequestResponse = {
 
 /**
  * RequestsResponse
+ *
+ * A page of retained observations with its filtered total and process epoch.
  */
 export type RequestsResponse = {
   /**
    * Requests
    */
   requests: Array<RequestRecord>
+  /**
+   * Retention Limit
+   */
+  retention_limit: number
+  /**
+   * Started At
+   */
+  started_at: string
   /**
    * Total
    */
@@ -637,6 +731,8 @@ export type RequestsResponse = {
 
 /**
  * ResourceMeter
+ *
+ * Observed host or device-wide memory in GiB, including other processes.
  */
 export type ResourceMeter = {
   /**
@@ -770,9 +866,47 @@ export type SpeechHistoryResponse = {
 }
 
 /**
+ * SpeechModelOption
+ */
+export type SpeechModelOption = {
+  /**
+   * Default Speaker
+   */
+  default_speaker?: string | null
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Mode
+   */
+  mode: 'custom' | 'describe' | 'clone'
+  /**
+   * Name
+   */
+  name: string
+  /**
+   * Speakers
+   */
+  speakers?: Array<string>
+  /**
+   * Supports Instruction
+   */
+  supports_instruction?: boolean
+}
+
+/**
  * SpeechRequest
  */
 export type SpeechRequest = {
+  /**
+   * Language
+   */
+  language?: string
+  /**
+   * Model Id
+   */
+  model_id?: string | null
   /**
    * Script
    */
@@ -787,6 +921,9 @@ export type SpeechRequest = {
     | ({
         mode: 'clone'
       } & ClonedVoice)
+    | ({
+        mode: 'custom'
+      } & CustomVoice)
 }
 
 /**
@@ -813,19 +950,47 @@ export type TranscriptionRequest = {
   /**
    * Audio
    *
-   * Audio reference only; no upload or fetching is implemented
+   * Base64 mono 16-bit PCM WAV data URL at 16000 Hz
    */
   audio: string
   /**
    * Formatting
    */
   formatting?: boolean
+  /**
+   * Language
+   */
+  language?: string | null
+  /**
+   * Model
+   */
+  model?: string | null
 }
 
 /**
  * TranscriptionResponse
  */
 export type TranscriptionResponse = {
+  /**
+   * Formatting Model
+   */
+  formatting_model?: string | null
+  /**
+   * Formatting Status
+   */
+  formatting_status: string
+  /**
+   * Language
+   */
+  language: string | null
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Raw Text
+   */
+  raw_text: string
   /**
    * Text
    */
@@ -887,6 +1052,10 @@ export type VideoGenerationRequest = {
    */
   fps?: number
   /**
+   * Model
+   */
+  model?: 'ltx-2.5-distilled' | 'h3-fl2va-int8-turbo'
+  /**
    * Negative Prompt
    */
   negative_prompt?: string
@@ -897,7 +1066,11 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    */
-  resolution?: '480p' | '720p' | '1080p'
+  resolution?: '480p' | '720p' | '768p' | '1080p'
+  /**
+   * Seed
+   */
+  seed?: number
 }
 
 /**
@@ -920,6 +1093,10 @@ export type VideoJob = {
    */
   duration: string
   /**
+   * Error
+   */
+  error?: string | null
+  /**
    * Fps
    */
   fps: string
@@ -927,6 +1104,10 @@ export type VideoJob = {
    * Id
    */
   id: string
+  /**
+   * Output Url
+   */
+  output_url?: string | null
   /**
    * Progress
    */
@@ -946,7 +1127,7 @@ export type VideoJob = {
   /**
    * Status
    */
-  status: 'Rendering' | 'Queued' | 'Done'
+  status: 'Rendering' | 'Queued' | 'Done' | 'Failed' | 'Cancelled'
   /**
    * Thumbnail
    */
@@ -972,6 +1153,30 @@ export type VideosResponse = {
    * Jobs
    */
   jobs: Array<VideoJob>
+}
+
+/**
+ * WhisperModels
+ */
+export type WhisperModels = {
+  /**
+   * Models
+   */
+  models: Array<string>
+  /**
+   * Selected
+   */
+  selected: string | null
+}
+
+/**
+ * WhisperSelection
+ */
+export type WhisperSelection = {
+  /**
+   * Model
+   */
+  model: string
 }
 
 /**
@@ -1133,7 +1338,7 @@ export type GenerateSpeechErrors = {
    */
   422: HttpValidationError
   /**
-   * No speech provider is configured
+   * Speech provider unavailable
    */
   503: SpeechUnavailable
 }
@@ -1150,6 +1355,25 @@ export type GenerateSpeechResponses = {
 
 export type GenerateSpeechResponse =
   GenerateSpeechResponses[keyof GenerateSpeechResponses]
+
+export type ListSpeechModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/speech/models'
+}
+
+export type ListSpeechModelsResponses = {
+  /**
+   * Response Listspeechmodels
+   *
+   * Successful Response
+   */
+  200: Array<SpeechModelOption>
+}
+
+export type ListSpeechModelsResponse =
+  ListSpeechModelsResponses[keyof ListSpeechModelsResponses]
 
 export type TranscribeAudioData = {
   body: TranscriptionRequest
@@ -1181,6 +1405,50 @@ export type TranscribeAudioResponses = {
 
 export type TranscribeAudioResponse =
   TranscribeAudioResponses[keyof TranscribeAudioResponses]
+
+export type GetWhisperModelsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type GetWhisperModelsResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type GetWhisperModelsResponse =
+  GetWhisperModelsResponses[keyof GetWhisperModelsResponses]
+
+export type SelectWhisperModelData = {
+  body: WhisperSelection
+  path?: never
+  query?: never
+  url: '/v1/audio/transcriptions/models'
+}
+
+export type SelectWhisperModelErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SelectWhisperModelError =
+  SelectWhisperModelErrors[keyof SelectWhisperModelErrors]
+
+export type SelectWhisperModelResponses = {
+  /**
+   * Successful Response
+   */
+  200: WhisperModels
+}
+
+export type SelectWhisperModelResponse =
+  SelectWhisperModelResponses[keyof SelectWhisperModelResponses]
 
 export type CreateCompletionData = {
   body: CompletionRequest
@@ -1548,7 +1816,7 @@ export type ListRequestsData = {
     /**
      * Status
      */
-    status?: 200 | 202 | 429 | 500 | null
+    status?: number | null
     /**
      * Search
      */
@@ -1704,6 +1972,37 @@ export type GenerateVideoResponses = {
 export type GenerateVideoResponse =
   GenerateVideoResponses[keyof GenerateVideoResponses]
 
+export type CancelVideoData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}'
+}
+
+export type CancelVideoErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelVideoError = CancelVideoErrors[keyof CancelVideoErrors]
+
+export type CancelVideoResponses = {
+  /**
+   * Successful Response
+   */
+  200: VideoResponse
+}
+
+export type CancelVideoResponse =
+  CancelVideoResponses[keyof CancelVideoResponses]
+
 export type GetVideoData = {
   body?: never
   path: {
@@ -1737,3 +2036,32 @@ export type GetVideoResponses = {
 }
 
 export type GetVideoResponse = GetVideoResponses[keyof GetVideoResponses]
+
+export type GetVideoContentData = {
+  body?: never
+  path: {
+    /**
+     * Video Id
+     */
+    video_id: string
+  }
+  query?: never
+  url: '/v1/videos/{video_id}/content'
+}
+
+export type GetVideoContentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetVideoContentError =
+  GetVideoContentErrors[keyof GetVideoContentErrors]
+
+export type GetVideoContentResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown
+}

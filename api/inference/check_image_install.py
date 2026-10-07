@@ -1,7 +1,7 @@
 """Exercise native image imports and processor construction without model weights."""
 
 from PIL import Image
-from diffusers import Flux2KleinKVPipeline, Flux2KleinPipeline, Flux2Transformer2DModel, QwenImage21Pipeline
+from diffusers import QwenImage21Pipeline
 from tokenizers import Tokenizer, models
 from transformers import PreTrainedTokenizerFast, Qwen2VLImageProcessor, Qwen3VLProcessor, Qwen3VLVideoProcessor
 
@@ -21,10 +21,7 @@ def check_image_install():
                        images=Image.new('RGB', (56, 56)), return_tensors='pt')
     assert result['pixel_values'].numel() > 0
     assert QwenImage21Pipeline.__module__.startswith('diffusers.pipelines.qwenimage21.')
-    assert Flux2KleinPipeline.__module__.startswith('diffusers.pipelines.flux2.')
-    assert Flux2KleinKVPipeline.__module__.startswith('diffusers.pipelines.flux2.')
-    assert callable(Flux2Transformer2DModel.from_single_file)
-    print('Native Qwen processor and Qwen/klein pipeline imports OK (no weights).')
+    print('Native Qwen processor and Qwen pipeline imports OK (no weights).')
 
 
 if __name__ == '__main__':

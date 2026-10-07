@@ -12,6 +12,9 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelVideoData,
+  CancelVideoErrors,
+  CancelVideoResponses,
   ConfigureContextV1ModelsModelIdContextPutData,
   ConfigureContextV1ModelsModelIdContextPutErrors,
   ConfigureContextV1ModelsModelIdContextPutResponses,
@@ -50,9 +53,14 @@ import type {
   GetRequestResponses,
   GetSettingsData,
   GetSettingsResponses,
+  GetVideoContentData,
+  GetVideoContentErrors,
+  GetVideoContentResponses,
   GetVideoData,
   GetVideoErrors,
   GetVideoResponses,
+  GetWhisperModelsData,
+  GetWhisperModelsResponses,
   HealthData,
   HealthResponses,
   ListImagesData,
@@ -65,6 +73,8 @@ import type {
   ListRequestsErrors,
   ListRequestsResponses,
   ListSpeechData,
+  ListSpeechModelsData,
+  ListSpeechModelsResponses,
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
@@ -74,6 +84,9 @@ import type {
   SelectModelV1ModelsSelectionPutData,
   SelectModelV1ModelsSelectionPutErrors,
   SelectModelV1ModelsSelectionPutResponses,
+  SelectWhisperModelData,
+  SelectWhisperModelErrors,
+  SelectWhisperModelResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -184,10 +197,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Reject a validated describe/clone request with HTTP 503.
- *
- * No speech provider is configured, so no audio is generated or persisted and
- * clone sample references are neither fetched nor treated as uploaded files.
+ * Queue native speech; cancellation waits for owned cleanup.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -206,12 +216,23 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
   })
 
 /**
+ * List Speech Models
+ *
+ * Expose only enabled native checkpoint integrations.
+ */
+export const listSpeechModels = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSpeechModelsData, ThrowOnError>,
+): RequestResult<ListSpeechModelsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    ListSpeechModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/speech/models', ...options })
+
+/**
  * Transcribe Audio
  *
- * Return HTTP 503 for validated requests while transcription is unconfigured.
- *
- * Neither audio fetching/recording/upload nor inference occurs; formatting is
- * accepted as future-provider input, not applied to a fabricated transcript.
+ * Queue native Whisper and preserve its raw transcript and formatting status.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,
@@ -234,10 +255,46 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
   })
 
 /**
+ * Get Models
+ *
+ * List all unique official checkpoints and the persisted selection.
+ */
+export const getWhisperModels = <ThrowOnError extends boolean = false>(
+  options?: Options<GetWhisperModelsData, ThrowOnError>,
+): RequestResult<GetWhisperModelsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetWhisperModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/transcriptions/models', ...options })
+
+/**
+ * Select Model
+ */
+export const selectWhisperModel = <ThrowOnError extends boolean = false>(
+  options: Options<SelectWhisperModelData, ThrowOnError>,
+): RequestResult<
+  SelectWhisperModelResponses,
+  SelectWhisperModelErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    SelectWhisperModelResponses,
+    SelectWhisperModelErrors,
+    ThrowOnError
+  >({
+    url: '/v1/audio/transcriptions/models',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
  * Create Completion
  *
- * Generate an assistant reply with the loaded model. Client disconnect cancels generation and
- * awaits cleanup; runtime failures preserve their HTTP status.
+ * Queue a reply; disconnect waits for native cancellation and cleanup.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,
@@ -286,11 +343,7 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 /**
  * Evaluate Decisions
  *
- * Evaluate typed questions with the resident CPU Laya specialist, independent of chat.
- *
- * Oversized tokenized questions/state return 422 rather than truncated answers.
- * Disconnect cancellation waits for the CPU worker before releasing ownership.
- * Results are not persisted; there is no fallback to a generative model.
+ * Queue typed CPU decisions, preserving validation and disconnect cleanup.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,
@@ -328,7 +381,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Condition Qwen Image on the uploaded image and edit instruction.
+ * Queue native Qwen-Image inference under shared memory ownership.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -349,7 +402,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Generate real PNG results with Kadan-owned native inference.
+ * Queue native Qwen-Image inference under shared memory ownership.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,
@@ -383,6 +436,11 @@ export const getImageFile = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Metrics
+ *
+ * Combine a fresh memory sample with the bounded telemetry snapshot.
+ *
+ * This monitoring read is excluded from generation telemetry, so polling
+ * does not increase request counts or feed back into latency statistics.
  */
 export const getMetrics = <ThrowOnError extends boolean = false>(
   options?: Options<GetMetricsData, ThrowOnError>,
@@ -529,6 +587,12 @@ export const downloadModelV1ModelsModelIdDownloadPost = <
 
 /**
  * List Requests
+ *
+ * Filter a newest-first snapshot and return the requested page.
+ *
+ * Search matches IDs, endpoints, catalog IDs and safe summaries. Totals cover
+ * retained matches only; concurrent completions or eviction can move records
+ * between successive page requests. No database history is consulted.
  */
 export const listRequests = <ThrowOnError extends boolean = false>(
   options?: Options<ListRequestsData, ThrowOnError>,
@@ -541,6 +605,11 @@ export const listRequests = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Request
+ *
+ * Return a retained observation by ID, or 404 after eviction or restart.
+ *
+ * The lookup uses a snapshot, so it never holds the telemetry lock while
+ * serializing the response.
  */
 export const getRequest = <ThrowOnError extends boolean = false>(
   options: Options<GetRequestData, ThrowOnError>,
@@ -591,7 +660,7 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
 /**
  * List Videos
  *
- * Return an empty queue because no video jobs are persisted or scheduled.
+ * Return jobs submitted to this API process.
  */
 export const listVideos = <ThrowOnError extends boolean = false>(
   options?: Options<ListVideosData, ThrowOnError>,
@@ -604,10 +673,7 @@ export const listVideos = <ThrowOnError extends boolean = false>(
 /**
  * Generate Video
  *
- * Reject validated generation settings with HTTP 503 without queuing a job.
- *
- * The declared 202 response is the future job contract, not evidence that a
- * provider ran or that GPU rendering has started.
+ * Queue a validated native generation and return its actual job identifier.
  */
 export const generateVideo = <ThrowOnError extends boolean = false>(
   options: Options<GenerateVideoData, ThrowOnError>,
@@ -626,9 +692,21 @@ export const generateVideo = <ThrowOnError extends boolean = false>(
   })
 
 /**
+ * Cancel Video
+ */
+export const cancelVideo = <ThrowOnError extends boolean = false>(
+  options: Options<CancelVideoData, ThrowOnError>,
+): RequestResult<CancelVideoResponses, CancelVideoErrors, ThrowOnError> =>
+  (options.client ?? client).delete<
+    CancelVideoResponses,
+    CancelVideoErrors,
+    ThrowOnError
+  >({ url: '/v1/videos/{video_id}', ...options })
+
+/**
  * Get Video
  *
- * Report HTTP 404 for the requested ID; no provider-backed video jobs exist.
+ * Return the real worker state, including errors and cancellation.
  */
 export const getVideo = <ThrowOnError extends boolean = false>(
   options: Options<GetVideoData, ThrowOnError>,
@@ -638,3 +716,19 @@ export const getVideo = <ThrowOnError extends boolean = false>(
     GetVideoErrors,
     ThrowOnError
   >({ url: '/v1/videos/{video_id}', ...options })
+
+/**
+ * Get Video Content
+ */
+export const getVideoContent = <ThrowOnError extends boolean = false>(
+  options: Options<GetVideoContentData, ThrowOnError>,
+): RequestResult<
+  GetVideoContentResponses,
+  GetVideoContentErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetVideoContentResponses,
+    GetVideoContentErrors,
+    ThrowOnError
+  >({ url: '/v1/videos/{video_id}/content', ...options })

@@ -1,9 +1,9 @@
+from api.memory_manager import memory_manager
+from api.memory_manager.http import infer
 from typing import Literal
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import ImageSet
-from api.services.images import image_manager
-from api.services.runtime import RuntimeFailure
 
 router = APIRouter(prefix="/v1/images/generations", tags=["Images"])
 
@@ -21,8 +21,5 @@ class ImageResponse(BaseModel):
 
 @router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="generateImages")
 async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
-    """Generate real PNG results with Kadan-owned native inference."""
-    try:
-        return ImageResponse(image=await image_manager.run(request, body))
-    except RuntimeFailure as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    """Queue native Qwen-Image inference under shared memory ownership."""
+    return await infer(request, memory_manager.submit(body, feature='image', operation='generate'))

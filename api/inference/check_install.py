@@ -1,9 +1,6 @@
 """Fail image builds and clean-install checks if a core inference import is broken."""
 
 
-from api.inference.check_image_install import check_image_install
-
-
 def main():
     """Import every catalog architecture without weights, GPU allocation or downloads."""
     import accelerate
@@ -12,12 +9,15 @@ def main():
     import laya
     from transformers import AutoTokenizer, GptOssForCausalLM, Qwen3_5MoeForCausalLM
     from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
-    from api.inference.model_adapter import build_runtime
-    from api.inference.qwen import build_qwen
-    from api.inference.glm import build_glm
+    from api.inference.llm.model_adapter import build_runtime
+    from api.inference.llm.qwen import build_qwen
+    from api.inference.llm.glm import build_glm
 
     assert all((accelerate, safetensors, laya, AutoTokenizer, GptOssForCausalLM,
                 Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
+    from api.inference.tts.check_install import check_speech_install
+    check_speech_install()
+    from api.inference.check_image_install import check_image_install
     check_image_install()
     print(f'Core inference imports OK (torch {torch.__version__}, CUDA build {torch.version.cuda}).')
 

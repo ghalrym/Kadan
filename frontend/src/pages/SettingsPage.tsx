@@ -3,6 +3,8 @@ import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
+import { WhisperSelector } from '../components/WhisperSelector'
+import { ModelPicker } from '../components/ModelPicker'
 
 /**
  * Request catalog status or a mutation under /v1/models with a 15-second timeout.
@@ -65,11 +67,6 @@ function ContextControl({ model, pending, value, change }: { model: ModelStatus;
   </div>
 }
 
-/** Match the native select chevron so the custom picker sits flush with other model rows. */
-function Chevron() {
-  return <svg className="model-picker-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg>
-}
-
 /** Format a token count with the preset label when one matches, else a grouped number. */
 const formatContext = (limit: number) => contextPresets.find(([, preset]) => preset === limit)?.[0] ?? limit.toLocaleString()
 
@@ -80,57 +77,6 @@ function ModelIcon({ type }: { type: string }) {
     <circle cx="7.76" cy="8.43" r="2.5" /><circle cx="4.24" cy="8.43" r="2.5" />
     <circle cx="3.15" cy="5.07" r="2.5" /><circle className="model-icon-center" cx="6" cy="6" r="1.5" />
   </svg>
-}
-
-/**
- * An in-flow dropdown group with sibling choice/download controls, rather than
- * interactive children inside native options. Escape restores trigger focus;
- * arrows/Home/End move between enabled controls, Tab and outside clicks dismiss.
- */
-function ModelPicker({ models, current, selectedId, pending, downloading, choose, download, pickerId = 'LLM', label = 'Language model' }: {
-  pickerId?: string; label?: string; models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
-  choose: (model: ModelStatus) => void; download: (model: ModelStatus) => void;
-}) {
-  const [open, setOpen] = useState(false)
-  const wrapper = useRef<HTMLDivElement>(null)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const popup = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    popup.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-    const outside = (event: PointerEvent) => { if (!wrapper.current?.contains(event.target as Node)) setOpen(false) }
-    document.addEventListener('pointerdown', outside)
-    return () => document.removeEventListener('pointerdown', outside)
-  }, [open])
-  function dismiss() { setOpen(false); trigger.current?.focus() }
-  return <div className="model-picker" ref={wrapper} onBlur={event => {
-    if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false)
-  }} onKeyDown={event => {
-    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss() }
-    if (!open || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    const controls = Array.from(popup.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
-    const index = controls.indexOf(document.activeElement as HTMLButtonElement)
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + controls.length) % controls.length
-    controls[next]?.focus()
-  }}>
-    <button type="button" id={`model-${pickerId}`} className="input model-picker-trigger" ref={trigger} aria-expanded={open} aria-controls={`${pickerId}-model-picker`} disabled={!models.length} onClick={() => setOpen(value => !value)} onKeyDown={event => {
-      if (!open && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setOpen(true) }
-    }}>
-      <span>{current ? (current.display_name ?? current.repo_id.split('/')[1]) : `Choose a ${label.toLowerCase()}`}</span><Chevron />
-    </button>
-    {open && <div id={`${pickerId}-model-picker`} role="group" aria-label={`${label} options`} className="model-picker-options" ref={popup}>
-      {models.map(model => <div className="model-picker-option" key={model.id}>
-        <button type="button" className="model-picker-choice" disabled={pending || model.status !== 'complete'} aria-pressed={model.id === selectedId} onClick={() => { choose(model); dismiss() }}>
-          <span>{(model.display_name ?? model.repo_id.split('/')[1])}</span>
-          <small><span className="model-picker-size">{formatGigabytes(model.estimated_bytes)}</span><span className={`model-picker-status model-picker-status--${model.status}`}>{model.id === selectedId ? 'Selected' : model.status.replaceAll('_', ' ')}</span></small>
-        </button>
-        {model.status !== 'complete' && <button type="button" className="button model-download-icon" disabled={pending || downloading} aria-label={`${model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'} ${(model.display_name ?? model.repo_id.split('/')[1])}`} title={`Download ${(model.display_name ?? model.repo_id.split('/')[1])}`} onClick={() => { download(model); dismiss() }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5" /></svg>
-        </button>}
-      </div>)}
-    </div>}
-  </div>
 }
 
 /**
@@ -158,9 +104,10 @@ export default function SettingsPage() {
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const [imageId, setImageId] = useState<string | null>(null)
-  const [videoId, setVideoId] = useState<string | null>(null)
+  const [speechId, setSpeechId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
+  const [videoId, setVideoId] = useState<string | null>(null)
   const [chosenId, setChosenId] = useState<string | null>(null)
   const [contextDraft, setContextDraft] = useState<{ modelId: string; limit: number | null } | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
@@ -249,11 +196,17 @@ export default function SettingsPage() {
     }
   }
   const models = modelStatus?.models ?? []
-  const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const imageModels = models.filter(model => model.kind === 'image')
   const image = imageModels.find(model => model.id === imageId) ?? imageModels[0]
+  const imageDownload = imageModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
+  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+  const speechModels = models.filter(model => model.kind === 'speech')
+  const speech = speechModels.find(model => model.id === speechId) ?? speechModels[0]
+  const speechDownload = speechModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+
+  const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
   const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
   const contextLimit = chosen && contextDraft?.modelId === chosen.id ? contextDraft.limit : chosen?.context_limit ?? null
@@ -273,8 +226,7 @@ export default function SettingsPage() {
     : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
-  const imageDownload = imageModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
-  const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+
   return (
     <div className="scroll-page">
       {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : licenseModel.kind === 'image' ? 'Image' : 'LLM'}`)?.focus() }} proceed={() => {
@@ -323,33 +275,54 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          {modelSettings.filter(setting => setting.type !== 'LLM').map(setting => {
-            if (setting.type !== 'Video' && setting.type !== 'Image') return <div className="model-row" key={setting.type}>
-              <label htmlFor={`model-${setting.type}`}><ModelIcon type={setting.type} />{setting.label}</label>
-              <select className="input" id={`model-${setting.type}`} value={setting.selected} disabled>{setting.options.map(option => <option key={option}>{option}</option>)}</select>
-            </div>
-            const isImage = setting.type === 'Image'
-            const current = isImage ? image : video
-            const choices = isImage ? imageModels : videoModels
-            const selected = isImage ? imageId : videoId
-            const choose = isImage ? setImageId : setVideoId
-            const transfer = isImage ? imageDownload : videoDownload
-            return <div className="model-row model-row--video" key={setting.type}>
-              <label htmlFor={`model-${setting.type}`}><ModelIcon type={setting.type} />{setting.label}</label>
-              <div className="field"><ModelPicker pickerId={setting.type} label={`${setting.type} model`} models={choices} current={current} selectedId={selected} pending={pending} downloading={downloading} choose={model => choose(model.id)} download={model => { choose(model.id); downloadModel(model) }} /></div>
-              {current && !current.inference_available && <span className="muted model-video-note">Download only</span>}
-              {transfer && <div className="model-download-status model-video-progress">
-                <div className="model-download-heading"><p role="status">{transfer.display_name} · {transfer.status}</p>
-                  <button type="button" className="button" disabled={pending || transfer.status === 'cancelling' || (downloading && transfer.status !== 'downloading')} onClick={() => {
-                    if (transfer.status === 'downloading') void submitModelChange(`/${transfer.id}/download`, 'DELETE')
-                    else downloadModel(transfer)
-                  }}>{transfer.status === 'cancelling' ? 'Cancelling…' : transfer.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
-                </div>
-                {['downloading', 'cancelling'].includes(transfer.status) && <><progress className="progress" aria-label={`${transfer.id} download progress`} max={transfer.total_bytes || 1} value={transfer.total_bytes ? transfer.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(transfer.downloaded_bytes)} / {transfer.total_bytes ? formatGigabytes(transfer.total_bytes) : 'checking checkpoint size'}</span></>}
-                {transfer.error && <p role="alert" className="error">{transfer.error}</p>}
-              </div>}
-            </div>
-          })}
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'TTS' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-TTS"><ModelIcon type="TTS" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
+            {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
+            {speechDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{speechDownload.display_name} · {speechDownload.status}</p>
+                <button type="button" className="button" disabled={pending || speechDownload.status === 'cancelling' || (downloading && speechDownload.status !== 'downloading')} onClick={() => {
+                  if (speechDownload.status === 'downloading') void submitModelChange(`/${speechDownload.id}/download`, 'DELETE')
+                  else downloadModel(speechDownload)
+                }}>{speechDownload.status === 'cancelling' ? 'Cancelling…' : speechDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
+            </div>}
+          </div> : model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
+            {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
+            {videoDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
+                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
+                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
+                  else downloadModel(videoDownload)
+                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
+            </div>}
+          </div> : model.type === 'Image' ? <div className="model-row model-row--image" key={model.type}>
+            <label htmlFor="model-Image"><ModelIcon type="Image" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Image" label="Image model" models={imageModels} current={image} selectedId={imageId} pending={pending} downloading={downloading} choose={model => setImageId(model.id)} download={model => { setImageId(model.id); downloadModel(model) }} /></div>
+            {image && !image.inference_available && <span className="muted model-image-note">Download only</span>}
+            {imageDownload && <div className="model-download-status model-image-progress">
+              <div className="model-download-heading"><p role="status">{imageDownload.display_name} · {imageDownload.status}</p>
+                <button type="button" className="button" disabled={pending || imageDownload.status === 'cancelling' || (downloading && imageDownload.status !== 'downloading')} onClick={() => {
+                  if (imageDownload.status === 'downloading') void submitModelChange(`/${imageDownload.id}/download`, 'DELETE')
+                  else downloadModel(imageDownload)
+                }}>{imageDownload.status === 'cancelling' ? 'Cancelling…' : imageDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(imageDownload.status) && <><progress className="progress" aria-label={`${imageDownload.id} download progress`} max={imageDownload.total_bytes || 1} value={imageDownload.total_bytes ? imageDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(imageDownload.downloaded_bytes)} / {imageDownload.total_bytes ? formatGigabytes(imageDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {imageDownload.error && <p role="alert" className="error">{imageDownload.error}</p>}
+            </div>}
+          </div> : <div className="model-row" key={model.type}>
+            <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
+            {model.type === 'STT' ? <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
+              {model.options.map(option => <option key={option}>{option}</option>)}
+            </select>}
+          </div>)}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
             <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>

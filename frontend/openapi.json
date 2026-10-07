@@ -150,10 +150,26 @@
             "type": "string"
           },
           "sample": {
-            "description": "Opaque sample reference. No upload endpoint or speech provider is configured; the reference is not fetched.",
+            "description": "Base64-encoded audio bytes; URLs and server paths are not accepted.",
             "minLength": 1,
             "title": "Sample",
             "type": "string"
+          },
+          "speaker_only": {
+            "default": false,
+            "title": "Speaker Only",
+            "type": "boolean"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript"
           }
         },
         "required": [
@@ -226,6 +242,31 @@
           "context_limit"
         ],
         "title": "ContextRequest",
+        "type": "object"
+      },
+      "CustomVoice": {
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "default": "",
+            "title": "Instruction",
+            "type": "string"
+          },
+          "mode": {
+            "const": "custom",
+            "title": "Mode",
+            "type": "string"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "speaker"
+        ],
+        "title": "CustomVoice",
         "type": "object"
       },
       "DecisionPlaygroundResponse": {
@@ -406,9 +447,32 @@
       },
       "GeneratedSpeech": {
         "properties": {
+          "audio_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Base64"
+          },
           "meta": {
             "title": "Meta",
             "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "const": "audio/wav",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
           },
           "script": {
             "title": "Script",
@@ -561,22 +625,54 @@
         "type": "object"
       },
       "MetricsResponse": {
+        "description": "Process-local request statistics plus best-effort host/device memory samples.\n\nNull latency/error statistics mean no retained samples in the window. A\ntruncated window covers retained records only; Online does not imply a\nloaded model or successful GPU inference.",
         "properties": {
+          "active_requests": {
+            "title": "Active Requests",
+            "type": "integer"
+          },
+          "completed_requests": {
+            "title": "Completed Requests",
+            "type": "integer"
+          },
           "error_rate_percent": {
-            "title": "Error Rate Percent",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Rate Percent"
+          },
+          "memory_unit": {
+            "const": "GiB",
+            "default": "GiB",
+            "title": "Memory Unit",
+            "type": "string"
           },
           "p50_latency_seconds": {
-            "title": "P50 Latency Seconds",
-            "type": "number"
-          },
-          "queued_jobs": {
-            "title": "Queued Jobs",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Latency Seconds"
           },
           "requests_per_minute": {
             "title": "Requests Per Minute",
             "type": "integer"
+          },
+          "resource_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resource Errors",
+            "type": "array"
           },
           "resources": {
             "items": {
@@ -585,19 +681,46 @@
             "title": "Resources",
             "type": "array"
           },
+          "retained_requests": {
+            "title": "Retained Requests",
+            "type": "integer"
+          },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "status": {
             "const": "Online",
+            "default": "Online",
             "title": "Status",
             "type": "string"
+          },
+          "window_seconds": {
+            "default": 60,
+            "title": "Window Seconds",
+            "type": "integer"
+          },
+          "window_truncated": {
+            "title": "Window Truncated",
+            "type": "boolean"
           }
         },
         "required": [
-          "status",
           "resources",
+          "resource_errors",
+          "started_at",
+          "retention_limit",
+          "retained_requests",
+          "completed_requests",
+          "active_requests",
           "requests_per_minute",
+          "window_truncated",
           "p50_latency_seconds",
-          "error_rate_percent",
-          "queued_jobs"
+          "error_rate_percent"
         ],
         "title": "MetricsResponse",
         "type": "object"
@@ -1040,6 +1163,7 @@
         "type": "object"
       },
       "RequestRecord": {
+        "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement.",
         "properties": {
           "endpoint": {
             "title": "Endpoint",
@@ -1053,9 +1177,20 @@
             "title": "Latency",
             "type": "string"
           },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
           "model": {
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "output": {
             "title": "Output",
@@ -1065,41 +1200,23 @@
             "title": "Prompt",
             "type": "string"
           },
+          "request_bytes": {
+            "title": "Request Bytes",
+            "type": "integer"
+          },
+          "response_bytes": {
+            "title": "Response Bytes",
+            "type": "integer"
+          },
           "status": {
-            "enum": [
-              200,
-              202,
-              429,
-              500
-            ],
+            "maximum": 599.0,
+            "minimum": 100.0,
             "title": "Status",
             "type": "integer"
           },
           "time": {
             "title": "Time",
             "type": "string"
-          },
-          "tokensPerSecond": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokenspersecond"
-          },
-          "ttft": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ttft"
           },
           "type": {
             "enum": [
@@ -1118,17 +1235,20 @@
           "id",
           "time",
           "type",
-          "model",
           "status",
           "latency",
+          "latency_ms",
           "endpoint",
           "prompt",
-          "output"
+          "output",
+          "request_bytes",
+          "response_bytes"
         ],
         "title": "RequestRecord",
         "type": "object"
       },
       "RequestResponse": {
+        "description": "Wrap a single retained HTTP observation for the detail endpoint.",
         "properties": {
           "request": {
             "$ref": "#/components/schemas/RequestRecord"
@@ -1141,6 +1261,7 @@
         "type": "object"
       },
       "RequestsResponse": {
+        "description": "A page of retained observations with its filtered total and process epoch.",
         "properties": {
           "requests": {
             "items": {
@@ -1149,6 +1270,14 @@
             "title": "Requests",
             "type": "array"
           },
+          "retention_limit": {
+            "title": "Retention Limit",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -1156,12 +1285,15 @@
         },
         "required": [
           "requests",
-          "total"
+          "total",
+          "retention_limit",
+          "started_at"
         ],
         "title": "RequestsResponse",
         "type": "object"
       },
       "ResourceMeter": {
+        "description": "Observed host or device-wide memory in GiB, including other processes.",
         "properties": {
           "label": {
             "title": "Label",
@@ -1383,9 +1515,76 @@
         "title": "SpeechHistoryResponse",
         "type": "object"
       },
+      "SpeechModelOption": {
+        "properties": {
+          "default_speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Speaker"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "custom",
+              "describe",
+              "clone"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "speakers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Speakers",
+            "type": "array"
+          },
+          "supports_instruction": {
+            "default": false,
+            "title": "Supports Instruction",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mode"
+        ],
+        "title": "SpeechModelOption",
+        "type": "object"
+      },
       "SpeechRequest": {
         "additionalProperties": false,
         "properties": {
+          "language": {
+            "default": "Auto",
+            "title": "Language",
+            "type": "string"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
           "script": {
             "minLength": 1,
             "title": "Script",
@@ -1395,6 +1594,7 @@
             "discriminator": {
               "mapping": {
                 "clone": "#/components/schemas/ClonedVoice",
+                "custom": "#/components/schemas/CustomVoice",
                 "describe": "#/components/schemas/DescribedVoice"
               },
               "propertyName": "mode"
@@ -1405,6 +1605,9 @@
               },
               {
                 "$ref": "#/components/schemas/ClonedVoice"
+              },
+              {
+                "$ref": "#/components/schemas/CustomVoice"
               }
             ],
             "title": "Voice"
@@ -1446,7 +1649,7 @@
         "additionalProperties": false,
         "properties": {
           "audio": {
-            "description": "Audio reference only; no upload or fetching is implemented",
+            "description": "Base64 mono 16-bit PCM WAV data URL at 16000 Hz",
             "minLength": 1,
             "title": "Audio",
             "type": "string"
@@ -1455,6 +1658,28 @@
             "default": true,
             "title": "Formatting",
             "type": "boolean"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -1465,13 +1690,51 @@
       },
       "TranscriptionResponse": {
         "properties": {
+          "formatting_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatting Model"
+          },
+          "formatting_status": {
+            "title": "Formatting Status",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
           "text": {
             "title": "Text",
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "text",
+          "raw_text",
+          "language",
+          "model",
+          "formatting_status"
         ],
         "title": "TranscriptionResponse",
         "type": "object"
@@ -1556,6 +1819,15 @@
             "title": "Fps",
             "type": "integer"
           },
+          "model": {
+            "default": "ltx-2.5-distilled",
+            "enum": [
+              "ltx-2.5-distilled",
+              "h3-fl2va-int8-turbo"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
           "negative_prompt": {
             "default": "",
             "maxLength": 8000,
@@ -1574,10 +1846,18 @@
             "enum": [
               "480p",
               "720p",
+              "768p",
               "1080p"
             ],
             "title": "Resolution",
             "type": "string"
+          },
+          "seed": {
+            "default": 42,
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "title": "Seed",
+            "type": "integer"
           }
         },
         "required": [
@@ -1613,6 +1893,17 @@
             "title": "Duration",
             "type": "string"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
           "fps": {
             "title": "Fps",
             "type": "string"
@@ -1620,6 +1911,17 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "output_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Url"
           },
           "progress": {
             "maximum": 100.0,
@@ -1643,7 +1945,9 @@
             "enum": [
               "Rendering",
               "Queued",
-              "Done"
+              "Done",
+              "Failed",
+              "Cancelled"
             ],
             "title": "Status",
             "type": "string"
@@ -1699,6 +2003,48 @@
           "jobs"
         ],
         "title": "VideosResponse",
+        "type": "object"
+      },
+      "WhisperModels": {
+        "properties": {
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "selected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected"
+          }
+        },
+        "required": [
+          "models",
+          "selected"
+        ],
+        "title": "WhisperModels",
+        "type": "object"
+      },
+      "WhisperSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "WhisperSelection",
         "type": "object"
       },
       "api__routes__v1__images__edits__ImageRequest": {
@@ -1814,7 +2160,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Chat uses Kadan's explicitly loaded inference adapter and returns an error when no model is ready or the checkpoint is unsupported. Decisions use a separate resident CPU Laya specialist without requiring a loaded chat model. Image generation and editing use a completed local Qwen-Image-2.1 checkpoint and return PNG files. Other unconfigured media providers return unavailable errors. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Qwen image generation/editing and speech synthesis use native wrappers. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -1956,7 +2302,7 @@
         ]
       },
       "post": {
-        "description": "Reject a validated describe/clone request with HTTP 503.\n\nNo speech provider is configured, so no audio is generated or persisted and\nclone sample references are neither fetched nor treated as uploaded files.",
+        "description": "Queue native speech; cancellation waits for owned cleanup.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -1997,7 +2343,7 @@
                 }
               }
             },
-            "description": "No speech provider is configured"
+            "description": "Speech provider unavailable"
           }
         },
         "summary": "Generate Speech",
@@ -2006,9 +2352,35 @@
         ]
       }
     },
+    "/v1/audio/speech/models": {
+      "get": {
+        "description": "Expose only enabled native checkpoint integrations.",
+        "operationId": "listSpeechModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpeechModelOption"
+                  },
+                  "title": "Response Listspeechmodels",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Speech Models",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Return HTTP 503 for validated requests while transcription is unconfigured.\n\nNeither audio fetching/recording/upload nor inference occurs; formatting is\naccepted as future-provider input, not applied to a fabricated transcript.",
+        "description": "Queue native Whisper and preserve its raw transcript and formatting status.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {
@@ -2058,9 +2430,70 @@
         ]
       }
     },
+    "/v1/audio/transcriptions/models": {
+      "get": {
+        "description": "List all unique official checkpoints and the persisted selection.",
+        "operationId": "getWhisperModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Models",
+        "tags": [
+          "Audio"
+        ]
+      },
+      "put": {
+        "operationId": "selectWhisperModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhisperSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhisperModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Model",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
     "/v1/chat/completions": {
       "post": {
-        "description": "Generate an assistant reply with the loaded model. Client disconnect cancels generation and\nawaits cleanup; runtime failures preserve their HTTP status.",
+        "description": "Queue a reply; disconnect waits for native cancellation and cleanup.",
         "operationId": "createCompletion",
         "requestBody": {
           "content": {
@@ -2144,7 +2577,7 @@
         ]
       },
       "post": {
-        "description": "Evaluate typed questions with the resident CPU Laya specialist, independent of chat.\n\nOversized tokenized questions/state return 422 rather than truncated answers.\nDisconnect cancellation waits for the CPU worker before releasing ownership.\nResults are not persisted; there is no fallback to a generative model.",
+        "description": "Queue typed CPU decisions, preserving validation and disconnect cleanup.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {
@@ -2208,7 +2641,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Condition Qwen Image on the uploaded image and edit instruction.",
+        "description": "Queue native Qwen-Image inference under shared memory ownership.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -2253,7 +2686,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Generate real PNG results with Kadan-owned native inference.",
+        "description": "Queue native Qwen-Image inference under shared memory ownership.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -2348,6 +2781,7 @@
     },
     "/v1/metrics": {
       "get": {
+        "description": "Combine a fresh memory sample with the bounded telemetry snapshot.\n\nThis monitoring read is excluded from generation telemetry, so polling\ndoes not increase request counts or feed back into latency statistics.",
         "operationId": "getMetrics",
         "responses": {
           "200": {
@@ -2587,6 +3021,7 @@
     },
     "/v1/requests": {
       "get": {
+        "description": "Filter a newest-first snapshot and return the requested page.\n\nSearch matches IDs, endpoints, catalog IDs and safe summaries. Totals cover\nretained matches only; concurrent completions or eviction can move records\nbetween successive page requests. No database history is consulted.",
         "operationId": "listRequests",
         "parameters": [
           {
@@ -2620,12 +3055,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "enum": [
-                    200,
-                    202,
-                    429,
-                    500
-                  ],
+                  "maximum": 599,
+                  "minimum": 100,
                   "type": "integer"
                 },
                 {
@@ -2641,6 +3072,7 @@
             "required": false,
             "schema": {
               "default": "",
+              "maxLength": 128,
               "title": "Search",
               "type": "string"
             }
@@ -2661,7 +3093,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 100,
               "minimum": 1,
               "title": "Limit",
@@ -2699,6 +3131,7 @@
     },
     "/v1/requests/{request_id}": {
       "get": {
+        "description": "Return a retained observation by ID, or 404 after eviction or restart.\n\nThe lookup uses a snapshot, so it never holds the telemetry lock while\nserializing the response.",
         "operationId": "getRequest",
         "parameters": [
           {
@@ -2803,7 +3236,7 @@
     },
     "/v1/videos": {
       "get": {
-        "description": "Return an empty queue because no video jobs are persisted or scheduled.",
+        "description": "Return jobs submitted to this API process.",
         "operationId": "listVideos",
         "responses": {
           "200": {
@@ -2825,7 +3258,7 @@
     },
     "/v1/videos/generations": {
       "post": {
-        "description": "Reject validated generation settings with HTTP 503 without queuing a job.\n\nThe declared 202 response is the future job contract, not evidence that a\nprovider ran or that GPU rendering has started.",
+        "description": "Queue a validated native generation and return its actual job identifier.",
         "operationId": "generateVideo",
         "requestBody": {
           "content": {
@@ -2869,8 +3302,48 @@
       }
     },
     "/v1/videos/{video_id}": {
+      "delete": {
+        "operationId": "cancelVideo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Video",
+        "tags": [
+          "Videos"
+        ]
+      },
       "get": {
-        "description": "Report HTTP 404 for the requested ID; no provider-backed video jobs exist.",
+        "description": "Return the real worker state, including errors and cancellation.",
         "operationId": "getVideo",
         "parameters": [
           {
@@ -2909,6 +3382,46 @@
           }
         },
         "summary": "Get Video",
+        "tags": [
+          "Videos"
+        ]
+      }
+    },
+    "/v1/videos/{video_id}/content": {
+      "get": {
+        "operationId": "getVideoContent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "title": "Video Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video Content",
         "tags": [
           "Videos"
         ]

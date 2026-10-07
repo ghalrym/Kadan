@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from api.inference.resources import ResourceManager
-from api.inference.context import ContextLimitError, ContextMemoryError
+from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
 from api.services.runtime import RuntimeFailure, RuntimeManager
 
@@ -183,7 +183,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         for failure, expected in failures:
             def controlled_import(name, *args, **kwargs):
-                if name == 'api.inference.model_adapter':
+                if name == 'api.inference.llm.model_adapter':
                     raise failure
                 return original_import(name, *args, **kwargs)
             with self.subTest(error=expected), patch('builtins.__import__', side_effect=controlled_import):
