@@ -4,6 +4,9 @@ This is original Kadan C++20 code. It does not copy, wrap, vendor or port
 Strata/FreeToken code. The first milestone implements an accounting library and
 a standalone development worker boundary, not model inference. There are no
 CUDA kernels, checkpoint readers or production API adapters in this milestone.
+A separate [quantized projection reference](QUANTIZATION.md) now provides original
+CPU NVFP4/FP8 format decoding and matrix-vector execution for future loaders and
+CUDA kernels. The worker executable does not call that library yet.
 Existing Python/API/UI execution is unchanged; other modalities are not migrated.
 
 ## Build and test without GPU access
