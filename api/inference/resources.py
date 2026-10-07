@@ -198,6 +198,8 @@ class ResourceManager:
         self._admission = threading.Lock()
         self._residents: dict[str, _Resident] = {}
         self._exclusive: str | None = None
+        self._used_host = 0
+        self._used_devices: dict[int, int] = {}
 
     @staticmethod
     def _validate(host: int, devices: dict[int, int]):
@@ -231,9 +233,25 @@ class ResourceManager:
 
     def _fits(self, host, devices):
         """Check logical capacity against current reservations; callers hold the state lock."""
-        return (sum(item.host_bytes for item in self._residents.values()) + host <= self.capacity.host_bytes
-                and all(sum(item.device_bytes.get(device, 0) for item in self._residents.values()) + size
+        return (self._used_host + host <= self.capacity.host_bytes
+                and all(self._used_devices.get(device, 0) + size
                         <= self.capacity.device_bytes[device] for device, size in devices.items()))
+
+    def _record(self, owner, workload, host, devices, evict, offload_on_handoff):
+        """Record admitted bytes under the state lock; cached totals avoid quadratic scans."""
+        token = object()
+        self._residents[owner] = _Resident(workload, host, devices, evict, token, offload_on_handoff)
+        self._used_host += host
+        for device, size in devices.items():
+            self._used_devices[device] = self._used_devices.get(device, 0) + size
+        return Reservation(self, owner, token)
+
+    def _remove(self, owner):
+        """Remove exactly one resident under the state lock, including callback releases."""
+        state = self._residents.pop(owner)
+        self._used_host -= state.host_bytes
+        for device, size in state.device_bytes.items():
+            self._used_devices[device] -= size
 
     def _physical_fits(self, host, devices):
         """Check fresh probe headroom, or accept when no probe was supplied; callers hold the state lock."""
@@ -263,7 +281,7 @@ class ResourceManager:
             raise
         with self._lock:
             if self._residents.get(owner) is state:
-                del self._residents[owner]
+                self._remove(owner)
 
     def reserve(self, owner: str, workload: Workload, host_bytes: int = 0,
                 device_bytes: dict[int, int] | None = None,
@@ -292,17 +310,20 @@ class ResourceManager:
                     raise ResourceBusy('Owner already has a reservation; release before resizing')
                 if self._exclusive not in (None, owner):
                     raise ResourceBusy('Another workload holds exclusive GPU access')
+                if self._fits(host_bytes, devices) and self._physical_fits(host_bytes, devices):
+                    self._cancelled(cancel_event)
+                    return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
                 candidates = [key for key, state in self._residents.items()
                               if not state.active and state.evict is not None]
             for candidate in candidates:
                 with self._lock:
                     available = self._probe() if self._probe else None
-                    host_short = (sum(item.host_bytes for item in self._residents.values()) + host_bytes
+                    host_short = (self._used_host + host_bytes
                                   > self.capacity.host_bytes
                                   or (available is not None and host_bytes > available.host_bytes))
                     short_devices = {
                         device for device, size in devices.items()
-                        if sum(item.device_bytes.get(device, 0) for item in self._residents.values()) + size
+                        if self._used_devices.get(device, 0) + size
                         > self.capacity.device_bytes[device]
                         or (available is not None and size > available.device_bytes.get(device, 0))
                     }
@@ -326,9 +347,7 @@ class ResourceManager:
                 self._cancelled(cancel_event)
                 if not self._physical_fits(host_bytes, devices):
                     raise ResourceExhausted('Physical available memory is below the requested reservation')
-                token = object()
-                self._residents[owner] = _Resident(workload, host_bytes, devices, evict, token, offload_on_handoff)
-                return Reservation(self, owner, token)
+                return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
 
     def _release(self, owner, token):
         """Remove accounting for the matching owner token only; reject release while its leases
@@ -340,7 +359,7 @@ class ResourceManager:
                 return
             if state.active:
                 raise ResourceBusy('Cannot release a workload with active leases')
-            del self._residents[owner]
+            self._remove(owner)
 
     @contextmanager
     def exclusive(self, owner: str, cancel_event: threading.Event | None = None):
