@@ -121,21 +121,6 @@ export default function ChatPage() {
               }
             >
               <p>{message.text}</p>
-              {message.cache && (
-                <details className="muted">
-                  <summary>Cache details</summary>
-                  <p>
-                    Reused {message.cache.reused_tokens} tokens; retained{' '}
-                    {message.cache.stored_tokens}. Lookup: {message.cache.reason}.
-                    Retention: {message.cache.retention_reason}.
-                  </p>
-                  <p>
-                    RAM {(message.cache.host_bytes / 1024 ** 2).toFixed(1)} MiB;
-                    VRAM {(Object.values(message.cache.device_bytes).reduce((sum, bytes) => sum + bytes, 0) / 1024 ** 2).toFixed(1)} MiB.
-                    Cache limit {((message.cache.limit_bytes ?? 0) / 1024 ** 2).toFixed(0)} MiB.
-                  </p>
-                </details>
-              )}
               {message.meta && (
                 <span className="mono faint">{message.meta}</span>
               )}

@@ -193,11 +193,13 @@ export default function RequestsPage() {
                     {request.model ?? '—'}
                   </Link>
                 </td>
-                <td className="mono faint" title="Not measured">
-                  —
+                <td className="mono faint" title={request.stream_ttft_ms != null ? 'HTTP arrival to first streamed content (includes queue and text buffering)' : 'Native generation start to first generated token (excludes HTTP queue)'}>
+                  {(request.stream_ttft_ms ?? request.generation_ttft_ms) != null
+                    ? `${((request.stream_ttft_ms ?? request.generation_ttft_ms)! / 1000).toFixed(3)} s`
+                    : '—'}
                 </td>
-                <td className="mono faint" title="Not measured">
-                  —
+                <td className="mono faint" title="Decode tokens per second after the first generated token; excludes prefill and cleanup">
+                  {request.decode_tokens_per_second != null ? request.decode_tokens_per_second.toFixed(2) : '—'}
                 </td>
                 <td className={`mono ${statusClass(request.status)}`}>
                   {request.status}

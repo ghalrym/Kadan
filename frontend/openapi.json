@@ -1351,11 +1351,77 @@
         "type": "object"
       },
       "RequestRecord": {
-        "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement.",
+        "description": "Completed HTTP-handler observation retained only in the current API process.\n\nThe legacy prompt/output fields contain structural and HTTP summaries, not\nuser text or model output. Latency includes validation and cleanup; it is\nnot a token throughput or time-to-first-token measurement. Optional native\ntimings measure admission/prefill to the first generated token, prefill-only\nwork, and decode after that token. Stream TTFT measures HTTP arrival to the\nfirst content event passed to ASGI (not browser receipt). Missing data is null.",
         "properties": {
+          "cache_hit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit"
+          },
+          "cache_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Reason"
+          },
+          "cached_prefix_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Prefix Sha256"
+          },
+          "conversation_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Key"
+          },
+          "decode_tokens_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decode Tokens Per Second"
+          },
           "endpoint": {
             "title": "Endpoint",
             "type": "string"
+          },
+          "generation_ttft_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Ttft Ms"
           },
           "id": {
             "title": "Id",
@@ -1384,6 +1450,39 @@
             "title": "Output",
             "type": "string"
           },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "prefill_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefill Ms"
+          },
+          "prefill_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefill Tokens"
+          },
           "prompt": {
             "title": "Prompt",
             "type": "string"
@@ -1396,11 +1495,55 @@
             "title": "Response Bytes",
             "type": "integer"
           },
+          "retention_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Reason"
+          },
+          "reused_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reused Tokens"
+          },
           "status": {
             "maximum": 599.0,
             "minimum": 100.0,
             "title": "Status",
             "type": "integer"
+          },
+          "stored_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Tokens"
+          },
+          "stream_ttft_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Ttft Ms"
           },
           "time": {
             "title": "Time",

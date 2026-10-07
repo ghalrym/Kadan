@@ -43,7 +43,7 @@ class LLMFeature:
                 **({"on_event": on_event} if on_event else {}))
         finish = {}
         def emit(event):
-            if 'finish_reason' in event or 'cache' in event:
+            if 'finish_reason' in event or 'cache' in event or 'timing' in event:
                 finish.update(event)
             if on_event is not None:
                 on_event(event)
@@ -51,4 +51,4 @@ class LLMFeature:
             **({"conversation_id": request.conversation_id} if request.conversation_id and request.reuse_prefix else {}))
         if finish.get('finish_reason') not in ('stop', 'length'):
             raise RuntimeFailure('Generation ended without a terminal event.', 502)
-        return {'text': text, 'finish_reason': finish['finish_reason'], 'cache': finish.get('cache')}
+        return {'text': text, 'finish_reason': finish['finish_reason'], 'cache': finish.get('cache'), 'timing': finish.get('timing')}

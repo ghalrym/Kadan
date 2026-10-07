@@ -11,7 +11,7 @@ from .context import ContextLimitError, ContextMemoryError, estimate_request_mem
 from ..resources import ResourceExhausted
 
 
-log = logging.getLogger(__name__)
+log = logging.getLogger('uvicorn.error')
 
 
 def check_cancel(cancel_event):
@@ -113,6 +113,8 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
     if retained is not None:
         identity = hashlib.sha256(repr((id(model), limit, max_new_tokens, sorted(str(s) for s in stops),
             getattr(tokenizer, 'chat_template', None), chat_template_kwargs)).encode()).hexdigest()
+    first_token_at = last_token_at = None
+    prefill_started = None
     started = time.monotonic()
     # Admit before moving tokens to GPU or allocating any request cache/workspace.
     with request_memory(resources, owner, model.config, total, prompt, device, cancel_event, expert_headroom_bytes):
@@ -122,6 +124,7 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                                                           prompt - 1, history=chat)
             tokens = tokens.to(device)
             cursor = reused
+            prefill_started = time.monotonic()
             while prompt - cursor > 32:
                 check_cancel(cancel_event)
                 end = min(cursor + 32, prompt)
@@ -139,12 +142,16 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                 consumed = prompt + len(generated)
                 token = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 value = token.item()
+                sampled_at = time.monotonic()
                 if step == 0:
-                    log.info("LLM first token after %.3fs; prompt_tokens=%d", time.monotonic()-started, prompt)
+                    log.info("LLM first token after %.3fs; prompt_tokens=%d", sampled_at-started, prompt)
                 output = None
                 if value in stops:
                     finish_reason = "stop"
                     break
+                last_token_at = sampled_at
+                if first_token_at is None:
+                    first_token_at = last_token_at
                 generated.append(value)
                 if streamer is not None:
                     streamer.put(torch.tensor([value]))
@@ -153,6 +160,14 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
             text = tokenizer.decode(generated, skip_special_tokens=True)
             if streamer is not None:
                 streamer.end()
+            if on_event is not None:
+                decode_seconds = (last_token_at - first_token_at) if len(generated) > 1 else 0
+                on_event({'timing': {
+                    'generation_ttft_ms': (first_token_at - started) * 1000 if first_token_at is not None else None,
+                    'prefill_ms': (first_token_at - prefill_started) * 1000 if first_token_at is not None else None,
+                    'decode_tokens_per_second': (len(generated) - 1) / decode_seconds if decode_seconds > 0 else None,
+                    'output_tokens': len(generated), 'prefill_tokens': prompt - reused,
+                }})
             if retained is not None:
                 # Cache describes inputs already consumed, never the sampled next
                 # token. On EOS all answer tokens were consumed; on length stop
@@ -172,7 +187,8 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                 check_cancel(cancel_event)
                 usage = {'hit': reused > 0, 'reused_tokens': reused, 'reason': reason,
                          **retained.commit(conversation_id, history=completed, retention_reason=retention_reason)}
-                log.info('LLM conversation cache: %s', usage)
+                usage['prefix_digest'] = hashlib.sha256(repr(consumed_ids).encode()).hexdigest() if usage['stored_tokens'] else None
+                log.info('LLM conversation=%s cache=%s', hashlib.sha256(conversation_id.encode()).hexdigest()[:16], usage)
                 if on_event is not None:
                     on_event({'cache': usage})
             if on_event is not None:

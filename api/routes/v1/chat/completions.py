@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from typing import Literal
@@ -82,7 +83,22 @@ def event_frame(value):
     return 'data: ' + json.dumps(value, ensure_ascii=False) + '\n\n'
 
 
-async def chunks(stream, identity):
+def observe_generation(measurement, event):
+    """Copy numeric native measurements and safe cache metadata; never output text."""
+    timing = event.get('timing') or {}
+    for key in ('generation_ttft_ms', 'prefill_ms', 'decode_tokens_per_second', 'output_tokens', 'prefill_tokens'):
+        if key in timing:
+            measurement[key] = timing[key]
+    cache = event.get('cache') or {}
+    for source, target in (('hit', 'cache_hit'), ('reused_tokens', 'reused_tokens'),
+                           ('stored_tokens', 'stored_tokens'), ('reason', 'cache_reason'),
+                           ('retention_reason', 'retention_reason'), ('prefix_digest', 'cached_prefix_sha256')):
+        if source in cache:
+            measurement[target] = cache[source]
+
+
+async def chunks(stream, identity, measurement=None, request_started=None):
+    measurement = {} if measurement is None else measurement
     def chunk(delta, finish_reason=None, cache=None):
         return event_frame({**({"cache": cache} if cache is not None else {}), **identity, 'object': 'chat.completion.chunk',
             'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}]})
@@ -91,6 +107,9 @@ async def chunks(stream, identity):
     cache = None
     try:
         async for event in stream:
+            observe_generation(measurement, event)
+            if event.get('content') and request_started is not None and 'stream_ttft_ms' not in measurement:
+                measurement['stream_ttft_ms'] = (time.monotonic() - request_started) * 1000
             if 'content' in event:
                 yield chunk({'content': event['content']})
             if 'cache' in event:
@@ -110,6 +129,9 @@ async def chunks(stream, identity):
     responses={200: {'content': {'text/event-stream': {'schema': {'type': 'string'}}}}})
 async def create_completion(body: CompletionRequest, request: Request):
     """Queue JSON or incremental SSE chat; disconnect waits for native cleanup."""
+    measurement = request.scope.setdefault('kadan_measurement', {})
+    if body.conversation_id:
+        measurement['conversation_key'] = hashlib.sha256(body.conversation_id.encode()).hexdigest()[:16]
     identity = {'id': 'chatcmpl-' + uuid4().hex, 'created': int(time.time()),
                 'model': body.model or memory_manager.runtime.model_id or 'unknown'}
     if body.stream:
@@ -118,8 +140,10 @@ async def create_completion(body: CompletionRequest, request: Request):
         except HTTPException:
             raise
         identity['model'] = model or identity['model']
-        return OwnedStreamResponse(chunks(stream, identity), stream)
+        return OwnedStreamResponse(chunks(stream, identity, measurement,
+            request.scope.get('kadan_request_started', time.monotonic())), stream)
     result = await infer(request, memory_manager.submit(body, feature='llm', operation='completion'))
+    observe_generation(measurement, result)
     text = result['text']
     return CompletionResponse(**identity, message=ChatMessage(role='assistant', text=text),
         choices=[CompletionChoice(message=AssistantMessage(content=text), finish_reason=result['finish_reason'])],
