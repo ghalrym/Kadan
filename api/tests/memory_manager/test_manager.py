@@ -70,9 +70,12 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.llm = Resident(self.resources, 'llm', self.events)
         self.stt = Resident(self.resources, 'speech', self.events)
 
-        async def complete(messages, model):
+        async def complete(messages, model, on_event=None):
             self.assertEqual(model, 'selected-llm')
             self.llm.infer()
+            if on_event:
+                on_event({'content': 'reply'})
+                on_event({'finish_reason': 'stop'})
             return 'reply'
 
         def transcribe(audio, model, language, cancel):
@@ -152,7 +155,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
                 chat = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'text': 'Hi'}]})
                 self.assertEqual(chat.status_code, 200)
-                self.assertEqual(chat.json(), {'message': {'role': 'assistant', 'text': 'reply', 'meta': None}})
+                self.assertEqual(chat.json()['message'], {'role': 'assistant', 'text': 'reply', 'meta': None})
                 audio = await client.post('/v1/audio/transcriptions', json={'audio': audio_url(), 'formatting': False})
                 self.assertEqual(audio.status_code, 200)
                 self.assertEqual(audio.json(), dict(text='heard', raw_text='heard', language='en', model='tiny',
@@ -172,9 +175,12 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
                 generated.append(spec.prompt)
                 output.write_bytes(b'controlled output')
 
-        async def complete(messages, model):
+        async def complete(messages, model, on_event=None):
             started.set()
             await release.wait()
+            if on_event:
+                on_event({'content': 'reply'})
+                on_event({'finish_reason': 'stop'})
             return 'reply'
 
         self.runtime.complete = complete

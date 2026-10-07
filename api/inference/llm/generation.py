@@ -5,6 +5,7 @@ import logging
 import time
 from uuid import uuid4
 import torch
+from .streaming import TextEvents
 from .context import ContextLimitError, ContextMemoryError, estimate_request_memory, resolve_context
 from ..resources import ResourceExhausted
 
@@ -75,7 +76,7 @@ def request_memory(resources, owner, config, total, prompt, device, cancel_event
 
 @torch.inference_mode()
 def autoregressive_generate(model, tokenizer, messages, device, cancel_event=None,
-                            max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0, chat_template_kwargs=None):
+                            max_new_tokens=256, context_limit=None, resources=None, owner='inference', expert_headroom_bytes=0, chat_template_kwargs=None, on_event=None):
     """Return greedy decoded text from role/text messages using 32-token prefill chunks. Validate
     context and admit memory before GPU transfer; cancellation and failed forwards release
     request references before the lease ends.
@@ -100,6 +101,8 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
         eos = tokenizer.eos_token_id
     stops = set(eos if isinstance(eos, list) else [eos])
     generated, cache, output, token = [], None, None, None
+    streamer = TextEvents(tokenizer, on_event) if on_event else None
+    finish_reason = "length"
     started = time.monotonic()
     # Admit before moving tokens to GPU or allocating any request cache/workspace.
     with request_memory(resources, owner, model.config, total, prompt, device, cancel_event, expert_headroom_bytes):
@@ -124,11 +127,18 @@ def autoregressive_generate(model, tokenizer, messages, device, cancel_event=Non
                     log.info("LLM first token after %.3fs; prompt_tokens=%d", time.monotonic()-started, prompt)
                 output = None
                 if value in stops:
+                    finish_reason = "stop"
                     break
                 generated.append(value)
+                if streamer is not None:
+                    streamer.put(torch.tensor([value]))
                 tokens = token
             check_cancel(cancel_event)
-            return tokenizer.decode(generated, skip_special_tokens=True)
+            text = tokenizer.decode(generated, skip_special_tokens=True)
+            if streamer is not None:
+                streamer.end()
+                on_event({"finish_reason": finish_reason})
+            return text
         except ResourceExhausted as exc:
             traceback.clear_frames(exc.__traceback__)
             raise ContextMemoryError(

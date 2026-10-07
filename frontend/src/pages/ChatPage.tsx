@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { requestChat, type ConversationMessage } from '../api/chat'
+import { streamChat, type ConversationMessage } from '../api/chat'
 
 /** Keep tab-local conversation history and one cancellable request with explicit retry. */
 export default function ChatPage() {
@@ -12,6 +12,7 @@ export default function ChatPage() {
   >(null)
   const [notice, setNotice] = useState('')
   const active = useRef<AbortController | null>(null)
+  const activeConversation = useRef<ConversationMessage[]>([])
   const historyEnd = useRef<HTMLDivElement | null>(null)
 
   useEffect(
@@ -33,17 +34,26 @@ export default function ChatPage() {
     if (active.current) return
     const controller = new AbortController()
     active.current = controller
+    activeConversation.current = conversation
     setPending(true)
     setError(null)
     setNotice('')
     setRetryMessages(null)
     setMessages(conversation)
     try {
-      const message = await requestChat(conversation, controller.signal)
+      const message = await streamChat(
+        conversation,
+        controller.signal,
+        (text) => {
+          if (active.current === controller && !controller.signal.aborted)
+            setMessages([...conversation, { role: 'assistant', text }])
+        },
+      )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])
     } catch (failure) {
       if (active.current !== controller || controller.signal.aborted) return
+      setMessages(conversation)
       setError(
         failure instanceof Error
           ? failure.message
@@ -63,7 +73,9 @@ export default function ChatPage() {
     active.current?.abort()
     active.current = null
     setPending(false)
-    setRetryMessages(messages)
+    const retry = activeConversation.current
+    setMessages(retry)
+    setRetryMessages(retry)
     setNotice(
       'Request cancelled in this browser. The backend may still be finishing inference.',
     )
@@ -112,9 +124,7 @@ export default function ChatPage() {
       </div>
       <div className="chat-composer-wrap">
         {(error || notice || retryMessages) && (
-          <div
-            className={`chat-banner${error ? ' chat-banner--error' : ''}`}
-          >
+          <div className={`chat-banner${error ? ' chat-banner--error' : ''}`}>
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
             {retryMessages && (

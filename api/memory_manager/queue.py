@@ -88,6 +88,7 @@ class InferenceQueue:
         self._wake = asyncio.Event()
         self._ready = False
         self.error = 'Inference queue has not started.'
+        self.streams = {}
 
     def key(self, suffix):
         return self.prefix + suffix
@@ -135,17 +136,20 @@ class InferenceQueue:
             self._lock_file.close()
             self._lock_file = None
 
-    async def submit(self, feature, operation, payload, model=None):
+    async def submit(self, feature, operation, payload, model=None, *, stream=None):
         if not self._ready:
             raise RuntimeFailure(self.error or 'Inference queue is stopping.')
         job = Job(id=uuid.uuid4().hex, feature=feature, operation=operation, model=model, payload=payload)
         encoded = job.model_dump_json()
         if len(encoded.encode()) > self.max_payload:
             raise RuntimeFailure('Inference request exceeds the queue payload limit.', 413)
+        if stream is not None:
+            self.streams[job.id] = stream
         try:
             accepted = await self.redis.eval(_ENQUEUE, 3, self.key('pending'), self.key('unfinished'),
                 self.key('job:' + job.id), job.id, encoded, self.limit)
         except (RedisError, asyncio.CancelledError) as exc:
+            self.streams.pop(job.id, None)
             # Enqueue may have committed even if its response was lost. Cancel
             # that stable ID before returning an error/disconnect to the caller.
             cleanup = asyncio.create_task(self.redis.eval(_CANCEL, 3, self.key('pending'),
@@ -156,6 +160,7 @@ class InferenceQueue:
                 raise
             raise RuntimeFailure('Redis inference queue is unavailable.') from exc
         if not accepted:
+            self.streams.pop(job.id, None)
             raise RuntimeFailure('Inference queue is full. Retry after a job completes.', 429)
         self._wake.set()
         return job.id

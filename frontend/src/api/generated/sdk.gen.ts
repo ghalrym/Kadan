@@ -291,7 +291,7 @@ export const selectWhisperModel = <ThrowOnError extends boolean = false>(
 /**
  * Create Completion
  *
- * Queue a reply; disconnect waits for native cancellation and cleanup.
+ * Queue JSON or incremental SSE chat; disconnect waits for native cleanup.
  */
 export const createCompletion = <ThrowOnError extends boolean = false>(
   options: Options<CreateCompletionData, ThrowOnError>,

@@ -12,6 +12,7 @@ from api.inference.stt.feature import STTFeature
 from api.inference.tts.feature import TTSFeature
 from api.inference.decisions.feature import DecisionsFeature
 from api.memory_manager.queue import InferenceQueue, Job
+from api.memory_manager.streaming import QueuedStream
 from api.inference.decisions.model import decision_manager
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
@@ -61,6 +62,13 @@ class MemoryManager:
         queued = getattr(wrapper, 'queued', None)
         return queued(job_id, body) if queued is not None else await self.queue.wait(job_id)
 
+    async def open_chat_stream(self, body):
+        model = self.llm.select(body)
+        stream = QueuedStream(self.queue)
+        stream.job_id = await self.queue.submit("llm", "completion", body.model_dump(mode="json"), model, stream=stream)
+        stream.start()
+        return stream, model
+
     async def start(self):
         try:
             await self.queue.start()
@@ -103,7 +111,9 @@ class MemoryManager:
             raise RuntimeFailure('Queued model selection does not match the request.', 422)
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
-        return await wrapper(body, model=job.model, operation=job.operation, job_id=job.id)
+        stream = self.queue.streams.get(job.id) if job.feature == "llm" else None
+        return await wrapper(body, model=job.model, operation=job.operation, job_id=job.id,
+            **({"on_event": stream.emit} if stream is not None else {}))
 
 
 memory_manager = MemoryManager()
