@@ -15,6 +15,9 @@ The [text manifest and explicit placement planner](MANIFEST.md) now bind the ful
 installed index and text-decoder tensor roles with bounded metadata reads, plus
 selected payload loading and caller-supplied placement budgets. They do not yet
 execute a full model.
+The [hybrid sequence-state foundation](STATE.md) adds precise KV/linear-state
+layout and an opt-in, compile-tested single-device state owner with commit,
+abort/invalidation, reset and cleanup rules. It does not execute layer math.
 Existing Python/API/UI execution is unchanged; other modalities are not migrated.
 
 ## Build and test without GPU access
