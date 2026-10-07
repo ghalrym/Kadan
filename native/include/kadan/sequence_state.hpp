@@ -23,13 +23,26 @@ SequenceStatePlan plan_sequence_state(const checkpoint::TextArchitecture& archit
     std::size_t token_capacity, std::span<const std::size_t> layer_devices,
     std::span<const std::size_t> device_budgets);
 
-using StateStep = std::uint64_t;
+// Opaque process-local capability: identity never depends on an object's address.
+class StateStep {
+public:
+    StateStep() = default;
+    bool operator==(const StateStep&) const = default;
+private:
+    friend class StateCursor;
+    StateStep(std::uint64_t owner,std::uint64_t generation):owner_(owner),generation_(generation) {}
+    std::uint64_t owner_ = 0, generation_ = 0;
+};
 // CPU sequencing reference. A producer must finish every layer before commit.
 // In-place recurrent updates cannot be rolled back: abort invalidates ALL state
 // until a synchronized physical reset. No partial prefix reuse is promised.
 class StateCursor {
 public:
     StateCursor(std::size_t layers,std::size_t capacity);
+    StateCursor(const StateCursor&) = delete;
+    StateCursor& operator=(const StateCursor&) = delete;
+    StateCursor(StateCursor&&) = delete;
+    StateCursor& operator=(StateCursor&&) = delete;
     StateStep begin();
     void check_step(StateStep step) const;
     void written(StateStep step,std::size_t layer);
@@ -44,7 +57,8 @@ public:
     bool valid() const { return valid_ && !closed_; }
 private:
     std::size_t layers_, capacity_, tokens_ = 0;
-    StateStep next_ = 0, active_ = 0;
+    const std::uint64_t owner_;
+    std::uint64_t next_ = 0, active_ = 0;
     std::bitset<256> written_;
     bool valid_ = true, closed_ = false;
 };

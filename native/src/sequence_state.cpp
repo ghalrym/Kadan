@@ -1,4 +1,5 @@
 #include "kadan/sequence_state.hpp"
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 
@@ -12,6 +13,16 @@ std::size_t mul(std::size_t a,std::size_t b) {
     require(!b || a<=std::numeric_limits<std::size_t>::max()/b,"state_size_overflow"); return a*b;
 }
 std::size_t align(std::size_t n) { return add(n,255)&~std::size_t{255}; }
+// One monotonically assigned identity per cursor, including replacement objects at
+// reused addresses. Saturate rather than wrap; relaxed ordering only assigns IDs.
+std::uint64_t new_owner() {
+    static std::atomic<std::uint64_t> last{0};
+    auto value=last.load(std::memory_order_relaxed);
+    for (;;) {
+        require(value!=std::numeric_limits<std::uint64_t>::max(),"state_owner_exhausted");
+        if (last.compare_exchange_weak(value,value+1,std::memory_order_relaxed)) return value+1;
+    }
+}
 void dimension(std::size_t n,std::size_t limit) { require(n>0 && n<=limit,"state_architecture_dimension"); }
 }
 SequenceStatePlan plan_sequence_state(const checkpoint::TextArchitecture& a,std::size_t capacity,
@@ -46,15 +57,15 @@ SequenceStatePlan plan_sequence_state(const checkpoint::TextArchitecture& a,std:
     }
     return plan;
 }
-StateCursor::StateCursor(std::size_t layers,std::size_t capacity):layers_(layers),capacity_(capacity) {
+StateCursor::StateCursor(std::size_t layers,std::size_t capacity):layers_(layers),capacity_(capacity),owner_(new_owner()) {
     require(layers>0 && layers<=256 && capacity>0,"state_cursor_shape");
 }
 StateStep StateCursor::begin() {
     require(valid() && !active_,"state_unavailable"); require(tokens_<capacity_,"state_context_full");
-    require(next_!=std::numeric_limits<StateStep>::max(),"state_step_exhausted");
-    written_.reset(); active_=++next_; return active_;
+    require(next_!=std::numeric_limits<std::uint64_t>::max(),"state_step_exhausted");
+    written_.reset(); active_=++next_; return StateStep(owner_,active_);
 }
-void StateCursor::check_step(StateStep step) const { require(valid() && active_ && active_==step,"stale_state_step"); }
+void StateCursor::check_step(StateStep step) const { require(valid() && active_ && step.owner_==owner_ && active_==step.generation_,"stale_state_step"); }
 void StateCursor::written(StateStep step,std::size_t layer) {
     check_step(step); require(layer<layers_,"state_layer_index"); require(!written_[layer],"state_layer_already_written"); written_.set(layer);
 }

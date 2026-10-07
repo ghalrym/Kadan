@@ -48,9 +48,13 @@ capacity or double-counting the same reserved bytes.
 
 ## Progress, cancellation and residency
 
-`StateCursor` is the CPU sequencing reference. It issues non-reused step IDs,
-requires exactly one completion acknowledgement per layer, refuses incomplete
-commits and capacity overruns, and rejects stale IDs. A reset does not reuse IDs.
+`StateCursor` is the CPU sequencing reference. It issues opaque tokens binding a
+non-reused process-local owner identity and a monotonic local generation. Cursor
+copying and moving are disabled. Owner identity is assigned atomically and
+saturates on exhaustion; object destruction/address reuse cannot revive a delayed
+token. Reset never resets the generation. The cursor requires exactly one
+completion acknowledgement per layer, refuses incomplete commits and capacity
+overruns, and rejects foreign and stale tokens.
 Single-token progress is the current boundary; batching/prefill chunk operations
 remain future work.
 

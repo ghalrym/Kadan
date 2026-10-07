@@ -2,6 +2,8 @@
 #include <array>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <type_traits>
 #include <stdexcept>
 #include <string_view>
 
@@ -60,6 +62,33 @@ void actual_profile_arithmetic() {
     check(p.device_bytes[0]==2716794880 && p.device_bytes[1]==2716794880);
     // These calls only compute byte counts, allocating no model or state buffers.
 }
+void owner_isolation() {
+    static_assert(!std::is_copy_constructible_v<kadan::StateCursor>);
+    static_assert(!std::is_copy_assignable_v<kadan::StateCursor>);
+    static_assert(!std::is_move_constructible_v<kadan::StateCursor>);
+    static_assert(!std::is_move_assignable_v<kadan::StateCursor>);
+    kadan::StateCursor a(1,2),b(1,2);
+    const auto first=a.begin(),foreign=b.begin(); // Both local generations are one.
+    check(first!=foreign);
+    auto rejected=[&](kadan::StateCursor& owner,kadan::StateStep token) {
+        fails([&]{owner.check_step(token);},"stale_state_step"); // CUDA layer() guard.
+        fails([&]{owner.written(token,0);},"stale_state_step");
+        fails([&]{owner.ready_to_commit(token);},"stale_state_step");
+        fails([&]{owner.commit(token);},"stale_state_step");
+        fails([&]{owner.abort(token);},"stale_state_step");
+        check(owner.active() && owner.valid() && owner.committed_tokens()==0);
+    };
+    rejected(a,foreign);rejected(b,first);rejected(a,{});
+    a.written(first,0);b.written(foreign,0);
+    rejected(a,foreign);rejected(b,first); // Rejection also when otherwise ready.
+    a.commit(first);b.commit(foreign);
+    a.reset();const auto next=a.begin();rejected(a,first);a.abort(next);
+    // optional reuses exactly the same storage: address identity would fail this.
+    std::optional<kadan::StateCursor> slot;slot.emplace(1,2);
+    const auto delayed=slot->begin();slot.reset();slot.emplace(1,2);
+    const auto replacement=slot->begin();check(delayed!=replacement);
+    rejected(*slot,delayed);slot->written(replacement,0);slot->commit(replacement);
+}
 void lifecycle() {
     kadan::StateCursor state(2,2);
     auto step=state.begin(); check(state.active() && state.committed_tokens()==0);
@@ -85,6 +114,6 @@ void lifecycle() {
 }
 }
 int main() {
-    try { layouts(); actual_profile_arithmetic(); lifecycle(); }
+    try { layouts(); actual_profile_arithmetic(); owner_isolation(); lifecycle(); }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
