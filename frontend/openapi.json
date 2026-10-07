@@ -20,6 +20,47 @@
         "title": "AssistantMessage",
         "type": "object"
       },
+      "CacheUsage": {
+        "properties": {
+          "device_bytes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Device Bytes",
+            "type": "object"
+          },
+          "hit": {
+            "title": "Hit",
+            "type": "boolean"
+          },
+          "host_bytes": {
+            "title": "Host Bytes",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reused_tokens": {
+            "title": "Reused Tokens",
+            "type": "integer"
+          },
+          "stored_tokens": {
+            "title": "Stored Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hit",
+          "reused_tokens",
+          "stored_tokens",
+          "host_bytes",
+          "device_bytes",
+          "reason"
+        ],
+        "title": "CacheUsage",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
           "meta": {
@@ -262,6 +303,20 @@
       "CompletionRequest": {
         "additionalProperties": false,
         "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Client-owned opaque conversation ID; omitted IDs never retain prefix state.",
+            "title": "Conversation Id"
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/CompletionMessage"
@@ -281,6 +336,12 @@
             ],
             "title": "Model"
           },
+          "reuse_prefix": {
+            "default": true,
+            "description": "Disable to compare against full prefill.",
+            "title": "Reuse Prefix",
+            "type": "boolean"
+          },
           "stream": {
             "default": false,
             "title": "Stream",
@@ -295,6 +356,16 @@
       },
       "CompletionResponse": {
         "properties": {
+          "cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CacheUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "choices": {
             "items": {
               "$ref": "#/components/schemas/CompletionChoice"

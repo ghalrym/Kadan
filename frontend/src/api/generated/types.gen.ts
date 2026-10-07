@@ -19,6 +19,38 @@ export type AssistantMessage = {
 }
 
 /**
+ * CacheUsage
+ */
+export type CacheUsage = {
+  /**
+   * Device Bytes
+   */
+  device_bytes: {
+    [key: string]: number
+  }
+  /**
+   * Hit
+   */
+  hit: boolean
+  /**
+   * Host Bytes
+   */
+  host_bytes: number
+  /**
+   * Reason
+   */
+  reason: string
+  /**
+   * Reused Tokens
+   */
+  reused_tokens: number
+  /**
+   * Stored Tokens
+   */
+  stored_tokens: number
+}
+
+/**
  * ChatMessage
  */
 export type ChatMessage = {
@@ -162,6 +194,12 @@ export type CompletionMessage = {
  */
 export type CompletionRequest = {
   /**
+   * Conversation Id
+   *
+   * Client-owned opaque conversation ID; omitted IDs never retain prefix state.
+   */
+  conversation_id?: string | null
+  /**
    * Messages
    */
   messages: Array<CompletionMessage>
@@ -169,6 +207,12 @@ export type CompletionRequest = {
    * Model
    */
   model?: string | null
+  /**
+   * Reuse Prefix
+   *
+   * Disable to compare against full prefill.
+   */
+  reuse_prefix?: boolean
   /**
    * Stream
    */
@@ -179,6 +223,7 @@ export type CompletionRequest = {
  * CompletionResponse
  */
 export type CompletionResponse = {
+  cache?: CacheUsage | null
   /**
    * Choices
    */

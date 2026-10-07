@@ -74,6 +74,7 @@ export async function streamChat(
   messages: ConversationMessage[],
   signal: AbortSignal,
   onText: (text: string) => void,
+  conversationId?: string,
 ): Promise<ConversationMessage> {
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
@@ -81,7 +82,11 @@ export async function streamChat(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...chatRequest(messages), stream: true }),
+    body: JSON.stringify({
+      ...chatRequest(messages),
+      stream: true,
+      conversation_id: conversationId,
+    }),
     signal,
   })
   if (!response.ok) {

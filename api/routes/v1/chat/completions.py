@@ -24,6 +24,9 @@ class CompletionRequest(BaseModel):
     messages: list[CompletionMessage] = Field(min_length=1)
     model: str | None = None
     stream: bool = False
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128,
+        description="Client-owned opaque conversation ID; omitted IDs never retain prefix state.")
+    reuse_prefix: bool = Field(default=True, description="Disable to compare against full prefill.")
 
 
 class AssistantMessage(BaseModel):
@@ -37,6 +40,15 @@ class CompletionChoice(BaseModel):
     finish_reason: Literal['stop', 'length'] = 'stop'
 
 
+class CacheUsage(BaseModel):
+    hit: bool
+    reused_tokens: int
+    stored_tokens: int
+    host_bytes: int
+    device_bytes: dict[str, int]
+    reason: str
+
+
 class CompletionResponse(BaseModel):
     # Preserve the original Kadan response while adding the standard envelope.
     message: ChatMessage
@@ -45,6 +57,7 @@ class CompletionResponse(BaseModel):
     created: int
     model: str
     choices: list[CompletionChoice]
+    cache: CacheUsage | None = None
 
 
 class OwnedStreamResponse(StreamingResponse):
@@ -68,20 +81,23 @@ def event_frame(value):
 
 
 async def chunks(stream, identity):
-    def chunk(delta, finish_reason=None):
-        return event_frame({**identity, 'object': 'chat.completion.chunk',
+    def chunk(delta, finish_reason=None, cache=None):
+        return event_frame({**({"cache": cache} if cache is not None else {}), **identity, 'object': 'chat.completion.chunk',
             'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}]})
     yield chunk({'role': 'assistant', 'content': ''})
     finish = None
+    cache = None
     try:
         async for event in stream:
             if 'content' in event:
                 yield chunk({'content': event['content']})
+            if 'cache' in event:
+                cache = event['cache']
             if 'finish_reason' in event:
                 finish = event['finish_reason']
         if finish not in ('stop', 'length'):
             raise RuntimeFailure('Generation ended without a terminal event.', 502)
-        yield chunk({}, finish)
+        yield chunk({}, finish, cache)
         yield 'data: [DONE]\n\n'
     except RuntimeFailure as exc:
         yield event_frame({'error': {'message': str(exc), 'type': 'inference_error', 'code': exc.status_code}})
@@ -104,4 +120,5 @@ async def create_completion(body: CompletionRequest, request: Request):
     result = await infer(request, memory_manager.submit(body, feature='llm', operation='completion'))
     text = result['text']
     return CompletionResponse(**identity, message=ChatMessage(role='assistant', text=text),
-        choices=[CompletionChoice(message=AssistantMessage(content=text), finish_reason=result['finish_reason'])])
+        choices=[CompletionChoice(message=AssistantMessage(content=text), finish_reason=result['finish_reason'])],
+        cache=result.get('cache'))

@@ -39,6 +39,7 @@ export type {
   ApiRoutesV1ImagesEditsImageRequest,
   ApiRoutesV1ImagesGenerationsImageRequest,
   AssistantMessage,
+  CacheUsage,
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteError,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,

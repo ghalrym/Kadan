@@ -199,7 +199,7 @@ class GptOssAdapter:
             torch.cuda.empty_cache()
             self.is_resident = False
 
-    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None):
+    def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None, conversation_cache=None, conversation_id=None):
         """Return decoded chat text under host/device leases and request serialization.
 
         Restore residency before taking the adapter lock, update expert
@@ -218,7 +218,8 @@ class GptOssAdapter:
                 return autoregressive_generate(self.model, self.tokenizer, messages, self.device,
                     cancel_event=cancel_event, max_new_tokens=max_new_tokens,
                     context_limit=self.effective_context_limit, resources=self.resources, owner=self.owner,
-                    expert_headroom_bytes=self.bank.max_expert_bytes, on_event=on_event)
+                    expert_headroom_bytes=self.bank.max_expert_bytes, on_event=on_event,
+                                                       conversation_cache=conversation_cache, conversation_id=conversation_id)
 
     def close(self):
         """Drop model, tokenizer and cache ownership, then release memory reservations.

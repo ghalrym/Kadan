@@ -16,7 +16,8 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         app.include_router(router)
         manager = SimpleNamespace(runtime=SimpleNamespace(model_id='small'),
-            submit=AsyncMock(return_value={'text': 'Hello', 'finish_reason': 'length'}))
+            submit=AsyncMock(return_value={'text': 'Hello', 'finish_reason': 'length',
+                'cache': {'hit':True,'reused_tokens':20,'stored_tokens':20,'host_bytes':70000,'device_bytes':{},'reason':'hit'}}))
         with patch('api.routes.v1.chat.completions.memory_manager', manager):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
                 for key in ('text', 'content'):
@@ -27,6 +28,7 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(data['choices'][0]['message']['content'], 'Hello')
                     self.assertEqual(data['choices'][0]['finish_reason'], 'length')
                     self.assertEqual(data['object'], 'chat.completion')
+                    self.assertEqual(data['cache']['reused_tokens'],20)
 
     async def test_chunks_are_incremental_and_terminal_waits_for_cleanup(self):
         release = asyncio.Event()
@@ -34,6 +36,7 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
             yield {'content': 'First '}
             await release.wait()
             yield {'content': 'second'}
+            yield {'cache': {'hit':True,'reused_tokens':20}}
             yield {'finish_reason': 'stop'}
         stream = chunks(source(), {'id': 'chatcmpl-test', 'created': 1, 'model': 'small'})
         self.assertIn('assistant', await anext(stream))
@@ -44,6 +47,7 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         self.assertIn('second', await pending)
         terminal = json.loads((await anext(stream)).removeprefix('data: '))
+        self.assertEqual(terminal['cache']['reused_tokens'],20)
         self.assertEqual(terminal['choices'][0], {'index': 0, 'delta': {}, 'finish_reason': 'stop'})
         self.assertEqual(await anext(stream), 'data: [DONE]\n\n')
 
