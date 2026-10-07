@@ -62,6 +62,11 @@ This prevents the 1,024-resident ledger limit from being exhausted by expert
 projections. A test fills 1,023 entries before admitting the whole fixture layer
 and verifies it consumes only the remaining entry.
 
+Successful `close()` destroys the charged descriptor object immediately, even if
+the public wrapper is retained. Repeated close is a no-op; `valid()` becomes false
+and execution/reset/diagnostics reject closed wrappers. Uncertain cleanup keeps
+the object and reservation intact until destruction/context handling.
+
 The same handle charges `sizeof(Impl)` host bytes for the bounded fixed descriptor
 and owner table (31,336 bytes with the verified toolchain), plus exact arena VRAM.
 The CPU object is allocated before constructor admission; failed admission
@@ -123,7 +128,11 @@ and checks admission exhaustion, the 1,024-entry boundary, partial-construction
 cleanup, reset/current-device/diagnostic-copy failures, uncertain enqueue,
 synchronization recovery/quarantine, and latched cleanup failures with retained
 charges. Fake context teardown is test-only; it is not production cleanup retry.
-No actual CUDA runtime behavior or numerical kernels are emulated by the shim.
+A regression instruments actual C++ owner allocations, retains eight closed
+wrappers under a one-owner RAM cap, and checks live owner bytes against the ledger
+at each construction/close. It also checks every closed-wrapper entry point and
+idempotent close. No actual CUDA runtime behavior or numerical kernels are
+emulated by the shim.
 
 CUDA12/GCC12 SM86 compile/link passes with parallelism two. CTest contains CPU
 tests only. No GPU stage has executed for this milestone.

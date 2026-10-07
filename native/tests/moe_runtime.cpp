@@ -10,6 +10,26 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <algorithm>
+#include <new>
+// Test-only allocation instrumentation. Track the actual allocation/deallocation
+// of sizeof(Impl) while the regression is enabled; fixed pointer slots avoid any
+// allocation recursion. Caller wrappers/fixtures/ledger storage are not owner bytes.
+namespace owner_allocations {
+bool enabled=false;std::size_t target=0,live=0,peak=0,count=0;
+std::array<void*,64> pointers{};
+void record(void* p,std::size_t size){
+    if(!enabled||size!=target)return;
+    for(auto& slot:pointers)if(!slot){slot=p;live+=size;peak=std::max(peak,live);++count;return;}
+    std::abort();
+}
+void forget(void* p){if(!p)return;for(auto& slot:pointers)if(slot==p){slot=nullptr;live-=target;return;}}
+}
+void* operator new(std::size_t n){if(void* p=std::malloc(n?n:1)){owner_allocations::record(p,n);return p;}throw std::bad_alloc();}
+void operator delete(void* p)noexcept{owner_allocations::forget(p);std::free(p);}
+void operator delete(void* p,std::size_t)noexcept{::operator delete(p);}
+void* operator new[](std::size_t n){return ::operator new(n);}
+void operator delete[](void* p)noexcept{::operator delete(p);}
+void operator delete[](void* p,std::size_t)noexcept{::operator delete(p);}
 namespace {
 std::unordered_map<void*,std::size_t> allocations;
 std::size_t used=0,peak=0,launches=0,syncs=0,copies=0,memsets=0,mallocs=0,frees=0;
@@ -51,6 +71,27 @@ int main(){try{
         }
         check(!layer.valid());bool rejected=false;try{layer.reset();}catch(const std::invalid_argument&){rejected=true;}check(rejected);
         layer.close();layer.close();check(!layer.valid()&&used==0&&allocations.empty()&&resources->snapshot().used[0]==0&&resources->snapshot().used[1]==0);
+    }
+    // Regression: retaining closed public wrappers must not retain uncharged
+    // descriptor tables. A one-owner RAM cap must bound actual owner allocation.
+    {
+        MoeFixture f;const auto bytes=kadan::cuda::Moe::host_metadata_bytes();
+        auto resources=std::make_shared<kadan::Resources>(kadan::Footprint{bytes,65536});
+        std::vector<std::unique_ptr<kadan::cuda::Moe>> closed;closed.reserve(8);
+        owner_allocations::target=bytes;owner_allocations::enabled=true;
+        for(int iteration=0;iteration<8;++iteration){
+            auto wrapper=std::make_unique<kadan::cuda::Moe>(f.config,f.weights(),0,resources);
+            check(owner_allocations::live==bytes&&resources->snapshot().used[0]==bytes);
+            wrapper->close();check(owner_allocations::live==0&&resources->snapshot().used[0]==0&&used==0);
+            check(!wrapper->valid());wrapper->close();
+            std::array<float,16> x{},y{};std::array<float,4> logits{},prob{};std::array<float,2> weights{};std::array<unsigned,2> selected{};
+            auto rejected=[&](auto fn){bool caught=false;try{fn();}catch(const std::invalid_argument& e){caught=std::string_view(e.what())=="moe_closed";}check(caught);};
+            rejected([&]{wrapper->reset();});rejected([&]{wrapper->forward_device(x,y);});
+            rejected([&]{wrapper->read_routes(selected,logits,prob,weights);});rejected([&]{wrapper->read_outputs(x,y,x);});
+            closed.push_back(std::move(wrapper));
+        }
+        check(closed.size()==8&&owner_allocations::count==8&&owner_allocations::peak==bytes&&owner_allocations::live==0);
+        closed.clear();check(owner_allocations::live==0&&resources->snapshot().residents==0);owner_allocations::enabled=false;
     }
     // Admission is one layer handle, even when only one ledger entry remains.
     {

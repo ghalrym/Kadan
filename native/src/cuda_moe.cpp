@@ -76,18 +76,25 @@ struct Moe::Impl {
     }
 };
 Moe::Moe(moe::Config c,const moe::Weights& w,int d,std::shared_ptr<Resources> r):impl_(std::make_unique<Impl>(c,w,d,std::move(r))){}
-Moe::~Moe(){impl_->cleanup();}
+Moe::~Moe(){if(impl_)impl_->cleanup();}
 std::size_t Moe::host_metadata_bytes(){return sizeof(Impl);}
-void Moe::forward_device(std::span<const float> x,std::span<float> y){impl_->forward(x,y);}
-void Moe::reset(){impl_->reset();}
-bool Moe::valid()const{return impl_->handle&&!impl_->invalid&&!impl_->poisoned;}
+void Moe::forward_device(std::span<const float> x,std::span<float> y){require(bool(impl_),"moe_closed");impl_->forward(x,y);}
+void Moe::reset(){require(bool(impl_),"moe_closed");impl_->reset();}
+bool Moe::valid()const{return impl_&&impl_->handle&&!impl_->invalid&&!impl_->poisoned;}
 void Moe::read_routes(std::span<unsigned> selected,std::span<float> logits,std::span<float> probabilities,std::span<float> top_weights){
-    auto& i=*impl_;i.available();require(valid()&&i.ready&&selected.size()==i.c.top_k&&logits.size()==i.c.experts&&probabilities.size()==i.c.experts&&top_weights.size()==i.c.top_k,"moe_route_read");
+    require(bool(impl_),"moe_closed");auto& i=*impl_;i.available();require(valid()&&i.ready&&selected.size()==i.c.top_k&&logits.size()==i.c.experts&&probabilities.size()==i.c.experts&&top_weights.size()==i.c.top_k,"moe_route_read");
     i.pin();try{check(cudaMemcpy(selected.data(),i.b.selected,selected.size_bytes(),cudaMemcpyDeviceToHost));check(cudaMemcpy(logits.data(),i.b.logits,logits.size_bytes(),cudaMemcpyDeviceToHost));check(cudaMemcpy(probabilities.data(),i.b.probabilities,probabilities.size_bytes(),cudaMemcpyDeviceToHost));check(cudaMemcpy(top_weights.data(),i.b.top_weights,top_weights.size_bytes(),cudaMemcpyDeviceToHost));i.unpin();}catch(...){i.poisoned=true;throw;}
 }
 void Moe::read_outputs(std::span<float> routed,std::span<float> shared,std::span<float> result){
-    auto& i=*impl_;i.available();require(valid()&&i.ready&&routed.size()==i.c.hidden&&shared.size()==i.c.hidden&&result.size()==i.c.hidden,"moe_output_read");
+    require(bool(impl_),"moe_closed");auto& i=*impl_;i.available();require(valid()&&i.ready&&routed.size()==i.c.hidden&&shared.size()==i.c.hidden&&result.size()==i.c.hidden,"moe_output_read");
     i.pin();try{check(cudaMemcpy(routed.data(),i.b.accumulator,routed.size_bytes(),cudaMemcpyDeviceToHost));check(cudaMemcpy(shared.data(),i.b.shared,shared.size_bytes(),cudaMemcpyDeviceToHost));check(cudaMemcpy(result.data(),i.b.result,result.size_bytes(),cudaMemcpyDeviceToHost));i.unpin();}catch(...){i.poisoned=true;throw;}
 }
-void Moe::close(){if(!impl_->cleanup())throw std::runtime_error("moe_cleanup_failed_reservation_retained");}
+void Moe::close(){
+    if(!impl_)return;
+    if(!impl_->cleanup())throw std::runtime_error("moe_cleanup_failed_reservation_retained");
+    // Successful cleanup released both RAM and VRAM admission. Destroy the
+    // charged descriptor object now, even if the public wrapper stays alive.
+    // Failed cleanup keeps Impl and the conservative reservation intact.
+    impl_.reset();
+}
 } // namespace kadan::cuda

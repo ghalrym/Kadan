@@ -19,7 +19,10 @@ public:
     bool valid() const;
     void read_routes(std::span<unsigned> selected,std::span<float> logits,std::span<float> probabilities,std::span<float> top_weights);
     void read_outputs(std::span<float> routed,std::span<float> shared,std::span<float> result);
-    void close(); // uncertain cleanup retains RAM/VRAM reservation, no automatic retry
+    // Success frees the charged descriptor object; idempotent afterward, valid()
+    // is false and execution/diagnostics reject. Uncertain cleanup retains the
+    // object and RAM/VRAM reservation without automatic retry.
+    void close();
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };
