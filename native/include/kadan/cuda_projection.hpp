@@ -49,6 +49,11 @@ public:
     void matvec(std::span<const float> input, std::span<float> output);
     // Explicit close reports cleanup failures. Failed/uncertain cleanup retains
     // the resource reservation; no automatic retry or device reset is attempted.
+    // Caller-admitted device buffers; activations never pass through host RAM.
+    // Blocking legacy-stream boundary, including status verification. Caller pins
+    // both spans until return, supplies disjoint aligned buffers on this device,
+    // and discards output after errors. No allocation/provenance inference.
+    void matvec_device(std::span<const float> input,std::span<float> output);
     void close();
 private:
     struct Impl;
