@@ -1,0 +1,19 @@
+name: Native worker CPU tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure CPU-only C++20 worker
+        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF
+      - name: Build with bounded parallelism
+        run: cmake --build /tmp/kadan-native --parallel 2
+      - name: Test accounting and subprocess boundary
+        run: ctest --test-dir /tmp/kadan-native --output-on-failure
