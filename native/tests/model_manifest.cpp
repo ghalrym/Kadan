@@ -47,6 +47,21 @@ int main(int argc,char** argv) {
                 fails([&]{ model.place(bad); },"manifest_overflow");
             }
             check(budget->used()==initial);
+            {
+                std::array<ExpertPolicy,2> policies{ExpertPolicy::fully_resident,ExpertPolicy::fully_resident};
+                std::array<std::size_t,2> no_slots{0,0};
+                auto resident=options;resident.layer_expert_policy=policies;resident.expert_slots=no_slots;
+                auto plan=model.place(resident);
+                // Six 16x16 NVFP4 projection slabs per layer: five aligned 256-byte
+                // regions each. Payload per projection is 128+16+4+4 = 152 bytes.
+                check(plan.expert_host_bytes==0 && plan.host_bytes==17*1024*1024);
+                for(const auto& d:plan.devices()) check(d.expert_resident_bytes==7680 && d.expert_cache_bytes==0);
+                policies[1]=ExpertPolicy::host_cached;no_slots[1]=1;
+                auto mixed=model.place(resident);check(mixed.expert_host_bytes==912);
+                check(mixed.devices()[0].expert_resident_bytes==7680 && mixed.devices()[0].expert_cache_bytes==0);
+                check(mixed.devices()[1].expert_resident_bytes==0 && mixed.devices()[1].expert_cache_bytes==3840);
+            }
+            check(budget->used()==initial);
             auto find=[&](std::string_view name) { auto items=model.items(); auto it=std::find_if(items.begin(),items.end(),[&](const auto& x){return x.name==name;}); check(it!=items.end()); return std::size_t(it-items.begin()); };
             const auto fp4=find("lm_head"),fp8=find("model.language_model.layers.0.linear_attn.in_proj_qkv");
             auto loading=std::make_shared<MemoryBudget>(13);
