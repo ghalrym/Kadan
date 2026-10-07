@@ -31,7 +31,11 @@ Launch `kadan-worker HOST_BYTES [GPU_BYTES ...]` with explicit unsigned decimal
 budgets, one per device (at most 64 GPUs). Budget position 0 is RAM; subsequent
 positions map to worker-local CUDA ordinals. Budgets are accounting ceilings,
 not memory probes, allocations, or a guarantee that external memory is free.
-No implicit defaults or pooled VRAM. Zero device arguments permits host-only use.
+Both the library and executable allow at most 64 device budgets. The ledger
+holds at most 1024 residents, including zero-byte, loading, and evicting records.
+A full ledger rejects reserve with `resident_limit`; a slot is reusable only
+after cleanup acknowledgement. These fixed limits bound control-plane storage
+independently of the allocation budgets. No implicit defaults or pooled VRAM. Zero device arguments permits host-only use.
 
 The parent writes one ASCII whitespace-separated command per newline to stdin;
 stdout returns exactly one `ok ...` or `error CODE` line. Startup failures use

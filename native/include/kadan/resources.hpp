@@ -28,12 +28,17 @@ struct Snapshot { Footprint capacity; Footprint used; std::size_t residents; };
 // cleanup before releasing bytes. No callbacks run under its mutex.
 class Resources {
 public:
+    // Bound control-plane storage even when every reservation requests zero bytes.
+    static constexpr std::size_t max_residents = 1024;
+    static constexpr std::size_t max_devices = 64;
     explicit Resources(Footprint capacity) : capacity_(std::move(capacity)), used_(capacity_.size()) {
         if (capacity_.empty()) throw std::invalid_argument("host_budget_required");
+        if (capacity_.size() > max_devices + 1) throw std::invalid_argument("too_many_devices");
     }
     Handle reserve(Workload workload, Footprint bytes) {
         std::lock_guard lock(mutex_);
         if (bytes.size() != capacity_.size()) throw std::invalid_argument("budget_shape");
+        if (residents_.size() >= max_residents) throw std::runtime_error("resident_limit");
         for (std::size_t i = 0; i < bytes.size(); ++i)
             if (bytes[i] > capacity_[i] - used_[i]) throw std::runtime_error("exhausted");
         if (next_ == std::numeric_limits<Handle>::max()) throw std::runtime_error("handles_exhausted");
