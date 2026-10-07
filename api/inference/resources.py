@@ -313,8 +313,10 @@ class ResourceManager:
                 if self._fits(host_bytes, devices) and self._physical_fits(host_bytes, devices):
                     self._cancelled(cancel_event)
                     return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
-                candidates = [key for key, state in self._residents.items()
-                              if not state.active and state.evict is not None]
+                candidates = sorted(
+                    [key for key, state in self._residents.items() if not state.active and state.evict is not None],
+                    key=lambda key: (bool(self._residents[key].host_bytes),
+                                     sum(self._residents[key].device_bytes.values())))
             for candidate in candidates:
                 with self._lock:
                     available = self._probe() if self._probe else None
@@ -424,6 +426,25 @@ class ResourceManager:
             for victim in victims:
                 self._cancelled(cancel_event)
                 self._evict(victim)
+
+    def available_devices(self, *, reclaim=False):
+        """Snapshot execution headroom without evicting or pooling device capacities.
+
+        Reclaimable accounting is only a planning upper bound: every subsequent
+        reserve still probes physical memory and performs real callback cleanup.
+        Active/non-evictable residents are never credited as reclaimable.
+        """
+        with self._lock:
+            physical = self._probe().device_bytes if self._probe else self.capacity.device_bytes
+            credit = {}
+            if reclaim:
+                for state in self._residents.values():
+                    if not state.active and not state.evicting and state.evict is not None:
+                        for i, size in state.device_bytes.items():
+                            credit[i] = credit.get(i, 0) + size
+            return {i: max(0, min(capacity - self._used_devices.get(i, 0) + credit.get(i, 0),
+                                 physical.get(i, 0) + credit.get(i, 0)))
+                    for i, capacity in self.capacity.device_bytes.items()}
 
     def snapshot(self) -> dict:
         """Return a lock-consistent copy of budgets and reservation metadata, not a measurement of

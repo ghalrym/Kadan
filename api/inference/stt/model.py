@@ -14,6 +14,7 @@ import wave
 
 import numpy as np
 
+from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCancelled
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
@@ -56,11 +57,12 @@ class TranscriptionManager:
     def _offload_locked(self):
         if self.device != 'cpu' and self.native is not None:
             self.native.to('cpu')
-            self.device = 'cpu'
             torch = sys.modules.get('torch')
             if torch is not None and torch.cuda.is_initialized():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+                with torch.cuda.device(self.device):
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            self.device = 'cpu'
         if self.device_reservation is not None:
             self.device_reservation.release()
             self.device_reservation = None
@@ -130,6 +132,13 @@ class TranscriptionManager:
                     self.device_reservation = None
                     raise
 
+    def _select_device(self, resources, entry, requested, extra=0):
+        retained = None
+        if self.name == entry.name and self.device != 'cpu' and self.device_reservation is not None:
+            retained = (int(self.device[5:]), entry.device_memory_gib * 1024**3)
+        return select_device(resources, entry.device_memory_gib * 1024**3 + extra,
+                             requested, allow_cpu=True, retained=retained)
+
     def load(self, model=None, cancel=None):
         """Load/promote one selected checkpoint under the existing host lease."""
         cancel = cancel or threading.Event()
@@ -139,11 +148,10 @@ class TranscriptionManager:
             raise RuntimeFailure('Whisper checkpoint is not enabled in this version.', 422)
         with self.lock:
             resources = self.resources or runtime_manager.ensure_resources()
-            device = os.environ.get('KADAN_WHISPER_DEVICE', 'cpu')
-            if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
-                raise RuntimeFailure('KADAN_WHISPER_DEVICE must be cpu or cuda:<index>.')
+            device = os.environ.get('KADAN_WHISPER_DEVICE', 'auto')
             if self.name != name:
                 self._clear_locked()
+            device = self._select_device(resources, entry, device)
             try:
                 if self.host_reservation is None:
                     self.host_reservation = resources.reserve('whisper:host', 'speech',
@@ -189,14 +197,11 @@ class TranscriptionManager:
 
         try:
             check_cancel()
-            device = os.environ.get('KADAN_WHISPER_DEVICE', 'cpu')
-            if device != 'cpu' and not (device.startswith('cuda:') and device[5:].isdecimal()):
-                raise RuntimeFailure('KADAN_WHISPER_DEVICE must be cpu or cuda:<index>.')
+            device = os.environ.get('KADAN_WHISPER_DEVICE', 'auto')
             resources = self.resources or runtime_manager.ensure_resources()
             budget = entry.memory_gib * 1024**3
             device_budget = entry.device_memory_gib * 1024**3
-            if device != 'cpu' and device_budget > resources.capacity.device_bytes.get(int(device[5:]), 0):
-                raise ResourceExhausted('Whisper exceeds the selected GPU budget')
+            device = self._select_device(resources, entry, device, len(audio) * 16)
             if self.name != name:
                 self._clear_locked()
             if self.host_reservation is None:
@@ -249,8 +254,10 @@ class TranscriptionManager:
             samples = payload = frames = None
             gc.collect()
             torch = sys.modules.get('torch')
-            if torch is not None and torch.cuda.is_initialized():
-                torch.cuda.empty_cache()
+            if self.device != 'cpu' and torch is not None and torch.cuda.is_initialized():
+                with torch.cuda.device(self.device):
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
             if audio_reservation is not None:
                 audio_reservation.release()
             if self.native is None and self.host_reservation is not None:
