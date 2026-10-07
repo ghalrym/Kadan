@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import threading
 
+from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
@@ -45,6 +46,7 @@ class H3Provider:
         self._host = self._context = self._device = None
         self._session = None
         self._selected_device = None
+        self._full_resident = False
 
     def validate(self, spec):
         """Reject settings the native base model cannot honor before job admission."""
@@ -67,6 +69,7 @@ class H3Provider:
                 reservation.release()
                 setattr(self, name, None)
         self._selected_device = None
+        self._full_resident = False
 
     def _evict(self):
         if not self._lock.acquire(blocking=False):
@@ -126,12 +129,16 @@ class H3Provider:
                 raise ResourceExhausted('H3 native inference requires a CUDA GPU')
             selected = self._selected_device
             if selected is None:
-                selected = max(devices, key=devices.get)
+                try:
+                    selected = int(select_device(resources, entry.estimated_bytes + 12 * GIB + CONTEXT_BYTES)[5:])
+                    self._full_resident = True
+                except ResourceExhausted:
+                    selected = int(select_device(resources, 12 * GIB + CONTEXT_BYTES)[5:])
+                    self._full_resident = False
             if devices[selected] < 12 * GIB + CONTEXT_BYTES:
                 raise ResourceExhausted('H3 needs 12 GiB of GPU execution budget plus its native context')
             # A single GPU streams the real INT8 host banks. Other inactive model
             # allocations park through their own callbacks before admission.
-            resources.offload_inactive_devices('video', cancellation)
             with ExitStack() as leases:
                 if self._host is None:
                     self._host = resources.reserve('video:h3:host', 'video',
@@ -154,6 +161,7 @@ class H3Provider:
                     from api.inference.video.h3_pipeline import H3Session
                     if self._session is None:
                         self._session = H3Session(checkpoint, selected)
+                    self._session.full_resident = self._full_resident
                     self._session.load(cancellation)
                 else:
                     self._run(spec, checkpoint, output_path, cancellation, [selected])
@@ -175,6 +183,7 @@ class H3Provider:
             check_cancel(cancellation)
             if self._session is None:
                 self._session = H3Session(checkpoint, devices[0])
+            self._session.full_resident = self._full_resident
             self._session.render(sampling_arguments(spec, rendered), cancellation)
             check_cancel(cancellation)
             if rendered.is_symlink() or not rendered.is_file() or not rendered.stat().st_size:

@@ -205,7 +205,9 @@ class SpeechRuntime:
             request, provider = self.registry.resolve(request)
             if not provider.enabled(request.model_id):
                 raise SpeechUnavailable('This speech checkpoint integration is not enabled.')
-            plan = provider.prepare(request)
+            placement = getattr(provider, "prepare_placement", None)
+            plan = (placement(request, self._resources(), self._plan if self._device_reservation else None)
+                    if placement is not None else provider.prepare(request))
             identity = (id(provider), request.model_id, plan.identity)
             if not self._ready or self._identity != identity:
                 self._unload()
