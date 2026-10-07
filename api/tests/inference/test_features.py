@@ -142,8 +142,8 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resources.snapshot()['reservations'], {})
             self.assertEqual(jobs.get('a'*32).status, 'Done')
 
-    async def test_image_and_tts_contract_is_honestly_unsupported(self):
-        for feature in (ImageFeature(), TTSFeature()):
+    async def test_image_contract_is_honestly_unsupported(self):
+        for feature in (ImageFeature(),):
             with self.subTest(feature=feature.name):
                 self.assertIsInstance(feature, InferenceFeature)
                 with self.assertRaises(RuntimeFailure):

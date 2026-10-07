@@ -14,8 +14,8 @@ import re
 import threading
 from typing import Callable, Literal
 
-Workload = Literal['llm', 'image', 'video', 'speech', 'decision']
-WORKLOADS = frozenset(('llm', 'image', 'video', 'speech', 'decision'))
+Workload = Literal['llm', 'image', 'video', 'speech', 'tts', 'decision']
+WORKLOADS = frozenset(('llm', 'image', 'video', 'speech', 'tts', 'decision'))
 
 
 class ResourceBusy(RuntimeError):

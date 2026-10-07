@@ -70,6 +70,8 @@ import type {
   ListRequestsErrors,
   ListRequestsResponses,
   ListSpeechData,
+  ListSpeechModelsData,
+  ListSpeechModelsResponses,
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
@@ -192,7 +194,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Queue native speech; cancellation waits for owned cleanup.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -209,6 +211,20 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * List Speech Models
+ *
+ * Expose only enabled native checkpoint integrations.
+ */
+export const listSpeechModels = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSpeechModelsData, ThrowOnError>,
+): RequestResult<ListSpeechModelsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    ListSpeechModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/speech/models', ...options })
 
 /**
  * Transcribe Audio

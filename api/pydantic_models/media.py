@@ -32,3 +32,5 @@ class GeneratedSpeech(BaseModel):
     meta: str
     script: str
     time: str
+    audio_base64: str | None = None
+    mime_type: Literal["audio/wav"] | None = None

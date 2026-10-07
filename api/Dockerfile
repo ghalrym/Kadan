@@ -13,10 +13,12 @@ RUN python -c 'from sglang.multimodal_gen.runtime.entrypoints.diffusion_generato
 FROM h3
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends g++ sox \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements*.txt /app/
-RUN uv pip install --system --no-cache -r requirements.txt && uv pip check --system
+COPY qwen_tts_compat /app/api/qwen_tts_compat
+RUN uv pip install --system --no-cache torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130 \
+    && uv pip install --system --no-cache -r requirements.txt && uv pip check --system
 COPY . /app/api
 RUN ffmpeg -version && ffprobe -version && python -m api.inference.check_install
 EXPOSE 8000

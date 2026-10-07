@@ -15,6 +15,8 @@ def main():
 
     assert all((accelerate, safetensors, laya, AutoTokenizer, GptOssForCausalLM,
                 Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
+    from api.inference.tts.check_install import check_speech_install
+    check_speech_install()
     print(f'Core inference imports OK (torch {torch.__version__}, CUDA build {torch.version.cuda}).')
 
 

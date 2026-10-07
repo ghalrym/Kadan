@@ -3,8 +3,7 @@ import type { GeneratedSpeech, SpeechRequest } from './generated/types.gen'
 
 /**
  * Trim editor values into the discriminated describe/clone API payload.
- * Throw for blank script/voice input; clone voice text is an opaque
- * sample reference, not an upload or permission to fetch remote media.
+ * Throw for blank script/voice input; clone samples contain uploaded base64 bytes.
  */
 export function speechRequest(
   script: string,
@@ -24,7 +23,7 @@ export function speechRequest(
   return {
     script,
     voice:
-      mode === 'clone' ? { mode, sample: voice } : { mode, description: voice },
+      mode === 'clone' ? { mode, sample: voice, speaker_only: false } : { mode, description: voice },
   }
 }
 
@@ -34,7 +33,7 @@ export function speechRequest(
 function speechError(status?: number): Error {
   if (status === 503)
     return new Error(
-      'No speech provider is configured. Speech generation and voice cloning are unavailable.',
+      'Speech generation is unavailable. Check the selected checkpoint and server model setup.',
     )
   if (status === 422)
     return new Error(
@@ -78,8 +77,7 @@ export async function fetchSpeechHistory(
 }
 
 /**
- * Send a typed speech request with caller cancellation and validate response metadata.
- * Reject provider/network/validation failures; returned metadata has no playback URL.
+ * Send a typed speech request with cancellation and validate complete WAV metadata.
  */
 export async function requestSpeech(
   body: SpeechRequest,
@@ -87,7 +85,7 @@ export async function requestSpeech(
 ): Promise<GeneratedSpeech> {
   const result = await generateSpeech({ body, signal })
   if (!result.response?.ok) throw speechError(result.response?.status)
-  if (!validAudio(result.data?.audio))
+  if (!validAudio(result.data?.audio) || !result.data.audio.audio_base64 || result.data.audio.mime_type !== 'audio/wav')
     throw new Error('The speech API returned an invalid response.')
   return result.data.audio
 }

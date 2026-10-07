@@ -103,6 +103,7 @@ export default function SettingsPage() {
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [speechId, setSpeechId] = useState<string | null>(null)
   const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
   const licenseAction = useRef(false)
   const [videoId, setVideoId] = useState<string | null>(null)
@@ -197,6 +198,10 @@ export default function SettingsPage() {
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+  const speechModels = models.filter(model => model.kind === 'speech')
+  const speech = speechModels.find(model => model.id === speechId) ?? speechModels[0]
+  const speechDownload = speechModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
   const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
@@ -217,6 +222,7 @@ export default function SettingsPage() {
     : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
     ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
+
   return (
     <div className="scroll-page">
       {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : 'LLM'}`)?.focus() }} proceed={() => {
@@ -265,7 +271,21 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
+          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'TTS' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-TTS"><ModelIcon type="TTS" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
+            {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
+            {speechDownload && <div className="model-download-status model-video-progress">
+              <div className="model-download-heading"><p role="status">{speechDownload.display_name} · {speechDownload.status}</p>
+                <button type="button" className="button" disabled={pending || speechDownload.status === 'cancelling' || (downloading && speechDownload.status !== 'downloading')} onClick={() => {
+                  if (speechDownload.status === 'downloading') void submitModelChange(`/${speechDownload.id}/download`, 'DELETE')
+                  else downloadModel(speechDownload)
+                }}>{speechDownload.status === 'cancelling' ? 'Cancelling…' : speechDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+              </div>
+              {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
+              {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
+            </div>}
+          </div> : model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
             <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
             {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}

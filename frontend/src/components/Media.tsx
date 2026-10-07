@@ -52,11 +52,13 @@ export function AudioCard({
   meta,
   script,
   time,
+  audioUrl,
 }: {
   voice: string
   meta: string
   script: string
   time: string
+  audioUrl?: string
 }) {
   return (
     <article className="panel audio-card">
@@ -68,9 +70,23 @@ export function AudioCard({
           <strong>{voice}</strong>
           <span className="mono muted">{meta}</span>
         </div>
-        <ActionButton>Download</ActionButton>
+        {audioUrl ? (
+          <a
+            className="button button--secondary"
+            href={audioUrl}
+            download="speech.wav"
+          >
+            Download
+          </a>
+        ) : (
+          <ActionButton>Download</ActionButton>
+        )}
       </div>
-      <Waveform />
+      {audioUrl ? (
+        <audio controls src={audioUrl} aria-label={`Play ${voice}`} />
+      ) : (
+        <Waveform />
+      )}
       <div className="audio-caption">
         <span className="mono muted">0:00 / {time}</span>
         <span className="muted">“{script}”</span>
