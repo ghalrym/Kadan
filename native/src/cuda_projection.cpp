@@ -4,6 +4,7 @@
 #include "kadan/cuda_projection.hpp"
 #include "nvfp4_kernel.cuh"
 #include "fp8_kernel.cuh"
+#include "layer_math_validation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -109,6 +110,31 @@ struct ProjectionImpl {
             return true;
         } catch (...) { cleanup_failed = true; poisoned = true; return false; }
     }
+    void matvec_device(std::span<const float> input,std::span<float> output) {
+        if (handle==0 || poisoned) throw std::logic_error("cuda_projection_unavailable");
+        if (input.size()!=layout.columns || output.size()!=layout.rows) throw std::invalid_argument("cuda_input_output_shape");
+        math::detail::output_alias(input,output,false);
+        if (reinterpret_cast<std::uintptr_t>(input.data())%alignof(float) || reinterpret_cast<std::uintptr_t>(output.data())%alignof(float))
+            throw std::invalid_argument("cuda_projection_alignment");
+        current_device();resources->pin(handle);pinned=true;unsigned flags=0;
+        try {
+            check(cudaMemsetAsync(status(),0,sizeof(unsigned),cudaStreamLegacy),"clear_status");
+            check(Operations::launch(storage,layout,global,input.data(),output.data(),status()),"launch_device_projection");
+            check(cudaStreamSynchronize(cudaStreamLegacy),"device_matvec_synchronize");
+            check(cudaMemcpy(&flags,status(),sizeof(flags),cudaMemcpyDeviceToHost),"read_status");
+            resources->unpin(handle);pinned=false;
+        } catch (...) {
+            poisoned=true;
+            // A failed enqueue/sync may leave borrowed input/output in use.
+            // One recovery synchronization establishes a safe return boundary;
+            // failure transfers an explicit quarantine obligation to the caller.
+            if(cudaStreamSynchronize(cudaStreamLegacy)!=cudaSuccess)
+                throw DeviceBufferQuarantine("cuda_projection_borrowed_buffers_quarantined");
+            resources->unpin(handle);pinned=false;
+            throw;
+        }
+        if (flags) throw std::overflow_error("nonfinite_cuda_projection");
+    }
     void matvec(std::span<const float> input, std::span<float> output) {
         if (handle == 0 || poisoned) throw std::logic_error("cuda_projection_unavailable");
         if (input.size() != layout.columns || output.size() != layout.rows) throw std::invalid_argument("cuda_input_output_shape");
@@ -158,6 +184,7 @@ Fp8Projection::Fp8Projection(const quantization::Matrix& host, int device, std::
 Fp8Projection::~Fp8Projection() { impl_->cleanup(); }
 const Fp8Plan& Fp8Projection::plan() const { return impl_->layout; }
 void Fp8Projection::matvec(std::span<const float> input, std::span<float> output) { impl_->matvec(input, output); }
+void Fp8Projection::matvec_device(std::span<const float> input,std::span<float> output) { impl_->matvec_device(input,output); }
 void Fp8Projection::close() {
     if (!impl_->cleanup()) throw std::runtime_error("cuda_cleanup_failed_reservation_retained");
 }

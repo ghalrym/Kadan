@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/cuda_plan.hpp"
+#include "kadan/cuda_error.hpp"
 #include "kadan/resources.hpp"
 #include <memory>
 #include <span>
@@ -49,6 +50,14 @@ public:
     void matvec(std::span<const float> input, std::span<float> output);
     // Explicit close reports cleanup failures. Failed/uncertain cleanup retains
     // the resource reservation; no automatic retry or device reset is attempted.
+    // Caller-admitted device buffers; activations never pass through host RAM.
+    // Blocking legacy-stream boundary, including status verification. Caller pins
+    // both spans until return, supplies disjoint aligned buffers on this device,
+    // and discards output after errors. DeviceBufferQuarantine overrides the
+    // return boundary: retain borrowed buffers until close succeeds/context ends.
+    // Other errors return only after quiescence or before work was enqueued.
+    // No allocation/provenance inference.
+    void matvec_device(std::span<const float> input,std::span<float> output);
     void close();
 private:
     struct Impl;
