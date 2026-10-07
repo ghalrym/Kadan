@@ -19,7 +19,9 @@ registers, rounds the global-scale multiplication to FP32 and accumulates with
 FP32 FMA. Four warp reductions feed four shared floats; a final warp reduction
 writes the row result. All lanes participate, including on short/tail rows.
 There are no host projection tiles or dense dequantization buffers. A four-byte
-status flag reports nonfinite decoded weights or reductions.
+status flag reports decoded weights whose exact pre-round value exceeds FP32
+range, or nonfinite reductions. The range check uses an exact double product
+before FP32 rounding, matching the CPU decoded-weight contract.
 
 The supported layout is exactly #99/#100's canonical unswizzled ModelOpt NVFP4
 2D view with one positive finite global multiplier. Input and output are FP32.
@@ -117,13 +119,17 @@ After authorization only:
 /tmp/kadan-native-cuda/kadan-cuda-parity --allow-gpu-validation --device 0
 ```
 
-The executable requires the opt-in flag. Five deterministic shapes exercise
+The executable requires the opt-in flag. Four deterministic shapes exercise
 short rows, multiple rows, all FP4 codes, block-scale extremes, and a non-power-of-
-256 tail: `(1,16)`, `(3,32)`, `(5,256)`, `(33,2048)`, `(2,2064)`. The global scale
+256 tail: `(3,32)`, `(5,256)`, `(33,2048)`, `(2,2064)`. The global scale
 is non-power-of-two. Results are compared with #99's CPU reference using
 `1e-5 + 64 * FLT_EPSILON * sum(abs(weight * input))` per row, bounding reduction
-error even near cancellation. A sixth `(1,16)` fixture checks the exact subnormal
-result with no tolerance, detecting accidental flush-to-zero. Each projection
+error even near cancellation. A fifth `(1,16)` fixture checks the exact subnormal
+result with no tolerance, detecting accidental flush-to-zero. The sixth `(2,16)`
+case expects overflow for positive and negative decoded weights that exceed
+FP32 range before rounding yet round to finite FLT_MAX in magnitude, using zero
+input. It replaces the ordinary `(1,16)` case, keeping exactly six launches.
+Each projection
 closes and verifies that its reservation was released. This harness has been
 compiled but **not executed**; GPU correctness and cleanup behavior remain
 unverified. Do not interpret a later parity pass as a throughput benchmark.

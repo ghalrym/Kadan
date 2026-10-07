@@ -1,4 +1,5 @@
 #include "nvfp4_kernel.cuh"
+#include "nvfp4_numeric.hpp"
 #include <cuda_runtime.h>
 
 namespace {
@@ -37,8 +38,12 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
         const float scale = positive_fp8(row_scales[byte / 8]);
         // FP4 * E4M3 is exact in FP32. Explicit round-to-nearest global multiply
         // matches the CPU decoded-weight rounding before the dot product.
-        const float low = __fmul_rn(fp4(packed & 15) * scale, global);
-        const float high = __fmul_rn(fp4(packed >> 4) * scale, global);
+        const float local_low = fp4(packed & 15) * scale;
+        const float local_high = fp4(packed >> 4) * scale;
+        invalid |= kadan::cuda::detail::weight_overflows(local_low, global)
+                || kadan::cuda::detail::weight_overflows(local_high, global);
+        const float low = __fmul_rn(local_low, global);
+        const float high = __fmul_rn(local_high, global);
         invalid |= !isfinite(low) || !isfinite(high);
         sum = fmaf(low, input[byte * 2], sum);
         sum = fmaf(high, input[byte * 2 + 1], sum);

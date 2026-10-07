@@ -1,4 +1,8 @@
 #include "kadan/cuda_plan.hpp"
+#include "../src/nvfp4_numeric.hpp"
+#include <bit>
+#include <cmath>
+#include <limits>
 #include <array>
 #include <climits>
 #include <iostream>
@@ -18,6 +22,27 @@ void fails(F fn, std::string_view expected) {
 int main() {
     using namespace kadan;
     try {
+        // Regression: exact decoded weight exceeds FLT_MAX but rounds to it.
+        const float edge_global = std::bit_cast<float>(0x7f783e0fU);
+        const float local = 6.0F * (11.0F / 64.0F);
+        const double exact = static_cast<double>(local) * edge_global;
+        check(exact > std::numeric_limits<float>::max());
+        check(static_cast<float>(exact) == std::numeric_limits<float>::max());
+        check(cuda::detail::weight_overflows(local, edge_global));
+        check(cuda::detail::weight_overflows(-local, edge_global));
+        check(!cuda::detail::weight_overflows(local, std::nextafter(edge_global, 0.0F)));
+        check(!cuda::detail::weight_overflows(1, std::numeric_limits<float>::max()));
+        check(!cuda::detail::weight_overflows(-1, std::numeric_limits<float>::max()));
+        check(!cuda::detail::weight_overflows(0, edge_global));
+        std::array<std::uint8_t, 8> edge_weights{}; edge_weights.fill(0x77);
+        const std::array<std::uint8_t, 1> edge_blocks{0x23};
+        const std::array<float, 1> edge_multiplier{edge_global};
+        const std::array<float, 16> zeros{};
+        quantization::Matrix edge{quantization::Encoding::modelopt_nvfp4, 1, 16,
+                                  edge_weights, edge_blocks, edge_multiplier};
+        fails<std::overflow_error>([&] { quantization::matvec(edge, zeros, 4); }, "nonfinite_result");
+        edge_weights.fill(0xff);
+        fails<std::overflow_error>([&] { quantization::matvec(edge, zeros, 4); }, "nonfinite_result");
         std::vector<std::uint8_t> weights(48, 0x22), blocks(6, 0x38);
         std::array<float, 1> global{1};
         quantization::Matrix m{quantization::Encoding::modelopt_nvfp4, 3, 32, weights, blocks, global};

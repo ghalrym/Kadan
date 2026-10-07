@@ -3,6 +3,7 @@
 #include <cuda_runtime_api.h>
 
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <iostream>
@@ -43,6 +44,32 @@ void fixture(std::size_t rows, std::size_t columns, int device,
     check(resources->snapshot().residents == 0 && resources->snapshot().used[device + 1] == 0, "reservation_not_released");
     std::cout << "passed rows=" << rows << " columns=" << columns << '\n';
 }
+void overflow_fixture(int device, const std::shared_ptr<kadan::Resources>& resources) {
+    using namespace kadan;
+    std::array<std::uint8_t, 16> weights{};
+    for (std::size_t i = 0; i < weights.size(); ++i) weights[i] = i < 8 ? 0x77 : 0xff;
+    const std::array<std::uint8_t, 2> blocks{0x23, 0x23};
+    const std::array<float, 1> global{std::bit_cast<float>(0x7f783e0fU)};
+    quantization::Matrix matrix{quantization::Encoding::modelopt_nvfp4, 2, 16, weights, blocks, global};
+    const std::array<float, 16> input{};
+    std::array<float, 2> output{123, 456};
+    bool cpu_rejected = false;
+    try { quantization::matvec(matrix, input, 8); }
+    catch (const std::overflow_error&) { cpu_rejected = true; }
+    check(cpu_rejected, "cpu_overflow_not_rejected");
+    cuda::Nvfp4Projection projection(matrix, device, resources);
+    bool gpu_rejected = false;
+    try { projection.matvec(input, output); } // Exactly one launch, both signs.
+    catch (const std::overflow_error& error) {
+        check(std::string_view(error.what()) == "nonfinite_cuda_projection", "unexpected_gpu_error");
+        gpu_rejected = true;
+    }
+    check(gpu_rejected && output[0] == 123 && output[1] == 456, "gpu_overflow_not_rejected");
+    projection.close();
+    check(resources->snapshot().residents == 0 && resources->snapshot().used[device + 1] == 0,
+          "overflow_reservation_not_released");
+    std::cout << "passed pre-round overflow rows=2 columns=16\n";
+}
 void subnormal_fixture(int device, const std::shared_ptr<kadan::Resources>& resources) {
     using namespace kadan;
     const std::array<std::uint8_t, 8> weights{0x22,0x22,0x22,0x22,0x22,0x22,0x22,0x22};
@@ -74,9 +101,10 @@ int main(int argc, char** argv) {
         check(cudaSetDevice(device) == cudaSuccess, "cudaSetDevice_failed");
         kadan::Footprint capacity(device + 2, 0); capacity[device + 1] = 65536;
         auto resources = std::make_shared<kadan::Resources>(capacity);
-        for (const auto shape : {std::array<std::size_t, 2>{1,16}, {3,32}, {5,256}, {33,2048}, {2,2064}})
+        for (const auto shape : {std::array<std::size_t, 2>{3,32}, {5,256}, {33,2048}, {2,2064}})
             fixture(shape[0], shape[1], device, resources);
         subnormal_fixture(device, resources);
+        overflow_fixture(device, resources);
         std::cout << "Six synthetic parity cases passed; no throughput measurement.\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
