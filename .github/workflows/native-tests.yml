@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Configure CPU-only C++20 worker
-        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF
+        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
       - name: Build with bounded parallelism
         run: cmake --build /tmp/kadan-native --parallel 2
-      - name: Test accounting and subprocess boundary
+      - name: Test native accounting, formats and bounded checkpoint reads
         run: ctest --test-dir /tmp/kadan-native --output-on-failure

@@ -3,7 +3,9 @@
 This is original Kadan C++20 code. It does not copy, wrap, vendor or port
 Strata/FreeToken code. The first milestone implements an accounting library and
 a standalone development worker boundary, not model inference. There are no
-CUDA kernels, checkpoint readers or production API adapters in this milestone.
+CUDA kernels or production API adapters. The separate
+[bounded checkpoint reader](CHECKPOINT.md) now loads selected rows from one
+explicitly chosen safetensors shard into owned quantized projection buffers.
 A separate [quantized projection reference](QUANTIZATION.md) now provides original
 CPU NVFP4/FP8 format decoding and matrix-vector execution for future loaders and
 CUDA kernels. The worker executable does not call that library yet.
