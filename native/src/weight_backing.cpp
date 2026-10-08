@@ -106,7 +106,7 @@ Handle WeightBacking::begin_transfer(const std::string& key, Footprint destinati
     require(destination[0] <= std::numeric_limits<Bytes>::max() - staging, "weight_peak_overflow");
     destination[0] += staging;
     // Build allocating control fields before reserving.
-    Transfer next{key, 0, {}, staging, false, false, destination};
+    Transfer next{key, 0, {}, staging, false, false, false, destination};
     next.destination[0] -= staging;
     next.reservation = resources_->reserve(entry.workload, std::move(destination));
     try {
@@ -116,7 +116,7 @@ Handle WeightBacking::begin_transfer(const std::string& key, Footprint destinati
     return transfer_->reservation;
 }
 void WeightBacking::copy(Handle id, const Sink& sink, const std::atomic_bool* cancelled) {
-    require(transfer_ && transfer_->reservation == id && !transfer_->attempted, "weight_transfer_state");
+    require(transfer_ && transfer_->reservation == id && !transfer_->attempted && !transfer_->cleanup_started, "weight_transfer_state");
     Busy busy(busy_); transfer_->attempted = true; auto& entry = entries_.at(transfer_->key);
     cancel(cancelled); entry.source->check_unchanged();
     for (std::size_t at = 0; at < entry.bytes;) {
@@ -130,7 +130,7 @@ void WeightBacking::copy(Handle id, const Sink& sink, const std::atomic_bool* ca
     transfer_->complete = true;
 }
 Handle WeightBacking::commit(Handle id) {
-    require(!busy_ && transfer_ && transfer_->reservation == id && transfer_->complete, "weight_transfer_state");
+    require(!busy_ && transfer_ && transfer_->reservation == id && transfer_->complete && !transfer_->cleanup_started, "weight_transfer_state");
     // Use the originally admitted footprint, subtract only this ticket's staging.
     // Reconstruct it from a saved field rather than aggregate ledger usage.
     auto destination = transfer_->destination;
@@ -142,6 +142,7 @@ Handle WeightBacking::commit(Handle id) {
 }
 void WeightBacking::cleaned(Handle id, bool success) {
     require(!busy_ && transfer_ && transfer_->reservation == id, "weight_transfer_state");
+    transfer_->cleanup_started = true;
     if (!success) return;
     transfer_->staging.reset();
     resources_->released(id); transfer_.reset();

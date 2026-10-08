@@ -154,6 +154,22 @@ void abandonment_and_read_failure() {
     check(ledger->snapshot().used == Footprint({3, 8})); store.cleaned(ticket, true);
     check(ledger->snapshot().residents == 0);
 }
+void cleanup_is_irreversible() {
+    Fixture fixture; auto ledger = std::make_shared<Resources>(Footprint{16, 8});
+    WeightBacking store(ledger, 0, 24, 3); fixture.add(store);
+    for (bool copied : {false, true}) {
+        auto ticket = store.begin_transfer("qwen/rev/a", {0, 8});
+        if (copied) store.copy(ticket, [](auto, auto) {});
+        store.cleaned(ticket, false);
+        check(ledger->snapshot().used == Footprint({3, 8}));
+        fails([&] { store.copy(ticket, [](auto, auto) {}); });
+        fails([&] { store.commit(ticket); });
+        store.cleaned(ticket, false);
+        check(ledger->snapshot().used == Footprint({3, 8}));
+        store.cleaned(ticket, true);
+        check(ledger->snapshot().residents == 0);
+    }
+}
 void admission_allocation_and_commit() {
     Fixture fixture; auto ledger = std::make_shared<Resources>(Footprint{16, 8});
     WeightBacking store(ledger, 8, 24, 3); fixture.add(store);
@@ -184,6 +200,6 @@ void admission_allocation_and_commit() {
     store.cleaned(later, true);
 }
 int main() {
-    retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit();
+    retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit(); cleanup_is_irreversible();
     std::cout << "weight backing tests passed\n";
 }

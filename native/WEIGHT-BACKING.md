@@ -67,7 +67,9 @@ The transfer lifecycle is:
 4. On cancellation, failed copy, or failed destination allocation, destroy and
    synchronize the partial destination before `cleaned(ticket, true)`. A false
    acknowledgement keeps the full transition peak charged and blocks new store
-   operations. Failed copy cannot be retried or committed on the same ticket;
+   operations. Starting cleanup irreversibly disables copy and commit, even when cleanup
+   returns false. Only cleanup retries remain valid. Failed copy cannot be
+   retried or committed on the same ticket;
    cleanup then a new transfer is the recovery path. No partially copied tensor
    may be published. Calling cleanup is the owner's physical proof obligation.
 

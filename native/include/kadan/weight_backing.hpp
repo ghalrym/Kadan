@@ -51,7 +51,7 @@ private:
         Handle reservation;
         std::unique_ptr<std::uint8_t[]> staging;
         std::size_t bytes;
-        bool attempted = false, complete = false;
+        bool attempted = false, complete = false, cleanup_started = false;
         Footprint destination;
     };
     void idle() const;
