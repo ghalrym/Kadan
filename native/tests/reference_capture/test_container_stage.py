@@ -153,26 +153,6 @@ class TransportTests(unittest.TestCase):
             self.assertFalse(result.child_reaped)
             self.assertFalse(result.cleanup_known(observed.verified_id))
 
-    def test_retained_parent_survives_owned_child_removal(self):
-        with tempfile.TemporaryDirectory() as folder:
-            stage=self.stopped_stage(folder)
-            stage.observer_parent=True;stage.owned_cgroup_name='docker-'+stage.verified_id+'.scope'
-            child=stage.cgroup/stage.owned_cgroup_name;child.mkdir();child.rmdir()
-            self.assertTrue(stage.observe(stage.verified_id,1).cleanup_known(stage.verified_id))
-            (stage.cgroup/'memory.current').write_text('4096')
-            self.assertFalse(stage.observe(stage.verified_id,1).cleanup_known(stage.verified_id))
-
-    def test_retained_parent_rejects_unknown_or_nested_descendants(self):
-        for nested in (False,True):
-            with tempfile.TemporaryDirectory() as folder:
-                stage=self.stopped_stage(folder)
-                stage.observer_parent=True;stage.owned_cgroup_name='docker-'+stage.verified_id+'.scope'
-                if nested:
-                    child=stage.cgroup/stage.owned_cgroup_name;child.mkdir();(child/'nested').mkdir()
-                else:(stage.cgroup/'unowned.scope').mkdir()
-                with self.assertRaisesRegex(ValueError,'observer_descendant'):
-                    stage.observe(stage.verified_id,1)
-
     def test_wrong_identity_cannot_signal(self):
         stage=self.bare_stage()
         with patch.object(stage,'rpc') as rpc,self.assertRaises(ValueError):stage.terminate('b'*64,'KILL',1)

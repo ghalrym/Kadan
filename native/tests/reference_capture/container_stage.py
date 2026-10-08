@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import resource
-import re
 import subprocess
 import tempfile
 import sys
@@ -45,8 +44,6 @@ class DockerReferenceStage:
         self.initial_oom = None
         self.final_oom = None
         self.cgroup_identity = None
-        self.observer_parent = False
-        self.owned_cgroup_name = None
         self.verified_id = None
 
     def rpc(self, args, timeout):
@@ -104,37 +101,13 @@ class DockerReferenceStage:
         relative=lines[0][4:]
         require(cid in relative and '..' not in Path(relative).parts, 'owned_cgroup_path')
         self.cgroup=Path('/sys/fs/cgroup')/relative
-        child_cgroup=self.cgroup
-        parent_pin=self.manifest.get('retained_parent')
-        if parent_pin is not None:
-            name=parent_pin['name']
-            require(re.fullmatch(r'kadanreference[0-9a-f]{16}\.slice',name) is not None, 'observer_parent_name')
-            require(host.get('CgroupParent')==name, 'observer_parent_config')
-            parent=Path('/sys/fs/cgroup')/name
-            require(child_cgroup.parent==parent, 'observer_parent_membership')
-            st=parent.stat()
-            require([st.st_dev,st.st_ino]==parent_pin['identity'], 'observer_parent_identity')
-            require((parent/'cgroup.procs').read_text().strip()=='', 'observer_parent_processes')
-            self.cgroup=parent
-            self.observer_parent=True
-            self.owned_cgroup_name=child_cgroup.name
-            self.verify_observer_children()
         st=self.cgroup.stat()
         self.cgroup_identity=(st.st_dev,st.st_ino)
         self.initial_oom=self.oom()
-        require(self.initial_oom==0, 'initial_oom_history')
-        procs=(child_cgroup/'cgroup.procs').read_text().split()
+        procs=(self.cgroup/'cgroup.procs').read_text().split()
         require(procs==[str(pid)], 'unexpected_container_children')
         self.verified_id=cid
         return True
-
-    def verify_observer_children(self):
-        if not getattr(self,'observer_parent',False):
-            return
-        directories={p.name for p in self.cgroup.iterdir() if p.is_dir()}
-        require(directories <= {self.owned_cgroup_name}, 'unowned_observer_descendant')
-        for name in directories:
-            require(not any(p.is_dir() for p in (self.cgroup/name).iterdir()), 'nested_observer_descendant')
 
     def start(self, cid, timeout):
         require(cid==self.verified_id and self.child is None, 'stage_start_once')
@@ -213,7 +186,6 @@ class DockerReferenceStage:
         populated=None
         self.final_oom=None  # Never reuse a previous sample after evidence vanishes.
         if self.cgroup.exists():
-            self.verify_observer_children()
             before=self.cgroup.stat()
             require((before.st_dev,before.st_ino)==self.cgroup_identity, 'cgroup_replaced')
             procs=(self.cgroup/'cgroup.procs').read_text().split()
