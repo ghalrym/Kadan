@@ -146,3 +146,25 @@ class NativeImageTests(unittest.TestCase):
         self.torch.cuda.synchronize.side_effect = None
         self.native.close()
         self.assertEqual(set(self.resources.snapshot()['reservations']), {'framework-context:1'})
+
+    def test_failed_transfer_drops_failure_frames_but_keeps_model_budget(self):
+        self.native.generate('x', '1:1', [1], threading.Event())
+        before = self.resources.snapshot()['reservations']
+        references = []
+        class Allocation:
+            pass
+        def fail(device):
+            allocation = Allocation()
+            references.append(weakref.ref(allocation))
+            raise RuntimeError('transfer uncertain')
+        self.pipeline.to.side_effect = fail
+        caught = None
+        try:
+            self.native.offload_to_ram()
+        except RuntimeError as exc:
+            caught = exc
+        self.assertIsNotNone(caught)
+        self.assertTrue(all(reference() is None for reference in references))
+        self.assertEqual(self.resources.snapshot()['reservations'], before)
+        self.pipeline.to.side_effect = None
+        self.native.close()

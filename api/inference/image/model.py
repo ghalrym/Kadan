@@ -131,7 +131,8 @@ class NativeImage:
             raise ResourceBusy('Image pipeline is active')
         try:
             self._park()
-        except BaseException:
+        except BaseException as exc:
+            clear_failure_frames(exc)
             self.cleanup_failed = True
             raise
         finally:
@@ -141,7 +142,8 @@ class NativeImage:
         try:
             self._close_allocations()
             self.cleanup_failed = False
-        except BaseException:
+        except BaseException as exc:
+            clear_failure_frames(exc)
             self.cleanup_failed = True
             raise
 
