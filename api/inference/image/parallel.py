@@ -5,6 +5,7 @@ per-request prefix caches, rank coordination, bounded process-group lifetime and
 both device reservations. Prefill remains eager in this foundation.
 """
 from dataclasses import dataclass
+import hashlib
 
 import torch
 import torch.distributed as dist
@@ -95,31 +96,93 @@ def compact_prefix(key, value, mode, rank, world):
     return key.clone().contiguous(), value.clone().contiguous()
 
 
-@torch.no_grad()
-def cached_block(block, hidden, modulation, rotary, prefix, shard, *,
-                 mode='ulysses', key_valid=None, group=None):
-    """Exact cached target-row block; both ranks execute local QKV and MLP GEMMs.
+def agree_metadata(metadata, error=None, *, control_group=None):
+    """CPU control-plane consensus before data collectives; group timeout is required.
 
-    hidden/rotary are already partitioned using original global target positions.
-    key_valid covers prefix plus UNPADDED global target rows. Padded rows never
-    become attention keys; the caller drops their final outputs. Prefix RoPE and
-    t=0 modulation come from eager extraction, not recomputation at target time.
+    Gloo is required so a bad CUDA allocation/shape cannot prevent error reporting.
+    Runtime/peer failures after this gate still require a process supervisor; no
+    function-local exception handler can make a failed NCCL communicator reusable.
     """
+    if dist.get_backend(control_group) != 'gloo':
+        raise ValueError('A bounded Gloo control group is required')
+    rows = [None] * dist.get_world_size(control_group)
+    dist.all_gather_object(rows, {'metadata': metadata, 'error': error}, group=control_group)
+    errors = [f'rank {rank}: {row["error"]}' for rank, row in enumerate(rows) if row['error']]
+    if errors:
+        raise ValueError('Rank preflight rejected: ' + '; '.join(errors))
+    if any(row['metadata'] != rows[0]['metadata'] for row in rows[1:]):
+        raise ValueError('Rank metadata disagreement before data exchange')
+
+
+def validate_cached(block, hidden, modulation, rotary, prefix, shard, mode, key_valid,
+                    request_id, step, block_index, group):
+    if not isinstance(request_id, str) or not 0 < len(request_id) <= 128:
+        raise ValueError('A bounded request identity is required')
+    if type(step) is not int or step < 0 or type(block_index) is not int or block_index < 0:
+        raise ValueError('Invalid step/block identity')
     if mode not in ('ulysses', 'all_gather'):
         raise ValueError('Unsupported sequence parallel mode')
     if dist.get_world_size(group) != shard.world or dist.get_rank(group) != shard.rank:
         raise ValueError('Partition and process group disagree')
-    if hidden.ndim != 3 or hidden.shape[1] != shard.width or rotary.shape[0] != shard.width:
-        raise ValueError('Local sequence or global-position rotary slice is invalid')
-    if block.attn.heads % shard.world:
+    if hidden.ndim != 3 or hidden.shape[1] != shard.width or hidden.dtype not in (torch.float32, torch.bfloat16, torch.float16):
+        raise ValueError('Invalid local hidden shape or dtype')
+    attention = block.attn
+    # The pinned model uses equal query/key/value head dimensions and no GQA.
+    if attention.heads % shard.world or attention.to_q.out_features % attention.heads:
         raise ValueError('Attention heads must divide the rank count')
+    depth = attention.to_q.out_features // attention.heads
+    if depth % 2 or rotary.shape != (shard.width, depth // 2) or rotary.dtype != torch.complex64:
+        raise ValueError('Invalid global-position rotary shape/dtype or head depth')
+    if attention.to_q.in_features != hidden.shape[-1] or any(
+        projection.out_features != attention.heads * depth or projection.in_features != hidden.shape[-1]
+        for projection in (attention.to_q, attention.to_k, attention.to_v)):
+        raise ValueError('Projection shape disagrees with hidden/head layout')
+    if modulation.shape != (hidden.shape[0] + 1, 4 * hidden.shape[-1]) or modulation.dtype != hidden.dtype:
+        raise ValueError('Expected target plus t=0 modulation rows')
     prefix_key, prefix_value = prefix
-    expected_heads = block.attn.heads // shard.world if mode == 'ulysses' else block.attn.heads
-    if prefix_key.shape != prefix_value.shape or prefix_key.shape[0] != hidden.shape[0] or prefix_key.shape[2] != expected_heads:
-        raise ValueError('Prefix must contain this mode’s head ownership exactly once')
+    expected_heads = attention.heads // shard.world if mode == 'ulysses' else attention.heads
+    if prefix_key.ndim != 4 or prefix_key.shape != prefix_value.shape or prefix_key.shape[0] != hidden.shape[0] or prefix_key.shape[2:] != (expected_heads, depth):
+        raise ValueError('Prefix must contain the matching head ownership/depth exactly once')
     for value in prefix:
-        if value.storage_offset() or value.untyped_storage().nbytes() != value.numel() * value.element_size():
-            raise ValueError('Prefix must own compact storage')
+        if value.dtype != hidden.dtype or value.storage_offset() or value.untyped_storage().nbytes() != value.numel() * value.element_size():
+            raise ValueError('Prefix must own compact storage with matching dtype')
+    for value in (modulation, rotary, *prefix, *block.parameters()):
+        if value.device != hidden.device:
+            raise ValueError('All local tensors and parameters must use the same device')
+    if any(value.dtype != hidden.dtype for value in block.parameters()):
+        raise ValueError('Block parameter dtype disagrees with hidden dtype')
+    mask_hash = None
+    if key_valid is not None:
+        if key_valid.dtype != torch.bool or key_valid.shape != (hidden.shape[0], prefix_key.shape[1] + shard.total) or key_valid.device != hidden.device:
+            raise ValueError('Key validity must cover prefix/unpadded targets on the local device')
+        mask_hash = hashlib.sha256(key_valid.detach().cpu().numpy().tobytes()).hexdigest()
+    return dict(request=request_id, step=step, block=block_index, mode=mode,
+        total=shard.total, world=shard.world, hidden=list(hidden.shape),
+        heads=attention.heads, depth=depth, prefix=list(prefix_key.shape),
+        dtype=str(hidden.dtype), device_type=hidden.device.type,
+        modulation=list(modulation.shape), rotary=list(rotary.shape), mask_hash=mask_hash)
+
+
+@torch.no_grad()
+def cached_block(block, hidden, modulation, rotary, prefix, shard, *,
+                 mode='ulysses', key_valid=None, group=None, control_group=None,
+                 request_id=None, step=0, block_index=0):
+    """Exact cached target-row block with rank-wide validation before exchange.
+
+    The caller must construct a bounded Gloo control group (same rank order as the
+    data group), run every rank under a fail-stop supervisor, and keep both device
+    reservations until all ranks are confirmed stopped on any runtime failure.
+    Eager extraction supplies post-RoPE prefix K/V with t=0 modulation.
+    """
+    metadata = None
+    error = None
+    try:
+        metadata = validate_cached(block, hidden, modulation, rotary, prefix, shard,
+            mode, key_valid, request_id, step, block_index, group)
+    except Exception as exc:
+        error = (type(exc).__name__ + ': ' + str(exc))[:512]
+    agree_metadata(metadata, error, control_group=control_group)
+    prefix_key, prefix_value = prefix
     first, second = modulation.chunk(2, dim=-1)
     target = torch.ones(shard.width, dtype=torch.bool, device=hidden.device)
     normalized, gate = block._modulate(block.img_norm1(hidden), first, target)
@@ -143,8 +206,6 @@ def cached_block(block, hidden, modulation, rotary, prefix, shard, *,
     if key_valid is not None or padding:
         if key_valid is None:
             key_valid = torch.ones((hidden.shape[0], prefix_rows + shard.total), dtype=torch.bool, device=hidden.device)
-        if key_valid.dtype != torch.bool or key_valid.shape != (hidden.shape[0], prefix_rows + shard.total):
-            raise ValueError('Key validity must cover the prefix and unpadded global targets')
         mask = functional.pad(key_valid, (0, padding), value=False)[:, None, None, :]
     result = functional.scaled_dot_product_attention(query.transpose(1, 2), key.transpose(1, 2),
         value.transpose(1, 2), attn_mask=mask, dropout_p=0.0, is_causal=False).transpose(1, 2)

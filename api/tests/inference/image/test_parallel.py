@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
+from unittest.mock import patch
 import unittest
 
 import torch
@@ -63,7 +65,7 @@ def numerical_rank(rank, rendezvous, output):
                     prefix = compact_prefix(*cache.get(), mode, rank, 2)
                     before = tuple(value.clone() for value in prefix)
                     actual = cached_block(block, shard.take(hidden), modulation,
-                        shard.take(rotary[prefix_rows:], dim=0), prefix, shard, mode=mode, key_valid=valid)
+                        shard.take(rotary[prefix_rows:], dim=0), prefix, shard, mode=mode, key_valid=valid, request_id=f'{dtype}-{prefix_rows}-{target_rows}', step=1)
                     gathered = [torch.empty_like(actual) for _ in range(2)]
                     dist.all_gather(gathered, actual)
                     result = torch.cat(gathered, dim=1)[:, :target_rows]
@@ -80,10 +82,101 @@ def numerical_rank(rank, rendezvous, output):
         dist.destroy_process_group()
 
 
+def rejection_rank(rank, rendezvous, output):
+    torch.set_num_threads(1)
+    dist.init_process_group('gloo', init_method='file://' + rendezvous,
+        rank=rank, world_size=2, timeout=timedelta(seconds=5))
+    block = QwenImage21TransformerBlock(32, 4, 8).eval()
+    shard = TokenShard(4, rank, 2)
+    hidden = torch.zeros(1, 2, 32)
+    modulation = torch.zeros(2, 128)
+    rotary = torch.ones(2, 4, dtype=torch.complex64)
+    reports = []
+    try:
+        for case in ('mask', 'dtype', 'shape', 'mode', 'step', 'request'):
+            mode = 'all_gather' if case == 'mode' and rank == 1 else 'ulysses'
+            heads = 4 if mode == 'all_gather' else 2
+            prefix = (torch.zeros(1, 3, heads, 8), torch.zeros(1, 3, heads, 8))
+            local = hidden.double() if case == 'dtype' and rank == 1 else hidden
+            if case == 'shape' and rank == 1:
+                local = hidden[:, :1]
+            mask = torch.ones(1, 6 if case == 'mask' and rank == 1 else 7, dtype=torch.bool)
+            started = time.monotonic()
+            with patch.object(block.attn.to_q, 'forward', side_effect=AssertionError('Projection reached')), \
+                    patch('api.inference.image.parallel.sequence_to_heads', side_effect=AssertionError('Exchange reached')), \
+                    patch('api.inference.image.parallel.gather_target_kv', side_effect=AssertionError('Exchange reached')):
+                try:
+                    cached_block(block, local, modulation, rotary, prefix, shard, mode=mode,
+                        key_valid=mask, request_id='other' if case == 'request' and rank == 1 else 'test',
+                        step=rank if case == 'step' else 0)
+                except ValueError as exc:
+                    reports.append(dict(case=case, error=str(exc), elapsed_s=time.monotonic()-started))
+                else:
+                    raise AssertionError('Both ranks must reject invalid input')
+        Path(output, f'rejected-{rank}.json').write_text(json.dumps(reports))
+    finally:
+        dist.destroy_process_group()
+
+
+
+def failed_rank(rank, rendezvous, failure):
+    dist.init_process_group('gloo', init_method='file://' + rendezvous,
+        rank=rank, world_size=2, timeout=timedelta(seconds=5))
+    dist.barrier()
+    if rank == 1:
+        if failure == 'peer_exit':
+            os._exit(71)
+        raise torch.cuda.OutOfMemoryError('Injected error; no CUDA allocation')
+    # This peer cannot complete normally. The parent owns and stops both ranks.
+    dist.barrier()
+
+
+def supervised_ranks(function, args, deadline=60):
+    """Bound unit-test hangs and reap all children on one-rank failure."""
+    context = multiprocessing.spawn(function, args=args, nprocs=2, join=False)
+    started = time.monotonic()
+    try:
+        while any(process.is_alive() for process in context.processes):
+            if any(process.exitcode not in (None, 0) for process in context.processes):
+                raise RuntimeError('Rank failed; all peer ranks must be stopped')
+            time.sleep(.05)
+            if time.monotonic() - started > deadline:
+                raise TimeoutError('Rank test watchdog expired')
+        if any(process.exitcode != 0 for process in context.processes):
+            raise RuntimeError('Rank failed; all peer ranks must be stopped')
+    finally:
+        for process in context.processes:
+            if process.is_alive():
+                process.terminate()
+        for process in context.processes:
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=2)
+            assert not process.is_alive(), 'Rank cleanup failed'
+
+
 class SequenceParallelTests(unittest.TestCase):
+    def test_peer_exit_and_injected_oom_stop_and_reap_all_ranks(self):
+        for failure in ('peer_exit', 'oom'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, 'Rank failed'):
+                    supervised_ranks(failed_rank, (str(Path(root, 'rendezvous')), failure), deadline=30)
+                self.assertLess(time.monotonic()-started, 30)
+
+    def test_one_rank_invalid_input_and_metadata_disagreement_reject_both(self):
+        with tempfile.TemporaryDirectory() as root:
+            supervised_ranks(rejection_rank, (str(Path(root, 'rendezvous')), root), deadline=30)
+            for rank in range(2):
+                reports = json.loads(Path(root, f'rejected-{rank}.json').read_text())
+                self.assertEqual(len(reports), 6)
+                self.assertTrue(all(row['elapsed_s'] < 5 for row in reports))
+                self.assertTrue(all('Rank ' in row['error'] for row in reports))
+
     def test_two_rank_math_order_padding_prefix_and_cached_modulation(self):
         with tempfile.TemporaryDirectory() as root:
-            multiprocessing.spawn(numerical_rank, args=(str(Path(root, 'rendezvous')), root), nprocs=2, join=True)
+            supervised_ranks(numerical_rank, (str(Path(root, 'rendezvous')), root))
             combined = []
             for rank in range(2):
                 rows = json.loads(Path(root, f'rank-{rank}.json').read_text())

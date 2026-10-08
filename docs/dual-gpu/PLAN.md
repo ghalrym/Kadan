@@ -126,3 +126,66 @@ Qwen2.1/dual3090 benchmark is assumed. Keep API changes unmerged for review.
 - xDiT USP/ring/Ulysses and pipeline design comparison:
   https://github.com/xdit-project/xDiT/blob/main/docs/methods/usp.md
   https://arxiv.org/html/2411.01738v1
+
+## Review follow-up: preflight and bounded probe (not yet executed on CUDA)
+
+`cached_block` now requires a request identity and a bounded Gloo control group
+with the same rank membership/order as the data group. Local input validation
+precedes projections/data collectives; both ranks agree request, step, block,
+mode, global/local shape, dtype and key-mask digest. A bad mask on one rank is
+reported to both before either enters the exchange. The mask digest includes a
+CPU copy/synchronization; measure it as validation cost, not communication-only
+or pure Python overhead. Post-gate allocation/runtime errors still require
+fail-stop supervision; a failed NCCL communicator is never reused.
+
+The CPU tests assert malformed one-rank mask/dtype/shape and mismatched
+mode/step/request fail before projection or data exchange. A parent watchdog
+also tests peer exit and injected CUDA-OOM exception without GPU allocations,
+stopping and reaping both children. This is not proof of NCCL failure behavior.
+
+`launch_probe.py` defaults to a read-only plan. After exact-head source review,
+green CI and coordination, `--execute-reviewed <full SHA> --evidence <new dir>`
+stops only the API after an idle-queue check, verifies physical GPU ownership
+release, then runs the pinned image with both explicit UUIDs. Each case has one
+exclusive lease on the existing model-volume inference.lock, and torchrun owns
+both ranks. No model weights are loaded and no database is touched. Container
+exit plus empty CUDA process inventory and return to physical baseline are the
+release fences between cases. The API stays stopped throughout the sweep.
+
+The host watchdog allows150 seconds/case; the rank supervisor allows135 seconds
+and kills/reaps the process group. NCCL timeout is45 seconds; control timeout10.
+The allocator hard limit is2 GiB/rank (CUDA/NCCL allocations outside PyTorch are
+additionally watched physically). Container RAM/no-swap is8 GiB,4 CPU,1 GiB SHM.
+Guards: CPU80 C, GPU90 C, host available16 GiB, physical GPU free256 MiB; require
+4 GiB/card before start. Normal probe is followed by peer-exit and injected-OOM
+cases. OOM is injected, not induced by exhausting hardware. Captured NCCL logs
+show transport selection; capability flags alone do not prove transport.
+
+On success or test failure the launcher restores unchanged MR119 configuration
+and verifies HTTP health, model ready and unchanged unrelated container IDs.
+Unconfirmed CUDA-process cleanup quarantines the cards and leaves API stopped.
+Expected interruption is5–8 minutes including recovery, superseding the earlier
+3–5 minute estimate. The launcher itself remains subject to source review; no
+CUDA parity/bandwidth/failure result is claimed yet.
+
+### Temporary allocation budget (per rank, real BF16 communication shape)
+
+| Operation | Input retained | Pack/send | Receive | Reorder/result | Conservative tensor live bound |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Target K/V gather | QKV192 MiB + TP buffer128 MiB | stack128 MiB | two receives256 MiB | concatenation256 MiB | 960 MiB |
+| Fused Ulysses forward | same320 MiB | stack192 MiB + contiguous send up to192 MiB |192 MiB | reorder up to192 MiB | 1088 MiB |
+| Ulysses inverse | inputs320 MiB + exchanged192 MiB | send up to64 MiB |64 MiB | reorder up to64 MiB | 704 MiB |
+| TP two reductions | same320 MiB | in place | backend scratch not counted here | in place | 320 MiB + backend scratch |
+
+These conservative live tensor bounds count simultaneous references and copies,
+not just the128 MiB off-rank logical payload. Allocator caching, backend scratch,
+CUDA contexts, host staging and the parity block's weights are additional;
+record actual allocated/reserved/physical peaks. Communication timing includes
+packing/reordering and synchronization; it is not raw link bandwidth. This probe
+is synthetic projection parity/communication, not a complete 32-block denoiser
+or an end-to-end speedup result.
+
+Follow-up local validation: all5 CPU tests passed in55.511 seconds in the pinned
+image with no GPU devices exposed (4 CPU,4 GiB RAM/no swap). Probe `--plan`
+imports passed in the same runtime with no GPU exposure. Python compilation and
+`git diff --check` passed. Exact-head CI is recorded separately after publication.
