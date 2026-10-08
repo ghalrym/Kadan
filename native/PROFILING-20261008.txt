@@ -192,3 +192,14 @@ stages and 26 CPU CTests pass. Evidence: profiling/20261008-normalization.json.
 Run: kadan-normalization-parity --allow-gpu-validation --device 0
 Run: kadan-linear-auxiliary-parity --allow-gpu-validation --device 0
 Native targets only rebuilt; image/dependencies/data/settings unchanged.
+
+Coalesced scalar-dot products
+Shared-memory product staging retains the exact ascending FP32 additions and
+BF16 boundaries. Width >4096 retains the original kernel. Auxiliary projection
+7.101 -> 2.412 ms/step; router logits 5.224 -> 2.229. Remaining route stays 6.545.
+All 149 IDs match. Warm API 19.783752 tok/s, prompt 1.509321 s, total 9.070434 s.
+Direct load 50.681055 s, prompt 1.802629 s, decode incl EOS 9.059132 s.
+Latest worker SHA256: 12ed6919f43f1b4c564ec1ae98a287fd82f84519b33bac127daf9924ac598caf
+Explicit NaN regressions now pass in 105 normalization, 60 auxiliary (including
+4096/4097), and 15 router cases. All MoE GPU stages and 26 CPU tests pass.
+Evidence: profiling/20261008-dot-staging.json. Native targets only rebuilt.

@@ -38,6 +38,20 @@ __global__ void auxiliary_projection(linear::Config c,LinearBuffers b){
     b.a[i]=round(a,b.status);b.b[i]=round(bb,b.status);
 }
 
+// Products are independent; retaining lane-zero ascending adds preserves the
+// original rounding and per-add numeric error behavior, including overflow.
+__global__ void auxiliary_projection_shared(linear::Config c,LinearBuffers b){
+    extern __shared__ float products[];float* ap=products;float* bp=ap+c.hidden;
+    const std::size_t i=blockIdx.x;
+    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x){
+        ap[j]=product(weight(b.a_weight[i*c.hidden+j]),b.normalized[j]);
+        bp[j]=product(weight(b.b_weight[i*c.hidden+j]),b.normalized[j]);}
+    __syncthreads();
+    if(threadIdx.x==0){float a=0,bb=0;for(std::size_t j=0;j<c.hidden;++j){
+        a=finite(plus(a,ap[j]),b.status);bb=finite(plus(bb,bp[j]),b.status);}
+        b.a[i]=round(a,b.status);b.b[i]=round(bb,b.status);}
+}
+
 __global__ void convolution(linear::Config c,LinearBuffers b){
     const std::size_t channel=blockIdx.x*blockDim.x+threadIdx.x;
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;if(channel>=channels)return;
@@ -81,7 +95,8 @@ cudaError_t linear_normalize(linear::Config c,LinearBuffers b,const float* input
 cudaError_t linear_auxiliary(linear::Config c,LinearBuffers b){
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;
     auxiliary<<<(channels+127)/128,128,0,cudaStreamLegacy>>>(c,b);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    auxiliary_projection<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
+    if(c.hidden<=4096) auxiliary_projection_shared<<<c.value_heads,128,2*c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b);
+    else auxiliary_projection<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
 }
 cudaError_t linear_core(linear::Config c,LinearBuffers b){
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;

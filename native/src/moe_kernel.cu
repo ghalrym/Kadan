@@ -18,6 +18,13 @@ __global__ void route_logits(moe::Config c,MoeBuffers b,const float* x){
     for(std::size_t j=0;j<c.hidden;++j)sum=finite(add(sum,mul(expand(b.router[e*c.hidden+j]),x[j])),b.status);
     b.logits[e]=bf(sum,b.status);
 }
+// Coalesced products, with the same serial addition order and BF16 boundary.
+__global__ void route_logits_shared(moe::Config c,MoeBuffers b,const float* x){
+    extern __shared__ float products[];const std::size_t e=blockIdx.x;
+    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)products[j]=mul(expand(b.router[e*c.hidden+j]),x[j]);
+    __syncthreads();
+    if(threadIdx.x==0){float sum=0;for(std::size_t j=0;j<c.hidden;++j)sum=finite(add(sum,products[j]),b.status);b.logits[e]=bf(sum,b.status);}
+}
 __global__ void route(moe::Config c,MoeBuffers b,const float* x){
     if(threadIdx.x)return;float maximum=-CUDART_INF_F;
     for(std::size_t j=0;j<c.hidden;++j){if(bf(x[j],b.status)!=x[j])atomicOr(b.status,1u);b.accumulator[j]=0;}
@@ -37,9 +44,9 @@ __global__ void route(moe::Config c,MoeBuffers b,const float* x){
 // -1 preserves top-k ordering because softmax probabilities are nonnegative.
 __global__ void route_shared(moe::Config c,MoeBuffers b,const float* x){
     extern __shared__ float scratch[];
-    float* input=scratch;float* gate=input+c.hidden;float* probabilities=gate+c.hidden;float* candidates=probabilities+c.experts;
+    float* products=scratch;float* probabilities=products+c.hidden;float* candidates=probabilities+c.experts;
     const unsigned tid=threadIdx.x;
-    for(std::size_t j=tid;j<c.hidden;j+=blockDim.x){const float v=x[j];if(bf(v,b.status)!=v)atomicOr(b.status,1u);b.accumulator[j]=0;input[j]=v;gate[j]=expand(b.shared_gate[j]);}
+    for(std::size_t j=tid;j<c.hidden;j+=blockDim.x){const float v=x[j];if(bf(v,b.status)!=v)atomicOr(b.status,1u);b.accumulator[j]=0;products[j]=mul(expand(b.shared_gate[j]),v);}
     for(std::size_t e=tid;e<c.experts;e+=blockDim.x)probabilities[e]=b.logits[e];
     __syncthreads();
     if(tid==0){float maximum=-CUDART_INF_F;for(std::size_t e=0;e<c.experts;++e)maximum=fmaxf(maximum,probabilities[e]);
@@ -49,7 +56,7 @@ __global__ void route_shared(moe::Config c,MoeBuffers b,const float* x){
             for(unsigned e=1;e<c.experts;++e)if(candidates[e]>candidates[best])best=e;
             b.selected[rank]=best;picked=add(picked,probabilities[best]);candidates[best]=-1.f;}
         for(std::size_t rank=0;rank<c.top_k;++rank)b.top_weights[rank]=bf(probabilities[b.selected[rank]]/picked,b.status);
-        float shared=0;for(std::size_t j=0;j<c.hidden;++j)shared=finite(add(shared,mul(gate[j],input[j])),b.status);
+        float shared=0;for(std::size_t j=0;j<c.hidden;++j)shared=finite(add(shared,products[j]),b.status);
         *b.shared_factor=bf(sigmoid(bf(shared,b.status)),b.status);
     }
     __syncthreads();
@@ -70,9 +77,11 @@ __global__ void finish(moe::Config c,MoeBuffers b,float* output){
 }
 }
 cudaError_t moe_route(moe::Config c,MoeBuffers b,const float* x){
-    route_logits<<<c.experts,32,0,cudaStreamLegacy>>>(c,b,x);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
+    if(c.hidden<=4096) route_logits_shared<<<c.experts,128,c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b,x);
+    else route_logits<<<c.experts,32,0,cudaStreamLegacy>>>(c,b,x);
+    auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
     if(c.hidden<=4096)
-        route_shared<<<1,256,(2*c.hidden+2*c.experts)*sizeof(float),cudaStreamLegacy>>>(c,b,x);
+        route_shared<<<1,256,(c.hidden+2*c.experts)*sizeof(float),cudaStreamLegacy>>>(c,b,x);
     else route<<<1,1,0,cudaStreamLegacy>>>(c,b,x);
     return cudaGetLastError();
 }
