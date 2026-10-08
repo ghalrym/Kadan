@@ -13,6 +13,20 @@ class RecoveryTests(unittest.TestCase):
             Mounts=[{'Source': '/original', 'Destination': '/app/api'}],
             Path='python', Args=['-m', 'uvicorn'], State={'Running': True})
 
+    def test_mount_order_is_not_a_configuration_change(self):
+        before = self.before | {'Mounts': [{'Destination': '/b', 'Source': 'b'}, {'Destination': '/a', 'Source': 'a'}]}
+        after = before | {'Mounts': list(reversed(before['Mounts']))}
+        self.assertEqual(launch_probe.container_identity(before), launch_probe.container_identity(after))
+        after['Mounts'][0] = after['Mounts'][0] | {'Source': 'different'}
+        self.assertNotEqual(launch_probe.container_identity(before), launch_probe.container_identity(after))
+
+    def test_cleanup_allows_only_captured_desktop_pid_starttimes(self):
+        desktop = {('GPU1', '10', '100')}
+        for current, expected in [(desktop, True), (set(), True),
+                ({('GPU1', '10', '101')}, False), (desktop | {('GPU1', '20', '200')}, False)]:
+            with self.subTest(current=current), patch.object(launch_probe, 'gpu_owners', return_value=current):
+                self.assertEqual(launch_probe.no_gpu_owners(desktop), expected)
+
     def test_starts_exact_container_and_ignores_changed_compose_files(self):
         stopped = copy.deepcopy(self.before)
         stopped['State']['Running'] = False

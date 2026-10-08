@@ -149,7 +149,7 @@ stops only the API after an idle-queue check, verifies physical GPU ownership
 release, then runs the pinned image with both explicit UUIDs. Each case has one
 exclusive lease on the existing model-volume inference.lock, and torchrun owns
 both ranks. No model weights are loaded and no database is touched. Container
-exit plus empty CUDA process inventory and return to physical baseline are the
+exit plus no CUDA owners beyond the captured desktop baseline and return to physical baseline are the
 release fences between cases. The API stays stopped throughout the sweep.
 
 The host watchdog allows150 seconds/case; the rank supervisor allows135 seconds
@@ -164,7 +164,7 @@ show transport selection; capability flags alone do not prove transport.
 On success or test failure the launcher starts the exact captured MR119 container ID with `docker start` (no Compose
 reevaluation) and verifies unchanged ID, image, Config, HostConfig, Mounts, Path
 and Args, Docker/HTTP health, model ready and unchanged unrelated container IDs.
-Unconfirmed CUDA-process cleanup quarantines the cards and leaves API stopped.
+Unconfirmed inference CUDA-process cleanup quarantines the cards and leaves API stopped.
 Expected interruption is5–8 minutes including recovery, superseding the earlier
 3–5 minute estimate. The launcher itself remains subject to source review; no
 CUDA parity/bandwidth/failure result is claimed yet.
@@ -198,3 +198,32 @@ Gloo control timeout is60 seconds to tolerate independent real-width CPU block
 initialization under the CPU quota; per-case initialization duration is recorded.
 NCCL45 seconds, probe120 seconds, supervisor135 seconds and host150 seconds remain
 bounded and unchanged. No GPU execution was needed to make these corrections.
+
+## First maintenance attempt: preflight stopped the probe
+
+Reviewed commit5e630ff68b8afca2ce5f0b0ee36c3b8e613ca12f passed all PR/push CI
+(API37845001016/37844994049, native37845001050/37844994068). The idle queue
+was checked and the API stopped at2026-10-08T21:16:11.680473871Z. No probe
+container or rank was launched: the ownership gate incorrectly required every
+GPU process to disappear, including pre-existing desktop contexts.
+
+The remaining GPU1 PIDs5200/5228/6514/7449 were cosmic-workspaces,
+cosmic-files-applet, xdg-desktop-portal-cosmic and Chrome, all started October7.
+GPU0 returned to2 MiB, GPU1 to594 MiB. No desktop process was killed. Recovery
+also exposed that Docker reorders its inspect Mounts list on stop; all entries
+and other compared fields were unchanged. After comparing mounts by destination,
+the exact API container1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499
+was restarted at21:18:05.930588893Z, without recreation or Compose evaluation.
+Frontend, Redis and Postgres IDs remained unchanged. Evidence is stored locally
+under task-4/dual-gpu-reviewed-5e630ff (before/restored inspect and lifecycle).
+
+The follow-up launcher normalizes only Mounts ordering. Before stopping it
+captures recognized desktop GPU PID/starttime tuples, excluding all API-container
+PIDs from that baseline. Release checks allow only that captured desktop set
+(or a subset if a desktop process exits); any new process or reused PID blocks
+cleanup. Unrecognized external GPU owners block before the pause. Physical
+memory must still return to the post-stop baseline, with128 MiB tolerance.
+Five recovery/baseline tests pass. This ownership-gate change needs independent
+review and exact-head CI before retrying the pause. No CUDA parity, collective
+transport, timings or failure-injection measurements were obtained in this
+attempt; no dual-GPU model execution was activated.

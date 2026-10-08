@@ -25,7 +25,9 @@ def run(*args, check=True, timeout=20):
 
 def container_identity(inspect):
     """Exclude runtime state/network addresses that legitimately change on start."""
-    return {key: inspect[key] for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'Path', 'Args')}
+    result = {key: inspect[key] for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'Path', 'Args')}
+    result['Mounts'] = sorted(result['Mounts'], key=lambda mount: mount['Destination'])
+    return result
 
 
 def inspect_container(container_id):
@@ -49,9 +51,36 @@ def gpu_snapshot():
             for v in (line.split(',') for line in lines)}
 
 
-def no_gpu_owners():
+def gpu_owners():
     lines = run('nvidia-smi', '--query-compute-apps=gpu_uuid,pid', '--format=csv,noheader').stdout.splitlines()
-    return not any(line.split(',')[0].strip() in GPUS for line in lines)
+    owners = set()
+    for line in lines:
+        gpu, pid = (part.strip() for part in line.split(','))
+        if gpu not in GPUS:
+            continue
+        try:
+            # starttime rejects PID reuse; comm is inspected separately below.
+            stat = Path('/proc', pid, 'stat').read_text()
+        except FileNotFoundError:
+            continue
+        starttime = stat.rsplit(')', 1)[1].split()[19]
+        owners.add((gpu, pid, starttime))
+    return owners
+
+
+def desktop_baseline(api_id):
+    api_pids = set(run('docker', 'top', api_id, '-eo', 'pid').stdout.splitlines()[1:])
+    api_pids = {pid.strip() for pid in api_pids}
+    desktop = {owner for owner in gpu_owners() if owner[1] not in api_pids}
+    allowed = {'cosmic-workspac', 'cosmic-files-ap', 'xdg-desktop-por', 'chrome'}
+    for _, pid, _ in desktop:
+        assert Path('/proc', pid, 'comm').read_text().strip() in allowed, 'Unrecognized external GPU owner; do not pause'
+    return desktop
+
+
+def no_gpu_owners(desktop):
+    # Existing desktop contexts may disappear; new/reused PIDs cannot pass.
+    return gpu_owners() <= desktop
 
 
 def guards():
@@ -95,6 +124,8 @@ def main():
               for n in ('kadan-redis-1','kadan-postgres-1','kadan-frontend-1')}
     for command, key in [('SCARD','unfinished'), ('LLEN','pending')]:
         assert run('docker','exec','kadan-redis-1','redis-cli',command,'kadan:inference:'+key).stdout.strip() == '0', 'Live queue not idle'
+    desktop = desktop_baseline(api_id)
+    (evidence/'desktop-baseline.json').write_text(json.dumps(sorted(desktop), indent=2))
     (evidence/'before.json').write_text(json.dumps(inspect, indent=2))
     def interrupted(signum, frame):
         raise InterruptedError(f'Launcher interrupted by signal {signum}')
@@ -108,9 +139,9 @@ def main():
         run('docker', 'stop', '--time', '30', api_id, timeout=45)
         assert not inspect_container(api_id)['State']['Running']
         deadline=time.monotonic()+30
-        while not no_gpu_owners() and time.monotonic()<deadline:
+        while not no_gpu_owners(desktop) and time.monotonic()<deadline:
             time.sleep(1)
-        assert no_gpu_owners(), 'Existing GPU ownership did not release'
+        assert no_gpu_owners(desktop), 'Existing GPU ownership did not release'
         baseline=gpu_snapshot()
         assert all(baseline[g]['free'] >= 4096 for g in GPUS)
         guards()
@@ -147,8 +178,8 @@ def main():
                 assert not state['Running'], 'Container cleanup unconfirmed'
                 run('docker','rm',NAME)
             deadline=time.monotonic()+20
-            while not no_gpu_owners() and time.monotonic()<deadline: time.sleep(1)
-            assert no_gpu_owners(), 'Rank CUDA cleanup unconfirmed'
+            while not no_gpu_owners(desktop) and time.monotonic()<deadline: time.sleep(1)
+            assert no_gpu_owners(desktop), 'Rank CUDA cleanup unconfirmed'
             after=gpu_snapshot()
             assert all(after[g]['used'] <= baseline[g]['used']+128 for g in GPUS), 'Physical memory did not return'
             assert not state['OOMKilled'], 'Unexpected container host OOM'
@@ -165,9 +196,9 @@ def main():
             run('docker','stop','--time','5',NAME,check=False)
             run('docker','rm',NAME,check=False)
         cleanup_deadline=time.monotonic()+20
-        while not no_gpu_owners() and time.monotonic()<cleanup_deadline:
+        while not no_gpu_owners(desktop) and time.monotonic()<cleanup_deadline:
             time.sleep(1)
-        cleanup_confirmed = no_gpu_owners()
+        cleanup_confirmed = no_gpu_owners(desktop)
         if cleanup_confirmed and baseline is not None:
             released=gpu_snapshot()
             cleanup_confirmed=all(released[g]['used']<=baseline[g]['used']+128 for g in GPUS)
