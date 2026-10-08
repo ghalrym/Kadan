@@ -29,5 +29,4 @@ Uses the same explicit32GiB compiler allowance within128GiB no-swap benchmark
 limit,5GiB ext4 disk cache limit,22GiB single-GPU accounting and physical/thermal
 supervisor guards as the prior corrected experiment. Live GPU0 is not exposed.
 Manifest and exact host-specific launch arguments are adjacent. Six CPU tests
-cover dispatch, backing views, request reuse and cached mutation. The GPU result
-is pending; do not interpret this candidate as a recommended production option.
+cover dispatch, backing views, request reuse and cached mutation. The GPU run was safely stopped before compilation when the user prioritized activating reviewed MR119 on the home API. Model cleanup and container exit were confirmed; GPU1 returned to baseline before deployment. No compiled result or speedup is available. Do not interpret this candidate as a recommended production option.
