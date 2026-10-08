@@ -5,6 +5,9 @@ import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from dataclasses import replace
+from native.tests.reference_capture.ancestor_observer import AncestorObserver, HeadroomProof, identity
+from native.tests.reference_capture.supervisor import Observation
 
 from native.tests.reference_capture.container_stage import DockerReferenceStage
 from native.tests.reference_capture.artifacts import sha256
@@ -152,6 +155,54 @@ class TransportTests(unittest.TestCase):
             result=observed.observe(observed.verified_id,1)
             self.assertFalse(result.child_reaped)
             self.assertFalse(result.cleanup_known(observed.verified_id))
+
+    def test_headroom_proof_is_distinct_from_zero_freed_bytes(self):
+        proof=HeadroomProof(True,True,True,True,True,137,100*1024**3,44*1024**3,
+                            60*1024**3,None,44*1024**3)
+        observation=Observation('a'*64,False,0,0,True,True,False,False,0,True,
+                                None,None,'terminated_headroom',proof)
+        self.assertTrue(observation.cleanup_known('a'*64))
+        self.assertFalse(observation.memory_released)
+        for key,value in (('init_terminated',False),('absence_verified',False),
+                          ('ancestor_identity_unchanged',False),('ancestor_oom_unchanged',False),
+                          ('ancestor_peers_unchanged',False),('host_available_bytes',1),
+                          ('ancestor_limit_bytes',61*1024**3),('host_floor_bytes',0)):
+            with self.subTest(key=key):
+                self.assertFalse(replace(observation,headroom_proof=replace(proof,**{key:value})).cleanup_known('a'*64))
+        self.assertFalse(replace(observation,memory_released=True).cleanup_known('a'*64))
+        self.assertFalse(replace(observation,cleanup_mode='zero_charge').cleanup_known('a'*64))
+
+    def test_deleted_leaf_needs_pinned_ancestor_wait_pidfd_and_headroom(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent=Path(folder);leaf=parent/'docker-owned.scope';leaf.mkdir()
+            observer=object.__new__(AncestorObserver)
+            observer.parent=parent;observer.leaf=leaf;observer.leaf_identity=identity(leaf)
+            observer.poller=Mock();observer.poller.poll.return_value=[(12,1)]
+            observer.peers=set();observer.pin={'identity':identity(parent),'oom_kill':0,
+                'memory_max':'max','host_floor_bytes':44*1024**3,'ancestor_floor_bytes':44*1024**3}
+            (parent/'memory.events').write_text('oom_kill 0\n')
+            (parent/'memory.current').write_text(str(30*1024**3))
+            (parent/'memory.max').write_text('max')
+            leaf.rmdir()
+            state={'Running':False,'Pid':0,'Restarting':False,'Dead':False,
+                   'FinishedAt':'2026-10-08T11:00:00Z','ExitCode':137}
+            original=Path.read_text
+            def read(path,*args,**kwargs):
+                if str(path)=='/proc/meminfo':return 'MemAvailable: 104857600 kB\n'
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'read_text',read):
+                self.assertTrue(observer.sample(state,137).valid())
+                observer.poller.poll.return_value=[]
+                self.assertFalse(observer.sample(state,137).valid())
+                observer.poller.poll.return_value=[(12,1)]
+                with self.assertRaises(ValueError):observer.sample(state,0)
+                (parent/'unexplained.scope').mkdir()
+                self.assertFalse(observer.sample(state,137).valid())
+                (parent/'unexplained.scope').rmdir()
+                (parent/'memory.events').write_text('oom_kill 1\n')
+                self.assertFalse(observer.sample(state,137).valid())
+                (parent/'memory.events').unlink()
+                with self.assertRaises(OSError):observer.sample(state,137)
 
     def test_wrong_identity_cannot_signal(self):
         stage=self.bare_stage()

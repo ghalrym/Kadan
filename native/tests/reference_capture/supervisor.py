@@ -11,6 +11,7 @@ import time
 from typing import Protocol
 
 from .artifacts import ExclusiveOutput, require
+from .ancestor_observer import HeadroomProof
 
 
 @dataclass(frozen=True)
@@ -27,19 +28,25 @@ class Observation:
     manifest_unchanged: bool
     memory_current_bytes: int | None = None
     cgroup_populated: int | None = None
+    cleanup_mode: str = "zero_charge"
+    headroom_proof: HeadroomProof | None = None
 
     def cleanup_known(self, owned_id):
         # Strict types prevent None, unknown counts or strings from clearing ownership.
-        return (self.container_id == owned_id and self.running is False
+        common=(self.container_id == owned_id and self.running is False
                 and type(self.process_count) is int and self.process_count == 0
                 and type(self.compute_process_count) is int and self.compute_process_count == 0
                 and self.child_reaped is True and self.gpu_baseline_restored is True
-                and self.memory_released is True
-                and type(self.memory_current_bytes) is int and self.memory_current_bytes == 0
-                and type(self.cgroup_populated) is int and self.cgroup_populated == 0
                 and type(self.docker_oom) is bool
                 and type(self.cgroup_oom_kill_delta) is int and self.cgroup_oom_kill_delta >= 0
                 and type(self.manifest_unchanged) is bool)
+        if self.cleanup_mode == 'terminated_headroom':
+            return (common and self.memory_released is False
+                    and isinstance(self.headroom_proof,HeadroomProof) and self.headroom_proof.valid())
+        return (common and self.cleanup_mode == 'zero_charge' and self.memory_released is True
+                and type(self.memory_current_bytes) is int and self.memory_current_bytes == 0
+                and type(self.cgroup_populated) is int and self.cgroup_populated == 0)
+
 
 
 class OwnedStage(Protocol):
