@@ -7,13 +7,13 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from PIL import Image
 
 from api.inference.image.model import NativeImage, REVISION, GIB
-from api.inference.resources import ResourceManager
+from api.inference.resources import MemoryCapacity, ResourceManager
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue
 from api.services.images import ImageManager
@@ -199,3 +199,34 @@ class ResidentBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(self.events.index('text:A:end'),self.events.index('image:B:start'))
         self.assertNotIn(self.adapter.owner+':context',self.resources.snapshot()['reservations'])
         self.assertEqual(self.active,0)
+
+    async def test_invalid_edit_never_parks_text_and_validation_scratch_is_released(self):
+        self.release.set()
+        a=await self.text('A');await self.manager.queue.wait(a)
+        before=self.resources.snapshot()['reservations']
+        b=await self.manager.queue.submit('image','edit',
+            {'prompt':'edit','count':1,'image':'data:image/png;base64,aW52YWxpZA=='},'qwen-image-2.1')
+        c=await self.text('C')
+        with self.assertRaises(RuntimeFailure) as caught:await self.manager.queue.wait(b)
+        self.assertEqual(caught.exception.status_code,422)
+        await self.manager.queue.wait(c)
+        self.assertEqual(self.events,['text:A:start','text:A:end','text:C:start','text:C:end'])
+        self.assertEqual(self.resources.snapshot()['reservations'],before)
+        self.image_factory.assert_not_called()
+
+    async def test_invalid_device_and_impossible_gpu_budget_do_not_park_text(self):
+        self.release.set()
+        a=await self.text('A');await self.manager.queue.wait(a)
+        for configured in ('cuda:nope','cuda:9'):
+            with patch.dict(os.environ,{'KADAN_IMAGE_DEVICE':configured}):
+                b=await self.image()
+                with self.assertRaises(RuntimeFailure):await self.manager.queue.wait(b)
+        # No configuration can fit even the sequential workspace on this budget.
+        capacity=self.resources.capacity
+        self.resources.capacity=MemoryCapacity(capacity.host_bytes,{0:GIB})
+        try:
+            b=await self.image()
+            with self.assertRaises(RuntimeFailure):await self.manager.queue.wait(b)
+        finally:self.resources.capacity=capacity
+        self.assertEqual(self.events,['text:A:start','text:A:end'])
+        self.image_factory.assert_not_called()

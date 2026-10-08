@@ -152,6 +152,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)
 
     async def test_image_generation_and_edit_use_redis_and_publish_real_png(self):
+        self.resources = ResourceManager(2 * 1024**3, {0: 50})
         service = self.manager.image.service
         service.downloads.get_checkpoint.side_effect = None
         service.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.directory.name))

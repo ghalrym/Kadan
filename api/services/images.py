@@ -61,7 +61,13 @@ class ImageManager:
         records = []
         for manifest in self.root.glob('*/result.json'):
             try:
-                records.append(ImageSet.model_validate_json(manifest.read_text()))
+                # Staging uses .<uuid>; only a completed canonical UUID directory
+                # becomes visible after the atomic rename.
+                if str(UUID(manifest.parent.name)) != manifest.parent.name or manifest.parent.is_symlink():
+                    continue
+                result = ImageSet.model_validate_json(manifest.read_text())
+                if result.id == manifest.parent.name:
+                    records.append(result)
             except (OSError, ValueError):
                 continue
         return sorted(records, key=lambda item: item.id, reverse=True)
@@ -79,6 +85,49 @@ class ImageManager:
             return path
         except (ValueError, OSError) as exc:
             raise RuntimeFailure('Image not found', 404) from exc
+
+    def validate_request(self, source, cancel=None):
+        """Reject unavailable config/capacity without loading or moving models."""
+        _, path = self.preflight()
+        if self.backend is None:
+            configured = os.environ.get('KADAN_IMAGE_DEVICE', os.environ.get('KADAN_GPU', 'auto'))
+            device = 'cuda:' + configured if configured.isdecimal() else configured
+            resources = self.runtime.ensure_resources()
+            try:
+                plan = qwen_image.NativeImage(path, resources, device=device)
+                plan._plan()  # Metadata/capacity only; never imports provider modules.
+                if plan.weights * 2 + qwen_image.WORKSPACE + qwen_image.GIB > resources.capacity.host_bytes:
+                    raise ResourceExhausted('Image request exceeds the host memory budget')
+            except ResourceExhausted as exc:
+                raise RuntimeFailure(str(exc), 503) from exc
+            except ValueError as exc:
+                raise RuntimeFailure(str(exc), 422) from exc
+        if source is not None:
+            self.validate_source(source, cancel)
+
+    def validate_source(self, source, cancel=None):
+        """Decode bounded edit input before handoff without evicting text.
+
+        Discard the validation image inside this worker; execution decodes the
+        same immutable source again under its existing output/staging admission.
+        No decoded pixels or reservations escape on cancellation or failure.
+        """
+        scratch = None
+        try:
+            scratch = self.runtime.ensure_resources().reserve('image:validation:' + uuid4().hex,
+                'image', host_bytes=qwen_image.GIB, cancel_event=cancel, allow_eviction=False)
+            with scratch.lease(cancel):
+                qwen_image.check_cancel(cancel)
+                with decode_source(source):
+                    qwen_image.check_cancel(cancel)
+        except (ResourceBusy, ResourceCancelled, ResourceExhausted) as exc:
+            raise RuntimeFailure(str(exc), 503 if isinstance(exc, ResourceExhausted) else 409) from exc
+        except (ValueError, OSError) as exc:
+            clear_failure_frames(exc)
+            raise RuntimeFailure(str(exc), 422) from exc
+        finally:
+            if scratch is not None:
+                scratch.release()
 
     def generate(self, prompt, aspect, count, seed, cancel, source=None):
         # Keep decoded input/output and PNG staging admitted even if a parked

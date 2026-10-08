@@ -10,7 +10,8 @@ required generated client change.
 
 Python remains the global intake/admission coordinator: the Redis queue's accepted
 order is authoritative and one consumer executes it. After validating the queued
-payload and model availability, MemoryManager awaits other feature wrappers'
+payload, model availability, device configuration, deterministic capacity and
+admitted edit decoding, MemoryManager awaits other feature wrappers'
 physical parking before dispatch. A later cache hit cannot pass an older image.
 No second Python residency table or competing native global queue is introduced.
 
@@ -88,8 +89,8 @@ startup, timeouts, unconfirmed startup reap, exact sub-budgets, preserved host
 backing and retryable restore pressure. Image tests retain the process context,
 prevent spending it twice, and inject failed synchronization.
 
-Local CPU validation: full API suite passed (404 tests, two skips at the first
-full run), plus the subsequently added active-native and startup-failure cases.
+Local CPU validation after review corrections: full API suite passed (412 tests,
+two skips), including the active-native and startup-failure cases.
 All six frontend tests passed after schema/client generation. `uv pip check` and
 `api.inference.check_install` passed with Torch 2.14.1+cpu, torchvision 0.29.1+cpu,
 and PR52's pinned Diffusers revision. This builds no local API image and downloads
@@ -100,3 +101,16 @@ remain unrun, requiring the image checkpoint and an explicit deployment budget.
 MR118's 192-logit GPU evidence is tiny text-only correctness with **pre-step**
 cancellation recovery; it does not prove interruption of an in-flight CUDA kernel.
 The live server and its GPU worker are unchanged by this development branch.
+
+
+Review corrections: history exposes only canonical UUID directories whose
+manifest identity matches the directory. A barrier test proves staging results
+are hidden before rename. Edit decoding runs before handoff under a 1 GiB
+reservation with eviction disabled, so invalid input or insufficient validation
+space cannot move resident text. The same immutable input is decoded again under
+the execution staging reservation. Invalid device settings and impossible logical
+budgets fail before provider construction/execution or parking. The effective edit
+limit is the queue's 16 MiB complete JSON payload (slightly under 16 MiB base64,
+about 12 MiB decoded), even though the decoder's independent hard cap is 20 MiB.
+See [read-only hardware readiness](LIVE-SWITCH-READINESS.md) for existing weights,
+cached runtime and exact proposed isolated test budgets.

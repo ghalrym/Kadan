@@ -1,12 +1,14 @@
 import asyncio
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from uuid import uuid4
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -114,3 +116,39 @@ class ImageManagerTests(unittest.TestCase):
         asyncio.run(run())
         self.assertTrue(stopped.is_set())
         self.assertFalse(self.manager._gate.locked())
+
+
+    def test_unpublished_manifest_is_hidden_until_atomic_rename(self):
+        entered, release = threading.Event(), threading.Event()
+        rename = Path.rename
+        def barrier(path, target):
+            if path.parent == self.manager.root and path.name.startswith('.'):
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError('publication barrier')
+            return rename(path, target)
+        with patch.object(Path, 'rename', barrier), ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.manager.generate, 'Tree', '1:1', 1, 0, threading.Event())
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(list(self.manager.root.glob('*/result.json')))
+                self.assertEqual(self.manager.history(), [])
+            finally:
+                release.set()
+            result = future.result(timeout=3)
+        self.assertEqual(self.manager.history(), [result])
+        published = self.manager.root / result.id
+        published.rename(self.manager.root / str(uuid4()))
+        self.assertEqual(self.manager.history(), [])  # Manifest identity must match.
+
+    def test_invalid_source_admission_never_evicts_resident_text(self):
+        resources = ResourceManager(1024**3, {0: 50})
+        evict = Mock()
+        host = resources.reserve('text', 'llm', host_bytes=1, evict=evict)
+        self.manager.runtime = SimpleNamespace(ensure_resources=lambda: resources)
+        with self.assertRaises(RuntimeFailure) as caught:
+            self.manager.validate_source('invalid')
+        self.assertEqual(caught.exception.status_code, 503)
+        evict.assert_not_called()
+        self.assertEqual(set(resources.snapshot()['reservations']), {'text'})
+        host.release()

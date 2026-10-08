@@ -1373,7 +1373,7 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Image
    *
-   * Inline PNG, JPEG or WebP data URL; remote URLs are not fetched
+   * Inline PNG, JPEG or WebP data URL; remote URLs are not fetched. The complete queued JSON request must also fit 16 MiB, so the effective encoded image limit is smaller than 16 MiB after prompt/JSON overhead (about 12 MiB decoded).
    */
   image: string
   /**

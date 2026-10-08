@@ -289,13 +289,16 @@ class ResourceManager:
                 device_bytes: dict[int, int] | None = None,
                 evict: Callable[[], None] | None = None,
                 cancel_event: threading.Event | None = None,
-                offload_on_handoff: bool = True) -> Reservation:
+                offload_on_handoff: bool = True,
+                allow_eviction: bool = True) -> Reservation:
         """Return an ownership handle after logical and physical admission. Evict eligible idle
         owners if needed; reject busy owners, cancellation or insufficient capacity. Callers
         allocate only afterward and provide callbacks that free actual tensors.
         offload_on_handoff=False is for bounded framework contexts, not model
         weights. Such contexts still count against GPU capacity and remain
         pressure-evictable through their cleanup callback.
+        allow_eviction=False admits validation scratch only from free capacity;
+        invalid incoming requests must not evict existing model residents.
         """
         devices = dict(device_bytes or {})
         self._validate(host_bytes, devices)
@@ -315,6 +318,8 @@ class ResourceManager:
                 if self._fits(host_bytes, devices) and self._physical_fits(host_bytes, devices):
                     self._cancelled(cancel_event)
                     return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
+                if not allow_eviction:
+                    raise ResourceExhausted('Insufficient free memory for non-disruptive validation')
                 candidates = sorted(
                     [key for key, state in self._residents.items() if not state.active and state.evict is not None],
                     key=lambda key: (bool(self._residents[key].host_bytes),

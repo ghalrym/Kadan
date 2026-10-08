@@ -13,7 +13,7 @@ class ImageRequest(BaseModel):
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
     seed: int | None = Field(default=None, ge=0, le=2**53 - 1)
-    image: str = Field(min_length=1, max_length=28_000_000, description="Inline PNG, JPEG or WebP data URL; remote URLs are not fetched")
+    image: str = Field(min_length=1, max_length=28_000_000, description="Inline PNG, JPEG or WebP data URL; remote URLs are not fetched. The complete queued JSON request must also fit 16 MiB, so the effective encoded image limit is smaller than 16 MiB after prompt/JSON overhead (about 12 MiB decoded).")
 
 
 

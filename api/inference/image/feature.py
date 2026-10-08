@@ -22,6 +22,9 @@ class ImageFeature:
     def preflight(self, request):
         self.service.preflight()
 
+    async def preflight_execution(self, request):
+        await native_call(self.service.validate_request, getattr(request, 'image', None))
+
     def validate(self, payload, operation):
         # Route-owned models import lazily to avoid manager construction cycles.
         from api.routes.v1.images.generations import ImageRequest

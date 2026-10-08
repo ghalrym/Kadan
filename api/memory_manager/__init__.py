@@ -114,6 +114,9 @@ class MemoryManager:
         preflight = getattr(wrapper, 'preflight', None)
         if preflight is not None:
             preflight(body)
+        preflight_execution = getattr(wrapper, 'preflight_execution', None)
+        if preflight_execution is not None:
+            await preflight_execution(body)
         if not isinstance(wrapper, UnsupportedFeature):
             # The Redis consumer remains the sole global FIFO executor. Await
             # physical parking before the next feature can reserve or execute.
