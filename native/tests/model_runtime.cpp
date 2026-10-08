@@ -9,10 +9,10 @@ int main(int argc,char**argv){try{
     check(argc==2||argc==3);using kadan::cuda::Model;kadan::cuda::ModelOptions o{8,16*1024*1024,64,512};
     auto metadata=std::make_shared<kadan::checkpoint::MemoryBudget>(16*1024*1024);
     if(argc==3){auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(o),2*1024*1024});bool uncertain=std::string_view(argv[2])=="reject-cleanup";if(uncertain)inject(Op::free);bool quarantine=rejected([&]{Model m(argv[1],o,0,r);});check(quarantine==uncertain);if(uncertain){check(used>0&&r->snapshot().residents==1);for(auto[ptr,n]:allocations){std::free(ptr);used-=n;}allocations.clear();}else check(used==0&&r->snapshot().residents==0);return 0;}
-    kadan::checkpoint::ModelManifest manifest(argv[1],metadata);auto g=kadan::model::read_generation(argv[1],16,metadata);kadan::model::Layout layout(manifest,8,g,metadata);expected_layers=int(layout.layers().size());
+    kadan::checkpoint::ModelManifest manifest(argv[1],metadata);auto g=kadan::model::read_generation(argv[1],16,metadata);kadan::model::Layout layout(manifest,8,g,metadata);expected_layers=int(layout.layers().size());o.staging_bytes=std::max(std::size_t(64),layout.minimum_staging_bytes());
     // Independently resolve serialized role names and compare every pointer used
     // by the streamed producer, including all routed/shared projection regions.
-    ModelImage image(layout);kadan::model::load(layout,std::make_shared<kadan::checkpoint::MemoryBudget>(64),image);kadan::StateCursor cursor(layout.layers().size(),8);
+    ModelImage image(layout);kadan::model::load(layout,std::make_shared<kadan::checkpoint::MemoryBudget>(o.staging_bytes),image);kadan::StateCursor cursor(layout.layers().size(),8);
     for(std::size_t i=0;i<layout.layers().size();++i){auto& l=layout.layers()[i];kadan::cuda::detail::DecoderProducer p(l.config,l.plan,cursor);p.storage=image.arena.data()+l.offset;p.bind();auto base=std::string("model.language_model.layers.")+std::to_string(i);
         auto role=[&](const void* pointer,const char* suffix){check(pointer==image.arena.data()+image.binding(base+suffix).weights);};
         if(l.config.attention==kadan::decoder::Attention::linear){role(p.linear.input_norm,".input_layernorm.weight");role(p.linear.conv_weight,".linear_attn.conv1d.weight");role(p.linear.a_weight,".linear_attn.in_proj_a.weight");role(p.linear.b_weight,".linear_attn.in_proj_b.weight");role(p.linear.a_log,".linear_attn.A_log");role(p.linear.dt_bias,".linear_attn.dt_bias");role(p.linear.output_norm,".linear_attn.norm.weight");}
