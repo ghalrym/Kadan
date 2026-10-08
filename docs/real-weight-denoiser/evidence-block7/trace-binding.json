@@ -1,0 +1,37 @@
+{
+  "protocol": "block7-traces-v1",
+  "capture_manifest_sha256": "15ef4ca04d95404a0467524015097e306f8dab871eca027635d716b843b469ce",
+  "block_sha256": "83d8858b2bc9883921dfe5d27fece96b609b452a4b98e2ba49c009c5ac4f4f2c",
+  "producer_source_commit": "1cc8c05e84d17cfa7e9f730510db01842063b546",
+  "provenance": "Retrospective binding of retained diagnostic files. Published source includes post-run validation assertions; not a pre-run source attestation.",
+  "backends": {
+    "default": {
+      "backend": "default",
+      "operators": [
+        "aten::mm",
+        "aten::scaled_dot_product_attention",
+        "aten::_scaled_dot_product_efficient_attention",
+        "aten::_efficient_attention_forward"
+      ],
+      "files": {
+        "default-intermediates.pt": "18b22811bc36fd08d42db059e323b64f28e1f04c8b3cfe935cea82aea15fa05e",
+        "default-report.json": "beac2154f3e7439f1932a81b1939df676e0174d8a452f55294373e4212f04b74",
+        "settings.json": "392c9e44f827593fc5a98e874e4bce5fc3d22b1fb57329f7429136fec4c7b9dc"
+      }
+    },
+    "math": {
+      "backend": "math",
+      "operators": [
+        "aten::mm",
+        "aten::scaled_dot_product_attention",
+        "aten::_scaled_dot_product_attention_math",
+        "aten::bmm"
+      ],
+      "files": {
+        "math-intermediates.pt": "1097c7fd86b771fc8ff2236e842a4f06524b1de78f1ffe3bf0af4517df36b029",
+        "math-report.json": "1664bfc8237dd7c0d5e09cb168a91fc0f223bf542fe64d81294c28db8eb036ed",
+        "settings.json": "392c9e44f827593fc5a98e874e4bce5fc3d22b1fb57329f7429136fec4c7b9dc"
+      }
+    }
+  }
+}

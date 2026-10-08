@@ -6,6 +6,8 @@ from pathlib import Path
 
 import torch
 
+from trace_binding import verify_binding
+
 from metrics import compare
 
 
@@ -103,6 +105,7 @@ def main():
     parser.add_argument('--traces',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
+    binding=verify_binding(args.capture,args.traces)
     args.output.mkdir(exist_ok=False)
     manifest=json.loads((args.capture/'manifest.json').read_text())
     row=manifest['blocks'][7];path=args.capture/row['file']
@@ -112,7 +115,7 @@ def main():
     assert hasher.hexdigest()==row['sha256']
     data=torch.load(path,weights_only=True,map_location='cpu',mmap=True)
     output,trace=short_block(data)
-    report=dict(protocol='captured-short-block-fp64-v1',capture_sha256=row['sha256'],torch=torch.__version__,device='cpu',dtype='float64',backends={})
+    report=dict(trace_binding=binding,protocol='captured-short-block-fp64-v1',capture_sha256=row['sha256'],torch=torch.__version__,device='cpu',dtype='float64',backends={})
     for backend in ('default','math'):
         saved=torch.load(args.traces/f'{backend}-intermediates.pt',weights_only=True,map_location='cpu')
         result=assess(saved['reference']['output'],saved['split']['output'],output)
