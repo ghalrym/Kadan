@@ -8,6 +8,7 @@ struct LinearBuffers {
     std::uint16_t* convolution;float* recurrent;unsigned* status;
 };
 cudaError_t linear_normalize(linear::Config c,LinearBuffers b,const float* input);
+cudaError_t linear_auxiliary(linear::Config c,LinearBuffers b);
 cudaError_t linear_core(linear::Config c,LinearBuffers b);
 cudaError_t linear_residual(linear::Config c,LinearBuffers b,const float* input,float* output);
 } // namespace kadan::cuda::detail

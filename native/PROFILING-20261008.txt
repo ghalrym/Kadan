@@ -174,3 +174,21 @@ Latest worker SHA256: ebddcb915089ed7314052ca5aa5a99df3f5969f99217c8c00f311e4d32
 All 149 IDs match. 14 router cases include 4096/4097 shared/fallback boundaries;
 all MoE GPU stages and 26 CPU tests pass. Evidence:
 profiling/20261008-router-shared.json. No image/dependency rebuild.
+
+Shared normalization and independent auxiliary heads
+Latest profile selected combined normalization and auxiliary costs. Coalesced
+shared staging preserves serial sum order and numeric flags in linear/full/decoder
+RMS normalization, with widths above 4096 retaining the original kernel. Independent
+auxiliary heads now use separate blocks with unchanged dot-product arithmetic.
+Linear normalization 11.471 -> 2.330 ms/step; decoder normalization 11.034 -> 3.134;
+auxiliary 12.633 -> 7.101. All 149 generated IDs remain identical.
+Warm API 17.197736 tok/s, prompt 1.732722 s, total 10.498271 s.
+Separate direct load 50.086447 s, prompt 2.048769 s, decode incl EOS 10.212494 s.
+Latest worker SHA256: 7e15287ea368c8e3dca106e83e991206b4b7f68dc67032a74c39ce480a2c873e
+90 bitwise normalization cases cover three families, widths 1/3/2048/4096/4097,
+valid/zero/non-BF16/nonfinite/overflow/signed-zero data. 12 auxiliary bitwise cases
+cover 1/4/32 heads, full shape, zero/nonfinite/overflow. All linear and decoder GPU
+stages and 26 CPU CTests pass. Evidence: profiling/20261008-normalization.json.
+Run: kadan-normalization-parity --allow-gpu-validation --device 0
+Run: kadan-linear-auxiliary-parity --allow-gpu-validation --device 0
+Native targets only rebuilt; image/dependencies/data/settings unchanged.

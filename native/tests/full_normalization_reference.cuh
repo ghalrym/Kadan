@@ -1,7 +1,10 @@
+// Frozen pre-optimization normalization/auxiliary reference.
 #include "full_kernel.cuh"
 #include <cuda_runtime.h>
 #include <math_constants.h>
-namespace kadan::cuda::detail {
+namespace baseline_full {
+using kadan::cuda::detail::FullBuffers;
+namespace full=kadan::full;
 namespace {
 __device__ float expand(std::uint16_t x){return __uint_as_float(unsigned(x)<<16);}
 __device__ float finite(float x,unsigned* s){if(!isfinite(x)){atomicOr(s,1u);return 0;}return x;}
@@ -22,15 +25,6 @@ __global__ void normalize(full::Config c,FullBuffers b,const float* input){
     if(threadIdx.x)return;
     for(std::size_t j=0;j<c.hidden;++j)if(bf(input[j],b.status)!=input[j])atomicOr(b.status,1u);
     norm(input,b.input_norm,b.normalized,c.hidden,c.epsilon,b.status);
-}
-__global__ void normalize_shared(full::Config c,FullBuffers b,const float* input){
-    extern __shared__ float x[];float* products=x+c.hidden;__shared__ float inverse;
-    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x){x[j]=input[j];const float v=bf(input[j],b.status);if(v!=input[j])atomicOr(b.status,1u);products[j]=mul(v,v);}
-    __syncthreads();
-    if(threadIdx.x==0){float total=0;for(std::size_t j=0;j<c.hidden;++j)total=finite(add(total,products[j]),b.status);
-        inverse=1/sqrtf(add(total/float(c.hidden),c.epsilon));}
-    __syncthreads();
-    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)b.normalized[j]=bf(mul(mul(bf(x[j],b.status),inverse),add(1,expand(b.input_norm[j]))),b.status);
 }
 __global__ void prepare(full::Config c,FullBuffers b,std::size_t position){
     if(threadIdx.x)return;const auto h=blockIdx.x;
@@ -71,8 +65,7 @@ __global__ void residual(full::Config c,FullBuffers b,const float* x,float* y){
     const std::size_t j=blockIdx.x*blockDim.x+threadIdx.x;if(j<c.hidden)y[j]=bf(add(x[j],bf(b.projected[j],b.status)),b.status);
 }
 }
-cudaError_t full_normalize(full::Config c,FullBuffers b,const float* x){if(c.hidden<=4096)normalize_shared<<<1,256,2*c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b,x);
-    else normalize<<<1,1,0,cudaStreamLegacy>>>(c,b,x);return cudaGetLastError();}
+cudaError_t full_normalize(full::Config c,FullBuffers b,const float* x){normalize<<<1,1,0,cudaStreamLegacy>>>(c,b,x);return cudaGetLastError();}
 cudaError_t full_core(full::Config c,FullBuffers b,std::size_t position){
     prepare<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
     append<<<(c.kv_heads*c.head_dim+127)/128,128,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;

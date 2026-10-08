@@ -1,6 +1,9 @@
+// Frozen pre-optimization normalization/auxiliary reference.
 #include "linear_kernel.cuh"
 #include <cuda_runtime.h>
-namespace kadan::cuda::detail {
+namespace baseline_linear {
+using kadan::cuda::detail::LinearBuffers;
+namespace linear=kadan::linear;
 namespace {
 __device__ float weight(std::uint16_t x){return __uint_as_float(unsigned(x)<<16);}
 __device__ float finite(float x,unsigned* status){if(!isfinite(x)){atomicOr(status,1u);return 0;}return x;}
@@ -14,30 +17,16 @@ __global__ void normalize(linear::Config c,LinearBuffers b,const float* input){
     const float inverse=1/sqrtf(sum/c.hidden+c.epsilon);
     for(std::size_t i=0;i<c.hidden;++i)b.normalized[i]=round(product(product(input[i],inverse),plus(1,weight(b.input_norm[i]))),b.status);
 }
-__global__ void normalize_shared(linear::Config c,LinearBuffers b,const float* input){
-    extern __shared__ float x[];float* products=x+c.hidden;__shared__ float inverse;
-    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x){x[j]=input[j];const float v=finite(x[j],b.status);if(round(v,b.status)!=v)atomicOr(b.status,1u);products[j]=product(v,v);}
-    __syncthreads();
-    if(threadIdx.x==0){float sum=0;for(std::size_t j=0;j<c.hidden;++j)sum=finite(plus(sum,products[j]),b.status);
-        inverse=1/sqrtf(sum/c.hidden+c.epsilon);}
-    __syncthreads();
-    for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)b.normalized[j]=round(product(product(x[j],inverse),plus(1,weight(b.input_norm[j]))),b.status);
-}
 __global__ void auxiliary(linear::Config c,LinearBuffers b){
     const std::size_t i=blockIdx.x*blockDim.x+threadIdx.x;
     const auto values=c.value_heads*c.value_dim,channels=2*c.key_heads*c.key_dim+values;
     if(i<channels)b.qkv[i]=round(b.qkv[i],b.status);
     if(i<values)b.z[i]=round(b.z[i],b.status);
-}
-// Independent output heads retain their original ascending hidden-dimension sum.
-__global__ void auxiliary_projection(linear::Config c,LinearBuffers b){
-    if(threadIdx.x)return;const std::size_t i=blockIdx.x;
-    float a=0,bb=0;for(std::size_t j=0;j<c.hidden;++j){
+    if(i<c.value_heads){float a=0,bb=0;for(std::size_t j=0;j<c.hidden;++j){
         a=finite(plus(a,product(weight(b.a_weight[i*c.hidden+j]),b.normalized[j])),b.status);
         bb=finite(plus(bb,product(weight(b.b_weight[i*c.hidden+j]),b.normalized[j])),b.status);}
-    b.a[i]=round(a,b.status);b.b[i]=round(bb,b.status);
+        b.a[i]=round(a,b.status);b.b[i]=round(bb,b.status);}
 }
-
 __global__ void convolution(linear::Config c,LinearBuffers b){
     const std::size_t channel=blockIdx.x*blockDim.x+threadIdx.x;
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;if(channel>=channels)return;
@@ -76,16 +65,10 @@ __global__ void residual(linear::Config c,LinearBuffers b,const float* input,flo
     const std::size_t i=blockIdx.x*blockDim.x+threadIdx.x;if(i<c.hidden)out[i]=round(plus(input[i],round(b.projected[i],b.status)),b.status);
 }
 }
-cudaError_t linear_normalize(linear::Config c,LinearBuffers b,const float* input){if(c.hidden<=4096)normalize_shared<<<1,256,2*c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b,input);
-    else normalize<<<1,1,0,cudaStreamLegacy>>>(c,b,input);return cudaGetLastError();}
-cudaError_t linear_auxiliary(linear::Config c,LinearBuffers b){
-    const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;
-    auxiliary<<<(channels+127)/128,128,0,cudaStreamLegacy>>>(c,b);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    auxiliary_projection<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
-}
+cudaError_t linear_normalize(linear::Config c,LinearBuffers b,const float* input){normalize<<<1,1,0,cudaStreamLegacy>>>(c,b,input);return cudaGetLastError();}
 cudaError_t linear_core(linear::Config c,LinearBuffers b){
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;
-    auto e=linear_auxiliary(c,b);if(e!=cudaSuccess)return e;
+    auxiliary<<<(channels+127)/128,128,0,cudaStreamLegacy>>>(c,b);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
     convolution<<<(channels+127)/128,128,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
     normalize_qk<<<c.key_heads,1,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
     recurrence<<<c.value_heads,128,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
