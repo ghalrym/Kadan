@@ -24,7 +24,9 @@ def parity(rank, started, control):
             (32,4,8,7,15,True), (4096,32,128,27,64,False)):
             assert time.monotonic()-started<120, 'Parity deadline'
             torch.manual_seed(121+rows)
+            initialization_started=time.monotonic()
             block=QwenImage21TransformerBlock(dimension,heads,depth).to(dtype=dtype,device=rank).eval()
+            initialization_s=time.monotonic()-initialization_started
             total=prefix_rows+rows
             joint=torch.randn(1,total,dimension,dtype=dtype,device=rank)
             modulation=torch.randn(2,4*dimension,dtype=dtype,device=rank)
@@ -51,7 +53,7 @@ def parity(rank, started, control):
                 torch.testing.assert_close(actual,expected,rtol=tolerance,atol=tolerance)
                 for original,retained in zip(before,prefix):torch.testing.assert_close(original,retained,rtol=0,atol=0)
                 reports.append(dict(mode=mode,dtype=str(dtype),dimension=dimension,heads=heads,head_width=depth,
-                    prefix_rows=prefix_rows,target_rows=rows,max_abs_error=float((actual.float()-expected.float()).abs().max()),
+                    initialization_s=initialization_s, prefix_rows=prefix_rows,target_rows=rows,max_abs_error=float((actual.float()-expected.float()).abs().max()),
                     rmse=float(((actual.float()-expected.float())**2).mean().sqrt()),
                     prefix_storage_bytes=sum(v.untyped_storage().nbytes() for v in prefix)))
                 assert torch.cuda.max_memory_reserved(rank)<=2*1024**3,'Parity allocator cap'
@@ -68,7 +70,7 @@ def main():
     args = parser.parse_args()
     if args.plan:
         print(json.dumps(dict(ranks=2, shape=[1, 8192, 32, 128], dtype='bfloat16',
-            warmups=3, iterations=10, deadline_s=120, per_rank_peak_reserved_cap_bytes=2*1024**3,
+            warmups=3, iterations=10, deadline_s=120, control_timeout_s=60, collective_timeout_s=45, per_rank_peak_reserved_cap_bytes=2*1024**3,
             modes=['kv_all_gather', 'ulysses_qkv_and_inverse', 'tp_two_all_reduces'],
             note='No model load, no compilation; live API must release both GPUs first.')))
         return
@@ -79,7 +81,9 @@ def main():
     assert free >= 4*1024**3, 'Require 4 GiB fresh per-device physical headroom'
     torch.cuda.set_per_process_memory_fraction(2*1024**3 / torch.cuda.get_device_properties(rank).total_memory, rank)
     dist.init_process_group('nccl', timeout=timedelta(seconds=45))
-    control = dist.new_group(backend='gloo', timeout=timedelta(seconds=10))
+    # Real-width blocks initialize on CPU independently before the next consensus.
+    # Allow bounded rank skew under the container CPU quota; outer watchdogs remain unchanged.
+    control = dist.new_group(backend='gloo', timeout=timedelta(seconds=60))
     started = time.monotonic()
     report = dict(rank=rank, device=torch.cuda.get_device_name(rank), torch=torch.__version__,
                   peer_access=torch.cuda.can_device_access_peer(rank, 1-rank), nccl_version=torch.cuda.nccl.version(), measurements=[])

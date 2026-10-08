@@ -14,7 +14,6 @@ import urllib.request
 
 IMAGE = 'sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa'
 GPUS = ['GPU-e30b6419-2c6d-f550-61d6-16166a920dac', 'GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3']
-LIVE = Path('/home/andrew/Projects/self-hosting/Kadan')
 REPO = Path(__file__).resolve().parents[2]
 API = 'kadan-api-1'
 NAME = 'kadan-dual-gpu-reviewed-probe'
@@ -24,8 +23,24 @@ def run(*args, check=True, timeout=20):
     return subprocess.run(args, check=check, capture_output=True, text=True, timeout=timeout)
 
 
-def compose(*args, timeout=200):
-    return run('docker', 'compose', '--project-directory', str(LIVE), '-p', 'kadan', *args, timeout=timeout)
+def container_identity(inspect):
+    """Exclude runtime state/network addresses that legitimately change on start."""
+    return {key: inspect[key] for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'Path', 'Args')}
+
+
+def inspect_container(container_id):
+    return json.loads(run('docker', 'inspect', container_id).stdout)[0]
+
+
+def restore_container(before):
+    """Start only the captured container; never reevaluate deployment files."""
+    container_id = before['Id']
+    assert container_identity(inspect_container(container_id)) == container_identity(before), 'Stopped API identity/config changed'
+    run('docker', 'start', container_id, timeout=45)
+    restored = inspect_container(container_id)
+    assert container_identity(restored) == container_identity(before), 'Restored API identity/config changed'
+    assert restored['State']['Running'], 'Restored API is not running'
+    return restored
 
 
 def gpu_snapshot():
@@ -67,9 +82,8 @@ def main():
     assert run('docker','inspect',NAME,check=False).returncode != 0, 'Probe name is already owned'
     args.evidence.mkdir(parents=True)
     evidence = args.evidence.resolve()
-    override = LIVE / 'compose.override.yaml'
-    config_hash = hashlib.sha256(override.read_bytes()).hexdigest()
-    inspect = json.loads(run('docker', 'inspect', API).stdout)[0]
+    inspect = inspect_container(API)
+    api_id = inspect['Id']
     assert inspect['Image'] == IMAGE and inspect['State']['Running']
     assert inspect['Config']['Labels']['org.opencontainers.image.revision'] == 'dea7b0fade2b068b8e142a1666bf39e495ad0d99'
     mounts = inspect['Mounts']
@@ -91,8 +105,8 @@ def main():
     try:
         # Mark before stopping so a command timeout still enters restoration logic.
         paused = True
-        compose('stop', '--timeout', '30', 'api', timeout=45)
-        assert not json.loads(run('docker','inspect',API).stdout)[0]['State']['Running']
+        run('docker', 'stop', '--time', '30', api_id, timeout=45)
+        assert not inspect_container(api_id)['State']['Running']
         deadline=time.monotonic()+30
         while not no_gpu_owners() and time.monotonic()<deadline:
             time.sleep(1)
@@ -158,9 +172,8 @@ def main():
             released=gpu_snapshot()
             cleanup_confirmed=all(released[g]['used']<=baseline[g]['used']+128 for g in GPUS)
         if paused and cleanup_confirmed:
-            assert hashlib.sha256(override.read_bytes()).hexdigest()==config_hash, 'Live configuration changed'
             assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in source_hashes.items()), 'Live source changed'
-            compose('up','-d','--no-build','--no-deps','--pull','never','--wait','--wait-timeout','180','api')
+            restore_container(inspect)
             deadline=time.monotonic()+180
             while True:
                 try:
@@ -169,13 +182,19 @@ def main():
                     with urllib.request.urlopen('http://127.0.0.1:8000/model-lifecycle',timeout=3) as response:
                         lifecycle=json.load(response)
                     assert lifecycle['state']=='ready', lifecycle
+                    state=inspect_container(api_id)['State']
+                    assert state['Running'] and state.get('Health', {}).get('Status')=='healthy', state
                     (evidence/'restored-lifecycle.json').write_text(json.dumps(lifecycle))
                     break
                 except Exception:
                     if time.monotonic()>deadline: raise
                     time.sleep(2)
             assert all(json.loads(run('docker','inspect',n).stdout)[0]['Id']==i for n,i in others.items())
-            (evidence/'restored.json').write_text(run('docker','inspect',API).stdout)
+            restored=inspect_container(api_id)
+            assert container_identity(restored)==container_identity(inspect), 'Ready API identity/config changed'
+            assert restored['State']['Running'] and restored['State'].get('Health', {}).get('Status')=='healthy', 'Container health not ready'
+            assert inspect_container(API)['Id']==api_id, 'API name no longer resolves to the captured container'
+            (evidence/'restored.json').write_text(json.dumps(restored, indent=2))
         elif paused:
             raise RuntimeError('QUARANTINE: rank cleanup unconfirmed; API remains stopped. Investigate before releasing ownership.')
 

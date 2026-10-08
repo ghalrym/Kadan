@@ -153,7 +153,7 @@ exit plus empty CUDA process inventory and return to physical baseline are the
 release fences between cases. The API stays stopped throughout the sweep.
 
 The host watchdog allows150 seconds/case; the rank supervisor allows135 seconds
-and kills/reaps the process group. NCCL timeout is45 seconds; control timeout10.
+and kills/reaps the process group. NCCL timeout is45 seconds; control timeout60, allowing CPU initialization skew for the real-width block.
 The allocator hard limit is2 GiB/rank (CUDA/NCCL allocations outside PyTorch are
 additionally watched physically). Container RAM/no-swap is8 GiB,4 CPU,1 GiB SHM.
 Guards: CPU80 C, GPU90 C, host available16 GiB, physical GPU free256 MiB; require
@@ -161,8 +161,9 @@ Guards: CPU80 C, GPU90 C, host available16 GiB, physical GPU free256 MiB; requir
 cases. OOM is injected, not induced by exhausting hardware. Captured NCCL logs
 show transport selection; capability flags alone do not prove transport.
 
-On success or test failure the launcher restores unchanged MR119 configuration
-and verifies HTTP health, model ready and unchanged unrelated container IDs.
+On success or test failure the launcher starts the exact captured MR119 container ID with `docker start` (no Compose
+reevaluation) and verifies unchanged ID, image, Config, HostConfig, Mounts, Path
+and Args, Docker/HTTP health, model ready and unchanged unrelated container IDs.
 Unconfirmed CUDA-process cleanup quarantines the cards and leaves API stopped.
 Expected interruption is5–8 minutes including recovery, superseding the earlier
 3–5 minute estimate. The launcher itself remains subject to source review; no
@@ -189,3 +190,11 @@ Follow-up local validation: all5 CPU tests passed in55.511 seconds in the pinned
 image with no GPU devices exposed (4 CPU,4 GiB RAM/no swap). Probe `--plan`
 imports passed in the same runtime with no GPU exposure. Python compilation and
 `git diff --check` passed. Exact-head CI is recorded separately after publication.
+
+Launcher review correction: stop/start uses the captured immutable container ID.
+Changes to `.env`/Compose cannot cause recreation during restoration. Identity and
+configuration are compared before start, after start and after readiness. The
+Gloo control timeout is60 seconds to tolerate independent real-width CPU block
+initialization under the CPU quota; per-case initialization duration is recorded.
+NCCL45 seconds, probe120 seconds, supervisor135 seconds and host150 seconds remain
+bounded and unchanged. No GPU execution was needed to make these corrections.
