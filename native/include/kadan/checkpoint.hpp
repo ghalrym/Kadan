@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <memory_resource>
 #include <mutex>
 #include <string_view>
@@ -65,6 +66,7 @@ private:
 
 // Linux POSIX reader. The root is trusted; shard_name must be one local basename.
 // Keeps an O_NOFOLLOW regular-file descriptor; never maps or reads all payloads.
+using TensorReader = std::function<void(std::string_view, std::size_t, std::span<std::uint8_t>)>;
 class Shard {
 public:
     Shard(const char* root, std::string_view shard_name,
@@ -74,6 +76,7 @@ public:
     Shard& operator=(const Shard&) = delete;
     std::size_t tensor_count() const;
     TensorInfo tensor(std::string_view name) const;
+    std::size_t tensor_index(std::string_view name) const;
     void check_unchanged() const;
     // Caller owns/admitted destination; no hidden payload allocation.
     void read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const;
@@ -83,7 +86,7 @@ public:
     // Optional payload_memory separates staging/host-bank admission from metadata.
     Projection load_modelopt_rows(std::string_view prefix, std::size_t first,
                                   std::size_t count, std::size_t payload_budget,
-                                  std::shared_ptr<MemoryBudget> payload_memory = {}) const;
+                                  std::shared_ptr<MemoryBudget> payload_memory = {}, const TensorReader& reader = {}) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

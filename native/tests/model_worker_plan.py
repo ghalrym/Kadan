@@ -27,6 +27,10 @@ def main():
             host, arena, vocab, actual_capacity, staging = map(int, fields[2:])
             assert host == 258 * 1024**2 and arena > 0 and vocab == 16
             assert actual_capacity == capacity and 0 < staging <= 1024**2
+        result = subprocess.run([worker, '--plan-resident', str(root), '1', str(256 * 1024**2)],
+                                capture_output=True, text=True, timeout=15, check=True)
+        fields = result.stdout.split()
+        assert fields[:2] == ['plan', '2'] and int(fields[2]) == 260 * 1024**2
         for capacity, metadata in [('0', '268435456'), ('262145', '268435456'),
                                    ('1', '0'), ('1', '268435457'), ('-1', '268435456')]:
             result = subprocess.run([worker, '--plan', str(root), capacity, metadata],

@@ -1,6 +1,7 @@
 #define KADAN_MODEL_RUNTIME
 #include "stack_runtime.cpp"
 #include <unistd.h>
+cudaError_t cudaDeviceReset(){check(allocations.empty());return cudaSuccess;}
 cudaError_t cudaSetDevice(int device){return device==0?cudaSuccess:cudaErrorUnknown;}
 cudaError_t cudaMemGetInfo(std::size_t*free,std::size_t*total){
     // Test-only stalled runtime: verify the production harness's watchdog exits

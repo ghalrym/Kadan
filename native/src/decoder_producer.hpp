@@ -15,14 +15,14 @@
 namespace kadan::cuda::detail {
 struct DecoderProducer {
     struct Projection {const std::uint8_t *weights=nullptr,*scales=nullptr;float global=0;std::size_t rows=0,columns=0;};
-    decoder::Config c;decoder::Plan p;StateCursor& cursor;void* storage=nullptr;
+    decoder::Config c;decoder::Plan p;StateCursor& cursor;void* storage=nullptr;void* request_storage=nullptr;std::size_t split=SIZE_MAX;
     LinearBuffers linear{};FullBuffers full{};MoeBuffers moe{};
     std::array<std::array<Projection,3>,257> experts{};
     DecoderProducer(decoder::Config config,decoder::Plan layout,StateCursor& authority):c(config),p(layout),cursor(authority){}
     DecoderProducer(const DecoderProducer&)=delete;DecoderProducer& operator=(const DecoderProducer&)=delete;
     static void require(bool ok,const char* error){if(!ok)throw std::invalid_argument(error);}
     static void check(cudaError_t error){if(error!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(error));}
-    std::uint8_t* bytes(std::size_t offset){return static_cast<std::uint8_t*>(storage)+offset;}
+    std::uint8_t* bytes(std::size_t offset){return offset < split ? static_cast<std::uint8_t*>(storage)+offset : static_cast<std::uint8_t*>(request_storage)+(offset-split);}
     template<class T>T* pointer(std::size_t offset){return reinterpret_cast<T*>(bytes(offset));}
     float* work(std::size_t index){return pointer<float>(p.workspace)+index*p.hidden;}
     unsigned* flags(){return pointer<unsigned>(p.status);}
@@ -56,7 +56,7 @@ struct DecoderProducer {
         auto* s=pointer<float>(base+m.scratch_offset);moe.logits=s+m.logits;moe.probabilities=s+m.probabilities;moe.top_weights=s+m.top_weights;moe.gate=s+m.gate;moe.up=s+m.up;moe.activation=s+m.activation;moe.down=s+m.down;moe.accumulator=s+m.accumulator;moe.shared=s+m.shared;moe.result=s+m.result;moe.shared_factor=s+m.shared_factor;moe.selected=pointer<unsigned>(base+m.indices_offset);moe.status=flags();
         zero();
     }
-    void bind() {
+    void bind(bool preserve_globals=false) {
         const bool is_linear=c.attention==decoder::Attention::linear;
         auto at=p.auxiliary;auto aux=[&](std::size_t n){auto* v=pointer<std::uint16_t>(at);at+=2*n;return v;};
         auto* scratch=pointer<float>(p.attention_scratch);
@@ -71,7 +71,7 @@ struct DecoderProducer {
         }
         const auto& m=p.moe;const auto base=p.moe_offset;moe.router=pointer<std::uint16_t>(base+m.router_offset);moe.shared_gate=pointer<std::uint16_t>(base+m.shared_gate_offset);
         for(std::size_t e=0;e<=c.moe.experts;++e){const bool shared=e==c.moe.experts;const auto& l=shared?m.shared_layout:m.routed_layout;const auto middle=shared?c.moe.shared_intermediate:c.moe.intermediate;const auto start=base+(shared?m.shared_offset:m.experts_offset+e*l.bytes);
-            experts[e]={Projection{bytes(start+l.gate_weights),bytes(start+l.gate_scales),0,middle,p.hidden},Projection{bytes(start+l.up_weights),bytes(start+l.up_scales),0,middle,p.hidden},Projection{bytes(start+l.down_weights),bytes(start+l.down_scales),0,p.hidden,middle}};}
+            experts[e]={Projection{bytes(start+l.gate_weights),bytes(start+l.gate_scales),preserve_globals?experts[e][0].global:0,middle,p.hidden},Projection{bytes(start+l.up_weights),bytes(start+l.up_scales),preserve_globals?experts[e][1].global:0,middle,p.hidden},Projection{bytes(start+l.down_weights),bytes(start+l.down_scales),preserve_globals?experts[e][2].global:0,p.hidden,middle}};}
         auto* s=pointer<float>(base+m.scratch_offset);moe.logits=s+m.logits;moe.probabilities=s+m.probabilities;moe.top_weights=s+m.top_weights;moe.gate=s+m.gate;moe.up=s+m.up;moe.activation=s+m.activation;moe.down=s+m.down;moe.accumulator=s+m.accumulator;moe.shared=s+m.shared;moe.result=s+m.result;moe.shared_factor=s+m.shared_factor;moe.selected=pointer<unsigned>(base+m.indices_offset);moe.status=flags();
     }
     void zero(){check(cudaMemsetAsync(bytes(p.moe_offset+p.moe.scratch_offset),0,p.moe.device_bytes-p.moe.scratch_offset,cudaStreamLegacy));check(cudaMemsetAsync(bytes(p.state_first),0,p.device_bytes-p.state_first,cudaStreamLegacy));}

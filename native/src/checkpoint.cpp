@@ -271,6 +271,7 @@ Shard::Shard(const char* root, std::string_view shard_name, std::shared_ptr<Memo
 }
 Shard::~Shard() = default;
 std::size_t Shard::tensor_count() const { return impl_->tensors.size(); }
+std::size_t Shard::tensor_index(std::string_view name) const { return &impl_->find(name) - impl_->tensors.data(); }
 TensorInfo Shard::tensor(std::string_view name) const {
     const auto& t = impl_->find(name);
     return {t.name, t.dtype, t.shape, t.rank, t.end - t.begin};
@@ -281,7 +282,7 @@ void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std
     impl_->unchanged(); impl_->read(t, offset, destination); impl_->unchanged();
 }
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
-                                    std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory) const {
+                                    std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory, const TensorReader& reader) const {
     require(!prefix.empty() && prefix.size() <= 480 && count != 0, "projection_range_or_name");
     auto name = [&](std::string_view suffix) { std::pmr::string n(prefix, impl_->budget.get()); n += suffix; return n; };
     const auto& weight = impl_->find(name(".weight"));
@@ -312,13 +313,16 @@ Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
     result.rows_ = count; result.columns_ = columns;
     result.weights_.resize(weight_bytes); result.blocks_.resize(scale_rows); result.multipliers_.resize(multiplier_count);
     impl_->unchanged();
-    impl_->read(weight, mul(first, weight.shape[1]), result.weights_);
-    if (fp4) impl_->read(scale, mul(first, columns / 16), result.blocks_);
+    auto read = [&](const Tensor& tensor, std::size_t offset, std::span<std::uint8_t> out) {
+        if (reader) reader(tensor.name, offset, out); else impl_->read(tensor, offset, out);
+    };
+    read(weight, mul(first, weight.shape[1]), result.weights_);
+    if (fp4) read(scale, mul(first, columns / 16), result.blocks_);
     const auto& multiplier = fp4 ? *global : scale;
     const bool scalar = multiplier.elements() == 1;
     for (std::size_t i = 0; i < multiplier_count; ++i) {
         std::array<std::uint8_t, 4> raw{};
-        impl_->read(multiplier, scalar ? 0 : mul(add(first, i), 4), raw);
+        read(multiplier, scalar ? 0 : mul(add(first, i), 4), raw);
         result.multipliers_[i] = quantization::fp32_le(raw);
     }
     impl_->unchanged();

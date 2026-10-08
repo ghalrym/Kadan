@@ -18,3 +18,5 @@ const char* cudaGetErrorString(cudaError_t);
 
 cudaError_t cudaMemGetInfo(std::size_t*,std::size_t*);
 cudaError_t cudaSetDevice(int);
+
+cudaError_t cudaDeviceReset();

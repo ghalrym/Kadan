@@ -60,6 +60,17 @@ void WeightBacking::drop(Entry& entry) {
     resources_->released(entry.reservation);
     entry.reservation = 0; ram_ -= entry.bytes;
 }
+bool WeightBacking::room_for_reservations(std::size_t count) {
+    idle(); require(count <= Resources::max_residents, "weight_reservation_count");
+    while (resources_->snapshot().residents > Resources::max_residents - count) {
+        auto victim=entries_.end();
+        for(auto it=entries_.begin();it!=entries_.end();++it)
+            if(it->second.ram&&(victim==entries_.end()||it->second.age<victim->second.age))victim=it;
+        if(victim==entries_.end())return false;
+        drop(victim->second);
+    }
+    return true;
+}
 void WeightBacking::evict(const std::string& key) { idle(); drop(entries_.at(key)); }
 void WeightBacking::forget(const std::string& key) {
     idle(); auto& entry = entries_.at(key); drop(entry); cold_ -= entry.bytes; entries_.erase(key);
@@ -73,7 +84,7 @@ bool WeightBacking::retain(const std::string& key, const std::atomic_bool* cance
     auto available = [&] {
         auto s = resources_->snapshot(); return s.capacity[0] - s.used[0];
     };
-    while (entry.bytes > ram_limit_ - ram_ || entry.bytes > available()) {
+    while (entry.bytes > ram_limit_ - ram_ || entry.bytes > available() || resources_->snapshot().residents >= Resources::max_residents) {
         auto victim = entries_.end();
         for (auto it = entries_.begin(); it != entries_.end(); ++it)
             if (it->second.ram && (victim == entries_.end() || it->second.age < victim->second.age)) victim = it;
@@ -92,6 +103,26 @@ bool WeightBacking::retain(const std::string& key, const std::atomic_bool* cance
         entry.ram = std::move(data); entry.reservation = reservation; ram_ += entry.bytes; touch(entry);
     } catch (...) { resources_->released(reservation); throw; }
     return true;
+}
+void WeightBacking::read_through(const std::string& key, Workload workload,
+                                 std::shared_ptr<const checkpoint::Shard> source,
+                                 const std::string& tensor, std::size_t offset,
+                                 std::span<std::uint8_t> destination, const std::atomic_bool* cancelled) {
+    idle(); cancel(cancelled); require(bool(source), "weight_source");
+    auto found = entries_.find(key);
+    if (found == entries_.end()) {
+        const auto bytes = source->tensor(tensor).bytes;
+        if (entries_.size() >= entry_limit_ || bytes > cold_limit_ - cold_) {
+            source->read_tensor(tensor, offset, destination); cancel(cancelled); return;
+        }
+        add(key, workload, source, tensor); found = entries_.find(key);
+    }
+    auto& entry = found->second;
+    require(entry.source == source && entry.tensor == tensor && entry.workload == workload, "weight_source_changed");
+    require(offset <= entry.bytes && destination.size() <= entry.bytes - offset, "weight_read_bounds");
+    if (retain(key, cancelled)) std::copy_n(entry.ram.get() + offset, destination.size(), destination.begin());
+    else source->read_tensor(tensor, offset, destination);
+    cancel(cancelled);
 }
 Handle WeightBacking::begin_transfer(const std::string& key, Footprint destination) {
     idle(); auto& entry = entries_.at(key); entry.source->check_unchanged();
