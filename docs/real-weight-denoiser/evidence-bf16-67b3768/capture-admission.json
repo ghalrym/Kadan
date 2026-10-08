@@ -1,0 +1,21 @@
+{
+  "capture_verified": true,
+  "historical_capture_recorded": {
+    "revision": "d26bb61231c349cf6b7896fa83353113880e1ba3",
+    "seed": 42,
+    "size": [
+      2048,
+      2048
+    ],
+    "steps": 40,
+    "cached_step": 1,
+    "timestep": [
+      0.9921875
+    ],
+    "dtype": "bfloat16",
+    "torch": "2.14.1+cu130"
+  },
+  "historical_precision_flags": "not recorded in capture manifest; unknown",
+  "current_replay_precision_flags": "to be measured separately in identity-rank files",
+  "free_disk_bytes": 15756626829312
+}

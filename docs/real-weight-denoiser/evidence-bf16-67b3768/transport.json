@@ -1,0 +1,50 @@
+[
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 02 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 03 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 02 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-29.log",
+    "line": "591e5b151334:29:29 [0] NCCL INFO Channel 03 : 0[0] -> 1[1] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 02 : 1[1] -> 0[0] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 03 : 1[1] -> 0[0] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 00 : 1[1] -> 0[0] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 01 : 1[1] -> 0[0] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 02 : 1[1] -> 0[0] via SHM/direct"
+  },
+  {
+    "file": "nccl-591e5b151334-30.log",
+    "line": "591e5b151334:30:30 [1] NCCL INFO Channel 03 : 1[1] -> 0[0] via SHM/direct"
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "protocol": "bf16-application-diagnostic-v1",
+  "first_slice": "passed",
+  "overall_protocol": "incomplete",
+  "later_steps": {
+    "20": "not-run",
+    "39": "not-run"
+  },
+  "fp32_protocol": "failed",
+  "rejected_candidate_v1": "rejected",
+  "timing": "passed-cached-core-only"
+}

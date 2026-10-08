@@ -1,0 +1,44 @@
+{
+  "checks": 186,
+  "violations": 0,
+  "nonfinite": 0,
+  "max_abs_error": 0.0,
+  "single_median_s": 6.1191635630093515,
+  "ulysses_slower_rank_median_s": 3.8254477779992158,
+  "speed_ratio": 1.5995940653540417,
+  "latency_reduction_percent": 37.48413915385041,
+  "peak_physical_mib": {
+    "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17204,
+    "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 16907
+  },
+  "peak_gpu_temp_c": {
+    "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 81,
+    "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 84
+  },
+  "peak_cpu_temp_c": 79.0,
+  "peak_container_memory_bytes": 2982989824,
+  "samples": 391,
+  "pause": {
+    "elapsed_s": 523.0621394350019,
+    "limit_s": 2100,
+    "restored": true
+  },
+  "supervisor": {
+    "returncode": 0,
+    "elapsed_s": 443.9865623809892,
+    "torchrun_reaped": true
+  },
+  "restoration": {
+    "container_id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+    "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+    "identity_config_mounts_equal": true,
+    "healthy": "healthy",
+    "model_state": "ready",
+    "model_id": "small",
+    "restarted_at": "2026-10-08T23:16:27.222307589Z"
+  },
+  "run_commit": "67b3768b9e9b1407838285d3031fc5356e2fa982",
+  "historical_precision_flags": "unknown: not recorded in capture manifest; current-run flags are separate",
+  "capture_bytes": 22869681264,
+  "evidence_bytes": 683952
+}

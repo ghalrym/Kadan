@@ -1,0 +1,25 @@
+{
+  "scope": "first-cached-step BF16 core only",
+  "benchmarks": [
+    {
+      "mode": "single",
+      "seconds": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "mode": "ulysses",
+      "seconds": [
+        3.8057332079915795,
+        3.8155651230044896,
+        3.8254477779992158,
+        3.839976495000883,
+        3.8472515329922317
+      ]
+    }
+  ]
+}
