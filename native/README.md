@@ -160,3 +160,8 @@ The complete single-device decoder-layer coordinator composes both attention
 variants with post-normalization, MoE and the second residual under one admission
 and publication boundary. See [DECODER.md](DECODER.md) for CPU validation,
 ownership/failure contracts and the unexecuted staged GPU correctness plan.
+
+The tiny mixed stack adds three linear layers, one full-attention layer, embedding,
+final norm and greedy vocabulary selection under whole-token publication. See
+[STACK.md](STACK.md) for ownership, synthetic CPU goldens and the unexecuted GPU
+plan. It has no tokenizer/checkpoint loading and makes no throughput claim.

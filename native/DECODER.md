@@ -2,6 +2,11 @@
 
 This milestone composes one batch-one text decoder layer on one SM86 device:
 
+The mixed-stack extension extracts its private borrowed producer into
+`decoder_producer.hpp`; standalone behavior and device bounds are unchanged.
+The bound cursor reference adds eight metadata bytes on the verified toolchain;
+`host_metadata_bytes()` reports the current charge.
+
 ```
 a = attention_with_input_norm_and_first_residual(x, position)
 u = BF16(offset_RMSNorm(a, post_attention_norm))
@@ -68,7 +73,7 @@ producers have no child allocations/ledger records; expert count does not grow
 the resident-record count.
 
 The owner reserves RAM `sizeof(Impl)` and exact arena VRAM **before** allocating
-its descriptor object. On the verified toolchain that is 32,352 RAM bytes. One
+its descriptor object. On the verified toolchain that is 32,360 RAM bytes. One
 `cudaMalloc` follows admission. Successful close releases physical resources and
 destroys the charged descriptor immediately, even if wrappers remain alive.
 Uncertain cleanup retains a conservative reservation. A failed constructor with
@@ -135,7 +140,7 @@ process timeout. No generation, model payload loading or benchmark is involved.
 
 Each stage runs the linear then full fixture **sequentially**, freeing one before
 constructing the next. Peak requested device memory is 13,056 bytes for linear
-(12,800 arena + 256 IO), or 14,080 for full (13,824 + 256). Peak owner RAM is 32,352
+(12,800 arena + 256 IO), or 14,080 for full (13,824 + 256). Peak owner RAM is 32,360
 bytes. Caps are 64KiB device / 128KiB host, excluding caller buffers/context. Each
 variant uses two allocations and two ledger entries; the full stage totals four
 allocation/free pairs, never simultaneously. Cleanup must finish with zero ledger
