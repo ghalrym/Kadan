@@ -43,3 +43,12 @@ the final run uses the host UID and a private scratch directory.
 This establishes two one-token synthetic exact matches and one unresolved tie
 failure, not actual-model parity, native GPU performance, longer-prefix cache
 correctness or a safe maintenance procedure. The runtime from #112 is unchanged.
+
+The existing native comparator independently returned 0 for tiny/representative
+at 0/0 and 1 (`capture_token_or_eos_mismatch`) for the tie. The sanitizer rebuild
+replaced the local comparator, SHA256 now
+`fac64d9bbb418760e75360a42dc71103421cbd309c0f2c1b1c56791877f5620f`.
+The old comparator hash is historical, not a current execution pin. The CUDA
+correctness executable remains unchanged at
+`0c2e7fef0f7b2911b83d7ab6c68415049436d33268d6d27b391907be0d02331c`.
+Any held actual-model execution must review/pin the final binaries again.

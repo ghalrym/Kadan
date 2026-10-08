@@ -291,10 +291,14 @@ sudo -n timeout --signal=TERM --kill-after=5s 915s \
 
 Native binary SHA256 remains
 `0c2e7fef0f7b2911b83d7ab6c68415049436d33268d6d27b391907be0d02331c`;
-comparator `/tmp/kadan-stack-cpu/kadan-model-compare` SHA256
+the historical comparator SHA256 was
 `656e6ee654e1cd1ab7b606d552c9f6e27d002ced32c74aac1b9f20d405a635bd`.
-These binaries are unchanged by documentation commits. Re-review any rebuild
-that changes a hash. One arena allocation, one model ticket, separate host logits
+The separate reference draft rebuilt `/tmp/kadan-stack-cpu/kadan-model-compare`
+with ASan/UBSan, now SHA256
+`fac64d9bbb418760e75360a42dc71103421cbd309c0f2c1b1c56791877f5620f`.
+The CUDA executable remains unchanged. The rebuilt comparator confirms the two
+synthetic CPU matches and rejects the router-tie capture; it requires renewed
+binary review/pinning before this held actual-model plan can run. One arena allocation, one model ticket, separate host logits
 ticket, and **2,314 static forward launches**; no generation loop. Internal
 watchdog900s, external915s+5s kill grace. Loader admission/validation scans about
 20.8GB of selected text payload, mostly before compute; the900s ceiling allows
