@@ -168,3 +168,36 @@ class NativeImageTests(unittest.TestCase):
         self.assertEqual(self.resources.snapshot()['reservations'], before)
         self.pipeline.to.side_effect = None
         self.native.close()
+
+    def test_component_offload_reserves_phase_envelope_and_keeps_quality_settings(self):
+        self.native.offload_mode='component'
+        self.native.component_weights={'text_encoder':17*GIB,'transformer':14*GIB,'vae':2*GIB}
+        self.pipeline.model_cpu_offload_seq='text_encoder->transformer->vae'
+        self.resources.framework_context(1,CONTEXT_BYTES)
+        native_context=self.resources.reserve('native-context','llm',device_bytes={1:CONTEXT_BYTES},offload_on_handoff=False)
+        self.addCleanup(native_context.release)
+        self.assertEqual(self.native._plan(),('cuda:1',23*GIB,True))
+        def forward(**kwargs):
+            row=self.resources.snapshot()['reservations'][self.native.owner+':gpu']
+            self.assertEqual(row['device_bytes'],{1:23*GIB})
+            self.assertEqual((kwargs['num_inference_steps'],kwargs['width'],kwargs['height']),(40,2048,2048))
+            return SimpleNamespace(images=[Image.new('RGB',(2,2))])
+        self.pipeline.side_effect=forward
+        self.native.generate('x','1:1',[42],threading.Event())
+        self.pipeline.enable_model_cpu_offload.assert_called_once_with(gpu_id=1)
+        self.pipeline.enable_sequential_cpu_offload.assert_not_called()
+        self.pipeline.vae.enable_tiling.assert_called_once()
+        self.pipeline.remove_all_hooks.assert_called_once()
+        self.assertIsNone(self.native.gpu)
+        self.assertEqual(self.factory.call_args.kwargs['torch_dtype'],'bf16')
+
+    def test_component_plan_never_spends_another_context_or_pools_cards(self):
+        self.native.offload_mode='component'
+        self.native.component_weights={'text_encoder':24*GIB,'transformer':14*GIB,'vae':2*GIB}
+        with self.assertRaises(ResourceExhausted):self.native.load()
+        self.factory.assert_not_called()
+        self.native.component_weights['text_encoder']=17*GIB
+        self.pipeline.model_cpu_offload_seq='transformer->vae'
+        with self.assertRaisesRegex(RuntimeError,'Unexpected component'):self.native.generate('x','1:1',[1],threading.Event())
+        self.pipeline.enable_model_cpu_offload.assert_not_called()
+        self.assertIsNone(self.native.pipeline)

@@ -28,8 +28,13 @@ def check_cancel(cancel):
 
 
 class NativeImage:
-    def __init__(self, path, resources, device='auto', modules=native_modules):
+    def __init__(self, path, resources, device='auto', modules=native_modules, offload_mode='sequential'):
         self.path, self.resources, self.requested, self.modules = path, resources, device, modules
+        if offload_mode not in ('sequential', 'component'):
+            raise ValueError('Image offload mode must be sequential or component')
+        self.offload_mode = offload_mode
+        self.component_weights = {name: sum(item.stat().st_size for item in (path/name).glob('*.safetensors'))
+            for name in ('text_encoder', 'transformer', 'vae')}
         self.owner = 'image:qwen:' + uuid4().hex
         self.pipeline = self.host = self.gpu = self.torch = None
         self.device = None
@@ -63,6 +68,19 @@ class NativeImage:
         overhead = {gpu: 0 if f'framework-context:{gpu}' in reserved else CONTEXT_BYTES for gpu in candidates}
         free = {gpu: max(0, free.get(gpu, 0) - overhead[gpu]) for gpu in candidates}
         capacities = {gpu: max(0, capacities.get(gpu, 0) - CONTEXT_BYTES) for gpu in candidates}
+        if self.offload_mode == 'component':
+            if not all(self.component_weights.values()):
+                raise ValueError('Component offload requires all three pinned checkpoint components')
+            # Experimental comparison mode: reserve the entire logical phase
+            # envelope, including activations, retained embeddings, allocator
+            # workspace and transfer peaks. Never reuse the 8 GiB leaf envelope.
+            for gpu in candidates:
+                held = sum(row['device_bytes'].get(gpu, 0) for row in reserved.values()
+                    if row['active_leases'] or not row['offload_on_handoff'])
+                budget = self.resources.capacity.device_bytes.get(gpu, 0) - held - overhead[gpu]
+                if budget > max(self.component_weights.values()):
+                    return f'cuda:{gpu}', budget, True
+            raise ResourceExhausted('No single-device phase envelope fits the largest image component')
         whole = self.weights + WORKSPACE
         for gpu in candidates:
             if free.get(gpu, 0) >= whole:
@@ -187,7 +205,12 @@ class NativeImage:
                     with (self.gpu or self.host).lease(cancel):
                         if self.gpu is not None:
                             if self.offloaded:
-                                self.pipeline.enable_sequential_cpu_offload(gpu_id=int(self.device[5:]))
+                                if self.offload_mode == 'component':
+                                    if self.pipeline.model_cpu_offload_seq != 'text_encoder->transformer->vae':
+                                        raise RuntimeError('Unexpected component offload order')
+                                    self.pipeline.enable_model_cpu_offload(gpu_id=int(self.device[5:]))
+                                else:
+                                    self.pipeline.enable_sequential_cpu_offload(gpu_id=int(self.device[5:]))
                             else:
                                 self.pipeline.to(self.device)
                         def checkpoint(_pipeline, _step, _timestep, values):
