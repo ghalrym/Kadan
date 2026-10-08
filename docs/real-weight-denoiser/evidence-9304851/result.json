@@ -1,0 +1,80 @@
+{
+  "executed_commit": "9304851657c8e420f117adcccc14b50610ee48bd",
+  "ci": {
+    "api_pr": 37850043699,
+    "native_pr": 37850043709
+  },
+  "pause": {
+    "elapsed_s": 320.4907192259998,
+    "limit_s": 2100,
+    "restored": true
+  },
+  "cases": {
+    "capture": {
+      "supervisor": {
+        "returncode": 0,
+        "elapsed_s": 202.36274345300626,
+        "torchrun_reaped": true
+      },
+      "exitcode": 0,
+      "host_oom": false,
+      "peak_sampled_host_bytes": 43757379584,
+      "max_cpu_c": 66.0,
+      "gpu": {
+        "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": {
+          "max_gpu_percent": 100,
+          "max_memory_percent": 28,
+          "max_power_w": 279.04,
+          "mean_sampled_gpu_percent": 7.994252873563219,
+          "peak_sampled_used_mib": 17280,
+          "peak_sampled_temperature_c": 71
+        },
+        "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": {
+          "max_gpu_percent": 16,
+          "max_memory_percent": 7,
+          "max_power_w": 54.61,
+          "mean_sampled_gpu_percent": 9.971264367816092,
+          "peak_sampled_used_mib": 604,
+          "peak_sampled_temperature_c": 58
+        }
+      }
+    },
+    "replay": {
+      "supervisor": {
+        "returncode": 1,
+        "elapsed_s": 36.53946132599958,
+        "torchrun_reaped": true
+      },
+      "exitcode": 1,
+      "host_oom": false,
+      "peak_sampled_host_bytes": 2923368448,
+      "max_cpu_c": 66.5,
+      "gpu": {
+        "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": {
+          "max_gpu_percent": 27,
+          "max_memory_percent": 4,
+          "max_power_w": 145.85,
+          "mean_sampled_gpu_percent": 2.59375,
+          "peak_sampled_used_mib": 1426,
+          "peak_sampled_temperature_c": 69
+        },
+        "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": {
+          "max_gpu_percent": 31,
+          "max_memory_percent": 5,
+          "max_power_w": 136.94,
+          "mean_sampled_gpu_percent": 9.03125,
+          "peak_sampled_used_mib": 2022,
+          "peak_sampled_temperature_c": 65
+        }
+      }
+    }
+  },
+  "restored": {
+    "id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+    "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+    "started_at": "2026-10-08T22:03:44.290735994Z",
+    "health": "healthy",
+    "model_state": "ready"
+  },
+  "capture_bytes": 22869681264
+}
