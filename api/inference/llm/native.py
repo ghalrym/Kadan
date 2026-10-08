@@ -13,9 +13,9 @@ import threading
 import time
 from uuid import uuid4
 
-from api.inference.llm.context import ContextLimitError, resolve_context
+from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
 from api.inference.placement import select_device
-from api.inference.resources import ResourceBusy
+from api.inference.resources import ResourceBusy, ResourceExhausted
 
 MIB = 1024**2
 METADATA_BYTES = 256 * MIB
@@ -46,16 +46,25 @@ def numbers(line, prefix, count):
 
 class WorkerProcess:
     """Single-owner bounded IPC, draining stderr while awaiting every reply."""
-    def __init__(self, command):
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
-        self.selector = selectors.DefaultSelector()
+    def __init__(self):
+        # Construct without side effects. The adapter must own this handle
+        # before start() can spawn or perform fallible pipe/selector setup.
+        self.process = self.selector = None
         self.buffer = bytearray()
         self.diagnostics = bytearray()
         self.closed = False
+        self.io_ready = False
+
+    def start(self, command):
+        if self.process is not None or self.closed:
+            raise RuntimeError('Native process handle cannot be reused')
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+        self.selector = selectors.DefaultSelector()
         for stream, kind in ((self.process.stdout, 'out'), (self.process.stderr, 'err')):
             os.set_blocking(stream.fileno(), False)
             self.selector.register(stream, selectors.EVENT_READ, kind)
+        self.io_ready = True
 
     def _pump(self, deadline, cancel):
         check_cancel(cancel)
@@ -118,6 +127,9 @@ class WorkerProcess:
         """
         if self.closed:
             return
+        if self.process is None:
+            self.closed = True
+            return
         if self.process.poll() is None:
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
@@ -130,7 +142,8 @@ class WorkerProcess:
             self.process.wait(timeout=5)  # Failure propagates: no release claim.
         finally:
             if self.process.poll() is not None:
-                self.selector.close()
+                if self.selector is not None:
+                    self.selector.close()
                 for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
                     stream.close()
                 self.closed = True
@@ -183,51 +196,57 @@ class NativeAdapter:
 
     @property
     def is_resident(self):
-        return self.worker is not None and not self.worker.closed and self.worker.process.poll() is None
+        return (self.worker is not None and self.worker.io_ready and not self.worker.closed
+                and self.worker.process.poll() is None)
 
     def configure_context(self, configured):
         with self._lock:
-            if self._closed:
-                raise RuntimeError('Native adapter is closed')
-            supported, effective = resolve_context(self.config, configured)
-            if effective > 262144:
-                raise ContextLimitError('Native worker context exceeds its reviewed 262144-token bound')
-            if self.worker is not None:
-                if effective != self.capacity:
-                    raise ContextLimitError('Unload native worker before changing its context')
-                return
-            self.configured_context_limit = configured
-            self.supported_context_limit = supported
-            self.effective_context_limit = effective
-            self.capacity = effective
-            try:
-                self.host = self.resources.reserve(self.owner + ':host', 'llm',
-                    host_bytes=NATIVE_HOST_BYTES + PYTHON_HOST_BYTES, evict=self._evict, cancel_event=self.cancel)
-                with self.host.lease(self.cancel):
-                    planner = WorkerProcess([str(self.binary), '--plan', str(self.root), str(effective), str(METADATA_BYTES)])
-                    # Keep ownership of an uncertain process for close()/retry.
-                    self.worker = planner
-                    host, arena, vocab, capacity, staging = numbers(planner.read(self.load_timeout, self.cancel), ['plan', '1'], 5)
-                    planner.finish()
-                    planner.stop()
-                    self.worker = None
-                    if host != NATIVE_HOST_BYTES or capacity != effective or not 0 < vocab <= 262144 or not 0 < arena or not 0 < staging <= MIB:
-                        raise NativeProtocolError('Native plan violates the adapter bounds')
-                    self.vocabulary, self.arena = vocab, arena
-                    self.device = select_device(self.resources, arena + HEADROOM_BYTES, self.device)
-                    index = int(self.device[5:])
-                    self.reservation = self.resources.reserve(self.owner + ':device', 'llm',
-                        device_bytes={index: arena + HEADROOM_BYTES}, evict=self._evict, cancel_event=self.cancel)
-                    with self.reservation.lease(self.cancel):
-                        self.tokenizer = self.tokenizer_factory(self.root)
-                        self.worker = WorkerProcess([str(self.binary), '--serve', str(self.root), str(index),
-                            str(effective), str(host), str(arena + HEADROOM_BYTES), str(HEADROOM_BYTES)])
-                        ready = numbers(self.worker.read(self.load_timeout, self.cancel), ['ready', '1'], 4)
-                        if ready != [vocab, effective, arena, host]:
-                            raise NativeProtocolError('Native worker readiness differs from admitted plan')
-            except BaseException:
-                self._close_locked()
-                raise
+            self._configure_context_locked(configured)
+
+    def _configure_context_locked(self, configured):
+        if self._closed:
+            raise RuntimeError('Native adapter is closed')
+        supported, effective = resolve_context(self.config, configured)
+        if effective > 262144:
+            raise ContextLimitError('Native worker context exceeds its reviewed 262144-token bound')
+        if self.worker is not None:
+            if effective != self.capacity:
+                raise ContextLimitError('Unload native worker before changing its context')
+            return
+        self.configured_context_limit = configured
+        self.supported_context_limit = supported
+        self.effective_context_limit = effective
+        self.capacity = effective
+        try:
+            self.host = self.resources.reserve(self.owner + ':host', 'llm',
+                host_bytes=NATIVE_HOST_BYTES + PYTHON_HOST_BYTES, evict=self._evict, cancel_event=self.cancel)
+            with self.host.lease(self.cancel):
+                planner = WorkerProcess()
+                # Publish ownership before spawn and fallible IPC setup.
+                self.worker = planner
+                planner.start([str(self.binary), '--plan', str(self.root), str(effective), str(METADATA_BYTES)])
+                host, arena, vocab, capacity, staging = numbers(planner.read(self.load_timeout, self.cancel), ['plan', '1'], 5)
+                planner.finish()
+                planner.stop()
+                self.worker = None
+                if host != NATIVE_HOST_BYTES or capacity != effective or not 0 < vocab <= 262144 or not 0 < arena or not 0 < staging <= MIB:
+                    raise NativeProtocolError('Native plan violates the adapter bounds')
+                self.vocabulary, self.arena = vocab, arena
+                self.device = select_device(self.resources, arena + HEADROOM_BYTES, self.device)
+                index = int(self.device[5:])
+                self.reservation = self.resources.reserve(self.owner + ':device', 'llm',
+                    device_bytes={index: arena + HEADROOM_BYTES}, evict=self._evict, cancel_event=self.cancel)
+                with self.reservation.lease(self.cancel):
+                    self.tokenizer = self.tokenizer_factory(self.root)
+                    self.worker = WorkerProcess()
+                    self.worker.start([str(self.binary), '--serve', str(self.root), str(index),
+                        str(effective), str(host), str(arena + HEADROOM_BYTES), str(HEADROOM_BYTES)])
+                    ready = numbers(self.worker.read(self.load_timeout, self.cancel), ['ready', '1'], 4)
+                    if ready != [vocab, effective, arena, host]:
+                        raise NativeProtocolError('Native worker readiness differs from admitted plan')
+        except BaseException:
+            self._close_locked()
+            raise
 
     def _close_locked(self):
         if self.worker is not None:
@@ -268,12 +287,18 @@ class NativeAdapter:
         return selected, bool(eos)
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None, conversation_id=None):
-        # Ready-but-evicted adapters restore through the same admitted load path.
-        # Closed adapters cannot silently reappear.
-        if self.worker is None and not self._closed:
-            self.cancel = cancel_event
-            self.configure_context(self.configured_context_limit)
+        # Eviction, reload and generation share one ownership gate. There is
+        # no unlocked window in which a newly restored worker can be evicted.
         with self._lock:
+            if self.worker is None and not self._closed:
+                self.cancel = cancel_event
+                try:
+                    self._configure_context_locked(self.configured_context_limit)
+                except (ResourceExhausted, ResourceBusy) as error:
+                    # Retry only after confirmed cleanup, never uncertain exit.
+                    if self.worker is None and self.host is None and self.reservation is None:
+                        raise ContextMemoryError(str(error)) from error
+                    raise
             check_cancel(cancel_event)
             if not self.is_resident:
                 raise RuntimeError('Native worker is unloaded; explicitly load it again')

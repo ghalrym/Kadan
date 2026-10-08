@@ -1,6 +1,11 @@
 """Synthetic subprocess faults; no Torch, CUDA, checkpoint payload or service."""
 import json
+from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
@@ -9,9 +14,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from api.inference.llm.context import ContextLimitError
+from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.inference.llm.native import NativeAdapter, NativeProtocolError, NATIVE_HOST_BYTES
-from api.inference.resources import ResourceExhausted, ResourceManager
+from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceManager
 
 WORKER = r'''
 import os, sys, time
@@ -122,6 +127,68 @@ class NativeAdapterTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):self.generate()
         self.assertFalse(self.adapter.is_resident)
 
+    def test_evicted_reload_budget_pressure_is_retryable_after_cleanup(self):
+        self.loaded();self.adapter._evict()
+        busy = self.resources.reserve('other-workload', 'image', device_bytes={0: 1024**3})
+        try:
+            with self.assertRaises(ContextMemoryError):self.generate()
+            self.assertFalse(self.adapter._closed)
+            self.assertIsNone(self.adapter.worker)
+            self.assertIsNone(self.adapter.host)
+            self.assertIsNone(self.adapter.reservation)
+        finally:busy.release()
+        self.assertEqual(self.generate(), 'AB')
+
+    def test_reload_does_not_translate_admission_error_with_uncertain_ownership(self):
+        self.loaded();self.adapter._evict()
+        retained = self.resources.reserve('uncertain-native-host', 'llm', host_bytes=1)
+        self.adapter.host = retained
+        with patch.object(self.adapter, '_configure_context_locked', side_effect=ResourceBusy('cleanup uncertain')):
+            with self.assertRaises(ResourceBusy):self.generate()
+        self.assertIs(self.adapter.host, retained)
+        self.assertTrue(self.resources.snapshot()['reservations'])
+
+    def test_eviction_before_generation_gate_reloads_instead_of_reporting_unloaded(self):
+        self.loaded()
+        entering, proceed = threading.Event(), threading.Event()
+        original_lock = self.adapter._lock
+        class Gate:
+            def __enter__(self):
+                entering.set()
+                if not proceed.wait(2):raise TimeoutError('test gate timed out')
+                original_lock.acquire()
+            def __exit__(self, *args):original_lock.release()
+            def acquire(self, **kwargs):return original_lock.acquire(**kwargs)
+            def release(self):original_lock.release()
+        self.adapter._lock = Gate()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.generate)
+            try:
+                self.assertTrue(entering.wait(2))
+                self.adapter._evict()
+                self.assertFalse(self.adapter.is_resident)
+            finally:proceed.set()
+            self.assertEqual(future.result(timeout=3), 'AB')
+        self.assertTrue(self.adapter.is_resident)
+
+    def test_eviction_cannot_interleave_between_reload_and_generation(self):
+        self.loaded();self.adapter._evict()
+        loaded, proceed = threading.Event(), threading.Event()
+        configure = self.adapter._configure_context_locked
+        def pause_after_reload(configured):
+            configure(configured)
+            loaded.set()
+            if not proceed.wait(2):raise TimeoutError('test reload gate timed out')
+        with patch.object(self.adapter, '_configure_context_locked', side_effect=pause_after_reload), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.generate)
+            try:
+                self.assertTrue(loaded.wait(2))
+                with self.assertRaises(ResourceBusy):self.adapter._evict()
+            finally:proceed.set()
+            self.assertEqual(future.result(timeout=3), 'AB')
+        self.assertTrue(self.adapter.is_resident)
+
     def test_bad_ready_and_load_timeouts_release_reservations(self):
         for mode in ('badready','planhang','readyhang'):
             self.mode(mode)
@@ -171,6 +238,69 @@ class NativeAdapterTests(unittest.TestCase):
             self.tokenizer.tokens=tokens
             with self.subTest(tokens=tokens),self.assertRaises(ContextLimitError):self.generate()
         self.assertFalse((self.root/'commands').exists())
+
+    def test_post_spawn_setup_failures_keep_child_and_budgets_until_confirmed_exit(self):
+        self.mode('readyhang')
+        original_selector = selectors.DefaultSelector
+        original_blocking = os.set_blocking
+        for fault in ('selector', 'blocking', 'register_first', 'register_second'):
+            for cleanup in ('success', 'terminate', 'kill', 'wait'):
+                with self.subTest(fault=fault, cleanup=cleanup):
+                    children = []
+                    with ExitStack() as patches:
+                        def setup_selector():
+                            worker = self.adapter.worker
+                            self.assertIsNotNone(worker)  # Ownership precedes all setup.
+                            if '--serve' not in worker.process.args:
+                                return original_selector()
+                            children.append(worker.process)
+                            if cleanup == 'terminate':
+                                patches.enter_context(patch('os.killpg', side_effect=PermissionError('terminate failed')))
+                            elif cleanup in ('kill', 'wait'):
+                                def kill(pid, sig):
+                                    if cleanup == 'kill' and sig == signal.SIGKILL:
+                                        raise PermissionError('kill failed')
+                                    # Simulate signals that have not yet caused exit.
+                                patches.enter_context(patch('os.killpg', side_effect=kill))
+                                patches.enter_context(patch.object(worker.process, 'wait',
+                                    side_effect=subprocess.TimeoutExpired('worker', 2)))
+                            if fault == 'selector':
+                                raise RuntimeError('selector creation failed')
+                            selector = original_selector()
+                            if fault.startswith('register'):
+                                original_register = selector.register
+                                calls = 0
+                                def register(*args, **kwargs):
+                                    nonlocal calls
+                                    calls += 1
+                                    if calls == (1 if fault == 'register_first' else 2):
+                                        raise RuntimeError('registration failed')
+                                    return original_register(*args, **kwargs)
+                                patches.enter_context(patch.object(selector, 'register', side_effect=register))
+                            return selector
+                        def blocking(fd, value):
+                            if fault == 'blocking' and '--serve' in self.adapter.worker.process.args:
+                                raise RuntimeError('set_blocking failed')
+                            return original_blocking(fd, value)
+                        patches.enter_context(patch('selectors.DefaultSelector', side_effect=setup_selector))
+                        patches.enter_context(patch('os.set_blocking', side_effect=blocking))
+                        with self.assertRaises((RuntimeError, PermissionError, subprocess.TimeoutExpired)):
+                            self.loaded()
+                        self.assertEqual(len(children), 1)
+                        self.assertFalse(self.adapter.is_resident)
+                        if cleanup == 'success':
+                            self.assertIsNotNone(children[0].poll())
+                            self.assertIsNone(self.adapter.worker)
+                            self.assertFalse(self.resources.snapshot()['reservations'])
+                        else:
+                            self.assertIs(self.adapter.worker.process, children[0])
+                            self.assertIsNone(children[0].poll())
+                            self.assertEqual(len(self.resources.snapshot()['reservations']), 2)
+                    # With injected faults removed, retry must reap the same
+                    # real synthetic child before returning either reservation.
+                    self.adapter._close_locked()
+                    self.assertIsNotNone(children[0].poll())
+                    self.assertFalse(self.resources.snapshot()['reservations'])
 
 
 if __name__=='__main__':unittest.main()

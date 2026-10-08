@@ -161,6 +161,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.status()['state'], 'ready')
         await self.manager.close()
 
+    async def test_offloaded_admission_failure_preserves_selection_for_retry(self):
+        await self.ready()
+        self.adapter.is_resident = False
+        self.adapter.generate = Mock(side_effect=ContextMemoryError('temporary budget pressure'))
+        with self.assertRaises(RuntimeFailure) as caught:
+            await self.manager.complete([], None)
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(self.manager.status()['state'], 'offloaded')
+        self.assertFalse(self.adapter.closed)
+        self.models.release_runtime_model.assert_not_called()
+        def restored(*args, **kwargs):
+            self.adapter.is_resident = True
+            return 'Retry succeeded'
+        self.adapter.generate.side_effect = restored
+        self.assertEqual(await self.manager.complete([], None), 'Retry succeeded')
+        self.assertEqual(self.manager.status()['state'], 'ready')
+        await self.manager.close()
+
     async def test_cancelled_generation_finishes_before_close(self):
         entered, finished = threading.Event(), threading.Event()
         def generate(*args, cancel_event, **kwargs):
