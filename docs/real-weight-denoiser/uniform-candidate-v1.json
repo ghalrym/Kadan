@@ -1,0 +1,17 @@
+{
+  "candidate": "fp32-partial512-fp64-outputsum-v1",
+  "operations": ["attention output projection", "MLP down projection"],
+  "chunk_k": 512,
+  "partial_gemm_dtype": "float32",
+  "output_accumulator_dtype": "float64",
+  "output_cast": "one final float32 cast",
+  "rows": "local rows only; no full-row duplication",
+  "weights": "prepacked transposed K chunks, one extra weight-sized allocation",
+  "development_block": 7,
+  "holdouts": "not executed; no tuning after this freeze without a new candidate version",
+  "atol": 0.00002,
+  "rtol": 0.00002,
+  "control": "both same projections in FP64 on each path's own current operands",
+  "timing": "two warmups, five synchronized samples; report packing, local projection and serial complete-block latency",
+  "scope": "FP32 diagnostic only; no BF16 implementation or production readiness claim"
+}
