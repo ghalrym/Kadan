@@ -145,3 +145,8 @@ reference and a compile-tested single-device owner, connecting hidden input to
 residual output with explicit BF16 boundaries and FP32 recurrent state. See
 [LINEAR-ATTENTION.md](LINEAR-ATTENTION.md) for original equations, lifetime/accounting,
 independent sequence evidence and the unexecuted staged GPU validation plan.
+
+The original batch-one full-attention sublayer (hidden input through bounded KV
+attention to residual) is documented in [FULL-ATTENTION.md](FULL-ATTENTION.md).
+It includes independent CPU goldens and an opt-in, unexecuted staged GPU harness;
+it does not connect to production routing or load checkpoint payloads.
