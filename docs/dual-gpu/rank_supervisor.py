@@ -14,7 +14,8 @@ def main():
     with open('/models/inference.lock', 'rb') as lease:
         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = 1
-        command = [sys.executable, '-m', 'torch.distributed.run', '--standalone',
+        command = [sys.executable, '-m', 'torch.distributed.run', '--nnodes=1',
+            '--node_rank=0', '--master_addr=127.0.0.1', '--master_port=29500',
             '--nproc_per_node=2', '--max_restarts=0', '/probe/communication_probe.py', *sys.argv[1:]]
         child = subprocess.Popen(command, start_new_session=True)
         def stop(signum, frame):

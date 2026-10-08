@@ -227,3 +227,27 @@ Five recovery/baseline tests pass. This ownership-gate change needs independent
 review and exact-head CI before retrying the pause. No CUDA parity, collective
 transport, timings or failure-injection measurements were obtained in this
 attempt; no dual-GPU model execution was activated.
+
+## Second maintenance attempt: network-isolated rendezvous
+
+Reviewed06e23a698ec249b39be8f56cdd3e0e1885aad7cd passed all CI
+(API37846024414/37846018452, native37846024424/37846018338). The desktop-aware
+ownership check passed. The normal probe container started21:24:18 UTC, but
+`torchrun --standalone` selected the Docker hostname for its rendezvous. With
+`--network none`, c10d repeatedly failed to resolve that hostname. No CUDA rank
+parity or collective measurements were produced, and failure-injection cases
+were not reached. The owned container was stopped early; supervisor elapsed
+97.471s, child reaped, exit1, host OOM false. Peak observed GPU memory5/596 MiB,
+GPU temperature56/57 C, CPU62.75 C. Desktop processes were preserved.
+
+Automatic cleanup/restoration succeeded. The exact original API container
+restarted21:25:57.516994445Z and passed unchanged normalized identity/config,
+HTTP/Docker health and model-ready checks. Other service IDs were unchanged.
+Evidence: task-4/dual-gpu-reviewed-06e23a6/RESULT.json and normal/output.txt.
+No dual-GPU execution was activated and no transport/bandwidth result is claimed.
+
+The supervisor now uses a single-node static rendezvous on127.0.0.1:29500
+instead of `--standalone`; network isolation and all deadlines remain unchanged.
+`cpu_rendezvous_probe.py` passed with both actual Gloo ranks in the same pinned,
+network-none image (4 CPU/4 GiB/no GPU exposure): both reduced1+2 to3 and exited.
+This correction needs review and exact-head CI before another GPU maintenance run.
