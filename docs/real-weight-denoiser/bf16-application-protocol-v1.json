@@ -22,12 +22,31 @@
     "height": 2048,
     "configured_scheduler_steps": 40,
     "captured_step": "first cached step after unchanged eager prefill",
-    "guidance_masks_conditioning": "exact production defaults, recorded and identical in paired comparisons"
+    "guidance_masks_conditioning": "exact production defaults, recorded and identical in paired comparisons",
+    "first_slice_capture": "reuse existing immutable real-weight-reviewed-9304851 capture; verify original hashes, no new capture",
+    "later_steps": "zero-based scheduler steps 20 and 39 from the same unchanged prompt/seed pipeline; record actual timesteps"
   },
   "cases": [
-    {"id": "development-apple-42", "role": "development-not-held-out", "seed": 42, "prompt": "A single red apple on a plain white table, soft natural daylight, realistic still-life photograph."},
-    {"id": "holdout-teapot-314159", "role": "held-out-prompt-and-seed", "seed": 314159, "prompt": "A blue ceramic teapot beside two white cups on a wooden kitchen table, soft morning window light, realistic photograph."},
-    {"id": "holdout-bicycle-271828", "role": "held-out-prompt-and-seed", "seed": 271828, "prompt": "A yellow bicycle leaning against a brick wall beside green plants, overcast daylight, realistic street photograph."}
+    {
+      "id": "existing-first-cached-step",
+      "role": "first diagnostic slice; existing development capture",
+      "seed": 42,
+      "prompt": "A single red apple on a plain white table, soft natural daylight, realistic still-life photograph.",
+      "capture": "real-weight-reviewed-9304851",
+      "step_index": 1
+    },
+    {
+      "id": "heldout-step-20",
+      "role": "later held-out timestep; not in first slice",
+      "seed": 42,
+      "step_index": 20
+    },
+    {
+      "id": "heldout-step-39",
+      "role": "later held-out timestep; not in first slice",
+      "seed": 42,
+      "step_index": 39
+    }
   ],
   "stages": [
     "production baseline capture and identity validation",
@@ -64,10 +83,12 @@
     "require_physical_free_gib_per_gpu_before_load": 22
   },
   "storage_review": {
-    "new_evidence_total_limit_gib": 96,
-    "require_initial_disk_free_gib": 128,
+    "total_active_artifact_limit_gib": 32,
+    "require_initial_disk_free_gib": 64,
     "retain_existing_evidence": true,
-    "note": "Three independent 32-GiB case ceilings; increased aggregate storage explicitly requires review"
+    "weights": "read existing immutable block packets by hash; no new weight packets",
+    "contexts": "one later timestep at a time; stream per block; remove only newly created consumed temporary contexts after durable checksums/reports; retain failure tensors and stop before ceiling",
+    "note": "Existing retained capture counts against active budget; historical evidence is not deleted"
   },
   "execution_controls": {
     "one_case_per_maintenance_window": true,
@@ -83,6 +104,16 @@
     "full 40-step scheduler trajectory equivalence",
     "final decoded image equivalence",
     "editing or reference-image parity",
-    "distributed speedup or production readiness"
-  ]
+    "full-image speedup or production readiness",
+    "acceptance of later steps before they are executed"
+  ],
+  "timing": {
+    "allowed_only_after": "all declared first-slice numerical stages pass, source/protocol reviewed and measurement budget remains",
+    "scope": "first-cached-step BF16 core only, not full image",
+    "warmups": 2,
+    "repeats": 5,
+    "include": "sharding, control consensus, communication/layout, all 32 blocks, final norm/projection and target gather",
+    "exclude": "preparation/disk I/O and CPU numerical audits; report separately",
+    "validate": "each timed repeat against same unchanged criterion"
+  }
 }
