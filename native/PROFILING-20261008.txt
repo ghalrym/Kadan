@@ -159,3 +159,18 @@ Latest worker SHA256: 3b90301205e11bb63476ba609b2018e0f04378036a60e176d44b9d5600
 nonfinite/BF16 overflow, full vocabulary and final-ID maxima. All mixed-stack
 GPU stages and 26 CPU tests pass. Evidence: profiling/20261008-selection.json.
 Run: kadan-selection-parity --allow-gpu-validation --device 0
+
+Remaining-router optimization
+After vocabulary selection, remaining route was 25.544 ms/decode step. Coalesced
+shared-memory staging preserves the original serial normalization/shared-gate
+sums. A -1 candidate marker is equivalent to excluding already-selected experts
+because normalized probabilities are nonnegative. Strict comparisons retain
+lowest-ID ties. Widths above 4096 keep the previous kernel; shared bytes are
+bounded to at most 34816. Remaining route is now 6.607 ms/step.
+Warm API 11.661429 tok/s; prompt 2.565798 s;
+total 15.385414 s. Direct load 50.085940 s, prompt
+2.864491 s, decode including EOS 14.307227 s.
+Latest worker SHA256: ebddcb915089ed7314052ca5aa5a99df3f5969f99217c8c00f311e4d32ca466a
+All 149 IDs match. 14 router cases include 4096/4097 shared/fallback boundaries;
+all MoE GPU stages and 26 CPU tests pass. Evidence:
+profiling/20261008-router-shared.json. No image/dependency rebuild.

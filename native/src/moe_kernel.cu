@@ -32,6 +32,29 @@ __global__ void route(moe::Config c,MoeBuffers b,const float* x){
     float shared=0;for(std::size_t j=0;j<c.hidden;++j)shared=finite(add(shared,mul(expand(b.shared_gate[j]),x[j])),b.status);
     *b.shared_factor=bf(sigmoid(bf(shared,b.status)),b.status);
 }
+// Stage independent input/router reads coalesced, then keep the original
+// serial normalization and shared-gate sums. Masking selected candidates with
+// -1 preserves top-k ordering because softmax probabilities are nonnegative.
+__global__ void route_shared(moe::Config c,MoeBuffers b,const float* x){
+    extern __shared__ float scratch[];
+    float* input=scratch;float* gate=input+c.hidden;float* probabilities=gate+c.hidden;float* candidates=probabilities+c.experts;
+    const unsigned tid=threadIdx.x;
+    for(std::size_t j=tid;j<c.hidden;j+=blockDim.x){const float v=x[j];if(bf(v,b.status)!=v)atomicOr(b.status,1u);b.accumulator[j]=0;input[j]=v;gate[j]=expand(b.shared_gate[j]);}
+    for(std::size_t e=tid;e<c.experts;e+=blockDim.x)probabilities[e]=b.logits[e];
+    __syncthreads();
+    if(tid==0){float maximum=-CUDART_INF_F;for(std::size_t e=0;e<c.experts;++e)maximum=fmaxf(maximum,probabilities[e]);
+        float total=0;for(std::size_t e=0;e<c.experts;++e){probabilities[e]=expf(probabilities[e]-maximum);total=add(total,probabilities[e]);}
+        for(std::size_t e=0;e<c.experts;++e){probabilities[e]/=total;candidates[e]=probabilities[e];}
+        float picked=0;for(std::size_t rank=0;rank<c.top_k;++rank){unsigned best=0;
+            for(unsigned e=1;e<c.experts;++e)if(candidates[e]>candidates[best])best=e;
+            b.selected[rank]=best;picked=add(picked,probabilities[best]);candidates[best]=-1.f;}
+        for(std::size_t rank=0;rank<c.top_k;++rank)b.top_weights[rank]=bf(probabilities[b.selected[rank]]/picked,b.status);
+        float shared=0;for(std::size_t j=0;j<c.hidden;++j)shared=finite(add(shared,mul(gate[j],input[j])),b.status);
+        *b.shared_factor=bf(sigmoid(bf(shared,b.status)),b.status);
+    }
+    __syncthreads();
+    for(std::size_t e=tid;e<c.experts;e+=blockDim.x)b.probabilities[e]=probabilities[e];
+}
 __global__ void activate(std::size_t n,MoeBuffers b){
     const std::size_t j=blockIdx.x*blockDim.x+threadIdx.x;if(j<n){const float gate=bf(b.gate[j],b.status),up=bf(b.up[j],b.status);
         b.activation[j]=bf(mul(bf(mul(gate,sigmoid(gate)),b.status),up),b.status);}
@@ -48,7 +71,10 @@ __global__ void finish(moe::Config c,MoeBuffers b,float* output){
 }
 cudaError_t moe_route(moe::Config c,MoeBuffers b,const float* x){
     route_logits<<<c.experts,32,0,cudaStreamLegacy>>>(c,b,x);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    route<<<1,1,0,cudaStreamLegacy>>>(c,b,x);return cudaGetLastError();
+    if(c.hidden<=4096)
+        route_shared<<<1,256,(2*c.hidden+2*c.experts)*sizeof(float),cudaStreamLegacy>>>(c,b,x);
+    else route<<<1,1,0,cudaStreamLegacy>>>(c,b,x);
+    return cudaGetLastError();
 }
 cudaError_t moe_activate(std::size_t n,MoeBuffers b){activate<<<(n+127)/128,128,0,cudaStreamLegacy>>>(n,b);return cudaGetLastError();}
 cudaError_t moe_accumulate(moe::Config c,MoeBuffers b,unsigned e){accumulate<<<(c.hidden+127)/128,128,0,cudaStreamLegacy>>>(c,b,e);return cudaGetLastError();}
