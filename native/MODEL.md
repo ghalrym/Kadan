@@ -86,14 +86,17 @@ requested metadata bytes within a 256 MiB parser/metadata quota.
 
 | Context capacity | Device arena bytes | GiB |
 | --- | ---: | ---: |
-| 1 | 20,897,995,392 | 19.463 |
+| 1 | 20,897,997,312 | 19.463 |
 | 128 | 20,900,677,632 | 19.465 |
 | 2,048 | 20,941,228,032 | 19.503 |
 | 32,768 | 21,590,034,432 | 20.107 |
 | 262,144 | 26,434,455,552 | 24.619 |
 
 Capacity 128 was verified by the new metadata-only binary against the installed
-checkpoint. Other rows are arithmetic from the same existing per-layer plans;
+checkpoint. Capacity one was subsequently verified by the metadata-only planner as well.
+The original capacity-one extrapolation omitted 192 bytes of alignment padding
+per full-attention layer (10 layers, 1,920 bytes total); the table and admission
+figure now include that padding. Other rows are arithmetic from the same existing per-layer plans;
 they are not measured allocations. State/workspace are included in the arena.
 CUDA runtime/driver overhead is covered by separate explicit headroom, not by a
 claim that requested bytes equal total device usage.
@@ -104,7 +107,7 @@ bytes are bounded, not a process RSS cap. The harness separately reserves its
 993,280-byte logits buffer. OS page cache and unrelated processes are outside
 this ledger. Device admission reserves arena plus 512 MiB headroom by default.
 
-At capacity one this requires **21,434,866,304 free/admitted device bytes** with
+At capacity one this requires **21,434,868,224 free/admitted device bytes** with
 that headroom. The observed running-service reservations cannot accommodate it;
 even that service's GPU-0 capacity (20,014,117,683 bytes) is below the requested
 native envelope. An explicitly coordinated test window/envelope is required.
@@ -168,9 +171,11 @@ failure, quarantine and retained reservations after cleanup failure. A CPU fake
 runtime exercises the actual standalone capture program, overwrite prevention,
 artifact validation/comparison and the watchdog's exit-124 path.
 
-Before actual-model work, separately authorize the tiny checkpoint GPU harness
-and compare its capture with the fixture generator's `reference.capture`. The new
-BF16 kernel mode and streamed owner have only CPU/fake-runtime verification here.
+All four reviewed synthetic GPU stages compared captures against the fixture
+generator's independent `reference.capture` and passed exact parity at
+`a9f165edac164ac2f49a00cc1209d1745ae983b8`; see
+[the actual-model review plan](ACTUAL-MODEL-PLAN.md) for the recorded evidence.
+This does not validate actual-checkpoint execution or performance.
 
 After independent review and explicit authorization of the memory window and
 actual payload reads, the smallest proposed experiment is:
@@ -218,7 +223,9 @@ fixture hashes and single-input proposals. Capacity is **8** and input IDs are
 in the capture header; pin it in the command and this plan. Record input IDs,
 progress and EOS flags are also pinned in the JSON.
 
-All GPU execution remains held. After independent review, each stage needs its
+The four stages in this pinned synthetic plan have each executed once after
+independent review and individual authorization, with exact parity and verified
+cleanup. Additional GPU execution remains held. Each new stage needs its
 own explicit authorization; no automatic stage advancement or retry. Each uses
 one model allocation/free pair, one model reservation, one 64-byte host logits
 reservation, a 270,532,672-byte host envelope and 536,870,912 bytes of device
@@ -249,3 +256,8 @@ writers throughout, and invalidate the result on any change. An in-process
 manifest identity contract remains a follow-up; this experiment does not claim
 to close that general TOCTOU gap. Actual-model payload reads, unloading and
 service changes remain separately held.
+
+The proposed actual-model reference/native commands, maintenance admission gate,
+corrected resource bounds, tolerance rationale and outstanding authorization gates
+are in [ACTUAL-MODEL-PLAN.md](ACTUAL-MODEL-PLAN.md). No actual-model execution is
+authorized by either document.
