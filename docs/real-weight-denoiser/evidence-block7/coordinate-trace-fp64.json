@@ -1,0 +1,151 @@
+{
+  "default": [
+    {
+      "coordinate": [
+        0,
+        39,
+        714
+      ],
+      "paths": {
+        "reference": {
+          "gate2_tanh": -0.9962648749351501,
+          "residual1": -2.483762741088867,
+          "mlp_out_gpu": -2.548396587371826,
+          "mlp_out_fp64_dot": -2.5483958389050754,
+          "gemm_rounding_vs_saved_operand_dot": -7.484667507995368e-07,
+          "scaled_mlp": 2.5388779640197754,
+          "output": 0.0551152229309082,
+          "fp64_final_add_of_saved_terms": 0.05511526631428865
+        },
+        "split": {
+          "gate2_tanh": -0.9962648749351501,
+          "residual1": -2.483762741088867,
+          "mlp_out_gpu": -2.5484232902526855,
+          "mlp_out_fp64_dot": -2.548414451209397,
+          "gemm_rounding_vs_saved_operand_dot": -8.83904328841112e-06,
+          "scaled_mlp": 2.5389046669006348,
+          "output": 0.05514192581176758,
+          "fp64_final_add_of_saved_terms": 0.05514186945654842
+        }
+      }
+    },
+    {
+      "coordinate": [
+        0,
+        39,
+        2552
+      ],
+      "paths": {
+        "reference": {
+          "gate2_tanh": -0.996379554271698,
+          "residual1": 0.8588818907737732,
+          "mlp_out_gpu": 0.8128197193145752,
+          "mlp_out_fp64_dot": 0.8128164924080119,
+          "gemm_rounding_vs_saved_operand_dot": 3.2269065632917204e-06,
+          "scaled_mlp": -0.8098769783973694,
+          "output": 0.04900491237640381,
+          "fp64_final_add_of_saved_terms": 0.049004941139870084
+        },
+        "split": {
+          "gate2_tanh": -0.996379554271698,
+          "residual1": 0.8588812351226807,
+          "mlp_out_gpu": 0.8127949237823486,
+          "mlp_out_fp64_dot": 0.8128023293765188,
+          "gemm_rounding_vs_saved_operand_dot": -7.4055941701178796e-06,
+          "scaled_mlp": -0.8098522424697876,
+          "output": 0.049028992652893066,
+          "fp64_final_add_of_saved_terms": 0.04902899125012539
+        }
+      }
+    },
+    {
+      "coordinate": [
+        0,
+        39,
+        3323
+      ],
+      "paths": {
+        "reference": {
+          "gate2_tanh": -0.9964907765388489,
+          "residual1": -2.6913440227508545,
+          "mlp_out_gpu": -3.012730836868286,
+          "mlp_out_fp64_dot": -3.012733254148909,
+          "gemm_rounding_vs_saved_operand_dot": 2.4172806227795718e-06,
+          "scaled_mlp": 3.0021584033966064,
+          "output": 0.31081438064575195,
+          "fp64_final_add_of_saved_terms": 0.31081446838256
+        },
+        "split": {
+          "gate2_tanh": -0.9964907765388489,
+          "residual1": -2.691342830657959,
+          "mlp_out_gpu": -3.0127577781677246,
+          "mlp_out_fp64_dot": -3.0127517909715467,
+          "gemm_rounding_vs_saved_operand_dot": -5.987196177947851e-06,
+          "scaled_mlp": 3.002185344696045,
+          "output": 0.31084251403808594,
+          "fp64_final_add_of_saved_terms": 0.3108425072318539
+        }
+      }
+    }
+  ],
+  "math": [
+    {
+      "coordinate": [
+        0,
+        39,
+        2552
+      ],
+      "paths": {
+        "reference": {
+          "gate2_tanh": -0.996379554271698,
+          "residual1": 0.8588806390762329,
+          "mlp_out_gpu": 0.8128188848495483,
+          "mlp_out_fp64_dot": 0.812818469484511,
+          "gemm_rounding_vs_saved_operand_dot": 4.1536503736505637e-07,
+          "scaled_mlp": -0.8098761439323425,
+          "output": 0.04900449514389038,
+          "fp64_final_add_of_saved_terms": 0.049004520886221314
+        },
+        "split": {
+          "gate2_tanh": -0.996379554271698,
+          "residual1": 0.8588809370994568,
+          "mlp_out_gpu": 0.8127951622009277,
+          "mlp_out_fp64_dot": 0.8128025149733392,
+          "gemm_rounding_vs_saved_operand_dot": -7.352772411484132e-06,
+          "scaled_mlp": -0.8098524808883667,
+          "output": 0.04902845621109009,
+          "fp64_final_add_of_saved_terms": 0.049028455671503934
+        }
+      }
+    },
+    {
+      "coordinate": [
+        0,
+        39,
+        3013
+      ],
+      "paths": {
+        "reference": {
+          "gate2_tanh": 0.996703028678894,
+          "residual1": -2.8947720527648926,
+          "mlp_out_gpu": 2.8647353649139404,
+          "mlp_out_fp64_dot": 2.8647396558367793,
+          "gemm_rounding_vs_saved_operand_dot": -4.290922838823263e-06,
+          "scaled_mlp": 2.855290412902832,
+          "output": -0.03948163986206055,
+          "fp64_final_add_of_saved_terms": -0.03948163819163142
+        },
+        "split": {
+          "gate2_tanh": 0.996703028678894,
+          "residual1": -2.8947699069976807,
+          "mlp_out_gpu": 2.864755630493164,
+          "mlp_out_fp64_dot": 2.864757959369266,
+          "gemm_rounding_vs_saved_operand_dot": -2.328876101742594e-06,
+          "scaled_mlp": 2.8553106784820557,
+          "output": -0.039459228515625,
+          "fp64_final_add_of_saved_terms": -0.03945929366022938
+        }
+      }
+    }
+  ]
+}
