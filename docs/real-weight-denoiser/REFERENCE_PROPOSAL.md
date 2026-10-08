@@ -15,6 +15,16 @@ then reconstructs local output rows. This uses the same total useful GEMM work a
 the parallel path, without full-row padding. Serial execution is an offline test
 reference, not a replacement execution strategy or speed claim.
 
+The reviewer-required separation is now explicit in two standalone review-only
+entrypoints. `verify_parallel_geometry.py` compares distributed output against
+virtual ranks at identical row/head geometry; it has not been executed and never
+advances the existing replay ladder. `precision_oracle.py` independently evaluates
+the full short-block equations in CPU FP64, including real-pair RoPE and explicit
+softmax, without production or Diffusers operators. Both eager and virtual outputs
+are assessed against that oracle at the unchanged `2e-5` bound. Passing the former
+cannot substitute for passing the latter. See `ORACLE_RESULTS.md` for the observed
+failure of the virtual path against the independent oracle.
+
 ## What the higher-precision evidence establishes
 
 At [0,39,714], the split-minus-eager FP64 dot of the two saved MLP products is
