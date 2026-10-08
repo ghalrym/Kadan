@@ -9,6 +9,7 @@ struct Fake:ResidentEngine {
     std::thread::id owner=std::this_thread::get_id();
     std::size_t count=0,starts=0,ends=0,parks=0;bool closed=false,fail_end=false,block=false;
     void owned(){check(owner==std::this_thread::get_id());}
+    WeightBacking::Stats cache_stats()const override{return {12,20,0,3,0,32,7,3,90,100,0};}
     Info info()const override{return {16,4,128,256};}
     void reset()override{owned();count=0;}
     void begin_request()override{owned();++starts;count=0;}
@@ -35,5 +36,9 @@ int main(int argc,char**){
     {Fake f;f.fail_end=true;auto out=run(f,command("submit",0)+command("start",1)+command("end",1),true);check(out.find("ended ")==std::string::npos&&out.find("closed ")==std::string::npos);}
     {Fake f;run(f,command("submit",0)+command("start",1));check(f.closed&&f.ends==1);}
     {Fake f;std::string in;for(int i=0;i<33;++i)in+=command("submit",0);run(f,in,true);check(f.starts==0);}
+    {Fake f;auto out=run(f,command("cache",0)+command("submit",0)+command("start",1)+command("end",1)+command("park",0)+command("cache",0));
+        check(out.find("cache "+nonce+" 0 32 12 20 7 3 90 100 0 3")!=std::string::npos);}
+    {Fake f;run(f,command("submit",0)+command("start",1)+command("cache",0),true);}
+    {Fake f;run(f,command("cache",1),true);}
     check(session_identity()!=session_identity());std::cout<<"resident session tests passed\n";
 }

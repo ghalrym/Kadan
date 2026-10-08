@@ -21,7 +21,7 @@ from pathlib import Path
 root=Path(sys.argv[2]); mode=lambda:(root/'mode').read_text()
 if sys.argv[1]=='--plan-resident':
  if mode()=='planhang':time.sleep(30)
- print(f'plan 2 {260*1024**2} 1024 16 {sys.argv[3]} 64',flush=True);sys.exit(0)
+ print(f'plan 3 {514*1024**2} 1024 16 {sys.argv[3]} 64 {256*1024**2} 1234',flush=True);sys.exit(0)
 (root/'serve-args').write_text(json.dumps(sys.argv))
 session=uuid.uuid4().hex; capacity=int(sys.argv[4])
 if mode()=='readyhang':time.sleep(30)
@@ -38,6 +38,8 @@ for line in sys.stdin:
   current+=1
   print(f'queued {reply_session} {1 if fault=="reused-id" else current}',flush=True)
  elif command=='start':
+  if fault=='slowstart':time.sleep(.5)
+  if fault=='starthang':time.sleep(30)
   progress=0;print(f'started {reply_session} {reply_id}',flush=True)
  elif command=='step':
   if fault=='hang':time.sleep(30)
@@ -47,6 +49,9 @@ for line in sys.stdin:
  elif command=='park':
   if fault=='park-failure':print('error cleanup',flush=True)
   else:print(f'parked {reply_session} {reply_id}',flush=True)
+ elif command=='cache':
+  retained=int(sys.argv[8])+1 if fault=='badcache' else int(sys.argv[8])//2
+  print(f'cache {reply_session} {reply_id} {sys.argv[8]} {retained} {sys.argv[8]} 7 3 90 100 0 1234',flush=True)
  elif command=='close':print(f'closed {session} 0',flush=True);sys.exit(0)
 '''
 
@@ -110,7 +115,7 @@ class ResidentAdapterTests(unittest.TestCase):
     def test_invalid_prompt_does_not_submit(self):
         self.adapter.tokenizer.tokens=[2]*400
         with self.assertRaises(ContextLimitError):self.generate()
-        self.assertFalse((self.root/'commands').exists())
+        self.assertNotIn('submit ',(self.root/'commands').read_text())
 
     def test_stale_session_wrong_id_and_reused_id_reap_failed_child(self):
         for mode in ('stale-session','wrong-id','reused-id'):
@@ -162,5 +167,43 @@ class ResidentAdapterTests(unittest.TestCase):
             return stop(worker)
         with patch.object(WorkerProcess,'stop',fail_stop):
             with self.assertRaises(subprocess.TimeoutExpired):self.adapter.configure_context(512)
-        self.assertEqual(len(self.resources.snapshot()['reservations']),3)
+        self.assertEqual(len(self.resources.snapshot()['reservations']),4)
         self.adapter._evict();self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_restore_uses_load_deadline_and_keeps_step_deadline(self):
+        self.adapter.offload_to_ram(); self.mode('slowstart')
+        self.assertEqual(self.generate(), 'AB')  # .5s start exceeds .3s step limit.
+        stats=self.adapter.cache_stats()
+        self.assertEqual(stats['retained_bytes'], CACHE_RAM_BYTES//2)
+        self.assertEqual((stats['hits'],stats['source_bytes']),(7,100))
+        self.mode('hang')
+        with self.assertRaises(TimeoutError): self.generate()
+        self.adapter.close(); self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_restore_timeout_and_cancellation_reap_before_release(self):
+        self.adapter.offload_to_ram(); self.adapter.load_timeout=.1; self.mode('starthang')
+        with self.assertRaises(TimeoutError): self.generate()
+        self.adapter.close(); self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_complete_cache_selected_and_explicit_cap_honored(self):
+        self.assertEqual(self.adapter.cache_capacity,self.adapter.packed_weight_bytes)
+        self.adapter._evict(); self.adapter.requested_cache_bytes=1024
+        self.adapter.configure_context(512)
+        self.assertEqual(self.adapter.cache_capacity,1024)
+        self.assertEqual(self.adapter.cache_stats()['capacity_bytes'],1024)
+
+    def test_cache_report_outside_admission_quarantines_before_release(self):
+        self.mode('badcache'); before=self.resources.snapshot()['reservations']
+        with self.assertRaises(NativeProtocolError): self.adapter.offload_to_ram()
+        self.assertTrue(self.adapter.quarantined)
+        self.assertEqual(self.resources.snapshot()['reservations'],before)
+        self.adapter.close(); self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_cancel_during_restore_reaps_child(self):
+        self.adapter.offload_to_ram(); self.mode('starthang')
+        cancel=threading.Event(); timer=threading.Timer(.05,cancel.set); timer.start()
+        try:
+            with self.assertRaises(InterruptedError): self.generate(cancel_event=cancel)
+        finally: timer.join()
+        self.assertFalse(self.adapter.worker_alive)
+        self.adapter.close(); self.assertEqual(self.resources.snapshot()['reservations'],{})

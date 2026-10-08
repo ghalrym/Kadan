@@ -11,7 +11,7 @@
 #endif
 namespace {
 void require(bool value,const char* why){if(!value)throw std::runtime_error(why);}
-struct Plan {std::size_t host,arena,vocab,capacity,staging;};
+struct Plan {std::size_t host,arena,vocab,capacity,staging,packed,tensors;};
 Plan plan(const char* root,std::size_t capacity,std::size_t metadata){
     require(capacity>0&&capacity<=kadan::serving::max_capacity,"capacity_range");
     require(metadata>0&&metadata<=kadan::serving::metadata_bytes,"metadata_range");
@@ -20,7 +20,9 @@ Plan plan(const char* root,std::size_t capacity,std::size_t metadata){
     auto generation=kadan::model::read_generation(root,manifest.architecture().vocab,budget);
     kadan::model::Layout layout(manifest,capacity,generation,budget);
     require(layout.minimum_staging_bytes()<=kadan::serving::staging_bytes,"staging_range");
-    return {metadata+kadan::serving::staging_bytes+kadan::serving::control_bytes,layout.device_bytes(),manifest.architecture().vocab,capacity,layout.minimum_staging_bytes()};
+    std::size_t packed=0;
+    for(const auto& item:manifest.items()) { require(item.payload_bytes<=SIZE_MAX-packed,"packed_overflow"); packed+=item.payload_bytes; }
+    return {metadata+kadan::serving::staging_bytes+kadan::serving::control_bytes,layout.device_bytes(),manifest.architecture().vocab,capacity,layout.minimum_staging_bytes(),packed,manifest.tensor_count()-manifest.excluded_tensor_count()};
 }
 #ifdef KADAN_WORKER_CUDA
 class CudaEngine final:public kadan::serving::ResidentEngine {
@@ -44,6 +46,7 @@ public:
     void begin_request()override{model_->begin_request();}
     void end_request()override{model_->end_request();}
     void park()override{model_->park();}
+    kadan::serving::WeightBacking::Stats cache_stats()const override{return model_->cache_stats();}
     kadan::serving::Info info()const override{return info_;}
     void reset()override{model_->reset();}
     kadan::serving::Token step(unsigned token,bool stop)override{auto selected=model_->step(token,stop);return {selected.token,selected.eos,model_->tokens()};}
@@ -58,8 +61,10 @@ int main(int argc,char** argv){
         if(argc==5&&(std::string_view(argv[1])=="--plan"||std::string_view(argv[1])=="--plan-resident")){
             const bool resident=std::string_view(argv[1])=="--plan-resident";
             auto p=plan(argv[2],number(argv[3]),number(argv[4]));
-            if(resident)p.host+=kadan::serving::WeightBacking::default_control_bytes;
-            std::cout<<"plan "<<(resident?2:1)<<' '<<p.host<<' '<<p.arena<<' '<<p.vocab<<' '<<p.capacity<<' '<<p.staging<<'\n';std::cout.flush();require(bool(std::cout),"output_failed");return 0;
+            if(resident)p.host+=kadan::serving::WeightBacking::model_control_bytes;
+            std::cout<<"plan "<<(resident?3:1)<<' '<<p.host<<' '<<p.arena<<' '<<p.vocab<<' '<<p.capacity<<' '<<p.staging;
+            if(resident)std::cout<<' '<<p.packed<<' '<<p.tensors;
+            std::cout<<'\n';std::cout.flush();require(bool(std::cout),"output_failed");return 0;
         }
         const bool resident=argc==10&&std::string_view(argv[1])=="--serve-resident";
         if(resident)require(std::signal(SIGTERM,SIG_DFL)!=SIG_ERR,"sigterm_setup");
@@ -67,7 +72,7 @@ int main(int argc,char** argv){
 #ifdef KADAN_WORKER_CUDA
         const auto device=number(argv[3]),capacity=number(argv[4]),host=number(argv[5]),gpu=number(argv[6]),headroom=number(argv[7]);
         auto p=plan(argv[2],capacity,kadan::serving::metadata_bytes);
-        if(resident)p.host+=kadan::serving::WeightBacking::default_control_bytes;
+        if(resident)p.host+=kadan::serving::WeightBacking::model_control_bytes;
         CudaEngine engine(argv[2],device,p,host,gpu,headroom,resident,resident?number(argv[8]):0,resident?number(argv[9]):0);
         if(resident)kadan::serving::resident_session(engine,engine.resources(),kadan::serving::session_identity(),std::cin,std::cout);
         else kadan::serving::session(engine,std::cin,std::cout);
