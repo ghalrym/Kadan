@@ -26,6 +26,15 @@ class PackagingTests(unittest.TestCase):
                                '--build-arg', 'SOURCE_REVISION=' + self.revision,
                                '--tag', 'kadan-native:test', '-'])
 
+    def test_correctness_overlay_is_separate_and_inert(self):
+        archive,build=packaging.commands(self.toolchain,self.api,self.revision,'native:test',True)
+        self.assertEqual(build[build.index('--file')+1],'native/packaging/Dockerfile.correctness')
+        self.assertEqual(archive[-2:],['api','native'])
+        source=Path(__file__).with_name('Dockerfile.correctness').read_text()
+        self.assertIn('--target kadan-model-worker kadan-model-correctness kadan-model-compare --parallel 2',source)
+        self.assertNotIn('--execute',source)
+        self.assertNotIn('--gpus',source)
+
     def test_unpinned_or_injected_inputs_rejected(self):
         for image in ['cuda:latest', 'sha256:' + 'a' * 64, self.api + '\n', self.api + ';id', '-bad@sha256:' + 'a' * 64]:
             with self.subTest(image=image), self.assertRaises(ValueError):

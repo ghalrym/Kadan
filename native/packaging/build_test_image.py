@@ -14,7 +14,7 @@ REVISION = re.compile(r"[0-9a-f]{40}\Z")
 TAG = re.compile(r"[a-z0-9][a-z0-9._/-]*(?::[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})?\Z")
 
 
-def commands(toolchain_image, api_image, revision, tag):
+def commands(toolchain_image, api_image, revision, tag, correctness=False):
     if not PIN.fullmatch(toolchain_image):
         raise ValueError('toolchain must be a name@sha256:64-lowercase-hex digest')
     if not (PIN.fullmatch(api_image) or LOCAL_IMAGE.fullmatch(api_image)):
@@ -25,7 +25,7 @@ def commands(toolchain_image, api_image, revision, tag):
     if not TAG.fullmatch(tag):
         raise ValueError('invalid local output image tag')
     archive = ['git', 'archive', '--format=tar', revision, 'api', 'native']
-    build = ['docker', 'build', '--pull=false', '--platform=linux/amd64', '--file', 'native/packaging/Dockerfile',
+    build = ['docker', 'build', '--pull=false', '--platform=linux/amd64', '--file', 'native/packaging/Dockerfile.correctness' if correctness else 'native/packaging/Dockerfile',
              '--build-arg', f'TOOLCHAIN_IMAGE={toolchain_image}',
              '--build-arg', f'API_IMAGE={api_base}',
              '--build-arg', f'SOURCE_REVISION={revision}',
@@ -39,10 +39,11 @@ def main(argv=None):
     parser.add_argument('--api-image', default=DEFAULT_API)
     parser.add_argument('--revision', required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--correctness-overlay', action='store_true', help='include test-only capture/comparator targets')
     parser.add_argument('--build', action='store_true', help='execute build (default: print only)')
     args = parser.parse_args(argv)
     try:
-        archive, build = commands(args.toolchain_image, args.api_image, args.revision, args.tag)
+        archive, build = commands(args.toolchain_image, args.api_image, args.revision, args.tag, args.correctness_overlay)
     except ValueError as error:
         parser.error(str(error))
     local_tag = 'kadan-native-api-base:' + args.api_image[7:] if LOCAL_IMAGE.fullmatch(args.api_image) else None
@@ -59,7 +60,7 @@ def main(argv=None):
                                        cwd=root, text=True).strip()
     if resolved != args.revision:
         raise ValueError('commit identity changed')
-    subprocess.run(['git', 'cat-file', '-e', args.revision + ':native/packaging/Dockerfile'],
+    subprocess.run(['git', 'cat-file', '-e', args.revision + ':' + build[build.index('--file') + 1]],
                    cwd=root, check=True)
     if local_tag:
         identity = subprocess.check_output(prepare[0], cwd=root, text=True).strip()
