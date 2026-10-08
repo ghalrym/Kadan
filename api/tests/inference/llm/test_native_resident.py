@@ -207,3 +207,12 @@ class ResidentAdapterTests(unittest.TestCase):
         finally: timer.join()
         self.assertFalse(self.adapter.worker_alive)
         self.adapter.close(); self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_cache_snapshot_cleared_only_after_confirmed_reap(self):
+        stats=self.adapter.cache_stats()
+        self.assertGreater(stats['retained_bytes'],0)
+        with patch.object(self.adapter.worker,'stop',side_effect=subprocess.TimeoutExpired('child',5)):
+            with self.assertRaises(subprocess.TimeoutExpired):self.adapter._evict()
+        self.assertEqual(self.adapter.cache_stats(),stats)
+        self.adapter.close()
+        self.assertIsNone(self.adapter.cache_stats())

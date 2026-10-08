@@ -38,3 +38,22 @@ class ProfilingTests(unittest.TestCase):
         ends=[v for event,v in rows if event=='image.phase.end']
         self.assertEqual(len(ends),5)
         self.assertTrue(all(v['seconds']>=0 for v in ends))
+
+    def test_throwing_stage_is_labeled_failed_and_original_hook_is_restored(self):
+        pipeline=Operation();pipeline.transformer=Operation();pipeline.vae=Operation()
+        pipeline.vae.decoder=Operation();pipeline.image_processor=Operation()
+        def installed_hook(value):raise ValueError('stage failed')
+        pipeline.transformer.forward=installed_hook
+        rows=[]
+        with self.assertRaisesRegex(ValueError,'stage failed'):
+            with profile_pipeline(pipeline,SimpleNamespace(),'cpu',lambda event,**values:rows.append((event,values))):
+                pipeline.transformer.forward(1)
+        self.assertIs(pipeline.transformer.forward,installed_hook)
+        ends=[v for event,v in rows if event=='image.phase.end']
+        self.assertEqual(ends[0]['status'],'failed')
+        # A subsequent hook installation also survives the next profile cycle.
+        pipeline.transformer.forward=lambda value:value+2
+        replacement=pipeline.transformer.forward
+        with profile_pipeline(pipeline,SimpleNamespace(),'cpu',lambda *a,**k:None):
+            self.assertEqual(pipeline.transformer.forward(1),3)
+        self.assertIs(pipeline.transformer.forward,replacement)

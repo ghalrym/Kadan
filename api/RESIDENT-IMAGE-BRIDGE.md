@@ -192,3 +192,17 @@ probe again. GPU budgets are unchanged: 22 GiB parent; final text peak
 23,355,836,416 bytes (21.7518 GiB) including both 512 MiB contexts, and sequential
 image phase 9 GiB including both contexts. The GPU margin is narrow and the
 existing physical probes/guards remain required.
+
+
+RuntimeManager now uses the resident adapter's explicit combined completion bound:
+generation allowance plus three load deadlines (metadata planner, readiness/load,
+and start/restore). This conservative total also covers a child evicted between
+runtime scheduling and acquisition of the adapter ownership lock. With the test's
+300-second load/restore setting and default300-second generation allowance, the
+outer bound is1,200 seconds; native per-command deadlines still apply. Other
+adapters retain the300-second default. This is an aggregate request bound, not
+independent retry allowances. Runtime-level real-subprocess regressions cover
+restore longer than the generation allowance, outer expiry during token execution,
+and restore-command expiry; all verify reap before reservation release. Cache
+snapshots are cleared only after confirmed cleanup, preventing stale retained-byte
+reports while preserving evidence if reap is uncertain.

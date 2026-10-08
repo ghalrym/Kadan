@@ -3,6 +3,7 @@ import asyncio
 from contextlib import suppress
 import os
 import json
+import math
 import threading
 
 from api.inference.placement import select_device
@@ -44,10 +45,13 @@ class RuntimeFailure(Exception):
 
 
 class RuntimeManager:
-    def __init__(self, factory=None, resources=None):
+    def __init__(self, factory=None, resources=None, *, generation_timeout=300):
         """Initialize one process-local controller with optional test factory and shared resource
         manager; allocate no model at construction.
         """
+        if not isinstance(generation_timeout, (int, float)) or not math.isfinite(generation_timeout) or generation_timeout <= 0:
+            raise ValueError('Generation timeout must be finite and positive')
+        self.generation_timeout = generation_timeout
         self.state = 'unloaded'
         self.model_id = None
         self.error = None
@@ -346,6 +350,10 @@ class RuntimeManager:
             raise RuntimeFailure('A chat request is already running. Retry when it finishes.', 429)
         async with self._generation:
             adapter = self.adapter
+            budget = getattr(adapter, 'completion_timeout', None)
+            timeout = self.generation_timeout if budget is None else budget(self.generation_timeout)
+            if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < self.generation_timeout:
+                raise RuntimeFailure('Adapter completion timeout is invalid.')
             self._cancel = threading.Event()
             worker = asyncio.create_task(asyncio.to_thread(adapter.generate,
                 [{'role': message.role, 'text': message.text} for message in messages],
@@ -355,7 +363,7 @@ class RuntimeManager:
             self._worker = worker
             try:
                 try:
-                    text = await asyncio.wait_for(asyncio.shield(worker), 300)
+                    text = await asyncio.wait_for(asyncio.shield(worker), timeout)
                 except asyncio.TimeoutError:
                     self._cancel.set()
                     with suppress(Exception):

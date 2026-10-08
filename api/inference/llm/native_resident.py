@@ -36,6 +36,16 @@ class ResidentAdapter(NativeAdapter):
         self.parked = False
         self.quarantined = False
 
+    def completion_timeout(self, generation_timeout):
+        """Bound a completion including a possible pressure-evicted child rebuild.
+
+        Planning, readiness/loading, and start/restore each have a load deadline.
+        Budget all three even for a currently warm child: pressure eviction may
+        happen before generate acquires its ownership lock. Token IPC keeps its
+        shorter step deadline. This is a combined outer bound, not three retries.
+        """
+        return generation_timeout + 3 * self.load_timeout
+
     @property
     def is_resident(self):
         return self.worker_alive and not self.quarantined and not self.parked and self.reservation is not None
@@ -208,6 +218,7 @@ class ResidentAdapter(NativeAdapter):
             if handle is not None:
                 handle.release()
                 setattr(self, name, None)
+        self.cache_statistics = None
         self.session = None
         self.request_id = 0
         self.parked = False
