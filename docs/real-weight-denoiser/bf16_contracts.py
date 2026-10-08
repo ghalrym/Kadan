@@ -48,17 +48,49 @@ def verdict(first_slice,timing='not-run'):
 def aggregate(rows):
     active=[row for row in rows if row is not None]
     if not active:raise ValueError('Missing rank evidence')
-    squared=sum(row.get('squared_error',0) for row in active)
-    reference_squared=sum(row.get('reference_squared',0) for row in active)
     count=sum(row['count'] for row in active)
-    return dict(rmse=math.sqrt(squared/count) if count else None,
-        relative_l2=math.sqrt(squared/reference_squared) if reference_squared else None,count=sum(row['count'] for row in active),violations=sum(row['violations'] for row in active),
-        nonfinite=sum(row['nonfinite'] for row in active),
-        max_abs_error=max((row['max_abs_error'] or 0) for row in active),
-        max_normalized_tolerance_ratio=max((row['max_normalized_tolerance_ratio'] or 0) for row in active))
+    nonfinite=sum(row['nonfinite'] for row in active)
+    edges=active[0]['error_histogram_edges']
+    if any(row['error_histogram_edges']!=edges for row in active):
+        raise ValueError('Rank histogram edges disagree')
+    counts=[sum(row['error_histogram_counts'][index] for row in active) for index in range(len(edges)-1)]
+    finite_count=sum(row['finite_count'] for row in active)
+    if sum(counts)!=finite_count:raise ValueError('Histogram finite count mismatch')
+    quantiles={}
+    if finite_count:
+        for q in (.5,.9,.99,1.):
+            target=max(1,q*finite_count);cumulative=0
+            for index,value in enumerate(counts):
+                cumulative+=value
+                if cumulative>=target:
+                    quantiles[str(q)]=[edges[index],edges[index+1]]
+                    break
+    squared=sum(row['squared_error'] for row in active)
+    reference_squared=sum(row['reference_squared'] for row in active)
+    points=[dict(row['max_normalized_point'],rank=row['rank']) if 'rank' in row else dict(row['max_normalized_point'])
+        for row in active if row['max_normalized_point'] is not None]
+    return dict(count=count,violations=sum(row['violations'] for row in active),nonfinite=nonfinite,
+        finite_count=finite_count,
+        rmse=None if nonfinite or not count else math.sqrt(squared/count),
+        relative_l2=None if nonfinite or not reference_squared else math.sqrt(squared/reference_squared),
+        max_abs_error=None if nonfinite else max(row['max_abs_error'] for row in active),
+        max_normalized_tolerance_ratio=None if nonfinite else max(row['max_normalized_tolerance_ratio'] for row in active),
+        max_normalized_point=None if nonfinite or not points else max(points,key=lambda point:point['ratio']),
+        absolute_error_quantile_bins=None if nonfinite else quantiles,
+        finite_error_histogram=dict(edges=edges,counts=counts,scope='finite-elements-only'),
+        error_metrics_status='unavailable-nonfinite-input' if nonfinite else 'complete')
 
 
 def require_pass(rows):
     combined=aggregate(rows)
     if combined['violations'] or combined['nonfinite']:raise AssertionError('Unchanged BF16 numerical criterion failed')
     return combined
+
+
+def timing_admission(remaining_by_rank,minimum_seconds=120):
+    """All ranks branch on the same conservative, control-group gathered budget."""
+    if len(remaining_by_rank)!=2 or any(not math.isfinite(value) for value in remaining_by_rank):
+        raise ValueError('Two finite rank budgets required')
+    remaining=min(remaining_by_rank)
+    return dict(admitted=remaining>=minimum_seconds,minimum_remaining_seconds=remaining,
+        required_seconds=minimum_seconds,remaining_by_rank=list(remaining_by_rank))

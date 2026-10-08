@@ -30,7 +30,9 @@ def inspect_values(actual,reference):
             quantiles[str(q)]=[float(edges[index]),None if not torch.isfinite(edges[index+1]) else float(edges[index+1])]
     result.update(max_normalized_point=worst,failing_points=points,coordinates_truncated=result['violations']>len(points),
         absolute_error_quantile_bins=quantiles,quantile_note='fixed histogram intervals, finite elements only',
-        squared_error=squared,reference_squared=reference_squared,shape=list(actual.shape))
+        squared_error=squared,reference_squared=reference_squared,squared_sums_scope='finite-elements-only',
+        finite_count=finite_count,error_histogram_counts=histogram.tolist(),
+        error_histogram_edges=[float(value) if torch.isfinite(value) else None for value in edges],shape=list(actual.shape))
     return result
 
 

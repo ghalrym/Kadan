@@ -11,7 +11,7 @@ import torch.distributed as dist
 from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21TransformerBlock, QwenImage21AdaLayerNormContinuous
 
 from api.inference.image.parallel import TokenShard, cached_block, compact_prefix, sequence_to_heads, heads_to_sequence
-from bf16_contracts import verify_capture, verdict, require_pass, aggregate, ULYSSES_SOURCE
+from bf16_contracts import verify_capture, verdict, require_pass, aggregate, ULYSSES_SOURCE, timing_admission
 from bf16_numerics import inspect_values, expected_head_ownership, advance_pair
 from replay import module, inputs, eager
 from trace_binding import sha256
@@ -141,7 +141,11 @@ def main():
         status=verdict('passed','pending');save_status()
         # Optional cached-core timings never weaken numerical acceptance.
         available=int(os.environ['KADAN_STAGE_SECONDS'])-(time.monotonic()-started)
-        if available<120:
+        budgets=[None,None]
+        dist.all_gather_object(budgets,available,group=control)
+        decision=timing_admission(budgets)
+        (OUT/f'timing-admission-rank-{rank}.json').write_text(json.dumps(decision,indent=2))
+        if not decision['admitted']:
             status=verdict('passed','skipped-insufficient-budget');save_status()
         else:
             benchmarks=[]

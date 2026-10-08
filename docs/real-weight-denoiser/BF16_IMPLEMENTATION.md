@@ -52,7 +52,12 @@ output is checked and the 32-block chain includes final adaptive norm/projection
 All numerical checks keep `atol=rtol=.02`, zero violations and zero nonfinite.
 Results are persisted before rank-wide acceptance. Rank-0-only reference audits
 avoid double-counting replicated references; sharded counts sum across ranks and
-extrema use maxima. Reports include signed worst normalized coordinates/bounds,
+extrema use maxima. Global quantile intervals are derived from summed histogram
+counts with identical edges, never averaged rank quantiles. The global worst
+normalized point retains its rank, global coordinate, actual/reference and bound.
+When any nonfinite value occurs, global error metrics and quantile intervals are
+null; the separately labeled finite-only histogram still reports its finite count.
+Reports include signed worst normalized coordinates/bounds,
 absolute errors, RMSE, relative L2 and fixed-histogram quantile intervals. Up to 32
 failing coordinates are listed with truncation marked; failed tensors are saved
 before stopping. Intermediate operators do not introduce acceptance gates.
@@ -62,8 +67,9 @@ record selected dispatch without forcing a backend. Capture/source identities,
 precision flags and the verdict history are retained. A first-slice pass cannot
 clear either the prior FP32 failure or the pending overall protocol.
 
-Cached-core timing is reached only after every numerical stage passes. With less
-than 120 seconds left in the existing stage budget it is skipped explicitly.
+Cached-core timing is reached only after every numerical stage passes. Each rank gathers its remaining stage budget over the control group; both branch
+on the same minimum. If that minimum is less than 120 seconds, timing is skipped
+explicitly on both ranks. The budgets and agreed decision are persisted.
 Otherwise it uses two warmups/five synchronized repeats, including sharding,
 control consensus, communication/layout, all blocks, norm/projection and gather.
 CPU audits remain outside the timed region and every repeat is checked. The

@@ -10,7 +10,7 @@ import torch
 
 import launch_bf16
 import supervisor_bf16
-from bf16_contracts import PROTOCOL, require_ci, require_review, require_pass, verdict
+from bf16_contracts import PROTOCOL, require_ci, require_review, require_pass, verdict, timing_admission, aggregate
 from bf16_numerics import inspect_values, expected_head_ownership, advance_pair
 
 
@@ -61,6 +61,45 @@ class BF16DiagnosticTests(unittest.TestCase):
         self.assertEqual(row['fp32_protocol'],'failed')
         self.assertEqual(row['overall_protocol'],'incomplete')
         self.assertEqual(row['later_steps'],{'20':'not-run','39':'not-run'})
+
+    def test_global_histogram_and_worst_point_are_not_rank_averages(self):
+        a=inspect_values(torch.zeros(9),torch.zeros(9))
+        b=inspect_values(torch.tensor([.03]),torch.zeros(1))
+        a['rank']=0;b['rank']=1
+        b['max_normalized_point']['global_coordinate']=[0,8192,0]
+        result=aggregate([a,b])
+        self.assertEqual(result['finite_error_histogram']['counts'],
+            [x+y for x,y in zip(a['error_histogram_counts'],b['error_histogram_counts'])])
+        self.assertEqual(result['absolute_error_quantile_bins']['0.5'],[0.,1e-5])
+        self.assertEqual(result['absolute_error_quantile_bins']['0.99'],[.02,.05])
+        self.assertEqual(result['max_normalized_point']['global_coordinate'],[0,8192,0])
+        self.assertEqual(result['max_normalized_point']['rank'],1)
+        self.assertEqual(result['max_normalized_point']['reference'],0.)
+        self.assertAlmostEqual(result['max_normalized_point']['bound'],.02)
+        self.assertAlmostEqual(result['rmse'],.03/(10**.5),places=8)
+
+    def test_global_nonfinite_metrics_are_unavailable_not_zero(self):
+        a=inspect_values(torch.tensor([0.,float('nan')]),torch.zeros(2))
+        b=inspect_values(torch.tensor([.03]),torch.zeros(1))
+        result=aggregate([a,b])
+        self.assertEqual(result['nonfinite'],1)
+        self.assertEqual(result['finite_count'],2)
+        for key in ('rmse','relative_l2','max_abs_error','max_normalized_tolerance_ratio',
+                    'max_normalized_point','absolute_error_quantile_bins'):
+            self.assertIsNone(result[key],key)
+        self.assertEqual(sum(result['finite_error_histogram']['counts']),2)
+        self.assertEqual(result['finite_error_histogram']['scope'],'finite-elements-only')
+        with self.assertRaises(AssertionError):require_pass([a,b])
+
+    def test_timing_admission_uses_minimum_asymmetric_budget(self):
+        for budgets in ([119.999,150.],[150.,119.999],[0.,900.],[-1.,900.]):
+            decision=timing_admission(budgets)
+            self.assertFalse(decision['admitted'])
+            self.assertEqual(decision['minimum_remaining_seconds'],min(budgets))
+        for budgets in ([120.,150.],[150.,120.]):
+            self.assertTrue(timing_admission(budgets)['admitted'])
+        with self.assertRaises(ValueError):timing_admission([120.])
+        with self.assertRaises(ValueError):timing_admission([float('nan'),150.])
 
     def test_supervisor_timeout_reaps_only_owned_process_group(self):
         child=Mock(pid=12345)
