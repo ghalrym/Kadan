@@ -196,6 +196,8 @@ class ResourceManager:
         # Serialize admission/eviction transactions; callbacks run without the
         # state lock so release() and snapshots are safe from eviction callbacks.
         self._admission = threading.Lock()
+        self._context_gate = threading.Lock()
+        self._framework_contexts = {}
         self._residents: dict[str, _Resident] = {}
         self._exclusive: str | None = None
         self._used_host = 0
@@ -426,6 +428,23 @@ class ResourceManager:
             for victim in victims:
                 self._cancelled(cancel_event)
                 self._evict(victim)
+
+    def framework_context(self, device, size):
+        """Admit a process-lifetime Torch CUDA context before image CUDA execution.
+
+        Parking tensors or empty_cache cannot destroy a shared Python context.
+        This non-evictable envelope stays charged until this process exits; native
+        child contexts have their own separately reaped ownership instead.
+        """
+        with self._context_gate:
+            if device not in self._framework_contexts:
+                self._framework_contexts[device] = (size, self.reserve(
+                    f'framework-context:{device}', 'image', device_bytes={device: size},
+                    offload_on_handoff=False))
+            admitted, handle = self._framework_contexts[device]
+            if size > admitted:
+                raise ResourceExhausted('Framework context exceeds its admitted envelope')
+            return handle
 
     def available_devices(self, *, reclaim=False):
         """Snapshot execution headroom without evicting or pooling device capacities.

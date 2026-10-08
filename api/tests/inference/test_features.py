@@ -142,14 +142,16 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resources.snapshot()['reservations'], {})
             self.assertEqual(jobs.get('a'*32).status, 'Done')
 
-    async def test_image_contract_is_honestly_unsupported(self):
-        for feature in (ImageFeature(),):
-            with self.subTest(feature=feature.name):
-                self.assertIsInstance(feature, InferenceFeature)
-                with self.assertRaises(RuntimeFailure):
-                    await feature.load('unimplemented')
-                with self.assertRaises(RuntimeFailure):
-                    await feature(object())
-                await feature.offload_to_ram()
-                await feature.unload()
-                self.assertIsNone(feature.adapter)
+    async def test_image_contract_owns_native_lifecycle(self):
+        service = Mock(native=object())
+        feature = ImageFeature(service)
+        self.assertIsInstance(feature, InferenceFeature)
+        self.assertIs(feature.adapter, service.native)
+        with self.assertRaises(RuntimeFailure):
+            await feature.load('unimplemented')
+        await feature.load('qwen-image-2.1')
+        service.load.assert_called_once()
+        await feature.offload_to_ram()
+        service.offload_to_ram.assert_called_once()
+        await feature.unload()
+        service.close.assert_called_once()

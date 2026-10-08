@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     lifespan=lifespan,
     title="Kadan API", version="0.0.1",
-    description="Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    description="Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Qwen image generation/editing and speech synthesis use native wrappers. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
 )
 
 # Observe only generation POST handlers; dashboard polling is excluded.

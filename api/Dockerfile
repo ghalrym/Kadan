@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends g++ sox \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements*.txt /app/
 COPY qwen_tts_compat /app/api/qwen_tts_compat
-RUN uv pip install --system --no-cache torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130 \
+RUN uv pip install --system --no-cache torchaudio==2.11.0 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130 \
     && uv pip install --system --no-cache -r requirements.txt && uv pip check --system
 COPY . /app/api
 RUN ffmpeg -version && ffprobe -version && python -m api.inference.check_install

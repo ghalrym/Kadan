@@ -116,12 +116,16 @@ class RuntimeManager:
         native = False
         if factory is None:
             backend = os.environ.get('KADAN_LLM_BACKEND', 'python')
-            if backend not in ('python', 'native'):
-                raise RuntimeFailure('KADAN_LLM_BACKEND must be python or native.')
-            if backend == 'native':
+            if backend not in ('python', 'native', 'native-resident'):
+                raise RuntimeFailure('KADAN_LLM_BACKEND must be python, native or native-resident.')
+            if backend in ('native', 'native-resident'):
                 # Lazy optional backend import preserves startup/default behavior.
                 from api.inference.llm.native import build_native
                 factory, native = build_native, True
+                if backend == 'native-resident':
+                    # Optional protocol-v2 bridge; no Torch model engine import.
+                    from api.inference.llm.native_resident import build_resident
+                    factory = build_resident
         if factory is None:
             # Keep the API available when native dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.

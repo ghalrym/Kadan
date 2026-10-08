@@ -1,18 +1,23 @@
 import asyncio
+import base64
 import os
 from pathlib import Path
 import tempfile
 import time
+import threading
 from types import SimpleNamespace
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import httpx
+from PIL import Image
 
 from api.inference.resources import ResourceBusy, ResourceManager
 from api.memory_manager import MemoryManager
 from api.inference.feature import InferenceFeature
+from api.inference.image.model import REVISION
+from api.inference.resources import ResourceCancelled
 from api.memory_manager.queue import InferenceQueue
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
 from api.routes.v1.chat.completions import CompletionRequest
@@ -20,6 +25,7 @@ from api.routes.v1.images.generations import ImageRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
 from api.server import app
 from api.services.video_jobs import VideoJobs
+from api.services.images import ImageManager
 from api.services.runtime import RuntimeFailure
 from api.tests.inference.stt.test_model import audio_url
 
@@ -88,7 +94,10 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = SimpleNamespace(adapter=None, unload=unload, model_id='selected-llm', ensure_resources=lambda: self.resources, complete=complete)
         transcription = SimpleNamespace(native=None, selected=lambda: 'tiny', transcribe=transcribe, close=lambda: None,
             offload_to_ram=lambda cancel: self.resources.offload_workload_devices('speech', cancel))
-        self.manager = MemoryManager(runtime=self.runtime, transcription=transcription)
+        downloads = Mock()
+        downloads.get_checkpoint.side_effect = ValueError("missing checkpoint")
+        images = ImageManager(self.directory.name, downloads, self.runtime)
+        self.manager = MemoryManager(runtime=self.runtime, transcription=transcription, images=images)
         await self.manager.queue.redis.aclose()
         self.prefix = f'kadan:test:{uuid.uuid4().hex}:'
         self.manager.queue = InferenceQueue(self.manager._execute, url=os.environ['KADAN_TEST_REDIS_URL'],
@@ -135,12 +144,60 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.llm.infer()
         self.assertEqual(self.llm.constructed, 2)
 
-    async def test_unavailable_feature_is_queued_without_moving_resident(self):
+    async def test_missing_image_checkpoint_preserves_existing_resident(self):
         self.llm.infer()
-        with self.assertRaisesRegex(RuntimeFailure, 'No image provider'):
+        with self.assertRaisesRegex(RuntimeFailure, 'Download Qwen'):
             await self.manager.submit(ImageRequest(prompt='tree'), feature='image')
         self.assertIsNotNone(self.llm.device)
         self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)
+
+    async def test_image_generation_and_edit_use_redis_and_publish_real_png(self):
+        service = self.manager.image.service
+        service.downloads.get_checkpoint.side_effect = None
+        service.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.directory.name))
+        service.backend = Mock(side_effect=lambda *args, **kwargs: [Image.new('RGBA', (2, 2))])
+        with patch('api.routes.v1.images.generations.memory_manager', self.manager), patch(
+                'api.routes.v1.images.edits.memory_manager', self.manager):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+                response = await client.post('/v1/images/generations', json={'prompt':'tree', 'count':1, 'seed':7})
+                self.assertEqual(response.status_code, 200, response.text)
+                result = response.json()['image']
+                self.assertEqual(result['seeds'], [7])
+                source = 'data:image/png;base64,' + base64.b64encode(service.file(result['id'], 0).read_bytes()).decode()
+                response = await client.post('/v1/images/edits', json={'prompt':'blue sky', 'count':1, 'image':source})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['image']['mode'], 'Edit')
+                self.assertEqual(service.backend.call_args.kwargs['image'].mode, 'RGBA')
+        self.assertEqual(len(service.history()), 2)
+        self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)
+
+    async def test_image_queue_cancel_waits_for_native_cleanup_before_retry(self):
+        service = self.manager.image.service
+        service.downloads.get_checkpoint.side_effect = None
+        service.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.directory.name))
+        started, stopped = threading.Event(), threading.Event()
+        def forward(path, resources, prompt, aspect, seeds, cancel, **kwargs):
+            reservation = resources.reserve('image-fixture', 'image', host_bytes=1)
+            try:
+                with reservation.lease(cancel):
+                    started.set()
+                    cancel.wait(3)
+                    raise ResourceCancelled('cancelled')
+            finally:
+                reservation.release()
+                stopped.set()
+        service.backend = forward
+        task = asyncio.create_task(self.manager.submit(ImageRequest(prompt='tree', count=1), feature='image'))
+        self.assertTrue(await asyncio.to_thread(started.wait, 3))
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(service.history(), [])
+        self.assertEqual(self.resources.snapshot()['reservations'], {})
+        service.backend = lambda *args, **kwargs: [Image.new('RGB', (1, 1))]
+        result = await self.manager.submit(ImageRequest(prompt='retry', count=1), feature='image')
+        self.assertEqual(result['image']['prompt'], 'retry')
 
     async def test_invalid_durable_payload_fails_and_next_request_succeeds(self):
         job_id = await self.manager.queue.submit('llm', 'generate', {'messages': []}, 'selected-llm')

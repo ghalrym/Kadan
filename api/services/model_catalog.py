@@ -75,6 +75,22 @@ for family in ('FL2VA',):
     )
     CATALOG[entry.id] = entry
 
+# Qwen's complete native Diffusers bundle; assets/ contains documentation images.
+QWEN_IMAGE_REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
+CATALOG['qwen-image-2.1'] = CatalogEntry(
+    'qwen-image-2.1', 'Qwen/Qwen-Image-2.1', QWEN_IMAGE_REVISION,
+    'qwen-research', 33_100_000_000, kind='image', display_name='Qwen-Image-2.1',
+    layout='components', component_paths=('processor', 'scheduler', 'text_encoder', 'transformer', 'vae'),
+    required_files=('model_index.json', 'LICENSE', 'processor/preprocessor_config.json',
+        'processor/tokenizer.json', 'processor/tokenizer_config.json', 'processor/chat_template.jinja',
+        'scheduler/scheduler_config.json', 'text_encoder/config.json',
+        'text_encoder/model.safetensors.index.json', 'transformer/config.json',
+        'transformer/diffusion_pytorch_model.safetensors.index.json', 'vae/config.json'),
+    weight_paths=('text_encoder', 'transformer', 'vae'),
+    license_url=f'https://huggingface.co/Qwen/Qwen-Image-2.1/blob/{QWEN_IMAGE_REVISION}/LICENSE',
+    license_notice='Qwen-Image-2.1 is licensed for research and evaluation only. Commercial use requires a separate license; continuing does not grant commercial rights.',
+)
+
 # A content-addressed composite: native release configs plus serialized INT8
 # tensors, FP16 video VAE, FP32 audio VAE, and the tested Turbo adapter.
 _H3_MANIFEST_BYTES = Path(__file__).with_name('h3_int8_manifest.json').read_bytes()

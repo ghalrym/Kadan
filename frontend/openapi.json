@@ -766,6 +766,13 @@
             },
             "title": "Seeds",
             "type": "array"
+          },
+          "urls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Urls",
+            "type": "array"
           }
         },
         "required": [
@@ -2403,8 +2410,8 @@
             "type": "integer"
           },
           "image": {
-            "description": "Source image reference; no image provider is configured and this reference is not fetched",
-            "maxLength": 2048,
+            "description": "Inline PNG, JPEG or WebP data URL; remote URLs are not fetched",
+            "maxLength": 28000000,
             "minLength": 1,
             "title": "Image",
             "type": "string"
@@ -2419,6 +2426,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2427,13 +2435,6 @@
               }
             ],
             "title": "Seed"
-          },
-          "strength": {
-            "default": 0.65,
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Strength",
-            "type": "number"
           }
         },
         "required": [
@@ -2477,6 +2478,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2496,7 +2498,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Qwen image generation/editing and speech synthesis use native wrappers. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2960,7 +2962,7 @@
     },
     "/v1/images": {
       "get": {
-        "description": "Return empty image history while no image provider or stored results exist.",
+        "description": "Return metadata for completed native image results.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -2982,7 +2984,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
+        "description": "Queue native Qwen-Image inference under shared memory ownership.",
         "operationId": "editImages",
         "requestBody": {
           "content": {
@@ -3027,7 +3029,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
+        "description": "Queue native Qwen-Image inference under shared memory ownership.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {
@@ -3065,6 +3067,56 @@
           }
         },
         "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/{identifier}/files/{index}": {
+      "get": {
+        "description": "Serve one published PNG without exposing arbitrary filesystem paths.",
+        "operationId": "getImageFile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Image File",
         "tags": [
           "Images"
         ]

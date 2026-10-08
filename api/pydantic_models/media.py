@@ -9,6 +9,7 @@ class ImageSet(BaseModel):
     aspect: Literal["square", "landscape", "portrait", "wide"]
     seeds: list[int]
     meta: str
+    urls: list[str] = Field(default_factory=list)
 
 
 class VideoJob(BaseModel):

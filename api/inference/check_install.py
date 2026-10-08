@@ -17,6 +17,8 @@ def main():
                 Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
     from api.inference.tts.check_install import check_speech_install
     check_speech_install()
+    from api.inference.check_image_install import check_image_install
+    check_image_install()
     print(f'Core inference imports OK (torch {torch.__version__}, CUDA build {torch.version.cuda}).')
 
 

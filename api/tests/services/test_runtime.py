@@ -54,15 +54,17 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_backend_selects_exact_planner_before_device_admission(self):
         self.manager._factory = None
-        for gpu, device in (('auto', 'auto'), ('1', 'cuda:1')):
-            with patch.dict('os.environ', {'KADAN_LLM_BACKEND': 'native', 'KADAN_GPU': gpu}), \
-                    patch('api.inference.llm.native.build_native', return_value=self.adapter) as factory, \
-                    patch('api.services.runtime.select_device', side_effect=AssertionError('Python placement called')):
-                await self.ready()
-                self.assertEqual(factory.call_args.kwargs['device'], device)
-                self.assertIs(factory.call_args.args[2], self.manager.resources)
-                self.assertIsNone(self.adapter.configured_context_limit)
-                await self.manager.unload()
+        for backend, target in (('native', 'api.inference.llm.native.build_native'),
+                                ('native-resident', 'api.inference.llm.native_resident.build_resident')):
+            for gpu, device in (('auto', 'auto'), ('1', 'cuda:1')):
+                with patch.dict('os.environ', {'KADAN_LLM_BACKEND': backend, 'KADAN_GPU': gpu}), \
+                        patch(target, return_value=self.adapter) as factory, \
+                        patch('api.services.runtime.select_device', side_effect=AssertionError('Python placement called')):
+                    await self.ready()
+                    self.assertEqual(factory.call_args.kwargs['device'], device)
+                    self.assertIs(factory.call_args.args[2], self.manager.resources)
+                    self.assertIsNone(self.adapter.configured_context_limit)
+                    await self.manager.unload()
 
     async def test_unknown_backend_fails_before_allocations(self):
         self.manager._factory = None

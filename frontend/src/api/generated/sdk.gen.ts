@@ -41,6 +41,9 @@ import type {
   GenerateVideoResponses,
   GetDecisionsData,
   GetDecisionsResponses,
+  GetImageFileData,
+  GetImageFileErrors,
+  GetImageFileResponses,
   GetMetricsData,
   GetMetricsResponses,
   GetModelLifecycleStatusData,
@@ -365,7 +368,7 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 /**
  * List Images
  *
- * Return empty image history while no image provider or stored results exist.
+ * Return metadata for completed native image results.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -378,7 +381,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Queue native Qwen-Image inference under shared memory ownership.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
@@ -399,7 +402,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Queue native Qwen-Image inference under shared memory ownership.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,
@@ -416,6 +419,20 @@ export const generateImages = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * Image File
+ *
+ * Serve one published PNG without exposing arbitrary filesystem paths.
+ */
+export const getImageFile = <ThrowOnError extends boolean = false>(
+  options: Options<GetImageFileData, ThrowOnError>,
+): RequestResult<GetImageFileResponses, GetImageFileErrors, ThrowOnError> =>
+  (options.client ?? client).get<
+    GetImageFileResponses,
+    GetImageFileErrors,
+    ThrowOnError
+  >({ url: '/v1/images/{identifier}/files/{index}', ...options })
 
 /**
  * Get Metrics

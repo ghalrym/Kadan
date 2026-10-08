@@ -4,6 +4,7 @@ The Python parent owns global admission and tokenization. The child owns one
 bounded arena and does greedy token steps; its accounting is a sub-budget.
 """
 from collections.abc import Mapping
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -274,12 +275,38 @@ class NativeAdapter:
             # Normal lifecycle requests a clean child close; failure still stops
             # and reaps it before releasing global ownership.
             try:
-                if self.is_resident:
-                    if self.worker.exchange('close', 5) != 'closed 0':
+                if self.worker_alive:
+                    if self.worker.exchange(self._close_command(), 5) != self._close_reply():
                         raise NativeProtocolError('Native close did not confirm zero reservations')
                     self.worker.finish()
             finally:
                 self._close_locked()
+
+    @property
+    def worker_alive(self):
+        return (self.worker is not None and self.worker.io_ready and not self.worker.closed
+                and self.worker.process.poll() is None)
+
+    def _close_command(self):
+        return 'close'
+
+    def _close_reply(self):
+        return 'closed 0'
+
+    def _restore_locked(self, cancel):
+        pass
+
+    @contextmanager
+    def _leases(self, cancel):
+        with self.host.lease(cancel), self.reservation.lease(cancel):
+            yield
+
+    def _begin_request(self, cancel):
+        if self.worker.exchange('reset', self.step_timeout, cancel) != 'ok reset':
+            raise NativeProtocolError('Native reset failed')
+
+    def _end_request(self, cancel):
+        pass
 
     def _step(self, token, stop, expected, cancel):
         selected, eos, progress = numbers(self.worker.exchange(f'step {token} {int(stop)}', self.step_timeout, cancel), ['token'], 3)
@@ -301,12 +328,13 @@ class NativeAdapter:
                         raise ContextMemoryError(str(error)) from error
                     raise
             check_cancel(cancel_event)
+            self._restore_locked(cancel_event)
             if not self.is_resident:
                 raise RuntimeError('Native worker is unloaded; explicitly load it again')
             if type(max_new_tokens) is not int or not 1 <= max_new_tokens <= 1024:
                 raise ContextLimitError('Output token limit must be between 1 and 1024')
             chat = [{'role': m['role'], 'content': m.get('text', m.get('content', ''))} for m in messages]
-            with self.host.lease(cancel_event), self.reservation.lease(cancel_event):
+            with self._leases(cancel_event):
                 tokens = self.tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True,
                     enable_thinking=False, preserve_thinking=True)
                 if isinstance(tokens, Mapping):
@@ -321,8 +349,7 @@ class NativeAdapter:
                 first = last = None
                 reason = 'length'
                 try:
-                    if self.worker.exchange('reset', self.step_timeout, cancel_event) != 'ok reset':
-                        raise NativeProtocolError('Native reset failed')
+                    self._begin_request(cancel_event)
                     for index, token in enumerate(tokens):
                         selected, eos = self._step(token, False, index+1, cancel_event)
                     for index in range(max_new_tokens):
@@ -338,6 +365,7 @@ class NativeAdapter:
                         if index + 1 < max_new_tokens:
                             selected, eos = self._step(selected, True, len(tokens)+index+1, cancel_event)
                     check_cancel(cancel_event)
+                    self._end_request(cancel_event)
                     result = self.tokenizer.decode(generated, skip_special_tokens=True)
                     if streamer is not None:
                         streamer.end()

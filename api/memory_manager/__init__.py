@@ -5,6 +5,7 @@ import os
 
 from pydantic import ValidationError
 
+from api.inference.feature import UnsupportedFeature
 from api.inference.llm.feature import LLMFeature
 from api.inference.video.feature import VideoFeature
 from api.inference.image.feature import ImageFeature
@@ -23,10 +24,10 @@ log = logging.getLogger(__name__)
 
 
 class MemoryManager:
-    def __init__(self, *, runtime=None, decisions=None, transcription=None, videos=None, queue=None):
+    def __init__(self, *, runtime=None, decisions=None, transcription=None, videos=None, images=None, queue=None):
         self.llm = LLMFeature(runtime or runtime_manager)
         self.video = VideoFeature(videos or video_jobs)
-        self.image = ImageFeature()
+        self.image = ImageFeature(images)
         self.stt = STTFeature(transcription or get_transcription_manager())
         self.tts = TTSFeature()
         self.decisions = DecisionsFeature(decisions or decision_manager)
@@ -109,6 +110,16 @@ class MemoryManager:
             raise RuntimeFailure('Invalid queued inference payload.', 422) from exc
         if getattr(body, 'model', None) is not None and body.model != job.model:
             raise RuntimeFailure('Queued model selection does not match the request.', 422)
+        # Validate availability before moving an otherwise useful resident.
+        preflight = getattr(wrapper, 'preflight', None)
+        if preflight is not None:
+            preflight(body)
+        if not isinstance(wrapper, UnsupportedFeature):
+            # The Redis consumer remains the sole global FIFO executor. Await
+            # physical parking before the next feature can reserve or execute.
+            for other in self.features.values():
+                if other is not wrapper:
+                    await other.offload_to_ram()
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         stream = self.queue.streams.get(job.id) if job.feature == "llm" else None
