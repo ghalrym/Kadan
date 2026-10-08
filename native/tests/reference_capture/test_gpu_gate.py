@@ -21,18 +21,30 @@ class GpuGateTests(unittest.TestCase):
 
     def test_ownership_thermal_memory_and_xid_failures(self):
         gate=GpuGate(self.baseline())
-        for fault in ('foreign','over_budget','hot','low_free','xid','other','cleanup_resident','cleanup_bytes'):
-            sample=self.baseline();owned={'uuid':UUID,'pid':42,'used_bytes':DEVICE_BUDGET,'cgroup':f'0::/system.slice/docker-{CID}.scope'}
+        for fault in ('foreign','over_budget','hot','low_free','xid','cleanup_resident','cleanup_bytes'):
+            sample=self.baseline();owned={'uuid':UUID,'pid':42,'start_time':100,'used_bytes':DEVICE_BUDGET,'cgroup':f'0::/system.slice/docker-{CID}.scope'}
             if fault=='foreign':owned['cgroup']='0::/unrelated'
             if fault=='over_budget':owned['used_bytes']=DEVICE_BUDGET+64*1024**2+1
             if fault in ('foreign','over_budget','cleanup_resident'):sample=replace(sample,processes=(owned,))
-            if fault=='hot':sample.devices[OTHER]['temperature']=80
+            if fault=='hot':sample.devices[UUID]['temperature']=80
             if fault=='low_free':sample.devices[UUID]['free_bytes']=1024**3-1
             if fault=='xid':sample=replace(sample,xid=True)
-            if fault=='other':sample=replace(sample,processes=({'uuid':OTHER,'pid':8,'used_bytes':1,'cgroup':'0::/new'},))
             if fault=='cleanup_bytes':sample.devices[UUID]['free_bytes']-=65*1024**2
             with self.subTest(fault=fault),self.assertRaises(ValueError):
                 gate.evaluate(sample,CID,cleanup=fault.startswith('cleanup'))
+
+    def test_pid_reuse_unexplained_growth_and_gpu1_scope(self):
+        gate=GpuGate(self.baseline())
+        owned={'uuid':UUID,'pid':42,'start_time':100,'used_bytes':1024**2,'cgroup':f'0::/system.slice/docker-{CID}.scope'}
+        sample=replace(self.baseline(),processes=(owned,))
+        self.assertTrue(gate.evaluate(sample,CID))
+        reused=replace(sample,processes=({**owned,'start_time':101},))
+        with self.assertRaisesRegex(ValueError,'pid_reused'):gate.evaluate(reused,CID)
+        unexplained=self.baseline();unexplained.devices[UUID]['free_bytes']-=65*1024**2
+        with self.assertRaisesRegex(ValueError,'unexplained'):gate.evaluate(unexplained,CID)
+        desktop=self.baseline();desktop.devices[OTHER].update(free_bytes=1,temperature=85)
+        desktop=replace(desktop,processes=({'uuid':OTHER,'pid':9,'start_time':999,'used_bytes':500,'cgroup':'desktop'},))
+        self.assertTrue(gate.evaluate(desktop,CID,cleanup=True))
 
     def test_parser_rejects_missing_unknown_telemetry(self):
         gpu=f'0, {UUID}, 24000, 50\n'

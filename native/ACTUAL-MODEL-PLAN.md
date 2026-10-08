@@ -286,8 +286,14 @@ separately reviewed coordination conditions. Planned exact native command (only 
 sudo -n timeout --signal=TERM --kill-after=5s 915s \
   /tmp/kadan-stack-cuda/kadan-model-correctness --execute \
   /var/lib/docker/volumes/kadan_model_data/_data/small-1355db6a052410cfd62085d94b58866fd0f2c3c5 \
-  0 1 271525888 21434868224 536870912 900 "$RUN/native.capture" 248044
+  0 1 272519168 21434868224 536870912 900 "$RUN/native.capture" 248044
 ```
+
+The host command envelope is 272,519,168 bytes: 271,525,888 bytes for
+`Model::host_bytes(o)` plus 993,280 bytes for the separate diagnostics allocation
+(248,320 vocabulary entries × 4-byte float). `model_correctness.cpp` requires
+both allocations to fit concurrently. The device budget remains 21,434,868,224
+bytes and device headroom remains 536,870,912 bytes.
 
 Native binary SHA256 remains
 `0c2e7fef0f7b2911b83d7ab6c68415049436d33268d6d27b391907be0d02331c`;

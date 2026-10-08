@@ -142,3 +142,28 @@ clock cancellation in both cleanup sleep phases. Mocked actual-reference runs
 cover post-forward manifest/source/snapshot drift, write/fsync/close failure and
 remaining isolation branches. These tests import no numerical backend and use no
 actual snapshot, real container, GPU or service operation.
+
+### GPU correctness observer isolation scope
+
+The one-BOS transport targets only GPU0 UUID
+`GPU-e30b6419-2c6d-f550-61d6-16166a920dac`. GPU0 must have no compute owner at
+admission. Each observed compute PID must belong to the owned container cgroup,
+and its `/proc/PID/stat` start time is pinned on first sight; reuse fails closed.
+GPU0 free-memory decline beyond owned allocations plus 64 MiB is unexplained
+growth and fails closed. Cleanup requires GPU0 compute absence and recovery
+within 64 MiB of its admission free-memory value.
+
+GPU1 desktop PID churn, allocations and temperature need not remain frozen;
+they are outside this stage's ownership, allocation and thermal gates. Device
+UUID/index inventory remains pinned. Kernel Xid observations remain a conservative
+system-level abort condition, including errors affecting another GPU.
+
+Kernel telemetry uses an inclusive journal cursor and requires that exact cursor
+as the first returned kernel record with a valid, consistent boot identity. Empty
+successful output, a missing/rotated cursor, inaccessible records, malformed output
+or command warnings are unknown/incomplete telemetry, never proof of no Xid.
+Bounded stdout/stderr and status are retained in exclusive telemetry JSON files
+(16 MiB aggregate ceiling). Missing journal access is a specific technical limit;
+the tooling does not change permissions or security settings to obtain access.
+These contracts require reviewer agreement before actual execution release;
+only fake tests have validated them, with no live GPU/journal validation implied.
