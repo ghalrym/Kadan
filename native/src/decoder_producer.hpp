@@ -76,25 +76,29 @@ struct DecoderProducer {
     }
     void zero(){check(cudaMemsetAsync(bytes(p.moe_offset+p.moe.scratch_offset),0,p.moe.device_bytes-p.moe.scratch_offset,cudaStreamLegacy));check(cudaMemsetAsync(bytes(p.state_first),0,p.device_bytes-p.state_first,cudaStreamLegacy));}
     void status(){check(cudaStreamSynchronize(cudaStreamLegacy));unsigned value=0;check(cudaMemcpy(&value,flags(),4,cudaMemcpyDeviceToHost));if(value)throw std::overflow_error("decoder_numeric_failure");}
-    void fp8(std::size_t i,const float* x,float* y){const auto& v=p.projections[i];check((c.linear.bf16_weights||c.full.bf16_weights?kadan_launch_fp8_bf16:kadan_launch_fp8)(bytes(v.weights),pointer<float>(v.scale),false,x,y,flags(),v.rows,v.columns));status();}
+    // Kernels use one legacy stream and OR into flags until run() resets them.
+    // Observe at stage boundaries and before host routing; intermediate checks
+    // only stall that same ordered stream. A failure still prevents publication,
+    // and the owner drains/quarantines pending work before releasing storage.
+    void fp8(std::size_t i,const float* x,float* y){const auto& v=p.projections[i];check((c.linear.bf16_weights||c.full.bf16_weights?kadan_launch_fp8_bf16:kadan_launch_fp8)(bytes(v.weights),pointer<float>(v.scale),false,x,y,flags(),v.rows,v.columns));}
     // Private borrowed producers: coordinator validates the owner-bound active
     // capability on entry. No child owns admission, state lifetime or progress.
     void attention(StateStep token,const float* input){
         cursor.check_step(token);
         if(c.attention==decoder::Attention::linear){
-            check(detail::linear_normalize(c.linear,linear,input));status();fp8(0,linear.normalized,linear.qkv);fp8(1,linear.normalized,linear.z);
-            check(detail::linear_core(c.linear,linear));status();fp8(2,linear.gated,linear.projected);check(detail::linear_residual(c.linear,linear,input,work(0)));status();
+            check(detail::linear_normalize(c.linear,linear,input));fp8(0,linear.normalized,linear.qkv);fp8(1,linear.normalized,linear.z);
+            check(detail::linear_core(c.linear,linear));fp8(2,linear.gated,linear.projected);check(detail::linear_residual(c.linear,linear,input,work(0)));status();
         }else{
-            check(detail::full_normalize(c.full,full,input));status();fp8(0,full.normalized,full.qg);fp8(1,full.normalized,full.key);fp8(2,full.normalized,full.value);
-            check(detail::full_core(c.full,full,cursor.committed_tokens()));status();fp8(3,full.gated,full.projected);check(detail::full_residual(c.full,full,input,work(0)));status();
+            check(detail::full_normalize(c.full,full,input));fp8(0,full.normalized,full.qg);fp8(1,full.normalized,full.key);fp8(2,full.normalized,full.value);
+            check(detail::full_core(c.full,full,cursor.committed_tokens()));fp8(3,full.gated,full.projected);check(detail::full_residual(c.full,full,input,work(0)));status();
         }
     }
     void project(const Projection& m,const float* x,float* y){check((c.moe.bf16_weights?kadan_launch_nvfp4_bf16:kadan_launch_nvfp4)(m.weights,m.scales,m.global,x,y,flags(),m.rows,m.columns));}
-    void expert(std::size_t e,std::size_t middle){project(experts[e][0],work(1),moe.gate);project(experts[e][1],work(1),moe.up);check(detail::moe_activate(middle,moe));status();project(experts[e][2],moe.activation,moe.down);}
+    void expert(std::size_t e,std::size_t middle){project(experts[e][0],work(1),moe.gate);project(experts[e][1],work(1),moe.up);check(detail::moe_activate(middle,moe));project(experts[e][2],moe.activation,moe.down);}
     void mixture(StateStep token){
         cursor.check_step(token);check(detail::moe_route(c.moe,moe,work(1)));status();std::array<unsigned,8> selected{};
         check(cudaMemcpy(selected.data(),moe.selected,c.moe.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));std::sort(selected.begin(),selected.begin()+c.moe.top_k);
-        for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);check(detail::moe_accumulate(c.moe,moe,selected[i]));status();}
+        for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);check(detail::moe_accumulate(c.moe,moe,selected[i]));}
         expert(c.moe.experts,c.moe.shared_intermediate);check(detail::moe_finish(c.moe,moe,work(2)));status();
     }
     void cancel(const std::atomic_bool* flag){if(flag&&flag->load(std::memory_order_relaxed))throw std::invalid_argument("decoder_cancelled");}

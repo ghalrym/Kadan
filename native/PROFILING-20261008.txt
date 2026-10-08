@@ -203,3 +203,18 @@ Latest worker SHA256: 12ed6919f43f1b4c564ec1ae98a287fd82f84519b33bac127daf9924ac
 Explicit NaN regressions now pass in 105 normalization, 60 auxiliary (including
 4096/4097), and 15 router cases. All MoE GPU stages and 26 CPU tests pass.
 Evidence: profiling/20261008-dot-staging.json. Native targets only rebuilt.
+
+Stage-boundary status checks
+One legacy stream orders dependent kernels and numeric flags accumulate until
+each layer starts. Retain checks after attention, post norm, routing (before host
+indices), mixture, and residual. Remove intermediate waits in attention/expert
+operations. Owners still drain/invalidate/quarantine on failure before publication.
+26 CPU tests (including new early-projection numeric failure), all decoder and
+mixed-stack GPU stages pass. Late-failure tests now assert the full mixture is
+submitted before rejection; output/token publication and cleanup assertions stay.
+149 output IDs match. Decode sync calls 163156 -> 30546, D2H 169115 -> 36505.
+Sync wait includes GPU execution; it is not added to GPU time.
+Warm API 23.791985 tok/s, prompt 1.250731 s, total 7.558756 s.
+Direct load 50.665559 s, prompt 1.513913 s, decode incl EOS 7.566063 s.
+Latest worker SHA256: 3169d72cc9e53a8d67167c9360383d8a94967292b25672383e189d1b7d5b4159
+Evidence: profiling/20261008-barriers.json. Native rebuild only; hot reload intact.

@@ -104,7 +104,7 @@ int main(){try{
         case 12:selection_override=99;break;
         }
         auto before=launches;auto result=kadan::stack::Selection{77,false};bool quarantine=rejected([&]{result=model.step(7,true,&stop);});check(quarantine==(scenario==4||scenario==10));check(!model.valid()&&model.tokens()==1&&result.token==77);
-        if(scenario==0){check(launches-before==99);for(std::size_t i=0;i<4;++i){auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.offset[i]+p.layer[i].state_first;check(state[0]!=0);}}
+        if(scenario==0){check(launches-before==111);for(std::size_t i=0;i<4;++i){auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.offset[i]+p.layer[i].state_first;check(state[0]!=0);}}
         if(scenario==11)check(launches-before==114);
         late_numeric=head_numeric=false;cancellation=cancel_after_copy=nullptr;final_sync_failures=1;selection_override=0;stop=false;before=launches;rejected([&]{model.step(2);});check(launches==before);
         std::array<float,16>a{},b{};rejected([&]{model.read_output(a,b);});

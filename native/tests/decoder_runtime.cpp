@@ -37,6 +37,7 @@ namespace {
 void check(bool x,std::source_location at=std::source_location::current()){if(!x)throw std::runtime_error("line_"+std::to_string(at.line()));}
 std::unordered_map<void*,std::size_t> allocations;std::size_t used=0,peak=0,launches=0,syncs=0,copies=0,memsets=0,mallocs=0,frees=0;
 enum class Op{none,copy,sync,memset,launch,free,get};Op failure=Op::none;int remaining=0,repeats=0;
+int numeric_stage=0;
 bool pending=false,fail_final_copy=false,fail_final_sync=false,late_numeric=false;int final_sync_failures=1;std::atomic_bool* cancel_after_copy=nullptr;std::atomic_bool* cancellation=nullptr;
 bool fail(Op op){if(op!=failure)return false;if(--remaining)return false;if(--repeats==0)failure=Op::none;else remaining=1;return true;}
 void inject(Op op,int call=1,int count=1){failure=op;remaining=call;repeats=count;}
@@ -55,7 +56,7 @@ cudaError_t cudaMemcpy(void*d,const void*s,std::size_t n,cudaMemcpyKind kind){
 cudaError_t cudaMemsetAsync(void*p,int v,std::size_t n,cudaStream_t){++memsets;if(fail(Op::memset))return cudaErrorUnknown;std::memset(p,v,n);return cudaSuccess;}
 cudaError_t cudaStreamSynchronize(cudaStream_t){++syncs;if(fail(Op::sync))return cudaErrorUnknown;pending=false;return cudaSuccess;}
 const char* cudaGetErrorString(cudaError_t){return "fake_cuda_failure";}
-cudaError_t kadan_launch_fp8(const std::uint8_t*,const float*,bool,const float*,float*,unsigned*,std::size_t,std::size_t){return launch();}
+cudaError_t kadan_launch_fp8(const std::uint8_t*,const float*,bool,const float*,float*,unsigned* flags,std::size_t,std::size_t){if(numeric_stage==1)*flags=1;return launch();}
 cudaError_t kadan_launch_nvfp4(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*,std::size_t,std::size_t){return launch();}
 namespace kadan::cuda::detail {
 cudaError_t linear_normalize(linear::Config,LinearBuffers,const float*){return launch();}
@@ -84,7 +85,7 @@ int main(){try{
             check(owner_allocations::count==8&&owner_allocations::peak==metadata);closed.clear();owner_allocations::enabled=false;}
         for(int dimension=0;dimension<2;++dimension){kadan::Footprint cap{metadata,p.device_bytes};--cap[dimension];auto r=std::make_shared<kadan::Resources>(cap);auto n=mallocs;rejected([&]{Decoder d(c,f.weights(),0,r);});check(mallocs==n&&r->snapshot().residents==0);}
         {auto r=manager();inject(Op::copy,3);rejected([&]{Decoder d(c,f.weights(),0,r);});check(used==0&&r->snapshot().residents==0);}
-        for(int scenario=0;scenario<11;++scenario){
+        for(int scenario=0;scenario<12;++scenario){
             auto r=manager();Decoder d(c,f.weights(),0,r);std::array<float,16>x{},y{},a{},u{},m{};std::atomic_bool stop=false;
             d.step_device(x,y);check(d.valid()&&d.tokens()==1);y.fill(42);
             switch(scenario){
@@ -99,12 +100,13 @@ int main(){try{
             case 8:stop=true;break;
             case 9:cancel_after_copy=&stop;break;
             case 10:fail_final_sync=true;final_sync_failures=2;break;
+            case 11:numeric_stage=1;break;
             }
             auto before_launches=launches;bool quarantine=rejected([&]{d.step_device(x,y,&stop);});check(quarantine==(scenario==4||scenario==10));check(!d.valid()&&d.tokens()==1);
             if(scenario!=3&&scenario!=9&&scenario!=10)for(float v:y)check(v==42);
-            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?15:14));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
-            late_numeric=false;cancellation=nullptr;cancel_after_copy=nullptr;final_sync_failures=1;stop=false;auto n=launches;rejected([&]{d.step_device(x,y);});check(launches==n);rejected([&]{d.read_intermediates(a,u,m);});
-            if(scenario==0||scenario==1||scenario==8||scenario==9){d.reset();check(d.valid()&&d.tokens()==0);std::vector<std::uint8_t> first(p.state_first_bytes),second(p.state_second_bytes);d.read_state(first,second);for(auto v:first)check(v==0);for(auto v:second)check(v==0);d.step_device(x,y);check(d.tokens()==1);}
+            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?27:26));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
+            late_numeric=false;numeric_stage=0;cancellation=nullptr;cancel_after_copy=nullptr;final_sync_failures=1;stop=false;auto n=launches;rejected([&]{d.step_device(x,y);});check(launches==n);rejected([&]{d.read_intermediates(a,u,m);});
+            if(scenario==0||scenario==1||scenario==8||scenario==9||scenario==11){d.reset();check(d.valid()&&d.tokens()==0);std::vector<std::uint8_t> first(p.state_first_bytes),second(p.state_second_bytes);d.read_state(first,second);for(auto v:first)check(v==0);for(auto v:second)check(v==0);d.step_device(x,y);check(d.tokens()==1);}
             else rejected([&]{d.reset();});
             d.close();check(!pending&&used==0&&r->snapshot().residents==0);
         }
