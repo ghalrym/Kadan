@@ -120,3 +120,7 @@ int main(){try{
     bool rejected=false;try{layer.read_state(short_conv,state);}catch(const std::invalid_argument&){rejected=true;}
     check(rejected && layer.valid());layer.reset();check(layer.valid());layer.close();check(allocations.empty());
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
+
+cudaError_t kadan_launch_fp8_bf16(const std::uint8_t*w,const float*s,bool row,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){return kadan_launch_fp8(w,s,row,x,y,f,r,c);}
+
+cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t*w,const std::uint8_t*s,float g,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){return kadan_launch_nvfp4(w,s,g,x,y,f,r,c);}

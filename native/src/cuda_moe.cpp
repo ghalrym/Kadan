@@ -48,7 +48,7 @@ struct Moe::Impl {
     void pin(){resources->pin(handle);pinned=true;}
     void unpin(){resources->unpin(handle);pinned=false;}
     bool quiet()noexcept{if(!pinned)return true;try{check(cudaStreamSynchronize(cudaStreamLegacy));unpin();return true;}catch(...){poisoned=true;return false;}}
-    void projection(const Projection& m,const float* x,float* y){check(kadan_launch_nvfp4(m.weights,m.scales,m.global,x,y,b.status,m.rows,m.columns));}
+    void projection(const Projection& m,const float* x,float* y){check((c.bf16_weights?kadan_launch_nvfp4_bf16:kadan_launch_nvfp4)(m.weights,m.scales,m.global,x,y,b.status,m.rows,m.columns));}
     void expert(std::size_t e,std::size_t middle,const float* x){projection(experts[e][0],x,b.gate);projection(experts[e][1],x,b.up);check(detail::moe_activate(middle,b));status();projection(experts[e][2],b.activation,b.down);}
     void forward(std::span<const float> x,std::span<float> y){
         available();require(!invalid,"moe_reset_required");ready=false;

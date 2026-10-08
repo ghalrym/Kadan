@@ -39,7 +39,7 @@ namespace {
 void check(bool x,std::source_location at=std::source_location::current()){if(!x)throw std::runtime_error("line_"+std::to_string(at.line()));}
 std::unordered_map<void*,std::size_t> allocations;std::size_t used=0,peak=0,launches=0,syncs=0,copies=0,memsets=0,mallocs=0,frees=0;
 enum class Op{none,copy,sync,memset,launch,free,get};Op failure=Op::none;int remaining=0,repeats=0;
-bool pending=false,fail_final_copy=false,fail_final_sync=false,late_numeric=false,head_numeric=false;int attention_index=-1,residuals=0;unsigned selection_override=0;void* selection_address=nullptr;int final_sync_failures=1;std::atomic_bool* cancel_after_copy=nullptr;std::atomic_bool* cancellation=nullptr;
+bool pending=false,fail_final_copy=false,fail_final_sync=false,late_numeric=false,head_numeric=false;int attention_index=-1,residuals=0,expected_layers=4;unsigned selection_override=0;void* selection_address=nullptr;int final_sync_failures=1;std::atomic_bool* cancel_after_copy=nullptr;std::atomic_bool* cancellation=nullptr;
 bool fail(Op op){if(op!=failure)return false;if(--remaining)return false;if(--repeats==0)failure=Op::none;else remaining=1;return true;}
 void inject(Op op,int call=1,int count=1){failure=op;remaining=call;repeats=count;}
 template<class F>bool rejected(F f){try{f();}catch(const kadan::cuda::DeviceBufferQuarantine&){return true;}catch(const std::exception&){return false;}throw std::runtime_error("expected_rejection");}
@@ -58,7 +58,7 @@ cudaError_t cudaMemsetAsync(void*p,int v,std::size_t n,cudaStream_t){++memsets;i
 cudaError_t cudaStreamSynchronize(cudaStream_t){++syncs;if(fail(Op::sync))return cudaErrorUnknown;pending=false;return cudaSuccess;}
 const char* cudaGetErrorString(cudaError_t){return "fake_cuda_failure";}
 cudaError_t kadan_launch_fp8(const std::uint8_t*,const float*,bool,const float*,float*,unsigned*,std::size_t,std::size_t){return launch();}
-cudaError_t kadan_launch_nvfp4(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*flags,std::size_t,std::size_t){if(head_numeric&&residuals==4)*flags=1;return launch();}
+cudaError_t kadan_launch_nvfp4(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*flags,std::size_t,std::size_t){if(head_numeric&&residuals==expected_layers)*flags=1;return launch();}
 namespace kadan::cuda::detail {
 cudaError_t stack_embedding(std::size_t,const std::uint16_t*,unsigned,float*){attention_index=-1;residuals=0;selection_address=nullptr;return launch();}
 cudaError_t stack_select(std::size_t,float*,unsigned*result,unsigned*){*result=selection_override;selection_address=result;return launch();}
@@ -76,6 +76,7 @@ cudaError_t moe_finish(moe::Config,MoeBuffers,float*){return launch();}
 cudaError_t decoder_norm(std::size_t,float,const std::uint16_t*,const float*,float*,unsigned*){return launch();}
 cudaError_t decoder_residual(std::size_t,const float*,const float*,float*,unsigned*){++residuals;if(cancellation&&residuals==3)cancellation->store(true);return launch();}
 }
+#ifndef KADAN_MODEL_RUNTIME
 int main(){try{
     using kadan::cuda::Stack;StackFixture f;auto c=f.config();auto p=kadan::stack::plan(c);auto metadata=Stack::host_metadata_bytes();
     auto manager=[&]{return std::make_shared<kadan::Resources>(kadan::Footprint{metadata,p.device_bytes});};
@@ -121,3 +122,10 @@ int main(){try{
     {auto eos=c;eos.eos=0;auto r=manager();Stack model(eos,f.weights(),0,r);check(model.step(2,false).eos&&!model.finished());check(model.step(7).eos&&model.finished());auto before=launches;rejected([&]{model.step(0);});check(launches==before&&model.tokens()==2);model.reset();check(!model.finished());model.close();}
     std::cout<<"Stack arena "<<p.device_bytes<<", metadata "<<metadata<<"; whole-token failure/quarantine, allocation and operation-count tests passed.\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
+
+// Shared fake runtime is also used by checkpoint-owner tests.
+#endif
+std::size_t bf16_launches=0;
+cudaError_t kadan_launch_fp8_bf16(const std::uint8_t*w,const float*s,bool row,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){++bf16_launches;return kadan_launch_fp8(w,s,row,x,y,f,r,c);}
+
+cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t*w,const std::uint8_t*s,float g,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){++bf16_launches;check(g>0);return kadan_launch_nvfp4(w,s,g,x,y,f,r,c);}

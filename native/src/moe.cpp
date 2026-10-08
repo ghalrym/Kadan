@@ -15,11 +15,11 @@ float bf(float x){return linear::bf16_round(x);}
 std::size_t align(std::size_t x){return (x+255)&~std::size_t{255};}
 float sigmoid(float x){const float e=std::exp(-std::abs(x));return x>=0?1/(1+e):e/(1+e);}
 float dense(std::span<const float> w,std::span<const float> x){float total=0;for(std::size_t j=0;j<x.size();++j)total=finite(total+w[j]*x[j]);return bf(total);}
-void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> y){
+void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> y,bool bf16_weights){
     for(std::size_t r=0;r<w.rows;++r){double sum=0;for(std::size_t j=0;j<w.columns;++j){
         auto packed=w.weights[r*(w.columns/2)+j/2];auto code=(packed>>(4*(j%2)))&15;
         const double decoded=double(quantization::e2m1(code))*quantization::e4m3fn(w.block_scales[r*(w.columns/16)+j/16])*w.multipliers[0];
-        require(std::isfinite(decoded)&&std::abs(decoded)<=std::numeric_limits<float>::max(),"moe_nonfinite_weight");sum+=double(float(decoded))*x[j];}
+        require(std::isfinite(decoded)&&std::abs(decoded)<=std::numeric_limits<float>::max(),"moe_nonfinite_weight");sum+=double(bf16_weights?bf(float(decoded)):float(decoded))*x[j];}
         require(std::isfinite(sum)&&std::abs(sum)<=std::numeric_limits<float>::max(),"moe_nonfinite");y[r]=bf(float(sum));}
 }
 }
@@ -59,9 +59,9 @@ struct Reference::Impl {
     std::span<const float> diagnostic(std::size_t offset,std::size_t n){require(!invalid&&ready,"moe_diagnostic_unavailable");return span(offset,n);}
     void expert(const Expert& e,std::size_t middle,std::span<const float> x){
         auto gate=span(p.gate,middle),up=span(p.up,middle),activation=span(p.activation,middle),down=span(p.down,c.hidden);
-        project(e.gate,x,gate);project(e.up,x,up);
+        project(e.gate,x,gate,c.bf16_weights);project(e.up,x,up,c.bf16_weights);
         for(std::size_t j=0;j<middle;++j)activation[j]=bf(bf(gate[j]*sigmoid(gate[j]))*up[j]);
-        project(e.down,activation,down);
+        project(e.down,activation,down,c.bf16_weights);
     }
     void forward(std::span<const float> x,std::span<float> y){
         require(!invalid,"moe_reset_required");ready=false;

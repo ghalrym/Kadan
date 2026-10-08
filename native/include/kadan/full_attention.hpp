@@ -6,6 +6,7 @@ namespace kadan::full {
 struct Config {
     std::size_t hidden,heads,kv_heads,head_dim,rotary_dim,capacity;
     float epsilon;
+    bool bf16_weights=false; // Round decoded weights before the dot product.
 };
 struct Weights {
     quantization::Matrix q_gate,key,value,out;

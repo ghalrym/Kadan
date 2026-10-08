@@ -141,3 +141,5 @@ int main(){try{
         std::cout<<"Owner RAM bytes: "<<layer.host_metadata_bytes()<<"; stage2 device peak "<<peak<<" bytes.\n";
     }
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
+
+cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t*w,const std::uint8_t*s,float g,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){return kadan_launch_nvfp4(w,s,g,x,y,f,r,c);}

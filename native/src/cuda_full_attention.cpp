@@ -21,7 +21,7 @@ struct FullAttention::Impl {
     Handle handle=0;void* storage=nullptr;bool loaded=false,pinned=false,invalid=false,poisoned=false,cleanup_failed=false;
     std::unique_ptr<Fp8Projection> qg,key,value,out;std::unique_ptr<SequenceState> state;detail::FullBuffers b{};
     Impl(full::Config config,const full::Weights& w,int ordinal,std::shared_ptr<Resources> manager):c(config),p(full::plan(c)),resources(std::move(manager)),device(ordinal){
-        full::validate_weights(c,w);require(resources&&device>=0,"full_owner");auto request=resources->snapshot().capacity;
+        require(!c.bf16_weights,"checkpoint_mode_requires_model_or_decoder");full::validate_weights(c,w);require(resources&&device>=0,"full_owner");auto request=resources->snapshot().capacity;
         require(std::size_t(device)+1<request.size(),"full_unbudgeted_device");
         const auto aux_bytes=(p.norm_weights*2+255)&~std::size_t{255};
         const auto frequency_bytes=(w.frequencies.size_bytes()+255)&~std::size_t{255};

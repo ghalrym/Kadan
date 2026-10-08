@@ -8,6 +8,7 @@ namespace kadan::linear {
 struct Config {
     std::size_t hidden,key_heads,value_heads,key_dim,value_dim,conv_kernel,capacity;
     float epsilon;
+    bool bf16_weights=false; // Round decoded weights before the dot product.
 };
 // Auxiliary weights are exact finite BF16 values represented in float storage.
 // Scalar-scaled FP8 projections match this checkpoint's linear sublayer roles.

@@ -2,7 +2,7 @@
 #include "kadan/quantization.hpp"
 #include <memory>
 namespace kadan::moe {
-struct Config { std::size_t hidden,experts,top_k,intermediate,shared_intermediate; };
+struct Config { std::size_t hidden,experts,top_k,intermediate,shared_intermediate; bool bf16_weights=false; };
 struct Expert { quantization::Matrix gate,up,down; };
 struct Weights { std::span<const float> router,shared_gate;std::span<const Expert> experts;Expert shared; };
 struct ExpertLayout { std::size_t gate_weights,gate_scales,up_weights,up_scales,down_weights,down_scales,bytes; };

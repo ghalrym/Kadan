@@ -21,7 +21,7 @@ struct LinearAttention::Impl {
     Handle handle=0;void* storage=nullptr;bool loaded=false,pinned=false,invalid=false,poisoned=false,cleanup_failed=false;
     std::unique_ptr<Fp8Projection> qkv,z,out;std::unique_ptr<SequenceState> state;detail::LinearBuffers b{};
     Impl(linear::Config config,const linear::Weights& w,int ordinal,std::shared_ptr<Resources> manager):c(config),p(linear::plan(c)),resources(std::move(manager)),device(ordinal){
-        linear::validate_weights(c,w);require(resources&&device>=0,"linear_owner");auto request=resources->snapshot().capacity;
+        require(!c.bf16_weights,"checkpoint_mode_requires_model_or_decoder");linear::validate_weights(c,w);require(resources&&device>=0,"linear_owner");auto request=resources->snapshot().capacity;
         require(std::size_t(device)+1<request.size(),"linear_unbudgeted_device");
         const auto aux_bytes=(p.aux_elements*2+255)&~std::size_t{255};
         const auto status_offset=(aux_bytes+p.scratch_floats*4+255)&~std::size_t{255};

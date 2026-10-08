@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 
 namespace {
+__device__ float bf16_weight(float x) { unsigned b=__float_as_uint(x);b+=0x7fffu+((b>>16)&1u);return __uint_as_float(b&0xffff0000u); }
+
 __device__ __forceinline__ float fp4(unsigned code) {
     const unsigned exponent = (code >> 1) & 3;
     const float magnitude = exponent == 0 ? float(code & 1) * 0.5F
@@ -24,6 +26,7 @@ __device__ __forceinline__ float warp_sum(float value) {
 // Original scalar CUDA implementation. Four warps cooperate on one row; each
 // lane handles packed byte pairs, with in-register dequantization and FP32 FMA.
 // Padding/tails do not mask warp participation. No dense weight intermediates.
+template<bool BF16>
 __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* scales,
                             float global, const float* input, float* output,
                             unsigned* status, std::size_t columns) {
@@ -42,8 +45,9 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
         const float local_high = fp4(packed >> 4) * scale;
         invalid |= kadan::cuda::detail::weight_overflows(local_low, global)
                 || kadan::cuda::detail::weight_overflows(local_high, global);
-        const float low = __fmul_rn(local_low, global);
-        const float high = __fmul_rn(local_high, global);
+        float low = __fmul_rn(local_low, global);
+        float high = __fmul_rn(local_high, global);
+        if constexpr(BF16) { low=bf16_weight(low);high=bf16_weight(high); }
         invalid |= !isfinite(low) || !isfinite(high);
         sum = fmaf(low, input[byte * 2], sum);
         sum = fmaf(high, input[byte * 2 + 1], sum);
@@ -67,7 +71,15 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
 cudaError_t kadan_launch_nvfp4(const std::uint8_t* weights, const std::uint8_t* scales,
                              float global, const float* input, float* output,
                              unsigned* status, std::size_t rows, std::size_t columns) {
-    nvfp4_matvec<<<static_cast<unsigned>(rows), 128, 0, cudaStreamLegacy>>>(
+    nvfp4_matvec<false><<<static_cast<unsigned>(rows), 128, 0, cudaStreamLegacy>>>(
+        weights, scales, global, input, output, status, columns);
+    return cudaGetLastError();
+}
+
+cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t* weights, const std::uint8_t* scales,
+                             float global, const float* input, float* output,
+                             unsigned* status, std::size_t rows, std::size_t columns) {
+    nvfp4_matvec<true><<<static_cast<unsigned>(rows), 128, 0, cudaStreamLegacy>>>(
         weights, scales, global, input, output, status, columns);
     return cudaGetLastError();
 }
