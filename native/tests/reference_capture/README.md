@@ -15,7 +15,7 @@ and maintenance operations still require separate review and authorization.
 
 The tiny and representative four-layer fixtures match the independent one-token
 stdlib equations exactly (absolute/relative tolerance **0/0**). The all-zero
-router fixture does **not** match: installed HF selects experts `[2,3]`, whereas
+router fixture does **not** match: this pinned run observed HF experts `[2,3]`, whereas
 the independent/native contract selects `[0,1]`. All four layers have a boundary
 tie; all 16 final logits differ. This is an unresolved semantic difference,
 not a passing parity result. No equation, router or tolerance was changed to
@@ -23,10 +23,35 @@ hide it. See [RESULTS.md](RESULTS.md) for the recorded evidence.
 
 `run_fixtures` retains captures, fixture hashes, stdout/stderr and JSON diagnostics
 and returns **1 if any comparison fails**, including the known tie case. The
-small stdlib regression suite checks format/error handling; its passing status
-does not mean HF/native numerical parity passed. The CMake/CI test
+small stdlib regression suite checks format, timeout evidence and cache contracts.
+Its passing status does not mean exact pinned HF compatibility passed. The CMake/CI test
 `reference-artifacts` runs only that suite. No Torch dependency or GPU execution
 is added to ordinary native CI.
+
+## Canonical conformance versus HF compatibility
+
+Canonical native routing orders the **computed FP32 softmax probabilities** in
+descending order, then uses ascending expert ID for exactly equal probabilities.
+The native CPU and CUDA implementations retain score order for diagnostics,
+sum the selected probabilities in that order in FP32, divide by that sum and
+round selected weights to BF16. Expert execution/accumulation is ascending ID;
+each weighted contribution and accumulator addition rounds to BF16. The gated
+shared branch and its final addition retain their existing BF16 semantics.
+This documents existing behavior in `native/src/moe.cpp` and `moe_kernel.cu`;
+this draft changes none of those equations or kernels.
+
+Canonical native conformance and exact compatibility with the pinned HF CPU
+fallback are separate claims. The existing native CPU tests check the former;
+**this runner compares HF captures against independent equations, not a new
+native forward**. Passing its two fixtures is only evidence about those
+HF-versus-equation cases. HF `topk` does not specify tied-index ordering; `[2,3]`
+is retained as an observation, never a required expected selection. No check
+hardcodes that choice, and the raw compatibility failure remains a failure.
+
+Ties are decided on computed probabilities, not original logits. FP32 softmax
+rounding can make probabilities exactly equal even when logits differ. Selecting
+by logits or applying an epsilon tie rule would change the canonical contract.
+Neither tolerances nor expected captures are adjusted to force HF compatibility.
 
 ## Reproduction
 
@@ -63,7 +88,9 @@ alarm (configurable only between 1 and 120 seconds). An outer container supervis
 is still needed for any proposed actual-model run. These are observation and
 escalation deadlines, not guaranteed cleanup/restoration times. Fixtures have a
 128 MiB isolated host ledger, a 4 MiB request reservation and no device budget;
-container memory enforcement is independent of that logical ledger.
+container memory enforcement is independent of that logical ledger. On supervisor
+`TimeoutExpired`, raw partial stdout/stderr are retained byte-for-byte (including
+non-UTF-8 bytes), and results record failure; partial artifacts are not accepted.
 
 Compare one-token captures independently:
 
@@ -130,8 +157,12 @@ Relevant rounding and call paths in that pinned file:
 Execution fixes intra-op threads to 2, inter-op to 1, float32 matmul precision
 `highest`, deterministic algorithms on and MKLDNN off; diagnostics verify and
 record the effective settings. Parameters are CPU BF16 except A_log/dt_bias FP32.
-The cache must have sequence length 1: convolution state BF16, linear recurrent
-state FP32, full-attention K/V BF16. Hooks observe router IDs, probabilities,
+The cache must have exactly the configured number of layers and sequence length
+1. Each linear layer must contain exactly slot 0 in each state dictionary:
+BF16 convolution `[1, 2*Kheads*Kdim + Vheads*Vdim, conv_width]` and FP32
+recurrence `[1,Vheads,Kdim,Vdim]`. Each full layer must have both BF16 K and V
+of shape `[1,KVheads,1,head_dim]`. Empty dictionaries, extra/missing layers or
+slots, missing tensors, wrong dtypes and wrong shapes fail before capture. Hooks observe router IDs, probabilities,
 boundary ties, and decoder-output hashes without extra forwards.
 
 The independent expected values come from existing stdlib `stack_golden.py` and

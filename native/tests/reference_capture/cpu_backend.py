@@ -11,6 +11,7 @@ from api.inference.llm.qwen import build_qwen
 from api.inference.llm.context import configure_context
 from api.inference.resources import ResourceManager
 from .artifacts import require, sha256
+from .cache_contract import validate_cache
 
 
 def cpu_tensor(tensor, dtype=None):
@@ -109,15 +110,9 @@ def forward(root, token):
             cpu_tensor(output.logits, torch.bfloat16)
             require(list(output.logits.shape) == [1,1,adapter.model.config.vocab_size], 'logit_shape')
             cache = output.past_key_values
-            require(cache is not None and cache.get_seq_length() == 1, 'cache_length')
             cache_records = []
-            for i, (kind, state) in enumerate(zip(adapter.model.config.layer_types, cache.layers)):
-                tensors = [*state.conv_states.values(), *state.recurrent_states.values()] if kind == 'linear_attention' else [state.keys, state.values]
+            for i, (kind, tensors) in enumerate(validate_cache(cache, adapter.model.config)):
                 for tensor in tensors:cpu_tensor(tensor)
-                if kind == 'linear_attention':
-                    require(all(t.dtype == torch.bfloat16 for t in state.conv_states.values()), 'conv_cache_dtype')
-                    require(all(t.dtype == torch.float32 for t in state.recurrent_states.values()), 'recurrent_cache_dtype')
-                else:require(all(t.dtype == torch.bfloat16 for t in tensors), 'kv_cache_dtype')
                 cache_records.append({'layer': i, 'kind': kind, 'tensors': [tensor_record(t) for t in tensors]})
             logits = output.logits[0,0].float().tolist()
             linear = adapter.model.config.layer_types.count('linear_attention')

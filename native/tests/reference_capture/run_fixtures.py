@@ -17,12 +17,19 @@ def run_case(base, name):
     representative, tied = CASES[name]
     create(root, representative, tied)
     capture, diagnostic = base / (name + '.capture'), base / (name + '.json')
-    result = subprocess.run(
-        [sys.executable, '-B', '-m', 'native.tests.reference_capture.capture',
-         '--synthetic-root', str(root), '--token', '2', '--output', str(capture),
-         '--diagnostic', str(diagnostic)], capture_output=True, text=True, timeout=90)
-    (base / (name + '.stdout')).write_text(result.stdout)
-    (base / (name + '.stderr')).write_text(result.stderr)
+    try:
+        result = subprocess.run(
+            [sys.executable, '-B', '-m', 'native.tests.reference_capture.capture',
+             '--synthetic-root', str(root), '--token', '2', '--output', str(capture),
+             '--diagnostic', str(diagnostic)], capture_output=True, timeout=90)
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired output may be bytes even in text mode. Preserve raw
+        # streams without decoding loss, then retain the failed status in main.
+        (base / (name + '.stdout')).write_bytes(error.stdout or b'')
+        (base / (name + '.stderr')).write_bytes(error.stderr or b'')
+        raise
+    (base / (name + '.stdout')).write_bytes(result.stdout)
+    (base / (name + '.stderr')).write_bytes(result.stderr)
     require(result.returncode == 0, 'capture_exit:' + str(result.returncode))
     report = json.loads(diagnostic.read_text())
     require(report['capture_sha256'] == sha256(capture.read_bytes()), 'capture_hash')

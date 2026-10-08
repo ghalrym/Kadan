@@ -1,5 +1,6 @@
 """Hand-authored format/diagnostic failures; no model or numerical dependency."""
 import json
+import io
 import os
 from pathlib import Path
 import struct
@@ -7,10 +8,13 @@ import tempfile
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from native.tests.reference_capture.artifacts import ExclusiveOutput, compare, decode, encode, read
 from native.tests.reference_capture.capture import preflight, verify_backend_sources
+from native.tests.reference_capture.cache_contract import validate_cache
+from native.tests.reference_capture import run_fixtures
 
 
 class ArtifactTests(unittest.TestCase):
@@ -102,6 +106,77 @@ class ArtifactTests(unittest.TestCase):
         # No dependency import/installation needed to test this fail-closed gate.
         with patch('importlib.metadata.version', return_value='unreviewed'), self.assertRaisesRegex(ValueError,'backend_package'):
             verify_backend_sources()
+
+
+class CacheContractTests(unittest.TestCase):
+    def fixture(self):
+        config = SimpleNamespace(num_hidden_layers=2, layer_types=['linear_attention', 'full_attention'],
+                                 linear_num_key_heads=2, linear_num_value_heads=4, linear_key_head_dim=2,
+                                 linear_value_head_dim=4, linear_conv_kernel_dim=3,
+                                 num_key_value_heads=2, head_dim=8)
+        def tensor(shape, dtype='torch.bfloat16'):
+            return SimpleNamespace(shape=shape, dtype=dtype)
+        linear = SimpleNamespace(conv_states={0: tensor([1,24,3])},
+                                 recurrent_states={0: tensor([1,4,2,4], 'torch.float32')})
+        full = SimpleNamespace(keys=tensor([1,2,1,8]), values=tensor([1,2,1,8]))
+        return SimpleNamespace(layers=[linear, full], get_seq_length=lambda: 1), config
+
+    def test_valid_exact_cardinality_and_shapes(self):
+        cache, config = self.fixture()
+        records = validate_cache(cache, config)
+        self.assertEqual([len(tensors) for _, tensors in records], [2,2])
+
+    def test_missing_extra_layers_and_wrong_length_rejected(self):
+        for operation in ('missing', 'extra', 'config_count', 'kinds_count', 'length', 'kind'):
+            cache, config = self.fixture()
+            if operation == 'missing':cache.layers.pop()
+            elif operation == 'extra':cache.layers.append(cache.layers[-1])
+            elif operation == 'config_count':config.num_hidden_layers += 1
+            elif operation == 'kinds_count':config.layer_types.pop()
+            elif operation == 'length':cache.get_seq_length = lambda: 0
+            else:config.layer_types[0] = 'unknown'
+            with self.subTest(operation=operation), self.assertRaises(ValueError):validate_cache(cache, config)
+
+    def test_empty_extra_wrong_linear_state_slots_rejected(self):
+        for name in ('conv_states', 'recurrent_states'):
+            for keys in ([], [0,1], [1], [False]):
+                cache, config = self.fixture()
+                tensor = getattr(cache.layers[0], name)[0]
+                setattr(cache.layers[0], name, {key: tensor for key in keys})
+                with self.subTest(name=name, keys=keys), self.assertRaisesRegex(ValueError, 'cache_state_slots'):
+                    validate_cache(cache, config)
+
+    def test_each_state_shape_dtype_and_presence_rejected(self):
+        for position in range(4):
+            for corruption in ('shape', 'dtype', 'missing'):
+                cache, config = self.fixture()
+                linear, full = cache.layers
+                owners = [(linear.conv_states, 0), (linear.recurrent_states, 0), (full, 'keys'), (full, 'values')]
+                owner, key = owners[position]
+                tensor = owner[key] if isinstance(owner, dict) else getattr(owner, key)
+                if corruption == 'shape':tensor.shape[-1] += 1
+                elif corruption == 'dtype':tensor.dtype = 'torch.float64'
+                elif isinstance(owner, dict):owner[key] = None
+                else:setattr(owner, key, None)
+                with self.subTest(position=position, corruption=corruption), self.assertRaises(ValueError):
+                    validate_cache(cache, config)
+
+
+class RunnerFailureTests(unittest.TestCase):
+    def test_timeout_preserves_raw_streams_and_failure_status(self):
+        for stdout, stderr in ((b'partial\xff\n', b'failure\xfe\n'), (None, None)):
+            with tempfile.TemporaryDirectory() as folder:
+                destination = Path(folder)/'run'
+                error = subprocess.TimeoutExpired(['capture'], 90, output=stdout, stderr=stderr)
+                with patch.object(run_fixtures, 'create'), patch.object(run_fixtures.subprocess, 'run', side_effect=error), \
+                     patch.object(sys, 'argv', ['run_fixtures', '--out', str(destination), '--cases', 'tiny']), \
+                     patch.object(sys, 'stdout', io.StringIO()):
+                    self.assertEqual(run_fixtures.main(), 1)
+                self.assertEqual((destination/'tiny.stdout').read_bytes(), stdout or b'')
+                self.assertEqual((destination/'tiny.stderr').read_bytes(), stderr or b'')
+                report = json.loads((destination/'results.json').read_text())['tiny']
+                self.assertFalse(report['accepted'])
+                self.assertIn('timed out', report['error'])
 
 
 if __name__=='__main__':unittest.main()
