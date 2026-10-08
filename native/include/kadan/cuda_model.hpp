@@ -31,6 +31,7 @@ public:
     std::size_t vocabulary()const;std::size_t device_bytes()const;
     // Diagnostic copy of the last committed logits. Failure invalidates reuse;
     // caller must discard the entire destination on exception.
+    float projection_multiplier(std::size_t item)const;
     void read_logits(std::span<float>);
     void read_state(std::size_t layer,std::span<std::uint8_t>,std::span<std::uint8_t>);
 private:struct Impl;std::unique_ptr<Impl> impl_;

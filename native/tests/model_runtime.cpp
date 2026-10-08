@@ -3,6 +3,8 @@
 #include "kadan/cuda_model.hpp"
 #include "model_image.hpp"
 #include <fstream>
+bool reset_failure=false;
+cudaError_t cudaDeviceReset(){check(allocations.empty());return reset_failure?cudaErrorUnknown:cudaSuccess;}
 std::size_t physical_free=SIZE_MAX;bool info_failure=false;
 cudaError_t cudaMemGetInfo(std::size_t*free,std::size_t*total){if(info_failure)return cudaErrorUnknown;*free=physical_free;*total=SIZE_MAX;return cudaSuccess;}
 int main(int argc,char**argv){try{
@@ -13,7 +15,10 @@ int main(int argc,char**argv){try{
     // Independently resolve serialized role names and compare every pointer used
     // by the streamed producer, including all routed/shared projection regions.
     ModelImage image(layout);kadan::model::load(layout,std::make_shared<kadan::checkpoint::MemoryBudget>(o.staging_bytes),image);kadan::StateCursor cursor(layout.layers().size(),8);
-    for(std::size_t i=0;i<layout.layers().size();++i){auto& l=layout.layers()[i];kadan::cuda::detail::DecoderProducer p(l.config,l.plan,cursor);p.storage=image.arena.data()+l.offset;p.bind();auto base=std::string("model.language_model.layers.")+std::to_string(i);
+    for(bool split:{false,true})for(std::size_t i=0;i<layout.layers().size();++i){auto& l=layout.layers()[i];kadan::cuda::detail::DecoderProducer p(l.config,l.plan,cursor);p.storage=image.arena.data()+l.offset;if(split){p.split=l.plan.moe_offset+l.plan.moe.scratch_offset;p.request_storage=image.arena.data()+l.offset+p.split;}p.bind();
+        for(std::size_t e=0;e<=l.config.moe.experts;++e)for(std::size_t j=0;j<3;++j)p.experts[e][j].global=float(1+e*3+j);
+        p.bind(true);for(std::size_t e=0;e<=l.config.moe.experts;++e)for(std::size_t j=0;j<3;++j)check(p.experts[e][j].global==float(1+e*3+j));
+        auto base=std::string("model.language_model.layers.")+std::to_string(i);
         auto role=[&](const void* pointer,const char* suffix){check(pointer==image.arena.data()+image.binding(base+suffix).weights);};
         if(l.config.attention==kadan::decoder::Attention::linear){role(p.linear.input_norm,".input_layernorm.weight");role(p.linear.conv_weight,".linear_attn.conv1d.weight");role(p.linear.a_weight,".linear_attn.in_proj_a.weight");role(p.linear.b_weight,".linear_attn.in_proj_b.weight");role(p.linear.a_log,".linear_attn.A_log");role(p.linear.dt_bias,".linear_attn.dt_bias");role(p.linear.output_norm,".linear_attn.norm.weight");}
         else{role(p.full.input_norm,".input_layernorm.weight");role(p.full.query_norm,".self_attn.q_norm.weight");role(p.full.key_norm,".self_attn.k_norm.weight");}
@@ -46,11 +51,23 @@ int main(int argc,char**argv){try{
     {auto options=o;options.split_residency=true;options.weight_ram_bytes=2*1024*1024;options.weight_cold_bytes=2*1024*1024;
         auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});
         Model m(argv[1],options,0,r);check(used==layout.device_bytes()&&m.retained_bytes()>0);
+        auto inspect=[&]{
+            std::size_t weight_bytes=layout.embedded()-layout.embedding();for(const auto& l:layout.layers())weight_bytes+=l.plan.moe_offset+l.plan.moe.scratch_offset;
+            const std::uint8_t* base=nullptr;for(auto[ptr,n]:allocations)if(n==weight_bytes){check(!base);base=static_cast<const std::uint8_t*>(ptr);}check(base);
+            auto physical=[&](std::size_t logical){std::size_t at=0;for(const auto& l:layout.layers()){auto split=l.plan.moe_offset+l.plan.moe.scratch_offset;if(logical<l.offset+l.plan.device_bytes){check(logical>=l.offset&&logical-l.offset<split);return base+at+logical-l.offset;}at+=split;}check(logical>=layout.embedding()&&logical<layout.embedded());return base+at+logical-layout.embedding();};
+            for(const auto& b:layout.bindings()){const auto& item=layout.manifest().items()[b.item];bool dense=item.kind==kadan::checkpoint::ItemKind::dense;bool fp8=item.kind==kadan::checkpoint::ItemKind::fp8;
+                auto bytes=dense?item.payload_bytes:item.rows*item.columns/(fp8?1:2);check(std::memcmp(physical(b.weights),image.arena.data()+b.weights,bytes)==0);
+                if(!dense){auto scales=fp8?4:item.rows*item.columns/16;check(std::memcmp(physical(b.scales),image.arena.data()+b.scales,scales)==0);}
+                if(item.kind==kadan::checkpoint::ItemKind::nvfp4)check(m.projection_multiplier(b.item)==image.scales[b.item]);
+            }
+        };inspect();
         selection_override=3;m.step(2,false);m.end_request();auto weights=used;auto retained=m.retained_bytes();
         check(weights>0&&weights<layout.device_bytes()&&!m.valid());
         auto before_copies=copies,before_mallocs=mallocs;m.begin_request();check(mallocs==before_mallocs+1&&copies==before_copies&&used==layout.device_bytes());
-        check(m.valid()&&m.tokens()==0);m.step(2,false);m.park();check(used==0&&m.retained_bytes()==retained&&r->snapshot().used[1]==0);
-        m.begin_request();check(used==layout.device_bytes()&&m.valid());m.step(2,false);m.close();check(used==0&&r->snapshot().residents==0);
+        check(m.valid()&&m.tokens()==0);inspect();m.step(2,false);m.park();check(used==0&&m.retained_bytes()==retained&&r->snapshot().used[1]==options.device_headroom);
+        auto parked=r->snapshot().used[1];check(parked==options.device_headroom);
+        bool blocked=false;try{r->reserve(kadan::Workload::image,{0,layout.device_bytes()+1});}catch(...){blocked=true;}check(blocked&&r->snapshot().used[1]==parked);
+        m.begin_request();check(used==layout.device_bytes()&&m.valid());inspect();m.step(2,false);m.close();check(used==0&&r->snapshot().residents==0);
     }
     for(int scenario=0;scenario<6;++scenario){auto options=o;options.split_residency=true;options.weight_ram_bytes=65536;options.weight_cold_bytes=2*1024*1024;
         auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});
@@ -67,6 +84,10 @@ int main(int argc,char**argv){try{
             rejected([&]{m.begin_request();});rejected([&]{m.close();});}
         check(r->snapshot().used[1]==layout.device_bytes()+options.device_headroom);
         for(auto[ptr,n]:allocations){std::free(ptr);used-=n;}allocations.clear();pending=false;
+    }
+    {auto options=o;options.split_residency=true;auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options),layout.device_bytes()+options.device_headroom});
+        {Model m(argv[1],options,0,r);reset_failure=true;rejected([&]{m.close();});check(used==0&&r->snapshot().used[1]==options.device_headroom);rejected([&]{m.close();});}
+        reset_failure=false;check(r->snapshot().used[1]==options.device_headroom); // Context teardown was not confirmed.
     }
     check(bf16_launches>0);
     std::cout<<"Checkpoint fake runtime: "<<expected_layers<<" layers, one reservation/arena, admission/load/step failures, two EOS IDs and cleanup passed.\n";

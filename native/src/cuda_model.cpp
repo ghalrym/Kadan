@@ -48,7 +48,7 @@ struct Model::Impl final:model::Sink {
     void multiplier(const model::Binding& b,float value)override{if(b.layer<0)head_global=value;else layers[std::size_t(b.layer)]->experts[std::size_t(b.expert)][std::size_t(b.part)].global=value;}
     void initialize(const char* root,const std::atomic_bool* cancelled){
         cancel(cancelled);manifest.emplace(root,metadata);auto g=model::read_generation(root,manifest->architecture().vocab,metadata);layout.emplace(*manifest,options.capacity,g,metadata);require(options.staging_bytes>=layout->minimum_staging_bytes(),"model_staging_row");
-        auto request=resources->snapshot().capacity;std::fill(request.begin(),request.end(),0);request[0]=Model::host_bytes(options);request[device+1]=options.split_residency?0:add(layout->device_bytes(),options.device_headroom);resources->resize_loading(handle,request);
+        auto request=resources->snapshot().capacity;std::fill(request.begin(),request.end(),0);request[0]=Model::host_bytes(options);request[device+1]=options.split_residency?options.device_headroom:add(layout->device_bytes(),options.device_headroom);resources->resize_loading(handle,request);
         cursor.emplace(layout->layers().size(),options.capacity);
         for(std::size_t i=0;i<layout->layers().size();++i){const auto& l=layout->layers()[i];producers.emplace_back(l.config,l.plan,*cursor);layers[i]=&producers.back();}
         if(options.split_residency){
@@ -75,7 +75,7 @@ struct Model::Impl final:model::Sink {
         int major=0,minor=0;check(cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,device));check(cudaDeviceGetAttribute(&minor,cudaDevAttrComputeCapabilityMinor,device));require(major==8&&minor==6,"requires_sm86");
         const bool reload=!storage;
         require(backing->room_for_reservations(reload?2:1),"model_resident_slots");
-        if(reload)weight_handle=resources->reserve(Workload::llm,device_request(add(weight_bytes,options.device_headroom)));
+        if(reload)weight_handle=resources->reserve(Workload::llm,device_request(weight_bytes));
         try{
             state_handle=resources->reserve(Workload::llm,device_request(state_bytes));
             std::size_t free=0,total=0;check(cudaMemGetInfo(&free,&total));require(free>=add(state_bytes,reload?add(weight_bytes,options.device_headroom):options.device_headroom),"model_physical_headroom");
@@ -123,13 +123,15 @@ struct Model::Impl final:model::Sink {
         if(cleanup_failed)return false;
         try{if(options.split_residency){if(pinned)unpin();park();}if(storage){current();check(cudaStreamSynchronize(cudaStreamLegacy));}if(pinned)unpin();if(loaded){resources->begin_eviction(handle);loaded=false;}if(storage){check(cudaFree(storage));storage=nullptr;}
             // Return host allocations before releasing their reservation.
-            producers.clear();layout.reset();manifest.reset();backing.reset();resources->released(handle);handle=0;if(cursor)cursor->close();ready=false;return true;
+            producers.clear();layout.reset();manifest.reset();backing.reset();
+            if(options.split_residency){require(resources->snapshot().used[device+1]==options.device_headroom,"context_has_other_device_owner");current();check(cudaDeviceReset());}
+            resources->released(handle);handle=0;if(cursor)cursor->close();ready=false;return true;
         }catch(...){cleanup_failed=poisoned=true;if(cursor)cursor->invalidate();return false;}
     }
 };
 std::size_t Model::host_bytes(ModelOptions o){require(o.metadata_bytes>0&&o.staging_bytes>=8&&o.staging_bytes<=32*1024*1024,"model_host_envelopes");return add(add(add(o.metadata_bytes,o.staging_bytes),control_headroom),o.split_residency?serving::WeightBacking::default_control_bytes:0);}
 Model::Model(const char* root,ModelOptions o,int device,std::shared_ptr<Resources> r,const std::atomic_bool* cancelled){
-    require(r&&device>=0,"model_owner");auto request=r->snapshot().capacity;require(std::size_t(device)+1<request.size(),"model_unbudgeted_device");std::fill(request.begin(),request.end(),0);request[0]=host_bytes(o);auto h=r->reserve(Workload::llm,request);
+    require(r&&device>=0,"model_owner");auto request=r->snapshot().capacity;require(std::size_t(device)+1<request.size(),"model_unbudgeted_device");std::fill(request.begin(),request.end(),0);request[0]=host_bytes(o);if(o.split_residency){require(r->snapshot().used[device+1]==0,"split_requires_exclusive_context");request[device+1]=o.device_headroom;}auto h=r->reserve(Workload::llm,request);
     try{impl_=std::make_unique<Impl>(o,device,r,h);}catch(...){r->released(h);throw;}
     try{impl_->initialize(root,cancelled);}catch(...){if(!impl_->cleanup())throw DeviceBufferQuarantine("model_load_cleanup_failed_reservation_retained");throw;}
 }
@@ -145,6 +147,11 @@ void Model::park(){require(bool(impl_),"model_closed");try{impl_->park();}catch(
 std::size_t Model::retained_bytes()const{return impl_&&impl_->backing?impl_->backing->stats().ram:0;}
 void Model::reset(){require(bool(impl_),"model_closed");impl_->reset();}
 void Model::close(){if(!impl_)return;if(!impl_->cleanup())throw std::runtime_error("model_cleanup_failed_reservation_retained");impl_.reset();}
+float Model::projection_multiplier(std::size_t item)const{
+    require(bool(impl_),"model_closed");auto&i=*impl_;i.available();
+    require(item<i.layout->bindings().size()&&i.manifest->items()[item].kind==checkpoint::ItemKind::nvfp4,"model_not_nvfp4");
+    const auto& b=i.layout->bindings()[item];return b.layer<0?i.head_global:i.layers[std::size_t(b.layer)]->experts[std::size_t(b.expert)][std::size_t(b.part)].global;
+}
 void Model::read_logits(std::span<float> out){require(bool(impl_),"model_closed");auto&i=*impl_;i.available();require(valid()&&i.ready&&out.size()==vocabulary(),"model_logits_unavailable");i.pin();try{check(cudaMemcpy(out.data(),i.bytes(i.layout->logits()),out.size_bytes(),cudaMemcpyDeviceToHost));i.unpin();}catch(...){i.poisoned=true;i.cursor->invalidate();throw;}}
 void Model::read_state(std::size_t index,std::span<std::uint8_t>a,std::span<std::uint8_t>b){require(bool(impl_),"model_closed");auto&i=*impl_;i.available();require(valid()&&index<i.layout->layers().size(),"model_state_unavailable");auto& p=*i.layers[index];require(a.size()==p.p.state_first_bytes&&b.size()==p.p.state_second_bytes,"model_state_shape");i.pin();try{check(cudaMemcpy(a.data(),p.bytes(p.p.state_first),a.size(),cudaMemcpyDeviceToHost));check(cudaMemcpy(b.data(),p.bytes(p.p.state_second),b.size(),cudaMemcpyDeviceToHost));i.unpin();}catch(...){i.poisoned=true;i.cursor->invalidate();throw;}}
 } // namespace kadan::cuda

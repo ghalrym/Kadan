@@ -21,14 +21,17 @@ receive remapped pointers; no numerical kernels or quantization rules change.
 - `begin_request()` on resident weights allocates only state/scratch, rebinds
   pointers while preserving projection scalars, zeroes state, and starts at token
   zero. It does not upload weights again.
-- `park()` also synchronizes/frees GPU weights and releases their headroom
-  reservation. Metadata, checkpoint descriptors and bounded immutable RAM arrays
+- `park()` also synchronizes/frees GPU weights while preserving a separate
+  context/headroom envelope on the long-lived host/model reservation. Metadata, checkpoint descriptors and bounded immutable RAM arrays
   remain available. No KV/state enters the RAM cache.
 - `begin_request()` after park reserves the complete GPU destination before
   uploading through the existing validated Qwen loader. Dense/projection reads
   now pass through WeightBacking: retained tensors come from RAM; others use
   checkpoint reads. Existing finite-value and format validation still runs.
-- `close()` removes all owned GPU/host allocations and verifies ledger cleanup.
+- `close()` removes all owned GPU/host allocations, calls `cudaDeviceReset()`
+  successfully, then releases the context/headroom envelope and verifies cleanup.
+  Split mode owns its dedicated worker context exclusively: it rejects another
+  counted GPU owner at construction or teardown rather than reset their memory.
   Failed synchronization/free poisons reuse and keeps uncertain reservations;
   no success acknowledgement is emitted. The supervisor must terminate/reconcile
   a quarantined leaf rather than repeatedly claiming that cleanup succeeded.
@@ -74,7 +77,7 @@ new request with the same small integer ID.
 | `step SESSION ID TOKEN STOP` | `token SESSION ID TOKEN EOS COMMITTED` |
 | `end SESSION ID` | `ended SESSION ID`; request memory physically released |
 | `cancel SESSION ID` | `cancelled SESSION ID`; queued request only |
-| `park SESSION 0` | `parked SESSION 0`; requires an empty/inactive queue |
+| `park SESSION 0` | `parked SESSION 0`; model allocations freed, context envelope retained |
 | `close SESSION 0` | `closed SESSION 0`; all reservations verified zero |
 
 Engine lifecycle and CUDA work execute on the main owning thread, including
@@ -115,9 +118,12 @@ accounting on successful close. Protocol tests cover FIFO, bounded admission,
 queued cancellation, stale sessions/IDs, cleanup failure and owning-thread calls.
 Legacy model/decoder/protocol tests remain in the sanitizer CI suite.
 
-The changed CUDA-facing C++ translation units are compiled locally against real
-CUDA headers with warnings as errors. No GPU inference, production benchmark,
+The changed CUDA-facing C++ translation units compile against real CUDA headers
+with warnings as errors. A tiny real-GPU test matches 192 logits bit-for-bit with
+legacy across reuse, park/reload and cancellation recovery; see
+[exact synthetic GPU evidence](RESIDENT-GPU-RESULT.md). No production benchmark,
 new model download, database write or full image rebuild is part of this MR.
-Real GPU numerical/performance validation and API adoption are still required
-before enabling resident mode in production. The reported live 51.92 tokens/sec
+Production-scale validation and API adoption remain required before rollout.
+The [separate API proposal](TEXT-IMAGE-INTEGRATION.md) audits PR52 and describes
+the smallest real queued text/image/text bridge. The reported live 51.92 tokens/sec
 is prior legacy-worker evidence, not a measurement of this mode.
