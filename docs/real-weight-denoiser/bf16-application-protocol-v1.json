@@ -65,7 +65,7 @@
     "same_threshold_for_chains": true,
     "intermediate_operator_values": "diagnostic only; no newly invented gates",
     "report_individual_cases": true,
-    "aggregate_pass": "all declared cases and stages pass; missing, timed-out or unexecuted stages are not passes",
+    "aggregate_pass": "first_slice verdict covers existing capture only; overall protocol is incomplete until later declared timestep cases pass; never count unexecuted stages as passes",
     "on_failure": "persist results then coordinated stop; no tolerance tuning or automatic stage skip"
   },
   "resource_envelope_per_case": {

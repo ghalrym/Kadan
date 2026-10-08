@@ -115,8 +115,10 @@ count and bounded output artifacts for inspection and say truncation occurred.
 Persist each result before rank-wide acceptance/stop. Any numerical or identity
 failure stops the case and later execution until review. Earlier successful
 stages remain individually reported; unrun/time-limited/missing stages are not
-passes. The aggregate outcome can be only `passed-declared-bf16-diagnostic-scope`,
-`failed`, or `incomplete`; it must always retain a separate `fp32_protocol=failed`.
+passes. Report a separate first-slice verdict and overall protocol verdict. A first-slice
+pass covers only the retained first-cached-step case; the overall protocol remains
+`incomplete` until later declared timesteps run and pass. Every result must retain
+a separate `fp32_protocol=failed`.
 Even a complete pass does not imply full scheduler, image or production readiness.
 
 ## Resources, ownership and restoration
