@@ -232,6 +232,12 @@ availability and requires separate security-sensitive approval. No such gate was
 implemented or applied; its commands have been removed. Do not install a firewall,
 close connections or change network settings under this plan.
 
+No external atomic maintenance lease currently exists. A quiet operator window
+is not equivalent to such a lease and cannot bind concurrent producers. The
+preferred eventual solution is an application-level maintenance lease, requiring
+separately reviewed Python/API changes and explicit deployment approval. It is
+not implemented or authorized by this plan.
+
 The runtime reviewer is evaluating safer supported coordination. Its mechanism,
 operator responsibilities and failure behavior must be reviewed before any
 actual-model execution. No replacement implementation is proposed here. Pending
@@ -339,8 +345,11 @@ network gate to remove under this corrected plan.
 Reference may be prepared before outage under its separate30-minute CPU ceiling.
 For the maintenance window, propose maximum queue drain60s, unload120s, each
 pre/post full-shard hash pass600s, native915+5s, cleanup observation30s,
-reload900s: approximately **54 minutes of worst-case bounded steps**, not a
-prediction of normal downtime. Hashing is sequential on one CPU; it reads the
+reload900s. These are **escalation and observation deadlines**, not an additive
+worst-case duration or a guarantee of cleanup/restoration. Cancellation, device
+work, process termination and reload can remain uncertain beyond those deadlines;
+there is no defensible upper bound on service outage from the present evidence.
+The previous approximately54-minute worst-case claim is withdrawn. Hashing is sequential on one CPU; it reads the
 full23.4GB checkpoint per pass. Do not benchmark disk/GPU to refine this estimate
 without permission. If a hash pass exceeds600s, abort the experiment and restore
 service when safe; do not silently expand the window. Reviewers may choose
