@@ -1,0 +1,27 @@
+{
+  "identity": {
+    "candidate": "fp32-partial512-fp64-outputsum-v1",
+    "candidate_source_sha256": "304bb07798f803e8b3dd58af2e2e1c89fea59b36c683c1932b179d9990c37c42",
+    "oracle_source_sha256": "bc72abb61163a6142f30f7aaab8ef412da293b4f320b53bba5610dc416c91c24",
+    "capture_manifest_sha256": "15ef4ca04d95404a0467524015097e306f8dab871eca027635d716b843b469ce",
+    "blocks": [
+      0,
+      15,
+      31
+    ]
+  },
+  "results": {
+    "0": {
+      "capture_sha256": "5f931c49065a1342e17c9e40f89ac6ceed3c0d1d2edfe19bf601f56747e0a426",
+      "oracle_sha256": "e38eac35737ef118f7872b78b69048e19b8f62d328af7ed4a5f1da42d59ea460"
+    },
+    "15": {
+      "capture_sha256": "bb8e0bde8edb6d5dbbcc3bfb9ea354ebaa66c59b83f9c019354814c847f063d1",
+      "oracle_sha256": "8678a5f6c148bf820988d570e0f102cfb266154ab0a85f80cbcbb86c421bb15e"
+    },
+    "31": {
+      "capture_sha256": "c18cb34d2218f6e27bf8bb684cc0e7164a3fc449b5c8997194e04ddfab3aa63c",
+      "oracle_sha256": "cf29038c44bd26d0573d4ee28e70ec3724590316a4823e0c7ec2b9a32d7d3e04"
+    }
+  }
+}

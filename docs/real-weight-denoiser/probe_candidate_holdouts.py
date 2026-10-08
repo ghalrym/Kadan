@@ -12,7 +12,7 @@ from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21Tra
 from controlled_projection import ControlledProjection, CANDIDATE_ID
 from diagnose_block7 import manual
 from precision_oracle import short_block, assess
-from replay import inputs, module
+from replay import inputs, module, eager
 from trace_binding import sha256
 
 BLOCKS=(0,15,31)
@@ -52,7 +52,9 @@ def main():
         for backend in ('default','math'):
             context=sdpa_kernel(SDPBackend.MATH) if backend=='math' else nullcontext()
             with context:
-                original,_=manual(block,args,set())
+                original=eager(block,*args)
+                reconstructed,_=manual(block,args,set())
+                assert torch.equal(original,reconstructed), "Pinned eager differs from reconstruction"
                 split={'norm','qkv','attention','out','mlp'}
                 baseline,_=manual(block,args,split)
                 result=dict(baseline=assess(original,baseline,oracle))
@@ -61,7 +63,7 @@ def main():
                     candidate,_=manual(block,args,split)
                     result['candidate']=assess(original,candidate,oracle)
                 results[index][backend]=result
-        del data,block,args,owners,ops,owner,op,original,baseline,candidate,oracle,_
+        del data,block,args,owners,ops,owner,op,original,reconstructed,baseline,candidate,oracle,_
         torch.cuda.empty_cache()
     filename='holdout-oracles.json' if args_cli.cpu_oracles else 'holdout-results.json'
     (out/filename).write_text(json.dumps(dict(identity=identity,results=results),indent=2))
