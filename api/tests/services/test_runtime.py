@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from api.inference.resources import ResourceManager
+from api.inference.resources import MemoryCapacity, ResourceManager
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
 from api.services.runtime import RuntimeFailure, RuntimeManager
@@ -51,6 +51,42 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.load()
         await self.manager.task
         self.assertEqual(self.manager.state, 'ready')
+
+    async def test_native_backend_selects_exact_planner_before_device_admission(self):
+        self.manager._factory = None
+        for gpu, device in (('auto', 'auto'), ('1', 'cuda:1')):
+            with patch.dict('os.environ', {'KADAN_LLM_BACKEND': 'native', 'KADAN_GPU': gpu}), \
+                    patch('api.inference.llm.native.build_native', return_value=self.adapter) as factory, \
+                    patch('api.services.runtime.select_device', side_effect=AssertionError('Python placement called')):
+                await self.ready()
+                self.assertEqual(factory.call_args.kwargs['device'], device)
+                self.assertIs(factory.call_args.args[2], self.manager.resources)
+                self.assertIsNone(self.adapter.configured_context_limit)
+                await self.manager.unload()
+
+    async def test_unknown_backend_fails_before_allocations(self):
+        self.manager._factory = None
+        with patch.dict('os.environ', {'KADAN_LLM_BACKEND': 'typo'}):
+            await self.manager.load()
+            await self.manager.task
+        self.assertEqual(self.manager.state, 'error')
+        self.assertIn('KADAN_LLM_BACKEND', self.manager.error)
+        self.assertFalse(self.manager.resources.snapshot()['reservations'])
+
+    async def test_failed_construction_cleanup_retains_selection_until_unload_retry(self):
+        self.adapter.configure_context = Mock(side_effect=RuntimeError('configuration cleanup failed'))
+        self.adapter.close = Mock(side_effect=[RuntimeError('close failed'), RuntimeError('close failed again'), None])
+        await self.manager.load()
+        with self.assertRaisesRegex(RuntimeError, 'close failed again'):
+            await self.manager.task
+        self.assertIs(self.manager.adapter, self.adapter)
+        self.assertEqual(self.manager.state, 'error')
+        self.models.release_runtime_model.assert_not_called()
+        await self.manager.unload()
+        self.assertEqual(self.adapter.close.call_count, 3)
+        self.assertIsNone(self.manager.adapter)
+        self.assertEqual(self.manager.state, 'unloaded')
+        self.models.release_runtime_model.assert_called_once()
 
     async def test_context_errors_preserve_ready_model_and_selection(self):
         await self.ready()
@@ -122,6 +158,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.is_resident = False
         self.assertEqual(self.manager.status()['state'], 'offloaded')
         await self.manager.complete([], None)
+        self.assertEqual(self.manager.status()['state'], 'ready')
+        await self.manager.close()
+
+    async def test_offloaded_admission_failure_preserves_selection_for_retry(self):
+        await self.ready()
+        self.adapter.is_resident = False
+        self.adapter.generate = Mock(side_effect=ContextMemoryError('temporary budget pressure'))
+        with self.assertRaises(RuntimeFailure) as caught:
+            await self.manager.complete([], None)
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(self.manager.status()['state'], 'offloaded')
+        self.assertFalse(self.adapter.closed)
+        self.models.release_runtime_model.assert_not_called()
+        def restored(*args, **kwargs):
+            self.adapter.is_resident = True
+            return 'Retry succeeded'
+        self.adapter.generate.side_effect = restored
+        self.assertEqual(await self.manager.complete([], None), 'Retry succeeded')
         self.assertEqual(self.manager.status()['state'], 'ready')
         await self.manager.close()
 
@@ -197,3 +251,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.manager.status()['error'], expected)
             self.assertIsNone(self.manager.adapter)
         self.assertEqual(self.models.release_runtime_model.call_count, len(failures))
+
+
+class ResourceBudgetTests(unittest.TestCase):
+    def budgets(self, override=None):
+        environment = {} if override is None else {'KADAN_GPU_BUDGET_BYTES': override}
+        manager = RuntimeManager()
+        with patch.dict('os.environ', environment, clear=True), \
+                patch('api.services.runtime.probe_memory', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
+            return manager.ensure_resources().capacity
+
+    def test_default_budgets_unchanged(self):
+        self.assertEqual(self.budgets(), MemoryCapacity(1600, {0: 800, 1: 1200}))
+
+    def test_explicit_budget_changes_only_named_gpu(self):
+        self.assertEqual(self.budgets('{"0":950}'), MemoryCapacity(1600, {0: 950, 1: 1200}))
+
+    def test_invalid_or_overcommitted_budgets_fail_closed(self):
+        for value in ('', '{}', '[]', '{"0":1001}', '{"2":1}', '{"0":true}',
+                      '{"0":0}', '{"0":-1}', '{"0":1.5}', '{"00":1}', '{"-1":1}'):
+            with self.subTest(value=value), self.assertRaises(RuntimeFailure):
+                self.budgets(value)

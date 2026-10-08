@@ -2,9 +2,16 @@
 #include <cfloat>
 
 namespace kadan::cuda::detail {
-// local = FP4 * E4M3 is exact in FP32. Multiplying its at most seven
-// significant bits by the FP32 global scale is exact in double. Check before
-// rounding: an out-of-range exact value can still round to finite FLT_MAX.
+// For admitted positive finite E4M3 scales, |FP4 * scale| <= 6*448.
+// This conservative power-of-two bound proves the exact product fits FP32,
+// without executing double arithmetic per weight. NaN/Inf fail the comparisons.
+#ifdef __CUDACC__
+__host__ __device__
+#endif
+constexpr bool bounded_nvfp4_global(float global) {
+    return global <= FLT_MAX / 4096.0F && global >= -FLT_MAX / 4096.0F;
+}
+// Exact check before rounding: values beyond FLT_MAX can round to FLT_MAX.
 #ifdef __CUDACC__
 __host__ __device__
 #endif

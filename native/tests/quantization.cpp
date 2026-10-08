@@ -1,4 +1,5 @@
 #include "kadan/quantization.hpp"
+#include "../src/nvfp4_numeric.hpp"
 
 #include <array>
 #include <cmath>
@@ -15,6 +16,20 @@ template<class Error = std::invalid_argument, class F> void fails(F fn, std::str
     try { fn(); }
     catch (const Error& error) { check(error.what() == expected); failed = true; }
     check(failed);
+}
+void bounded_global() {
+    using kadan::cuda::detail::bounded_nvfp4_global;
+    using kadan::cuda::detail::weight_overflows;
+    const float bound=std::numeric_limits<float>::max()/4096.f;
+    check(bounded_nvfp4_global(bound)&&bounded_nvfp4_global(-bound));
+    check(!bounded_nvfp4_global(std::nextafter(bound,INFINITY)));
+    check(!bounded_nvfp4_global(std::nextafter(-bound,-INFINITY)));
+    check(!bounded_nvfp4_global(INFINITY)&&!bounded_nvfp4_global(-INFINITY));
+    check(!bounded_nvfp4_global(std::numeric_limits<float>::quiet_NaN()));
+    for(unsigned code=0;code<16;++code)for(unsigned scale=0;scale<127;++scale){
+        const float local=e2m1(code)*e4m3fn(scale);
+        check(!weight_overflows(local,bound)&&!weight_overflows(local,-bound));
+    }
 }
 void primitives() {
     // Explicit golden values, not production exponent arithmetic.
@@ -132,6 +147,6 @@ void fp8() {
 }
 } // namespace
 int main() {
-    try { primitives(); packed_byte_order(); nvfp4(); fp8(); }
+    try { bounded_global(); primitives(); packed_byte_order(); nvfp4(); fp8(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

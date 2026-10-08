@@ -1,0 +1,1194 @@
+{
+  "workload": {
+    "model": "small",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Count from 1 to 40, separated by commas. Output only the numbers."
+      }
+    ],
+    "stream": false
+  },
+  "original_api": {
+    "id": "req_7f9215b82b7848a4b3454c8f2cb1c9c7",
+    "time": "2026-10-08T12:30:45.695+00:00",
+    "type": "LLM",
+    "model": "small",
+    "status": 200,
+    "latency": "229.976 s",
+    "latency_ms": 229975.66,
+    "endpoint": "/v1/chat/completions",
+    "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+    "output": "HTTP 200; 569 response bytes",
+    "request_bytes": 140,
+    "response_bytes": 569,
+    "generation_ttft_ms": 37587.13248099957,
+    "stream_ttft_ms": null,
+    "prefill_ms": 37587.13248099957,
+    "decode_tokens_per_second": 0.7748777148875823,
+    "output_tokens": 149,
+    "prefill_tokens": 30,
+    "conversation_key": null,
+    "cache_hit": null,
+    "reused_tokens": null,
+    "stored_tokens": null,
+    "cache_reason": null,
+    "retention_reason": null,
+    "cached_prefix_sha256": null
+  },
+  "router_api": {
+    "id": "req_c504cf83956c400189f24840a9e23854",
+    "time": "2026-10-08T12:46:38.396+00:00",
+    "type": "LLM",
+    "model": "small",
+    "status": 200,
+    "latency": "33.019 s",
+    "latency_ms": 33018.956,
+    "endpoint": "/v1/chat/completions",
+    "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+    "output": "HTTP 200; 569 response bytes",
+    "request_bytes": 140,
+    "response_bytes": 569,
+    "generation_ttft_ms": 4882.721034999122,
+    "stream_ttft_ms": null,
+    "prefill_ms": 4882.721034999122,
+    "decode_tokens_per_second": 5.312070536122873,
+    "output_tokens": 149,
+    "prefill_tokens": 30,
+    "conversation_key": null,
+    "cache_hit": null,
+    "reused_tokens": null,
+    "stored_tokens": null,
+    "cache_reason": null,
+    "retention_reason": null,
+    "cached_prefix_sha256": null
+  },
+  "attention_api": {
+    "id": "req_4f01b7d704a3431885a354b3d68c6a2b",
+    "time": "2026-10-08T13:02:39.139+00:00",
+    "type": "LLM",
+    "model": "small",
+    "status": 200,
+    "latency": "27.994 s",
+    "latency_ms": 27994.313,
+    "endpoint": "/v1/chat/completions",
+    "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+    "output": "HTTP 200; 569 response bytes",
+    "request_bytes": 140,
+    "response_bytes": 569,
+    "generation_ttft_ms": 4673.300991998985,
+    "stream_ttft_ms": null,
+    "prefill_ms": 4673.300991998985,
+    "decode_tokens_per_second": 6.410482463060915,
+    "output_tokens": 149,
+    "prefill_tokens": 30,
+    "conversation_key": null,
+    "cache_hit": null,
+    "reused_tokens": null,
+    "stored_tokens": null,
+    "cache_reason": null,
+    "retention_reason": null,
+    "cached_prefix_sha256": null
+  },
+  "router_commit": "adceb7a21c2affbd6957de4a246d36322b670e82",
+  "worker_sha256": "bdc424a856e910e75c7cfaf2812b06a3a1b3be2ca05aea720972649cb8948727",
+  "token_ids_identical": 149,
+  "phase_profiles": {
+    "before_prefill": {
+      "kernels": [
+        {
+          "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 32430,
+          "gpu_ms": 954.247582,
+          "launch_host_ms": 71.175614
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc896selectEmPfPjS4_(unsigned long, float*, unsigned int*, unsigned int*)",
+          "calls": 30,
+          "gpu_ms": 925.005562,
+          "launch_host_ms": 0.136014
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c35routeENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 1200,
+          "gpu_ms": 770.160611,
+          "launch_host_ms": 2.653806
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429auxiliaryENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 380.941344,
+          "launch_host_ms": 2.119537
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429normalizeENS_6linear6ConfigENS1_13LinearBuffersEPKf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*)",
+          "calls": 900,
+          "gpu_ms": 346.024063,
+          "launch_host_ms": 2.341909
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f4normEmfPKtPKfPfPj(unsigned long, float, unsigned short const*, float const*, float*, unsigned int*)",
+          "calls": 1230,
+          "gpu_ms": 332.702047,
+          "launch_host_ms": 2.844441
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59attentionENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 220.626912,
+          "launch_host_ms": 0.692
+        },
+        {
+          "name": "kadan_launch_fp8_bf16(unsigned char const*, float const*, bool, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 3900,
+          "gpu_ms": 181.199808,
+          "launch_host_ms": 9.129261
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59normalizeENS_4full6ConfigENS1_11FullBuffersEPKf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*)",
+          "calls": 300,
+          "gpu_ms": 178.739489,
+          "launch_host_ms": 0.962834
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c312route_logitsENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 1200,
+          "gpu_ms": 157.297408,
+          "launch_host_ms": 2.908214
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210recurrenceENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 57.164159,
+          "launch_host_ms": 1.972905
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a57prepareENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 47.779552,
+          "launch_host_ms": 0.754829
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c38activateEmNS1_10MoeBuffersE(unsigned long, kadan::cuda::detail::MoeBuffers&)",
+          "calls": 10800,
+          "gpu_ms": 38.68576,
+          "launch_host_ms": 22.85261
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c310accumulateENS_3moe6ConfigENS1_10MoeBuffersEj(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, unsigned int)",
+          "calls": 9600,
+          "gpu_ms": 37.345888,
+          "launch_host_ms": 20.844158
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210gated_normENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 36.348255,
+          "launch_host_ms": 1.96721
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584212normalize_qkENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 18.415264,
+          "launch_host_ms": 2.005517
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f8residualEmPKfS4_PfPj(unsigned long, float const*, float const*, float*, unsigned int*)",
+          "calls": 1200,
+          "gpu_ms": 5.790144,
+          "launch_host_ms": 2.710146
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58428residualENS_6linear6ConfigENS1_13LinearBuffersEPKfPf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*, float*)",
+          "calls": 900,
+          "gpu_ms": 5.001728,
+          "launch_host_ms": 2.165337
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584211convolutionENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 4.468768,
+          "launch_host_ms": 2.055206
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c36finishENS_3moe6ConfigENS1_10MoeBuffersEPf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float*)",
+          "calls": 1200,
+          "gpu_ms": 4.464992,
+          "launch_host_ms": 2.621693
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a58residualENS_4full6ConfigENS1_11FullBuffersEPKfPf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*, float*)",
+          "calls": 300,
+          "gpu_ms": 1.680768,
+          "launch_host_ms": 0.741412
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a56appendENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 1.07488,
+          "launch_host_ms": 0.685292
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc899embeddingEmPKtjPf(unsigned long, unsigned short const*, unsigned int, float*)",
+          "calls": 30,
+          "gpu_ms": 0.288416,
+          "launch_host_ms": 0.201891
+        }
+      ],
+      "totals": [
+        [
+          "sync",
+          "32850",
+          "4514.886795"
+        ],
+        [
+          "copy0",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy1",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy2",
+          "34050",
+          "196.759122"
+        ],
+        [
+          "copy3",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy4",
+          "0",
+          "0.000000"
+        ]
+      ]
+    },
+    "before_decode": {
+      "kernels": [
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59attentionENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 4893.243867,
+          "launch_host_ms": 3.358184
+        },
+        {
+          "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 161069,
+          "gpu_ms": 4719.426079,
+          "launch_host_ms": 351.492638
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc896selectEmPfPjS4_(unsigned long, float*, unsigned int*, unsigned int*)",
+          "calls": 149,
+          "gpu_ms": 4584.32432,
+          "launch_host_ms": 0.541489
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c35routeENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 5960,
+          "gpu_ms": 3809.659543,
+          "launch_host_ms": 13.095581
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429auxiliaryENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 1884.90512,
+          "launch_host_ms": 10.470883
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429normalizeENS_6linear6ConfigENS1_13LinearBuffersEPKf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*)",
+          "calls": 4470,
+          "gpu_ms": 1711.375996,
+          "launch_host_ms": 11.320674
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f4normEmfPKtPKfPfPj(unsigned long, float, unsigned short const*, float const*, float*, unsigned int*)",
+          "calls": 6109,
+          "gpu_ms": 1645.863617,
+          "launch_host_ms": 13.972823
+        },
+        {
+          "name": "kadan_launch_fp8_bf16(unsigned char const*, float const*, bool, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 19370,
+          "gpu_ms": 896.540832,
+          "launch_host_ms": 45.007537
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59normalizeENS_4full6ConfigENS1_11FullBuffersEPKf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*)",
+          "calls": 1490,
+          "gpu_ms": 883.14759,
+          "launch_host_ms": 3.816874
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c312route_logitsENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 5960,
+          "gpu_ms": 777.898016,
+          "launch_host_ms": 14.140418
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210recurrenceENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 282.88182,
+          "launch_host_ms": 9.852872
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a57prepareENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 236.223168,
+          "launch_host_ms": 3.550804
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c38activateEmNS1_10MoeBuffersE(unsigned long, kadan::cuda::detail::MoeBuffers&)",
+          "calls": 53640,
+          "gpu_ms": 191.48909,
+          "launch_host_ms": 113.261948
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c310accumulateENS_3moe6ConfigENS1_10MoeBuffersEj(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, unsigned int)",
+          "calls": 47680,
+          "gpu_ms": 184.732673,
+          "launch_host_ms": 103.097779
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210gated_normENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 179.777338,
+          "launch_host_ms": 9.746922
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584212normalize_qkENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 91.180925,
+          "launch_host_ms": 9.905499
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f8residualEmPKfS4_PfPj(unsigned long, float const*, float const*, float*, unsigned int*)",
+          "calls": 5960,
+          "gpu_ms": 28.699264,
+          "launch_host_ms": 13.470865
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58428residualENS_6linear6ConfigENS1_13LinearBuffersEPKfPf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*, float*)",
+          "calls": 4470,
+          "gpu_ms": 24.668928,
+          "launch_host_ms": 10.573702
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c36finishENS_3moe6ConfigENS1_10MoeBuffersEPf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float*)",
+          "calls": 5960,
+          "gpu_ms": 22.214208,
+          "launch_host_ms": 13.091498
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584211convolutionENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 22.111296,
+          "launch_host_ms": 10.10205
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a58residualENS_4full6ConfigENS1_11FullBuffersEPKfPf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*, float*)",
+          "calls": 1490,
+          "gpu_ms": 8.277792,
+          "launch_host_ms": 3.594158
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a56appendENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 5.34816,
+          "launch_host_ms": 3.33927
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc899embeddingEmPKtjPf(unsigned long, unsigned short const*, unsigned int, float*)",
+          "calls": 149,
+          "gpu_ms": 1.135968,
+          "launch_host_ms": 0.72453
+        }
+      ],
+      "totals": [
+        [
+          "sync",
+          "163156",
+          "26144.804825"
+        ],
+        [
+          "copy0",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy1",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy2",
+          "169115",
+          "973.898274"
+        ],
+        [
+          "copy3",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy4",
+          "0",
+          "0.000000"
+        ]
+      ]
+    },
+    "after_prefill": {
+      "kernels": [
+        {
+          "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 32430,
+          "gpu_ms": 954.341439,
+          "launch_host_ms": 72.27038
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc896selectEmPfPjS4_(unsigned long, float*, unsigned int*, unsigned int*)",
+          "calls": 30,
+          "gpu_ms": 924.131325,
+          "launch_host_ms": 0.122184
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c35routeENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 1200,
+          "gpu_ms": 770.78346,
+          "launch_host_ms": 2.731069
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429auxiliaryENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 380.91056,
+          "launch_host_ms": 2.159537
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429normalizeENS_6linear6ConfigENS1_13LinearBuffersEPKf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*)",
+          "calls": 900,
+          "gpu_ms": 346.236799,
+          "launch_host_ms": 2.304466
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f4normEmfPKtPKfPfPj(unsigned long, float, unsigned short const*, float const*, float*, unsigned int*)",
+          "calls": 1230,
+          "gpu_ms": 333.027521,
+          "launch_host_ms": 2.939478
+        },
+        {
+          "name": "kadan_launch_fp8_bf16(unsigned char const*, float const*, bool, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 3900,
+          "gpu_ms": 181.24112,
+          "launch_host_ms": 9.310573
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59normalizeENS_4full6ConfigENS1_11FullBuffersEPKf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*)",
+          "calls": 300,
+          "gpu_ms": 178.847329,
+          "launch_host_ms": 0.982901
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c312route_logitsENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 1200,
+          "gpu_ms": 157.357952,
+          "launch_host_ms": 2.960246
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210recurrenceENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 57.178335,
+          "launch_host_ms": 2.004711
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a57prepareENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 47.78976,
+          "launch_host_ms": 0.741821
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c38activateEmNS1_10MoeBuffersE(unsigned long, kadan::cuda::detail::MoeBuffers&)",
+          "calls": 10800,
+          "gpu_ms": 38.509216,
+          "launch_host_ms": 23.154347
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c310accumulateENS_3moe6ConfigENS1_10MoeBuffersEj(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, unsigned int)",
+          "calls": 9600,
+          "gpu_ms": 37.24816,
+          "launch_host_ms": 20.831093
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210gated_normENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 36.380511,
+          "launch_host_ms": 1.9961
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584212normalize_qkENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 18.442656,
+          "launch_host_ms": 2.046273
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_scoresENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 11.832704,
+          "launch_host_ms": 0.695849
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f8residualEmPKfS4_PfPj(unsigned long, float const*, float const*, float*, unsigned int*)",
+          "calls": 1200,
+          "gpu_ms": 5.83776,
+          "launch_host_ms": 2.778069
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58428residualENS_6linear6ConfigENS1_13LinearBuffersEPKfPf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*, float*)",
+          "calls": 900,
+          "gpu_ms": 4.948288,
+          "launch_host_ms": 2.136164
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c36finishENS_3moe6ConfigENS1_10MoeBuffersEPf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float*)",
+          "calls": 1200,
+          "gpu_ms": 4.49248,
+          "launch_host_ms": 2.682884
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584211convolutionENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 900,
+          "gpu_ms": 4.467744,
+          "launch_host_ms": 2.052107
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_valuesENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 4.084992,
+          "launch_host_ms": 0.693023
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a517attention_softmaxENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 1.821984,
+          "launch_host_ms": 0.687694
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a58residualENS_4full6ConfigENS1_11FullBuffersEPKfPf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*, float*)",
+          "calls": 300,
+          "gpu_ms": 1.672576,
+          "launch_host_ms": 0.729426
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a56appendENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 300,
+          "gpu_ms": 1.078624,
+          "launch_host_ms": 0.694205
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc899embeddingEmPKtjPf(unsigned long, unsigned short const*, unsigned int, float*)",
+          "calls": 30,
+          "gpu_ms": 0.30352,
+          "launch_host_ms": 0.216286
+        }
+      ],
+      "totals": [
+        [
+          "sync",
+          "32850",
+          "4304.442839"
+        ],
+        [
+          "copy0",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy1",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy2",
+          "34050",
+          "196.437844"
+        ],
+        [
+          "copy3",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy4",
+          "0",
+          "0.000000"
+        ]
+      ]
+    },
+    "after_decode": {
+      "kernels": [
+        {
+          "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 161069,
+          "gpu_ms": 4726.477406,
+          "launch_host_ms": 356.713301
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc896selectEmPfPjS4_(unsigned long, float*, unsigned int*, unsigned int*)",
+          "calls": 149,
+          "gpu_ms": 4590.456701,
+          "launch_host_ms": 0.487206
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c35routeENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 5960,
+          "gpu_ms": 3816.461533,
+          "launch_host_ms": 13.377658
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429auxiliaryENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 1886.110879,
+          "launch_host_ms": 10.605202
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429normalizeENS_6linear6ConfigENS1_13LinearBuffersEPKf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*)",
+          "calls": 4470,
+          "gpu_ms": 1713.79795,
+          "launch_host_ms": 11.148528
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f4normEmfPKtPKfPfPj(unsigned long, float, unsigned short const*, float const*, float*, unsigned int*)",
+          "calls": 6109,
+          "gpu_ms": 1648.779713,
+          "launch_host_ms": 14.16337
+        },
+        {
+          "name": "kadan_launch_fp8_bf16(unsigned char const*, float const*, bool, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+          "calls": 19370,
+          "gpu_ms": 896.858976,
+          "launch_host_ms": 45.395151
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a59normalizeENS_4full6ConfigENS1_11FullBuffersEPKf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*)",
+          "calls": 1490,
+          "gpu_ms": 884.653094,
+          "launch_host_ms": 3.80185
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c312route_logitsENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+          "calls": 5960,
+          "gpu_ms": 778.864672,
+          "launch_host_ms": 14.34596
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210recurrenceENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 283.050428,
+          "launch_host_ms": 9.809911
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a57prepareENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 236.616448,
+          "launch_host_ms": 3.589582
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c38activateEmNS1_10MoeBuffersE(unsigned long, kadan::cuda::detail::MoeBuffers&)",
+          "calls": 53640,
+          "gpu_ms": 190.763746,
+          "launch_host_ms": 114.204682
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c310accumulateENS_3moe6ConfigENS1_10MoeBuffersEj(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, unsigned int)",
+          "calls": 47680,
+          "gpu_ms": 184.058689,
+          "launch_host_ms": 102.672701
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210gated_normENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 180.058107,
+          "launch_host_ms": 9.840539
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_valuesENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 100.064576,
+          "launch_host_ms": 3.356281
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584212normalize_qkENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 91.229598,
+          "launch_host_ms": 10.076166
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_scoresENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 77.14096,
+          "launch_host_ms": 3.380638
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a517attention_softmaxENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 30.69904,
+          "launch_host_ms": 3.356975
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f8residualEmPKfS4_PfPj(unsigned long, float const*, float const*, float*, unsigned int*)",
+          "calls": 5960,
+          "gpu_ms": 28.748192,
+          "launch_host_ms": 13.657408
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58428residualENS_6linear6ConfigENS1_13LinearBuffersEPKfPf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*, float*)",
+          "calls": 4470,
+          "gpu_ms": 24.42176,
+          "launch_host_ms": 10.454727
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c36finishENS_3moe6ConfigENS1_10MoeBuffersEPf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float*)",
+          "calls": 5960,
+          "gpu_ms": 22.098752,
+          "launch_host_ms": 13.119956
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584211convolutionENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+          "calls": 4470,
+          "gpu_ms": 22.080896,
+          "launch_host_ms": 10.123592
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a58residualENS_4full6ConfigENS1_11FullBuffersEPKfPf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*, float*)",
+          "calls": 1490,
+          "gpu_ms": 8.1984,
+          "launch_host_ms": 3.553843
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a56appendENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+          "calls": 1490,
+          "gpu_ms": 5.303488,
+          "launch_host_ms": 3.444403
+        },
+        {
+          "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc899embeddingEmPKtjPf(unsigned long, unsigned short const*, unsigned int, float*)",
+          "calls": 149,
+          "gpu_ms": 1.260672,
+          "launch_host_ms": 0.855671
+        }
+      ],
+      "totals": [
+        [
+          "sync",
+          "163156",
+          "21455.362042"
+        ],
+        [
+          "copy0",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy1",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy2",
+          "169115",
+          "969.128715"
+        ],
+        [
+          "copy3",
+          "0",
+          "0.000000"
+        ],
+        [
+          "copy4",
+          "0",
+          "0.000000"
+        ]
+      ]
+    }
+  },
+  "before_direct": {
+    "load_seconds": 50.21783845400205,
+    "prefill_seconds": 5.183657824003603,
+    "decode_with_eos_seconds": 29.451303684996674,
+    "prompt_ids": [
+      248045,
+      846,
+      198,
+      2427,
+      494,
+      220,
+      16,
+      310,
+      220,
+      19,
+      15,
+      11,
+      18101,
+      539,
+      73982,
+      13,
+      8984,
+      1132,
+      279,
+      4947,
+      13,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "output_ids": [
+      16,
+      11,
+      220,
+      17,
+      11,
+      220,
+      18,
+      11,
+      220,
+      19,
+      11,
+      220,
+      20,
+      11,
+      220,
+      21,
+      11,
+      220,
+      22,
+      11,
+      220,
+      23,
+      11,
+      220,
+      24,
+      11,
+      220,
+      16,
+      15,
+      11,
+      220,
+      16,
+      16,
+      11,
+      220,
+      16,
+      17,
+      11,
+      220,
+      16,
+      18,
+      11,
+      220,
+      16,
+      19,
+      11,
+      220,
+      16,
+      20,
+      11,
+      220,
+      16,
+      21,
+      11,
+      220,
+      16,
+      22,
+      11,
+      220,
+      16,
+      23,
+      11,
+      220,
+      16,
+      24,
+      11,
+      220,
+      17,
+      15,
+      11,
+      220,
+      17,
+      16,
+      11,
+      220,
+      17,
+      17,
+      11,
+      220,
+      17,
+      18,
+      11,
+      220,
+      17,
+      19,
+      11,
+      220,
+      17,
+      20,
+      11,
+      220,
+      17,
+      21,
+      11,
+      220,
+      17,
+      22,
+      11,
+      220,
+      17,
+      23,
+      11,
+      220,
+      17,
+      24,
+      11,
+      220,
+      18,
+      15,
+      11,
+      220,
+      18,
+      16,
+      11,
+      220,
+      18,
+      17,
+      11,
+      220,
+      18,
+      18,
+      11,
+      220,
+      18,
+      19,
+      11,
+      220,
+      18,
+      20,
+      11,
+      220,
+      18,
+      21,
+      11,
+      220,
+      18,
+      22,
+      11,
+      220,
+      18,
+      23,
+      11,
+      220,
+      18,
+      24,
+      11,
+      220,
+      19,
+      15
+    ]
+  },
+  "after_direct": {
+    "load_seconds": 49.602072427995154,
+    "prefill_seconds": 4.981351882001036,
+    "decode_with_eos_seconds": 24.79219861299498,
+    "prompt_ids": [
+      248045,
+      846,
+      198,
+      2427,
+      494,
+      220,
+      16,
+      310,
+      220,
+      19,
+      15,
+      11,
+      18101,
+      539,
+      73982,
+      13,
+      8984,
+      1132,
+      279,
+      4947,
+      13,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "output_ids": [
+      16,
+      11,
+      220,
+      17,
+      11,
+      220,
+      18,
+      11,
+      220,
+      19,
+      11,
+      220,
+      20,
+      11,
+      220,
+      21,
+      11,
+      220,
+      22,
+      11,
+      220,
+      23,
+      11,
+      220,
+      24,
+      11,
+      220,
+      16,
+      15,
+      11,
+      220,
+      16,
+      16,
+      11,
+      220,
+      16,
+      17,
+      11,
+      220,
+      16,
+      18,
+      11,
+      220,
+      16,
+      19,
+      11,
+      220,
+      16,
+      20,
+      11,
+      220,
+      16,
+      21,
+      11,
+      220,
+      16,
+      22,
+      11,
+      220,
+      16,
+      23,
+      11,
+      220,
+      16,
+      24,
+      11,
+      220,
+      17,
+      15,
+      11,
+      220,
+      17,
+      16,
+      11,
+      220,
+      17,
+      17,
+      11,
+      220,
+      17,
+      18,
+      11,
+      220,
+      17,
+      19,
+      11,
+      220,
+      17,
+      20,
+      11,
+      220,
+      17,
+      21,
+      11,
+      220,
+      17,
+      22,
+      11,
+      220,
+      17,
+      23,
+      11,
+      220,
+      17,
+      24,
+      11,
+      220,
+      18,
+      15,
+      11,
+      220,
+      18,
+      16,
+      11,
+      220,
+      18,
+      17,
+      11,
+      220,
+      18,
+      18,
+      11,
+      220,
+      18,
+      19,
+      11,
+      220,
+      18,
+      20,
+      11,
+      220,
+      18,
+      21,
+      11,
+      220,
+      18,
+      22,
+      11,
+      220,
+      18,
+      23,
+      11,
+      220,
+      18,
+      24,
+      11,
+      220,
+      19,
+      15
+    ]
+  }
+}

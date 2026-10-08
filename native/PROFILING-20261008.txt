@@ -1,0 +1,328 @@
+MR114 native worker profiling and reproduction — 2026-10-08
+
+The live API uses the original C++/CUDA worker, greedy single-GPU execution.
+MR114 remains unmerged. Router baseline commit: adceb7a21c2affbd6957de4a246d36322b670e82.
+
+Identical warm workload
+POST /v1/chat/completions with model="small", stream=false and one user message:
+"Count from 1 to 40, separated by commas. Output only the numbers."
+30 prompt tokens, 149 output tokens, EOS stop, output cap 256. No prefix reuse.
+
+Unprofiled API comparison (model ready and resident before each request):
+                          Decode tok/s   Prompt s    Total s
+Original worker               0.774878     37.5871   229.9757
+Parallel expert router        5.312071      4.8827    33.0190
+Router + parallel attention   6.410482      4.6733    27.9943
+Final decode is 8.27x the original and 20.7% above the router-only result.
+All 149 output IDs match exactly in direct runs; API text/finish reason match.
+Direct model loads measured separately: original 49.49 s, router 50.22 s,
+attention 49.60 s. Loading is unchanged; 50+ tok/s is not achieved.
+
+Measured optimization decisions
+Original router: 89.91% of measured GPU kernel time, 28.343 ms/layer or
+1133.734 ms/token step. NVFP4 projections were only 2.53%, vocabulary 2.45%.
+Parallel expert logits retain serial FP32 accumulation within each row and
+original BF16 boundaries, softmax, stable top-k ties, shared gate and flags.
+One added launch, no arena allocation. Routing became about 31 ms/step.
+
+Next change was selected from separate matched decode-phase measurements:
+                                      Before attention   After attention
+Full-attention math (ms/step)               32.8406            1.3953
+NVFP4 projections, combined                 31.6740           31.7213
+Vocabulary selection                        30.7673           30.8084
+Remaining router                            25.5682           (unchanged)
+Linear auxiliary projections                12.6504           (unchanged)
+Full-attention prepare/append are separate from the attention-math row.
+Before attention, prompt-phase attention math was only 7.354 ms/step: measuring
+prompt and decode together would have obscured the largest decode cost.
+
+Attention now splits independent score positions and output dimensions across
+threads. Dot products and weighted sums keep their original ascending order;
+softmax keeps its serial order. BF16 rounding, padded diagnostics, KV state,
+status flags, stream ordering and owner/publication boundaries are preserved.
+No extra arena memory. Attention math is 23.5x faster in the matched phase.
+Remaining largest measured costs are NVFP4 projections and serial vocabulary
+selection, approximately 31.7 and 30.8 ms per decode step respectively.
+
+Profiling method and synchronization interpretation
+profiling/cuda_phase_profile.cpp is the measured LD_PRELOAD CUDA13 interposer.
+It surrounds __cudaLaunchKernel with CUDA events; host callsite offsets resolve
+against `nm -n -C WORKER` using profiling/summarize_profile.py. SIGUSR1 marks a
+phase boundary; send it while the worker awaits its next pipe command, after
+ready and after the final prompt reply. The next launch snapshots/resets counters.
+Phase 0 contains loading; phase 1 prompt; phase 2 decode. Generated EOS is included
+in native-step phase counters but excluded from API decode-rate reporting.
+Library build: g++ -O2 -shared -fPIC cuda_phase_profile.cpp -o phase_profile.so -ldl
+with CUDA runtime headers. Preload ONLY in the worker, not the API process.
+Raw phase aggregates, workload, token IDs and API records: profiling/20261008-results.json.
+
+Matched router-only decode: 149 steps, 181.779 ms GPU events/step;
+5.178 ms host launch calls/step; 6.536 ms D2H calls/step. About 1095 stream-sync
+calls/step (~27 per layer). Their 175.47 ms wait/step INCLUDES GPU execution;
+do not add this to kernel time or call it exclusive synchronization overhead.
+After attention: 150.525 ms GPU events/step, 5.272 ms launch calls/step;
+sync total 21.455 s versus 26.145 s before over the same 149 steps. D2H totals
+0.969 s versus 0.974 s. Copies are synchronous API wall time, not pure DMA time.
+GPU events include event-placement/launch gaps; profiler overhead is present.
+Headline throughput uses unprofiled API requests. Earlier direct original
+throughput 0.773422 agreed with API 0.774878, excluding API/IPC as the primary
+bottleneck. IPC is not independently isolated; host residual includes control,
+launching and IPC. No overlapping GPU/wait times are added together.
+
+Correctness and review hardening
+All 149 generated IDs match the original. 26 CPU CTests pass.
+Existing MoE and full-attention GPU stages 1/2/3 pass golden outputs, reset,
+expected numeric failure/invalidation and zero-ledger cleanup.
+Router regression: 12 cases covering full 256x2048 shape, ties, expert counts
+1/8/256, top-k 1/8, maximum BF16-weight FP32 overflow, and non-BF16 input.
+Attention regression: 7 cases at 16 query heads, 2 KV heads, head dim 256,
+capacity 65536, positions 0/1/31/127/178/511, including nonfinite input.
+Both tests reset BOTH status flags per case, compare them, require zero for
+valid inputs and nonzero for expected invalid inputs. Bitwise comparison covers
+router logits/probabilities/top-k/weights/shared factor and attention query/KV/
+probability-padding/core/gated outputs against frozen original GPU kernels.
+Commands (pass --device and 0 as separate arguments):
+          kadan-moe-route-parity --allow-gpu-validation --device 0
+          kadan-full-core-parity --allow-gpu-validation --device 0
+GPU tests remain explicit opt-in targets, not automatic CTest executions.
+This is regression evidence, not comprehensive reference-framework parity.
+
+Exact live configuration and tokenizer fix
+Checkpoint nvidia/Qwen3.6-35B-A3B-NVFP4, catalog small,
+revision 1355db6a052410cfd62085d94b58866fd0f2c3c5; context 65536; RTX3090 GPU 0.
+Native host envelope 270532608 B; parent host reservation 807403520 B;
+device envelope 22818965504 B including headroom 536870912 B.
+KADAN_LLM_BACKEND=native; KADAN_GPU=0;
+KADAN_GPU_BUDGET_BYTES={"0":22818965504}; HF_HUB_OFFLINE=1;
+OMP_NUM_THREADS=4; MKL_NUM_THREADS=4; WATCHFILES_FORCE_POLLING=true.
+Transformers 5.17.0, tokenizers 0.23.2, Torch 2.14.1, uvicorn 0.54.0,
+watchfiles 1.3.0. Chat template: tokenize=True, add_generation_prompt=True,
+enable_thinking=False, preserve_thinking=True. Adapter accepts Mapping
+(including BatchEncoding) and extracts input_ids; dict-only handling failed
+with the installed tokenizer. UserDict regression covers this fix.
+
+Image remains kadan-native-api:review-ba380d9,
+sha256:32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e.
+Attention-stage worker SHA256: bdc424a856e910e75c7cfaf2812b06a3a1b3be2ca05aea720972649cb8948727
+Router worker SHA256: 8416e32910f4176639656267f208ffa9c19187b2ae0e70d871c96cf767f3d03f
+Original worker SHA256: 5cfb911177fd930fe2111e975975ad50dd23e622d88e208671353a6930c66763
+CUDA 13.0.2, SM86, Release, --ftz=false, legacy stream, static libstdc++/libgcc.
+Only native/test targets rebuilt. No API dependency/image rebuild.
+Local build/native-dev directory mounted read-only at /opt/kadan/local;
+KADAN_NATIVE_WORKER=/opt/kadan/local/run-model-worker, with wrapper scoping
+LD_LIBRARY_PATH=/opt/kadan/lib then executing local/kadan-model-worker.
+Image SHA256SUMS describes its original binary; live binary has separate
+/opt/kadan/local/SHA256SUMS. Source api mounted at /app/api; uvicorn --reload
+--reload-dir /app/api. Frontend uses source-mounted Vite. Data/settings retained.
+
+Reproduce: wait GET /model-lifecycle for ready; send the workload above; inspect
+/v1/requests prefill_ms, decode_tokens_per_second, prefill_tokens/output_tokens.
+Native changes: build kadan-model-worker, atomically replace the directory-mounted
+binary and update its hash, POST /model-lifecycle/unload then /load. Python changes
+hot reload. Roll back to the image worker by changing only local KADAN_NATIVE_WORKER
+to /opt/kadan/bin/run-model-worker and recreating API with --no-build --no-deps.
+Do not remove volumes. Keep MR114 unmerged.
+
+Projection optimization (next coherent change)
+Fresh current-worker decode profile: NVFP4 31.698 ms/step, vocabulary 30.727,
+remaining route 25.536, linear auxiliary 12.629. This selected NVFP4 next.
+Admitted FP4 magnitude <=6 and positive E4M3 scale <=448 imply local magnitude
+<=2688. For |global| <= FLT_MAX/4096 the exact product cannot overflow FP32.
+Dispatch that conservative case without per-weight FP64 checks; retain the
+original exact double check for larger scales. Post-multiply and BF16 numeric
+checks remain. No changes to decoding arithmetic or reduction ordering.
+Measured NVFP4 cost: 10.884 ms/step, down from 31.698. All 149 output IDs match.
+Warm API: 7.405324 tok/s; prompt 4.028506 s;
+total 24.244720 s. Direct load 49.785798 s, prompt
+4.352109 s, decode including EOS 21.653301 s.
+Latest worker SHA256: 21bff4f94e2660298a70fc2431176b649bf7b586b2192fd4610ad7d6692aa4ba
+Evidence: profiling/20261008-projection.json. Image/dependencies unchanged.
+Tests: exhaustive CPU bound check for every admitted FP4/E4M3 code at both bound
+signs; 34 bitwise GPU cases across both BF16 modes, subnormal/signed globals,
+boundary/fallback/overflow and 248320x2048 head shape; six existing GPU projection
+goldens; 26 CPU CTests. Attention test now begins with nonzero probability
+sentinels, tests positions 128/129 and capacity-1, and follows long prefixes with
+short ones. It explicitly asserts zero tail padding, not only reference parity.
+Run: kadan-nvfp4-bounded-parity --allow-gpu-validation --device 0
+Run: kadan-full-core-parity --allow-gpu-validation --device 0
+
+Parallel vocabulary selection
+After projections, selection was largest at 30.732 ms/decode step. The new
+256-thread selector performs the identical per-logit BF16 conversion/sanitization,
+then an associative max with lowest-ID tie breaking. Diagnostic logits and status
+are unchanged. Selection is now 0.340 ms/step; all 149 output IDs match.
+Warm API 9.547823 tok/s, prompt 3.142033 s,
+total 18.780214 s. Separate direct load 50.228616 s,
+prompt 3.447379 s, decode including EOS 17.112554 s.
+Latest worker SHA256: 3b90301205e11bb63476ba609b2018e0f04378036a60e176d44b9d56000346c3
+36 bitwise selection cases cover boundary sizes, BF16 ties, signed zeros,
+nonfinite/BF16 overflow, full vocabulary and final-ID maxima. All mixed-stack
+GPU stages and 26 CPU tests pass. Evidence: profiling/20261008-selection.json.
+Run: kadan-selection-parity --allow-gpu-validation --device 0
+
+Remaining-router optimization
+After vocabulary selection, remaining route was 25.544 ms/decode step. Coalesced
+shared-memory staging preserves the original serial normalization/shared-gate
+sums. A -1 candidate marker is equivalent to excluding already-selected experts
+because normalized probabilities are nonnegative. Strict comparisons retain
+lowest-ID ties. Widths above 4096 keep the previous kernel; shared bytes are
+bounded to at most 34816. Remaining route is now 6.607 ms/step.
+Warm API 11.661429 tok/s; prompt 2.565798 s;
+total 15.385414 s. Direct load 50.085940 s, prompt
+2.864491 s, decode including EOS 14.307227 s.
+Latest worker SHA256: ebddcb915089ed7314052ca5aa5a99df3f5969f99217c8c00f311e4d32ca466a
+All 149 IDs match. 14 router cases include 4096/4097 shared/fallback boundaries;
+all MoE GPU stages and 26 CPU tests pass. Evidence:
+profiling/20261008-router-shared.json. No image/dependency rebuild.
+
+Shared normalization and independent auxiliary heads
+Latest profile selected combined normalization and auxiliary costs. Coalesced
+shared staging preserves serial sum order and numeric flags in linear/full/decoder
+RMS normalization, with widths above 4096 retaining the original kernel. Independent
+auxiliary heads now use separate blocks with unchanged dot-product arithmetic.
+Linear normalization 11.471 -> 2.330 ms/step; decoder normalization 11.034 -> 3.134;
+auxiliary 12.633 -> 7.101. All 149 generated IDs remain identical.
+Warm API 17.197736 tok/s, prompt 1.732722 s, total 10.498271 s.
+Separate direct load 50.086447 s, prompt 2.048769 s, decode incl EOS 10.212494 s.
+Latest worker SHA256: 7e15287ea368c8e3dca106e83e991206b4b7f68dc67032a74c39ce480a2c873e
+90 bitwise normalization cases cover three families, widths 1/3/2048/4096/4097,
+valid/zero/non-BF16/nonfinite/overflow/signed-zero data. 12 auxiliary bitwise cases
+cover 1/4/32 heads, full shape, zero/nonfinite/overflow. All linear and decoder GPU
+stages and 26 CPU CTests pass. Evidence: profiling/20261008-normalization.json.
+Run: kadan-normalization-parity --allow-gpu-validation --device 0
+Run: kadan-linear-auxiliary-parity --allow-gpu-validation --device 0
+Native targets only rebuilt; image/dependencies/data/settings unchanged.
+
+Coalesced scalar-dot products
+Shared-memory product staging retains the exact ascending FP32 additions and
+BF16 boundaries. Width >4096 retains the original kernel. Auxiliary projection
+7.101 -> 2.412 ms/step; router logits 5.224 -> 2.229. Remaining route stays 6.545.
+All 149 IDs match. Warm API 19.783752 tok/s, prompt 1.509321 s, total 9.070434 s.
+Direct load 50.681055 s, prompt 1.802629 s, decode incl EOS 9.059132 s.
+Latest worker SHA256: 12ed6919f43f1b4c564ec1ae98a287fd82f84519b33bac127daf9924ac598caf
+Explicit NaN regressions now pass in 105 normalization, 60 auxiliary (including
+4096/4097), and 15 router cases. All MoE GPU stages and 26 CPU tests pass.
+Evidence: profiling/20261008-dot-staging.json. Native targets only rebuilt.
+
+Stage-boundary status checks
+One legacy stream orders dependent kernels and numeric flags accumulate until
+each layer starts. Retain checks after attention, post norm, routing (before host
+indices), mixture, and residual. Remove intermediate waits in attention/expert
+operations. Owners still drain/invalidate/quarantine on failure before publication.
+26 CPU tests (including new early-projection numeric failure), all decoder and
+mixed-stack GPU stages pass. Late-failure tests now assert the full mixture is
+submitted before rejection; output/token publication and cleanup assertions stay.
+149 output IDs match. Decode sync calls 163156 -> 30546, D2H 169115 -> 36505.
+Sync wait includes GPU execution; it is not added to GPU time.
+Warm API 23.791985 tok/s, prompt 1.250731 s, total 7.558756 s.
+Direct load 50.665559 s, prompt 1.513913 s, decode incl EOS 7.566063 s.
+Latest worker SHA256: 3169d72cc9e53a8d67167c9360383d8a94967292b25672383e189d1b7d5b4159
+Evidence: profiling/20261008-barriers.json. Native rebuild only; hot reload intact.
+
+Parallel router exponentials and stable selection
+Independent exponentials and probability divisions are parallel. Top-k reduces
+(value, lowest expert ID) pairs, excluding winners with -1. Serial sums of all
+probabilities, selected probabilities, and shared-gate products are unchanged.
+Route 6.545 -> 2.853 ms/step. 15 bitwise router cases including NaN, ties,
+4096/4097 boundaries; all MoE GPU stages and 26 CPU tests pass. 149 IDs match.
+Warm API 26.119518 tok/s, prompt 1.135493 s, total 6.884216 s.
+Direct load 50.708565 s, prompt 1.407122 s, decode incl EOS 7.012884 s.
+Latest worker SHA256: d610f0c9340728a8c574fdc439d06c5557e18817252dd6086806f3df97e65f97
+Evidence: profiling/20261008-router-parallel.json. Native targets only rebuilt.
+
+Ordered sums with exact failure replay
+IEEE addition cannot recover from Inf/NaN without sanitization. A finite final
+sum proves all intermediate sums were finite; omit per-add checks on that path.
+On nonfinite final sums, replay the original checks/resets to preserve diagnostic
+outputs and flags. Ascending additions and BF16 boundaries are unchanged.
+108 sum cases cover odd/full/zero lengths, overflow followed by cancellation,
+Inf/NaN, subnormals, signed zeros, and pre-existing flags. Expanded 105/60/15
+normalization/auxiliary/router cases and 26 CPU tests pass. All 149 IDs match.
+Warm API 34.287630 tok/s, prompt 0.855812 s, total 5.247149 s.
+Direct load 50.628657 s, prompt 1.119194 s, decode incl EOS 5.624754 s.
+Latest worker SHA256: cd59f1f16e344f81e9195e68e1d93b5e51e5a4673d670d054afe8e5c9ca1761c
+Evidence: profiling/20261008-ordered-sum.json. Native targets only rebuilt.
+Run: kadan-ordered-sum-parity --allow-gpu-validation --device 0
+Review follow-up: exact source 02abd7056503872e366017de160969bdad2eb762 was
+archived separately, rebuilt and rerun: 105 normalization, 60 auxiliary, and
+15 router cases all passed. Its recorded API rate is 23.791985 tok/s.
+
+Fused expert projections
+Gate/up use a two-dimensional grid with the original row kernel. Routed down
+projections perform the original BF16 weighting/accumulation in their final lane,
+retaining raw down diagnostics. Shared down remains separate. No arena growth.
+126 bitwise fusion cases cover both BF16 modes, shapes, bounded/fallback scales,
+Inf/NaN, accumulator overflow and absent expert. Existing 34 projection cases,
+all decoder/mixed-stack GPU stages and 26 CPU tests pass. 149 IDs match.
+Warm API 35.708470 tok/s, prompt 0.829894 s, total 5.122045 s.
+Direct load 50.071925 s, prompt 1.026128 s, decode incl EOS 5.102568 s.
+Latest worker SHA256: 6a192e00d05942d816abf5e3cf3d1efe38e13970611c8a79609499e484182ad1
+Evidence: profiling/20261008-expert-fusion.json. Native rebuild only.
+Run: kadan-nvfp4-fusion-parity --allow-gpu-validation --device 0
+
+Block-local FP8 decoded-weight tables
+Four independent rows share a block and a scalar-scale decode table; per-row
+scales use four tables. Four-warps-per-row sums and every BF16 boundary stay.
+Only used entries affect flags. Out-of-range rows still participate in barriers.
+384 bitwise cases include scalar/row scales, both BF16 modes, partial rows/columns,
+signs, zero, subnormal, overflow, Inf/NaN, unused overflowing table entries.
+All decoder/stack GPU stages and 26 CPU tests pass; 149 generated IDs match.
+FP8 kernels 5.841 -> 2.763 ms/step.
+Warm API 40.418982 tok/s, prompt 0.736669 s, total 4.523774 s.
+Direct load 50.106768 s, prompt 0.923834 s, decode incl EOS 4.635395 s.
+Latest worker SHA256: cbfb8458e7d50b58ce74683ace9b87f18c568e59c86e0c74224c5e550bdc051a
+Evidence: profiling/20261008-fp8-table.json. Native rebuild only.
+Run: kadan-fp8-table-parity --allow-gpu-validation --device 0
+
+Hybrid NVFP4 decoded-weight tables
+Columns >=2048 use a block-local FP4/E4M3/global table across four rows. Short
+rows retain the smaller kernel (table staging regressed the 512-column microbench).
+Original partial sums, BF16 boundaries, exact large-global overflow checks stay.
+Unused entries never affect status. Paired projections 4.323 -> 3.408 ms/step.
+38 original-reference projection cases now include unused overflowing table
+entries; 126 fusion cases, all decoder/stack GPU stages and 26 CPU tests pass.
+149 generated IDs match.
+Warm API 42.881621 tok/s, prompt 0.689286 s, total 4.230605 s.
+Direct load 49.633054 s, prompt 0.891359 s, decode incl EOS 4.434501 s.
+Latest worker SHA256: ece9e801db85fbbe1cce865f3a94bf6343345d0b5d62187d61ce94cc60f8a1d6
+Evidence: profiling/20261008-fp4-table.json. Native rebuild only.
+
+Parallel attention-head preparation and normalization
+Stage independent products, keep ordered sums, then compute independent output
+dimensions and rotary pairs in parallel. Dimensions >4096 keep the original
+kernels. Barriers separate product staging, inverse computation, and rotation.
+42 bitwise combined head cases cover odd/full/4096/4097 dimensions, zero/signed
+zero, Inf/NaN, overflow and invalid norm weights. Full-core parity (including
+capacity-end/short-after-long), all linear/decoder GPU stages and 26 CPU tests pass.
+149 generated IDs match.
+Warm API 48.937376 tok/s, prompt 0.604069 s, total 3.731506 s.
+Direct load 49.898865 s, prompt 0.795500 s, decode incl EOS 4.002463 s.
+Latest worker SHA256: a301a385102b60533b989bd1628e772790f1fd23d1c929d97d18e9488619138a
+Evidence: profiling/20261008-head-normalization.json. Native rebuild only.
+Run: kadan-attention-head-parity --allow-gpu-validation --device 0
+
+Final: status observations at routing and publication
+Flags accumulate on one legacy stream. Check before host-selected indices and
+before layer publication; no per-layer flag reset occurs between those points.
+Cancellation keeps the same checkpoints and drains/checks pending work first,
+preserving numeric-error priority. CPU regressions assert that pre-route numeric
+errors win over invalid selected indices and concurrent cancellation; failure
+publication, reset, and quarantine assertions remain. 26 CPU tests and all
+decoder/stack GPU stages pass. 149/149 output IDs match the reference.
+Decode sync calls 30546 -> 12666; D2H copies 36505 -> 18625.
+Initial warm API 51.724706 tok/s. Three repeat requests:
+median 51.922933 tok/s, range 51.733803--52.051356.
+Median API prompt 0.556738 s; total 3.537372 s.
+All repeats returned the exact count-from-1-to-40 text, 30 input/149 output tokens.
+Separate instrumented load 50.195393 s, prompt 0.763096 s, decode incl EOS 3.789727 s.
+Latest worker SHA256: 6475816389ed484d0b64eda6efcdf0453f7e29836d7b65ae050b9a68e061f387
+The live /proc/<pid>/exe hash was independently checked against this binary.
+API uses source-mounted uvicorn --reload --reload-dir /app/api; UI runs Vite.
+Original image ID 32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e
+is unchanged. Native targets rebuilt in cached builder; no image rebuild.
+Local data, model selection/context, and unrelated settings retained.
+Evidence: profiling/20261008-publication-barriers.json.
+
+Review regression follow-up: fused gate/up parity now uses distinct weight AND
+scale buffers with different contents, in addition to different globals. All
+126 cases pass. This is test-only; the final running worker/hash is unchanged.

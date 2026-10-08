@@ -16,6 +16,7 @@ from .artifacts import ExclusiveOutput, require, sha256
 from .capture_actual import bounded_json, validate_manifest, plain_path, BUFFER
 from .capture import REPO, PINS
 from .supervisor import Observation
+from .ancestor_observer import AncestorObserver
 
 MAX_LOG = 8 * BUFFER
 
@@ -45,6 +46,7 @@ class DockerReferenceStage:
         self.final_oom = None
         self.cgroup_identity = None
         self.verified_id = None
+        self.ancestor_observer = None
 
     def rpc(self, args, timeout):
         # Bounded disk-backed capture: no unbounded communicate() buffers.
@@ -106,6 +108,11 @@ class DockerReferenceStage:
         self.initial_oom=self.oom()
         procs=(self.cgroup/'cgroup.procs').read_text().split()
         require(procs==[str(pid)], 'unexpected_container_children')
+        pin=self.manifest.get('existing_ancestor')
+        if pin is not None:
+            require(host.get('AutoRemove') is False and host.get('CgroupnsMode')=='private', 'retained_private_container')
+            require(type(pid) is int and pid>0, 'init_pid')
+            self.ancestor_observer=AncestorObserver(self.cgroup,pid,pin)
         self.verified_id=cid
         return True
 
@@ -179,6 +186,19 @@ class DockerReferenceStage:
         if reaped:
             for log in self.logs:
                 if log.fd>=0:log.finish()
+        if getattr(self,'ancestor_observer',None) is not None and state['Running'] is False:
+            remaining=end-time.monotonic()
+            require(remaining>0,'observation_deadline')
+            raw=self.rpc(['wait',cid],remaining).decode().strip()
+            require(raw.isdecimal(),'docker_wait_status')
+            proof=self.ancestor_observer.sample(state,int(raw))
+            remaining=end-time.monotonic()
+            require(remaining>0,'observation_deadline')
+            unchanged=self.evidence_check('manifest',self.manifest_path,remaining)
+            return Observation(cid,False,0 if proof.absence_verified else None,0,reaped,
+                               proof.init_terminated,False,state['OOMKilled'],
+                               0 if proof.ancestor_oom_unchanged else None,unchanged,
+                               None,None,'terminated_headroom',proof)
         # Require a final cgroup sample after the owned child has exited. On engines
         # that remove the cgroup immediately this intentionally returns uncertainty.
         procs=None

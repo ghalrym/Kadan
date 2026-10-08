@@ -5,6 +5,13 @@
 namespace {
 __device__ float bf16_weight(float x) { unsigned b=__float_as_uint(x);b+=0x7fffu+((b>>16)&1u);return __uint_as_float(b&0xffff0000u); }
 
+__device__ float bf16_activation(float value,unsigned* status){
+    if(!isfinite(value)){atomicOr(status,1U);value=0;}
+    value=bf16_weight(value);
+    if(!isfinite(value)){atomicOr(status,1U);value=0;}
+    return value;
+}
+
 __device__ __forceinline__ float fp4(unsigned code) {
     const unsigned exponent = (code >> 1) & 3;
     const float magnitude = exponent == 0 ? float(code & 1) * 0.5F
@@ -26,10 +33,11 @@ __device__ __forceinline__ float warp_sum(float value) {
 // Original scalar CUDA implementation. Four warps cooperate on one row; each
 // lane handles packed byte pairs, with in-register dequantization and FP32 FMA.
 // Padding/tails do not mask warp participation. No dense weight intermediates.
-template<bool BF16>
+template<bool BF16, bool Bounded, bool Accumulate=false, bool Pair=false>
 __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* scales,
                             float global, const float* input, float* output,
-                            unsigned* status, std::size_t columns) {
+                            unsigned* status, std::size_t columns, Nvfp4Accumulation accumulation={}, Nvfp4Pair pair={}) {
+    if constexpr(Pair) if(blockIdx.y){weights=pair.weights;scales=pair.scales;global=pair.global;output=pair.output;}
     const std::size_t row = blockIdx.x;
     const std::size_t packed_columns = columns / 2;
     const auto* row_weights = weights + row * packed_columns;
@@ -43,8 +51,9 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
         // matches the CPU decoded-weight rounding before the dot product.
         const float local_low = fp4(packed & 15) * scale;
         const float local_high = fp4(packed >> 4) * scale;
-        invalid |= kadan::cuda::detail::weight_overflows(local_low, global)
-                || kadan::cuda::detail::weight_overflows(local_high, global);
+        if constexpr(!Bounded)
+            invalid |= kadan::cuda::detail::weight_overflows(local_low, global)
+                    || kadan::cuda::detail::weight_overflows(local_high, global);
         float low = __fmul_rn(local_low, global);
         float high = __fmul_rn(local_high, global);
         if constexpr(BF16) { low=bf16_weight(low);high=bf16_weight(high); }
@@ -64,6 +73,68 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
         if (lane == 0) {
             if (!isfinite(sum)) atomicOr(status, 2U);
             output[row] = sum;
+            if constexpr(Accumulate){
+                float weight=0;for(std::size_t rank=0;rank<accumulation.top_k;++rank)
+                    if(accumulation.selected[rank]==accumulation.expert)weight=accumulation.weights[rank];
+                const float down=bf16_activation(sum,status);
+                const float weighted=bf16_activation(__fmul_rn(down,weight),status);
+                accumulation.accumulator[row]=bf16_activation(__fadd_rn(accumulation.accumulator[row],weighted),status);
+            }
+        }
+    }
+}
+// Long rows amortize a block-local FP4/E4M3/global decode table across four
+// independent rows. Preserve the original partial sums; unused entries never
+// affect numeric flags. Short rows retain the smaller original kernel.
+template<bool BF16, bool Bounded, bool Accumulate=false, bool Pair=false>
+__global__ void nvfp4_table(const std::uint8_t* weights, const std::uint8_t* scales,
+                            float global, const float* input, float* output,
+                            unsigned* status, std::size_t columns, std::size_t rows, Nvfp4Accumulation accumulation={}, Nvfp4Pair pair={}) {
+    if constexpr(Pair) if(blockIdx.y){weights=pair.weights;scales=pair.scales;global=pair.global;output=pair.output;}
+    const unsigned group=threadIdx.x/128,tid=threadIdx.x%128;
+    const std::size_t row = blockIdx.x*4+group;
+    const std::size_t packed_columns = columns / 2;
+    const auto* row_weights = weights + row * packed_columns;
+    const auto* row_scales = scales + row * (columns / 16);
+    __shared__ float table[2048];
+    __shared__ unsigned char overflow[2048];
+    for(unsigned code=threadIdx.x;code<2048;code+=blockDim.x){
+        const float local=fp4(code&15)*positive_fp8(code>>4);
+        if constexpr(!Bounded)overflow[code]=kadan::cuda::detail::weight_overflows(local,global);
+        float value=__fmul_rn(local,global);if constexpr(BF16)value=bf16_weight(value);table[code]=value;
+    }
+    __syncthreads();
+    float sum = 0;
+    bool invalid = false;
+    for (std::size_t byte = tid; row<rows && byte < packed_columns; byte += 128) {
+        const unsigned packed = row_weights[byte];
+        const unsigned scale=unsigned(row_scales[byte/8])<<4;
+        const unsigned lo=scale|(packed&15),hi=scale|(packed>>4);
+        const float low=table[lo],high=table[hi];
+        if constexpr(!Bounded)invalid|=overflow[lo]||overflow[hi];
+        invalid |= !isfinite(low) || !isfinite(high);
+        sum = fmaf(low, input[byte * 2], sum);
+        sum = fmaf(high, input[byte * 2 + 1], sum);
+    }
+    if (invalid) atomicOr(status, 1U);
+    sum = warp_sum(sum);
+    __shared__ float partial[16];
+    const unsigned lane = tid & 31;
+    const unsigned warp = tid >> 5;
+    if (lane == 0) partial[group*4+warp] = sum;
+    __syncthreads();
+    if (warp == 0) {
+        sum = warp_sum(lane < 4 ? partial[group*4+lane] : 0.0F);
+        if (lane == 0 && row<rows) {
+            if (!isfinite(sum)) atomicOr(status, 2U);
+            output[row] = sum;
+            if constexpr(Accumulate){
+                float weight=0;for(std::size_t rank=0;rank<accumulation.top_k;++rank)
+                    if(accumulation.selected[rank]==accumulation.expert)weight=accumulation.weights[rank];
+                const float down=bf16_activation(sum,status);
+                const float weighted=bf16_activation(__fmul_rn(down,weight),status);
+                accumulation.accumulator[row]=bf16_activation(__fadd_rn(accumulation.accumulator[row],weighted),status);
+            }
         }
     }
 }
@@ -71,15 +142,37 @@ __global__ void nvfp4_matvec(const std::uint8_t* weights, const std::uint8_t* sc
 cudaError_t kadan_launch_nvfp4(const std::uint8_t* weights, const std::uint8_t* scales,
                              float global, const float* input, float* output,
                              unsigned* status, std::size_t rows, std::size_t columns) {
-    nvfp4_matvec<false><<<static_cast<unsigned>(rows), 128, 0, cudaStreamLegacy>>>(
-        weights, scales, global, input, output, status, columns);
+    if(kadan::cuda::detail::bounded_nvfp4_global(global))
+        { if(columns>=2048) nvfp4_table<false,true><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows); else nvfp4_matvec<false,true><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns); }
+    else
+        { if(columns>=2048) nvfp4_table<false,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows); else nvfp4_matvec<false,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns); }
     return cudaGetLastError();
 }
 
 cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t* weights, const std::uint8_t* scales,
                              float global, const float* input, float* output,
                              unsigned* status, std::size_t rows, std::size_t columns) {
-    nvfp4_matvec<true><<<static_cast<unsigned>(rows), 128, 0, cudaStreamLegacy>>>(
-        weights, scales, global, input, output, status, columns);
+    if(kadan::cuda::detail::bounded_nvfp4_global(global))
+        { if(columns>=2048) nvfp4_table<true,true><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows); else nvfp4_matvec<true,true><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns); }
+    else
+        { if(columns>=2048) nvfp4_table<true,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows); else nvfp4_matvec<true,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns); }
+    return cudaGetLastError();
+}
+
+cudaError_t kadan_launch_nvfp4_pair(const std::uint8_t* weights,const std::uint8_t* scales,float global,const float* input,float* output,unsigned* status,std::size_t rows,std::size_t columns,bool bf16,Nvfp4Pair pair){
+    const bool bounded=kadan::cuda::detail::bounded_nvfp4_global(global)&&kadan::cuda::detail::bounded_nvfp4_global(pair.global);
+    if(bf16&&bounded) { if(columns>=2048) nvfp4_table<true,true,false,true><<<dim3(static_cast<unsigned>((rows+3)/4),2),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,{},pair); else nvfp4_matvec<true,true,false,true><<<dim3(static_cast<unsigned>(rows),2),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,{},pair); }
+    else if(bf16) { if(columns>=2048) nvfp4_table<true,false,false,true><<<dim3(static_cast<unsigned>((rows+3)/4),2),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,{},pair); else nvfp4_matvec<true,false,false,true><<<dim3(static_cast<unsigned>(rows),2),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,{},pair); }
+    else if(bounded) { if(columns>=2048) nvfp4_table<false,true,false,true><<<dim3(static_cast<unsigned>((rows+3)/4),2),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,{},pair); else nvfp4_matvec<false,true,false,true><<<dim3(static_cast<unsigned>(rows),2),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,{},pair); }
+    else { if(columns>=2048) nvfp4_table<false,false,false,true><<<dim3(static_cast<unsigned>((rows+3)/4),2),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,{},pair); else nvfp4_matvec<false,false,false,true><<<dim3(static_cast<unsigned>(rows),2),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,{},pair); }
+    return cudaGetLastError();
+}
+
+cudaError_t kadan_launch_nvfp4_accumulate(const std::uint8_t* weights,const std::uint8_t* scales,float global,const float* input,float* output,unsigned* status,std::size_t rows,std::size_t columns,bool bf16,Nvfp4Accumulation accumulation){
+    const bool bounded=kadan::cuda::detail::bounded_nvfp4_global(global);
+    if(bf16&&bounded) { if(columns>=2048) nvfp4_table<true,true,true,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,accumulation,{}); else nvfp4_matvec<true,true,true,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,accumulation,{}); }
+    else if(bf16) { if(columns>=2048) nvfp4_table<true,false,true,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,accumulation,{}); else nvfp4_matvec<true,false,true,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,accumulation,{}); }
+    else if(bounded) { if(columns>=2048) nvfp4_table<false,true,true,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,accumulation,{}); else nvfp4_matvec<false,true,true,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,accumulation,{}); }
+    else { if(columns>=2048) nvfp4_table<false,false,true,false><<<static_cast<unsigned>((rows+3)/4),512,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,rows,accumulation,{}); else nvfp4_matvec<false,false,true,false><<<static_cast<unsigned>(rows),128,0,cudaStreamLegacy>>>(weights,scales,global,input,output,status,columns,accumulation,{}); }
     return cudaGetLastError();
 }

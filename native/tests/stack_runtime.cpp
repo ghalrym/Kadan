@@ -104,8 +104,8 @@ int main(){try{
         case 12:selection_override=99;break;
         }
         auto before=launches;auto result=kadan::stack::Selection{77,false};bool quarantine=rejected([&]{result=model.step(7,true,&stop);});check(quarantine==(scenario==4||scenario==10));check(!model.valid()&&model.tokens()==1&&result.token==77);
-        if(scenario==0){check(launches-before==99);for(std::size_t i=0;i<4;++i){auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.offset[i]+p.layer[i].state_first;check(state[0]!=0);}}
-        if(scenario==11)check(launches-before==114);
+        if(scenario==0){check(launches-before==92);for(std::size_t i=0;i<4;++i){auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.offset[i]+p.layer[i].state_first;check(state[0]!=0);}}
+        if(scenario==11)check(launches-before==94);
         late_numeric=head_numeric=false;cancellation=cancel_after_copy=nullptr;final_sync_failures=1;selection_override=0;stop=false;before=launches;rejected([&]{model.step(2);});check(launches==before);
         std::array<float,16>a{},b{};rejected([&]{model.read_output(a,b);});
         if(scenario==0||scenario==1||scenario==8||scenario==9||scenario==11||scenario==12){model.reset();check(model.valid()&&model.tokens()==0);for(std::size_t i=0;i<4;++i){std::vector<std::uint8_t> x(p.layer[i].state_first_bytes),y(p.layer[i].state_second_bytes);model.read_state(i,x,y);for(auto v:x)check(v==0);for(auto v:y)check(v==0);}model.step(2);check(model.tokens()==1);}
@@ -118,7 +118,7 @@ int main(){try{
     {kadan::StateCursor a(4,8),b(4,8);kadan::cuda::detail::DecoderProducer producer(c.layer[0],p.layer[0],a);auto own=a.begin(),foreign=b.begin();auto before=launches;rejected([&]{producer.run(foreign,nullptr,nullptr);});a.abort(own);a.reset();rejected([&]{producer.run(own,nullptr,nullptr);});check(launches==before);}
     {auto r=manager();Stack model(c,f.weights(),0,r);auto before=launches;owner_allocations::all_count=0;owner_allocations::count_all=true;
         for(int replay=0;replay<2;++replay){for(int t=0;t<5;++t)model.step(2,false);model.reset();}
-        owner_allocations::count_all=false;check(owner_allocations::all_count==0&&launches-before==1150);for(int i=0;i<8;++i)model.step(2,false);before=launches;rejected([&]{model.step(2);});check(launches==before&&model.tokens()==8&&model.valid());model.close();check(used==0);}
+        owner_allocations::count_all=false;check(owner_allocations::all_count==0&&launches-before==950);for(int i=0;i<8;++i)model.step(2,false);before=launches;rejected([&]{model.step(2);});check(launches==before&&model.tokens()==8&&model.valid());model.close();check(used==0);}
     {auto eos=c;eos.eos=0;auto r=manager();Stack model(eos,f.weights(),0,r);check(model.step(2,false).eos&&!model.finished());check(model.step(7).eos&&model.finished());auto before=launches;rejected([&]{model.step(0);});check(launches==before&&model.tokens()==2);model.reset();check(!model.finished());model.close();}
     std::cout<<"Stack arena "<<p.device_bytes<<", metadata "<<metadata<<"; whole-token failure/quarantine, allocation and operation-count tests passed.\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
@@ -129,3 +129,6 @@ std::size_t bf16_launches=0;
 cudaError_t kadan_launch_fp8_bf16(const std::uint8_t*w,const float*s,bool row,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){++bf16_launches;return kadan_launch_fp8(w,s,row,x,y,f,r,c);}
 
 cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t*w,const std::uint8_t*s,float g,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){++bf16_launches;check(g>0);return kadan_launch_nvfp4(w,s,g,x,y,f,r,c);}
+
+cudaError_t kadan_launch_nvfp4_pair(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*,std::size_t,std::size_t,bool,Nvfp4Pair){return launch();}
+cudaError_t kadan_launch_nvfp4_accumulate(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*,std::size_t,std::size_t,bool,Nvfp4Accumulation){return launch();}

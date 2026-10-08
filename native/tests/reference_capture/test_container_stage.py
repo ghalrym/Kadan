@@ -5,10 +5,14 @@ import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from dataclasses import replace
+from native.tests.reference_capture.ancestor_observer import AncestorObserver, HeadroomProof, identity, require_hierarchical_events
+from native.tests.reference_capture.supervisor import Observation
 
 from native.tests.reference_capture.container_stage import DockerReferenceStage
 from native.tests.reference_capture.artifacts import sha256
 from native.tests.reference_capture.evidence import read_regular
+from native.tests.reference_capture.lifecycle_smoke import SmokeStage, WORK
 
 
 class TransportTests(unittest.TestCase):
@@ -152,6 +156,77 @@ class TransportTests(unittest.TestCase):
             result=observed.observe(observed.verified_id,1)
             self.assertFalse(result.child_reaped)
             self.assertFalse(result.cleanup_known(observed.verified_id))
+
+    def test_headroom_proof_is_distinct_from_zero_freed_bytes(self):
+        proof=HeadroomProof(True,True,True,True,True,137,100*1024**3,44*1024**3,
+                            60*1024**3,None,44*1024**3)
+        observation=Observation('a'*64,False,0,0,True,True,False,False,0,True,
+                                None,None,'terminated_headroom',proof)
+        self.assertTrue(observation.cleanup_known('a'*64))
+        self.assertFalse(observation.memory_released)
+        for key,value in (('init_terminated',False),('absence_verified',False),
+                          ('ancestor_identity_unchanged',False),('ancestor_oom_unchanged',False),
+                          ('ancestor_peers_unchanged',False),('host_available_bytes',1),
+                          ('ancestor_limit_bytes',61*1024**3),('host_floor_bytes',0)):
+            with self.subTest(key=key):
+                self.assertFalse(replace(observation,headroom_proof=replace(proof,**{key:value})).cleanup_known('a'*64))
+        self.assertFalse(replace(observation,memory_released=True).cleanup_known('a'*64))
+        self.assertFalse(replace(observation,cleanup_mode='zero_charge').cleanup_known('a'*64))
+
+    def test_deleted_leaf_needs_pinned_ancestor_wait_pidfd_and_headroom(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent=Path(folder);leaf=parent/'docker-owned.scope';leaf.mkdir()
+            observer=object.__new__(AncestorObserver)
+            observer.parent=parent;observer.leaf=leaf;observer.leaf_identity=identity(leaf)
+            observer.poller=Mock();observer.poller.poll.return_value=[(12,1)]
+            observer.peers=set();observer.pin={'identity':identity(parent),'oom_kill':0,
+                'memory_max':'max','host_floor_bytes':44*1024**3,'ancestor_floor_bytes':44*1024**3}
+            (parent/'memory.events').write_text('oom_kill 0\n')
+            (parent/'memory.current').write_text(str(30*1024**3))
+            (parent/'memory.max').write_text('max')
+            leaf.rmdir()
+            state={'Running':False,'Pid':0,'Restarting':False,'Dead':False,
+                   'FinishedAt':'2026-10-08T11:00:00Z','ExitCode':137}
+            original=Path.read_text
+            def read(path,*args,**kwargs):
+                if str(path)=='/proc/meminfo':return 'MemAvailable: 104857600 kB\n'
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'read_text',read):
+                self.assertTrue(observer.sample(state,137).valid())
+                observer.poller.poll.return_value=[]
+                self.assertFalse(observer.sample(state,137).valid())
+                observer.poller.poll.return_value=[(12,1)]
+                with self.assertRaises(ValueError):observer.sample(state,0)
+                (parent/'unexplained.scope').mkdir()
+                self.assertFalse(observer.sample(state,137).valid())
+                (parent/'unexplained.scope').rmdir()
+                (parent/'memory.events').write_text('oom_kill 1\n')
+                self.assertFalse(observer.sample(state,137).valid())
+                (parent/'memory.events').unlink()
+                with self.assertRaises(OSError):observer.sample(state,137)
+
+    def test_localevents_mount_option_is_rejected(self):
+        ordinary='29 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 cgroup rw,nsdelegate,memory_recursiveprot'
+        require_hierarchical_events(ordinary)
+        for bad in (ordinary+',memory_localevents',ordinary.replace('rw,nosuid','rw,memory_localevents,nosuid'),'',ordinary+'\n'+ordinary):
+            with self.assertRaises(ValueError):require_hierarchical_events(bad)
+
+    def test_localevents_rechecked_on_every_cleanup_sample(self):
+        observer=object.__new__(AncestorObserver)
+        with patch('native.tests.reference_capture.ancestor_observer.require_hierarchical_events',side_effect=ValueError('nonhierarchical_memory_events')):
+            with self.assertRaisesRegex(ValueError,'nonhierarchical'):observer.sample({},0)
+
+    def test_smoke_start_is_benign_and_never_actual_reference(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage=object.__new__(SmokeStage)
+            stage.evidence=Path(folder);stage.logs=[];stage.child=None;stage.verified_id='a'*64
+            with patch('native.tests.reference_capture.lifecycle_smoke.subprocess.Popen') as spawn:
+                stage.start(stage.verified_id,1)
+                command=spawn.call_args.args[0]
+                self.assertEqual(command,['docker','exec','a'*64,'/usr/local/bin/python','-I','-S','-c',WORK])
+                self.assertNotIn('capture_actual',' '.join(command))
+                self.assertIn('16*1024*1024',WORK)
+            for log in stage.logs:log.close()
 
     def test_wrong_identity_cannot_signal(self):
         stage=self.bare_stage()
