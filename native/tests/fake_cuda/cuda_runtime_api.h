@@ -15,3 +15,6 @@ cudaError_t cudaMemcpy(void*,const void*,std::size_t,cudaMemcpyKind);
 cudaError_t cudaMemsetAsync(void*,int,std::size_t,cudaStream_t);
 cudaError_t cudaStreamSynchronize(cudaStream_t);
 const char* cudaGetErrorString(cudaError_t);
+
+cudaError_t cudaMemGetInfo(std::size_t*,std::size_t*);
+cudaError_t cudaSetDevice(int);

@@ -94,6 +94,7 @@ public:
                                     std::shared_ptr<MemoryBudget> payload_memory = {}) const;
     void read_dense(std::size_t item, std::size_t offset, std::span<std::uint8_t> destination) const;
     float read_input_scale(std::size_t item) const;
+    void check_unchanged() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
