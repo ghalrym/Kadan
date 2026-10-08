@@ -273,3 +273,16 @@ Direct load 50.106768 s, prompt 0.923834 s, decode incl EOS 4.635395 s.
 Latest worker SHA256: cbfb8458e7d50b58ce74683ace9b87f18c568e59c86e0c74224c5e550bdc051a
 Evidence: profiling/20261008-fp8-table.json. Native rebuild only.
 Run: kadan-fp8-table-parity --allow-gpu-validation --device 0
+
+Hybrid NVFP4 decoded-weight tables
+Columns >=2048 use a block-local FP4/E4M3/global table across four rows. Short
+rows retain the smaller kernel (table staging regressed the 512-column microbench).
+Original partial sums, BF16 boundaries, exact large-global overflow checks stay.
+Unused entries never affect status. Paired projections 4.323 -> 3.408 ms/step.
+38 original-reference projection cases now include unused overflowing table
+entries; 126 fusion cases, all decoder/stack GPU stages and 26 CPU tests pass.
+149 generated IDs match.
+Warm API 42.881621 tok/s, prompt 0.689286 s, total 4.230605 s.
+Direct load 49.633054 s, prompt 0.891359 s, decode incl EOS 4.434501 s.
+Latest worker SHA256: ece9e801db85fbbe1cce865f3a94bf6343345d0b5d62187d61ce94cc60f8a1d6
+Evidence: profiling/20261008-fp4-table.json. Native rebuild only.
