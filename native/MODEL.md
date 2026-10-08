@@ -257,7 +257,7 @@ manifest identity contract remains a follow-up; this experiment does not claim
 to close that general TOCTOU gap. Actual-model payload reads, unloading and
 service changes remain separately held.
 
-The proposed actual-model reference/native commands, maintenance admission gate,
+The proposed actual-model reference/native commands, unresolved maintenance coordination,
 corrected resource bounds, tolerance rationale and outstanding authorization gates
 are in [ACTUAL-MODEL-PLAN.md](ACTUAL-MODEL-PLAN.md). No actual-model execution is
 authorized by either document.
