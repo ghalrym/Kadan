@@ -1,7 +1,7 @@
 """Opt-in acceptance instrumentation; never installed by the production adapter.
 
 Wrap after Accelerate installs offload hooks. Stage synchronization is deliberate
-and its overhead must be disclosed. Only the first transformer call is optionally
+and its overhead must be disclosed. Only the selected transformer call is optionally
 traced, bounding profiler lifetime; all other phases use synchronized wall clocks.
 """
 from contextlib import contextmanager, nullcontext
@@ -10,7 +10,9 @@ import time
 
 
 @contextmanager
-def profile_pipeline(pipeline, torch, device, emit, trace_path=None):
+def profile_pipeline(pipeline, torch, device, emit, trace_path=None, *, trace_transformer_index=1, record_shapes=False):
+    if type(trace_transformer_index) is not int or trace_transformer_index < 1:
+        raise ValueError("Transformer trace index must be positive")
     originals = []
     counts = {}
     traced = False
@@ -43,12 +45,12 @@ def profile_pipeline(pipeline, torch, device, emit, trace_path=None):
                     torch.cuda.reset_peak_memory_stats(int(device[5:]))
             start = time.perf_counter()
             profile = None
-            if stage == 'transformer' and trace_path is not None and not traced:
+            if stage == 'transformer' and trace_path is not None and index == trace_transformer_index and not traced:
                 traced = True
                 activities = [torch.profiler.ProfilerActivity.CPU]
                 if device != 'cpu':
                     activities.append(torch.profiler.ProfilerActivity.CUDA)
-                profile = torch.profiler.profile(activities=activities, record_shapes=False,
+                profile = torch.profiler.profile(activities=activities, record_shapes=record_shapes,
                     profile_memory=False, with_stack=False)
             emit('image.phase.begin', stage=stage, index=index, **memory())
             status = 'failed'
@@ -71,7 +73,14 @@ def profile_pipeline(pipeline, torch, device, emit, trace_path=None):
                         device_us=getattr(row, 'self_device_time_total', 0))
                         for row in profile.key_averages()
                         if 'copy' in row.key.lower() or 'memcpy' in row.key.lower() or 'to_copy' in row.key]
-                    emit('image.transfer.profile', trace=str(trace_path), events=copies)
+                    emit('image.transfer.profile', trace=str(trace_path), index=index, events=copies)
+                    operations = [dict(name=row.key, count=row.count, shapes=row.input_shapes,
+                        cpu_us=row.self_cpu_time_total,
+                        device_us=getattr(row, 'device_time_total', 0))
+                        for row in profile.key_averages(group_by_input_shape=record_shapes)
+                        if any(name in row.key for name in ('aten::mm', 'aten::addmm', 'aten::bmm',
+                            'aten::linear', 'scaled_dot_product', 'flash_attention'))]
+                    emit('image.compute.profile', trace=str(trace_path), index=index, operations=operations)
         setattr(owner, method, measured)
 
     try:

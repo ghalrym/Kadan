@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock
 
 from api.inference.image.profiling import profile_pipeline
 
@@ -57,3 +58,18 @@ class ProfilingTests(unittest.TestCase):
         with profile_pipeline(pipeline,SimpleNamespace(),'cpu',lambda *a,**k:None):
             self.assertEqual(pipeline.transformer.forward(1),3)
         self.assertIs(pipeline.transformer.forward,replacement)
+
+    def test_selected_cached_step_only_is_profiled_with_shapes(self):
+        pipeline=Operation();pipeline.transformer=Operation();pipeline.vae=Operation()
+        pipeline.vae.decoder=Operation();pipeline.image_processor=Operation()
+        trace=MagicMock();trace.key_averages.return_value=[]
+        factory=MagicMock(return_value=trace)
+        torch=SimpleNamespace(profiler=SimpleNamespace(profile=factory,ProfilerActivity=SimpleNamespace(CPU='cpu')))
+        with profile_pipeline(pipeline,torch,'cpu',lambda *a,**k:None,'trace.json',trace_transformer_index=3,record_shapes=True):
+            for i in range(2):pipeline.transformer.forward(i)
+            factory.assert_not_called()
+            pipeline.transformer.forward(2)
+            pipeline.transformer.forward(3)
+        factory.assert_called_once()
+        self.assertTrue(factory.call_args.kwargs['record_shapes'])
+        trace.export_chrome_trace.assert_called_once_with('trace.json')
