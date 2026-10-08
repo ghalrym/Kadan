@@ -40,4 +40,4 @@ is2. Host preflight requires144GiB available, with16GiB ongoing minimum.
 
 Evidence directory for the corrected run:
 `/home/andrew/Documents/Codex/2026-10-08/task-4/image-compile-119-budgeted/evidence/`.
-Result pending at time of this manifest commit; no compilation speedup is claimed.
+The candidate failed its GPU headroom guard; see RESULT.md and result-summary.json. No compilation speedup is claimed.

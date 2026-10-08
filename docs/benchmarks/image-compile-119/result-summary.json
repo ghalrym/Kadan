@@ -1,0 +1,24 @@
+{
+  "status": "failed_candidate_gpu_headroom_guard",
+  "source_sha": "6e9529d0902ccffbc89c0d3ee546880c0b44d57f",
+  "harness_commit": "15ad0e269dfd708241b78bf44d1b699a6cb33f1a",
+  "baseline_forward_s": 291.671,
+  "baseline_unprofiled_cached_median_s": 6.601799256000959,
+  "compiler_backend_completed_s": [
+    8.57801668200409
+  ],
+  "compiled_image_completed": false,
+  "warm_reuse_tested": false,
+  "cgroup_peak_bytes": 56097591296,
+  "compiler_cache_bytes": 4476141,
+  "torch_failed_transformer_peak_allocated_bytes": 23396391936,
+  "torch_failed_transformer_peak_reserved_bytes": 23601348608,
+  "gpu_min_free_mib": 147,
+  "cpu_max_c": 71.5,
+  "gpu_max_c": 82,
+  "oom_killed": false,
+  "cleanup_container_exited": true,
+  "live_gpu0_unchanged": true,
+  "live_health": "ok",
+  "png_sha256": "6df59d86af4143efd1e3e5b419812754bd2b9ed1b10ccd33c3bb2ecac4dbf42b"
+}
