@@ -43,6 +43,31 @@ int main(int argc,char**argv){try{
     {auto r=manager();Model m(argv[1],o,0,r);for(unsigned eos:{14,15}){selection_override=eos;check(m.step(2,false).eos&&!m.finished());check(m.step(7).eos&&m.finished());auto before=launches;rejected([&]{m.step(3);});check(launches==before&&m.tokens()==2);m.reset();}selection_override=3;
         owner_allocations::all_count=0;owner_allocations::count_all=true;for(int n=0;n<8;++n)m.step(2,false);owner_allocations::count_all=false;check(owner_allocations::all_count==0);auto before=launches;rejected([&]{m.step(2,false);});check(launches==before&&m.valid()&&m.tokens()==8);m.close();check(r->snapshot().residents==0);}
     for(auto op:{Op::free,Op::sync}){auto r=manager();std::size_t before=0;{Model m(argv[1],o,0,r);inject(op);rejected([&]{m.close();});check(r->snapshot().used[0]==Model::host_bytes(o)&&r->snapshot().used[1]==layout.device_bytes()+512);before=syncs;rejected([&]{m.close();});}check(before==syncs&&r->snapshot().residents==1);for(auto[ptr,n]:allocations){std::free(ptr);used-=n;}allocations.clear();pending=false;}
+    {auto options=o;options.split_residency=true;options.weight_ram_bytes=2*1024*1024;options.weight_cold_bytes=2*1024*1024;
+        auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});
+        Model m(argv[1],options,0,r);check(used==layout.device_bytes()&&m.retained_bytes()>0);
+        selection_override=3;m.step(2,false);m.end_request();auto weights=used;auto retained=m.retained_bytes();
+        check(weights>0&&weights<layout.device_bytes()&&!m.valid());
+        auto before_copies=copies,before_mallocs=mallocs;m.begin_request();check(mallocs==before_mallocs+1&&copies==before_copies&&used==layout.device_bytes());
+        check(m.valid()&&m.tokens()==0);m.step(2,false);m.park();check(used==0&&m.retained_bytes()==retained&&r->snapshot().used[1]==0);
+        m.begin_request();check(used==layout.device_bytes()&&m.valid());m.step(2,false);m.close();check(used==0&&r->snapshot().residents==0);
+    }
+    for(int scenario=0;scenario<6;++scenario){auto options=o;options.split_residency=true;options.weight_ram_bytes=65536;options.weight_cold_bytes=2*1024*1024;
+        auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});
+        if(scenario==4||scenario==5){if(scenario==4)options.metadata_bytes=64;else options.staging_bytes=8;rejected([&]{Model m(argv[1],options,0,r);});}
+        else if(scenario==0){std::atomic_bool stop=true;rejected([&]{Model m(argv[1],options,0,r,&stop);});}
+        else{Model m(argv[1],options,0,r);m.park();
+            if(scenario==1)physical_free=0;if(scenario==2)inject(Op::copy);std::atomic_bool stop=scenario==3;
+            rejected([&]{m.begin_request(&stop);});physical_free=SIZE_MAX;m.close();}
+        check(used==0&&r->snapshot().residents==0);
+    }
+    for(auto op:{Op::free,Op::sync}){auto options=o;options.split_residency=true;
+        auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options),layout.device_bytes()+options.device_headroom});
+        {Model m(argv[1],options,0,r);inject(op);rejected([&]{m.end_request();});check(!m.valid());
+            rejected([&]{m.begin_request();});rejected([&]{m.close();});}
+        check(r->snapshot().used[1]==layout.device_bytes()+options.device_headroom);
+        for(auto[ptr,n]:allocations){std::free(ptr);used-=n;}allocations.clear();pending=false;
+    }
     check(bf16_launches>0);
     std::cout<<"Checkpoint fake runtime: "<<expected_layers<<" layers, one reservation/arena, admission/load/step failures, two EOS IDs and cleanup passed.\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

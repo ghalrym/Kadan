@@ -3,6 +3,7 @@
 #include "kadan/resources.hpp"
 #include <deque>
 #include <optional>
+#include <memory>
 
 namespace kadan::serving {
 // Single-owner event-loop component. The transport serializes calls in receipt
@@ -19,14 +20,17 @@ public:
     struct Action { Kind kind; Handle request; Handle reservation; };
 
     explicit GenerationQueue(Footprint capacity, std::size_t limit = 32)
-        : resources_(std::move(capacity)), limit_(limit) {
+        : GenerationQueue(std::make_shared<Resources>(std::move(capacity)), limit) {}
+    explicit GenerationQueue(std::shared_ptr<Resources> resources, std::size_t limit = 32)
+        : resources_(std::move(resources)), limit_(limit) {
+        if (!resources_) throw std::invalid_argument("resources_required");
         if (!limit || limit > 1024) throw std::invalid_argument("queue_limit");
     }
     Handle submit(Model model) {
         require(!stopping_, "stopping");
         require(!model.key.empty() && model.key.size() <= 256, "model_key");
         require(model.workload == Workload::llm || model.workload == Workload::image, "workload");
-        const auto capacity = resources_.snapshot().capacity;
+        const auto capacity = resources_->snapshot().capacity;
         require(model.bytes.size() == capacity.size(), "budget_shape");
         for (std::size_t i = 0; i < capacity.size(); ++i)
             require(model.bytes[i] <= capacity[i], "exhausted");
@@ -40,7 +44,7 @@ public:
     Action poll() {
         if (phase_ != Kind::idle) return action();
         if (resident_ && (stopping_ || (!queue_.empty() && !(resident_->model == queue_.front().model)))) {
-            resources_.begin_eviction(resident_->handle);
+            resources_->begin_eviction(resident_->handle);
             phase_ = Kind::cleanup;
             return action();
         }
@@ -48,11 +52,11 @@ public:
         if (!resident_) {
             // Construct before reserving to preserve accounting on allocation failure.
             Resident next{queue_.front().model, 0};
-            next.handle = resources_.reserve(next.model.workload, next.model.bytes);
+            next.handle = resources_->reserve(next.model.workload, next.model.bytes);
             resident_.emplace(std::move(next));
             phase_ = Kind::load;
         } else {
-            resources_.pin(resident_->handle);
+            resources_->pin(resident_->handle);
             phase_ = Kind::execute;
         }
         active_ = queue_.front().id;
@@ -65,16 +69,16 @@ public:
             phase_ = Kind::cleanup;
             return;
         }
-        resources_.loaded(resident_->handle);
-        resources_.pin(resident_->handle);
+        resources_->loaded(resident_->handle);
+        resources_->pin(resident_->handle);
         phase_ = Kind::execute;
     }
     // Call only after request-local work is synchronized and cleaned up.
     void completed(Handle id, bool reusable) {
         check(id, Kind::execute);
-        resources_.unpin(resident_->handle);
+        resources_->unpin(resident_->handle);
         if (!reusable || cancelled_ || stopping_) {
-            resources_.begin_eviction(resident_->handle);
+            resources_->begin_eviction(resident_->handle);
             phase_ = Kind::cleanup;
         } else {
             finish();
@@ -86,7 +90,7 @@ public:
     void cleaned(Handle reservation, bool success) {
         require(phase_ == Kind::cleanup && resident_ && resident_->handle == reservation, "stale_cleanup");
         if (!success) return;
-        resources_.released(resident_->handle);
+        resources_->released(resident_->handle);
         resident_.reset();
         if (active_) finish();
         phase_ = Kind::idle;
@@ -104,7 +108,11 @@ public:
         while (queue_.size() > (active_ ? 1u : 0u)) queue_.pop_back();
         if (active_) cancelled_ = true;
     }
-    Snapshot snapshot() const { return resources_.snapshot(); }
+    void evict_idle() {
+        require(!active_ && queue_.empty() && phase_ == Kind::idle, "busy");
+        if (resident_) { resources_->begin_eviction(resident_->handle); phase_ = Kind::cleanup; }
+    }
+    Snapshot snapshot() const { return resources_->snapshot(); }
     std::size_t pending() const { return queue_.size(); }
 private:
     struct Request { Handle id; Model model; };
@@ -117,7 +125,7 @@ private:
     }
     Action action() const { return {phase_, active_, resident_->handle}; }
     void finish() { queue_.pop_front(); active_ = 0; cancelled_ = false; }
-    Resources resources_;
+    std::shared_ptr<Resources> resources_;
     std::size_t limit_;
     std::deque<Request> queue_;
     std::optional<Resident> resident_;

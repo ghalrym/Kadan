@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <iosfwd>
 #include <string_view>
+#include "kadan/resources.hpp"
+#include <memory>
 namespace kadan::serving {
 constexpr std::size_t max_capacity=262144, max_frame=64;
 constexpr std::size_t metadata_bytes=256*1024*1024, staging_bytes=1024*1024, control_bytes=1024*1024;
@@ -20,4 +22,14 @@ public:
 // Parent supervises deadlines and process termination. Any exception is terminal;
 // caller emits a fixed error frame, exits nonzero, and never reuses this engine.
 void session(Engine&,std::istream&,std::ostream&);
+class ResidentEngine : public Engine {
+public:
+    virtual void begin_request()=0;
+    virtual void end_request()=0;
+    virtual void park()=0;
+};
+// Unique worker incarnation; every v2 command/reply also carries its FIFO ID.
+std::string session_identity();
+void resident_session(ResidentEngine&,std::shared_ptr<Resources>,std::string_view identity,
+                      std::istream&,std::ostream&);
 }

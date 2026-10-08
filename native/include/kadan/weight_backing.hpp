@@ -12,6 +12,7 @@ namespace kadan::serving {
 // store. Shard metadata has its own caller-admitted MemoryBudget.
 class WeightBacking {
 public:
+    static constexpr std::size_t default_entry_limit=1024, default_control_bytes=2*1024*1024;
     struct Stats { Bytes ram, cold, staging; std::size_t entries; Handle transfer; };
     using Sink = std::function<void(std::size_t, std::span<const std::uint8_t>)>;
     WeightBacking(std::shared_ptr<Resources>, Bytes ram_limit, Bytes cold_limit,
@@ -21,7 +22,13 @@ public:
     WeightBacking& operator=(const WeightBacking&) = delete;
     // Versioned model/tensor key; a cold reference never writes/deletes the file.
     void add(std::string key, Workload, std::shared_ptr<const checkpoint::Shard>, std::string tensor);
+    // Caller owns/admitted destination (e.g. loader staging). Cache misses fall
+    // back to bounded checkpoint reads when cache metadata or RAM is full.
+    void read_through(const std::string&, Workload, std::shared_ptr<const checkpoint::Shard>,
+                      const std::string& tensor, std::size_t offset, std::span<std::uint8_t>,
+                      const std::atomic_bool* cancelled = nullptr);
     bool retain(const std::string&, const std::atomic_bool* cancelled = nullptr);
+    bool room_for_reservations(std::size_t count);
     void evict(const std::string&);
     void forget(const std::string&);
     // Reserve source + destination + staging peak BEFORE destination allocation.

@@ -2,6 +2,7 @@
 #include "kadan/checkpoint.hpp"
 #include <array>
 
+namespace kadan::serving { class WeightBacking; }
 namespace kadan::checkpoint {
 enum class LayerKind { linear_attention, full_attention };
 struct TextArchitecture {
@@ -95,6 +96,7 @@ public:
     void read_dense(std::size_t item, std::size_t offset, std::span<std::uint8_t> destination) const;
     float read_input_scale(std::size_t item) const;
     void check_unchanged() const;
+    void backing(std::shared_ptr<serving::WeightBacking>);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

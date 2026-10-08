@@ -199,7 +199,25 @@ void admission_allocation_and_commit() {
     check(ledger->snapshot().used == Footprint({16, 0}));
     store.cleaned(later, true);
 }
+void read_through_and_slot_pressure() {
+    Fixture fixture; auto source=fixture.shard();auto ledger=std::make_shared<Resources>(Footprint{32,8});
+    WeightBacking store(ledger,32,24,3);fixture.add(store);check(store.retain("qwen/rev/a"));
+    std::vector<kadan::Handle> external;
+    for(std::size_t i=1;i<Resources::max_residents;++i)external.push_back(ledger->reserve(kadan::Workload::video,{0,0}));
+    check(store.retain("qwen/rev/b"));check(ledger->snapshot().residents==Resources::max_residents&&store.stats().ram==8);
+    check(store.room_for_reservations(1)&&store.stats().ram==0);
+    check(!store.room_for_reservations(2));
+    for(auto id:external)ledger->released(id);
+    std::array<std::uint8_t,4> out{};
+    WeightBacking cold(ledger,0,0,3);cold.read_through("tensor",kadan::Workload::llm,source,"b",2,out);
+    check(out==std::array<std::uint8_t,4>{10,11,12,13}&&cold.stats().entries==0);
+    WeightBacking cache(ledger,8,8,3);cache.read_through("tensor",kadan::Workload::llm,source,"a",2,out);
+    check(out==std::array<std::uint8_t,4>{2,3,4,5}&&cache.stats().ram==8);
+    cache.read_through("tensor",kadan::Workload::llm,source,"a",3,out);
+    check(out==std::array<std::uint8_t,4>{3,4,5,6});
+    fails([&]{cache.read_through("tensor",kadan::Workload::llm,fixture.shard(),"a",0,out);});
+}
 int main() {
-    retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit(); cleanup_is_irreversible();
+    retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit(); cleanup_is_irreversible(); read_through_and_slot_pressure();
     std::cout << "weight backing tests passed\n";
 }

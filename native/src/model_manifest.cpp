@@ -1,4 +1,5 @@
 #include "kadan/model_manifest.hpp"
+#include "kadan/weight_backing.hpp"
 #include "metadata_json.hpp"
 #include <algorithm>
 #include <cmath>
@@ -67,7 +68,8 @@ struct ModelManifest::Impl {
     struct Entry { std::string_view name; std::size_t shard; bool used=false; };
     std::shared_ptr<MemoryBudget> budget;
     TextArchitecture arch{};
-    std::pmr::vector<std::unique_ptr<Shard>> shards;
+    std::pmr::vector<std::shared_ptr<Shard>> shards;
+    std::shared_ptr<serving::WeightBacking> backing;
     std::pmr::vector<Entry> entries;
     std::pmr::vector<ModelItem> items;
     std::pmr::vector<std::string_view> quant_targets;
@@ -76,6 +78,11 @@ struct ModelManifest::Impl {
     explicit Impl(std::shared_ptr<MemoryBudget> quota) : budget(std::move(quota)),shards(budget.get()),entries(budget.get()),items(budget.get()),quant_targets(budget.get()) {}
     std::pmr::string name(std::string_view prefix,std::string_view suffix) const {
         std::pmr::string out(prefix,budget.get()); out+=suffix; return out;
+    }
+    void read(std::size_t shard, std::string_view name, std::size_t offset, std::span<std::uint8_t> out) const {
+        if (!backing) { shards[shard]->read_tensor(name, offset, out); return; }
+        auto key = std::to_string(shard) + "/" + std::to_string(shards[shard]->tensor_index(name));
+        backing->read_through(key, Workload::llm, shards[shard], std::string(name), offset, out);
     }
     Entry& entry(std::string_view name) {
         auto it=std::lower_bound(entries.begin(),entries.end(),name,[](const auto& e,auto n){return e.name<n;});
@@ -199,7 +206,7 @@ ModelManifest::ModelManifest(const char* root,std::shared_ptr<MemoryBudget> budg
         }
         std::sort(names.begin(),names.end());
         for (const auto& name:names) {
-            impl_->shards.push_back(std::make_unique<Shard>(root,name,budget,limits.shard));
+            impl_->shards.push_back(std::make_shared<Shard>(root,name,budget,limits.shard));
             impl_->tensors+=impl_->shards.back()->tensor_count();
             require(impl_->tensors<=limits.tensors,"manifest_tensor_limit");
         }
@@ -285,17 +292,20 @@ Placement plan_model_placement(std::span<const ModelItem> items,std::size_t laye
 Projection ModelManifest::load_projection_rows(std::size_t item,std::size_t first,std::size_t count,std::size_t budget,std::shared_ptr<MemoryBudget> payload_memory) const {
     require(item<impl_->items.size() && impl_->items[item].kind!=ItemKind::dense,"not_projection_item");
     const auto& entry=impl_->items[item];
-    return impl_->shards[entry.shard]->load_modelopt_rows(entry.name,first,count,budget,std::move(payload_memory));
+    TensorReader reader;
+    if (impl_->backing) reader = [&](auto name, auto offset, auto out) { impl_->read(entry.shard, name, offset, out); };
+    return impl_->shards[entry.shard]->load_modelopt_rows(entry.name,first,count,budget,std::move(payload_memory),reader);
 }
 void ModelManifest::read_dense(std::size_t item,std::size_t offset,std::span<std::uint8_t> destination) const {
     require(item<impl_->items.size() && impl_->items[item].kind==ItemKind::dense,"not_dense_item");
-    const auto& entry=impl_->items[item]; impl_->shards[entry.shard]->read_tensor(entry.name,offset,destination);
+    const auto& entry=impl_->items[item]; impl_->read(entry.shard,entry.name,offset,destination);
 }
+void ModelManifest::backing(std::shared_ptr<serving::WeightBacking> backing) { impl_->backing = std::move(backing); }
 void ModelManifest::check_unchanged() const { for(const auto& shard:impl_->shards) shard->check_unchanged(); }
 float ModelManifest::read_input_scale(std::size_t item) const {
     require(item<impl_->items.size() && impl_->items[item].kind!=ItemKind::dense,"not_projection_item");
     const auto& entry=impl_->items[item]; std::array<std::uint8_t,4> bytes{};
-    impl_->shards[entry.shard]->read_tensor(impl_->name(entry.name,".input_scale"),0,bytes);
+    impl_->read(entry.shard,impl_->name(entry.name,".input_scale"),0,bytes);
     const auto scale=quantization::fp32_le(bytes); require(std::isfinite(scale) && scale>0,"invalid_input_scale"); return scale;
 }
 } // namespace kadan::checkpoint
