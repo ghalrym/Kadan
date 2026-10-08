@@ -1,4 +1,4 @@
-"""Kadan-owned model lifecycle; no external inference server or engine process."""
+"""Kadan-owned model lifecycle, including an opt-in original native worker."""
 import asyncio
 from contextlib import suppress
 import os
@@ -78,8 +78,24 @@ class RuntimeManager:
         with self._resources_lock:
             if self.resources is None:
                 available = probe_memory()
+                budgets = {index: int(size * .8) for index, size in available.device_bytes.items()}
+                override = os.environ.get('KADAN_GPU_BUDGET_BYTES')
+                if override is not None:
+                    try:
+                        values = json.loads(override)
+                        if not isinstance(values, dict) or not values:
+                            raise ValueError()
+                        for index, size in values.items():
+                            if (not index.isascii() or not index.isdecimal() or str(int(index)) != index
+                                    or type(size) is not int or size <= 0
+                                    or size > available.device_bytes.get(int(index), 0)):
+                                raise ValueError()
+                            budgets[int(index)] = size
+                    except (ValueError, TypeError) as exc:
+                        raise RuntimeFailure('KADAN_GPU_BUDGET_BYTES must be a nonempty JSON object of GPU indices '
+                                             'to positive byte budgets within currently free device memory.') from exc
                 self.resources = ResourceManager(int(available.host_bytes * .8),
-                    {index: int(size * .8) for index, size in available.device_bytes.items()}, probe=probe_memory)
+                    budgets, probe=probe_memory)
             return self.resources
 
     async def start(self):
@@ -97,6 +113,15 @@ class RuntimeManager:
         context settings; close the adapter if configuration fails.
         """
         factory = self._factory
+        native = False
+        if factory is None:
+            backend = os.environ.get('KADAN_LLM_BACKEND', 'python')
+            if backend not in ('python', 'native'):
+                raise RuntimeFailure('KADAN_LLM_BACKEND must be python or native.')
+            if backend == 'native':
+                # Lazy optional backend import preserves startup/default behavior.
+                from api.inference.llm.native import build_native
+                factory, native = build_native, True
         if factory is None:
             # Keep the API available when native dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.
@@ -112,7 +137,11 @@ class RuntimeManager:
         gpu = os.environ.get('KADAN_GPU', 'auto')
         if gpu != 'auto' and not gpu.isdecimal():
             raise RuntimeFailure('KADAN_GPU must be auto or one primary GPU index.')
-        if self._factory is not None:
+        if native:
+            # Native planning admits its exact arena in configure_context; the
+            # Python adapter's 2 GiB placement floor is not a native budget.
+            device = 'auto' if gpu == 'auto' else f'cuda:{gpu}'
+        elif self._factory is not None:
             device = f'cuda:{gpu if gpu != "auto" else 0}'
         else:
             # Prefer whole-checkpoint residency when possible. Packed adapters
@@ -127,7 +156,14 @@ class RuntimeManager:
         try:
             adapter.configure_context(self.context_settings['configured_context_limit'])
         except BaseException:
-            adapter.close()
+            try:
+                adapter.close()
+            except BaseException:
+                # The load task waits for this construction thread before
+                # disposing/unloading. Transfer uncertain ownership so it keeps
+                # the selection lease and can retry cleanup deterministically.
+                self.adapter = adapter
+                raise
             raise
         return adapter
 

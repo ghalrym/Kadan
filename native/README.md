@@ -1,11 +1,18 @@
 # Native inference worker foundation
 
+The opt-in [API native adapter](API-INTEGRATION.md) adds a persistent
+`kadan-model-worker` using the original full-model CUDA path. Its controlled
+[test/restoration plan](API-INTEGRATION-TEST-PLAN.md) remains separate from
+execution approval. Python is still the default; this draft has CPU/synthetic
+coverage and CUDA compile evidence, not actual-model or throughput evidence.
+The development control-plane worker described below remains `kadan-worker`.
+
 This is original Kadan C++20 code. It does not copy, wrap, vendor or port
 Strata/FreeToken code. The first milestone implements an accounting library and
 a standalone development worker boundary, not model inference. Optional original
 SM86 [NVFP4](CUDA.md) and [FP8](FP8.md) fused projection primitives are available.
 The FP8 milestone is compile/CPU-tested only; its shared-owner refactor has not
-been GPU-tested. There are no production API adapters. The separate
+been GPU-tested at that milestone. The separate
 [bounded checkpoint reader](CHECKPOINT.md) now loads selected rows from one
 explicitly chosen safetensors shard into owned quantized projection buffers.
 A separate [quantized projection reference](QUANTIZATION.md) now provides original
@@ -35,7 +42,7 @@ CUDA driver initialization, inference, benchmark, or database access occurs.
 GPU parity executables for SM86; see [CUDA.md](CUDA.md) for compile-only commands,
 verified toolchain and lifetime/error contracts. [FP8.md](FP8.md) defines the
 combined validation plan, admission invariants and remaining engine milestones.
-The worker still does not call this GPU library. The CUDA target has been compiled
+The development control-plane worker does not call this GPU library. The CUDA target has been compiled
 locally. The earlier #101 NVFP4 revision passed six authorized tiny GPU cases;
 no GPU tests have run for the FP8/shared-owner revision and no benchmark has run.
 Do not run GPU workloads until Andrew explicitly authorizes them. Do not restart
