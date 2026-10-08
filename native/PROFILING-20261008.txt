@@ -246,3 +246,16 @@ Run: kadan-ordered-sum-parity --allow-gpu-validation --device 0
 Review follow-up: exact source 02abd7056503872e366017de160969bdad2eb762 was
 archived separately, rebuilt and rerun: 105 normalization, 60 auxiliary, and
 15 router cases all passed. Its recorded API rate is 23.791985 tok/s.
+
+Fused expert projections
+Gate/up use a two-dimensional grid with the original row kernel. Routed down
+projections perform the original BF16 weighting/accumulation in their final lane,
+retaining raw down diagnostics. Shared down remains separate. No arena growth.
+126 bitwise fusion cases cover both BF16 modes, shapes, bounded/fallback scales,
+Inf/NaN, accumulator overflow and absent expert. Existing 34 projection cases,
+all decoder/mixed-stack GPU stages and 26 CPU tests pass. 149 IDs match.
+Warm API 35.708470 tok/s, prompt 0.829894 s, total 5.122045 s.
+Direct load 50.071925 s, prompt 1.026128 s, decode incl EOS 5.102568 s.
+Latest worker SHA256: 6a192e00d05942d816abf5e3cf3d1efe38e13970611c8a79609499e484182ad1
+Evidence: profiling/20261008-expert-fusion.json. Native rebuild only.
+Run: kadan-nvfp4-fusion-parity --allow-gpu-validation --device 0

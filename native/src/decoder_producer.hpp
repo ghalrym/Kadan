@@ -94,11 +94,17 @@ struct DecoderProducer {
         }
     }
     void project(const Projection& m,const float* x,float* y){check((c.moe.bf16_weights?kadan_launch_nvfp4_bf16:kadan_launch_nvfp4)(m.weights,m.scales,m.global,x,y,flags(),m.rows,m.columns));}
-    void expert(std::size_t e,std::size_t middle){project(experts[e][0],work(1),moe.gate);project(experts[e][1],work(1),moe.up);check(detail::moe_activate(middle,moe));project(experts[e][2],moe.activation,moe.down);}
+    void expert(std::size_t e,std::size_t middle){
+        const auto& gate=experts[e][0];const auto& up=experts[e][1];
+        check(kadan_launch_nvfp4_pair(gate.weights,gate.scales,gate.global,work(1),moe.gate,flags(),gate.rows,gate.columns,c.moe.bf16_weights,{up.weights,up.scales,up.global,moe.up}));
+        check(detail::moe_activate(middle,moe));const auto& down=experts[e][2];
+        if(e<c.moe.experts)check(kadan_launch_nvfp4_accumulate(down.weights,down.scales,down.global,moe.activation,moe.down,flags(),down.rows,down.columns,c.moe.bf16_weights,{moe.selected,moe.top_weights,c.moe.top_k,unsigned(e),moe.accumulator}));
+        else project(down,moe.activation,moe.down);
+    }
     void mixture(StateStep token){
         cursor.check_step(token);check(detail::moe_route(c.moe,moe,work(1)));status();std::array<unsigned,8> selected{};
         check(cudaMemcpy(selected.data(),moe.selected,c.moe.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));std::sort(selected.begin(),selected.begin()+c.moe.top_k);
-        for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);check(detail::moe_accumulate(c.moe,moe,selected[i]));}
+        for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);}
         expert(c.moe.experts,c.moe.shared_intermediate);check(detail::moe_finish(c.moe,moe,work(2)));status();
     }
     void cancel(const std::atomic_bool* flag){if(flag&&flag->load(std::memory_order_relaxed))throw std::invalid_argument("decoder_cancelled");}

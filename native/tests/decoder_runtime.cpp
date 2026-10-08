@@ -104,7 +104,7 @@ int main(){try{
             }
             auto before_launches=launches;bool quarantine=rejected([&]{d.step_device(x,y,&stop);});check(quarantine==(scenario==4||scenario==10));check(!d.valid()&&d.tokens()==1);
             if(scenario!=3&&scenario!=9&&scenario!=10)for(float v:y)check(v==42);
-            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?27:26));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
+            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?22:21));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
             late_numeric=false;numeric_stage=0;cancellation=nullptr;cancel_after_copy=nullptr;final_sync_failures=1;stop=false;auto n=launches;rejected([&]{d.step_device(x,y);});check(launches==n);rejected([&]{d.read_intermediates(a,u,m);});
             if(scenario==0||scenario==1||scenario==8||scenario==9||scenario==11){d.reset();check(d.valid()&&d.tokens()==0);std::vector<std::uint8_t> first(p.state_first_bytes),second(p.state_second_bytes);d.read_state(first,second);for(auto v:first)check(v==0);for(auto v:second)check(v==0);d.step_device(x,y);check(d.tokens()==1);}
             else rejected([&]{d.reset();});
@@ -118,7 +118,7 @@ int main(){try{
             owner_allocations::all_count=0;owner_allocations::count_all=true;
             for(int replay=0;replay<2;++replay){for(int t=0;t<3;++t)d.step_device(x,y);d.reset();}
             owner_allocations::count_all=false;check(owner_allocations::all_count==0);
-            check(launches-n==6*(kind==kadan::decoder::Attention::linear?28:27));d.close();check(r->snapshot().residents==0&&used==0);}
+            check(launches-n==6*(kind==kadan::decoder::Attention::linear?23:22));d.close();check(r->snapshot().residents==0&&used==0);}
         std::cout<<(kind==kadan::decoder::Attention::linear?"linear":"full")<<" arena "<<p.device_bytes<<", metadata "<<metadata<<"; failure publication, quarantine and accounting passed\n";
     }
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
@@ -126,3 +126,6 @@ int main(){try{
 cudaError_t kadan_launch_fp8_bf16(const std::uint8_t*w,const float*s,bool row,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){return kadan_launch_fp8(w,s,row,x,y,f,r,c);}
 
 cudaError_t kadan_launch_nvfp4_bf16(const std::uint8_t*w,const std::uint8_t*s,float g,const float*x,float*y,unsigned*f,std::size_t r,std::size_t c){return kadan_launch_nvfp4(w,s,g,x,y,f,r,c);}
+
+cudaError_t kadan_launch_nvfp4_pair(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*,std::size_t,std::size_t,bool,Nvfp4Pair){return launch();}
+cudaError_t kadan_launch_nvfp4_accumulate(const std::uint8_t*,const std::uint8_t*,float,const float*,float*,unsigned*,std::size_t,std::size_t,bool,Nvfp4Accumulation){return launch();}
