@@ -90,11 +90,10 @@ class ImageManager:
         """Reject unavailable config/capacity without loading or moving models."""
         _, path = self.preflight()
         if self.backend is None:
-            configured = os.environ.get('KADAN_IMAGE_DEVICE', os.environ.get('KADAN_GPU', 'auto'))
-            device = 'cuda:' + configured if configured.isdecimal() else configured
+            device, offload_mode = self._configuration()
             resources = self.runtime.ensure_resources()
             try:
-                plan = qwen_image.NativeImage(path, resources, device=device)
+                plan = qwen_image.NativeImage(path, resources, device=device, offload_mode=offload_mode)
                 plan._plan()  # Metadata/capacity only; never imports provider modules.
                 if plan.weights * 2 + qwen_image.WORKSPACE + qwen_image.GIB > resources.capacity.host_bytes:
                     raise ResourceExhausted('Image request exceeds the host memory budget')
@@ -214,6 +213,15 @@ class ImageManager:
         with self._gate:
             return self._load(cancel)
 
+    @staticmethod
+    def _configuration():
+        configured = os.environ.get('KADAN_IMAGE_DEVICE', os.environ.get('KADAN_GPU', 'auto'))
+        device = 'cuda:' + configured if configured.isdecimal() else configured
+        mode = os.environ.get('KADAN_IMAGE_OFFLOAD', 'sequential')
+        if mode not in ('sequential', 'component'):
+            raise RuntimeFailure('KADAN_IMAGE_OFFLOAD must be sequential or component', 422)
+        return device, mode
+
     def _load(self, cancel=None):
         try:
             entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
@@ -221,13 +229,12 @@ class ImageManager:
             raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
         if entry.revision != qwen_image.REVISION:
             raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
-        configured = os.environ.get('KADAN_IMAGE_DEVICE', os.environ.get('KADAN_GPU', 'auto'))
-        device = 'cuda:' + configured if configured.isdecimal() else configured
-        if self.native is not None and (self.native.path != path or self.native.requested != device):
+        device, offload_mode = self._configuration()
+        if self.native is not None and (self.native.path != path or self.native.requested != device or self.native.offload_mode != offload_mode):
             self.native.close()
             self.native = None
         if self.native is None:
-            self.native = qwen_image.NativeImage(path, self.runtime.ensure_resources(), device=device)
+            self.native = qwen_image.NativeImage(path, self.runtime.ensure_resources(), device=device, offload_mode=offload_mode)
         return self.native.load(cancel)
 
     def offload_to_ram(self, cancel=None):

@@ -152,3 +152,21 @@ class ImageManagerTests(unittest.TestCase):
         evict.assert_not_called()
         self.assertEqual(set(resources.snapshot()['reservations']), {'text'})
         host.release()
+
+    def test_deployment_offload_setting_validated_and_reconfigures_existing_pipeline(self):
+        self.manager.backend=None
+        path=Path(self.temp.name)
+        for part in ('text_encoder','transformer','vae'):
+            (path/part).mkdir();(path/part/'model.safetensors').write_bytes(b'fixture')
+        self.manager.runtime.ensure_resources.return_value=ResourceManager(100*1024**3,{0:24*1024**3})
+        with patch.dict('os.environ',{'KADAN_IMAGE_DEVICE':'cuda:0','KADAN_IMAGE_OFFLOAD':'invalid'}):
+            with self.assertRaises(RuntimeFailure) as caught:self.manager.validate_request(None)
+            self.assertEqual(caught.exception.status_code,422)
+        with patch.dict('os.environ',{'KADAN_IMAGE_DEVICE':'cuda:0','KADAN_IMAGE_OFFLOAD':'component'}):
+            self.manager.validate_request(None)
+            old=Mock(path=path,requested='cuda:0',offload_mode='sequential')
+            self.manager.native=old
+            with patch('api.services.images.qwen_image.NativeImage') as factory:
+                self.manager.load()
+                old.close.assert_called_once()
+                self.assertEqual(factory.call_args.kwargs['offload_mode'],'component')
