@@ -1,8 +1,10 @@
 # Staging reviewed MR119 on the home API
 
-No deployment was performed. Keep MR119 unmerged and preserve the live GPU0
-worker until a deliberate switch is authorized. The original checkout contains
-six untracked local deployment files; do not reset, clean, or overwrite them.
+MR119 was activated for review with explicit user permission on2026-10-08. See
+[HOME-API-RESULT.md](HOME-API-RESULT.md) for the exact running revision, successful
+HTTP verification and rollback. Keep MR119 unmerged. The instructions below
+describe staging constraints; preserve local files and use the recorded backup
+when changing the authorized API-only override.
 
 ## Explicit component selection
 
@@ -56,7 +58,7 @@ step count, guidance, or VAE tiling. Compilation experiments remain harness-only
 
 Switching the existing home API's image/environment/native bind requires an
 API-only recreate/restart, not merely Uvicorn reload. That interrupts its GPU0
-worker; it is deliberately not done by this task. A staged sidecar enables testing
+worker; it was performed only after explicit user approval; see the result above. A staged sidecar enables testing
 without that interruption. Keep Redis/Postgres volumes and current model data
 unchanged. The original image/backend/worker bind and source checkout remain the
 rollback inputs. The environment setting is selectable now; promotion or default
