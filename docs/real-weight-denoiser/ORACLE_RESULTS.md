@@ -41,7 +41,10 @@ arithmetic correction will succeed.
 
 Inputs, BF16 checkpoint weights and the already-generated BF16 prefix are promoted
 exactly to FP64. RoPE uses the exact captured complex64 coefficients promoted to
-FP64, with independently expressed real-pair rotation and **no float32 roundtrip**.
+FP64, with complex128 pair rotation and **no float32 roundtrip**. Protocol
+`captured-short-block-fp64-v1` fixes captured constants, the 128-row block, explicit
+FP64 equations and symmetric `atol=rtol=2e-5`. Review this version before holdout
+blocks or prompts.
 Normalization, modulation, projection, RMSNorm, attention scores/softmax/value
 sum, SwiGLU and residuals are evaluated in FP64. Score storage is bounded to one
 head at a time. No FP64 prefill, new RoPE frequencies, full-sequence FP64 run, or

@@ -1,0 +1,18 @@
+{
+  "protocol": "captured-short-block-fp64-v1",
+  "status": "review-required-before-holdouts",
+  "development_capture": "real-weight-reviewed-9304851",
+  "development_block": 7,
+  "target_rows": 128,
+  "inputs": "exact captured constants promoted to float64; no regenerated prefill",
+  "rope": "complex128 pair multiplication of promoted captured complex64 coefficients",
+  "arithmetic": "CPU float64 including variance, RMSNorm, softmax, SiLU, tanh and residuals",
+  "attention": "explicit per-head score, stable exponential normalization and value product",
+  "atol": 0.00002,
+  "rtol": 0.00002,
+  "comparisons": ["eager versus FP64", "virtual ranks versus FP64"],
+  "preserve": "original eager versus split report and failures",
+  "transport_proof": "separate distributed versus virtual-rank comparison; unexecuted",
+  "promotion": "none; full-length BF16 chain, scheduler trajectory and image gates remain separate",
+  "resource_envelope": {"cpus": 4, "ram_gib": 8, "swap": false, "gpu_access": false, "timeout_seconds": 180}
+}

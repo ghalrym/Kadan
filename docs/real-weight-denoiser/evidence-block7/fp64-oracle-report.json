@@ -1,4 +1,5 @@
 {
+  "protocol": "captured-short-block-fp64-v1",
   "capture_sha256": "83d8858b2bc9883921dfe5d27fece96b609b452a4b98e2ba49c009c5ac4f4f2c",
   "torch": "2.14.1+cu130",
   "device": "cpu",

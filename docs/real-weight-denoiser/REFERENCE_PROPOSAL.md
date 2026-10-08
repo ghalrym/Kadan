@@ -6,8 +6,8 @@ Keep the existing eager comparison and its failure as a compatibility gate. Add
 an independent, serial emulation of rank-local arithmetic as a second reference
 for parallel implementation correctness. Do not change production GEMMs yet:
 the evidence identifies shape-dependent rounding, not an incorrect formula that
-a new kernel would repair. No gate below is implemented or accepted by this
-proposal, and the existing launcher must continue to stop at block 7.
+a new kernel would repair. The diagnostic implementations below do not change acceptance or promotion,
+and the existing launcher must continue to stop at block 7.
 
 The serial reference performs each rank's local GEMMs at the actual local row
 count, then reconstructs global Q/K/V and evaluates its owned attention heads,

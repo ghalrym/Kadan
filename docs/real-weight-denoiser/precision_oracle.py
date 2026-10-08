@@ -10,12 +10,11 @@ from metrics import compare
 
 
 def rotate_pairs(value, frequencies):
-    """FP64 real pair rotation using exact stored complex64 coefficients."""
-    pairs=value.reshape(*value.shape[:-1],-1,2)
-    real,imag=pairs[...,0],pairs[...,1]
-    cosine=frequencies.real.double()[None,:,None,:]
-    sine=frequencies.imag.double()[None,:,None,:]
-    return torch.stack((real*cosine-imag*sine,real*sine+imag*cosine),dim=-1).flatten(-2)
+    """Complex128 pair rotation using exact stored complex64 coefficients."""
+    assert value.dtype==torch.float64
+    pairs=torch.view_as_complex(value.reshape(*value.shape[:-1],-1,2).contiguous())
+    coefficients=frequencies.to(torch.complex128)[None,:,None,:]
+    return torch.view_as_real(pairs*coefficients).flatten(-2)
 
 
 def normalized(value,epsilon,rms=False):
@@ -113,7 +112,7 @@ def main():
     assert hasher.hexdigest()==row['sha256']
     data=torch.load(path,weights_only=True,map_location='cpu',mmap=True)
     output,trace=short_block(data)
-    report=dict(capture_sha256=row['sha256'],torch=torch.__version__,device='cpu',dtype='float64',backends={})
+    report=dict(protocol='captured-short-block-fp64-v1',capture_sha256=row['sha256'],torch=torch.__version__,device='cpu',dtype='float64',backends={})
     for backend in ('default','math'):
         saved=torch.load(args.traces/f'{backend}-intermediates.pt',weights_only=True,map_location='cpu')
         result=assess(saved['reference']['output'],saved['split']['output'],output)
