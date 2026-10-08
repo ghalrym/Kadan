@@ -1,0 +1,12 @@
+{
+  "candidate_freeze_commit": "f81b037fee04ed1cea62525fe4c653c5c119ddb2",
+  "candidate": "fp32-partial512-fp64-outputsum-v1",
+  "blocks": [0, 15, 31],
+  "selection": "predetermined early/middle/last blocks from existing capture, excluding development block 7",
+  "scope": "128-row FP32 arithmetic only; same captured prompt/timestep, not held-out prompts",
+  "backends": ["default", "math"],
+  "acceptance": "candidate final output versus original eager and independent FP64 oracle, atol=rtol=2e-5, zero violations",
+  "intermediates": "diagnostic only",
+  "failure_policy": "record every selected case; no tuning or promotion upon failure",
+  "gpu": "free GPU0 only; no API pause"
+}
