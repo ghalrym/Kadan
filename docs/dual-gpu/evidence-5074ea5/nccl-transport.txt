@@ -1,0 +1,60 @@
+4665dca53d6b:11:11 [0] NCCL INFO NET/Socket : Using [0]lo:127.0.0.1<0>
+4665dca53d6b:11:11 [0] NCCL INFO Using network Socket
+4665dca53d6b:11:11 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'lo'
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 02 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 03 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 02 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:11:11 [0] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:11:11 [0] NCCL INFO Channel 03 : 0[0] -> 1[1] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO NET/Socket : Using [0]lo:127.0.0.1<0>
+4665dca53d6b:12:12 [1] NCCL INFO Using network Socket
+4665dca53d6b:12:12 [1] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'lo'
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 0 and 1. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 00 : 1[1] -> 0[0] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 01 : 1[1] -> 0[0] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 02 : 1[1] -> 0[0] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 03 : 1[1] -> 0[0] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 02 : 1[1] -> 0[0] via SHM/direct
+4665dca53d6b:12:12 [1] NCCL INFO P2P is disabled between connected GPUs 1 and 0. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.
+4665dca53d6b:12:12 [1] NCCL INFO Channel 03 : 1[1] -> 0[0] via SHM/direct

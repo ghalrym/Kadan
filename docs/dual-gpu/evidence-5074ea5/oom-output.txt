@@ -1,0 +1,44 @@
+/usr/local/lib/python3.12/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[rank0]:[W1008 21:33:31.091551899 ProcessGroupNCCL.cpp:5310] Guessing device ID based on global rank. This can cause a hang if rank to GPU mapping is heterogeneous. You can specify device_id in init_process_group()
+W1008 21:33:32.415000 7 site-packages/torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 11 closing signal SIGTERM
+E1008 21:33:32.579000 7 site-packages/torch/distributed/elastic/multiprocessing/api.py:1002] failed (exitcode: 72) local_rank: 1 (pid: 12) of binary: /usr/local/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/run.py", line 1142, in <module>
+    main()
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 380, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/run.py", line 1138, in main
+    run(args)
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/run.py", line 1129, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 197, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 386, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/probe/communication_probe.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-10-08_21:33:32
+  host      : deb771c202ac
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 11)  (SIGTERM)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 11
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-08_21:33:32
+  host      : deb771c202ac
+  rank      : 1 (local_rank: 1)
+  exitcode  : 72 (pid: 12) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

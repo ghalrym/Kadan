@@ -1,0 +1,78 @@
+{
+  "executed_commit": "5074ea50e95a51b9b40d684d16903e194db41b03",
+  "api_ci_pr": 37846949602,
+  "native_ci_pr": 37846949598,
+  "restored_container_id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+  "restored_image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+  "restored_started_at": "2026-10-08T21:33:33.947302404Z",
+  "health": "healthy",
+  "model_state": "ready",
+  "cases": {
+    "normal": {
+      "supervisor": {
+        "returncode": 0,
+        "elapsed_s": 25.164645445009228,
+        "torchrun_reaped": true
+      },
+      "container_exit": 0,
+      "host_oom": false,
+      "started_at": "2026-10-08T21:32:26.032996914Z",
+      "finished_at": "2026-10-08T21:32:51.719229031Z",
+      "max_cpu_c": 68.75,
+      "gpu_sampled_peaks": {
+        "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": {
+          "used_mib": 2040,
+          "temperature_c": 65
+        },
+        "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": {
+          "used_mib": 2606,
+          "temperature_c": 64
+        }
+      }
+    },
+    "peer_exit": {
+      "supervisor": {
+        "returncode": 1,
+        "elapsed_s": 18.449960159996408,
+        "torchrun_reaped": true
+      },
+      "container_exit": 1,
+      "host_oom": false,
+      "started_at": "2026-10-08T21:32:52.537365715Z",
+      "finished_at": "2026-10-08T21:33:11.522119944Z",
+      "max_cpu_c": 65.75,
+      "gpu_sampled_peaks": {
+        "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": {
+          "used_mib": 5,
+          "temperature_c": 62
+        },
+        "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": {
+          "used_mib": 570,
+          "temperature_c": 60
+        }
+      }
+    },
+    "oom": {
+      "supervisor": {
+        "returncode": 1,
+        "elapsed_s": 18.697495125001296,
+        "torchrun_reaped": true
+      },
+      "container_exit": 1,
+      "host_oom": false,
+      "started_at": "2026-10-08T21:33:13.686872157Z",
+      "finished_at": "2026-10-08T21:33:32.943429794Z",
+      "max_cpu_c": 67.0,
+      "gpu_sampled_peaks": {
+        "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": {
+          "used_mib": 444,
+          "temperature_c": 59
+        },
+        "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": {
+          "used_mib": 570,
+          "temperature_c": 60
+        }
+      }
+    }
+  }
+}
