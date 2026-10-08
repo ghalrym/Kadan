@@ -1,0 +1,88 @@
+{
+  "protocol": "bf16-application-diagnostic-v1",
+  "status": "proposed-awaiting-independent-review-not-executed",
+  "purpose": "Measure actual deployment-precision fidelity independently of failed FP32/oracle protocols",
+  "prior_results": {
+    "fp32_eager_compatibility": "failed; preserve original reports",
+    "fp32_independent_oracle": "failed, including original eager on later blocks",
+    "controlled_accumulation_v1": "rejected; must not be imported or selected"
+  },
+  "execution": {
+    "path": "unmodified api/inference/image/parallel.py cached_block mode=ulysses",
+    "source_sha256": "8b688762e1a4900e93d1d222828909be5a287c06220ab298ec96c664007b9438",
+    "weights_dtype": "bfloat16",
+    "activation_dtype": "bfloat16",
+    "precision_policy": "pinned production operations and existing internal casts; no new projection accumulation policy",
+    "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+    "checkpoint_revision": "d26bb61231c349cf6b7896fa83353113880e1ba3",
+    "baseline": "unchanged pinned single-GPU production eager pipeline, default attention dispatch, no compilation",
+    "component_cpu_offload": true,
+    "target_tokens": 16384,
+    "width": 2048,
+    "height": 2048,
+    "configured_scheduler_steps": 40,
+    "captured_step": "first cached step after unchanged eager prefill",
+    "guidance_masks_conditioning": "exact production defaults, recorded and identical in paired comparisons"
+  },
+  "cases": [
+    {"id": "development-apple-42", "role": "development-not-held-out", "seed": 42, "prompt": "A single red apple on a plain white table, soft natural daylight, realistic still-life photograph."},
+    {"id": "holdout-teapot-314159", "role": "held-out-prompt-and-seed", "seed": 314159, "prompt": "A blue ceramic teapot beside two white cups on a wooden kitchen table, soft morning window light, realistic photograph."},
+    {"id": "holdout-bicycle-271828", "role": "held-out-prompt-and-seed", "seed": 271828, "prompt": "A yellow bicycle leaning against a brick wall beside green plants, overcast daylight, realistic street photograph."}
+  ],
+  "stages": [
+    "production baseline capture and identity validation",
+    "bit-exact transport/layout round trip at actual shape",
+    "32 independent full-length trained blocks on identical captured eager inputs",
+    "free-running chains of 1, 4 and 32 blocks, paired with independently advancing eager chain",
+    "final adaptive norm and projection for the 32-block chain"
+  ],
+  "criteria": {
+    "atol": 0.02,
+    "rtol": 0.02,
+    "allowed_violations": 0,
+    "allowed_nonfinite": 0,
+    "block_outputs": "all elements, all blocks, all ranks",
+    "chain_outputs": "each constituent block output and final 32-block norm/projection output",
+    "same_threshold_for_chains": true,
+    "intermediate_operator_values": "diagnostic only; no newly invented gates",
+    "report_individual_cases": true,
+    "aggregate_pass": "all declared cases and stages pass; missing, timed-out or unexecuted stages are not passes",
+    "on_failure": "persist results then coordinated stop; no tolerance tuning or automatic stage skip"
+  },
+  "resource_envelope_per_case": {
+    "overall_pause_seconds": 2100,
+    "recovery_reserve_seconds": 600,
+    "stage_seconds_max": 900,
+    "collective_timeout_seconds": 120,
+    "host_ram_gib": 128,
+    "swap": false,
+    "cpus": 4,
+    "shared_memory_gib": 1,
+    "allocator_gib_per_gpu": 22,
+    "capture_disk_gib": 32,
+    "require_host_available_gib": 160,
+    "require_physical_free_gib_per_gpu_before_load": 22
+  },
+  "storage_review": {
+    "new_evidence_total_limit_gib": 96,
+    "require_initial_disk_free_gib": 128,
+    "retain_existing_evidence": true,
+    "note": "Three independent 32-GiB case ceilings; increased aggregate storage explicitly requires review"
+  },
+  "execution_controls": {
+    "one_case_per_maintenance_window": true,
+    "existing_inference_lock_inode": "hold until every worker/rank has stopped",
+    "queue": "must be idle; no concurrent consumer",
+    "restore": "exact captured API container identity/config with docker start; verify native small model ready",
+    "on_unconfirmed_cleanup": "quarantine GPUs and report failure",
+    "before_run": "independent protocol and harness-source review, exact-head green CI, explicit coordinated maintenance execution authorization",
+    "current_launcher": "unchanged and still stops at failed FP32 gate; no bypass flag"
+  },
+  "excluded_claims": [
+    "pass of FP32/eager or FP32/oracle gate",
+    "full 40-step scheduler trajectory equivalence",
+    "final decoded image equivalence",
+    "editing or reference-image parity",
+    "distributed speedup or production readiness"
+  ]
+}
