@@ -1,3 +1,4 @@
+#include "ordered_sum.cuh"
 #include "decoder_kernel.cuh"
 #include <cuda_runtime.h>
 namespace kadan::cuda::detail {
@@ -12,7 +13,7 @@ __global__ void norm(std::size_t n,float epsilon,const std::uint16_t* w,const fl
 __global__ void norm_shared(std::size_t n,float epsilon,const std::uint16_t* w,const float* input,float* y,unsigned* s){
     extern __shared__ float x[];float* products=x+n;__shared__ float inv;
     for(std::size_t j=threadIdx.x;j<n;j+=blockDim.x){x[j]=input[j];products[j]=__fmul_rn(x[j],x[j]);}__syncthreads();
-    if(threadIdx.x==0){float sum=0;for(std::size_t j=0;j<n;++j)sum=finite(__fadd_rn(sum,products[j]),s);inv=1/sqrtf(__fadd_rn(sum/float(n),epsilon));}
+    if(threadIdx.x==0){float sum=ordered_finite_sum(products,n,s);inv=1/sqrtf(__fadd_rn(sum/float(n),epsilon));}
     __syncthreads();
     for(std::size_t j=threadIdx.x;j<n;j+=blockDim.x)y[j]=bf(__fmul_rn(__fmul_rn(x[j],inv),__fadd_rn(1,__uint_as_float(unsigned(w[j])<<16))),s);
 }

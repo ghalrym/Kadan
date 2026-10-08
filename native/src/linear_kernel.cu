@@ -1,3 +1,4 @@
+#include "ordered_sum.cuh"
 #include "linear_kernel.cuh"
 #include <cuda_runtime.h>
 namespace kadan::cuda::detail {
@@ -18,7 +19,7 @@ __global__ void normalize_shared(linear::Config c,LinearBuffers b,const float* i
     extern __shared__ float x[];float* products=x+c.hidden;__shared__ float inverse;
     for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x){x[j]=input[j];const float v=finite(x[j],b.status);if(round(v,b.status)!=v)atomicOr(b.status,1u);products[j]=product(v,v);}
     __syncthreads();
-    if(threadIdx.x==0){float sum=0;for(std::size_t j=0;j<c.hidden;++j)sum=finite(plus(sum,products[j]),b.status);
+    if(threadIdx.x==0){float sum=ordered_finite_sum(products,c.hidden,b.status);
         inverse=1/sqrtf(sum/c.hidden+c.epsilon);}
     __syncthreads();
     for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)b.normalized[j]=round(product(product(x[j],inverse),plus(1,weight(b.input_norm[j]))),b.status);
@@ -48,7 +49,9 @@ __global__ void auxiliary_projection_shared(linear::Config c,LinearBuffers b){
         bp[j]=product(weight(b.b_weight[i*c.hidden+j]),b.normalized[j]);}
     __syncthreads();
     if(threadIdx.x==0){float a=0,bb=0;for(std::size_t j=0;j<c.hidden;++j){
-        a=finite(plus(a,ap[j]),b.status);bb=finite(plus(bb,bp[j]),b.status);}
+        a=plus(a,ap[j]);bb=plus(bb,bp[j]);}
+        if(!isfinite(a))a=ordered_finite_sum(ap,c.hidden,b.status);
+        if(!isfinite(bb))bb=ordered_finite_sum(bp,c.hidden,b.status);
         b.a[i]=round(a,b.status);b.b[i]=round(bb,b.status);}
 }
 

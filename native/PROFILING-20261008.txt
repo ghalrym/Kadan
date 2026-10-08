@@ -229,3 +229,20 @@ Warm API 26.119518 tok/s, prompt 1.135493 s, total 6.884216 s.
 Direct load 50.708565 s, prompt 1.407122 s, decode incl EOS 7.012884 s.
 Latest worker SHA256: d610f0c9340728a8c574fdc439d06c5557e18817252dd6086806f3df97e65f97
 Evidence: profiling/20261008-router-parallel.json. Native targets only rebuilt.
+
+Ordered sums with exact failure replay
+IEEE addition cannot recover from Inf/NaN without sanitization. A finite final
+sum proves all intermediate sums were finite; omit per-add checks on that path.
+On nonfinite final sums, replay the original checks/resets to preserve diagnostic
+outputs and flags. Ascending additions and BF16 boundaries are unchanged.
+108 sum cases cover odd/full/zero lengths, overflow followed by cancellation,
+Inf/NaN, subnormals, signed zeros, and pre-existing flags. Expanded 105/60/15
+normalization/auxiliary/router cases and 26 CPU tests pass. All 149 IDs match.
+Warm API 34.287630 tok/s, prompt 0.855812 s, total 5.247149 s.
+Direct load 50.628657 s, prompt 1.119194 s, decode incl EOS 5.624754 s.
+Latest worker SHA256: cd59f1f16e344f81e9195e68e1d93b5e51e5a4673d670d054afe8e5c9ca1761c
+Evidence: profiling/20261008-ordered-sum.json. Native targets only rebuilt.
+Run: kadan-ordered-sum-parity --allow-gpu-validation --device 0
+Review follow-up: exact source 02abd7056503872e366017de160969bdad2eb762 was
+archived separately, rebuilt and rerun: 105 normalization, 60 auxiliary, and
+15 router cases all passed. Its recorded API rate is 23.791985 tok/s.

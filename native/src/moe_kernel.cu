@@ -1,3 +1,4 @@
+#include "ordered_sum.cuh"
 #include "moe_kernel.cuh"
 #include <cuda_runtime.h>
 #include <math_constants.h>
@@ -23,7 +24,7 @@ __global__ void route_logits_shared(moe::Config c,MoeBuffers b,const float* x){
     extern __shared__ float products[];const std::size_t e=blockIdx.x;
     for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)products[j]=mul(expand(b.router[e*c.hidden+j]),x[j]);
     __syncthreads();
-    if(threadIdx.x==0){float sum=0;for(std::size_t j=0;j<c.hidden;++j)sum=finite(add(sum,products[j]),b.status);b.logits[e]=bf(sum,b.status);}
+    if(threadIdx.x==0){float sum=ordered_finite_sum(products,c.hidden,b.status);b.logits[e]=bf(sum,b.status);}
 }
 __global__ void route(moe::Config c,MoeBuffers b,const float* x){
     if(threadIdx.x)return;float maximum=-CUDART_INF_F;
@@ -71,7 +72,7 @@ __global__ void route_shared(moe::Config c,MoeBuffers b,const float* x){
         __syncthreads();
     }
     if(tid<c.top_k)b.top_weights[tid]=bf(probabilities[b.selected[tid]]/picked,b.status);
-    if(tid==0){float shared=0;for(std::size_t j=0;j<c.hidden;++j)shared=finite(add(shared,products[j]),b.status);
+    if(tid==0){float shared=ordered_finite_sum(products,c.hidden,b.status);
         *b.shared_factor=bf(sigmoid(bf(shared,b.status)),b.status);}
     if(tid<c.experts)b.probabilities[tid]=probabilities[tid];
 }

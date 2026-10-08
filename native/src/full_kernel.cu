@@ -1,3 +1,4 @@
+#include "ordered_sum.cuh"
 #include "full_kernel.cuh"
 #include <cuda_runtime.h>
 #include <math_constants.h>
@@ -27,7 +28,7 @@ __global__ void normalize_shared(full::Config c,FullBuffers b,const float* input
     extern __shared__ float x[];float* products=x+c.hidden;__shared__ float inverse;
     for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x){x[j]=input[j];const float v=bf(input[j],b.status);if(v!=input[j])atomicOr(b.status,1u);products[j]=mul(v,v);}
     __syncthreads();
-    if(threadIdx.x==0){float total=0;for(std::size_t j=0;j<c.hidden;++j)total=finite(add(total,products[j]),b.status);
+    if(threadIdx.x==0){float total=ordered_finite_sum(products,c.hidden,b.status);
         inverse=1/sqrtf(add(total/float(c.hidden),c.epsilon));}
     __syncthreads();
     for(std::size_t j=threadIdx.x;j<c.hidden;j+=blockDim.x)b.normalized[j]=bf(mul(mul(bf(x[j],b.status),inverse),add(1,expand(b.input_norm[j]))),b.status);
