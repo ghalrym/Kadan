@@ -322,3 +322,7 @@ Original image ID 32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec0
 is unchanged. Native targets rebuilt in cached builder; no image rebuild.
 Local data, model selection/context, and unrelated settings retained.
 Evidence: profiling/20261008-publication-barriers.json.
+
+Review regression follow-up: fused gate/up parity now uses distinct weight AND
+scale buffers with different contents, in addition to different globals. All
+126 cases pass. This is test-only; the final running worker/hash is unchanged.

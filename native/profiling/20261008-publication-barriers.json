@@ -333,5 +333,12 @@
     "running_executable_sha256": "6475816389ed484d0b64eda6efcdf0453f7e29836d7b65ae050b9a68e061f387",
     "api_reload": true,
     "frontend_vite": true
+  },
+  "review_followup": {
+    "distinct_gate_up_weight_and_scale_buffers": true,
+    "passed_cases": 126,
+    "test_binary_sha256": "54fb1768e5347739874f84eeb6b5a2c0c3f4c157bfcd8506e24d26f8ea72b2c0",
+    "command": "kadan-nvfp4-fusion-parity --allow-gpu-validation --device 0",
+    "production_worker_unchanged": true
   }
 }
