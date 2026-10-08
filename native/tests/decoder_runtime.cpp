@@ -65,11 +65,11 @@ cudaError_t linear_residual(linear::Config,LinearBuffers,const float*,float*){if
 cudaError_t full_normalize(full::Config,FullBuffers,const float*){return launch();}
 cudaError_t full_core(full::Config,FullBuffers b,std::size_t){b.keys[0]=123;b.values[0]=456;return launch(3);}
 cudaError_t full_residual(full::Config,FullBuffers,const float*,float*){if(cancellation)cancellation->store(true);return launch();}
-cudaError_t moe_route(moe::Config c,MoeBuffers b,const float*){for(std::size_t i=0;i<c.top_k;++i)b.selected[i]=unsigned(i);return launch();}
+cudaError_t moe_route(moe::Config c,MoeBuffers b,const float*){for(std::size_t i=0;i<c.top_k;++i)b.selected[i]=numeric_stage==2?~0u:unsigned(i);return launch();}
 cudaError_t moe_activate(std::size_t,MoeBuffers b){if(late_numeric)*b.status=1;return launch();}
 cudaError_t moe_accumulate(moe::Config,MoeBuffers,unsigned){return launch();}
 cudaError_t moe_finish(moe::Config,MoeBuffers,float*){return launch();}
-cudaError_t decoder_norm(std::size_t,float,const std::uint16_t*,const float*,float*,unsigned*){return launch();}
+cudaError_t decoder_norm(std::size_t,float,const std::uint16_t*,const float*,float*,unsigned*flags){if(numeric_stage==2)*flags=1;return launch();}
 cudaError_t decoder_residual(std::size_t,const float*,const float*,float*,unsigned*){return launch();}
 }
 int main(){try{
@@ -85,7 +85,7 @@ int main(){try{
             check(owner_allocations::count==8&&owner_allocations::peak==metadata);closed.clear();owner_allocations::enabled=false;}
         for(int dimension=0;dimension<2;++dimension){kadan::Footprint cap{metadata,p.device_bytes};--cap[dimension];auto r=std::make_shared<kadan::Resources>(cap);auto n=mallocs;rejected([&]{Decoder d(c,f.weights(),0,r);});check(mallocs==n&&r->snapshot().residents==0);}
         {auto r=manager();inject(Op::copy,3);rejected([&]{Decoder d(c,f.weights(),0,r);});check(used==0&&r->snapshot().residents==0);}
-        for(int scenario=0;scenario<12;++scenario){
+        for(int scenario=0;scenario<14;++scenario){
             auto r=manager();Decoder d(c,f.weights(),0,r);std::array<float,16>x{},y{},a{},u{},m{};std::atomic_bool stop=false;
             d.step_device(x,y);check(d.valid()&&d.tokens()==1);y.fill(42);
             switch(scenario){
@@ -101,12 +101,14 @@ int main(){try{
             case 9:cancel_after_copy=&stop;break;
             case 10:fail_final_sync=true;final_sync_failures=2;break;
             case 11:numeric_stage=1;break;
+            case 12:numeric_stage=2;break;
+            case 13:numeric_stage=1;cancellation=&stop;break;
             }
-            auto before_launches=launches;bool quarantine=rejected([&]{d.step_device(x,y,&stop);});check(quarantine==(scenario==4||scenario==10));check(!d.valid()&&d.tokens()==1);
+            auto before_launches=launches;bool numeric_error=false;bool quarantine=rejected([&]{try{d.step_device(x,y,&stop);}catch(const std::overflow_error&){numeric_error=true;throw;}});if(scenario>=11)check(numeric_error);check(quarantine==(scenario==4||scenario==10));check(!d.valid()&&d.tokens()==1);
             if(scenario!=3&&scenario!=9&&scenario!=10)for(float v:y)check(v==42);
-            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?22:21));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
+            if(scenario==0){check(launches-before_launches==(kind==kadan::decoder::Attention::linear?23:22));auto* state=static_cast<std::uint8_t*>(allocations.begin()->first)+p.state_first;check(state[0]!=0);}
             late_numeric=false;numeric_stage=0;cancellation=nullptr;cancel_after_copy=nullptr;final_sync_failures=1;stop=false;auto n=launches;rejected([&]{d.step_device(x,y);});check(launches==n);rejected([&]{d.read_intermediates(a,u,m);});
-            if(scenario==0||scenario==1||scenario==8||scenario==9||scenario==11){d.reset();check(d.valid()&&d.tokens()==0);std::vector<std::uint8_t> first(p.state_first_bytes),second(p.state_second_bytes);d.read_state(first,second);for(auto v:first)check(v==0);for(auto v:second)check(v==0);d.step_device(x,y);check(d.tokens()==1);}
+            if(scenario==0||scenario==1||scenario==8||scenario==9||scenario>=11){d.reset();check(d.valid()&&d.tokens()==0);std::vector<std::uint8_t> first(p.state_first_bytes),second(p.state_second_bytes);d.read_state(first,second);for(auto v:first)check(v==0);for(auto v:second)check(v==0);d.step_device(x,y);check(d.tokens()==1);}
             else rejected([&]{d.reset();});
             d.close();check(!pending&&used==0&&r->snapshot().residents==0);
         }

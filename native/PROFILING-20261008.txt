@@ -300,3 +300,25 @@ Direct load 49.898865 s, prompt 0.795500 s, decode incl EOS 4.002463 s.
 Latest worker SHA256: a301a385102b60533b989bd1628e772790f1fd23d1c929d97d18e9488619138a
 Evidence: profiling/20261008-head-normalization.json. Native rebuild only.
 Run: kadan-attention-head-parity --allow-gpu-validation --device 0
+
+Final: status observations at routing and publication
+Flags accumulate on one legacy stream. Check before host-selected indices and
+before layer publication; no per-layer flag reset occurs between those points.
+Cancellation keeps the same checkpoints and drains/checks pending work first,
+preserving numeric-error priority. CPU regressions assert that pre-route numeric
+errors win over invalid selected indices and concurrent cancellation; failure
+publication, reset, and quarantine assertions remain. 26 CPU tests and all
+decoder/stack GPU stages pass. 149/149 output IDs match the reference.
+Decode sync calls 30546 -> 12666; D2H copies 36505 -> 18625.
+Initial warm API 51.724706 tok/s. Three repeat requests:
+median 51.922933 tok/s, range 51.733803--52.051356.
+Median API prompt 0.556738 s; total 3.537372 s.
+All repeats returned the exact count-from-1-to-40 text, 30 input/149 output tokens.
+Separate instrumented load 50.195393 s, prompt 0.763096 s, decode incl EOS 3.789727 s.
+Latest worker SHA256: 6475816389ed484d0b64eda6efcdf0453f7e29836d7b65ae050b9a68e061f387
+The live /proc/<pid>/exe hash was independently checked against this binary.
+API uses source-mounted uvicorn --reload --reload-dir /app/api; UI runs Vite.
+Original image ID 32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e
+is unchanged. Native targets rebuilt in cached builder; no image rebuild.
+Local data, model selection/context, and unrelated settings retained.
+Evidence: profiling/20261008-publication-barriers.json.

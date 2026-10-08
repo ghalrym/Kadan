@@ -1,0 +1,337 @@
+{
+  "api": {
+    "id": "req_86cec6fafe0547a797d2a34cb58019b8",
+    "time": "2026-10-08T14:52:55.678+00:00",
+    "type": "LLM",
+    "model": "small",
+    "status": 200,
+    "latency": "3.540 s",
+    "latency_ms": 3540.452,
+    "endpoint": "/v1/chat/completions",
+    "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+    "output": "HTTP 200; 569 response bytes",
+    "request_bytes": 140,
+    "response_bytes": 569,
+    "generation_ttft_ms": 571.4713870111154,
+    "stream_ttft_ms": null,
+    "prefill_ms": 571.4713870111154,
+    "decode_tokens_per_second": 51.72470552314523,
+    "output_tokens": 149,
+    "prefill_tokens": 30,
+    "conversation_key": null,
+    "cache_hit": null,
+    "reused_tokens": null,
+    "stored_tokens": null,
+    "cache_reason": null,
+    "retention_reason": null,
+    "cached_prefix_sha256": null
+  },
+  "warm_repeats": {
+    "runs": [
+      {
+        "id": "req_1838b56089a144898a5ce58696f3f8ce",
+        "time": "2026-10-08T14:53:50.859+00:00",
+        "type": "LLM",
+        "model": "small",
+        "status": 200,
+        "latency": "3.563 s",
+        "latency_ms": 3563.051,
+        "endpoint": "/v1/chat/completions",
+        "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+        "output": "HTTP 200; 569 response bytes",
+        "request_bytes": 140,
+        "response_bytes": 569,
+        "generation_ttft_ms": 626.3770240038866,
+        "stream_ttft_ms": null,
+        "prefill_ms": 626.3770240038866,
+        "decode_tokens_per_second": 52.05135594836935,
+        "output_tokens": 149,
+        "prefill_tokens": 30,
+        "conversation_key": null,
+        "cache_hit": null,
+        "reused_tokens": null,
+        "stored_tokens": null,
+        "cache_reason": null,
+        "retention_reason": null,
+        "cached_prefix_sha256": null
+      },
+      {
+        "id": "req_b94aa31b0eb3420ca4b7fa9ce7ce4a9d",
+        "time": "2026-10-08T14:53:54.487+00:00",
+        "type": "LLM",
+        "model": "small",
+        "status": 200,
+        "latency": "3.486 s",
+        "latency_ms": 3485.626,
+        "endpoint": "/v1/chat/completions",
+        "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+        "output": "HTTP 200; 569 response bytes",
+        "request_bytes": 140,
+        "response_bytes": 569,
+        "generation_ttft_ms": 555.1936560077593,
+        "stream_ttft_ms": null,
+        "prefill_ms": 555.1936560077593,
+        "decode_tokens_per_second": 51.922932566408406,
+        "output_tokens": 149,
+        "prefill_tokens": 30,
+        "conversation_key": null,
+        "cache_hit": null,
+        "reused_tokens": null,
+        "stored_tokens": null,
+        "cache_reason": null,
+        "retention_reason": null,
+        "cached_prefix_sha256": null
+      },
+      {
+        "id": "req_a7e4e89c42604261932b043e8a4f465a",
+        "time": "2026-10-08T14:53:58.036+00:00",
+        "type": "LLM",
+        "model": "small",
+        "status": 200,
+        "latency": "3.537 s",
+        "latency_ms": 3537.372,
+        "endpoint": "/v1/chat/completions",
+        "prompt": "140 request bytes; JSON object; 1 messages; 0 message characters",
+        "output": "HTTP 200; 569 response bytes",
+        "request_bytes": 140,
+        "response_bytes": 569,
+        "generation_ttft_ms": 556.737503997283,
+        "stream_ttft_ms": null,
+        "prefill_ms": 556.737503997283,
+        "decode_tokens_per_second": 51.733803130237185,
+        "output_tokens": 149,
+        "prefill_tokens": 30,
+        "conversation_key": null,
+        "cache_hit": null,
+        "reused_tokens": null,
+        "stored_tokens": null,
+        "cache_reason": null,
+        "retention_reason": null,
+        "cached_prefix_sha256": null
+      }
+    ],
+    "median_decode_tokens_per_second": 51.922932566408406,
+    "min_decode_tokens_per_second": 51.733803130237185,
+    "max_decode_tokens_per_second": 52.05135594836935,
+    "median_prefill_ms": 556.737503997283,
+    "median_total_ms": 3537.372,
+    "exact_text_match": true
+  },
+  "worker_sha256": "6475816389ed484d0b64eda6efcdf0453f7e29836d7b65ae050b9a68e061f387",
+  "output_ids_match": 149,
+  "load_seconds": 50.19539285999781,
+  "prefill_seconds": 0.763096149006742,
+  "decode_with_eos_seconds": 3.789727461000439,
+  "decode_profile": {
+    "kernels": [
+      {
+        "name": "kadan_launch_nvfp4_pair(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long, bool, Nvfp4Pair)",
+        "calls": 53640,
+        "gpu_ms": 509.290794,
+        "launch_host_ms": 122.603676
+      },
+      {
+        "name": "kadan_launch_nvfp4_accumulate(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long, bool, Nvfp4Accumulation)",
+        "calls": 47680,
+        "gpu_ms": 441.278314,
+        "launch_host_ms": 106.293469
+      },
+      {
+        "name": "kadan_launch_fp8_bf16(unsigned char const*, float const*, bool, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+        "calls": 19370,
+        "gpu_ms": 412.422459,
+        "launch_host_ms": 41.931622
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584210recurrenceENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 282.964284,
+        "launch_host_ms": 9.990653
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c38activateEmNS1_10MoeBuffersE(unsigned long, kadan::cuda::detail::MoeBuffers&)",
+        "calls": 53640,
+        "gpu_ms": 199.15789,
+        "launch_host_ms": 115.207753
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c312route_sharedENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+        "calls": 5960,
+        "gpu_ms": 153.969598,
+        "launch_host_ms": 13.504403
+      },
+      {
+        "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+        "calls": 149,
+        "gpu_ms": 137.239744,
+        "launch_host_ms": 0.377834
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f11norm_sharedEmfPKtPKfPfPj(unsigned long, float, unsigned short const*, float const*, float*, unsigned int*)",
+        "calls": 6109,
+        "gpu_ms": 128.775198,
+        "launch_host_ms": 13.721483
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c319route_logits_sharedENS_3moe6ConfigENS1_10MoeBuffersEPKf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float const*)",
+        "calls": 5960,
+        "gpu_ms": 127.815039,
+        "launch_host_ms": 13.406424
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584227auxiliary_projection_sharedENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 106.711235,
+        "launch_host_ms": 10.212555
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584216normalize_sharedENS_6linear6ConfigENS1_13LinearBuffersEPKf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*)",
+        "calls": 4470,
+        "gpu_ms": 103.928705,
+        "launch_host_ms": 11.737286
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_valuesENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+        "calls": 1490,
+        "gpu_ms": 99.893024,
+        "launch_host_ms": 3.329813
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516attention_scoresENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+        "calls": 1490,
+        "gpu_ms": 76.848192,
+        "launch_host_ms": 3.346422
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc896selectEmPfPjS4_(unsigned long, float*, unsigned int*, unsigned int*)",
+        "calls": 149,
+        "gpu_ms": 50.5768,
+        "launch_host_ms": 0.403565
+      },
+      {
+        "name": "kadan_launch_nvfp4_bf16(unsigned char const*, unsigned char const*, float, float const*, float*, unsigned int*, unsigned long, unsigned long)",
+        "calls": 5960,
+        "gpu_ms": 45.521824,
+        "launch_host_ms": 13.41677
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a516normalize_sharedENS_4full6ConfigENS1_11FullBuffersEPKf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*)",
+        "calls": 1490,
+        "gpu_ms": 36.279297,
+        "launch_host_ms": 3.941539
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a517attention_softmaxENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+        "calls": 1490,
+        "gpu_ms": 30.581504,
+        "launch_host_ms": 3.367786
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584219normalize_qk_sharedENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 25.36832,
+        "launch_host_ms": 10.345901
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584217gated_norm_sharedENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 24.695904,
+        "launch_host_ms": 10.18077
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail46_GLOBAL__N__e6deb8a4_13_moe_kernel_cu_bda529c36finishENS_3moe6ConfigENS1_10MoeBuffersEPf(kadan::moe::Config&, kadan::cuda::detail::MoeBuffers&, float*)",
+        "calls": 5960,
+        "gpu_ms": 23.814304,
+        "launch_host_ms": 13.443296
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd584211convolutionENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 22.021824,
+        "launch_host_ms": 9.981429
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail50_GLOBAL__N__00a09a1e_17_decoder_kernel_cu_26beee0f8residualEmPKfS4_PfPj(unsigned long, float const*, float const*, float*, unsigned int*)",
+        "calls": 5960,
+        "gpu_ms": 20.56912,
+        "launch_host_ms": 13.070904
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58429auxiliaryENS_6linear6ConfigENS1_13LinearBuffersE(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&)",
+        "calls": 4470,
+        "gpu_ms": 17.246368,
+        "launch_host_ms": 10.055969
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail49_GLOBAL__N__c98120dd_16_linear_kernel_cu_d8fd58428residualENS_6linear6ConfigENS1_13LinearBuffersEPKfPf(kadan::linear::Config&, kadan::cuda::detail::LinearBuffers&, float const*, float*)",
+        "calls": 4470,
+        "gpu_ms": 17.167904,
+        "launch_host_ms": 10.411652
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a514prepare_sharedENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+        "calls": 1490,
+        "gpu_ms": 15.011648,
+        "launch_host_ms": 3.479185
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a58residualENS_4full6ConfigENS1_11FullBuffersEPKfPf(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, float const*, float*)",
+        "calls": 1490,
+        "gpu_ms": 5.449664,
+        "launch_host_ms": 3.441034
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail47_GLOBAL__N__83bba1f2_14_full_kernel_cu_3add50a56appendENS_4full6ConfigENS1_11FullBuffersEm(kadan::full::Config&, kadan::cuda::detail::FullBuffers&, unsigned long)",
+        "calls": 1490,
+        "gpu_ms": 5.359872,
+        "launch_host_ms": 3.318131
+      },
+      {
+        "name": "__device_stub__ZN5kadan4cuda6detail48_GLOBAL__N__ab76db94_15_stack_kernel_cu_165abc899embeddingEmPKtjPf(unsigned long, unsigned short const*, unsigned int, float*)",
+        "calls": 149,
+        "gpu_ms": 0.93856,
+        "launch_host_ms": 0.596481
+      }
+    ],
+    "totals": [
+      [
+        "sync",
+        "12666",
+        "1992.411565"
+      ],
+      [
+        "copy0",
+        "0",
+        "0.000000"
+      ],
+      [
+        "copy1",
+        "0",
+        "0.000000"
+      ],
+      [
+        "copy2",
+        "18625",
+        "114.315169"
+      ],
+      [
+        "copy3",
+        "0",
+        "0.000000"
+      ],
+      [
+        "copy4",
+        "0",
+        "0.000000"
+      ]
+    ]
+  },
+  "deployment": {
+    "image": "kadan-native-api:review-ba380d9",
+    "image_id": "sha256:32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e",
+    "running_executable": "/opt/kadan/local/kadan-model-worker",
+    "running_executable_sha256": "6475816389ed484d0b64eda6efcdf0453f7e29836d7b65ae050b9a68e061f387",
+    "api_reload": true,
+    "frontend_vite": true
+  }
+}

@@ -77,7 +77,7 @@ struct DecoderProducer {
     void zero(){check(cudaMemsetAsync(bytes(p.moe_offset+p.moe.scratch_offset),0,p.moe.device_bytes-p.moe.scratch_offset,cudaStreamLegacy));check(cudaMemsetAsync(bytes(p.state_first),0,p.device_bytes-p.state_first,cudaStreamLegacy));}
     void status(){check(cudaStreamSynchronize(cudaStreamLegacy));unsigned value=0;check(cudaMemcpy(&value,flags(),4,cudaMemcpyDeviceToHost));if(value)throw std::overflow_error("decoder_numeric_failure");}
     // Kernels use one legacy stream and OR into flags until run() resets them.
-    // Observe at stage boundaries and before host routing; intermediate checks
+    // Observe before host routing and layer publication; intermediate checks
     // only stall that same ordered stream. A failure still prevents publication,
     // and the owner drains/quarantines pending work before releasing storage.
     void fp8(std::size_t i,const float* x,float* y){const auto& v=p.projections[i];check((c.linear.bf16_weights||c.full.bf16_weights?kadan_launch_fp8_bf16:kadan_launch_fp8)(bytes(v.weights),pointer<float>(v.scale),false,x,y,flags(),v.rows,v.columns));}
@@ -87,10 +87,10 @@ struct DecoderProducer {
         cursor.check_step(token);
         if(c.attention==decoder::Attention::linear){
             check(detail::linear_normalize(c.linear,linear,input));fp8(0,linear.normalized,linear.qkv);fp8(1,linear.normalized,linear.z);
-            check(detail::linear_core(c.linear,linear));fp8(2,linear.gated,linear.projected);check(detail::linear_residual(c.linear,linear,input,work(0)));status();
+            check(detail::linear_core(c.linear,linear));fp8(2,linear.gated,linear.projected);check(detail::linear_residual(c.linear,linear,input,work(0)));
         }else{
             check(detail::full_normalize(c.full,full,input));fp8(0,full.normalized,full.qg);fp8(1,full.normalized,full.key);fp8(2,full.normalized,full.value);
-            check(detail::full_core(c.full,full,cursor.committed_tokens()));fp8(3,full.gated,full.projected);check(detail::full_residual(c.full,full,input,work(0)));status();
+            check(detail::full_core(c.full,full,cursor.committed_tokens()));fp8(3,full.gated,full.projected);check(detail::full_residual(c.full,full,input,work(0)));
         }
     }
     void project(const Projection& m,const float* x,float* y){check((c.moe.bf16_weights?kadan_launch_nvfp4_bf16:kadan_launch_nvfp4)(m.weights,m.scales,m.global,x,y,flags(),m.rows,m.columns));}
@@ -105,13 +105,16 @@ struct DecoderProducer {
         cursor.check_step(token);check(detail::moe_route(c.moe,moe,work(1)));status();std::array<unsigned,8> selected{};
         check(cudaMemcpy(selected.data(),moe.selected,c.moe.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));std::sort(selected.begin(),selected.begin()+c.moe.top_k);
         for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);}
-        expert(c.moe.experts,c.moe.shared_intermediate);check(detail::moe_finish(c.moe,moe,work(2)));status();
+        expert(c.moe.experts,c.moe.shared_intermediate);check(detail::moe_finish(c.moe,moe,work(2)));
     }
     void cancel(const std::atomic_bool* flag){if(flag&&flag->load(std::memory_order_relaxed))throw std::invalid_argument("decoder_cancelled");}
+    // Keep cancellation at the same checkpoints. If cancellation is requested,
+    // drain/check pending numeric work first, preserving numeric-error priority.
+    void cancel_pending(const std::atomic_bool* flag){if(flag&&flag->load(std::memory_order_relaxed)){status();throw std::invalid_argument("decoder_cancelled");}}
     void run(StateStep step,const float* input,const std::atomic_bool* cancelled){
         cursor.check_step(step);check(cudaMemsetAsync(flags(),0,4,cudaStreamLegacy));
-        attention(step,input);cancel(cancelled);
-        check(detail::decoder_norm(p.hidden,p.epsilon,pointer<std::uint16_t>(p.post_norm),work(0),work(1),flags()));status();mixture(step);cancel(cancelled);
+        attention(step,input);cancel_pending(cancelled);
+        check(detail::decoder_norm(p.hidden,p.epsilon,pointer<std::uint16_t>(p.post_norm),work(0),work(1),flags()));mixture(step);cancel_pending(cancelled);
         check(detail::decoder_residual(p.hidden,work(0),work(2),work(3),flags()));status();cancel(cancelled);
     }
 };
