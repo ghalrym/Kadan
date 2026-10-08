@@ -155,3 +155,8 @@ The original resident MoE branch is documented in [MOE.md](MOE.md). It uses one
 admitted layer arena, deterministic routing, original NVFP4 projections and
 independent changing-route goldens. Decoder residual/commit integration and
 host expert streaming remain separate milestones; the new GPU harness is opt-in.
+
+The complete single-device decoder-layer coordinator composes both attention
+variants with post-normalization, MoE and the second residual under one admission
+and publication boundary. See [DECODER.md](DECODER.md) for CPU validation,
+ownership/failure contracts and the unexecuted staged GPU correctness plan.
