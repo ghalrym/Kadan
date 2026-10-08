@@ -12,6 +12,7 @@ from api.inference.llm.context import configure_context
 from api.inference.resources import ResourceManager
 from .artifacts import require, sha256
 from .cache_contract import validate_cache
+from .limits import Limits
 
 
 def cpu_tensor(tensor, dtype=None):
@@ -55,9 +56,9 @@ def select_backend():
             'selected_fallbacks': selected, 'device': 'cpu', 'hub_kernels': False}
 
 
-def forward(root, token):
+def forward(root, token, limits=Limits()):
     report = select_backend()
-    resources = ResourceManager(128 * 1024**2, {})
+    resources = ResourceManager(limits.host_bytes, {})
     adapter = None
     output = None
     hooks = []
@@ -75,7 +76,7 @@ def forward(root, token):
             return _original(*args, **kwargs)
         setattr(hf, name, counted)
     try:
-        adapter = build_qwen(SimpleNamespace(id='synthetic-reference'), root, resources, 'cpu')
+        adapter = build_qwen(SimpleNamespace(id=limits.owner), root, resources, 'cpu')
         configure_context(adapter, 1)
         require(adapter.model.config._attn_implementation == 'eager' and not adapter.model.training, 'model_backend')
         require(not getattr(adapter.model, '_use_kernels', False), 'kernelized_model')
@@ -100,7 +101,7 @@ def forward(root, token):
                                'has_probability_ties': len(set(ordered)) != len(ordered),
                                'boundary_tie': k < len(ordered) and ordered[k-1] == ordered[k]})
             hooks.extend([layer.register_forward_hook(layer_hook), layer.mlp.gate.register_forward_hook(route_hook)])
-        request = resources.reserve('synthetic-reference:request', 'llm', host_bytes=4 * 1024**2)
+        request = resources.reserve(limits.owner + ':request', 'llm', host_bytes=limits.request_bytes)
         with adapter.reservation.lease(), request.lease(), torch.inference_mode():
             calls['model'] += 1
             output = adapter.model(input_ids=torch.tensor([[token]], dtype=torch.long),

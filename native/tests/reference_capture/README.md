@@ -176,3 +176,9 @@ native intermediates. This test contains no native GPU measurement and no
 throughput claim. It does not establish actual-model correctness or support any
 other modality. Synthetic path/dimension/file bounds are fail-closed guardrails
 for trusted generated fixtures, not a sandbox for hostile checkpoint directories.
+
+## Separate actual-reference support draft
+
+See [ACTUAL-TOOLING.md](ACTUAL-TOOLING.md) for the explicitly gated actual entrypoint,
+CPU supervisor, verification and remaining blockers. This synthetic entrypoint
+and all dimension/shard guards remain unchanged. No actual execution is approved.
