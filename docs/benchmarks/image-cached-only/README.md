@@ -30,3 +30,13 @@ limit,5GiB ext4 disk cache limit,22GiB single-GPU accounting and physical/therma
 supervisor guards as the prior corrected experiment. Live GPU0 is not exposed.
 Manifest and exact host-specific launch arguments are adjacent. Six CPU tests
 cover dispatch, backing views, request reuse and cached mutation. The GPU run was safely stopped before compilation when the user prioritized activating reviewed MR119 on the home API. Model cleanup and container exit were confirmed; GPU1 returned to baseline before deployment. No compiled result or speedup is available. Do not interpret this candidate as a recommended production option.
+
+## Review requirements before any resumed GPU run
+
+The source review accepted the eager-extract/cached-compile dispatch. Before
+resuming, extend per-image deadlines to changed-prompt H/J; assert parked reserved
+and physical VRAM against retained accounting, not allocated bytes alone; and
+require explicit B/D/F and H/J output comparisons before a correctness success.
+The recorded audit_seconds includes GPU waits from hashing and must not be
+subtracted as pure instrumentation overhead. The paused manifest is historical;
+update it and record new checksums before running again.
