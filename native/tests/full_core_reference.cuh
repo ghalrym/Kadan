@@ -1,7 +1,10 @@
+// Frozen serial full-attention GPU reference for bitwise regression.
 #include "full_kernel.cuh"
 #include <cuda_runtime.h>
 #include <math_constants.h>
-namespace kadan::cuda::detail {
+namespace baseline {
+using kadan::cuda::detail::FullBuffers;
+namespace full=kadan::full;
 namespace {
 __device__ float expand(std::uint16_t x){return __uint_as_float(unsigned(x)<<16);}
 __device__ float finite(float x,unsigned* s){if(!isfinite(x)){atomicOr(s,1u);return 0;}return x;}
@@ -34,28 +37,15 @@ __global__ void append(full::Config c,FullBuffers b,std::size_t position){
     const std::size_t j=blockIdx.x*blockDim.x+threadIdx.x,n=c.kv_heads*c.head_dim;
     if(j<n){b.keys[position*n+j]=std::uint16_t(__float_as_uint(bf(b.key[j],b.status))>>16);b.values[position*n+j]=std::uint16_t(__float_as_uint(bf(b.value[j],b.status))>>16);}
 }
-// Each score keeps its original ascending head-dimension accumulation. Only
-// independent positions/outputs are parallelized, preserving BF16 boundaries.
-__global__ void attention_scores(full::Config c,FullBuffers b,std::size_t position){
-    const std::size_t h=blockIdx.x,kh=h/(c.heads/c.kv_heads),kv=c.kv_heads*c.head_dim;
-    auto* row=b.probabilities+h*c.capacity;
-    for(std::size_t t=threadIdx.x;t<c.capacity;t+=blockDim.x)row[t]=0;
-    const float scale=1/sqrtf(float(c.head_dim));
-    for(std::size_t t=threadIdx.x;t<=position;t+=blockDim.x){float dot=0;
-        for(std::size_t j=0;j<c.head_dim;++j)dot=finite(add(dot,mul(b.query[h*c.head_dim+j],expand(b.keys[t*kv+kh*c.head_dim+j]))),b.status);
-        row[t]=bf(mul(bf(dot,b.status),scale),b.status);}
-}
-__global__ void attention_softmax(full::Config c,FullBuffers b,std::size_t position){
-    if(threadIdx.x)return;auto* row=b.probabilities+blockIdx.x*c.capacity;
-    float maximum=-CUDART_INF_F;for(std::size_t t=0;t<=position;++t)maximum=fmaxf(maximum,row[t]);
+__global__ void attention(full::Config c,FullBuffers b,std::size_t position){
+    if(threadIdx.x)return;const std::size_t h=blockIdx.x,kh=h/(c.heads/c.kv_heads),kv=c.kv_heads*c.head_dim;
+    auto* row=b.probabilities+h*c.capacity;for(std::size_t t=0;t<c.capacity;++t)row[t]=0;
+    const float scale=1/sqrtf(float(c.head_dim));float maximum=-CUDART_INF_F;
+    for(std::size_t t=0;t<=position;++t){float dot=0;for(std::size_t j=0;j<c.head_dim;++j)dot=finite(add(dot,mul(b.query[h*c.head_dim+j],expand(b.keys[t*kv+kh*c.head_dim+j]))),b.status);
+        row[t]=bf(mul(bf(dot,b.status),scale),b.status);maximum=fmaxf(maximum,row[t]);}
     float denominator=0;for(std::size_t t=0;t<=position;++t){row[t]=expf(row[t]-maximum);denominator=finite(add(denominator,row[t]),b.status);}
     for(std::size_t t=0;t<=position;++t)row[t]=bf(row[t]/denominator,b.status);
-}
-__global__ void attention_values(full::Config c,FullBuffers b,std::size_t position){
-    const std::size_t h=blockIdx.x,kh=h/(c.heads/c.kv_heads),kv=c.kv_heads*c.head_dim;
-    const auto* row=b.probabilities+h*c.capacity;
-    for(std::size_t j=threadIdx.x;j<c.head_dim;j+=blockDim.x){float sum=0;
-        for(std::size_t t=0;t<=position;++t)sum=finite(add(sum,mul(row[t],expand(b.values[t*kv+kh*c.head_dim+j]))),b.status);
+    for(std::size_t j=0;j<c.head_dim;++j){float sum=0;for(std::size_t t=0;t<=position;++t)sum=finite(add(sum,mul(row[t],expand(b.values[t*kv+kh*c.head_dim+j]))),b.status);
         const auto at=h*c.head_dim+j;b.core[at]=bf(sum,b.status);b.gated[at]=bf(mul(b.core[at],bf(sigmoid(b.gate[at]),b.status)),b.status);}
 }
 __global__ void residual(full::Config c,FullBuffers b,const float* x,float* y){
@@ -66,9 +56,7 @@ cudaError_t full_normalize(full::Config c,FullBuffers b,const float* x){normaliz
 cudaError_t full_core(full::Config c,FullBuffers b,std::size_t position){
     prepare<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
     append<<<(c.kv_heads*c.head_dim+127)/128,128,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    attention_scores<<<c.heads,128,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    attention_softmax<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    attention_values<<<c.heads,128,0,cudaStreamLegacy>>>(c,b,position);return cudaGetLastError();
+    attention<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);return cudaGetLastError();
 }
 cudaError_t full_residual(full::Config c,FullBuffers b,const float* x,float* y){residual<<<(c.hidden+127)/128,128,0,cudaStreamLegacy>>>(c,b,x,y);return cudaGetLastError();}
 } // namespace kadan::cuda::detail

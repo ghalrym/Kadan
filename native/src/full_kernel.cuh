@@ -9,7 +9,7 @@ struct FullBuffers {
     std::uint16_t *keys,*values;unsigned* status;
 };
 cudaError_t full_normalize(full::Config,FullBuffers,const float*);
-// Three launches: prepare Q/K/G, append current BF16 KV, causal attention/gate.
+// Five launches: prepare Q/K/G, append KV, scores, serial softmax, values/gate.
 cudaError_t full_core(full::Config,FullBuffers,std::size_t position);
 cudaError_t full_residual(full::Config,FullBuffers,const float*,float*);
 } // namespace kadan::cuda::detail
