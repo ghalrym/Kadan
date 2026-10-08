@@ -45,6 +45,10 @@ database write, or full image rebuild is needed for this foundation.
 3. Add worker transport and native Qwen executor lifecycle integration, preserving
    token protocol compatibility. Test process death, cancellation during copies,
    synchronization and cleanup acknowledgement before reservation release.
+   `cuda::Model` is construction-thread/device affine: route all lifecycle work
+   through its owning executor thread. The synchronous reset/step/close protocol
+   cannot receive cancellation during a long step; add a separately serviced
+   cancellation signal or supervised leaf termination, then acknowledge cleanup.
 4. Separate API/Python MR: bridge Redis arrival order to the native coordinator;
    define exactly one admission owner and prevent duplicated independent ledgers
    from overcommitting. Integrate/review the existing image provider separately,
