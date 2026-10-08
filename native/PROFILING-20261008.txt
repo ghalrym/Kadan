@@ -259,3 +259,17 @@ Direct load 50.071925 s, prompt 1.026128 s, decode incl EOS 5.102568 s.
 Latest worker SHA256: 6a192e00d05942d816abf5e3cf3d1efe38e13970611c8a79609499e484182ad1
 Evidence: profiling/20261008-expert-fusion.json. Native rebuild only.
 Run: kadan-nvfp4-fusion-parity --allow-gpu-validation --device 0
+
+Block-local FP8 decoded-weight tables
+Four independent rows share a block and a scalar-scale decode table; per-row
+scales use four tables. Four-warps-per-row sums and every BF16 boundary stay.
+Only used entries affect flags. Out-of-range rows still participate in barriers.
+384 bitwise cases include scalar/row scales, both BF16 modes, partial rows/columns,
+signs, zero, subnormal, overflow, Inf/NaN, unused overflowing table entries.
+All decoder/stack GPU stages and 26 CPU tests pass; 149 generated IDs match.
+FP8 kernels 5.841 -> 2.763 ms/step.
+Warm API 40.418982 tok/s, prompt 0.736669 s, total 4.523774 s.
+Direct load 50.106768 s, prompt 0.923834 s, decode incl EOS 4.635395 s.
+Latest worker SHA256: cbfb8458e7d50b58ce74683ace9b87f18c568e59c86e0c74224c5e550bdc051a
+Evidence: profiling/20261008-fp8-table.json. Native rebuild only.
+Run: kadan-fp8-table-parity --allow-gpu-validation --device 0
