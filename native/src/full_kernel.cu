@@ -40,6 +40,24 @@ __global__ void prepare(full::Config c,FullBuffers b,std::size_t position){
     rotate(b.query+h*c.head_dim,b.frequencies,c.rotary_dim/2,position,b.status);
     if(h<c.kv_heads){norm(b.key+h*c.head_dim,b.key_norm,b.key+h*c.head_dim,c.head_dim,c.epsilon,b.status);rotate(b.key+h*c.head_dim,b.frequencies,c.rotary_dim/2,position,b.status);}
 }
+__global__ void prepare_shared(full::Config c,FullBuffers b,std::size_t position){
+    extern __shared__ float products[];float* kp=products+c.head_dim;
+    __shared__ float qi,ki;const auto h=blockIdx.x;
+    for(std::size_t j=threadIdx.x;j<c.head_dim;j+=blockDim.x){const float q=bf(b.qg[h*2*c.head_dim+j],b.status);products[j]=mul(q,q);
+        if(h<c.kv_heads){const float k=bf(b.key[h*c.head_dim+j],b.status);kp[j]=mul(k,k);}}
+    __syncthreads();
+    if(threadIdx.x==0){qi=1/sqrtf(add(ordered_finite_sum(products,c.head_dim,b.status)/float(c.head_dim),c.epsilon));
+        if(h<c.kv_heads)ki=1/sqrtf(add(ordered_finite_sum(kp,c.head_dim,b.status)/float(c.head_dim),c.epsilon));}
+    __syncthreads();
+    for(std::size_t j=threadIdx.x;j<c.head_dim;j+=blockDim.x){b.query[h*c.head_dim+j]=bf(mul(mul(bf(b.qg[h*2*c.head_dim+j],b.status),qi),add(1,expand(b.query_norm[j]))),b.status);
+        b.gate[h*c.head_dim+j]=bf(b.qg[(h*2+1)*c.head_dim+j],b.status);
+        if(h<c.kv_heads)b.key[h*c.head_dim+j]=bf(mul(mul(bf(b.key[h*c.head_dim+j],b.status),ki),add(1,expand(b.key_norm[j]))),b.status);}
+    __syncthreads();
+    const auto half=c.rotary_dim/2;
+    for(std::size_t j=threadIdx.x;j<half;j+=blockDim.x){const float angle=mul(float(position),b.frequencies[j]),cs=bf(cosf(angle),b.status),sn=bf(sinf(angle),b.status);
+        auto* q=b.query+h*c.head_dim;const float a=q[j],bb=q[j+half];q[j]=bf(add(bf(mul(a,cs),b.status),-bf(mul(bb,sn),b.status)),b.status);q[j+half]=bf(add(bf(mul(a,sn),b.status),bf(mul(bb,cs),b.status)),b.status);
+        if(h<c.kv_heads){auto* k=b.key+h*c.head_dim;const float ka=k[j],kb=k[j+half];k[j]=bf(add(bf(mul(ka,cs),b.status),-bf(mul(kb,sn),b.status)),b.status);k[j+half]=bf(add(bf(mul(ka,sn),b.status),bf(mul(kb,cs),b.status)),b.status);}}
+}
 __global__ void append(full::Config c,FullBuffers b,std::size_t position){
     const std::size_t j=blockIdx.x*blockDim.x+threadIdx.x,n=c.kv_heads*c.head_dim;
     if(j<n){b.keys[position*n+j]=std::uint16_t(__float_as_uint(bf(b.key[j],b.status))>>16);b.values[position*n+j]=std::uint16_t(__float_as_uint(bf(b.value[j],b.status))>>16);}
@@ -74,8 +92,12 @@ __global__ void residual(full::Config c,FullBuffers b,const float* x,float* y){
 }
 cudaError_t full_normalize(full::Config c,FullBuffers b,const float* x){if(c.hidden<=4096)normalize_shared<<<1,256,2*c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b,x);
     else normalize<<<1,1,0,cudaStreamLegacy>>>(c,b,x);return cudaGetLastError();}
+cudaError_t full_prepare(full::Config c,FullBuffers b,std::size_t position){
+    if(c.head_dim<=4096)prepare_shared<<<c.heads,128,2*c.head_dim*sizeof(float),cudaStreamLegacy>>>(c,b,position);
+    else prepare<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);return cudaGetLastError();
+}
 cudaError_t full_core(full::Config c,FullBuffers b,std::size_t position){
-    prepare<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);auto e=cudaGetLastError();if(e!=cudaSuccess)return e;
+    auto e=full_prepare(c,b,position);if(e!=cudaSuccess)return e;
     append<<<(c.kv_heads*c.head_dim+127)/128,128,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;
     attention_scores<<<c.heads,128,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;
     attention_softmax<<<c.heads,1,0,cudaStreamLegacy>>>(c,b,position);e=cudaGetLastError();if(e!=cudaSuccess)return e;

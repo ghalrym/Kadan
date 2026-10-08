@@ -89,6 +89,23 @@ __global__ void gated_norm(linear::Config c,LinearBuffers b){
     const float inverse=1/sqrtf(sum/c.value_dim+c.epsilon);
     for(std::size_t j=0;j<c.value_dim;++j){const float n=round(product(b.core[base+j],inverse),b.status);const float weighted=round(product(n,weight(b.output_norm[j])),b.status);b.gated[base+j]=round(product(weighted,product(b.z[base+j],sig(b.z[base+j]))),b.status);}
 }
+__global__ void normalize_qk_shared(linear::Config c,LinearBuffers b){
+    extern __shared__ float products[];float* kp=products+c.key_dim;
+    __shared__ float qi,ki;const auto head=blockIdx.x;const auto keys=c.key_heads*c.key_dim;
+    for(std::size_t j=threadIdx.x;j<c.key_dim;j+=blockDim.x){const float q=b.qkv[head*c.key_dim+j],k=b.qkv[keys+head*c.key_dim+j];products[j]=product(q,q);kp[j]=product(k,k);}
+    __syncthreads();
+    if(threadIdx.x==0){qi=1/sqrtf(ordered_finite_sum(products,c.key_dim,b.status)+1e-6f);ki=1/sqrtf(ordered_finite_sum(kp,c.key_dim,b.status)+1e-6f);}
+    __syncthreads();
+    for(std::size_t j=threadIdx.x;j<c.key_dim;j+=blockDim.x){b.qkv[head*c.key_dim+j]=product(b.qkv[head*c.key_dim+j],qi)/sqrtf(float(c.key_dim));b.qkv[keys+head*c.key_dim+j]=product(b.qkv[keys+head*c.key_dim+j],ki);}
+}
+__global__ void gated_norm_shared(linear::Config c,LinearBuffers b){
+    extern __shared__ float products[];__shared__ float inverse;const auto base=blockIdx.x*c.value_dim;
+    for(std::size_t j=threadIdx.x;j<c.value_dim;j+=blockDim.x)products[j]=product(b.core[base+j],b.core[base+j]);
+    __syncthreads();
+    if(threadIdx.x==0)inverse=1/sqrtf(ordered_finite_sum(products,c.value_dim,b.status)/c.value_dim+c.epsilon);
+    __syncthreads();
+    for(std::size_t j=threadIdx.x;j<c.value_dim;j+=blockDim.x){const float n=round(product(b.core[base+j],inverse),b.status);const float weighted=round(product(n,weight(b.output_norm[j])),b.status);b.gated[base+j]=round(product(weighted,product(b.z[base+j],sig(b.z[base+j]))),b.status);}
+}
 __global__ void residual(linear::Config c,LinearBuffers b,const float* input,float* out){
     const std::size_t i=blockIdx.x*blockDim.x+threadIdx.x;if(i<c.hidden)out[i]=round(plus(input[i],round(b.projected[i],b.status)),b.status);
 }
@@ -101,13 +118,21 @@ cudaError_t linear_auxiliary(linear::Config c,LinearBuffers b){
     if(c.hidden<=4096) auxiliary_projection_shared<<<c.value_heads,128,2*c.hidden*sizeof(float),cudaStreamLegacy>>>(c,b);
     else auxiliary_projection<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
 }
+cudaError_t linear_normalize_qk(linear::Config c,LinearBuffers b){
+    if(c.key_dim<=4096)normalize_qk_shared<<<c.key_heads,128,2*c.key_dim*sizeof(float),cudaStreamLegacy>>>(c,b);
+    else normalize_qk<<<c.key_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
+}
+cudaError_t linear_gated_norm(linear::Config c,LinearBuffers b){
+    if(c.value_dim<=4096)gated_norm_shared<<<c.value_heads,128,c.value_dim*sizeof(float),cudaStreamLegacy>>>(c,b);
+    else gated_norm<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
+}
 cudaError_t linear_core(linear::Config c,LinearBuffers b){
     const auto channels=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;
     auto e=linear_auxiliary(c,b);if(e!=cudaSuccess)return e;
     convolution<<<(channels+127)/128,128,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    normalize_qk<<<c.key_heads,1,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
+    e=linear_normalize_qk(c,b);if(e!=cudaSuccess)return e;
     recurrence<<<c.value_heads,128,0,cudaStreamLegacy>>>(c,b);e=cudaGetLastError();if(e!=cudaSuccess)return e;
-    gated_norm<<<c.value_heads,1,0,cudaStreamLegacy>>>(c,b);return cudaGetLastError();
+    return linear_gated_norm(c,b);
 }
 cudaError_t linear_residual(linear::Config c,LinearBuffers b,const float* input,float* output){residual<<<(c.hidden+127)/128,128,0,cudaStreamLegacy>>>(c,b,input,output);return cudaGetLastError();}
 } // namespace kadan::cuda::detail

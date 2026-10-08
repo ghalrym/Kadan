@@ -9,6 +9,8 @@ struct LinearBuffers {
 };
 cudaError_t linear_normalize(linear::Config c,LinearBuffers b,const float* input);
 cudaError_t linear_auxiliary(linear::Config c,LinearBuffers b);
+cudaError_t linear_normalize_qk(linear::Config,LinearBuffers);
+cudaError_t linear_gated_norm(linear::Config,LinearBuffers);
 cudaError_t linear_core(linear::Config c,LinearBuffers b);
 cudaError_t linear_residual(linear::Config c,LinearBuffers b,const float* input,float* output);
 } // namespace kadan::cuda::detail

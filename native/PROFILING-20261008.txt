@@ -286,3 +286,17 @@ Warm API 42.881621 tok/s, prompt 0.689286 s, total 4.230605 s.
 Direct load 49.633054 s, prompt 0.891359 s, decode incl EOS 4.434501 s.
 Latest worker SHA256: ece9e801db85fbbe1cce865f3a94bf6343345d0b5d62187d61ce94cc60f8a1d6
 Evidence: profiling/20261008-fp4-table.json. Native rebuild only.
+
+Parallel attention-head preparation and normalization
+Stage independent products, keep ordered sums, then compute independent output
+dimensions and rotary pairs in parallel. Dimensions >4096 keep the original
+kernels. Barriers separate product staging, inverse computation, and rotation.
+42 bitwise combined head cases cover odd/full/4096/4097 dimensions, zero/signed
+zero, Inf/NaN, overflow and invalid norm weights. Full-core parity (including
+capacity-end/short-after-long), all linear/decoder GPU stages and 26 CPU tests pass.
+149 generated IDs match.
+Warm API 48.937376 tok/s, prompt 0.604069 s, total 3.731506 s.
+Direct load 49.898865 s, prompt 0.795500 s, decode incl EOS 4.002463 s.
+Latest worker SHA256: a301a385102b60533b989bd1628e772790f1fd23d1c929d97d18e9488619138a
+Evidence: profiling/20261008-head-normalization.json. Native rebuild only.
+Run: kadan-attention-head-parity --allow-gpu-validation --device 0
