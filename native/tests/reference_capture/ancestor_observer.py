@@ -50,8 +50,24 @@ def identity(path):
     return [st.st_dev,st.st_ino]
 
 
+def require_hierarchical_events(mountinfo=None):
+    if mountinfo is None:
+        mountinfo=Path('/proc/self/mountinfo').read_text()
+    matches=[]
+    for line in mountinfo.splitlines():
+        fields=line.split()
+        if ' - ' not in line:
+            continue
+        separator=fields.index('-')
+        if len(fields)>separator+3 and fields[4]=='/sys/fs/cgroup' and fields[separator+1]=='cgroup2':
+            matches.append(set(fields[5].split(',')) | set(fields[separator+3].split(',')))
+    require(len(matches)==1, 'cgroup2_mount_evidence')
+    require('memory_localevents' not in matches[0], 'nonhierarchical_memory_events')
+
+
 class AncestorObserver:
     def __init__(self, leaf, pid, pin):
+        require_hierarchical_events()
         self.leaf=leaf
         self.parent=leaf.parent
         require(str(self.parent)==pin['path']=='/sys/fs/cgroup/system.slice','existing_ancestor_only')
@@ -59,6 +75,11 @@ class AncestorObserver:
         require(counter(self.parent/'memory.events','oom_kill')==pin['oom_kill'],'ancestor_oom_baseline')
         require(type(pin['memory_current_ceiling']) is int and
                 int((self.parent/'memory.current').read_text())<=pin['memory_current_ceiling'], 'ancestor_quiet_baseline')
+        available=Path('/proc/meminfo').read_text().split('MemAvailable:',1)[1].splitlines()[0].split()
+        require(len(available)==2 and available[1]=='kB' and int(available[0])*1024>=pin['host_floor_bytes']>=44*1024**3,'admission_host_headroom')
+        limit=(self.parent/'memory.max').read_text().strip()
+        require(limit==pin['memory_max'] and pin['ancestor_floor_bytes']>=44*1024**3,'admission_ancestor_limit')
+        require(limit=='max' or int(limit)-int((self.parent/'memory.current').read_text())>=pin['ancestor_floor_bytes'],'admission_ancestor_headroom')
         self.pin=pin
         self.leaf_identity=identity(leaf)
         self.peers={p.name for p in self.parent.iterdir() if p.is_dir() and p!=leaf}
@@ -69,6 +90,7 @@ class AncestorObserver:
         require(not self.poller.poll(0),'init_already_exited')
 
     def sample(self, state, wait_exit_code):
+        require_hierarchical_events()
         require(state['Running'] is False and state['Pid']==0 and state['Restarting'] is False
                 and state['Dead'] is False and state['FinishedAt']!='0001-01-01T00:00:00Z', 'stopped_metadata')
         require(type(wait_exit_code) is int and wait_exit_code==state['ExitCode'], 'docker_wait_exit')

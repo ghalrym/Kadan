@@ -6,12 +6,13 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from dataclasses import replace
-from native.tests.reference_capture.ancestor_observer import AncestorObserver, HeadroomProof, identity
+from native.tests.reference_capture.ancestor_observer import AncestorObserver, HeadroomProof, identity, require_hierarchical_events
 from native.tests.reference_capture.supervisor import Observation
 
 from native.tests.reference_capture.container_stage import DockerReferenceStage
 from native.tests.reference_capture.artifacts import sha256
 from native.tests.reference_capture.evidence import read_regular
+from native.tests.reference_capture.lifecycle_smoke import SmokeStage, WORK
 
 
 class TransportTests(unittest.TestCase):
@@ -203,6 +204,29 @@ class TransportTests(unittest.TestCase):
                 self.assertFalse(observer.sample(state,137).valid())
                 (parent/'memory.events').unlink()
                 with self.assertRaises(OSError):observer.sample(state,137)
+
+    def test_localevents_mount_option_is_rejected(self):
+        ordinary='29 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 cgroup rw,nsdelegate,memory_recursiveprot'
+        require_hierarchical_events(ordinary)
+        for bad in (ordinary+',memory_localevents',ordinary.replace('rw,nosuid','rw,memory_localevents,nosuid'),'',ordinary+'\n'+ordinary):
+            with self.assertRaises(ValueError):require_hierarchical_events(bad)
+
+    def test_localevents_rechecked_on_every_cleanup_sample(self):
+        observer=object.__new__(AncestorObserver)
+        with patch('native.tests.reference_capture.ancestor_observer.require_hierarchical_events',side_effect=ValueError('nonhierarchical_memory_events')):
+            with self.assertRaisesRegex(ValueError,'nonhierarchical'):observer.sample({},0)
+
+    def test_smoke_start_is_benign_and_never_actual_reference(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage=object.__new__(SmokeStage)
+            stage.evidence=Path(folder);stage.logs=[];stage.child=None;stage.verified_id='a'*64
+            with patch('native.tests.reference_capture.lifecycle_smoke.subprocess.Popen') as spawn:
+                stage.start(stage.verified_id,1)
+                command=spawn.call_args.args[0]
+                self.assertEqual(command,['docker','exec','a'*64,'/usr/local/bin/python','-I','-S','-c',WORK])
+                self.assertNotIn('capture_actual',' '.join(command))
+                self.assertIn('16*1024*1024',WORK)
+            for log in stage.logs:log.close()
 
     def test_wrong_identity_cannot_signal(self):
         stage=self.bare_stage()

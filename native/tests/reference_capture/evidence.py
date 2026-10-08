@@ -60,12 +60,15 @@ def validate(folder, manifest_digest):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('operation',choices=('artifacts','manifest'))
+    parser.add_argument('operation',choices=('artifacts','manifest','smoke'))
     parser.add_argument('path')
     parser.add_argument('digest')
     args=parser.parse_args()
     try:
         if args.operation=='artifacts':validate(args.path,args.digest)
+        elif args.operation=='smoke':
+            require(read_regular(Path(args.path)/'stdout.raw',1024)==b'SMOKE_DONE 16777216\n','smoke_output')
+            require(read_regular(Path(args.path)/'stderr.raw',1024)==b'','smoke_stderr')
         else:require(sha256(read_regular(args.path,MAX_MANIFEST))==args.digest,'manifest_changed')
         return 0
     except Exception:
