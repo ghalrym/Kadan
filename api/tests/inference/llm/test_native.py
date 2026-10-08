@@ -1,4 +1,5 @@
 """Synthetic subprocess faults; no Torch, CUDA, checkpoint payload or service."""
+from collections import UserDict
 import json
 from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
@@ -97,6 +98,13 @@ class NativeAdapterTests(unittest.TestCase):
                          ['reset','step 2 0','step 7 0','step 3 1','step 4 1'])
         self.assertEqual(self.generate(), 'AB')
         self.assertTrue(self.adapter.is_resident)
+
+    def test_mapping_tokenizer_result_reaches_worker(self):
+        self.loaded()
+        with patch.object(self.tokenizer, 'apply_chat_template',
+                          return_value=UserDict({'input_ids': [2, 7], 'attention_mask': [1, 1]})):
+            self.assertEqual(self.generate(), 'AB')
+        self.assertIn('step 7 0', (self.root/'commands').read_text())
 
     def test_output_limit_does_not_feed_unneeded_last_token(self):
         self.loaded();events=[]

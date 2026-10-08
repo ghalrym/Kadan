@@ -1,0 +1,74 @@
+Native API / MR114 profiling and reproducibility (2026-10-08)
+
+Workload: POST /v1/chat/completions, model small, stream false, one user message:
+Count from 1 to 40, separated by commas. Output only the numbers.
+30 prompt IDs, 149 output IDs, EOS stop. Max output 256. Greedy execution.
+
+Initial native API: 0.774877715 decode tokens/sec; prompt37.587132 s; total229.975660 s.
+Parallel expert router API: 5.312070536 decode tokens/sec; prompt4.882721 s; total33.018956 s.
+Both are warm, unprofiled API requests. All149 output IDs match exactly in separate direct runs; API text and finish reason match. Direct load measured separately49.486230 s before,50.192877 s after. No claim of improved loading or50+ tok/s.
+
+Baseline CUDA-event sample (30 prompt +8 output tokens,37 native steps):
+MoE router89.91% of kernel time,28.343 ms/layer,1133.734 ms/token step.
+NVFP4 GEMV2.53%, vocabulary selection2.45%, linear auxiliary1.01%.
+Original router launched one thread for ALL expert dot products. New route_logits
+schedules independent expert rows in separate blocks, keeping each row's serial
+FP32 accumulation and BF16 boundary. Original softmax, top-k/tie semantics,
+shared gate and failure flags remain. Adds one launch, no arena bytes.
+Optimized full179-step event profile: routing30.947 ms/step (logits5.248,
+remaining route25.699); vocabulary30.895; NVFP4 GEMV31.832; full attention28.694.
+Attention depends on sequence length: original/optimized event samples differ
+in length, so total kernel averages are not a matched-length comparison.
+The headline unprofiled API workload IS identical before/after.
+
+Timing methodology: LD_PRELOAD interposer measures CUDA13 __cudaLaunchKernel
+with CUDA events and host launch wall time; caller offsets resolved against nm.
+Original direct full run:37.901179 s prompt,192.671821 s decode including EOS,
+179 step round trips230.571110 s. Stream synchronize waits228.388494 s include
+GPU execution: NEVER add those waits to kernel time. D2H synchronous calls
+1.170158 s; H2D during loading1.970632 s. Residual~1.01 s includes host launches,
+control and IPC; not separately isolated IPC. Direct throughput0.773422 agrees
+with API0.774878. Profiling overhead excluded from headline result.
+
+Validation: all149 generated IDs identical; six256-expert x2048-hidden router
+cases including ties match original GPU router bit-for-bit; existing MoE GPU
+stages1/2/3 pass golden/reset/overflow/cleanup checks;26 CPU CTests pass.
+Explicit router regression: kadan-moe-route-parity --allow-gpu-validation --device0
+(pass --device and 0 as separate arguments). GPU tests are opt-in, not CTest.
+This is regression evidence, not comprehensive reference-framework parity.
+
+Exact configuration: checkpoint nvidia/Qwen3.6-35B-A3B-NVFP4, catalog small,
+revision1355db6a052410cfd62085d94b58866fd0f2c3c5, context65536, RTX3090 GPU0.
+Native host envelope270532608 B; parent host reservation807403520 B;
+device envelope22818965504 B including headroom536870912 B.
+KADAN_LLM_BACKEND=native; KADAN_GPU=0;
+KADAN_GPU_BUDGET_BYTES={"0":22818965504}; HF_HUB_OFFLINE=1;
+OMP_NUM_THREADS=4; MKL_NUM_THREADS=4; WATCHFILES_FORCE_POLLING=true.
+Tokenizer: transformers5.17.0, tokenizers0.23.2, template tokenize=True,
+add_generation_prompt=True, enable_thinking=False, preserve_thinking=True.
+The adapter now accepts collections.abc.Mapping, including BatchEncoding,
+and extracts input_ids; plain dict-only checking rejected the installed tokenizer.
+Regression test uses UserDict. Torch2.14.1; uvicorn0.54.0; watchfiles1.3.0.
+
+Original image kadan-native-api:review-ba380d9:
+sha256:32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e
+Original worker SHA2565cfb911177fd930fe2111e975975ad50dd23e622d88e208671353a6930c66763.
+Router-optimized worker SHA2568416e32910f4176639656267f208ffa9c19187b2ae0e70d871c96cf767f3d03f.
+CUDA13.0.2, SM86, Release, --ftz=false, legacy stream, static libstdc++/libgcc.
+Only native library/worker/test targets rebuilt; API dependencies unchanged.
+Local directory build/native-dev is mounted read-only at /opt/kadan/local;
+KADAN_NATIVE_WORKER=/opt/kadan/local/run-model-worker; wrapper scopes
+LD_LIBRARY_PATH=/opt/kadan/lib then execs local/kadan-model-worker.
+Source api mounted at /app/api, uvicorn --reload --reload-dir /app/api.
+Frontend uses source-mounted Vite. Existing volumes/settings preserved.
+
+Reproduction: wait GET /model-lifecycle for ready; send the above request to
+POST /v1/chat/completions. Fetch /v1/requests for prefill_ms,
+decode_tokens_per_second, prefill_tokens and output_tokens. Loading must be
+excluded from warm throughput. Native source edits require rebuilding only
+kadan-model-worker, atomically replacing the directory-mounted binary, then
+POST /model-lifecycle/unload and /model-lifecycle/load. Python source hot reload
+remains enabled; no image rebuild for Python or native-binary-only updates.
+Rollback changes only the local KADAN_NATIVE_WORKER back to the image launcher
+/opt/kadan/bin/run-model-worker, then recreates API with --no-build --no-deps.
+Do not delete volumes. Keep MR114 unmerged.

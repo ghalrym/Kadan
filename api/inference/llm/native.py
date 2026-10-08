@@ -3,6 +3,7 @@
 The Python parent owns global admission and tokenization. The child owns one
 bounded arena and does greedy token steps; its accounting is a sub-budget.
 """
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -308,7 +309,7 @@ class NativeAdapter:
             with self.host.lease(cancel_event), self.reservation.lease(cancel_event):
                 tokens = self.tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True,
                     enable_thinking=False, preserve_thinking=True)
-                if isinstance(tokens, dict):
+                if isinstance(tokens, Mapping):
                     tokens = tokens['input_ids']
                 if not isinstance(tokens, list) or not tokens or any(type(t) is not int or not 0 <= t < self.vocabulary for t in tokens):
                     raise ContextLimitError('Tokenizer returned invalid native input IDs')
