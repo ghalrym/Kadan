@@ -1,0 +1,204 @@
+[
+  {
+    "rank": 0,
+    "cases": [
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 6912
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 2.384185791015625e-07,
+        "prefix_bytes": 6912
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1792
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 896
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1728
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1728
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 896
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 448
+      }
+    ]
+  },
+  {
+    "rank": 1,
+    "cases": [
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 6912
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 2.384185791015625e-07,
+        "prefix_bytes": 6912
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.float32",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1792
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.float32",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 896
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 16,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1728
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 3456
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 27,
+        "target_rows": 17,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 1728
+      },
+      {
+        "mode": "all_gather",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 896
+      },
+      {
+        "mode": "ulysses",
+        "dtype": "torch.bfloat16",
+        "prefix_rows": 7,
+        "target_rows": 15,
+        "max_abs_error": 0.0,
+        "prefix_bytes": 448
+      }
+    ]
+  }
+]
