@@ -218,3 +218,14 @@ Warm API 23.791985 tok/s, prompt 1.250731 s, total 7.558756 s.
 Direct load 50.665559 s, prompt 1.513913 s, decode incl EOS 7.566063 s.
 Latest worker SHA256: 3169d72cc9e53a8d67167c9360383d8a94967292b25672383e189d1b7d5b4159
 Evidence: profiling/20261008-barriers.json. Native rebuild only; hot reload intact.
+
+Parallel router exponentials and stable selection
+Independent exponentials and probability divisions are parallel. Top-k reduces
+(value, lowest expert ID) pairs, excluding winners with -1. Serial sums of all
+probabilities, selected probabilities, and shared-gate products are unchanged.
+Route 6.545 -> 2.853 ms/step. 15 bitwise router cases including NaN, ties,
+4096/4097 boundaries; all MoE GPU stages and 26 CPU tests pass. 149 IDs match.
+Warm API 26.119518 tok/s, prompt 1.135493 s, total 6.884216 s.
+Direct load 50.708565 s, prompt 1.407122 s, decode incl EOS 7.012884 s.
+Latest worker SHA256: d610f0c9340728a8c574fdc439d06c5557e18817252dd6086806f3df97e65f97
+Evidence: profiling/20261008-router-parallel.json. Native targets only rebuilt.
