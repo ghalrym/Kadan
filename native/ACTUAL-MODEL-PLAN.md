@@ -1,8 +1,10 @@
 # Actual-checkpoint validation: review proposal, not execution authorization
 
 Prepared after the four synthetic GPU stages at
-`a9f165edac164ac2f49a00cc1209d1745ae983b8`. Andrew's approval to merge #112 and to
-open an unload/test/reload window is **pending**. No actual weight payloads,
+`a9f165edac164ac2f49a00cc1209d1745ae983b8`. Parent merged #112 after Andrew's
+approval at `28371deb630bbd83cf1015bbbc24d982bd29653b` (reviewed head
+`6b29e038993efe70838e89dbc8b58035cdaf239a`). Authorization to open an
+unload/test/reload window remains **pending**. No actual weight payloads,
 reference inference, actual-model GPU execution, unload/load, network gate or
 service mutation was performed while preparing this document.
 
@@ -116,9 +118,11 @@ model selection alone does not prove that no background writer exists.
 ## Reference capture path: CPU, bounded, separately reviewable
 
 Use a new **test-only standalone capture wrapper**, not an HTTP completion or
-`adapter.generate`. It is not implemented/pinned yet; its source, CPU fixture
-tests and executable/container provenance are prerequisites to execution. This
-plan must not be treated as an already runnable reference command.
+`adapter.generate`. The separate [reference-capture draft](tests/reference_capture/README.md)
+implements a synthetic-only prototype with installed source/build pins and CPU
+fixture evidence. It rejects actual model dimensions; actual-model support,
+review and a container cleanup supervisor remain prerequisites. This plan must
+not be treated as an already runnable reference command.
 
 The wrapper's exact contract is:
 
@@ -287,10 +291,14 @@ sudo -n timeout --signal=TERM --kill-after=5s 915s \
 
 Native binary SHA256 remains
 `0c2e7fef0f7b2911b83d7ab6c68415049436d33268d6d27b391907be0d02331c`;
-comparator `/tmp/kadan-stack-cpu/kadan-model-compare` SHA256
+the historical comparator SHA256 was
 `656e6ee654e1cd1ab7b606d552c9f6e27d002ced32c74aac1b9f20d405a635bd`.
-These binaries are unchanged by documentation commits. Re-review any rebuild
-that changes a hash. One arena allocation, one model ticket, separate host logits
+The separate reference draft rebuilt `/tmp/kadan-stack-cpu/kadan-model-compare`
+with ASan/UBSan, now SHA256
+`fac64d9bbb418760e75360a42dc71103421cbd309c0f2c1b1c56791877f5620f`.
+The CUDA executable remains unchanged. The rebuilt comparator confirms the two
+synthetic CPU matches and rejects the router-tie capture; it requires renewed
+binary review/pinning before this held actual-model plan can run. One arena allocation, one model ticket, separate host logits
 ticket, and **2,314 static forward launches**; no generation loop. Internal
 watchdog900s, external915s+5s kill grace. Loader admission/validation scans about
 20.8GB of selected text payload, mostly before compute; the900s ceiling allows
@@ -361,11 +369,12 @@ assumed to be part of an LLM-only window.
 
 Still required before executing anything in this plan:
 
-1. Andrew's #112 merge decision and explicit reference payload/inference plus
-   maintenance window authorization. No merge is performed by this document.
-2. Implement and independently review the test-only CPU reference capture wrapper,
-   fixture tests, source/image hashes, numerical backend selection and container
-   cleanup supervisor. It does not exist yet; do not invent its CLI/hash.
+1. Explicit actual-reference payload/inference and maintenance-window
+   authorization. The completed #112 merge does not grant either.
+2. Review the separate synthetic-only reference wrapper and its exact router-tie
+   failure; implement and review actual-model support and a container cleanup
+   supervisor separately. Pin final source/image hashes and numerical backend
+   selection. The draft's synthetic CLI does not permit this actual-model run.
 3. Independent review of initial0/0 acceptance and the one-BOS semantics; reference
    capture must be reviewed/pinned before the native command is released.
 4. Resolve and review safer supported coordination for explicit lifecycle loads
