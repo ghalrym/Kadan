@@ -150,3 +150,8 @@ The original batch-one full-attention sublayer (hidden input through bounded KV
 attention to residual) is documented in [FULL-ATTENTION.md](FULL-ATTENTION.md).
 It includes independent CPU goldens and an opt-in, unexecuted staged GPU harness;
 it does not connect to production routing or load checkpoint payloads.
+
+The original resident MoE branch is documented in [MOE.md](MOE.md). It uses one
+admitted layer arena, deterministic routing, original NVFP4 projections and
+independent changing-route goldens. Decoder residual/commit integration and
+host expert streaming remain separate milestones; the new GPU harness is opt-in.
