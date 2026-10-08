@@ -20,8 +20,8 @@ void norm(std::span<const float> x,std::span<const float> weight,std::span<float
     const float inverse=1/std::sqrt(sum/float(x.size())+epsilon);
     for(std::size_t j=0;j<x.size();++j)y[j]=bf((x[j]*inverse)*(1+weight[j]));
 }
-void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> y){
-    for(std::size_t r=0;r<w.rows;++r){double sum=0;for(std::size_t j=0;j<w.columns;++j)sum+=double(quantization::e4m3fn(w.weights[r*w.columns+j])*w.multipliers[0])*x[j];
+void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> y,bool bf16_weights){
+    for(std::size_t r=0;r<w.rows;++r){double sum=0;for(std::size_t j=0;j<w.columns;++j){float weight=quantization::e4m3fn(w.weights[r*w.columns+j])*w.multipliers[0];sum+=double(bf16_weights?bf(weight):weight)*x[j];}
         require(std::isfinite(sum)&&std::abs(sum)<=std::numeric_limits<float>::max(),"full_nonfinite");y[r]=bf(float(sum));}
 }
 void rotate(std::span<float> x,std::span<const float> freq,std::size_t position){
@@ -70,7 +70,7 @@ struct Reference::Impl {
             auto normalized=span(p.norm_offset,c.hidden),qg=span(p.qg_offset,2*p.queries),k=span(p.k_offset,p.kv),v=span(p.v_offset,p.kv);
             auto q=span(p.q_offset,p.queries),gate=span(p.gate_offset,p.queries),prob=span(p.prob_offset,c.heads*c.capacity);
             auto core=span(p.core_offset,p.queries),gated=span(p.gated_offset,p.queries),out=span(p.out_offset,c.hidden);
-            norm(input,w.input_norm,normalized,c.epsilon);project(w.q_gate,normalized,qg);project(w.key,normalized,k);project(w.value,normalized,v);
+            norm(input,w.input_norm,normalized,c.epsilon);project(w.q_gate,normalized,qg,c.bf16_weights);project(w.key,normalized,k,c.bf16_weights);project(w.value,normalized,v,c.bf16_weights);
             for(std::size_t h=0;h<c.heads;++h){
                 norm(qg.subspan(h*2*c.head_dim,c.head_dim),w.query_norm,q.subspan(h*c.head_dim,c.head_dim),c.epsilon);
                 std::copy_n(qg.begin()+(h*2+1)*c.head_dim,c.head_dim,gate.begin()+h*c.head_dim);
@@ -89,7 +89,7 @@ struct Reference::Impl {
                 for(std::size_t j=0;j<c.head_dim;++j){float sum=0;for(std::size_t t=0;t<=position;++t)sum=finite(sum+row[t]*expand(values[t*p.kv+kh*c.head_dim+j]));
                     const auto at=h*c.head_dim+j;core[at]=bf(sum);gated[at]=bf(core[at]*bf(sigmoid(gate[at])));}
             }
-            project(w.out,gated,out);for(std::size_t j=0;j<c.hidden;++j)out[j]=bf(input[j]+out[j]);
+            project(w.out,gated,out,c.bf16_weights);for(std::size_t j=0;j<c.hidden;++j)out[j]=bf(input[j]+out[j]);
             cursor.written(token,0);cursor.commit(token);std::copy(out.begin(),out.end(),output.begin());
         }catch(...){cursor.invalidate();throw;}
     }

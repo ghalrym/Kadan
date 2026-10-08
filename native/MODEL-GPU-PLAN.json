@@ -1,0 +1,344 @@
+{
+  "status": "proposed; GPU execution held pending independent review and authorization",
+  "capacity": 8,
+  "input_ids": [
+    2,
+    7,
+    11
+  ],
+  "absolute_tolerance": 0,
+  "relative_tolerance": 0,
+  "host_envelope_bytes": 270532672,
+  "device_headroom_bytes": 536870912,
+  "model_cuda_allocations": 1,
+  "model_reservations": 1,
+  "diagnostics_host_reservations": 1,
+  "capture_bytes": 260,
+  "watchdog_seconds": 30,
+  "external_timeout_seconds": 45,
+  "external_kill_after_seconds": 5,
+  "fixture_root": "/tmp/kadan-112-reviewed-fixtures-kh0r8nou",
+  "sources": {
+    "native/tests/model_fixture.py": "123763a27d19f2d8dd4b975f179fb29b410fb0c19b61260f1c23963008534d25",
+    "native/tests/model_equations.py": "4ca6cd03e4363b60f72b8eda6b6374b638ae8a6f1afde51496351c240a030629",
+    "native/tests/stack_golden.py": "5cb0c63cedfd1ccc3a4c3aeb33aabc9ef00eb616343dbfd680eb7567e412d40f"
+  },
+  "binaries": {
+    "/tmp/kadan-stack-cuda/kadan-model-correctness": "0c2e7fef0f7b2911b83d7ab6c68415049436d33268d6d27b391907be0d02331c",
+    "/tmp/kadan-stack-cpu/kadan-model-compare": "656e6ee654e1cd1ab7b606d552c9f6e27d002ced32c74aac1b9f20d405a635bd"
+  },
+  "stages": [
+    {
+      "name": "tiny-4",
+      "layers": 4,
+      "representative": false,
+      "arena_bytes": 54784,
+      "device_envelope_bytes": 536925696,
+      "forward_kernel_launches": 345,
+      "reference_records": [
+        [
+          2,
+          11,
+          0,
+          1
+        ],
+        [
+          7,
+          11,
+          0,
+          2
+        ],
+        [
+          11,
+          5,
+          0,
+          3
+        ]
+      ],
+      "planner": {
+        "layers": "4",
+        "bound_items": "112",
+        "vocabulary": "16",
+        "arena_bytes": "54784",
+        "minimum_staging_bytes": "22",
+        "metadata_used": "128565",
+        "eos": "15,14"
+      },
+      "files": {
+        "config.json": {
+          "bytes": 4028,
+          "sha256": "302b54235b0e0309cca1985e440ad3726abb1dd1bc1c2f3c0ac76f6ef0b4935b"
+        },
+        "expected.bin": {
+          "bytes": 2292,
+          "sha256": "8543b2a8ab0f47c38bb73ce40bcb8a977626862959fbb24ef7584e9ddb4e209a"
+        },
+        "fixture.safetensors": {
+          "bytes": 56805,
+          "sha256": "0d266c63a5f0ae29d63b51642a0aaf1f58055a1809879741dcb11591ee2c621c"
+        },
+        "generation_config.json": {
+          "bytes": 26,
+          "sha256": "856d67e2b1d46a5bfca64d035a352a7ddeff61358cdede80fb979d9c17c25f5f"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 28725,
+          "sha256": "5b7573920c383358039a32442abe184cfa71f0556519fc0ffaff9c8bda61706a"
+        },
+        "reference.capture": {
+          "bytes": 260,
+          "sha256": "f885a374976721b598c67ec754ea40c48edc13e58c6d66443d167ce6f187809d"
+        }
+      },
+      "planned_argv": [
+        "/tmp/kadan-stack-cuda/kadan-model-correctness",
+        "--execute",
+        "/tmp/kadan-112-reviewed-fixtures-kh0r8nou/tiny-4",
+        "0",
+        "8",
+        "270532672",
+        "536925696",
+        "536870912",
+        "30",
+        "/tmp/REVIEW_AUTHORIZED_UNIQUE_tiny-4.capture",
+        "2",
+        "7",
+        "11"
+      ]
+    },
+    {
+      "name": "tiny-8",
+      "layers": 8,
+      "representative": false,
+      "arena_bytes": 107008,
+      "device_envelope_bytes": 536977920,
+      "forward_kernel_launches": 678,
+      "reference_records": [
+        [
+          2,
+          2,
+          0,
+          1
+        ],
+        [
+          7,
+          11,
+          0,
+          2
+        ],
+        [
+          11,
+          13,
+          0,
+          3
+        ]
+      ],
+      "planner": {
+        "layers": "8",
+        "bound_items": "221",
+        "vocabulary": "16",
+        "arena_bytes": "107008",
+        "minimum_staging_bytes": "22",
+        "metadata_used": "256713",
+        "eos": "15,14"
+      },
+      "files": {
+        "config.json": {
+          "bytes": 6791,
+          "sha256": "755a457e523d56821c11b8d808a3dd19d5faec5294e6711fd8407dcb35ed5f20"
+        },
+        "expected.bin": {
+          "bytes": 4380,
+          "sha256": "3f8d62b8200e3321e256713b4eed1c2279b63544604333b2062ef9d4a77566dc"
+        },
+        "fixture.safetensors": {
+          "bytes": 112804,
+          "sha256": "4bd6dd429db4e5c77406e84800e6016bf19dbdcbab7e7156397ca647e63b5ae8"
+        },
+        "generation_config.json": {
+          "bytes": 26,
+          "sha256": "856d67e2b1d46a5bfca64d035a352a7ddeff61358cdede80fb979d9c17c25f5f"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 57090,
+          "sha256": "1aa3dea1a93de9cb3bcc7b372c45b086a6218ac7addee2eb828cf72a4e7a8669"
+        },
+        "reference.capture": {
+          "bytes": 260,
+          "sha256": "c9971b61969bef725596c6ff726bea2dd014bc8a93d7c101da632aa72868a90a"
+        }
+      },
+      "planned_argv": [
+        "/tmp/kadan-stack-cuda/kadan-model-correctness",
+        "--execute",
+        "/tmp/kadan-112-reviewed-fixtures-kh0r8nou/tiny-8",
+        "0",
+        "8",
+        "270532672",
+        "536977920",
+        "536870912",
+        "30",
+        "/tmp/REVIEW_AUTHORIZED_UNIQUE_tiny-8.capture",
+        "2",
+        "7",
+        "11"
+      ]
+    },
+    {
+      "name": "representative-4",
+      "layers": 4,
+      "representative": true,
+      "arena_bytes": 565248,
+      "device_envelope_bytes": 537436160,
+      "forward_kernel_launches": 705,
+      "reference_records": [
+        [
+          2,
+          9,
+          0,
+          1
+        ],
+        [
+          7,
+          9,
+          0,
+          2
+        ],
+        [
+          11,
+          5,
+          0,
+          3
+        ]
+      ],
+      "planner": {
+        "layers": "4",
+        "bound_items": "208",
+        "vocabulary": "16",
+        "arena_bytes": "565248",
+        "minimum_staging_bytes": "260",
+        "metadata_used": "261133",
+        "eos": "15,14"
+      },
+      "files": {
+        "config.json": {
+          "bytes": 4030,
+          "sha256": "ed78587154f3503605a1c0e8db0c755d0892df5013a8d178e233da8383f7887a"
+        },
+        "expected.bin": {
+          "bytes": 17292,
+          "sha256": "0e75b564fb2473565b73a8b77550854b9130b19369b075952acf514eac70f7a4"
+        },
+        "fixture.safetensors": {
+          "bytes": 604561,
+          "sha256": "b4d5e9359413a71645ea1d588b6079245b5fc602f90f42e9db62ae6646c12db0"
+        },
+        "generation_config.json": {
+          "bytes": 26,
+          "sha256": "856d67e2b1d46a5bfca64d035a352a7ddeff61358cdede80fb979d9c17c25f5f"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 63798,
+          "sha256": "d11788045bf04cb9005cbc688de86d254f3f8d833fcb2114e3cb4b0d332c1358"
+        },
+        "reference.capture": {
+          "bytes": 260,
+          "sha256": "133d4b640d7791304d9e90a03a50f5e2dfc0a12a893b28d0f203dbe420f1989f"
+        }
+      },
+      "planned_argv": [
+        "/tmp/kadan-stack-cuda/kadan-model-correctness",
+        "--execute",
+        "/tmp/kadan-112-reviewed-fixtures-kh0r8nou/representative-4",
+        "0",
+        "8",
+        "270532672",
+        "537436160",
+        "536870912",
+        "30",
+        "/tmp/REVIEW_AUTHORIZED_UNIQUE_representative-4.capture",
+        "2",
+        "7",
+        "11"
+      ]
+    },
+    {
+      "name": "tiny-40",
+      "layers": 40,
+      "representative": false,
+      "arena_bytes": 524800,
+      "device_envelope_bytes": 537395712,
+      "forward_kernel_launches": 3342,
+      "reference_records": [
+        [
+          2,
+          2,
+          0,
+          1
+        ],
+        [
+          7,
+          13,
+          0,
+          2
+        ],
+        [
+          11,
+          7,
+          0,
+          3
+        ]
+      ],
+      "planner": {
+        "layers": "40",
+        "bound_items": "1093",
+        "vocabulary": "16",
+        "arena_bytes": "524800",
+        "minimum_staging_bytes": "22",
+        "metadata_used": "1232897",
+        "eos": "15,14"
+      },
+      "files": {
+        "config.json": {
+          "bytes": 29114,
+          "sha256": "d584c15e8c7b30721ef4076d842030ca0441c060a0bf97efb17928c32980f1d1"
+        },
+        "expected.bin": {
+          "bytes": 21084,
+          "sha256": "88cba099c01699610d4654988545dabebfdc55ad82d9afb4c8025b5d840995ea"
+        },
+        "fixture.safetensors": {
+          "bytes": 564977,
+          "sha256": "a8177b2ed1d2a04e6fb999168f8f68d3019f8b0d3d242949631ad8f3a7cfc43c"
+        },
+        "generation_config.json": {
+          "bytes": 26,
+          "sha256": "856d67e2b1d46a5bfca64d035a352a7ddeff61358cdede80fb979d9c17c25f5f"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 286373,
+          "sha256": "1765d7dc5e15bfd739cc0f05c210f5eccd681184d1d976e7c7aeb20283587030"
+        },
+        "reference.capture": {
+          "bytes": 260,
+          "sha256": "5ddd3dfc54980a9d520e2547b23137ace519d88894fa8f12c992b52e35e2fb89"
+        }
+      },
+      "planned_argv": [
+        "/tmp/kadan-stack-cuda/kadan-model-correctness",
+        "--execute",
+        "/tmp/kadan-112-reviewed-fixtures-kh0r8nou/tiny-40",
+        "0",
+        "8",
+        "270532672",
+        "537395712",
+        "536870912",
+        "30",
+        "/tmp/REVIEW_AUTHORIZED_UNIQUE_tiny-40.capture",
+        "2",
+        "7",
+        "11"
+      ]
+    }
+  ]
+}

@@ -49,6 +49,17 @@ public:
         ++next_;
         return handle;
     }
+    // Extend/shrink one still-loading reservation atomically after metadata planning.
+    // Failed admission preserves both the reservation and aggregate accounting.
+    void resize_loading(Handle handle, Footprint bytes) {
+        std::lock_guard lock(mutex_);auto& r=get(handle);
+        require(r.state==State::loading && r.pins==0,"not_loading");
+        require(bytes.size()==capacity_.size(),"budget_shape");
+        for(std::size_t i=0;i<bytes.size();++i)
+            require(bytes[i]<=capacity_[i]-(used_[i]-r.bytes[i]),"exhausted");
+        for(std::size_t i=0;i<bytes.size();++i) used_[i]=used_[i]-r.bytes[i]+bytes[i];
+        r.bytes.swap(bytes);
+    }
     void loaded(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);

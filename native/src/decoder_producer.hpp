@@ -56,9 +56,27 @@ struct DecoderProducer {
         auto* s=pointer<float>(base+m.scratch_offset);moe.logits=s+m.logits;moe.probabilities=s+m.probabilities;moe.top_weights=s+m.top_weights;moe.gate=s+m.gate;moe.up=s+m.up;moe.activation=s+m.activation;moe.down=s+m.down;moe.accumulator=s+m.accumulator;moe.shared=s+m.shared;moe.result=s+m.result;moe.shared_factor=s+m.shared_factor;moe.selected=pointer<unsigned>(base+m.indices_offset);moe.status=flags();
         zero();
     }
+    void bind() {
+        const bool is_linear=c.attention==decoder::Attention::linear;
+        auto at=p.auxiliary;auto aux=[&](std::size_t n){auto* v=pointer<std::uint16_t>(at);at+=2*n;return v;};
+        auto* scratch=pointer<float>(p.attention_scratch);
+        if(is_linear){const auto& l=p.linear;
+            linear.input_norm=aux(p.hidden);linear.conv_weight=aux(l.conv_elements);linear.a_weight=aux(c.linear.value_heads*p.hidden);linear.b_weight=aux(c.linear.value_heads*p.hidden);linear.a_log=aux(c.linear.value_heads);linear.dt_bias=aux(c.linear.value_heads);linear.output_norm=aux(c.linear.value_dim);
+            linear.normalized=scratch+l.norm_offset;linear.qkv=scratch+l.qkv_offset;linear.z=scratch+l.z_offset;linear.a=scratch+l.a_offset;linear.b=scratch+l.b_offset;linear.core=scratch+l.core_offset;linear.gated=scratch+l.gate_offset;linear.projected=scratch+l.out_offset;
+            linear.convolution=pointer<std::uint16_t>(p.state_first);linear.recurrent=pointer<float>(p.state_second);linear.status=flags();
+        }else{const auto& f=p.full;
+            full.input_norm=aux(p.hidden);full.query_norm=aux(c.full.head_dim);full.key_norm=aux(c.full.head_dim);full.frequencies=pointer<float>(p.frequencies);
+            full.normalized=scratch+f.norm_offset;full.qg=scratch+f.qg_offset;full.key=scratch+f.k_offset;full.value=scratch+f.v_offset;full.query=scratch+f.q_offset;full.gate=scratch+f.gate_offset;full.probabilities=scratch+f.prob_offset;full.core=scratch+f.core_offset;full.gated=scratch+f.gated_offset;full.projected=scratch+f.out_offset;
+            full.keys=pointer<std::uint16_t>(p.state_first);full.values=pointer<std::uint16_t>(p.state_second);full.status=flags();
+        }
+        const auto& m=p.moe;const auto base=p.moe_offset;moe.router=pointer<std::uint16_t>(base+m.router_offset);moe.shared_gate=pointer<std::uint16_t>(base+m.shared_gate_offset);
+        for(std::size_t e=0;e<=c.moe.experts;++e){const bool shared=e==c.moe.experts;const auto& l=shared?m.shared_layout:m.routed_layout;const auto middle=shared?c.moe.shared_intermediate:c.moe.intermediate;const auto start=base+(shared?m.shared_offset:m.experts_offset+e*l.bytes);
+            experts[e]={Projection{bytes(start+l.gate_weights),bytes(start+l.gate_scales),0,middle,p.hidden},Projection{bytes(start+l.up_weights),bytes(start+l.up_scales),0,middle,p.hidden},Projection{bytes(start+l.down_weights),bytes(start+l.down_scales),0,p.hidden,middle}};}
+        auto* s=pointer<float>(base+m.scratch_offset);moe.logits=s+m.logits;moe.probabilities=s+m.probabilities;moe.top_weights=s+m.top_weights;moe.gate=s+m.gate;moe.up=s+m.up;moe.activation=s+m.activation;moe.down=s+m.down;moe.accumulator=s+m.accumulator;moe.shared=s+m.shared;moe.result=s+m.result;moe.shared_factor=s+m.shared_factor;moe.selected=pointer<unsigned>(base+m.indices_offset);moe.status=flags();
+    }
     void zero(){check(cudaMemsetAsync(bytes(p.moe_offset+p.moe.scratch_offset),0,p.moe.device_bytes-p.moe.scratch_offset,cudaStreamLegacy));check(cudaMemsetAsync(bytes(p.state_first),0,p.device_bytes-p.state_first,cudaStreamLegacy));}
     void status(){check(cudaStreamSynchronize(cudaStreamLegacy));unsigned value=0;check(cudaMemcpy(&value,flags(),4,cudaMemcpyDeviceToHost));if(value)throw std::overflow_error("decoder_numeric_failure");}
-    void fp8(std::size_t i,const float* x,float* y){const auto& v=p.projections[i];check(kadan_launch_fp8(bytes(v.weights),pointer<float>(v.scale),false,x,y,flags(),v.rows,v.columns));status();}
+    void fp8(std::size_t i,const float* x,float* y){const auto& v=p.projections[i];check((c.linear.bf16_weights||c.full.bf16_weights?kadan_launch_fp8_bf16:kadan_launch_fp8)(bytes(v.weights),pointer<float>(v.scale),false,x,y,flags(),v.rows,v.columns));status();}
     // Private borrowed producers: coordinator validates the owner-bound active
     // capability on entry. No child owns admission, state lifetime or progress.
     void attention(StateStep token,const float* input){
@@ -71,7 +89,7 @@ struct DecoderProducer {
             check(detail::full_core(c.full,full,cursor.committed_tokens()));status();fp8(3,full.gated,full.projected);check(detail::full_residual(c.full,full,input,work(0)));status();
         }
     }
-    void project(const Projection& m,const float* x,float* y){check(kadan_launch_nvfp4(m.weights,m.scales,m.global,x,y,flags(),m.rows,m.columns));}
+    void project(const Projection& m,const float* x,float* y){check((c.moe.bf16_weights?kadan_launch_nvfp4_bf16:kadan_launch_nvfp4)(m.weights,m.scales,m.global,x,y,flags(),m.rows,m.columns));}
     void expert(std::size_t e,std::size_t middle){project(experts[e][0],work(1),moe.gate);project(experts[e][1],work(1),moe.up);check(detail::moe_activate(middle,moe));status();project(experts[e][2],moe.activation,moe.down);}
     void mixture(StateStep token){
         cursor.check_step(token);check(detail::moe_route(c.moe,moe,work(1)));status();std::array<unsigned,8> selected{};

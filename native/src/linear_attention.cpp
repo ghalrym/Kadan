@@ -25,9 +25,9 @@ void norm(std::span<const float> x,std::span<const float> weights,std::span<floa
         out[j]=bf16_round(offset?n*(1+weights[j]):bf16_round(n)*weights[j]);
     }
 }
-void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> out){
+void project(const quantization::Matrix& w,std::span<const float> x,std::span<float> out,bool bf16_weights){
     for(std::size_t row=0;row<w.rows;++row){double sum=0;for(std::size_t j=0;j<w.columns;++j){
-        const float weight=quantization::e4m3fn(w.weights[row*w.columns+j])*w.multipliers[0];sum+=double(weight)*x[j];}
+        const float weight=quantization::e4m3fn(w.weights[row*w.columns+j])*w.multipliers[0];sum+=double(bf16_weights?bf16_round(weight):weight)*x[j];}
         require(std::isfinite(sum)&&std::abs(sum)<=std::numeric_limits<float>::max(),"linear_nonfinite");out[row]=bf16_round(float(sum));}
 }
 void dense(std::span<const float> w,std::span<const float> x,std::span<float> out){
@@ -71,7 +71,7 @@ struct Reference::Impl {
             require(input.size()==c.hidden&&output.size()==c.hidden,"linear_input_shape");for(float x:input)require(bf16_round(x)==x,"linear_input_bf16");
             auto normalized=span(p.norm_offset,c.hidden),qkv=span(p.qkv_offset,p.channels),z=span(p.z_offset,p.values);
             auto a=span(p.a_offset,c.value_heads),b=span(p.b_offset,c.value_heads),core=span(p.core_offset,p.values),gated=span(p.gate_offset,p.values),projected=span(p.out_offset,c.hidden);
-            norm(input,w.input_norm,normalized,c.epsilon,true);project(w.qkv,normalized,qkv);project(w.z,normalized,z);dense(w.a,normalized,a);dense(w.b,normalized,b);
+            norm(input,w.input_norm,normalized,c.epsilon,true);project(w.qkv,normalized,qkv,c.bf16_weights);project(w.z,normalized,z,c.bf16_weights);dense(w.a,normalized,a);dense(w.b,normalized,b);
             for(std::size_t channel=0;channel<p.channels;++channel){
                 auto start=channel*c.conv_kernel;for(std::size_t j=1;j<c.conv_kernel;++j)conv[start+j-1]=conv[start+j];conv[start+c.conv_kernel-1]=store(qkv[channel]);
                 float sum=0;for(std::size_t j=0;j<c.conv_kernel;++j)sum=finite(sum+expand(conv[start+j])*w.conv[start+j]);
@@ -97,7 +97,7 @@ struct Reference::Impl {
                 norm(core.subspan(head*c.value_dim,c.value_dim),w.output_norm,gated.subspan(head*c.value_dim,c.value_dim),c.epsilon,false);
             }
             for(std::size_t j=0;j<p.values;++j)gated[j]=bf16_round(gated[j]*(z[j]*sig(z[j])));
-            project(w.out,gated,projected);
+            project(w.out,gated,projected,c.bf16_weights);
             for(std::size_t j=0;j<c.hidden;++j)projected[j]=bf16_round(input[j]+projected[j]);
             cursor.written(token,0);cursor.commit(token);std::copy(projected.begin(),projected.end(),output.begin());
         }catch(...){cursor.invalidate();throw;}

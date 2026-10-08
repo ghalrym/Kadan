@@ -165,3 +165,8 @@ The tiny mixed stack adds three linear layers, one full-attention layer, embeddi
 final norm and greedy vocabulary selection under whole-token publication. See
 [STACK.md](STACK.md) for ownership, synthetic CPU goldens and the unexecuted GPU
 plan. It has no tokenizer/checkpoint loading and makes no throughput claim.
+
+The [checkpoint-backed model](MODEL.md) adds configurable text layers, bounded
+loading and a single-device token-ID/logit correctness harness. CPU fixture tests
+and CUDA compilation are verified; actual-checkpoint GPU parity remains pending
+an authorized memory window.

@@ -291,6 +291,7 @@ void ModelManifest::read_dense(std::size_t item,std::size_t offset,std::span<std
     require(item<impl_->items.size() && impl_->items[item].kind==ItemKind::dense,"not_dense_item");
     const auto& entry=impl_->items[item]; impl_->shards[entry.shard]->read_tensor(entry.name,offset,destination);
 }
+void ModelManifest::check_unchanged() const { for(const auto& shard:impl_->shards) shard->check_unchanged(); }
 float ModelManifest::read_input_scale(std::size_t item) const {
     require(item<impl_->items.size() && impl_->items[item].kind!=ItemKind::dense,"not_projection_item");
     const auto& entry=impl_->items[item]; std::array<std::uint8_t,4> bytes{};
