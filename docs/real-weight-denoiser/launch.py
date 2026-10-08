@@ -1,0 +1,241 @@
+"""Explicit maintenance-window launcher. Default is read-only plan, never execution.
+
+Run with --execute-reviewed COMMIT only after source review and exact-head CI clear.
+The operator coordinates the interruption. This script does not establish approval.
+"""
+import argparse
+import hashlib
+import json
+import signal
+import shutil
+from pathlib import Path
+import subprocess
+import time
+import urllib.request
+
+IMAGE = 'sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa'
+GPUS = ['GPU-e30b6419-2c6d-f550-61d6-16166a920dac', 'GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3']
+REPO = Path(__file__).resolve().parents[2]
+API = 'kadan-api-1'
+NAME = 'kadan-real-weight-reviewed-probe'
+
+
+def run(*args, check=True, timeout=20):
+    return subprocess.run(args, check=check, capture_output=True, text=True, timeout=timeout)
+
+
+def container_identity(inspect):
+    """Exclude runtime state/network addresses that legitimately change on start."""
+    result = {key: inspect[key] for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'Path', 'Args')}
+    result['Mounts'] = sorted(result['Mounts'], key=lambda mount: mount['Destination'])
+    return result
+
+
+def inspect_container(container_id):
+    return json.loads(run('docker', 'inspect', container_id).stdout)[0]
+
+
+def restore_container(before):
+    """Start only the captured container; never reevaluate deployment files."""
+    container_id = before['Id']
+    assert container_identity(inspect_container(container_id)) == container_identity(before), 'Stopped API identity/config changed'
+    run('docker', 'start', container_id, timeout=45)
+    restored = inspect_container(container_id)
+    assert container_identity(restored) == container_identity(before), 'Restored API identity/config changed'
+    assert restored['State']['Running'], 'Restored API is not running'
+    return restored
+
+
+def gpu_snapshot():
+    lines = run('nvidia-smi', '--query-gpu=uuid,memory.used,memory.free,temperature.gpu', '--format=csv,noheader,nounits').stdout.splitlines()
+    return {v[0].strip(): dict(used=int(v[1]), free=int(v[2]), temperature=int(v[3]))
+            for v in (line.split(',') for line in lines)}
+
+
+def gpu_owners():
+    lines = run('nvidia-smi', '--query-compute-apps=gpu_uuid,pid', '--format=csv,noheader').stdout.splitlines()
+    owners = set()
+    for line in lines:
+        gpu, pid = (part.strip() for part in line.split(','))
+        if gpu not in GPUS:
+            continue
+        try:
+            # starttime rejects PID reuse; comm is inspected separately below.
+            stat = Path('/proc', pid, 'stat').read_text()
+        except FileNotFoundError:
+            continue
+        starttime = stat.rsplit(')', 1)[1].split()[19]
+        owners.add((gpu, pid, starttime))
+    return owners
+
+
+def desktop_baseline(api_id):
+    api_pids = set(run('docker', 'top', api_id, '-eo', 'pid').stdout.splitlines()[1:])
+    api_pids = {pid.strip() for pid in api_pids}
+    desktop = {owner for owner in gpu_owners() if owner[1] not in api_pids}
+    allowed = {'cosmic-workspac', 'cosmic-files-ap', 'xdg-desktop-por', 'chrome'}
+    for _, pid, _ in desktop:
+        assert Path('/proc', pid, 'comm').read_text().strip() in allowed, 'Unrecognized external GPU owner; do not pause'
+    return desktop
+
+
+def no_gpu_owners(desktop):
+    # Existing desktop contexts may disappear; new/reused PIDs cannot pass.
+    return gpu_owners() <= desktop
+
+
+def guards():
+    snap = gpu_snapshot()
+    assert all(snap[g]['free'] >= 256 and snap[g]['temperature'] < 90 for g in GPUS), snap
+    memory = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+    assert int(memory['MemAvailable'].split()[0]) >= 16 * 1024**2, 'Host free memory guard'
+    temperatures = [int(p.read_text()) / 1000 for p in Path('/sys/class/hwmon').glob('hwmon*/temp*_input')
+                    if p.parent.joinpath('name').read_text().strip() in ('k10temp', 'coretemp')]
+    assert temperatures and max(temperatures) < 80, 'CPU temperature unavailable or above guard'
+    return dict(gpu=snap, cpu_temperature=max(temperatures))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute-reviewed', metavar='COMMIT')
+    parser.add_argument('--evidence', type=Path)
+    args = parser.parse_args()
+    if not args.execute_reviewed:
+        print(json.dumps(dict(image=IMAGE, gpus=GPUS, cases=['capture-first-cached-step', 'real-weight-replay'],
+            per_case_host_deadline_s=930, collective_timeout_s=120, container_ram_gib=128, capture_disk_gib=32,
+            torch_reserved_gib_per_rank=22, estimated_interruption_minutes='up to 35 including restore',
+            note='Requires exact-head review/CI and coordinated API-only pause. No GPU access performed.')))
+        return
+    assert args.evidence and not args.evidence.exists(), 'Choose a new evidence directory'
+    assert run('git', '-C', str(REPO), 'rev-parse', 'HEAD').stdout.strip() == args.execute_reviewed
+    assert not run('git', '-C', str(REPO), 'status', '--porcelain').stdout, 'Probe source must be clean'
+    assert run('docker','inspect',NAME,check=False).returncode != 0, 'Probe name is already owned'
+    assert shutil.disk_usage(args.evidence.parent).free >= 64*1024**3, 'Require64 GiB disk headroom'
+    available = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')))*1024
+    assert available >= 160*1024**3, 'Require160 GiB available host RAM'
+    args.evidence.mkdir(parents=True)
+    evidence = args.evidence.resolve()
+    capture=evidence/'capture';capture.mkdir()
+    inspect = inspect_container(API)
+    api_id = inspect['Id']
+    assert inspect['Image'] == IMAGE and inspect['State']['Running']
+    assert inspect['Config']['Labels']['org.opencontainers.image.revision'] == 'dea7b0fade2b068b8e142a1666bf39e495ad0d99'
+    mounts = inspect['Mounts']
+    model_mount = next(m for m in mounts if m['Destination'] == '/var/lib/kadan/models')
+    assert model_mount['Type'] == 'volume'
+    source_mount = next(m for m in mounts if m['Destination'] == '/app/api')
+    source_hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(source_mount['Source']).rglob('*.py')}
+    others = {n: json.loads(run('docker','inspect', n).stdout)[0]['Id']
+              for n in ('kadan-redis-1','kadan-postgres-1','kadan-frontend-1')}
+    for command, key in [('SCARD','unfinished'), ('LLEN','pending')]:
+        assert run('docker','exec','kadan-redis-1','redis-cli',command,'kadan:inference:'+key).stdout.strip() == '0', 'Live queue not idle'
+    desktop = desktop_baseline(api_id)
+    (evidence/'desktop-baseline.json').write_text(json.dumps(sorted(desktop), indent=2))
+    (evidence/'before.json').write_text(json.dumps(inspect, indent=2))
+    def interrupted(signum, frame):
+        raise InterruptedError(f'Launcher interrupted by signal {signum}')
+    signal.signal(signal.SIGTERM, interrupted)
+    paused = False
+    baseline = None
+    cleanup_confirmed = False
+    try:
+        # Mark before stopping so a command timeout still enters restoration logic.
+        paused = True
+        run('docker', 'stop', '--time', '30', api_id, timeout=45)
+        assert not inspect_container(api_id)['State']['Running']
+        deadline=time.monotonic()+30
+        while not no_gpu_owners(desktop) and time.monotonic()<deadline:
+            time.sleep(1)
+        assert no_gpu_owners(desktop), 'Existing GPU ownership did not release'
+        baseline=gpu_snapshot()
+        assert all(baseline[g]['free'] >= 22*1024 for g in GPUS)
+        guards()
+        for case in ('capture', 'replay'):
+            case_dir=evidence/(case+'-evidence')
+            case_dir.mkdir()
+            command=['docker','run','-d','--name',NAME,'--network','none','--cpus','4',
+                '--memory','128g','--memory-swap','128g','--shm-size','1g',
+                '--gpus','"device='+','.join(GPUS)+'"',
+                '--mount',f'type=bind,src={REPO}/api,dst=/app/api,readonly',
+                '--mount',f'type=bind,src={REPO}/docs/real-weight-denoiser,dst=/probe,readonly',
+                '--mount',f'type=bind,src={case_dir},dst=/evidence',
+                '--mount',f'type=bind,src={capture},dst=/capture'+(',readonly' if case=='replay' else ''),
+                '--mount',f'type=volume,src={model_mount["Name"]},dst=/models,readonly',
+                '--env','PYTHONPATH=/app','--env','PYTHONDONTWRITEBYTECODE=1',
+                '--env','OMP_NUM_THREADS=1','--env','MKL_NUM_THREADS=1','--env','GLOO_SOCKET_IFNAME=lo',
+                '--env','NCCL_DEBUG=INFO','--env','NCCL_DEBUG_SUBSYS=INIT,GRAPH,NET,SHM,P2P',
+                '--env','NCCL_DEBUG_FILE=/evidence/nccl-%h-%p.log',
+                '--entrypoint','python',IMAGE,'/probe/supervisor.py',case]
+            started=time.monotonic()
+            run(*command)
+            samples=[]
+            try:
+                while json.loads(run('docker','inspect',NAME).stdout)[0]['State']['Running']:
+                    assert time.monotonic()-started < 930, 'Host watchdog expired'
+                    sample=guards()
+                    sample['utilization_csv']=run('nvidia-smi','--query-gpu=uuid,utilization.gpu,utilization.memory,power.draw','--format=csv,noheader,nounits').stdout
+                    sample['container_memory']=run('docker','exec',NAME,'cat','/sys/fs/cgroup/memory.current',check=False).stdout.strip()
+                    samples.append(sample)
+                    assert sum(p.stat().st_size for p in capture.iterdir())<=32*1024**3, 'Capture disk guard'
+                    time.sleep(1)
+            finally:
+                run('docker','stop','--time','5',NAME,check=False)
+                state=json.loads(run('docker','inspect',NAME).stdout)[0]['State']
+                (case_dir/'container-state.json').write_text(json.dumps(state))
+                (case_dir/'output.txt').write_text(run('docker','logs',NAME,check=False).stdout+run('docker','logs',NAME,check=False).stderr)
+                (case_dir/'samples.json').write_text(json.dumps(samples))
+                assert not state['Running'], 'Container cleanup unconfirmed'
+                run('docker','rm',NAME)
+            deadline=time.monotonic()+20
+            while not no_gpu_owners(desktop) and time.monotonic()<deadline: time.sleep(1)
+            assert no_gpu_owners(desktop), 'Rank CUDA cleanup unconfirmed'
+            after=gpu_snapshot()
+            assert all(after[g]['used'] <= baseline[g]['used']+128 for g in GPUS), 'Physical memory did not return'
+            assert not state['OOMKilled'], 'Unexpected container host OOM'
+            assert state['ExitCode']==0, 'Real-weight stage failed; stop ladder'
+            if case=='capture': assert (capture/'manifest.json').exists()
+            else: assert all((case_dir/f'timings-rank-{r}.json').exists() for r in range(2))
+        cleanup_confirmed=True
+    finally:
+        # No blanket process kills: only this launcher's named container is owned.
+        found=run('docker','inspect',NAME,check=False)
+        if found.returncode==0:
+            run('docker','stop','--time','5',NAME,check=False)
+            run('docker','rm',NAME,check=False)
+        cleanup_deadline=time.monotonic()+20
+        while not no_gpu_owners(desktop) and time.monotonic()<cleanup_deadline:
+            time.sleep(1)
+        cleanup_confirmed = no_gpu_owners(desktop)
+        if cleanup_confirmed and baseline is not None:
+            released=gpu_snapshot()
+            cleanup_confirmed=all(released[g]['used']<=baseline[g]['used']+128 for g in GPUS)
+        if paused and cleanup_confirmed:
+            assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in source_hashes.items()), 'Live source changed'
+            restore_container(inspect)
+            deadline=time.monotonic()+180
+            while True:
+                try:
+                    with urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3) as response:
+                        assert response.status==200
+                    with urllib.request.urlopen('http://127.0.0.1:8000/model-lifecycle',timeout=3) as response:
+                        lifecycle=json.load(response)
+                    assert lifecycle['state']=='ready', lifecycle
+                    state=inspect_container(api_id)['State']
+                    assert state['Running'] and state.get('Health', {}).get('Status')=='healthy', state
+                    (evidence/'restored-lifecycle.json').write_text(json.dumps(lifecycle))
+                    break
+                except Exception:
+                    if time.monotonic()>deadline: raise
+                    time.sleep(2)
+            assert all(json.loads(run('docker','inspect',n).stdout)[0]['Id']==i for n,i in others.items())
+            restored=inspect_container(api_id)
+            assert container_identity(restored)==container_identity(inspect), 'Ready API identity/config changed'
+            assert restored['State']['Running'] and restored['State'].get('Health', {}).get('Status')=='healthy', 'Container health not ready'
+            assert inspect_container(API)['Id']==api_id, 'API name no longer resolves to the captured container'
+            (evidence/'restored.json').write_text(json.dumps(restored, indent=2))
+        elif paused:
+            raise RuntimeError('QUARANTINE: rank cleanup unconfirmed; API remains stopped. Investigate before releasing ownership.')
+
+
+if __name__ == '__main__':
+    main()

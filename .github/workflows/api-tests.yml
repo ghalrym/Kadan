@@ -37,6 +37,8 @@ jobs:
           python -m api.inference.check_install
       - name: Run backend tests
         run: python -m unittest discover -s api/tests -v
+      - name: Verify review-only denoiser harness contracts
+        run: python -m unittest discover -s docs/real-weight-denoiser -p 'test_*.py' -v
       - name: Verify the pinned H3 output sanitizer
         run: |
           curl --fail --silent --show-error --location https://raw.githubusercontent.com/sgl-project/sglang/f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a/python/sglang/multimodal_gen/configs/sample/sampling_params.py -o "$RUNNER_TEMP/kadan-h3-sampling.py"
