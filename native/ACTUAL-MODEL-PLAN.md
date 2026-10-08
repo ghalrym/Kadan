@@ -209,69 +209,51 @@ reviewed error analysis/reference study and new authorization, never post-hoc
 fitting to the observed maximum. The actual selected token and EOS flag remain
 unknown until the independent reference is captured and reviewed.
 
-## Queue/admission race prevention without production code changes
+## Queue/admission coordination: correction and unresolved review item
 
-A dashboard idle snapshot, an unrelated `flock`, or POST unload alone is not a
-lock: the Redis consumer can reload on a newly queued request. Do not start a
-native actual-weight load on that basis. The API owns the existing inference
-lock; do not take, unlink or replace it, and do not write/cancel/delete Redis jobs.
+The earlier claim that a newly queued chat request reloads an unloaded model was
+incorrect. At `5af05a673a09d009f1fd87bd38b87ca0cb471346`, the verified path is
+`MemoryManager._execute` -> `LLMFeature.__call__` -> `RuntimeManager.complete`.
+That path does **not** call `LLMFeature.load`. `complete` rejects unless state is
+ready and the adapter exists; a request without a selected model can reject even
+earlier in `LLMFeature.__call__`. After successful unload, queued chat does not
+by itself reconstruct the LLM.
 
-Proposed **temporary container-network-namespace ingress gate** needs separate
-operator approval as part of the maintenance window. Host `nft` and `nsenter`
-are available. Re-resolve the API container PID/netns and verify its identity
-before every operation (observed init PID78447, bridge IP172.22.0.2, port8000;
-these values are observations, never hard-coded across restarts).
+Remaining concerns are narrower: an explicit lifecycle load can reconstruct the
+LLM, and other modality requests may allocate shared GPU resources. An unrelated
+`flock` does not bind those producers; the native ledger is still separate from
+the service ledger. Queue/admission observations remain useful evidence, not an
+atomic cross-process reservation. Do not take, unlink or replace the service's
+inference lock or write/cancel/delete Redis jobs for this experiment.
 
-Reviewed shell procedure to finalize before execution:
+The prior nft/namespace firewall and socket-killing proposal is **withdrawn from
+this plan**. It would expand the requested LLM-only window to ordinary API
+availability and requires separate security-sensitive approval. No such gate was
+implemented or applied; its commands have been removed. Do not install a firewall,
+close connections or change network settings under this plan.
 
-```sh
-api_pid=$(docker inspect -f '{{.State.Pid}}' kadan-api-1)
-# Save namespace identity and existing rules first; require unique table absent.
-sudo nsenter -t "$api_pid" -n nft -f /review/kadan-validation-gate.nft
-# Gate file contains only:
-# table inet kadan_validation {
-#   chain input {
-#     type filter hook input priority -300; policy accept;
-#     iifname != "lo" tcp dport 8000 reject with tcp reset
-#   }
-# }
-# Close pre-existing non-loopback API sockets so buffered/pipelined requests
-# cannot cross the idle check. Validate ss -K support/filter before approval.
-sudo nsenter -t "$api_pid" -n ss -K 'sport = :8000 and dst != 127.0.0.1 and dst != ::1'
-```
-
-Gate all methods/connections, including frontend proxy and published host port;
-closing sockets may cancel a submitted request. Therefore require a quiet window
-first, then wait for its cooperative cleanup. Loopback healthchecks and the
-operator's `docker exec` HTTP client remain available. The operator must prevent
-other privileged loopback clients and direct Redis producers during the window;
-inspect Redis CLIENT LIST without secrets and fail if unaccounted producers exist.
-If that exclusion cannot be established, **do not proceed**; no claim of global
-atomic admission is made. Gate changes neither production source nor budget,
-but it does temporarily remove all ordinary API access, not just chat.
-
-After installing/verifying the gate and closing sockets, require two stable
-observations five seconds apart: Redis `LLEN kadan:inference:pending = 0` and
-`SCARD kadan:inference:unfinished = 0`, HTTP active_requests0, no queued/rendering
-video jobs, no active memory leases/exclusive owner, ready/small/no error.
-Read these via read-only Redis commands and loopback HTTP. No background producer
-or consumer restart is permitted. Monitor the same conditions throughout the
-window. New work, unexplained residency, container/netns replacement or loss of
-gate ownership is an abort, not an occasion to evict another workload.
+The runtime reviewer is evaluating safer supported coordination. Its mechanism,
+operator responsibilities and failure behavior must be reviewed before any
+actual-model execution. No replacement implementation is proposed here. Pending
+that decision, preserve the read-only checks: queue pending/unfinished counts,
+active HTTP requests, video jobs, shared active leases/exclusive owner, explicit
+lifecycle activity, physical memory and process residency. If the agreed
+coordination cannot exclude conflicting lifecycle or other-modality allocation,
+stop; do not silently substitute a broader operational gate or racy polling.
 
 ## Supported unload, native run and restoration sequence
 
 The following are **proposed future commands**, not authorization. `RUN` is a
-new operator-owned0700 artifact directory; `api_pid` and its netns identity must
-still match the approved API container. All commands/logs use the same operator
-session. In-namespace loopback bypasses only the temporary ingress gate.
+new operator-owned0700 artifact directory. Verify the API container identity and
+service epoch before mutation. All commands/logs use the same operator session.
+Execution also depends on the unresolved supported coordination described above.
 
 ```sh
 # Read/save state before mutation; GET is harmless.
-sudo nsenter -t "$api_pid" -n curl --fail-with-body --silent --show-error \
+curl --fail-with-body --silent --show-error \
   --max-time 10 http://127.0.0.1:8000/model-lifecycle > "$RUN/lifecycle-before.json"
 # Exactly one authorized unload, no body.
-sudo nsenter -t "$api_pid" -n curl --fail-with-body --silent --show-error \
+curl --fail-with-body --silent --show-error \
   --max-time 120 -X POST http://127.0.0.1:8000/model-lifecycle/unload \
   > "$RUN/unload.json"
 ```
@@ -287,8 +269,8 @@ context65,536, max_output256, service epoch, budgets and snapshot selection.
 
 Before native: the independent CPU reference must already have passed capture
 validation and review, with its chosen token/EOS and hash added to the approved
-run manifest. Recheck all native/reference/metadata/shard hashes; verify the gate
-and queue. Planned exact native command (only RUN varies as a fresh path):
+run manifest. Recheck all native/reference/metadata/shard hashes, queue and the
+separately reviewed coordination conditions. Planned exact native command (only RUN varies as a fresh path):
 
 ```sh
 sudo -n timeout --signal=TERM --kill-after=5s 915s \
@@ -330,10 +312,10 @@ comparison failed; the one-shot restoration must be included in approval:
 
 ```sh
 # Exactly one no-body load restores saved model/context, not new settings.
-sudo nsenter -t "$api_pid" -n curl --fail-with-body --silent --show-error \
+curl --fail-with-body --silent --show-error \
   --max-time 30 -X POST http://127.0.0.1:8000/model-lifecycle/load \
   > "$RUN/reload-accepted.json"
-# Poll GET via the same loopback route; HTTP202 is acceptance, not readiness.
+# Poll GET via the same endpoint; HTTP202 is acceptance, not readiness.
 ```
 
 Poll up to900s for ready/small, configured/effective context65,536, output256,
@@ -345,20 +327,12 @@ residency and warm/prefix caches but preserves saved selection/context and store
 outputs. No container restart is needed. Reload reads actual payloads and must
 be covered by the window's authorization.
 
-Remove **only** the uniquely owned gate after verifying native cleanup and the
-restoration outcome; never flush other rules:
-
-```sh
-sudo nsenter -t "$api_pid" -n nft delete table inet kadan_validation
-```
-
-Verify the ordinary host/frontend read-only health path is reachable again and
-existing unrelated network rules match their saved state. If reload fails or
-times out, do not repeat/restart; record current state. Once native cleanup is
-certain, restore normal network access and report that model readiness was not
-restored. If native cleanup is uncertain, keep admission blocked and escalate
-instead of allowing automatic reload. Operator recovery/removal of the owned
-gate must be available even if the supervising terminal fails.
+Verify the ordinary host/frontend read-only health path and the restoration
+outcome. If reload fails or times out, do not repeat or restart; record current
+state and report incomplete restoration. If native cleanup is uncertain, do not
+issue the planned reload: notify the operator/reviewer and retain the agreed
+coordination conditions. There is no automatic reload on queued chat and no
+network gate to remove under this corrected plan.
 
 ## Duration, service impact and remaining review gates
 
@@ -370,9 +344,11 @@ prediction of normal downtime. Hashing is sequential on one CPU; it reads the
 full23.4GB checkpoint per pass. Do not benchmark disk/GPU to refine this estimate
 without permission. If a hash pass exceeds600s, abort the experiment and restore
 service when safe; do not silently expand the window. Reviewers may choose
-smaller ceilings before execution. The gate makes **all ordinary API operations
-unavailable** during the window; the frontend may still render but requests fail.
-This is broader than LLM unloading alone, and Andrew must approve that impact.
+smaller ceilings before execution. The requested window makes the selected LLM
+unavailable from unload until successful reload; queued chat rejects while it is
+unloaded. It does not itself disable all API access. Any additional impact from
+the still-unresolved coordination mechanism must be reviewed and approved, not
+assumed to be part of an LLM-only window.
 
 Still required before executing anything in this plan:
 
@@ -383,11 +359,10 @@ Still required before executing anything in this plan:
    cleanup supervisor. It does not exist yet; do not invent its CLI/hash.
 3. Independent review of initial0/0 acceptance and the one-BOS semantics; reference
    capture must be reviewed/pinned before the native command is released.
-4. Review/approve the temporary ingress gate and existing-socket closure, verify
-   ss/nft behavior and direct-producer exclusion, and prewrite/verify the exact
-   bounded supervisor and restoration procedure. An idle verbal promise alone
-   does not satisfy this gate. If this operational change is declined, stop and
-   propose an alternative explicitly; do not silently fall back to racy polling.
+4. Resolve and review safer supported coordination for explicit lifecycle loads
+   and other-modality admission. The broad network/socket gate is withdrawn;
+   no alternative implementation or operational mutation is authorized here.
+   Finalize the bounded supervisor/restoration procedure only after that review.
 5. Approve checkpoint payload hashing, snapshot-writer exclusion, corrected native
    envelope, CPU reference40GiB cap and all time ceilings. Recheck physical and
    cgroup availability at each phase. No actual weight work is currently cleared.
