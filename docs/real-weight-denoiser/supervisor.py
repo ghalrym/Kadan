@@ -14,6 +14,8 @@ def main():
     with open('/models/inference.lock', 'rb') as lease:
         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = 1
+        stage_seconds = int(os.environ['KADAN_STAGE_SECONDS'])
+        assert 1 <= stage_seconds <= 900
         assert sys.argv[1:] in (['capture'], ['replay'])
         if sys.argv[1]=='capture':
             command=[sys.executable,'/probe/capture.py','--model',
@@ -29,7 +31,7 @@ def main():
         signal.signal(signal.SIGINT, stop)
         started = time.monotonic()
         try:
-            status = child.wait(timeout=900)
+            status = child.wait(timeout=stage_seconds)
         finally:
             # torchrun propagates rank errors; independently reap its entire group.
             try:

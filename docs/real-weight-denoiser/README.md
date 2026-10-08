@@ -59,9 +59,19 @@ No DB writes, model downloads, compilation or whole-image builds are used.
 
 These **new bounds require independent review before execution**:
 
-- Capture and replay each have900s supervisor /930s host limits. NCCL/control
-  collectives have120s timeouts. Worst-case pause envelope is35 minutes including
-  recovery; this is a ceiling, not an expected measured duration.
+- One absolute2100-second pause deadline starts before API stop. Measurement
+  ends no later than1500 seconds, reserving600 seconds for cleanup, exact-container
+  restart and readiness. Each stage receives at most900 seconds, clipped to the
+  remaining measurement budget minus30 seconds of launch/termination margin;
+  replay is shortened or skipped if capture consumed the budget. The930-second
+  per-stage host bound is also clipped by that absolute measurement deadline.
+  NCCL/control collectives retain120-second bounds. A host alarm interrupts
+  measurement at the reserve boundary; commands, restoration and readiness share
+  the original overall deadline and cannot each allocate fresh time. Total pause
+  accounting is written to pause-budget.json/pause-result.json. The35-minute
+  window is enforced for the launcher; a failed Docker/driver/service cannot be
+  guaranteed healthy by a timer. Unconfirmed cleanup still quarantines GPUs, and
+  deadline/recovery failures are reported instead of claiming successful restore.
 - Container hard RAM/no-swap128 GiB,4 CPU,1 GiB SHM. Require160 GiB host available
   before pause; abort below16 GiB. Model construction, duplicate CPU tensors,
   mmap/file cache, comparisons and both rank processes share that128 GiB ceiling.
@@ -85,7 +95,9 @@ These **new bounds require independent review before execution**:
 
 ## Status and remaining full-denoising gate
 
-CPU-only contract tests passed4/4 in the pinned image; module compilation and
+CPU-only numerical/loader contract tests passed4/4 in the pinned image;
+4 additional deadline tests passed locally (elapsed-stage clipping, no late stage
+start, bounded command timeout and readiness deadline); module compilation and
 read-only launch plan passed. These tests cover metric thresholds/streaming,
 nonfinite rejection, meta-module state loading, preservation of shortened global
 RoPE/mask shape and chain-vs-reset distinction. They are not real-weight or CUDA

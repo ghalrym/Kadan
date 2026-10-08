@@ -18,9 +18,41 @@ GPUS = ['GPU-e30b6419-2c6d-f550-61d6-16166a920dac', 'GPU-2a2378dd-08c1-6f69-6317
 REPO = Path(__file__).resolve().parents[2]
 API = 'kadan-api-1'
 NAME = 'kadan-real-weight-reviewed-probe'
+PAUSE_SECONDS = 35*60
+RECOVERY_SECONDS = 10*60
+COMMAND_DEADLINE = None
+
+
+class PauseBudget:
+    def __init__(self, started):
+        self.started = started
+        self.end = started + PAUSE_SECONDS
+        self.measurement_end = self.end - RECOVERY_SECONDS
+
+    def stage_seconds(self):
+        # Leave30s for launch/supervisor termination before recovery reserve.
+        seconds = min(900, int(self.measurement_end-time.monotonic())-30)
+        if seconds < 1:
+            raise TimeoutError('Measurement budget exhausted; restore API now')
+        return seconds
+
+
+def remaining(deadline, cap):
+    seconds = min(cap, deadline-time.monotonic())
+    if seconds <= 0:
+        raise TimeoutError('Overall API pause deadline exhausted')
+    return seconds
+
+
+def arm_deadline(deadline):
+    global COMMAND_DEADLINE
+    COMMAND_DEADLINE = deadline
+    signal.setitimer(signal.ITIMER_REAL, remaining(deadline, PAUSE_SECONDS))
 
 
 def run(*args, check=True, timeout=20):
+    if COMMAND_DEADLINE is not None:
+        timeout = remaining(COMMAND_DEADLINE, timeout)
     return subprocess.run(args, check=check, capture_output=True, text=True, timeout=timeout)
 
 
@@ -96,13 +128,14 @@ def guards():
 
 
 def main():
+    global COMMAND_DEADLINE
     parser = argparse.ArgumentParser()
     parser.add_argument('--execute-reviewed', metavar='COMMIT')
     parser.add_argument('--evidence', type=Path)
     args = parser.parse_args()
     if not args.execute_reviewed:
         print(json.dumps(dict(image=IMAGE, gpus=GPUS, cases=['capture-first-cached-step', 'real-weight-replay'],
-            per_case_host_deadline_s=930, collective_timeout_s=120, container_ram_gib=128, capture_disk_gib=32,
+            overall_pause_deadline_s=PAUSE_SECONDS, recovery_reserve_s=RECOVERY_SECONDS, per_case_host_deadline_s=930, collective_timeout_s=120, container_ram_gib=128, capture_disk_gib=32,
             torch_reserved_gib_per_rank=22, estimated_interruption_minutes='up to 35 including restore',
             note='Requires exact-head review/CI and coordinated API-only pause. No GPU access performed.')))
         return
@@ -135,10 +168,16 @@ def main():
     def interrupted(signum, frame):
         raise InterruptedError(f'Launcher interrupted by signal {signum}')
     signal.signal(signal.SIGTERM, interrupted)
+    def expired(signum, frame):
+        raise TimeoutError('API pause phase deadline reached; stop measurement and recover')
+    signal.signal(signal.SIGALRM, expired)
     paused = False
     baseline = None
     cleanup_confirmed = False
+    budget = PauseBudget(time.monotonic())
+    (evidence/'pause-budget.json').write_text(json.dumps(dict(overall_s=PAUSE_SECONDS, recovery_reserve_s=RECOVERY_SECONDS, started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))))
     try:
+        arm_deadline(budget.measurement_end)
         # Mark before stopping so a command timeout still enters restoration logic.
         paused = True
         run('docker', 'stop', '--time', '30', api_id, timeout=45)
@@ -151,6 +190,8 @@ def main():
         assert all(baseline[g]['free'] >= 22*1024 for g in GPUS)
         guards()
         for case in ('capture', 'replay'):
+            arm_deadline(budget.measurement_end)
+            stage_seconds=budget.stage_seconds()
             case_dir=evidence/(case+'-evidence')
             case_dir.mkdir()
             command=['docker','run','-d','--name',NAME,'--network','none','--cpus','4',
@@ -161,6 +202,7 @@ def main():
                 '--mount',f'type=bind,src={case_dir},dst=/evidence',
                 '--mount',f'type=bind,src={capture},dst=/capture'+(',readonly' if case=='replay' else ''),
                 '--mount',f'type=volume,src={model_mount["Name"]},dst=/models,readonly',
+                '--env',f'KADAN_STAGE_SECONDS={stage_seconds}',
                 '--env','PYTHONPATH=/app','--env','PYTHONDONTWRITEBYTECODE=1',
                 '--env','OMP_NUM_THREADS=1','--env','MKL_NUM_THREADS=1','--env','GLOO_SOCKET_IFNAME=lo',
                 '--env','NCCL_DEBUG=INFO','--env','NCCL_DEBUG_SUBSYS=INIT,GRAPH,NET,SHM,P2P',
@@ -171,7 +213,7 @@ def main():
             samples=[]
             try:
                 while json.loads(run('docker','inspect',NAME).stdout)[0]['State']['Running']:
-                    assert time.monotonic()-started < 930, 'Host watchdog expired'
+                    assert time.monotonic() < min(started+930,budget.measurement_end), 'Host measurement deadline expired'
                     sample=guards()
                     sample['utilization_csv']=run('nvidia-smi','--query-gpu=uuid,utilization.gpu,utilization.memory,power.draw','--format=csv,noheader,nounits').stdout
                     sample['container_memory']=run('docker','exec',NAME,'cat','/sys/fs/cgroup/memory.current',check=False).stdout.strip()
@@ -179,6 +221,8 @@ def main():
                     assert sum(p.stat().st_size for p in capture.iterdir())<=32*1024**3, 'Capture disk guard'
                     time.sleep(1)
             finally:
+                # Cleanup consumes the reserved recovery budget, not fresh time.
+                arm_deadline(budget.end)
                 run('docker','stop','--time','5',NAME,check=False)
                 state=json.loads(run('docker','inspect',NAME).stdout)[0]['State']
                 (case_dir/'container-state.json').write_text(json.dumps(state))
@@ -197,6 +241,7 @@ def main():
             else: assert all((case_dir/f'timings-rank-{r}.json').exists() for r in range(2))
         cleanup_confirmed=True
     finally:
+        arm_deadline(budget.end)
         # No blanket process kills: only this launcher's named container is owned.
         found=run('docker','inspect',NAME,check=False)
         if found.returncode==0:
@@ -212,12 +257,12 @@ def main():
         if paused and cleanup_confirmed:
             assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in source_hashes.items()), 'Live source changed'
             restore_container(inspect)
-            deadline=time.monotonic()+180
+            deadline=min(time.monotonic()+180,budget.end)
             while True:
                 try:
-                    with urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3) as response:
+                    with urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=remaining(budget.end,3)) as response:
                         assert response.status==200
-                    with urllib.request.urlopen('http://127.0.0.1:8000/model-lifecycle',timeout=3) as response:
+                    with urllib.request.urlopen('http://127.0.0.1:8000/model-lifecycle',timeout=remaining(budget.end,3)) as response:
                         lifecycle=json.load(response)
                     assert lifecycle['state']=='ready', lifecycle
                     state=inspect_container(api_id)['State']
@@ -233,8 +278,12 @@ def main():
             assert restored['State']['Running'] and restored['State'].get('Health', {}).get('Status')=='healthy', 'Container health not ready'
             assert inspect_container(API)['Id']==api_id, 'API name no longer resolves to the captured container'
             (evidence/'restored.json').write_text(json.dumps(restored, indent=2))
+            (evidence/'pause-result.json').write_text(json.dumps(dict(elapsed_s=time.monotonic()-budget.started, limit_s=PAUSE_SECONDS, restored=True)))
         elif paused:
             raise RuntimeError('QUARANTINE: rank cleanup unconfirmed; API remains stopped. Investigate before releasing ownership.')
+
+    signal.setitimer(signal.ITIMER_REAL,0)
+    COMMAND_DEADLINE = None
 
 
 if __name__ == '__main__':
