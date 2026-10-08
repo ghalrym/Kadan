@@ -8,7 +8,7 @@ import unittest
 from native.tests.reference_capture.supervisor import Observation, Policy, supervise
 
 ID='a'*64
-CLEAN=Observation(ID,False,0,0,True,True,True,False,0,True)
+CLEAN=Observation(ID,False,0,0,True,True,True,False,0,True,0,0)
 DIRTY=replace(CLEAN,running=True,process_count=1,child_reaped=False,memory_released=False)
 
 
@@ -76,9 +76,33 @@ class SupervisorTests(unittest.TestCase):
     def test_unknown_or_wrong_identity_never_proves_cleanup(self):
         for change in ({'container_id':'b'*64},{'running':None},{'process_count':False},
                        {'compute_process_count':None},{'child_reaped':None},{'memory_released':None},
-                       {'gpu_baseline_restored':None},{'cgroup_oom_kill_delta':None}):
+                       {'gpu_baseline_restored':None},{'cgroup_oom_kill_delta':None},
+                       {'memory_current_bytes':1},{'memory_current_bytes':None},
+                       {'cgroup_populated':1},{'cgroup_populated':None}):
             report=self.run_stage(FakeSubprocessStage(observation=replace(CLEAN,**change)))
             self.assertFalse(report['restoration_permitted'])
+
+    def test_cancellation_during_cleanup_sleeps_cannot_skip_escalation(self):
+        for phase in ('grace','final'):
+            for raises in (False,True):
+                with self.subTest(phase=phase,raises=raises),tempfile.TemporaryDirectory() as folder:
+                    stage=FakeSubprocessStage(observation=DIRTY)
+                    clock=Clock();cancelled=[False];interrupted=[False]
+                    def sleep(seconds):
+                        clock.sleep(seconds)
+                        killed=any(c[0]=='KILL' for c in stage.commands)
+                        if not interrupted[0] and ((phase=='grace' and not killed) or (phase=='final' and killed)):
+                            interrupted[0]=True;cancelled[0]=True
+                            if raises:raise InterruptedError('injected cancellation')
+                    report=supervise(stage,ID,Path(folder)/'report',execute=True,
+                                     policy=Policy(deadline=2,term_grace=1,cleanup_deadline=6),
+                                     clock=clock,sleep=sleep,cancelled=lambda:cancelled[0])
+                    self.assertTrue(interrupted[0])
+                    kill_index=next(i for i,c in enumerate(stage.commands) if c[0]=='KILL')
+                    self.assertTrue(any(c[0]=='observe' for c in stage.commands[kill_index+1:]))
+                    self.assertFalse(report['restoration_permitted'])
+                    self.assertIn('operator_cancelled',report['errors'])
+                    self.assertLessEqual(clock.now,7)
 
     def test_inert_and_exclusive(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -25,6 +25,8 @@ class Observation:
     docker_oom: bool
     cgroup_oom_kill_delta: int
     manifest_unchanged: bool
+    memory_current_bytes: int | None = None
+    cgroup_populated: int | None = None
 
     def cleanup_known(self, owned_id):
         # Strict types prevent None, unknown counts or strings from clearing ownership.
@@ -32,7 +34,10 @@ class Observation:
                 and type(self.process_count) is int and self.process_count == 0
                 and type(self.compute_process_count) is int and self.compute_process_count == 0
                 and self.child_reaped is True and self.gpu_baseline_restored is True
-                and self.memory_released is True and type(self.docker_oom) is bool
+                and self.memory_released is True
+                and type(self.memory_current_bytes) is int and self.memory_current_bytes == 0
+                and type(self.cgroup_populated) is int and self.cgroup_populated == 0
+                and type(self.docker_oom) is bool
                 and type(self.cgroup_oom_kill_delta) is int and self.cgroup_oom_kill_delta >= 0
                 and type(self.manifest_unchanged) is bool)
 
@@ -71,7 +76,7 @@ class Policy:
 
 
 def supervise(stage: OwnedStage, container_id, result_path, *, execute=False,
-              policy=Policy(), clock=time.monotonic, sleep=time.sleep):
+              policy=Policy(), clock=time.monotonic, sleep=time.sleep, cancelled=lambda: False):
     require(execute is True, 'supervisor_execution_intent')
     require(re.fullmatch('[0-9a-f]{64}', container_id) is not None, 'immutable_container_id')
     result = ExclusiveOutput(result_path)
@@ -86,14 +91,24 @@ def supervise(stage: OwnedStage, container_id, result_path, *, execute=False,
         return getattr(stage,name)(container_id,*args,timeout=timeout)
     def fail(label, error):
         errors.append(label + ':' + str(error)[:1024])
+    def cleanup_sleep(seconds):
+        # Injected clock/sleep interruptions must not skip escalation or evidence.
+        try:
+            sleep(seconds)
+        except BaseException as error:
+            fail('cleanup_interrupted',error)
+
     try:
         try:
+            require(not cancelled(), 'operator_cancelled')
             require(call('verify') is True, 'ownership_verification')
             # Ownership is retained even when start RPC fails after creating a child.
             owned = True
             end = clock() + policy.deadline
+            require(not cancelled(), 'operator_cancelled')
             call('start', budget=end-clock())
             while clock() < end:
+                require(not cancelled(), 'operator_cancelled')
                 code = call('poll', budget=end-clock())
                 if code is not None:
                     require(type(code) is int, 'invalid_exit_status')
@@ -125,7 +140,7 @@ def supervise(stage: OwnedStage, container_id, result_path, *, execute=False,
                     fail('TERM_observe',error)
                 if stopped:
                     break
-                sleep(min(1,max(0,grace_end-clock())))
+                cleanup_sleep(min(1,max(0,grace_end-clock())))
             if not stopped:
                 try:
                     call('terminate','KILL')
@@ -151,9 +166,11 @@ def supervise(stage: OwnedStage, container_id, result_path, *, execute=False,
                 except BaseException as error:
                     stable = 0
                     fail('cleanup_observe',error)
-                sleep(min(1,max(0,end-clock())))
+                cleanup_sleep(min(1,max(0,end-clock())))
             if not report['cleanup_verified']:
                 errors.append('cleanup_uncertain_hold_ownership_no_restoration')
+        if cancelled():
+            errors.append('operator_cancelled')
         # This is only the cleanup prerequisite, never service-window authorization.
         report['restoration_permitted'] = report['cleanup_verified']
         report['accepted'] = report['cleanup_verified'] and not errors and report['exit_code'] == 0
@@ -171,6 +188,7 @@ def main():
     # Delayed transport import keeps the state machine usable without process I/O.
     import argparse
     import signal
+    from threading import Event
     from .container_stage import DockerReferenceStage
     parser=argparse.ArgumentParser(description='Supervise an already-created owned CPU reference container; never restore a service.')
     parser.add_argument('--execute-approved-reference',action='store_true')
@@ -179,12 +197,15 @@ def main():
     args=parser.parse_args()
     try:
         require(args.execute_approved_reference,'supervisor_execution_intent')
-        def cancelled(signum, frame):
-            raise InterruptedError('operator_cancelled')
-        signal.signal(signal.SIGTERM,cancelled)
+        cancellation=Event()
+        def mark_cancelled(signum, frame):
+            cancellation.set()
+        signal.signal(signal.SIGTERM,mark_cancelled)
+        signal.signal(signal.SIGINT,mark_cancelled)
         stage=DockerReferenceStage(args.manifest,args.manifest_sha256,args.run_id,
                                    args.source,args.snapshot,args.evidence)
-        report=supervise(stage,args.container_id,stage.evidence/'supervisor.json',execute=True)
+        report=supervise(stage,args.container_id,stage.evidence/'supervisor.json',execute=True,
+                         cancelled=cancellation.is_set)
         print(json.dumps(report))
         return 0 if report['accepted'] else (1 if report['cleanup_verified'] else 2)
     except BaseException as error:

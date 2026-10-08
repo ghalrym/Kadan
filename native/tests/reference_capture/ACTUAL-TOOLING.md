@@ -71,9 +71,16 @@ exit, full artifact/hash/diagnostic completion, Docker OOM and cgroup memory.eve
 On deadline/failure it requests TERM, waits up to five seconds, then requests KILL
 if needed. Every RPC is bounded. It then requires five consecutive one-second
 observations of actual exit, reaped exec client, no owned processes/compute,
-released memory and restored baseline. Deadline/kill RPC success never proves exit.
-SIGTERM/interrupt initiates cleanup; SIGKILL or host failure still requires an
-external operator to retain ownership.
+released memory and restored baseline. CPU cleanup uses a fixed conservative
+stopped baseline of exactly zero hierarchical `memory.current` bytes and requires
+`cgroup.events populated=0`, which includes descendant occupancy. Direct
+`cgroup.procs` emptiness alone is insufficient. Raw charged bytes/population are
+retained in the report, and cgroup device/inode identity must match admission.
+Missing, unreadable, malformed or replaced cgroup evidence never proves cleanup. Deadline/kill RPC success never proves exit.
+SIGTERM/SIGINT set a cancellation flag instead of raising through cleanup.
+Cancellation stops stage work but cannot skip TERM/KILL or final observations;
+cleanup sleep interruptions are retained as failures and observation continues.
+SIGKILL or host failure still requires an external operator to retain ownership.
 
 `restoration_permitted` means **only the cleanup prerequisite**, never authorization
 or an action. No restoration API is implemented. Numerical failure with proven
@@ -114,3 +121,24 @@ exercise actual-entrypoint gates and supervisor failures. Existing numerical
 fixture runner remains unchanged and is run separately in the pinned CPU-only
 image without model mounts. A passing gate suite does not establish actual-model
 correctness or validate a real container cleanup observation path.
+
+## Independent review fixes
+
+Cleanup now checks hierarchical charged bytes (`memory.current == 0`) separately
+from exit/process absence, and checks hierarchical `cgroup.events populated == 0`
+for descendant occupancy. Both raw values are included in every observation.
+No missing-cgroup or memory-unknown exception releases ownership.
+
+Writable manifest and artifact evidence use capped descriptor reads that reject
+symlinks in every path component, special files (including FIFOs), growth and
+replacement. Potentially blocking filesystem validation runs in an owned helper
+subprocess with a bounded wait. Timeout kills the helper without an unbounded
+post-kill wait; an unreaped helper keeps cleanup uncertain. Raw model stdout and
+stderr remain independently preserved. No validation helper loads model payloads.
+
+The 43-test stdlib suite adds generated retained-memory/descendant/missing evidence,
+file replacement/FIFO/symlink tests, fake helper deadline/reaping failures and fake
+clock cancellation in both cleanup sleep phases. Mocked actual-reference runs
+cover post-forward manifest/source/snapshot drift, write/fsync/close failure and
+remaining isolation branches. These tests import no numerical backend and use no
+actual snapshot, real container, GPU or service operation.
