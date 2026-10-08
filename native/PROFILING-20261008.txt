@@ -81,7 +81,8 @@ Both tests reset BOTH status flags per case, compare them, require zero for
 valid inputs and nonzero for expected invalid inputs. Bitwise comparison covers
 router logits/probabilities/top-k/weights/shared factor and attention query/KV/
 probability-padding/core/gated outputs against frozen original GPU kernels.
-Commands: kadan-moe-route-parity --allow-gpu-validation --device 0
+Commands (pass --device and 0 as separate arguments):
+          kadan-moe-route-parity --allow-gpu-validation --device 0
           kadan-full-core-parity --allow-gpu-validation --device 0
 GPU tests remain explicit opt-in targets, not automatic CTest executions.
 This is regression evidence, not comprehensive reference-framework parity.
@@ -102,7 +103,7 @@ with the installed tokenizer. UserDict regression covers this fix.
 
 Image remains kadan-native-api:review-ba380d9,
 sha256:32f6aeb88e9670af3810a45d7d7275dd2eb7039a70d3e33eeb5f4c6cfbaec06e.
-Final worker SHA256: bdc424a856e910e75c7cfaf2812b06a3a1b3be2ca05aea720972649cb8948727
+Attention-stage worker SHA256: bdc424a856e910e75c7cfaf2812b06a3a1b3be2ca05aea720972649cb8948727
 Router worker SHA256: 8416e32910f4176639656267f208ffa9c19187b2ae0e70d871c96cf767f3d03f
 Original worker SHA256: 5cfb911177fd930fe2111e975975ad50dd23e622d88e208671353a6930c66763
 CUDA 13.0.2, SM86, Release, --ftz=false, legacy stream, static libstdc++/libgcc.
@@ -121,3 +122,26 @@ binary and update its hash, POST /model-lifecycle/unload then /load. Python chan
 hot reload. Roll back to the image worker by changing only local KADAN_NATIVE_WORKER
 to /opt/kadan/bin/run-model-worker and recreating API with --no-build --no-deps.
 Do not remove volumes. Keep MR114 unmerged.
+
+Projection optimization (next coherent change)
+Fresh current-worker decode profile: NVFP4 31.698 ms/step, vocabulary 30.727,
+remaining route 25.536, linear auxiliary 12.629. This selected NVFP4 next.
+Admitted FP4 magnitude <=6 and positive E4M3 scale <=448 imply local magnitude
+<=2688. For |global| <= FLT_MAX/4096 the exact product cannot overflow FP32.
+Dispatch that conservative case without per-weight FP64 checks; retain the
+original exact double check for larger scales. Post-multiply and BF16 numeric
+checks remain. No changes to decoding arithmetic or reduction ordering.
+Measured NVFP4 cost: 10.884 ms/step, down from 31.698. All 149 output IDs match.
+Warm API: 7.405324 tok/s; prompt 4.028506 s;
+total 24.244720 s. Direct load 49.785798 s, prompt
+4.352109 s, decode including EOS 21.653301 s.
+Latest worker SHA256: 21bff4f94e2660298a70fc2431176b649bf7b586b2192fd4610ad7d6692aa4ba
+Evidence: profiling/20261008-projection.json. Image/dependencies unchanged.
+Tests: exhaustive CPU bound check for every admitted FP4/E4M3 code at both bound
+signs; 34 bitwise GPU cases across both BF16 modes, subnormal/signed globals,
+boundary/fallback/overflow and 248320x2048 head shape; six existing GPU projection
+goldens; 26 CPU CTests. Attention test now begins with nonzero probability
+sentinels, tests positions 128/129 and capacity-1, and follows long prefixes with
+short ones. It explicitly asserts zero tail padding, not only reference parity.
+Run: kadan-nvfp4-bounded-parity --allow-gpu-validation --device 0
+Run: kadan-full-core-parity --allow-gpu-validation --device 0

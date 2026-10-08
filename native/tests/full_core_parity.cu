@@ -27,15 +27,20 @@ int main(int argc,char**argv){
  b.qg=allocate<float>(2*q);b.key=allocate<float>(kv);b.value=allocate<float>(kv);b.query=allocate<float>(q);b.gate=allocate<float>(q);b.probabilities=allocate<float>(c.heads*c.capacity);b.core=allocate<float>(q);b.gated=allocate<float>(q);b.keys=allocate<std::uint16_t>(c.capacity*kv);b.values=allocate<std::uint16_t>(c.capacity*kv);return b;};auto a=make(),b=make();
  unsigned seed=1947;auto random=[&](){seed=1664525*seed+1013904223;return float(int(seed>>16)%257-128)/1024;};
  std::vector<std::uint16_t> history(512*kv);for(auto&v:history)v=std::uint16_t(std::bit_cast<unsigned>(random())>>16);upload(a.keys,history);upload(b.keys,history);for(auto&v:history)v=std::uint16_t(std::bit_cast<unsigned>(random())>>16);upload(a.values,history);upload(b.values,history);
- const std::size_t positions[]={0,1,31,127,178,511,511};
- for(std::size_t test=0;test<7;++test){const auto position=positions[test];std::vector<float> qg(2*q),key(kv),value(kv);for(auto&v:qg)v=random();for(auto&v:key)v=random();for(auto&v:value)v=random();if(test==6)qg[0]=std::numeric_limits<float>::infinity();
+ // Begin dirty; later shorter positions must clear a previously longer prefix.
+ check(cudaMemset(a.probabilities,0x3f,c.heads*c.capacity*sizeof(float)));
+ check(cudaMemset(b.probabilities,0x3f,c.heads*c.capacity*sizeof(float)));
+ const std::size_t positions[]={0,1,31,127,128,129,178,511,1,c.capacity-1,1,511};
+ for(std::size_t test=0;test<12;++test){const auto position=positions[test];std::vector<float> qg(2*q),key(kv),value(kv);for(auto&v:qg)v=random();for(auto&v:key)v=random();for(auto&v:value)v=random();if(test==11)qg[0]=std::numeric_limits<float>::infinity();
  check(cudaMemset(a.status,0,sizeof(unsigned)));check(cudaMemset(b.status,0,sizeof(unsigned)));
  upload(a.qg,qg);upload(b.qg,qg);upload(a.key,key);upload(b.key,key);upload(a.value,value);upload(b.value,value);
  check(baseline::full_core(c,a,position));check(kadan::cuda::detail::full_core(c,b,position));check(cudaDeviceSynchronize());
- exact(a.query,b.query,q,"query");exact(a.gate,b.gate,q,"gate");exact(a.keys,b.keys,512*kv,"keys");exact(a.values,b.values,512*kv,"values");exact(a.probabilities,b.probabilities,c.heads*c.capacity,"probabilities/tail padding");exact(a.core,b.core,q,"core");exact(a.gated,b.gated,q,"gated");exact(a.status,b.status,1,"status");
+ exact(a.query,b.query,q,"query");exact(a.gate,b.gate,q,"gate");exact(a.keys,b.keys,c.capacity*kv,"keys");exact(a.values,b.values,c.capacity*kv,"values");exact(a.probabilities,b.probabilities,c.heads*c.capacity,"probabilities/tail padding");exact(a.core,b.core,q,"core");exact(a.gated,b.gated,q,"gated");exact(a.status,b.status,1,"status");
+ std::vector<float> probabilities(c.heads*c.capacity);check(cudaMemcpy(probabilities.data(),b.probabilities,probabilities.size()*sizeof(float),cudaMemcpyDeviceToHost));
+ for(std::size_t head=0;head<c.heads;++head)for(std::size_t t=position+1;t<c.capacity;++t)if(probabilities[head*c.capacity+t]!=0.f)throw std::runtime_error("stale probability tail");
  unsigned flags=0;check(cudaMemcpy(&flags,b.status,sizeof(flags),cudaMemcpyDeviceToHost));
- if((test<6&&flags!=0)||(test==6&&flags==0))throw std::runtime_error("unexpected per-case status");}
+ if((test<11&&flags!=0)||(test==11&&flags==0))throw std::runtime_error("unexpected per-case status");}
  for(auto p:owned)check(cudaFree(p));
- std::cout<<"PASS: seven full-shape attention cases (16 query heads, 2 KV heads, head dim 256, capacity 65536), positions 0/1/31/127/178/511 and nonfinite input; bitwise query/KV/probability-padding/core/gated/status parity\n";
+ std::cout<<"PASS: 12 full-shape attention cases (16 query heads, 2 KV heads, head dim 256, capacity 65536), positions 0/1/31/127/128/129/178/511/capacity-1, dirty probability buffers, shorter-after-longer and nonfinite input; bitwise query/KV/probability-padding/core/gated/status parity\n";
  }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}
 }
