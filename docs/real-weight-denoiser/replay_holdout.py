@@ -38,7 +38,15 @@ def load_tail():
 def verdict(state):return holdout_verdict(STEP,state,CONTEXT_SHA)
 
 
+def record_phase(name,rank):
+    if os.environ.get('KADAN_RECORD_PHASE')=='1':
+        path=OUT/f'phase-rank-{rank}.json';temporary=path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(dict(phase=name,unix_time=time.time(),rank=rank)))
+        temporary.replace(path)
+
+
 def audit(name,actual,reference,rank,control,shard=None,rank0_only=False):
+    record_phase('cpu-audit:'+name,rank)
     row=None if rank0_only and rank else dict(name=name,rank=rank,**inspect_values(actual,reference))
     if row is not None:
         row['global_row_offset']=None if shard is None else shard.start
@@ -76,8 +84,9 @@ def main():
     save_status()
     try:
         assert sha256('/app/api/inference/image/parallel.py')==ULYSSES_SOURCE
+        record_phase('verify-packets',rank)
         BASE_MANIFEST=verify_capture(ROOT)
-        manifest=verify_contexts(CONTEXTS,BASE_MANIFEST,STEP,os.environ['KADAN_REVIEWED_COMMIT'])
+        manifest=verify_contexts(CONTEXTS,BASE_MANIFEST,STEP,os.environ.get('KADAN_CAPTURE_COMMIT',os.environ['KADAN_REVIEWED_COMMIT']))
         CONTEXT_SHA=sha256(CONTEXTS/'manifest.json')
         (OUT/f'identity-rank-{rank}.json').write_text(json.dumps(dict(immutable_weight_manifest_sha256=sha256(ROOT/'manifest.json'),
             context_manifest_sha256=CONTEXT_SHA,step_index=STEP,capture_precision=manifest['precision'],
@@ -99,6 +108,7 @@ def main():
         del data,full,local,exchanged,expected
         blocks=[];contexts=[]
         for index in range(32):
+            record_phase(f'load-block-{index}',rank)
             data=packet(index)
             block=module(QwenImage21TransformerBlock,data['config'],data['state'],device,torch.bfloat16)
             assert type(block.attn.processor).__qualname__==data['processor_type']
@@ -112,6 +122,7 @@ def main():
             operators=[event.key for event in profile.key_averages() if 'attention' in event.key or 'mm' in event.key]
             (OUT/f'backend-{kind}-rank-{rank}.json').write_text(json.dumps(dict(operators=operators)))
         def parallel_step(index,hidden,request):
+            record_phase(f'gpu-parallel:{request}:{index}',rank)
             mod,rope,prefix,mask,owned=contexts[index]
             enabled=not profiled['parallel']
             with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) if enabled else nullcontext() as profile:
@@ -120,6 +131,7 @@ def main():
             if enabled:record_profile('parallel',profile)
             return result
         def reference_step(index,hidden):
+            record_phase(f'gpu-reference:{index}',rank)
             mod,rope,prefix,mask,_=contexts[index]
             if rank==0:
                 enabled=not profiled['reference']

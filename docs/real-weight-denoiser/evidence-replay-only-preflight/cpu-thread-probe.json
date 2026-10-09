@@ -1,0 +1,20 @@
+{
+  "scope": "CPU-only recreation of prior pinned container environment; not historical rank telemetry",
+  "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+  "torch": "2.14.1+cu130",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "before": {
+    "intraop": 1,
+    "interop": 16,
+    "affinity_cpus": 32,
+    "cpu_max": "400000 100000"
+  },
+  "after_explicit_setters": {
+    "intraop": 1,
+    "interop": 1
+  },
+  "causality": "Oversubscription during failed replay is unproven; pool capacity is not utilization"
+}
