@@ -11,7 +11,7 @@ import torch
 
 import launch_trajectory
 import supervisor_trajectory
-from trajectory_adapter import UlyssesAdapter
+from trajectory_adapter import UlyssesAdapter, validate_transformer_output
 from trajectory_contracts import StepOrder, storage_plan, require_review, PROTOCOL, SETTINGS, CRITERIA, verify_run, require_predecessors
 from trace_binding import sha256
 from trajectory_io import measure, normalized_rgb, ArtifactWriter, tensor_identity
@@ -148,6 +148,15 @@ class TrajectoryTests(unittest.TestCase):
         self.assertEqual(child.wait.call_count,2)
         self.assertEqual([event[0] for event in events],[12345,12345])
         self.assertEqual(events[-1][1],supervisor_trajectory.signal.SIGKILL)
+
+    def test_extract_prefix_is_preserved_until_pipeline_target_slice(self):
+        raw=torch.arange(16389).view(1,16389,1).expand(1,16389,64)
+        self.assertIs(validate_transformer_output(raw,'extract'),raw)
+        consumed=raw[:,-16384:]
+        self.assertEqual(consumed[0,0,0],5)
+        self.assertIs(validate_transformer_output(consumed,'cached'),consumed)
+        with self.assertRaises(ValueError):validate_transformer_output(raw,'cached')
+        with self.assertRaises(ValueError):validate_transformer_output(raw[:,:100],'extract')
 
     def test_identity_distinguishes_dtype_shape_and_content(self):
         self.assertNotEqual(tensor_identity(torch.zeros(2)),tensor_identity(torch.zeros(1,2)))

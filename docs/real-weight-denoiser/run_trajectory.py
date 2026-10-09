@@ -14,7 +14,7 @@ from diffusers import QwenImage21Pipeline
 
 from bf16_contracts import ULYSSES_SOURCE
 from capture import PROMPT, REVISION
-from trajectory_adapter import UlyssesAdapter
+from trajectory_adapter import UlyssesAdapter, validate_transformer_output
 from trajectory_contracts import PROTOCOL, SETTINGS, CRITERIA, StepOrder, verify_run
 from trajectory_io import ArtifactWriter, tensor_identity, measure, normalized_rgb
 from trace_binding import sha256
@@ -122,8 +122,7 @@ def main():
             result=forward(*args,**kwargs)
             assert isinstance(result,tuple) and len(result)==1
             output=result[0] if adapter is None else adapter.gather(result[0])
-            assert output.shape==(1,16384,64)
-            return (output,)
+            return (validate_transformer_output(output,current),)
         pipeline.transformer.forward=transformer
         scheduler_step=pipeline.scheduler.step;originals.append((pipeline.scheduler,'step',scheduler_step))
         @wraps(scheduler_step)

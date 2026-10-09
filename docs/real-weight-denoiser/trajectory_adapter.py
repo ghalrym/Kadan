@@ -40,3 +40,15 @@ class UlyssesAdapter:
     def close(self):
         for module,forward in self.original:module.forward=forward
         self.prefix.clear()
+
+
+def validate_transformer_output(output,mode):
+    if output.ndim!=3 or output.shape[0]!=1 or output.shape[2]!=64:
+        raise ValueError('Unexpected transformer output batch/channel shape')
+    if mode=='extract':
+        if output.shape[1]<16384:raise ValueError('Prefill output omits target rows')
+    elif mode=='cached':
+        if output.shape[1]!=16384:raise ValueError('Cached output must contain target rows only')
+    else:raise ValueError('Unexpected cache mode')
+    # The pinned pipeline owns tail slicing after prefill; never slice here.
+    return output
