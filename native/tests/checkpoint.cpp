@@ -185,6 +185,20 @@ void binding_and_budget_failures() {
     layout_reject("F8_E4M3", "[1,1]", "nvfp4_global_layout");
     check(q->used() == 0);
 }
+void half_metadata_limits() {
+    Fixture f; auto q=budget();
+    const auto header="{\"__metadata__\":{\"config\":\""+std::string(2013, 'a')+"\"},"+tensor("half", "F16", "[1]", 0, 2)+"}";
+    f.write(header, {0, 60});
+    fails([&]{Shard shard(f.root.c_str(), "model.safetensors", q);}, "json_string_limit");
+    { Shard shard(f.root.c_str(), "model.safetensors", q, {8192, 4, 4096});
+      check(shard.tensor("half").dtype==Dtype::fp16 && shard.tensor("half").bytes==2); }
+    check(q->used()==0);
+    f.write("{"+tensor("half", "F16", "[1]", 0, 1)+"}", {0});
+    fails([&]{Shard shard(f.root.c_str(), "model.safetensors", q);}, "tensor_byte_size");
+    f.write("{"+tensor(std::string(513,'a'), "F16", "[1]", 0, 2)+"}", {0,60});
+    fails([&]{Shard shard(f.root.c_str(), "model.safetensors", q, {8192,4,4096});}, "json_string_limit");
+    check(q->used()==0);
+}
 void filesystem_cases() {
     Fixture f; nvfp4_fixture(f); auto q = budget();
     for (const auto name : {"../model.safetensors", "/tmp/model.safetensors", ".", "..", "x/y", ""})
@@ -206,6 +220,6 @@ void filesystem_cases() {
 }
 } // namespace
 int main() {
-    try { loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
+    try { half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

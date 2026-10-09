@@ -33,9 +33,10 @@ private:
 struct Limits {
     std::size_t header_bytes = 16 * 1024 * 1024;
     std::size_t tensors = 65536;
+    std::size_t metadata_value_bytes = 512; // Names and schema strings stay capped at 512.
 };
 
-enum class Dtype { u8, fp8, fp32, bf16 };
+enum class Dtype { u8, fp8, fp32, bf16, fp16 };
 // Borrowed name remains valid for the Shard lifetime; dimensions/byte count copied.
 struct TensorInfo {
     std::string_view name;
