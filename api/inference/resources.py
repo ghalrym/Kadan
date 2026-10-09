@@ -23,6 +23,14 @@ class ResourceBusy(RuntimeError):
     pass
 
 
+class ResourceRecoveryRequired(RuntimeError):
+    """Cleanup is unconfirmed; retain accounting and require explicit recovery.
+
+    Deliberately separate from ResourceBusy: admission must never swallow this
+    failure or turn a quarantined owner into a retrying FIFO head.
+    """
+
+
 class ResourceExhausted(RuntimeError):
     pass
 

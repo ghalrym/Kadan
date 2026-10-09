@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from uuid import uuid4
 
-from api.inference.resources import ResourceManager, ResourceBusy, ResourcePending
+from api.inference.image.rank_session import RankBudget, RankSession
+from api.inference.resources import ResourceManager, ResourcePending, ResourceRecoveryRequired
+from api.tests.inference.image.test_rank_session import FakeRanks
 from api.memory_manager.queue import InferenceQueue
 from api.services.runtime import RuntimeFailure
 
@@ -90,16 +92,60 @@ class ResourceWaitTests(unittest.IsolatedAsyncioTestCase):
         second = await self.queue.submit('stt', 'generate', {})
         self.assertEqual(await self.queue.wait(second), 'stt')
 
-    async def test_cleanup_uncertainty_keeps_accounting_and_does_not_retry(self):
-        def uncertain():
-            raise RuntimeError('cleanup unconfirmed')
-        self.resources.reserve('quarantined', 'llm', device_bytes={0: 90}, evict=uncertain)
+    async def test_rank_cleanup_uncertainty_fails_without_blocking_fifo(self):
+        self.resources = ResourceManager(1000, {0: 100, 1: 100})
+        transport = FakeRanks()
+        session = RankSession(self.resources, transport, RankBudget(200, (0, 1), 10, 70), enabled=True)
+        session.execute('a' * 32)
+        before = self.resources.snapshot()['reservations']
+        transport.confirmed = False
+        transport.mutate = lambda command, replies: [replies[0], dict(replies[1], resident_bytes=1)]
+
+        async def execute(job):
+            self.attempts += 1
+            if job.feature == 'video':
+                # Real handoff invokes RankSession.park -> failed acknowledgement
+                # -> unconfirmed transport stop, retaining all three reservations.
+                self.resources.offload_workload_devices('image')
+            elif job.feature == 'image':
+                session.execute(job.id)
+            return job.feature
+        self.queue.execute = execute
+        try:
+            for feature in ('video', 'image'):
+                job = await self.queue.submit(feature, 'generate', {})
+                with self.assertRaisesRegex(RuntimeFailure, 'cleanup.*unconfirmed'):
+                    await asyncio.wait_for(self.queue.wait(job), 1)
+                self.assertEqual((await self.queue.get(job))['state'], 'failed')
+            self.assertEqual(self.attempts, 2)
+            self.assertEqual(session.state, 'quarantined')
+            self.assertEqual(self.resources.snapshot()['reservations'], before)
+            self.assertFalse(self.resources._listeners)
+            # Capacity eviction must propagate quarantine instead of swallowing
+            # it as a busy candidate and converting it into ResourcePending.
+            with self.assertRaises(ResourceRecoveryRequired):
+                self.resources.reserve('next', 'video', device_bytes={0: 90, 1: 90})
+            self.assertEqual(self.resources.snapshot()['reservations'], before)
+            following = await self.queue.submit('decisions', 'generate', {})
+            self.assertEqual(await asyncio.wait_for(self.queue.wait(following), 1), 'decisions')
+        finally:
+            transport.confirmed = True
+            session.close(recover=True)
+        self.assertFalse(self.resources.snapshot()['reservations'])
+
+    async def test_recovery_failure_does_not_reuse_transient_cause(self):
+        async def blocked(job):
+            self.attempts += 1
+            try:
+                raise ResourcePending('initial admission')
+            except ResourcePending as error:
+                raise ResourceRecoveryRequired('cleanup unconfirmed') from error
+        self.queue.execute = blocked
         first = await self.queue.submit('video', 'generate', {})
         with self.assertRaisesRegex(RuntimeFailure, 'cleanup unconfirmed'):
             await asyncio.wait_for(self.queue.wait(first), 1)
-        self.assertIn('quarantined', self.resources.snapshot()['reservations'])
-        self.assertEqual(self.events, [])
         self.assertEqual(self.attempts, 1)
+        self.assertFalse(self.resources._listeners)
 
     async def test_wrapped_transient_failure_waits_and_close_cancels_waiter(self):
         async def blocked(job):

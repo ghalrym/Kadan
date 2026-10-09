@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from api.inference.resources import ResourceBusy, ResourceExhausted, ResourcePending
+from api.inference.resources import ResourceBusy, ResourceExhausted, ResourcePending, ResourceRecoveryRequired
 from api.services.runtime import RuntimeFailure, finish_cleanup, runtime_manager
 
 log = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ class InferenceQueue:
         seen = set()
         while error is not None and id(error) not in seen:
             seen.add(id(error))
-            if isinstance(error, (ResourceBusy, ResourceExhausted)):
+            if isinstance(error, (ResourceBusy, ResourceExhausted, ResourceRecoveryRequired)):
                 return error
             error = error.__cause__
         return None
