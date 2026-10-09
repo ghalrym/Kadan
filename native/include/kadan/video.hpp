@@ -35,4 +35,31 @@ private:
     std::unique_ptr<float[]> weights_;
     Handle resident_ = 0;
 };
+// Block 0 pre-attention boundary, CPU F32 equations over F16 checkpoint weights.
+// Output layout [tokens,32,3,64]: Q/K/V are interleaved per head.
+// No attention, rotary positions, frame decoding or generation backend.
+class H3DecoderQkv {
+public:
+    static constexpr std::size_t hidden = 2048, width = 6144, max_tokens = 8;
+    static constexpr Bytes weight_bytes = (hidden + width*hidden + width)*sizeof(float);
+    static constexpr Bytes metadata_bytes = H3DecoderInput::metadata_bytes;
+    static constexpr Bytes scratch_bytes = (hidden+width)*sizeof(float);
+    explicit H3DecoderQkv(std::shared_ptr<Resources> resources);
+    ~H3DecoderQkv();
+    H3DecoderQkv(const H3DecoderQkv&) = delete;
+    H3DecoderQkv& operator=(const H3DecoderQkv&) = delete;
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void unload();
+    bool loaded() const { return weights_ != nullptr; }
+    // Serialized owner; caller admits [tokens,2048] F32 input for the whole call.
+    // Observation hook runs after each 64 projection rows and must not reenter.
+    void execute(std::span<const float> input, const std::string& output,
+                 const std::atomic_bool& cancel,
+                 const std::function<void(std::size_t)>& on_rows = {});
+private:
+    Footprint host(Bytes bytes) const;
+    std::shared_ptr<Resources> resources_;
+    std::unique_ptr<float[]> weights_;
+    Handle resident_ = 0;
+};
 } // namespace kadan::video
