@@ -16,7 +16,7 @@ from api.inference.image.feature import ImageFeature
 from api.inference.image.model import GIB, REVISION
 from api.inference.resources import ResourceManager, ResourceCancelled
 from api.memory_manager import MemoryManager
-from api.memory_manager.queue import InferenceQueue
+from api.memory_manager.queue import InferenceQueue, Job
 from api.services.images import ImageManager
 from api.services.runtime import RuntimeFailure
 
@@ -112,3 +112,40 @@ class DualQueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.wait(c)
         self.assertLess(self.events.index('image:reaped'),self.events.index('text:C'))
         self.assertEqual(self.images.history(),[])
+
+
+class DualPreflightTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_affinity_preserves_resident_text_before_fifo_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'weights.safetensors').write_bytes(b'fixture')
+            resources = ResourceManager(100 * GIB, {0: 24 * GIB, 1: 24 * GIB})
+            events = []
+            text = Text(resources, events)
+            await text(SimpleNamespace(label='resident'))
+            downloads = SimpleNamespace(get_checkpoint=lambda _: (SimpleNamespace(revision=REVISION), root))
+            images = ImageManager(root / 'outputs', downloads,
+                SimpleNamespace(ensure_resources=lambda: resources))
+            manager = object.__new__(MemoryManager)
+            manager.features = {'llm': text, 'image': ImageFeature(images)}
+            manager.queue = SimpleNamespace(streams={})
+            job = Job(id='a' * 32, feature='image', operation='generate', model='qwen-image-2.1',
+                payload={'prompt': 'image', 'count': 1})
+            resident = text.gpu
+            before = resources.snapshot()
+            unavailable = max(os.sched_getaffinity(0)) + 1
+            try:
+                with patch.dict('os.environ', {'KADAN_IMAGE_BACKEND': 'dual',
+                        'KADAN_IMAGE_CPUS': f'[{unavailable}]'}, clear=True), patch(
+                        'api.inference.image.rank_transport.ProcessRanks.start') as start:
+                    with self.assertRaises(RuntimeFailure) as caught:
+                        await manager._execute(job)
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertEqual(events, ['text:resident'])
+                self.assertIs(text.gpu, resident)
+                self.assertEqual(resources.snapshot(), before)
+                self.assertIsNone(images.native)
+                start.assert_not_called()
+            finally:
+                images.close()
+                await text.offload_to_ram()

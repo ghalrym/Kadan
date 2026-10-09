@@ -33,6 +33,9 @@ class DualImage:
         self.last_timing = None
 
     def _plan(self):
+        # Reject deployment errors before the FIFO parks another resident model.
+        # ProcessRanks.start rechecks the mask in case it changes after preflight.
+        self.policy.affinity(os.sched_getaffinity(0))
         if not self.weights:
             raise ResourceExhausted('The two-rank checkpoint has no weights')
         required_host = self.budget.host_bytes + GIB

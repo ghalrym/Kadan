@@ -49,6 +49,18 @@ class ProcessRankTests(unittest.TestCase):
             self.assertEqual(reply['threads'], 2)
             self.assertEqual(reply['omp_threads'], '2')
 
+    def test_startup_rechecks_affinity_after_preflight(self):
+        self.transport.policy = ImagePolicy.from_environment({'KADAN_IMAGE_CPUS': '[3]'})
+        self.assertEqual(self.transport.policy.affinity({3, 7}), [3])
+        with patch('api.inference.image.rank_transport.os.sched_getaffinity', return_value={7}), patch(
+                'api.inference.image.rank_transport.subprocess.Popen') as launch:
+            with self.assertRaisesRegex(ValueError, 'CPU affinity'):
+                self.session.execute('a' * 32, payload={'prompt': 'image'})
+        launch.assert_not_called()
+        self.assertEqual(self.session.state, 'closed')
+        self.assertFalse(self.resources.snapshot()['reservations'])
+        self.assertIsNone(self.transport.directory)
+
     def test_startup_failure_before_first_child_has_no_false_quarantine(self):
         self.transport.memory_probe=lambda: (_ for _ in ()).throw(OSError('probe unavailable'))
         with self.assertRaises(OSError):self.session.execute('a'*32)
