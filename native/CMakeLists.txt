@@ -460,3 +460,20 @@ if(KADAN_ENABLE_DECISIONS)
     set_tests_properties(decision-executor PROPERTIES TIMEOUT 60)
   endif()
 endif()
+
+# Complete H3 text conditioning model, CPU only.
+add_library(kadan_h3_text src/h3_text.cpp)
+target_link_libraries(kadan_h3_text PUBLIC kadan_checkpoint kadan_resources)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_h3_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+endif()
+
+add_executable(kadan-h3-text-encode src/h3_text_encode.cpp)
+target_link_libraries(kadan-h3-text-encode PRIVATE kadan_h3_text)
+
+if(BUILD_TESTING)
+  add_executable(h3-text-tests tests/h3_text.cpp)
+  target_link_libraries(h3-text-tests PRIVATE kadan_h3_text)
+  add_test(NAME h3-text COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/h3_text_fixture.py" "$<TARGET_FILE:h3-text-tests>" "$<TARGET_FILE:kadan-h3-text-encode>")
+  set_tests_properties(h3-text PROPERTIES TIMEOUT 600 LABELS full-graph)
+endif()

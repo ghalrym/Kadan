@@ -165,6 +165,7 @@ private:
             if (key == "dtype") {
                 bit = 1; const auto dtype = string();
                 if (dtype == "U8") tensor.dtype = Dtype::u8;
+                else if (dtype == "I8") tensor.dtype = Dtype::i8;
                 else if (dtype == "F8_E4M3") tensor.dtype = Dtype::fp8;
                 else if (dtype == "F32") tensor.dtype = Dtype::fp32;
                 else if (dtype == "F16") tensor.dtype = Dtype::fp16;
