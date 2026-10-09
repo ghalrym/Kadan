@@ -1,4 +1,4 @@
-"""Experimental QwenImage21 cached-block sequence parallelism.
+"""QwenImage21 cached-block sequence parallelism.
 
 Not selected by the API. The caller owns two identical block replicas, compact
 per-request prefix caches, rank coordination, bounded process-group lifetime and

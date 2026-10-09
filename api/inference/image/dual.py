@@ -40,7 +40,7 @@ class DualImage:
     @staticmethod
     def validate(prompt, aspect, count, image=None):
         if image is not None or aspect != '1:1' or count != 1:
-            raise ValueError('Experimental two-rank images support one 2048-square text-to-image output; edits and other sizes are unavailable')
+            raise ValueError('Two-rank images support one 2048-square text-to-image output; edits and other sizes are unavailable')
         if not isinstance(prompt,str) or not 0 < len(prompt) <= 2000:
             raise ValueError('Two-rank prompt must contain 1 to 2000 characters')
 

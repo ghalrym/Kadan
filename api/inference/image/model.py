@@ -71,7 +71,7 @@ class NativeImage:
         if self.offload_mode == 'component':
             if not all(self.component_weights.values()):
                 raise ValueError('Component offload requires all three pinned checkpoint components')
-            # Experimental comparison mode: reserve the entire logical phase
+            # Component offload: reserve the entire logical phase
             # envelope, including activations, retained embeddings, allocator
             # workspace and transfer peaks. Never reuse the 8 GiB leaf envelope.
             for gpu in candidates:

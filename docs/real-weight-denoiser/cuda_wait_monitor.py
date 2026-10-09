@@ -1,4 +1,4 @@
-"""Read-only Linux task counters and cleanup helpers; no thermal policy."""
+"""Read-only Linux task counters and cleanup helpers."""
 import json
 import os
 from pathlib import Path

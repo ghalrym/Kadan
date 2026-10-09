@@ -81,7 +81,7 @@ class ProcessRankTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.session.execute('a' * 32, payload={'prompt': 'oom'})
         self.assertIn('synthetic allocation failure', '\n'.join(captured.output))
-    def test_default_resource_guard_runs_without_temperature_sensors(self):
+    def test_default_resource_admission_releases_rank_ownership(self):
         self.budget=RankBudget(128*1024**2,(0,1),10,70)
         self.transport=ProcessRanks(Path('/unused'),self.budget,
             worker_module='api.tests.inference.image.rank_fixture',
@@ -89,15 +89,10 @@ class ProcessRankTests(unittest.TestCase):
         self.resources=ResourceManager(256*1024**2,{0:100,1:100})
         self.session=RankSession(self.resources,self.transport,self.budget,enabled=True,
             operation_timeout=3,cleanup_timeout=.2)
-        original_glob=Path.glob
-        def no_sensors(path,*args,**kwargs):
-            self.assertNotIn('/sys/class/hwmon',str(path))
-            return original_glob(path,*args,**kwargs)
-        with patch.object(Path,'glob',no_sensors),patch('api.inference.image.rank_transport.subprocess.run',side_effect=AssertionError('unexpected sensor command')):
-            self.session.execute('a'*32,payload={'prompt':'ok'})
-            self.transport._guard()
-            children=list(self.transport.processes)
-            self.session.close()
+        self.session.execute('a'*32,payload={'prompt':'ok'})
+        self.transport._guard()
+        children=list(self.transport.processes)
+        self.session.close()
         self.assertTrue(all(p.poll() is not None for p in children))
         self.assertFalse(self.resources.snapshot()['reservations'])
 

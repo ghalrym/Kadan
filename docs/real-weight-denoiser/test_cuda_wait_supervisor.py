@@ -20,7 +20,7 @@ class WaitSupervisorTests(unittest.TestCase):
             cleanup(children,20)
         self.assertEqual(events,[('kill',100),('kill',101),('wait',9),('wait',8)])
 
-    def test_running_loop_keeps_resource_checks_without_thermal_monitor(self):
+    def test_running_loop_enforces_resource_admission(self):
         # Execute the actual running-container loop only, with synthetic process
         # telemetry; no preflight, Docker launch or GPU work is evaluated.
         tree=ast.parse(Path(launch.__file__).read_text())
