@@ -452,6 +452,16 @@ if(KADAN_ENABLE_DECISIONS)
   target_compile_options(kadan_decision_executor PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_executable(kadan-decision-worker src/decision_worker.cpp)
   target_link_libraries(kadan-decision-worker PRIVATE kadan_decision_executor ${KADAN_OPENBLAS})
+  # Bundle CPU math/text libraries built against the same base as the API.
+  # Keep the target platform's libc and loader; the launcher scopes library lookup.
+  install(TARGETS kadan-decision-worker
+    RUNTIME_DEPENDENCIES
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+    RUNTIME DESTINATION libexec COMPONENT decision-runtime
+    LIBRARY DESTINATION lib COMPONENT decision-runtime)
+  install(PROGRAMS packaging/run_decision_worker.sh
+    DESTINATION bin RENAME kadan-decision-worker COMPONENT decision-runtime)
   if(BUILD_TESTING)
     add_executable(decision-executor-tests tests/decision_executor.cpp)
     target_include_directories(decision-executor-tests PRIVATE src)
