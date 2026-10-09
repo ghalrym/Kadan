@@ -386,3 +386,13 @@ if(BUILD_TESTING)
   add_test(NAME stt-component-cli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/stt_fixture.py" "$<TARGET_FILE:kadan-stt-component>")
   set_tests_properties(stt-component stt-component-cli PROPERTIES TIMEOUT 30)
 endif()
+
+# H3 block 0 pre-attention projection only; no video generation backend.
+add_executable(kadan-video-qkv-component src/video_qkv_component.cpp)
+target_link_libraries(kadan-video-qkv-component PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-qkv-tests tests/video_qkv.cpp)
+  target_link_libraries(video-qkv-tests PRIVATE kadan_video)
+  add_test(NAME video-qkv-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_qkv_fixture.py" "$<TARGET_FILE:video-qkv-tests>" "$<TARGET_FILE:kadan-video-qkv-component>")
+  set_tests_properties(video-qkv-component PROPERTIES TIMEOUT 60)
+endif()
