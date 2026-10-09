@@ -3,11 +3,11 @@ import json
 import os
 from pathlib import Path
 import signal
-import subprocess
 import threading
 import time
 
 from thermal_guard import check_cpu
+from nvml_sensor import NVMLReader
 
 
 class ThermalWatch:
@@ -22,6 +22,7 @@ class ThermalWatch:
         self.lock = threading.Lock()
         self.deadline = None
         self.last_valid = None
+        self.reader = NVMLReader(self.gpus)
         self.thread = threading.Thread(target=self._run, name='cuda-wait-thermal', daemon=True)
         self.guard = threading.Thread(target=self._guard, name='cuda-wait-freshness', daemon=True)
 
@@ -45,6 +46,7 @@ class ThermalWatch:
         for thread in (self.thread, self.guard):
             if thread.ident is not None:
                 thread.join(timeout=max(0, end-time.monotonic()))
+        self.reader.close(end)
         if self.thread.is_alive() or self.guard.is_alive():
             raise RuntimeError('Thermal monitor teardown unconfirmed')
         if self.error is not None: raise RuntimeError('Independent thermal monitor: '+self.error)
@@ -81,15 +83,11 @@ class ThermalWatch:
                 query_started = time.monotonic()
                 remaining = deadline-query_started
                 if remaining <= 0: raise RuntimeError('Thermal sample stale before GPU query')
-                result = subprocess.run(['nvidia-smi','--query-gpu=uuid,memory.used,memory.free,temperature.gpu',
-                    '--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=remaining)
+                result = self.reader.sample(timeout=remaining)
                 acquired = time.monotonic()
                 if acquired >= deadline: raise RuntimeError('Thermal sample stale after GPU query')
-                rows={}
-                for line in result.stdout.splitlines():
-                    uuid,used,free,temp=[x.strip() for x in line.split(',')]
-                    if uuid in rows: raise RuntimeError('Duplicate GPU sensor')
-                    rows[uuid]=dict(used=int(used),free=int(free),temperature=int(temp))
+                rows=result['gpu']
+                if set(rows)!=set(self.gpus):raise RuntimeError('NVML GPU identity mismatch')
                 accepted=bool(self.gpus) and all(g in rows and 0 <= rows[g]['temperature'] < 90
                     and rows[g]['free']>=256 and rows[g]['used']>=0 for g in self.gpus)
                 memory=dict(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())
@@ -98,7 +96,8 @@ class ThermalWatch:
                     acquisition_seconds=acquired-started, query_seconds=acquired-query_started,
                     sample_age_seconds=acquired-started, previous_sample_age_seconds=None if self.last_valid is None
                     else acquired-self.last_valid, freshness_deadline=deadline,
-                    cpu_temperature=peak,gpu=rows,accepted=accepted)
+                    cpu_temperature=peak,gpu=rows,accepted=accepted, sensor_backend='persistent-nvml',
+                    sensor_timing={k:v for k,v in result.items() if k!='gpu'})
                 if not accepted: raise RuntimeError('GPU sensor/headroom guard')
                 with (self.evidence/'watchdog.jsonl').open('a') as stream:
                     stream.write(json.dumps(row)+'\n')
@@ -122,6 +121,9 @@ class ThermalWatch:
                     rejected_sample=row, last_valid=self.last_valid, deadline=self.deadline)))
             except OSError:
                 pass
+        finally:
+            try:self.reader.close()
+            except Exception as exc:self._fail(exc)
 
 
 def cgroup_identity(pid, proc=Path('/proc'), sysfs=Path('/sys/fs/cgroup')):

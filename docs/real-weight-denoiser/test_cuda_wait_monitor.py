@@ -1,24 +1,35 @@
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
 import tempfile
 import threading
 import time
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
+from nvml_sensor import NVMLReader
 from supervisor_cuda_wait import cleanup
 import launch_cuda_wait as launch
+
+
+def sensor_result(stdout):
+    rows={}
+    for line in stdout.splitlines():
+        uuid,used,free,temp=[v.strip() for v in line.split(',')]
+        rows[uuid]=dict(used=int(used),free=int(free),temperature=int(temp))
+    return dict(gpu=rows)
 
 
 class WaitMonitorTests(unittest.TestCase):
     def test_slow_gpu_query_signals_main_independently(self):
         with tempfile.TemporaryDirectory() as root:
             monitor=ThermalWatch(root,['GPU-one'])
-            with patch('cuda_wait_monitor.check_cpu',return_value=50) as cpu, patch('cuda_wait_monitor.subprocess.run',side_effect=subprocess.TimeoutExpired('nvidia-smi',.35)) as query, patch('cuda_wait_monitor.os.kill') as kill:
+            with patch('cuda_wait_monitor.check_cpu',return_value=50) as cpu, patch('cuda_wait_monitor.NVMLReader.sample',side_effect=subprocess.TimeoutExpired('nvidia-smi',.35)) as query, patch('cuda_wait_monitor.os.kill') as kill:
                 monitor._run()
             cpu.assert_called_once()
             self.assertGreater(query.call_args.kwargs['timeout'], .35)
@@ -29,7 +40,7 @@ class WaitMonitorTests(unittest.TestCase):
     def test_hot_cpu_signals_without_waiting_for_gpu_or_docker(self):
         with tempfile.TemporaryDirectory() as root:
             monitor=ThermalWatch(root,['GPU-one'])
-            with patch('cuda_wait_monitor.check_cpu',side_effect=RuntimeError('hot')), patch('cuda_wait_monitor.subprocess.run') as query,patch('cuda_wait_monitor.os.kill') as kill:
+            with patch('cuda_wait_monitor.check_cpu',side_effect=RuntimeError('hot')), patch('cuda_wait_monitor.NVMLReader.sample') as query,patch('cuda_wait_monitor.os.kill') as kill:
                 monitor._run()
             query.assert_not_called();kill.assert_called_once()
 
@@ -67,13 +78,13 @@ class WaitMonitorTests(unittest.TestCase):
         monitor=ThermalWatch(directory.name,['GPU-one'])
         clock=[0.0]
         def cpu(*args): clock[0]+=cpu_duration; return 50
-        def query(*args, **kwargs): clock[0]+=duration; return SimpleNamespace(stdout=stdout)
+        def query(*args, **kwargs): clock[0]+=duration; return sensor_result(stdout)
         def wait(*args): monitor.stop_event.set()
         real_open=Path.open
         def opened(path,*args,**kwargs):
             clock[0]+=write_delay
             return real_open(path,*args,**kwargs)
-        with patch('cuda_wait_monitor.time.monotonic',side_effect=lambda:clock[0]), patch('cuda_wait_monitor.check_cpu',side_effect=cpu), patch('cuda_wait_monitor.subprocess.run',side_effect=query) as queried, patch('cuda_wait_monitor.Path.read_text',return_value='MemAvailable: 999999999 kB\n'), patch.object(monitor.stop_event,'wait',side_effect=wait), patch('cuda_wait_monitor.os.kill') as kill, patch('cuda_wait_monitor.Path.open',opened):
+        with patch('cuda_wait_monitor.time.monotonic',side_effect=lambda:clock[0]), patch('cuda_wait_monitor.check_cpu',side_effect=cpu), patch('cuda_wait_monitor.NVMLReader.sample',side_effect=query) as queried, patch('cuda_wait_monitor.Path.read_text',return_value='MemAvailable: 999999999 kB\n'), patch.object(monitor.stop_event,'wait',side_effect=wait), patch('cuda_wait_monitor.os.kill') as kill, patch('cuda_wait_monitor.Path.open',opened):
             monitor._run()
         return monitor,queried,kill,Path(directory.name)
 
@@ -146,7 +157,7 @@ class WaitMonitorTests(unittest.TestCase):
             def blocked(path,*args,**kwargs):
                 if path.name=='watchdog.jsonl': release.wait(2)
                 return real_open(path,*args,**kwargs)
-            with patch('cuda_wait_monitor.check_cpu',return_value=50),patch('cuda_wait_monitor.subprocess.run',return_value=SimpleNamespace(stdout='GPU-one, 0, 24000, 50\n')),patch('cuda_wait_monitor.Path.read_text',return_value='MemAvailable: 999999999 kB\n'),patch('cuda_wait_monitor.Path.open',blocked),patch('cuda_wait_monitor.os.kill',side_effect=lambda *args:aborted.set()):
+            with patch('cuda_wait_monitor.check_cpu',return_value=50),patch('cuda_wait_monitor.NVMLReader.sample',return_value=sensor_result('GPU-one, 0, 24000, 50\n')),patch('cuda_wait_monitor.Path.read_text',return_value='MemAvailable: 999999999 kB\n'),patch('cuda_wait_monitor.Path.open',blocked),patch('cuda_wait_monitor.os.kill',side_effect=lambda *args:aborted.set()):
                 try:
                     with self.assertRaisesRegex(RuntimeError,'stale'):monitor.start()
                     self.assertTrue(aborted.wait(.5))
@@ -155,6 +166,21 @@ class WaitMonitorTests(unittest.TestCase):
                     release.set()
                     with self.assertRaises(RuntimeError):monitor.close()
             self.assertFalse(monitor.thread.is_alive())
+
+    def test_hung_nvml_helper_is_reaped_after_freshness_abort(self):
+        with tempfile.TemporaryDirectory() as root:
+            monitor=ThermalWatch(root,['GPU-one']);monitor.freshness=.1;monitor.guard_interval=.005
+            monitor.reader=NVMLReader(['GPU-one'],command=[sys.executable,'-c','import time;time.sleep(60)'])
+            real_kill=os.kill
+            def signal_owner(pid,sig):
+                if pid!=os.getpid():real_kill(pid,sig)
+            try:
+                with patch('cuda_wait_monitor.check_cpu',return_value=50),patch('cuda_wait_monitor.os.kill',side_effect=signal_owner):
+                    with self.assertRaises(RuntimeError):monitor.start()
+                    with self.assertRaises(RuntimeError):monitor.close()
+            finally:monitor.reader.close()
+            self.assertIsNotNone(monitor.reader.process.poll())
+            self.assertFalse(monitor.thread.is_alive());self.assertFalse(monitor.guard.is_alive())
 
     def test_actual_cgroup_and_thread_identity(self):
         with tempfile.TemporaryDirectory() as root:

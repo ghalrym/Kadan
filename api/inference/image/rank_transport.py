@@ -2,6 +2,7 @@
 import importlib
 import json
 import logging
+import re
 import os
 from pathlib import Path
 import selectors
@@ -17,6 +18,8 @@ from api.inference.resources import ResourceCancelled
 
 MAX_FRAME = 65536
 STDERR_TAIL_BYTES = 8192
+PROGRESS_LINE_BYTES = 512
+PROGRESS = re.compile(rb'image_step_returned job=([0-9a-f]{32}) rank=([01]) step=([0-9]{1,2}) monotonic=([0-9]{1,12}\.[0-9]{6}) elapsed_seconds=([0-9]{1,12}\.[0-9]{6})')
 
 
 def encode(value):
@@ -88,12 +91,17 @@ class ProcessRanks:
         self.gone = set()
         self.stderr_tails = {}
         self.session = None
+        self.progress_job = None
+        self.progress_lines = {}
+        self.progress_drop = set()
+        self.progress_steps = {}
 
     def start(self, session, devices, deadline, cancel):
         if self.processes or self.directory is not None:
             raise RuntimeError('Previous rank ownership has not been reaped')
         self.session = session
         self.stderr_tails = {}
+        self.progress_job=None;self.progress_lines={};self.progress_drop=set();self.progress_steps={}
         if self.cooldown:
             cool = 0
             admission_end = min(deadline, time.monotonic()+30)
@@ -147,8 +155,31 @@ class ProcessRanks:
             self.connections.append(parent)
             parent.setblocking(False)
 
+    def _progress(self, rank, data):
+        # Forward only bounded, owned-job events immediately. Docker's log sink
+        # retains flushed records even if the API is killed before stop().
+        parts=data.split(b'\n')
+        for index,part in enumerate(parts):
+            line=self.progress_lines.get(rank,b'')+part
+            if len(line)>PROGRESS_LINE_BYTES:self.progress_drop.add(rank)
+            complete=index<len(parts)-1
+            if complete:
+                if rank not in self.progress_drop:
+                    event=PROGRESS.fullmatch(line)
+                    if event and self.progress_job is not None:
+                        job,reported,step,stamp,elapsed=event.groups();step=int(step)
+                        if (job.decode()==self.progress_job and int(reported)==rank
+                                and step==self.progress_steps.get(rank,0)+1 and step<=40):
+                            logging.getLogger(__name__).info(
+                                'image_step_returned session=%s job=%s rank=%s step=%s monotonic=%s elapsed_seconds=%s',
+                                self.session,self.progress_job,rank,step,stamp.decode(),elapsed.decode())
+                            self.progress_steps[rank]=step
+                self.progress_lines[rank]=b'';self.progress_drop.discard(rank)
+            else:
+                self.progress_lines[rank]=b'' if rank in self.progress_drop else line
+
     def _drain_stderr(self):
-        # No files or background threads: retain only an 8 KiB tail per rank.
+        # Keep an 8 KiB diagnostic tail, plus at most one 512-byte partial event per rank.
         # Bound each drain so a noisy child cannot monopolize the supervisor.
         for rank, process in enumerate(self.processes):
             if process.stderr is None or process.stderr.closed:
@@ -161,6 +192,7 @@ class ProcessRanks:
                 if not data:
                     break
                 self.stderr_tails[rank] = (self.stderr_tails.get(rank, b'') + data)[-STDERR_TAIL_BYTES:]
+                self._progress(rank,data)
 
     def _report_stderr(self):
         self._drain_stderr()
@@ -254,6 +286,9 @@ class ProcessRanks:
             raise RuntimeError(f'Image GPU thermal guard reached or unavailable: {values}')
 
     def exchange(self, command, deadline, cancel):
+        if command.get('operation')=='execute':
+            self.progress_job=command['job']
+            self.progress_lines={};self.progress_drop=set();self.progress_steps={}
         payload = encode(command)
         pending = {i: bytearray(payload) for i in range(2)}
         buffers = {i: bytearray() for i in range(2)}
@@ -298,6 +333,7 @@ class ProcessRanks:
                                     self.session, command.get('job'), rank, json.dumps(str(value.get('error', ''))[:512]))
                             replies[rank] = value
                             selector.unregister(key.fileobj)
+        self._drain_stderr()  # Include final step emitted before the completion acknowledgement.
         if command["operation"] == "ready":
             self._confirm_owners()
         if command["operation"] == "park" and not self._owned_fit(self.budget.context_bytes):
