@@ -1,7 +1,7 @@
 # Build from the repository root; .dockerignore admits API/native source only.
 FROM python:3.12-slim AS decision-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      cmake g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev \
+      cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
