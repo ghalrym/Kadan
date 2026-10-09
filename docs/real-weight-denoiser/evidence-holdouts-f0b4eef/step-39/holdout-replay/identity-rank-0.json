@@ -1,0 +1,23 @@
+{
+  "immutable_weight_manifest_sha256": "15ef4ca04d95404a0467524015097e306f8dab871eca027635d716b843b469ce",
+  "context_manifest_sha256": "9ceff1294a8aecf4a3211ab952d5b8f3beeec151fc8640431d536e2257c0fafa",
+  "step_index": 39,
+  "capture_precision": {
+    "matmul_tf32": false,
+    "bf16_reduced_precision": true,
+    "cudnn_tf32": true,
+    "flash_sdp": true,
+    "efficient_sdp": true,
+    "math_sdp": true
+  },
+  "ulysses_sha256": "8b688762e1a4900e93d1d222828909be5a287c06220ab298ec96c664007b9438",
+  "torch": "2.14.1+cu130",
+  "dtype": "bfloat16",
+  "rank": 0,
+  "matmul_tf32": false,
+  "bf16_reduced_precision": true,
+  "cudnn_tf32": true,
+  "flash_sdp": true,
+  "efficient_sdp": true,
+  "math_sdp": true
+}

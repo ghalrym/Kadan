@@ -1,0 +1,113 @@
+{
+  "20": {
+    "status": "passed",
+    "boundaries": 172,
+    "last_boundary": "chain-final",
+    "violations": 0,
+    "nonfinite": 0,
+    "max_abs_error": 0.0,
+    "stages": {
+      "holdout-capture": {
+        "supervisor": {
+          "returncode": 0,
+          "elapsed_s": 239.70955134299584,
+          "torchrun_reaped": true
+        },
+        "sample_count": 207,
+        "gpu_peak_mib": {
+          "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17280,
+          "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 635
+        },
+        "gpu_max_c": 81,
+        "cpu_max_recorded_c": 69.0,
+        "container_memory_peak_bytes": 28954017792
+      },
+      "holdout-replay": {
+        "supervisor": {
+          "returncode": 0,
+          "elapsed_s": 376.52608179699746,
+          "torchrun_reaped": true
+        },
+        "sample_count": 332,
+        "gpu_peak_mib": {
+          "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17202,
+          "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 16943
+        },
+        "gpu_max_c": 80,
+        "cpu_max_recorded_c": 78.75,
+        "container_memory_peak_bytes": 2980159488
+      }
+    },
+    "restoration": {
+      "container_id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+      "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+      "started_at": "2026-10-08T23:52:23.255149097Z",
+      "healthy": "healthy",
+      "native_state": "ready",
+      "native_model": "small",
+      "pause": {
+        "elapsed_s": 696.8282808140066,
+        "limit_s": 2100,
+        "restored": true
+      }
+    },
+    "contexts_retained": false
+  },
+  "39": {
+    "status": "incomplete-resource-guard",
+    "boundaries": 60,
+    "last_boundary": "teacher-vs-capture-19",
+    "violations": 0,
+    "nonfinite": 0,
+    "max_abs_error": 0.0,
+    "stages": {
+      "holdout-capture": {
+        "supervisor": {
+          "returncode": 0,
+          "elapsed_s": 359.6830818620074,
+          "torchrun_reaped": true
+        },
+        "sample_count": 310,
+        "gpu_peak_mib": {
+          "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17280,
+          "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 703
+        },
+        "gpu_max_c": 82,
+        "cpu_max_recorded_c": 73.75,
+        "container_memory_peak_bytes": 29002739712
+      },
+      "holdout-replay": {
+        "supervisor": {
+          "returncode": 1,
+          "elapsed_s": 153.72037947799254,
+          "torchrun_reaped": true
+        },
+        "sample_count": 134,
+        "gpu_peak_mib": {
+          "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17202,
+          "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 16970
+        },
+        "gpu_max_c": 78,
+        "cpu_max_recorded_c": 75.75,
+        "container_memory_peak_bytes": 2981715968
+      }
+    },
+    "restoration": {
+      "container_id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+      "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+      "started_at": "2026-10-09T00:03:16.403255278Z",
+      "healthy": "healthy",
+      "native_state": "ready",
+      "native_model": "small",
+      "pause": {
+        "elapsed_s": 595.0770410480036,
+        "limit_s": 2100,
+        "restored": true
+      }
+    },
+    "contexts_retained": true
+  },
+  "source_commit": "f0b4eefc615a6370fb6bb43a13264a0128e0ea13",
+  "step39_stop": "Launcher CPU guard requires a nonempty temperature list and max <80 C; assertion triggered. The triggering sample was rejected before persistence, so its exact value is unavailable. Workers reaped and API restored. No OOM.",
+  "overall": "incomplete; first slice and step20 passed, step39 incomplete; FP32 failed; candidate v1 rejected; full trajectory/image not run; production inactive"
+}

@@ -1,0 +1,12 @@
+{
+  "protocol": "bf16-heldout-steps-v1",
+  "step_index": 39,
+  "heldout_step": "incomplete",
+  "context_manifest_sha256": null,
+  "first_slice": "passed-67b3768",
+  "fp32_protocol": "failed",
+  "rejected_candidate_v1": "rejected",
+  "full_trajectory": "not-run",
+  "decoded_image": "not-run",
+  "production_activation": false
+}

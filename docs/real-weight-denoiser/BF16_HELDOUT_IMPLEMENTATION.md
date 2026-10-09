@@ -1,7 +1,7 @@
 # BF16 held-out timestep extension — source review required
 
 This extension implements the already declared zero-based steps 20 and 39 from
-BF16_APPLICATION_PROTOCOL_V1.md. Neither held-out case has been executed. The
+BF16_APPLICATION_PROTOCOL_V1.md. Execution results are recorded in BF16_HELDOUT_RESULTS.md: step 20 passed; step 39 remains incomplete after a CPU-guard stop. The
 first-slice result at 67b3768 remains passed; the FP32 protocols remain failed and
 controlled-accumulation candidate v1 remains rejected. Production is unchanged.
 

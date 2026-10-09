@@ -1,0 +1,13 @@
+{
+  "container_id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+  "image": "sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa",
+  "started_at": "2026-10-09T00:03:16.403255278Z",
+  "healthy": "healthy",
+  "native_state": "ready",
+  "native_model": "small",
+  "pause": {
+    "elapsed_s": 595.0770410480036,
+    "limit_s": 2100,
+    "restored": true
+  }
+}

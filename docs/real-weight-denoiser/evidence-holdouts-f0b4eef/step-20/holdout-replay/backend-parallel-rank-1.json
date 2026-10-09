@@ -1,0 +1,1 @@
+{"operators": ["aten::mm", "record_param_comms", "aten::scaled_dot_product_attention", "aten::_scaled_dot_product_flash_attention", "aten::_flash_attention_forward"]}

@@ -1,0 +1,9 @@
+{
+  "protocol": "bf16-heldout-steps-v1",
+  "source_commit": "f0b4eefc615a6370fb6bb43a13264a0128e0ea13",
+  "step_index": 39,
+  "decision": "approved-for-bounded-execution",
+  "reviewer": "Independent review relayed by parent thread",
+  "review_reference": "01a11767-879a-728b-a932-8da474177028: authorization following MR123 independent review",
+  "condition": "Step 39 only after explicit step 20 pass, restoration and cleanup checks"
+}
