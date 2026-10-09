@@ -58,5 +58,3 @@ class WaitMonitorTests(unittest.TestCase):
             row['flags']={'before':0,'after':0,'after_window':4}
             (root/'rank-0.json').write_text(json.dumps(row))
             with self.assertRaisesRegex(ValueError,'changed'):launch.verify(root,'control','a'*40)
-
-
