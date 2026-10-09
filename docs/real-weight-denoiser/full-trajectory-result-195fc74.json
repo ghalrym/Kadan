@@ -1,0 +1,117 @@
+{
+  "executed_commit": "195fc7440005c449a57d77f4f312971a3280d22f",
+  "protocol": "full-independent-trajectory-v2-rgba",
+  "production_activation": false,
+  "retained_bytes": 32698664784,
+  "runs": [
+    {
+      "case": "reference",
+      "manifest_sha256": "6798b0481a0e1766f7582abfa65372e93d800f3b76189307c66b2806fd810d2c",
+      "png_sha256": "6df59d86af4143efd1e3e5b419812754bd2b9ed1b10ccd33c3bb2ecac4dbf42b",
+      "status": "passed",
+      "completed_steps": 40,
+      "raw_vae_finite": true,
+      "cpu_peak": 71.25,
+      "pause": {
+        "elapsed_s": 389.80559319899476,
+        "limit_s": 2100,
+        "restored": true
+      },
+      "timings": [
+        {
+          "request_instrumented_seconds": 273.94607679201,
+          "main_to_completion_seconds": 292.9221349309955,
+          "includes": "text encoding, offload, independent prefill, all denoising/scheduler steps, VAE, image preparation, disk writes and audits",
+          "excludes": "container startup and API restoration; reported in launcher pause evidence",
+          "speedup_claim": false
+        }
+      ],
+      "artifact_bytes": 259873959
+    },
+    {
+      "case": "repeat",
+      "manifest_sha256": "badf9755e309b5c7741e8113f3301d6836fa298928b88b17bd2184439f4eb756",
+      "png_sha256": "6df59d86af4143efd1e3e5b419812754bd2b9ed1b10ccd33c3bb2ecac4dbf42b",
+      "status": "passed",
+      "completed_steps": 40,
+      "raw_vae_finite": true,
+      "cpu_peak": 71.25,
+      "pause": {
+        "elapsed_s": 391.50214160900214,
+        "limit_s": 2100,
+        "restored": true
+      },
+      "timings": [
+        {
+          "request_instrumented_seconds": 277.46912631999294,
+          "main_to_completion_seconds": 296.51100425000186,
+          "includes": "text encoding, offload, independent prefill, all denoising/scheduler steps, VAE, image preparation, disk writes and audits",
+          "excludes": "container startup and API restoration; reported in launcher pause evidence",
+          "speedup_claim": false
+        }
+      ],
+      "artifact_bytes": 259907210,
+      "comparison_summary": [
+        {
+          "file": "comparisons-rank-0.jsonl",
+          "count": 83,
+          "passed": true,
+          "max_abs": 0.0,
+          "nonfinite": 0,
+          "violations": 0
+        }
+      ]
+    },
+    {
+      "case": "candidate",
+      "manifest_sha256": "6ee0e34fc8e8052b757bd9dd033471050d1ab6a8a30a5af937e141fe8c0361e2",
+      "png_sha256": "6df59d86af4143efd1e3e5b419812754bd2b9ed1b10ccd33c3bb2ecac4dbf42b",
+      "status": "passed",
+      "completed_steps": 40,
+      "raw_vae_finite": true,
+      "cpu_peak": 79.0,
+      "pause": {
+        "elapsed_s": 324.6031566849997,
+        "limit_s": 2100,
+        "restored": true
+      },
+      "timings": [
+        {
+          "request_instrumented_seconds": 205.1519236479944,
+          "main_to_completion_seconds": 224.2997040640039,
+          "includes": "text encoding, offload, independent prefill, all denoising/scheduler steps, VAE, image preparation, disk writes and audits",
+          "excludes": "container startup and API restoration; reported in launcher pause evidence",
+          "speedup_claim": false,
+          "slower_rank_request_seconds": 205.1519236479944
+        },
+        {
+          "request_instrumented_seconds": 203.72200487100054,
+          "main_to_completion_seconds": 222.8628199119994,
+          "includes": "text encoding, offload, independent prefill, all denoising/scheduler steps, VAE, image preparation, disk writes and audits",
+          "excludes": "container startup and API restoration; reported in launcher pause evidence",
+          "speedup_claim": false,
+          "slower_rank_request_seconds": 205.1519236479944
+        }
+      ],
+      "artifact_bytes": 259925585,
+      "comparison_summary": [
+        {
+          "file": "comparisons-rank-0.jsonl",
+          "count": 83,
+          "passed": true,
+          "max_abs": 0.0,
+          "nonfinite": 0,
+          "violations": 0
+        },
+        {
+          "file": "comparisons-rank-1.jsonl",
+          "count": 83,
+          "passed": true,
+          "max_abs": 0.0,
+          "nonfinite": 0,
+          "violations": 0
+        }
+      ]
+    }
+  ]
+}
