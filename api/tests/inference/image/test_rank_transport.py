@@ -105,6 +105,19 @@ class ProcessRankTests(unittest.TestCase):
 
 
 class PhysicalOwnerTests(unittest.TestCase):
+    def test_duplicate_canonical_devices_reject_before_child_launch(self):
+        identity='e30b6419-2c6d-f550-61d6-16166a920dac'
+        transport=ProcessRanks(Path('/unused'),RankBudget(1000,(0,1),10,70),guard=lambda:None)
+        torch=SimpleNamespace(cuda=SimpleNamespace(get_device_properties=lambda d:
+            SimpleNamespace(uuid=('GPU-' if d else '')+identity)))
+        with patch('api.inference.image.rank_transport.subprocess.Popen') as spawn, \
+                patch('api.inference.image.rank_transport.importlib.import_module',return_value=torch):
+            with self.assertRaisesRegex(RuntimeError,'same physical GPU'):
+                transport.start('session',(0,1),time.monotonic()+1,None)
+        spawn.assert_not_called()
+        self.assertEqual(transport.processes,[])
+        self.assertIsNone(transport.directory)
+
     def test_torch_bare_uuid_matches_nvml_prefixed_identity(self):
         ids=['e30b6419-2c6d-f550-61d6-16166a920dac','2a2378dd-08c1-6f69-6317-a253d90e76b3']
         for prefix in ('','GPU-'):

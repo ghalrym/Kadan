@@ -141,6 +141,8 @@ class ProcessRanks:
             # Torch exposes a bare CUuuid; NVML/nvidia-smi prefixes GPU-.
             self.uuids = {d:'GPU-'+str(UUID(str(torch.cuda.get_device_properties(d).uuid).removeprefix('GPU-')))
                 for d in self.budget.devices}
+        if len(set(self.uuids.values())) != len(self.budget.devices):
+            raise RuntimeError('Logical image devices alias the same physical GPU')
         result = subprocess.run(['nvidia-smi','--query-gpu=uuid,memory.used', '--format=csv,noheader,nounits'],
             capture_output=True,text=True,timeout=2,check=True)
         rows = {parts[0].strip():int(parts[1].strip())*1024**2
