@@ -419,3 +419,13 @@ if(BUILD_TESTING)
   add_test(NAME video-attention-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_attention_fixture.py" "$<TARGET_FILE:video-attention-tests>" "$<TARGET_FILE:kadan-video-attention-component>")
   set_tests_properties(video-attention-component PROPERTIES TIMEOUT 60)
 endif()
+
+# Block 0 residual/norm2/gated feed-forward CPU tail; not full generation.
+add_executable(kadan-video-ff-component src/video_ff_component.cpp)
+target_link_libraries(kadan-video-ff-component PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-ff-tests tests/video_ff.cpp)
+  target_link_libraries(video-ff-tests PRIVATE kadan_video)
+  add_test(NAME video-ff-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_ff_fixture.py" "$<TARGET_FILE:video-ff-tests>" "$<TARGET_FILE:kadan-video-ff-component>")
+  set_tests_properties(video-ff-component PROPERTIES TIMEOUT 120)
+endif()
