@@ -41,7 +41,8 @@ def reason(row, initial=False):
     cache=ROOT/'compiler-cache'
     if cache.exists() and sum(x.stat().st_size for x in cache.rglob('*') if x.is_file()) > CONFIG['compiler_cache_limit_bytes']:
         return 'compiler disk cache limit'
-    if gpu['thermal']!='Not Active' or gpu['power_brake']!='Not Active':return 'GPU1 thermal/power-brake flag'
+    # Thermal slowdown is passive evidence, not an application abort policy.
+    if gpu['power_brake']!='Not Active':return 'GPU1 power-brake flag'
     if row['host_available_bytes']<(CONFIG['physical_host_start_min_bytes'] if initial else CONFIG['host_abort_available_bytes']):return 'host RAM headroom'
     minimum=CONFIG['gpu_budget_bytes']/1024**2 if initial else CONFIG['gpu_abort_free_mib']
     if gpu['free_mib']<minimum:return 'GPU1 physical headroom'
