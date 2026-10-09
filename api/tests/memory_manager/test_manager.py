@@ -133,6 +133,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events, ['llm:gpu', 'llm:run', 'llm:ram', 'speech:gpu', 'speech:run', 'speech:ram', 'llm:gpu', 'llm:run'])
 
     async def test_active_lease_cannot_be_moved_and_pressure_can_evict_ram(self):
+        self.manager.features = {'llm': self.manager.llm, 'video': self.manager.video}
         self.llm.infer()
         with self.llm.device.lease():
             with self.assertRaises(ResourceBusy):
@@ -266,6 +267,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         provider = SimpleNamespace(validate=lambda spec: None, offload_to_ram=lambda cancel: None,
             generate=lambda spec, output, cancel: output.write_bytes(b'controlled output'))
         self.manager.videos = VideoJobs(Path(self.directory.name) / 'videos', factory=lambda _: provider)
+        self.manager.features = {'llm': self.manager.llm, 'video': self.manager.video}
         self.llm.infer()
         with self.llm.device.lease():
             job = await self.manager.submit(VideoGenerationRequest(prompt='test'), feature='video')
