@@ -10,7 +10,7 @@ from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
-from api.services.chat_runtime import chat_runtime as runtime
+from api.services.chat_runtime import chat_runtime
 from api.inference.decisions.laya_python import clear_failure_frames
 
 H3_REVISION = H3_INT8_REVISION
@@ -107,7 +107,7 @@ class H3Provider:
         self._use(None, None, cancellation)
 
     def offload_to_ram(self, cancellation=None):
-        runtime.ensure_resources().offload_workload_devices('video', cancellation)
+        chat_runtime.ensure_resources().offload_workload_devices('video', cancellation)
 
     def generate(self, spec, output_path: Path, cancellation: threading.Event):
         self._use(spec, output_path, cancellation)
@@ -123,7 +123,7 @@ class H3Provider:
             entry, checkpoint = model_manager.get_checkpoint(self.model_id)
             if entry.revision != H3_REVISION:
                 raise ValueError('H3 checkpoint revision does not match the native provider')
-            resources = runtime.ensure_resources()
+            resources = chat_runtime.ensure_resources()
             devices = resources.capacity.device_bytes
             if not devices:
                 raise ResourceExhausted('H3 native inference requires a CUDA GPU')

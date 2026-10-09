@@ -68,7 +68,7 @@ class H3Tests(unittest.TestCase):
                         raise failure
 
                 with patch('api.inference.video.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path(directory))), \
-                     patch('api.inference.video.h3.runtime.ensure_resources', return_value=resources), \
+                     patch('api.inference.video.h3.chat_runtime.ensure_resources', return_value=resources), \
                      patch.object(H3Provider, '_run', side_effect=run):
                     if failure:
                         with self.assertRaises(type(failure)):
@@ -86,7 +86,7 @@ class H3Tests(unittest.TestCase):
         resources = ResourceManager(32 * GIB, {0: 200 * GIB})
         entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)
         with patch('api.inference.video.h3.model_manager.get_checkpoint', create=True, return_value=(entry, Path('/tmp'))), \
-             patch('api.inference.video.h3.runtime.ensure_resources', return_value=resources), \
+             patch('api.inference.video.h3.chat_runtime.ensure_resources', return_value=resources), \
              patch.object(H3Provider, '_run') as run:
             with self.assertRaises(ResourceExhausted):
                 H3Provider().generate(spec(), Path('/tmp/out.mp4'), threading.Event())
@@ -210,7 +210,7 @@ class H3Tests(unittest.TestCase):
         def run(*args):
             provider._session = session
         with patch('api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
-                'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
+                'api.inference.video.h3.chat_runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
             provider.generate(spec(), Path('/unused'), threading.Event())
             host = provider._host
             resources.offload_inactive_devices('speech')
@@ -236,7 +236,7 @@ class H3Tests(unittest.TestCase):
             with self.assertRaises(ResourceExhausted):
                 resources.reserve('large', 'llm', host_bytes=400 * GIB)
         with patch('api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
-                'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
+                'api.inference.video.h3.chat_runtime.ensure_resources', return_value=resources), patch.object(provider, '_run', side_effect=run):
             provider.generate(spec(), Path('/unused'), threading.Event())
             provider.close()
 
