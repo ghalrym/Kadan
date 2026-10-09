@@ -115,6 +115,18 @@ if __name__=='__main__':
         corruptions=[(p+'self_attn.q_proj.weight_scale',struct.pack('<f',math.nan),'h3_text_scale'),
                      (p+'input_layernorm.weight',bytes((128,127)),'h3_text_nonfinite_weight'),
                      (p+'self_attn.q_proj.comfy_quant',json.dumps(dict(format='int8_tensorwise',convrot=True,convrot_groupsize=128)).encode(),'h3_text_quant_marker')]
+        marker_name=p+'self_attn.q_proj.comfy_quant'
+        marker_bytes=header[marker_name]['data_offsets'][1]-header[marker_name]['data_offsets'][0]
+        malformed_markers=[
+            b'{"format":"int8_tensor wise","convrot":true,"convrot_groupsize":256}',
+            b'{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":2 56}',
+            b'{"format":"int8_tensorwise","convrot":tr ue,"convrot_groupsize":256}',
+            b'{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":0256}',
+            b'{"format":"int8_tensorwise","convrot":true,"convrot_groupsize":256}x',
+        ]
+        for marker in malformed_markers:
+            assert len(marker)<=marker_bytes
+            corruptions.append((marker_name,marker.ljust(marker_bytes,b' '),'h3_text_quant_marker'))
         for index,(name,replacement,error) in enumerate(corruptions):
             at=8+length+header[name]['data_offsets'][0]
             with (root/'weights.safetensors').open('r+b') as f:

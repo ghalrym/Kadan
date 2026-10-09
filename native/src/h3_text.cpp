@@ -1,4 +1,5 @@
 #include "kadan/h3_text.hpp"
+#include "h3_quant_marker.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -71,12 +72,8 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     auto codes=std::make_unique<std::int8_t[]>(in);
     std::array<std::uint8_t,256> marker_bytes;
     shard.read_tensor(prefix+".comfy_quant",0,{marker_bytes.data(),std::size_t(marker.bytes)});
-    std::size_t compact_size=0;
-    for(std::size_t i=0;i<marker.bytes;++i) {
-        const char c=char(marker_bytes[i]);if(c!=' ' && c!='\n' && c!='\r' && c!='\t')marker_bytes[compact_size++]=std::uint8_t(c);
-    }
-    const std::string_view compact(reinterpret_cast<const char*>(marker_bytes.data()),compact_size);
-    require(compact=="{\"format\":\"int8_tensorwise\",\"convrot\":true,\"convrot_groupsize\":256}","h3_text_quant_marker");
+    const std::string_view marker_text(reinterpret_cast<const char*>(marker_bytes.data()),std::size_t(marker.bytes));
+    require(detail::convrot_group(marker_text)==256,"h3_text_quant_marker");
     for(std::size_t offset=0;offset<in*out;) {
         stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);
         shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;
