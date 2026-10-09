@@ -25,7 +25,7 @@ def compare(control, candidate):
             raise ValueError('Control/candidate numerical identity differs: '+key)
     if control['policy'] != 'control' or candidate['policy'] != 'blocking':
         raise ValueError('Expected fresh control and blocking cases')
-    if control['flags']['before'] & 7 == 4:
+    if control['flags']['before'] & 7 == 4 or control['flags'].get('after_window',control['flags']['after']) & 7 == 4:
         return dict(numerical_equal=True, intervention=False, verdict='inconclusive: control already blocking')
     if candidate['flags']['after'] & 7 != 4:
         raise ValueError('Candidate blocking flags unconfirmed')
@@ -79,6 +79,10 @@ def measure(torch, device, policy):
         torch.cuda.synchronize(device)
         wall, process, main = time.monotonic()-started, time.process_time()-cpu, time.thread_time()-main_cpu
         raw = result.view(torch.uint8).cpu().numpy().tobytes()
+        final_runtime=Runtime()
+        flags['after_window']=final_runtime.flags()
+        if final_runtime.device()!=device or flags['after_window']!=flags['after']:
+            raise RuntimeError('Wait flags/device changed during measured window')
         return dict(device=device, gpu_uuid=actual_uuid, policy=policy, flags=flags, shape=PLAN['shape'], dtype=PLAN['dtype'],
                     iterations=iterations, wall_seconds=wall, process_cpu_seconds=process,
                     main_cpu_seconds=main, output_sha256=hashlib.sha256(raw).hexdigest())
