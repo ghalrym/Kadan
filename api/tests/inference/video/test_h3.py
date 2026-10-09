@@ -82,6 +82,22 @@ class H3Tests(unittest.TestCase):
                 self.assertEqual(resources.snapshot()['reservations'], {})
                 self.assertIsNone(resources.snapshot()['exclusive_owner'])
 
+    def test_retained_context_does_not_make_streamed_execution_claim_entire_gpu(self):
+        resources = ResourceManager(400 * GIB, {0: 18 * GIB})
+        context = resources.framework_context(0, GIB)
+        entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=64 * GIB)
+        provider = H3Provider()
+        def run(*args):
+            rows = resources.snapshot()['reservations']
+            self.assertEqual(rows['video:h3:device']['device_bytes'], {0: 16 * GIB})
+            self.assertEqual(rows['framework-context:0']['device_bytes'], {0: GIB})
+        with patch('api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/tmp'))), \
+             patch('api.inference.video.h3.runtime.ensure_resources', return_value=resources), \
+             patch.object(provider, '_run', side_effect=run):
+            provider.generate(spec(), Path('/tmp/not-written.mp4'), threading.Event())
+            provider.close()
+        self.assertEqual(set(resources.snapshot()['reservations']), {'framework-context:0'})
+
     def test_insufficient_host_memory_does_not_start_worker(self):
         resources = ResourceManager(32 * GIB, {0: 200 * GIB})
         entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=144_000_000_000)

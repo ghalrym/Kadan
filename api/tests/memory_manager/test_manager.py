@@ -101,7 +101,8 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.queue.redis.aclose()
         self.prefix = f'kadan:test:{uuid.uuid4().hex}:'
         self.manager.queue = InferenceQueue(self.manager._execute, url=os.environ['KADAN_TEST_REDIS_URL'],
-            lock_path=Path(self.directory.name) / 'lock', prefix=self.prefix)
+            lock_path=Path(self.directory.name) / 'lock', prefix=self.prefix,
+            resources=self.runtime.ensure_resources)
         await self.manager.start()
 
     async def asyncTearDown(self):
@@ -132,6 +133,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events, ['llm:gpu', 'llm:run', 'llm:ram', 'speech:gpu', 'speech:run', 'speech:ram', 'llm:gpu', 'llm:run'])
 
     async def test_active_lease_cannot_be_moved_and_pressure_can_evict_ram(self):
+        self.manager.features = {'llm': self.manager.llm, 'video': self.manager.video}
         self.llm.infer()
         with self.llm.device.lease():
             with self.assertRaises(ResourceBusy):
@@ -261,15 +263,24 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.get('/v1/videos/' + job_id)).json()['job']['status'], 'Cancelled')
                 self.assertEqual(generated, [])
 
-    async def test_video_handoff_failure_is_visible_in_polling(self):
-        provider = SimpleNamespace(validate=lambda spec: None, offload_to_ram=lambda cancel: None)
+    async def test_video_handoff_waits_and_is_visible_in_polling(self):
+        provider = SimpleNamespace(validate=lambda spec: None, offload_to_ram=lambda cancel: None,
+            generate=lambda spec, output, cancel: output.write_bytes(b'controlled output'))
         self.manager.videos = VideoJobs(Path(self.directory.name) / 'videos', factory=lambda _: provider)
+        self.manager.features = {'llm': self.manager.llm, 'video': self.manager.video}
         self.llm.infer()
         with self.llm.device.lease():
             job = await self.manager.submit(VideoGenerationRequest(prompt='test'), feature='video')
-            with self.assertRaises(RuntimeFailure):
-                await self.manager.queue.wait(job.id)
-            self.assertEqual((await self.manager.video_job(job.id)).status, 'Failed')
+            async def waiting():
+                while (await self.manager.queue.get(job.id))['state'] != 'waiting_for_resources':
+                    await asyncio.sleep(.01)
+            await asyncio.wait_for(waiting(), 1)
+            observed = await self.manager.video_job(job.id)
+            self.assertEqual(observed.status, 'Queued')
+            self.assertEqual(observed.progress_text, 'Waiting for resources')
+            self.assertIsNone(observed.error)
+        await asyncio.wait_for(self.manager.queue.wait(job.id), 1)
+        self.assertEqual((await self.manager.video_job(job.id)).status, 'Done')
 
     async def test_slow_first_resource_discovery_does_not_block_event_loop(self):
         original = self.runtime.ensure_resources

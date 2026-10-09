@@ -17,7 +17,7 @@ from api.inference.image.dual import DualImage
 from api.inference.image.model import GIB, REVISION
 from api.tests.inference.image.test_rank_session import FakeRanks
 from api.inference.image.feature import ImageFeature
-from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled
+from api.inference.resources import ResourceManager, ResourceCancelled, ResourceRecoveryRequired
 from api.services.images import ImageManager, decode_source
 from api.services.runtime import RuntimeFailure
 
@@ -66,7 +66,7 @@ class ImageManagerTests(unittest.TestCase):
                         return [picture]
                     dual.generate = generate
                 with patch.object(manager, '_load', return_value=dual):
-                    with self.assertRaises(ResourceBusy):
+                    with self.assertRaises(ResourceRecoveryRequired):
                         manager.generate('x', '1:1', 1, 42, threading.Event(), job_id='a' * 32)
                 self.assertEqual(deadlines, [40.0])
                 self.assertEqual(now[0], 40.0)
@@ -76,9 +76,9 @@ class ImageManagerTests(unittest.TestCase):
                     for tier in ('host', 'context', 'execution')))
                 self.assertFalse(any(key.startswith('image:output:') for key in rows))
                 self.assertEqual(manager.history(), [])
-                with self.assertRaises(ResourceBusy):
+                with self.assertRaises(ResourceRecoveryRequired):
                     manager.close()
-                with self.assertRaises(ResourceBusy):
+                with self.assertRaises(ResourceRecoveryRequired):
                     dual.session.execute('b' * 32)
                 self.assertEqual(deadlines, [40.0])
                 # A separate operator recovery, never an automatic finalizer.

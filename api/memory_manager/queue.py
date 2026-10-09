@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from api.services.runtime import RuntimeFailure, finish_cleanup
+from api.inference.resources import ResourceBusy, ResourceExhausted, ResourcePending, ResourceRecoveryRequired
+from api.services.runtime import RuntimeFailure, finish_cleanup, runtime_manager
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ if state == 'queued' then
  redis.call('HSET', KEYS[3], 'state', 'cancelled')
  redis.call('HDEL', KEYS[3], 'job')
  redis.call('EXPIRE', KEYS[3], ARGV[2])
-elseif state == 'running' then
+elseif state == 'running' or state == 'waiting_for_resources' then
  redis.call('HSET', KEYS[3], 'cancel', '1')
 end
 return state
@@ -74,10 +75,11 @@ return state
 
 class InferenceQueue:
     def __init__(self, execute, *, url, lock_path, prefix='kadan:inference:', limit=32,
-                 retention=3600, max_payload=16 * 1024 * 1024):
+                 retention=3600, max_payload=16 * 1024 * 1024, resources=None):
         if limit < 1 or retention < 1 or max_payload < 1:
             raise ValueError('Queue bounds must be positive')
         self.execute = execute
+        self.resources = resources or runtime_manager.ensure_resources
         self.redis = Redis.from_url(url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2)
         self.prefix, self.limit, self.retention, self.max_payload = prefix, limit, retention, max_payload
         self.lock_path = Path(lock_path)
@@ -219,6 +221,38 @@ class InferenceQueue:
         await self.redis.eval(_FINISH, 2, self.key('unfinished'), self.key('job:' + job_id),
             job_id, state, encoded, error[:2000], status, self.retention)
 
+    @staticmethod
+    def _resource_failure(error):
+        # Follow explicit wrapping only: a cleanup error must not inherit an
+        # earlier admission failure through implicit exception context.
+        seen = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, (ResourceBusy, ResourceExhausted, ResourceRecoveryRequired)):
+                return error
+            error = error.__cause__
+        return None
+
+    async def _execute_when_available(self, job):
+        while True:
+            try:
+                return await self.execute(job)
+            except Exception as error:
+                stream = self.streams.get(job.id)
+                if not isinstance(self._resource_failure(error), (ResourceBusy, ResourcePending)) or (stream and stream.published):
+                    raise
+                # execute() has returned ownership and completed its cleanup.
+                # Keep this job at the FIFO head; never re-enqueue behind arrivals.
+                resources = self.resources()
+                revision = resources.revision
+                await self.redis.hset(self.key('job:' + job.id), mapping={
+                    'state': 'waiting_for_resources'})
+                log.info('Inference %s waiting for resources', job.id)
+                await resources.wait_for_change(revision)
+                if not self._ready or (await self.get(job.id)).get('cancel') == '1':
+                    raise asyncio.CancelledError()
+                await self.redis.hset(self.key('job:' + job.id), mapping={'state': 'running'})
+
     async def _run(self, job_id):
         record = await self.get(job_id)
         if record.get('cancel') == '1':
@@ -227,7 +261,7 @@ class InferenceQueue:
         encoded = await self.redis.hget(self.key('job:' + job_id), 'job')
         job = Job.model_validate_json(encoded)
         self._active_id = job_id
-        self._active = asyncio.create_task(self.execute(job))
+        self._active = asyncio.create_task(self._execute_when_available(job))
         try:
             while not self._active.done():
                 if not self._ready or (await self.get(job_id)).get('cancel') == '1':
@@ -240,7 +274,11 @@ class InferenceQueue:
                 await self._finish(job_id, 'cancelled', status=499)
             except Exception as exc:
                 log.warning('Inference %s failed: %s', job_id, exc)
-                await self._finish(job_id, 'failed', error=str(exc), status=getattr(exc, 'status_code', 502))
+                resource = self._resource_failure(exc)
+                message = ('This model configuration is not supported by the current worker.'
+                           if isinstance(resource, ResourceExhausted) and not isinstance(resource, ResourcePending)
+                           else str(exc))
+                await self._finish(job_id, 'failed', error=message, status=getattr(exc, 'status_code', 502))
             else:
                 try:
                     await self._finish(job_id, 'succeeded', result=result)

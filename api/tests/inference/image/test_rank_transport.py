@@ -10,7 +10,7 @@ from unittest.mock import patch
 from api.inference.image.policy import ImagePolicy
 from api.inference.image.rank_session import RankBudget, RankSession
 from api.inference.image.rank_transport import ProcessRanks, encode
-from api.inference.resources import ResourceManager, ResourceCancelled, ResourceBusy
+from api.inference.resources import ResourceManager, ResourceCancelled, ResourceRecoveryRequired
 
 
 class ProcessRankTests(unittest.TestCase):
@@ -150,11 +150,11 @@ class ProcessRankTests(unittest.TestCase):
         self.session.execute('a'*32,payload={'prompt':'ok'})
         children=list(self.transport.processes)
         self.memory[1]=100*1024**2
-        with self.assertRaises(ResourceBusy):self.session.park()
+        with self.assertRaises(ResourceRecoveryRequired):self.session.park()
         self.assertEqual(self.session.state,'quarantined')
         self.assertTrue(all(p.poll() is not None for p in children))
         self.assertEqual(len(self.resources.snapshot()['reservations']),3)
-        with self.assertRaises(ResourceBusy):self.session.execute('b'*32)
+        with self.assertRaises(ResourceRecoveryRequired):self.session.execute('b'*32)
         self.memory[1]=0;self.session.close(recover=True)
         self.assertFalse(self.resources.snapshot()['reservations'])
 

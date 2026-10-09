@@ -14,7 +14,7 @@ import time
 from typing import Protocol
 from uuid import uuid4
 
-from api.inference.resources import ResourceBusy, ResourceCancelled
+from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceRecoveryRequired
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ class RankSession:
             raise ResourceBusy('Rank session is active; the global FIFO owns scheduling')
         try:
             if self.state == 'quarantined':
-                raise ResourceBusy('Both-rank cleanup is unconfirmed; ownership remains reserved')
+                raise ResourceRecoveryRequired('Both-rank cleanup is unconfirmed; ownership remains reserved')
             yield
         finally:
             self.gate.release()
@@ -200,7 +200,7 @@ class RankSession:
                 confirmed = False
         if not confirmed:
             self.state = 'quarantined'
-            raise ResourceBusy('Rank cleanup unconfirmed; all accounting retained')
+            raise ResourceRecoveryRequired('Rank cleanup unconfirmed; all accounting retained')
         for name in ('execution', 'context', 'host'):
             reservation = getattr(self, name)
             if reservation is not None:

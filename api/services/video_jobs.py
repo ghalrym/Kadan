@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import threading
 
-from api.inference.resources import ResourceCancelled
+from api.inference.resources import ResourceBusy, ResourceCancelled, ResourcePending
 from api.pydantic_models.media import VideoJob
 from api.services.runtime import RuntimeFailure
 
@@ -107,6 +107,9 @@ class VideoJobs:
                 staging.replace(destination)
                 self._update(job_id, status='Done', progress=100, progress_text='Complete',
                              output_url=f'/v1/videos/{job_id}/content')
+        except (ResourceBusy, ResourcePending):
+            self._update(job_id, status='Queued', progress_text='Waiting for resources', error=None)
+            raise
         except ResourceCancelled:
             self._update(job_id, status='Cancelled', progress_text='Cancelled')
         except Exception as exc:

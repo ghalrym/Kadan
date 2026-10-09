@@ -15,6 +15,7 @@ class QueuedStream:
         self.events = asyncio.Queue(maxsize=16)
         self.closed = threading.Event()
         self.waiter = None
+        self.published = False
 
     def start(self):
         self.waiter = asyncio.create_task(self.queue.wait(self.job_id))
@@ -23,6 +24,7 @@ class QueuedStream:
         """Called by the existing native thread, with bounded backpressure and disconnect escape."""
         if self.closed.is_set():
             raise InterruptedError('Stream disconnected')
+        self.published = True
         pending = asyncio.run_coroutine_threadsafe(self.events.put(event), self.loop)
         deadline = time.monotonic() + 10
         try:

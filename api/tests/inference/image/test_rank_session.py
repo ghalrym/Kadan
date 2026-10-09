@@ -2,7 +2,7 @@ import threading
 import unittest
 
 from api.inference.image.rank_session import RankBudget, RankSession
-from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted
+from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted, ResourceRecoveryRequired
 
 
 class FakeRanks:
@@ -113,11 +113,11 @@ class RankSessionTests(unittest.TestCase):
     def test_uncertain_cleanup_quarantines_all_bytes_until_explicit_recovery(self):
         self.controller.execute('a' * 32)
         self.transport.confirmed = False
-        with self.assertRaises(ResourceBusy):
+        with self.assertRaises(ResourceRecoveryRequired):
             self.controller.close()
         self.assertEqual(self.controller.state, 'quarantined')
         self.assertEqual(len(self.reservations()), 3)
-        with self.assertRaises(ResourceBusy):
+        with self.assertRaises(ResourceRecoveryRequired):
             self.controller.execute('b' * 32)
         self.transport.confirmed = True
         self.controller.close(recover=True)
@@ -137,7 +137,7 @@ class RankSessionTests(unittest.TestCase):
         self.controller.execute('a' * 32)
         self.transport.mutate = lambda c, r: [r[0], dict(r[1], resident_bytes=1)]
         self.transport.confirmed = False
-        with self.assertRaises(ResourceBusy):
+        with self.assertRaises(ResourceRecoveryRequired):
             self.controller.park()
         self.assertEqual(self.controller.state, 'quarantined')
         self.assertTrue(self.reservations())
