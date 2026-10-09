@@ -43,6 +43,7 @@ def main(binary,checkpoint):
             actual=torch.tensor(result['projected']);expected=second(torch.nn.functional.silu(first(values)))
             assert actual.shape==expected.shape and torch.isfinite(actual).all()
             error=(actual-expected).abs();assert bool((error<=1e-4+expected.abs()*1e-4).all()),float(error.max())
+            assert result['resident_bytes_at_publication']==2*2048*4
             assert result['resident_bytes']==0 and not result['full_tts_generation'] and not result['gpu_execution']
             rows.append(dict(case=name,input_sha256=hashlib.sha256(data).hexdigest(),
                 output_sha256=hashlib.sha256(actual.numpy().tobytes()).hexdigest(),values=actual.numel(),

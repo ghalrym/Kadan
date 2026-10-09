@@ -36,5 +36,6 @@ if __name__=='__main__':
         result=json.loads(subprocess.check_output([sys.argv[2],str(root),'weights.safetensors',str(root/'input')]))
         expected=[.5*((.25*x+.125)/(1+math.exp(-(.25*x+.125))))-.0625 for x in values]
         assert max(abs(a-b) for a,b in zip(result['projected'],expected))<1e-7
+        assert result['resident_bytes_at_publication']==2*2048*4
         assert result['resident_bytes']==0 and not result['full_tts_generation']
         print('PASS: bounded TTS projection closed-form oracle and cleanup')
