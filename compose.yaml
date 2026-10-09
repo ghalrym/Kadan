@@ -28,6 +28,8 @@ services:
   migrate:
     build:
       context: ./api
+      additional_contexts:
+        native: ./native
     environment: &database_environment
       <<: *postgres_environment
       POSTGRES_HOST: postgres
@@ -42,6 +44,8 @@ services:
     stop_grace_period: 5m
     build:
       context: ./api
+      additional_contexts:
+        native: ./native
     init: true
     environment:
       <<: *database_environment

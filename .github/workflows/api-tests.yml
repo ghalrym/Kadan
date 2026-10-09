@@ -49,12 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build the default CUDA-enabled API image
-        run: docker build -t kadan-api:test api
+        run: docker build --build-context native=./native -t kadan-api:test api
       - name: Verify installed native runtime and API startup imports
         run: |
           docker run --rm kadan-api:test python -m api.inference.check_install
           docker run --rm kadan-api:test python -c 'import torch; assert torch.version.cuda == "13.0", torch.__version__'
           docker run --rm kadan-api:test python -c 'from api.server import app; assert app'
+          docker run --rm kadan-api:test python -c 'import subprocess; p=subprocess.run(["/opt/kadan/bin/kadan-decision-worker","/missing-model"],input="",text=True,capture_output=True,timeout=10); assert p.returncode == 1, p; assert "resident_bytes=0" in p.stderr, p.stderr'
           docker compose config --quiet
 
   generated-client:
