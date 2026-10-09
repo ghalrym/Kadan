@@ -70,3 +70,7 @@ jobs:
         run: cmake --build /tmp/kadan-h3-generation --target kadan-h3-generate kadan-h3-worker kadan-h3-tokenize h3-pipeline-tests h3-generation-tests h3-codec-tests --parallel 2
       - name: Test complete sparse generation and codec ownership
         run: ctest --test-dir /tmp/kadan-h3-generation --output-on-failure -R '^h3-(pipeline|generation|codec|worker|tokenizer)$'
+      - name: Test installed H3 worker and runtime dependencies
+        run: |
+          cmake --install /tmp/kadan-h3-generation --prefix /tmp/kadan-h3-installed --component h3-runtime
+          python3 native/tests/h3_worker.py /tmp/kadan-h3-installed/bin/kadan-h3-worker

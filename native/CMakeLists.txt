@@ -553,6 +553,14 @@ if(KADAN_ENABLE_H3_GENERATION)
   add_executable(kadan-h3-worker src/h3_worker.cpp)
   target_link_libraries(kadan-h3-worker PRIVATE kadan_h3_generation nlohmann_json::nlohmann_json)
   target_compile_options(kadan-h3-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  install(TARGETS kadan-h3-worker
+    RUNTIME_DEPENDENCIES
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+    RUNTIME DESTINATION libexec COMPONENT h3-runtime
+    LIBRARY DESTINATION lib COMPONENT h3-runtime)
+  install(PROGRAMS packaging/run_h3_worker.sh
+    DESTINATION bin RENAME kadan-h3-worker COMPONENT h3-runtime)
 endif()
 if(KADAN_ENABLE_H3_GENERATION AND BUILD_TESTING AND Python3_Interpreter_FOUND)
   add_test(NAME h3-worker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/h3_worker.py" "$<TARGET_FILE:kadan-h3-worker>")
