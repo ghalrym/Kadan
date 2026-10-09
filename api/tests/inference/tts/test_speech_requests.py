@@ -3,29 +3,29 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from api.inference.feature import InferenceFeature
+from api.inference.request_execution import RequestExecutor
 from api.inference.resources import ResourceManager, ResourceBusy
-from api.inference.tts.feature import TTSFeature
-from api.inference.tts.runtime import SpeechRegistry, SpeechRuntime
+from api.inference.tts.speech_requests import SpeechRequests
+from api.inference.tts.speech_runtime import SpeechRegistry, SpeechRuntime
 from api.routes.v1.audio.speech import SpeechRequest
 from api.services import speech
-from api.tests.inference.tts.test_runtime import AlternateProvider
+from api.tests.inference.tts.test_speech_runtime import AlternateProvider
 
 
-class TTSFeatureTests(unittest.IsolatedAsyncioTestCase):
+class SpeechRequestsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.resources = ResourceManager(1000, {0: 1000})
         self.provider = AlternateProvider(self.resources)
         self.registry = SpeechRegistry()
         self.registry.register(self.provider)
         self.runtime = SpeechRuntime(self.registry, lambda: self.resources)
-        self.feature = TTSFeature(self.runtime)
+        self.feature = SpeechRequests(self.runtime)
 
     async def asyncTearDown(self):
         await self.feature.unload()
 
     async def test_common_contract_retains_same_adapter_and_protects_active_device(self):
-        self.assertIsInstance(self.feature, InferenceFeature)
+        self.assertIsInstance(self.feature, RequestExecutor)
         await self.feature.load('alternate')
         self.assertIs(self.feature.adapter, self.provider)
         self.resources.offload_workload_devices('speech')
@@ -47,7 +47,7 @@ class TTSFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.feature.adapter)
         self.assertEqual(self.resources.snapshot()['reservations'], {})
 
-    async def test_repeated_unload_cancellation_waits_for_native_cleanup(self):
+    async def test_repeated_unload_cancellation_waits_for_inference_cleanup(self):
         await self.feature.load('alternate')
         started, release = threading.Event(), threading.Event()
         original = self.provider.unload

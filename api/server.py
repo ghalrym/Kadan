@@ -9,7 +9,7 @@ from api.routes.v1.images import edits, generations as image_generations
 from api.routes.v1.videos import generations as video_generations
 from api.routes import model_lifecycle
 from api.services.model_downloads import model_manager
-from api.services.runtime import runtime_manager
+from api.services.chat_runtime import chat_runtime
 from api.services.telemetry import TelemetryMiddleware
 from api.services.video_jobs import video_jobs
 from api.memory_manager import memory_manager
@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
         cleanup.push_async_callback(asyncio.to_thread, video_jobs.close)
         cleanup.push_async_callback(memory_manager.close)
         if await memory_manager.start():
-            await runtime_manager.start()
+            await chat_runtime.start()
         yield
 
 app = FastAPI(

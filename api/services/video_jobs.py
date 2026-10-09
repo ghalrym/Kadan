@@ -7,7 +7,7 @@ import threading
 
 from api.inference.resources import ResourceCancelled
 from api.pydantic_models.media import VideoJob
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 
 class VideoJobs:
@@ -84,7 +84,7 @@ class VideoJobs:
         self._run(job_id, self._providers[model_id], spec, event)
         job = self.get(job_id)
         if job.status == 'Failed':
-            raise RuntimeFailure(job.error, 502)
+            raise InferenceFailure(job.error, 502)
         if job.status == 'Cancelled':
             raise ResourceCancelled('Video generation cancelled')
         return job.model_dump(mode='json')

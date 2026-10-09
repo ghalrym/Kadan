@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 from api.inference.resources import MemoryCapacity, ResourceManager
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
-from api.services.runtime import RuntimeFailure, RuntimeManager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import ChatRuntime
 
 
 class Adapter:
@@ -35,15 +36,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.adapter = Adapter()
         self.factory = Mock(return_value=self.adapter)
-        self.manager = RuntimeManager(self.factory, ResourceManager(1000, {0: 1000}))
-        context_patch = patch('api.services.runtime.read_context_settings', return_value=dict(
+        self.manager = ChatRuntime(self.factory, ResourceManager(1000, {0: 1000}))
+        context_patch = patch('api.services.chat_runtime.read_context_settings', return_value=dict(
             configured_context_limit=None, effective_context_limit=131072, supported_context_limit=131072))
         context_patch.start()
         self.addCleanup(context_patch.stop)
         self.models = Mock()
         self.models.configured_context.return_value = None
         self.models.acquire_runtime_model.return_value = (SimpleNamespace(id='medium'), Path('/models/pinned'))
-        patched = patch('api.services.runtime.model_manager', self.models)
+        patched = patch('api.services.chat_runtime.model_manager', self.models)
         patched.start()
         self.addCleanup(patched.stop)
 
@@ -52,12 +53,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.task
         self.assertEqual(self.manager.state, 'ready')
 
-    async def test_native_backend_selects_exact_planner_before_device_admission(self):
+    async def test_inference_backend_selects_exact_planner_before_device_admission(self):
         self.manager._factory = None
         for gpu, device in (('auto', 'auto'), ('1', 'cuda:1')):
             with patch.dict('os.environ', {'KADAN_LLM_BACKEND': 'native', 'KADAN_GPU': gpu}), \
-                    patch('api.inference.llm.native.build_native', return_value=self.adapter) as factory, \
-                    patch('api.services.runtime.select_device', side_effect=AssertionError('Python placement called')):
+                    patch('api.inference.llm.qwen_subprocess.build_qwen_subprocess', return_value=self.adapter) as factory, \
+                    patch('api.services.chat_runtime.select_device', side_effect=AssertionError('Python placement called')):
                 await self.ready()
                 self.assertEqual(factory.call_args.kwargs['device'], device)
                 self.assertIs(factory.call_args.args[2], self.manager.resources)
@@ -92,7 +93,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.ready()
         for error, status in ((ContextLimitError('too many tokens'), 422), (ContextMemoryError('does not fit'), 503)):
             self.adapter.generate = Mock(side_effect=error)
-            with self.assertRaises(RuntimeFailure) as caught:
+            with self.assertRaises(InferenceFailure) as caught:
                 await self.manager.complete([], None)
             self.assertEqual(caught.exception.status_code, status)
             self.assertEqual(self.manager.state, 'ready')
@@ -116,10 +117,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.models.release_runtime_model.assert_called_once()
 
     async def test_unloaded_and_wrong_model_fail(self):
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await self.manager.complete([], None)
         await self.ready()
-        with self.assertRaises(RuntimeFailure) as error:
+        with self.assertRaises(InferenceFailure) as error:
             await self.manager.complete([], 'small')
         self.assertEqual(error.exception.status_code, 409)
         await self.manager.close()
@@ -148,7 +149,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_generation_rejected(self):
         await self.ready()
         async with self.manager._generation:
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.manager.complete([], None)
         self.assertEqual(error.exception.status_code, 429)
         await self.manager.close()
@@ -165,7 +166,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.ready()
         self.adapter.is_resident = False
         self.adapter.generate = Mock(side_effect=ContextMemoryError('temporary budget pressure'))
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.manager.complete([], None)
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(self.manager.status()['state'], 'offloaded')
@@ -200,7 +201,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_bad_response_is_error_and_actual_adapter_is_closed(self):
         self.adapter.generate = Mock(return_value='')
         await self.ready()
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await self.manager.complete([], None)
         self.assertEqual(self.manager.state, 'error')
         self.assertTrue(self.adapter.closed)
@@ -222,7 +223,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.state, 'error')
         self.factory.assert_not_called()
 
-    async def test_native_import_errors_identify_missing_modules_and_preserve_cause(self):
+    async def test_inference_import_errors_identify_missing_modules_and_preserve_cause(self):
         original_import = builtins.__import__
         self.manager._factory = None
         failures = (
@@ -241,7 +242,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     raise failure
                 return original_import(name, *args, **kwargs)
             with self.subTest(error=expected), patch('builtins.__import__', side_effect=controlled_import):
-                with self.assertRaises(RuntimeFailure) as caught:
+                with self.assertRaises(InferenceFailure) as caught:
                     self.manager._construct(SimpleNamespace(id='medium'), Path('/models/pinned'), threading.Event())
                 self.assertEqual(str(caught.exception), expected)
                 self.assertIs(caught.exception.__cause__, failure)
@@ -256,9 +257,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 class ResourceBudgetTests(unittest.TestCase):
     def budgets(self, override=None):
         environment = {} if override is None else {'KADAN_GPU_BUDGET_BYTES': override}
-        manager = RuntimeManager()
+        manager = ChatRuntime()
         with patch.dict('os.environ', environment, clear=True), \
-                patch('api.services.runtime.probe_memory', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
+                patch('api.services.chat_runtime.probe_memory', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
             return manager.ensure_resources().capacity
 
     def test_default_budgets_unchanged(self):
@@ -270,5 +271,5 @@ class ResourceBudgetTests(unittest.TestCase):
     def test_invalid_or_overcommitted_budgets_fail_closed(self):
         for value in ('', '{}', '[]', '{"0":1001}', '{"2":1}', '{"0":true}',
                       '{"0":0}', '{"0":-1}', '{"0":1.5}', '{"00":1}', '{"-1":1}'):
-            with self.subTest(value=value), self.assertRaises(RuntimeFailure):
+            with self.subTest(value=value), self.assertRaises(InferenceFailure):
                 self.budgets(value)

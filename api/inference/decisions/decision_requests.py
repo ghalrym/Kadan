@@ -1,7 +1,7 @@
 """Device-aware Decisions wrapper over the retained Laya adapter."""
 import asyncio
-from api.inference.feature import native_call
-from api.services.runtime import finish_cleanup
+from api.inference.cancellation import run_cancellable_thread
+from api.inference.cancellation import await_cleanup
 
 
 class DecisionRequests:
@@ -30,9 +30,9 @@ class DecisionRequests:
         return self.adapter
     async def offload_to_ram(self):
         if hasattr(self.evaluator, 'offload_to_ram'):
-            await native_call(self.evaluator.offload_to_ram)
+            await run_cancellable_thread(self.evaluator.offload_to_ram)
     async def unload(self):
-        await finish_cleanup(asyncio.create_task(self.evaluator.close()))
+        await await_cleanup(asyncio.create_task(self.evaluator.close()))
     async def __call__(self, request, *, model=None, operation='generate', job_id=None):
         answers = await self.evaluator.evaluate(request.state, request.questions)
         return [answer.model_dump(mode='json') if hasattr(answer, 'model_dump') else answer for answer in answers]

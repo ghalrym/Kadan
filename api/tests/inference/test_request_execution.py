@@ -8,21 +8,21 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from api.inference.feature import InferenceFeature
-from api.inference.llm.feature import LLMFeature
-from api.inference.video.feature import VideoFeature
+from api.inference.request_execution import RequestExecutor
+from api.inference.llm.chat_requests import ChatRequests
+from api.inference.video.video_requests import VideoRequests
 from api.inference.video.h3 import H3Provider, H3_REVISION, GIB
-from api.inference.image.feature import ImageFeature
-from api.inference.stt.feature import STTFeature
-from api.inference.stt.model import TranscriptionManager
+from api.inference.image.image_requests import ImageRequests
+from api.inference.stt.transcription_requests import TranscriptionRequests
+from api.inference.stt.whisper_transcriber import WhisperTranscriber
 from api.inference.stt.catalog import checkpoint
-from api.inference.tts.feature import TTSFeature
+from api.inference.tts.speech_requests import SpeechRequests
 from api.inference.decisions.decision_requests import DecisionRequests
 from api.inference.decisions.laya_python import LayaPythonEvaluator
 from api.inference.resources import ResourceManager, ResourceBusy
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 from api.services.video_jobs import VideoJobs
-from api.tests.inference.stt.test_model import audio_url
+from api.tests.inference.stt.test_whisper_transcriber import audio_url
 from api.tests.inference.decisions.test_laya_python import questions
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
@@ -30,7 +30,7 @@ from api.routes.v1.decisions import DecisionRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
 
 
-class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
+class RequestExecutorContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_uses_selected_adapter_and_parks_only_its_device_allocations(self):
         resources = ResourceManager(100, {0: 50})
         host = resources.reserve('host', 'llm', host_bytes=20)
@@ -47,8 +47,8 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             service.adapter = None
         service = SimpleNamespace(adapter=None, state='unloaded', task=None, model_id=None,
             load=load, complete=complete, unload=unload, ensure_resources=lambda: resources)
-        feature = LLMFeature(service)
-        self.assertIsInstance(feature, InferenceFeature)
+        feature = ChatRequests(service)
+        self.assertIsInstance(feature, RequestExecutor)
         self.assertIs(await feature.load('chat'), adapter)
         self.assertEqual(await feature(CompletionRequest(messages=[{'role':'user','text':'hello'}]), model='chat'), 'hello')
         with device.lease():
@@ -60,7 +60,7 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
         await feature.unload()
         self.assertIsNone(feature.adapter)
 
-    async def test_whisper_load_call_park_reload_and_unload_keep_one_native_object(self):
+    async def test_whisper_load_call_park_reload_and_unload_keep_one_inference_object(self):
         resources = ResourceManager(8 * GIB, {0: 8 * GIB})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -71,10 +71,10 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             native.transcribe.return_value = {'text':'heard','language':'en'}
             factory = Mock(return_value=native)
             store = SimpleNamespace(root=root, get_checkpoint=lambda _: (None, root))
-            service = TranscriptionManager(factory, resources, store)
-            feature = STTFeature(service)
-            self.assertIsInstance(feature, InferenceFeature)
-            with patch('api.inference.stt.model.checkpoint', return_value=entry), patch.dict(
+            service = WhisperTranscriber(factory, resources, store)
+            feature = TranscriptionRequests(service)
+            self.assertIsInstance(feature, RequestExecutor)
+            with patch('api.inference.stt.whisper_transcriber.checkpoint', return_value=entry), patch.dict(
                     'os.environ', {'KADAN_WHISPER_DEVICE':'cuda:0'}):
                 self.assertIs(await feature.load('tiny'), native)
                 result = await feature(TranscriptionRequest(audio=audio_url(), formatting=False), model='tiny')
@@ -98,7 +98,7 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
         native.predict.return_value = {'answers':{'urgent':{'type':'noul','noul':.7}},'usage':{}}
         loader = Mock(return_value=native)
         feature = DecisionRequests(LayaPythonEvaluator(loader, resources, check=Mock(), ram_bytes=60))
-        self.assertIsInstance(feature, InferenceFeature)
+        self.assertIsInstance(feature, RequestExecutor)
         self.assertIs(await feature.load(), native)
         native.predict.assert_not_called()
         await feature.offload_to_ram()
@@ -121,8 +121,8 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
                 'api.inference.video.h3.runtime.ensure_resources', return_value=resources), patch(
                 'api.inference.video.h3_pipeline.H3Session', return_value=session) as construct:
             jobs = VideoJobs(directory, factory=lambda _: provider)
-            feature = VideoFeature(jobs)
-            self.assertIsInstance(feature, InferenceFeature)
+            feature = VideoRequests(jobs)
+            self.assertIsInstance(feature, RequestExecutor)
             self.assertIs(await feature.load('h3-fl2va-int8-turbo'), provider)
             session.load.assert_called_once()
             session.render.assert_not_called()
@@ -143,12 +143,12 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(jobs.get('a'*32).status, 'Done')
 
     async def test_image_contract_is_honestly_unsupported(self):
-        for feature in (ImageFeature(),):
+        for feature in (ImageRequests(),):
             with self.subTest(feature=feature.name):
-                self.assertIsInstance(feature, InferenceFeature)
-                with self.assertRaises(RuntimeFailure):
+                self.assertIsInstance(feature, RequestExecutor)
+                with self.assertRaises(InferenceFailure):
                     await feature.load('unimplemented')
-                with self.assertRaises(RuntimeFailure):
+                with self.assertRaises(InferenceFailure):
                     await feature(object())
                 await feature.offload_to_ram()
                 await feature.unload()

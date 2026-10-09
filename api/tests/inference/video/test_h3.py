@@ -145,7 +145,7 @@ class H3Tests(unittest.TestCase):
                     H3Provider()._run(spec(), Path(directory), Path(directory) / 'out.mp4', threading.Event(), [0])
             self.assertEqual(list(Path(directory).iterdir()), [])
 
-    def test_precancelled_request_never_enters_native_pipeline(self):
+    def test_precancelled_request_never_enters_inference_pipeline(self):
         from api.inference.video import h3_pipeline
         event = threading.Event()
         event.set()
@@ -154,7 +154,7 @@ class H3Tests(unittest.TestCase):
                 H3Provider()._run(spec(), Path(directory), Path(directory) / 'out.mp4', event, [0])
             render.assert_not_called()
 
-    def test_native_frames_release_before_cuda_cache_and_lease_return(self):
+    def test_inference_frames_release_before_cuda_cache_and_lease_return(self):
         from api.inference.video import h3_pipeline
 
         class TensorOwner:

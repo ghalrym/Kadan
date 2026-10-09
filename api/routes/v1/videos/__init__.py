@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from api.services.video_jobs import video_jobs
 from api.memory_manager import memory_manager
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 from api.pydantic_models.media import VideoJob
 
 router = APIRouter(prefix="/v1/videos", tags=["Videos"])
@@ -23,7 +23,7 @@ async def list_videos() -> VideosResponse:
     """Return jobs submitted to this API process."""
     try:
         return VideosResponse(jobs=[await memory_manager.video_job(job.id) for job in video_jobs.list()])
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
 
@@ -32,7 +32,7 @@ async def get_video(video_id: str) -> VideoResponse:
     """Return the real worker state, including errors and cancellation."""
     try:
         return VideoResponse(job=await memory_manager.video_job(video_id))
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Video not found") from exc
@@ -43,7 +43,7 @@ async def cancel_video(video_id: str) -> VideoResponse:
     try:
         await memory_manager.queue.cancel(video_id)
         return VideoResponse(job=video_jobs.cancel(video_id))
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Video not found") from exc

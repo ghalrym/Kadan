@@ -9,11 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted
-from api.inference.tts.runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechRegistry, SpeechResult, SpeechRuntime, SpeechUnavailable
+from api.inference.tts.speech_runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechRegistry, SpeechResult, SpeechRuntime, SpeechUnavailable
 from api.routes.v1.audio.speech import router
 from api.services import speech
 from api.memory_manager import MemoryManager, memory_manager
-from api.inference.tts.feature import TTSFeature
+from api.inference.tts.speech_requests import SpeechRequests
 from api.tests.memory_manager.helpers import direct_feature
 
 
@@ -190,8 +190,8 @@ class SpeechLifecycleTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         manager = MemoryManager()
-        manager.tts = TTSFeature(self.runtime)
-        manager.features['tts'] = manager.tts
+        manager.tts = SpeechRequests(self.runtime)
+        manager.request_executors['tts'] = manager.tts
         with patch.object(speech, 'speech_runtime', self.runtime), patch.object(
                 memory_manager, 'submit', direct_feature(manager, 'tts')), TestClient(app) as client:
             models = client.get('/v1/audio/speech/models').json()

@@ -9,7 +9,7 @@ class LifespanTests(unittest.IsolatedAsyncioTestCase):
         runtime = Mock(start=AsyncMock(), close=AsyncMock())
         downloads = Mock()
         manager = Mock(start=AsyncMock(), close=AsyncMock())
-        with patch('api.server.runtime_manager', runtime), patch('api.server.model_manager', downloads), patch('api.server.memory_manager', manager):
+        with patch('api.server.chat_runtime', runtime), patch('api.server.model_manager', downloads), patch('api.server.memory_manager', manager):
             async with lifespan(app):
                 runtime.start.assert_awaited_once()
                 runtime.close.assert_not_awaited()

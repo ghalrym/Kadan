@@ -7,7 +7,8 @@ from unittest.mock import Mock, patch
 from api.inference.resources import ResourceManager, ResourceExhausted
 from api.routes.v1.decisions import DecisionRequest
 from api.inference.decisions.laya_python import LayaPythonEvaluator, parse_answer, translate_questions
-from api.services.runtime import RuntimeFailure, RuntimeManager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import ChatRuntime
 
 
 def questions():
@@ -19,7 +20,7 @@ def questions():
 
 
 class ContractTests(unittest.TestCase):
-    def test_translation_and_native_fractional_outputs(self):
+    def test_translation_and_inference_fractional_outputs(self):
         qs = questions()
         definitions = translate_questions(qs)
         self.assertEqual(definitions['cause']['criteria'], {'load': 'Capacity'})
@@ -42,7 +43,7 @@ class ContractTests(unittest.TestCase):
             (questions()[2], dict(type='noul', noul=.5, answer_confidence=float('inf'))),
             (questions()[1], dict(type='score', score=.5, probabilities={'0': .2, '1': .2})),
         ]:
-            with self.subTest(answer=answer), self.assertRaises(RuntimeFailure) as caught:
+            with self.subTest(answer=answer), self.assertRaises(InferenceFailure) as caught:
                 parse_answer(question, answer)
             self.assertEqual(caught.exception.status_code, 502)
 
@@ -73,7 +74,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admission_failure_precedes_model_allocation(self):
         other = self.resources.reserve('active-chat', 'llm', host_bytes=60)
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(caught.exception.status_code, 503)
         self.loader.assert_not_called()
@@ -81,7 +82,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_load_failure_releases_budget(self):
         self.loader.side_effect = ValueError('broken checkpoint')
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(self.resources.snapshot()['reservations'], {})
 
@@ -102,7 +103,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.manager.loader = failing_loader
         try:
             await self.manager.evaluate('state', self.qs)
-        except RuntimeFailure as retained_error:
+        except InferenceFailure as retained_error:
             self.assertIsNotNone(retained_error.__cause__)
             self.assertIsNone(refs[0]())
             self.assertEqual(self.resources.snapshot()['reservations'], {})
@@ -110,21 +111,21 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.fail('expected load failure')
 
     async def test_no_chat_load_required_and_shared_manager_initialized_once(self):
-        runtime = RuntimeManager(resources=self.resources)
+        runtime = ChatRuntime(resources=self.resources)
         self.manager.resources = None
-        with patch('api.inference.decisions.laya_python.runtime_manager', runtime):
+        with patch('api.inference.decisions.laya_python.chat_runtime', runtime):
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(runtime.state, 'unloaded')
         self.assertIs(self.manager.resources, runtime.ensure_resources())
 
     async def test_truncation_and_preflight_fail_without_successful_answer(self):
-        self.manager.check.side_effect = RuntimeFailure('too long', 422)
-        with self.assertRaises(RuntimeFailure):
+        self.manager.check.side_effect = InferenceFailure('too long', 422)
+        with self.assertRaises(InferenceFailure):
             await self.manager.evaluate('state', self.qs)
         self.agent.predict.assert_not_called()
         self.manager.check.side_effect = None
         self.agent.predict.return_value['usage'] = {'truncated': True}
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(caught.exception.status_code, 422)
 
@@ -143,7 +144,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.01)
         self.assertFalse(task.done())
         self.assertTrue(self.manager._generation.locked())
-        with self.assertRaises(RuntimeFailure) as busy:
+        with self.assertRaises(InferenceFailure) as busy:
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(busy.exception.status_code, 429)
         with self.assertRaises(ResourceExhausted):

@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI
 
 from api.routes.v1.chat.completions import CompletionRequest, OwnedStreamResponse, chunks, router
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 from api.services.telemetry import TelemetryMiddleware, TelemetryStore
 
 
@@ -55,7 +55,7 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_error_after_content_is_not_success(self):
         async def source():
             yield {'content': 'Partial'}
-            raise RuntimeFailure('failed', 503)
+            raise InferenceFailure('failed', 503)
         events = [event async for event in chunks(source(), {'id': 'test'})]
         self.assertIn('"error"', events[-2])
         self.assertNotIn('"finish_reason": "stop"', ''.join(events))

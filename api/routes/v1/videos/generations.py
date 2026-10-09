@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import VideoJob
 from api.memory_manager import memory_manager
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
@@ -29,7 +29,7 @@ async def generate_video(body: VideoGenerationRequest) -> VideoGenerationRespons
     """Queue a validated native generation and return its actual job identifier."""
     try:
         return VideoGenerationResponse(job=await memory_manager.submit(body, feature='video'))
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -2,7 +2,8 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from api.services.runtime import RuntimeFailure, runtime_manager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import chat_runtime
 
 router = APIRouter(prefix='/model-lifecycle', tags=['Model lifecycle'])
 
@@ -28,7 +29,7 @@ class ModelLoadRequest(BaseModel):
 @router.get('', operation_id='getModelLifecycleStatus')
 def get_model_lifecycle() -> ModelLifecycleStatus:
     """Return current model state, context limits and shared-memory accounting without loading a model."""
-    return ModelLifecycleStatus(**runtime_manager.status())
+    return ModelLifecycleStatus(**chat_runtime.status())
 
 
 @router.post('/load', status_code=202, operation_id='loadSelectedModel')
@@ -41,12 +42,12 @@ async def load_selected_model(body: ModelLoadRequest | None = None) -> ModelLife
         options = {} if body is None else {'model_id': body.model_id}
         if body is not None and 'context_limit' in body.model_fields_set:
             options['context_limit'] = body.context_limit
-        return ModelLifecycleStatus(**await runtime_manager.load(**options))
-    except RuntimeFailure as exc:
+        return ModelLifecycleStatus(**await chat_runtime.load(**options))
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.post('/unload', operation_id='unloadSelectedModel')
 async def unload_selected_model() -> ModelLifecycleStatus:
     """Request cooperative cancellation and wait for model cleanup before returning unloaded state."""
-    return ModelLifecycleStatus(**await runtime_manager.unload())
+    return ModelLifecycleStatus(**await chat_runtime.unload())

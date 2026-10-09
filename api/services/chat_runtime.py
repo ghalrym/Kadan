@@ -1,10 +1,12 @@
-"""Kadan-owned model lifecycle, including an opt-in original native worker."""
+"""Chat model selection, loading and generation lifecycle."""
 import asyncio
 from contextlib import suppress
 import os
 import json
 import threading
 
+from api.inference.errors import InferenceFailure
+from api.inference.cancellation import await_cleanup
 from api.inference.placement import select_device
 from api.inference.resources import ResourceManager, ResourceExhausted, probe_memory
 from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
@@ -22,28 +24,7 @@ def read_context_settings(path, configured):
                 effective_context_limit=effective)
 
 
-async def finish_cleanup(task):
-    """Keep ownership until cleanup ends, then propagate any caller cancellation."""
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-class RuntimeFailure(Exception):
-    def __init__(self, detail: str, status_code: int = 503):
-        """Attach an HTTP status to a caller-visible lifecycle or inference failure."""
-        super().__init__(detail)
-        self.status_code = status_code
-
-
-class RuntimeManager:
+class ChatRuntime:
     def __init__(self, factory=None, resources=None):
         """Initialize one process-local controller with optional test factory and shared resource
         manager; allocate no model at construction.
@@ -92,7 +73,7 @@ class RuntimeManager:
                                 raise ValueError()
                             budgets[int(index)] = size
                     except (ValueError, TypeError) as exc:
-                        raise RuntimeFailure('KADAN_GPU_BUDGET_BYTES must be a nonempty JSON object of GPU indices '
+                        raise InferenceFailure('KADAN_GPU_BUDGET_BYTES must be a nonempty JSON object of GPU indices '
                                              'to positive byte budgets within currently free device memory.') from exc
                 self.resources = ResourceManager(int(available.host_bytes * .8),
                     budgets, probe=probe_memory)
@@ -105,7 +86,7 @@ class RuntimeManager:
             return
         try:
             await self.load()
-        except (RuntimeFailure, OSError, ValueError) as exc:
+        except (InferenceFailure, OSError, ValueError) as exc:
             self.model_id, self.state, self.error = selected, 'error', str(exc)
 
     def _construct(self, entry, path, cancel):
@@ -113,17 +94,17 @@ class RuntimeManager:
         context settings; close the adapter if configuration fails.
         """
         factory = self._factory
-        native = False
+        uses_subprocess = False
         if factory is None:
             backend = os.environ.get('KADAN_LLM_BACKEND', 'python')
             if backend not in ('python', 'native'):
-                raise RuntimeFailure('KADAN_LLM_BACKEND must be python or native.')
+                raise InferenceFailure('KADAN_LLM_BACKEND must be python or native.')
             if backend == 'native':
                 # Lazy optional backend import preserves startup/default behavior.
-                from api.inference.llm.native import build_native
-                factory, native = build_native, True
+                from api.inference.llm.qwen_subprocess import build_qwen_subprocess
+                factory, uses_subprocess = build_qwen_subprocess, True
         if factory is None:
-            # Keep the API available when native dependencies are broken so Settings
+            # Keep the API available when model dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.
             try:
                 from api.inference.llm.model_adapter import build_runtime
@@ -131,15 +112,15 @@ class RuntimeManager:
                 detail = (f'Inference dependency is missing: {exc.name}.'
                           if isinstance(exc, ModuleNotFoundError) and exc.name
                           else f'Inference runtime import failed: {exc}')
-                raise RuntimeFailure(detail) from exc
+                raise InferenceFailure(detail) from exc
             factory = build_runtime
         self.ensure_resources()
         gpu = os.environ.get('KADAN_GPU', 'auto')
         if gpu != 'auto' and not gpu.isdecimal():
-            raise RuntimeFailure('KADAN_GPU must be auto or one primary GPU index.')
-        if native:
-            # Native planning admits its exact arena in configure_context; the
-            # Python adapter's 2 GiB placement floor is not a native budget.
+            raise InferenceFailure('KADAN_GPU must be auto or one primary GPU index.')
+        if uses_subprocess:
+            # Subprocess planning admits its exact arena in configure_context; the
+            # Python adapter's 2 GiB placement floor is not a subprocess budget.
             device = 'auto' if gpu == 'auto' else f'cuda:{gpu}'
         elif self._factory is not None:
             device = f'cuda:{gpu if gpu != "auto" else 0}'
@@ -177,10 +158,10 @@ class RuntimeManager:
         """Close the owned adapter on a worker thread before releasing selection; cleanup errors
         preserve its handle.
         """
-        await finish_cleanup(asyncio.create_task(self._finish_dispose()))
+        await await_cleanup(asyncio.create_task(self._finish_dispose()))
 
     async def _finish_dispose(self):
-        """Release the handle and selection only after native close has succeeded."""
+        """Release the handle and selection only after subprocess close has succeeded."""
         adapter = self.adapter
         if adapter is not None:
             await asyncio.to_thread(adapter.close)
@@ -192,13 +173,13 @@ class RuntimeManager:
         try:
             entry, path = model_manager.acquire_runtime_model()
         except ValueError as exc:
-            raise RuntimeFailure(str(exc), 409) from exc
+            raise InferenceFailure(str(exc), 409) from exc
         self._leased = True
         try:
             self.context_settings = read_context_settings(path, model_manager.configured_context(entry.id))
         except (ValueError, OSError) as exc:
             self._release()
-            raise RuntimeFailure(f'Cannot load context configuration: {exc}', 422) from exc
+            raise InferenceFailure(f'Cannot load context configuration: {exc}', 422) from exc
         self._cancel = threading.Event()
         self.model_id, self.error, self.state = entry.id, None, 'loading'
         self.task = asyncio.create_task(self._load(entry, path, self._cancel))
@@ -215,13 +196,13 @@ class RuntimeManager:
             if model_id is None:
                 if (self.state in ('loading', 'ready', 'unloading') or self._generation.locked()
                         or (self.task is not None and not self.task.done())):
-                    raise RuntimeFailure('Unload the current model before loading another.', 409)
+                    raise InferenceFailure('Unload the current model before loading another.', 409)
                 return self._start_load(model_manager)
 
             def validate():
                 entry = model_manager._language_entry(model_id)
                 if not model_manager._checkpoint_complete(entry):
-                    raise RuntimeFailure('Download this model completely before loading it.', 409)
+                    raise InferenceFailure('Download this model completely before loading it.', 409)
                 configured = model_manager.configured_context(model_id) if context_limit is _UNSET else context_limit
                 if configured is not None and (type(configured) is not int or not 1 <= configured <= 2**31 - 1):
                     raise ValueError('Context limit must be a positive integer or null')
@@ -236,7 +217,7 @@ class RuntimeManager:
                     return self.status()
                 if (self.state in ('loading', 'unloading') or self._generation.locked()
                         or (self.task is not None and not self.task.done())):
-                    raise RuntimeFailure('Model lifecycle or generation is busy; retry when it finishes.', 409)
+                    raise InferenceFailure('Model lifecycle or generation is busy; retry when it finishes.', 409)
                 if self.adapter is not None or self._leased:
                     await self._unload_locked()
                 # Selection/context endpoints use this same store lock. No await
@@ -259,14 +240,14 @@ class RuntimeManager:
                                     temporary.write_bytes(data)
                                     temporary.replace(path)
                         except OSError as rollback:
-                            raise RuntimeFailure('Load failed and saved settings could not be restored; refresh Settings before retrying.', 503) from rollback
+                            raise InferenceFailure('Load failed and saved settings could not be restored; refresh Settings before retrying.', 503) from rollback
                         raise failure
             except BusyError as exc:
-                raise RuntimeFailure(str(exc), 409) from exc
+                raise InferenceFailure(str(exc), 409) from exc
             except ValueError as exc:
-                raise RuntimeFailure(f'Cannot load context configuration: {exc}', 422) from exc
+                raise InferenceFailure(f'Cannot load context configuration: {exc}', 422) from exc
             except OSError as exc:
-                raise RuntimeFailure('Model storage is unavailable; load was not started. Refresh Settings before retrying.', 503) from exc
+                raise InferenceFailure('Model storage is unavailable; load was not started. Refresh Settings before retrying.', 503) from exc
 
     async def _load(self, entry, path, cancel):
         """Await a shielded construction worker. Timeout or cancellation requests cooperative
@@ -281,7 +262,7 @@ class RuntimeManager:
             except asyncio.TimeoutError:
                 cancel.set()
                 self.adapter = await asyncio.shield(worker)
-                raise RuntimeFailure('Model load exceeded 30 minutes and was cancelled.')
+                raise InferenceFailure('Model load exceeded 30 minutes and was cancelled.')
             if cancel.is_set():
                 await self._dispose()
                 return
@@ -307,7 +288,7 @@ class RuntimeManager:
     async def _unload_locked(self):
         """Retain transition ownership through cleanup, even on repeated caller cancellation."""
         self.state = 'unloading'
-        return await finish_cleanup(asyncio.create_task(self._finish_unload()))
+        return await await_cleanup(asyncio.create_task(self._finish_unload()))
 
     async def _finish_unload(self):
         """Complete the owned unload transaction before its caller may release the lock."""
@@ -335,11 +316,11 @@ class RuntimeManager:
         while other inference failures dispose it.
         """
         if self.state != 'ready' or self.adapter is None:
-            raise RuntimeFailure('No model is ready. Download, select and load one in Settings.')
+            raise InferenceFailure('No model is ready. Download, select and load one in Settings.')
         if model is not None and model != self.model_id:
-            raise RuntimeFailure('Requested model is not the loaded model.', 409)
+            raise InferenceFailure('Requested model is not the loaded model.', 409)
         if self._generation.locked():
-            raise RuntimeFailure('A chat request is already running. Retry when it finishes.', 429)
+            raise InferenceFailure('A chat request is already running. Retry when it finishes.', 429)
         async with self._generation:
             adapter = self.adapter
             self._cancel = threading.Event()
@@ -356,11 +337,11 @@ class RuntimeManager:
                     self._cancel.set()
                     with suppress(Exception):
                         await asyncio.shield(worker)
-                    raise RuntimeFailure('Generation timed out; cooperative cleanup completed.', 504)
+                    raise InferenceFailure('Generation timed out; cooperative cleanup completed.', 504)
                 if self.adapter is not adapter or self.state != 'ready':
-                    raise RuntimeFailure('Model unloaded during generation.', 409)
+                    raise InferenceFailure('Model unloaded during generation.', 409)
                 if not isinstance(text, str) or not text.strip():
-                    raise RuntimeFailure('Model produced no answer text.', 502)
+                    raise InferenceFailure('Model produced no answer text.', 502)
                 return text
             except asyncio.CancelledError:
                 self._cancel.set()
@@ -370,18 +351,18 @@ class RuntimeManager:
                 raise
             except (ContextLimitError, ContextMemoryError) as exc:
                 # Admission failures are request errors, not a damaged model.
-                raise RuntimeFailure(str(exc), 422 if isinstance(exc, ContextLimitError) else 503) from exc
+                raise InferenceFailure(str(exc), 422 if isinstance(exc, ContextLimitError) else 503) from exc
             except Exception as exc:
                 if self.state != 'unloading':
                     async with self._transition:
                         await self._dispose()
                         self.state, self.error = 'error', str(exc)
-                if isinstance(exc, RuntimeFailure):
+                if isinstance(exc, InferenceFailure):
                     raise
-                raise RuntimeFailure(f'Inference failed: {exc}', 502) from exc
+                raise InferenceFailure(f'Inference failed: {exc}', 502) from exc
             finally:
                 if self._worker is worker:
                     self._worker = None
 
 
-runtime_manager = RuntimeManager()
+chat_runtime = ChatRuntime()

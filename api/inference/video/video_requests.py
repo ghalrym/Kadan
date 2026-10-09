@@ -1,17 +1,17 @@
-"""Video wrapper owning the selected native provider through VideoJobs."""
-from api.inference.feature import native_call
+"""Video wrapper owning the selected video provider through VideoJobs."""
+from api.inference.cancellation import run_cancellable_thread
 from api.inference.video import VideoSpec
 
 
-class VideoFeature:
+class VideoRequests:
     operations = ('generate',)
     name, workload = 'video', 'video'
-    def __init__(self, service):
-        self.service = service
+    def __init__(self, video_jobs):
+        self.video_jobs = video_jobs
         self.model = None
     @property
     def adapter(self):
-        return self.service.provider(self.model) if self.model is not None else None
+        return self.video_jobs.provider(self.model) if self.model is not None else None
     def select(self, request):
         return request.model
     def validate(self, payload, operation):
@@ -19,22 +19,22 @@ class VideoFeature:
         from api.routes.v1.videos.generations import VideoGenerationRequest
         return VideoGenerationRequest.model_validate(payload)
     def preflight(self, request):
-        self.service.validate(request.model, VideoSpec(**request.model_dump(exclude={'model'})))
+        self.video_jobs.validate(request.model, VideoSpec(**request.model_dump(exclude={'model'})))
     def queued(self, job_id, request):
-        return self.service.prepare(job_id, VideoSpec(**request.model_dump(exclude={'model'})))
+        return self.video_jobs.prepare(job_id, VideoSpec(**request.model_dump(exclude={'model'})))
     async def load(self, model=None):
         selected = model or self.model
-        await native_call(self.service.load, selected)
+        await run_cancellable_thread(self.video_jobs.load, selected)
         self.model = selected
         return self.adapter
     async def offload_to_ram(self):
-        await native_call(self.service.offload_to_ram)
+        await run_cancellable_thread(self.video_jobs.offload_to_ram)
     async def unload(self):
-        await native_call(lambda cancel: self.service.unload())
+        await run_cancellable_thread(lambda cancel: self.video_jobs.unload())
         self.model = None
     async def __call__(self, request, *, model=None, operation='generate', job_id=None):
         model = model or self.select(request)
         self.model = model
         spec = VideoSpec(**request.model_dump(exclude={'model'}))
-        # Native provider retains atomic load/forward leases and output publication.
-        return await native_call(self.service.run, job_id, model, spec)
+        # Video provider retains atomic load/forward leases and output publication.
+        return await run_cancellable_thread(self.video_jobs.run, job_id, model, spec)

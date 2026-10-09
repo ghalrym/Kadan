@@ -6,7 +6,7 @@ import threading
 import unittest
 import uuid
 
-from api.inference.feature import native_call
+from api.inference.cancellation import run_cancellable_thread
 from api.memory_manager.queue import InferenceQueue
 from api.memory_manager.streaming import QueuedStream
 
@@ -21,7 +21,7 @@ class StreamQueueTests(unittest.IsolatedAsyncioTestCase):
                 cancel.wait(5)
                 cleaned.set()
             async def execute(job):
-                await native_call(work)
+                await run_cancellable_thread(work)
                 return 'done'
             queue = InferenceQueue(execute, url=os.environ['KADAN_TEST_REDIS_URL'],
                 prefix='kadan:test:'+uuid.uuid4().hex+':', lock_path=Path(directory)/'lock')

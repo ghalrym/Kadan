@@ -10,7 +10,7 @@ from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
-from api.services.runtime import runtime_manager as runtime
+from api.services.chat_runtime import chat_runtime as runtime
 from api.inference.decisions.laya_python import clear_failure_frames
 
 H3_REVISION = H3_INT8_REVISION

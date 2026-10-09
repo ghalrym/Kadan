@@ -11,9 +11,9 @@ import uuid
 
 from redis.asyncio import Redis
 
-from api.inference.feature import native_call
+from api.inference.cancellation import run_cancellable_thread
 from api.memory_manager.queue import InferenceQueue
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 
 @unittest.skipUnless(os.getenv('KADAN_TEST_REDIS_URL'), 'Set KADAN_TEST_REDIS_URL for real Redis integration')
@@ -30,7 +30,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
                 self.started.set()
                 await self.release.wait()
             if job.payload.get('fail'):
-                raise RuntimeFailure('native failure', 422)
+                raise InferenceFailure('native failure', 422)
             return {'number': job.payload['number']}
 
         self.execute = execute
@@ -60,12 +60,12 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.started.wait(), 2)
         second = await self.submit(2, fail=True)
         third = await self.submit(3)
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.submit(4)
         self.assertEqual(caught.exception.status_code, 429)
         self.release.set()
         self.assertEqual(await self.queue.wait(first), {'number': 1})
-        with self.assertRaisesRegex(RuntimeFailure, 'native failure'):
+        with self.assertRaisesRegex(InferenceFailure, 'native failure'):
             await self.queue.wait(second)
         self.assertEqual(await self.queue.wait(third), {'number': 3})
         self.assertEqual(self.order, [1, 2, 3])
@@ -80,12 +80,12 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.cancel(second)
         self.release.set()
         await self.queue.wait(first)
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await self.queue.wait(second)
         self.assertEqual(self.order, [1])
         self.assertEqual((await self.queue.get(second))['state'], 'cancelled')
 
-    async def test_native_cancel_waits_for_thread_before_next_job(self):
+    async def test_inference_cancel_waits_for_thread_before_next_job(self):
         started, cleaned = threading.Event(), threading.Event()
 
         def native(cancel):
@@ -95,7 +95,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
 
         async def execute(job):
             if job.payload['number'] == 1:
-                await native_call(native)
+                await run_cancellable_thread(native)
             else:
                 self.assertTrue(cleaned.is_set())
             return job.payload
@@ -137,7 +137,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         first = await self.submit(1, wait=True)
         await self.started.wait()
         other = self.make_queue()
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await other.start()
         await other.close()
         self.assertEqual((await self.queue.get(first))['state'], 'running')
@@ -147,7 +147,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_different_volume_cannot_consume_same_namespace(self):
         other = self.make_queue()
         other.lock_path = Path(self.directory.name) / 'other.lock'
-        with self.assertRaisesRegex(RuntimeFailure, 'different model volume'):
+        with self.assertRaisesRegex(InferenceFailure, 'different model volume'):
             await other.start()
         await other.close()
 
@@ -161,7 +161,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.redis.rpush(self.queue.key('pending'), stale_ids[0])
         await self.queue.start()
         for job_id in stale_ids:
-            with self.assertRaisesRegex(RuntimeFailure, 'restarted'):
+            with self.assertRaisesRegex(InferenceFailure, 'restarted'):
                 await self.queue.wait(job_id)
         self.assertEqual(self.order, [])
         self.assertEqual(await self.queue.wait(await self.submit(3)), {'number': 3})
@@ -170,7 +170,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.queue.submit('llm', 'generate', {'tensor': object()})
         self.queue.max_payload = 100
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.submit(1, text='x' * 200)
         self.assertEqual(caught.exception.status_code, 413)
 
@@ -185,7 +185,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.queue.get(second))['state'], 'failed')
         self.assertEqual(self.order, [1])
 
-    async def test_redis_connection_failure_stops_native_and_retains_lock(self):
+    async def test_redis_connection_failure_stops_inference_and_retains_lock(self):
         cleaned = asyncio.Event()
 
         async def execute(job):
@@ -204,7 +204,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.queue._consumer, 2)
         self.assertFalse(self.queue._ready)
         other = self.make_queue()
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             await other.start()
         await other.close()
         await self.queue.redis.aclose()
@@ -244,12 +244,12 @@ asyncio.run(main())
             self.assertEqual((await self.queue.get(job_id))['state'], 'failed')
         self.assertEqual(self.order, [])
 
-    async def test_invalid_native_result_fails_one_job_without_stopping_consumer(self):
+    async def test_invalid_inference_result_fails_one_job_without_stopping_consumer(self):
         async def execute(job):
             return float('nan') if job.payload['number'] == 1 else {'number': 2}
         self.queue.execute = execute
         first, second = await self.submit(1), await self.submit(2)
-        with self.assertRaisesRegex(RuntimeFailure, 'invalid or oversized'):
+        with self.assertRaisesRegex(InferenceFailure, 'invalid or oversized'):
             await self.queue.wait(first)
         self.assertEqual(await self.queue.wait(second), {'number': 2})
         self.assertTrue(self.queue._ready)

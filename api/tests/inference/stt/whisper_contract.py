@@ -10,14 +10,14 @@ from fastapi.testclient import TestClient
 
 from api.inference.resources import ResourceManager
 from api.memory_manager import MemoryManager
-from api.services.runtime import RuntimeManager
+from api.services.chat_runtime import ChatRuntime
 from api.tests.memory_manager.helpers import direct_feature
 from api.server import app
 from api.services.model_catalog import CATALOG
 from api.services.model_downloads import ModelManager
-from api.inference.stt.model import TranscriptionManager
+from api.inference.stt.whisper_transcriber import WhisperTranscriber
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
-from api.tests.inference.stt.test_model import audio_url
+from api.tests.inference.stt.test_whisper_transcriber import audio_url
 
 
 def assert_checkpoint_contract(case, name, digest):
@@ -41,12 +41,12 @@ def assert_checkpoint_contract(case, name, digest):
         native.modules.return_value = []
         native.transcribe.return_value = {'text': 'controlled native output', 'language': 'en'}
         factory = Mock(return_value=native)
-        manager = TranscriptionManager(factory, resources, store)
-        memory = MemoryManager(runtime=RuntimeManager(resources=resources), transcription=manager)
+        manager = WhisperTranscriber(factory, resources, store)
+        memory = MemoryManager(runtime=ChatRuntime(resources=resources), transcription=manager)
         with patch('api.routes.v1.audio.transcriptions.memory_manager.submit', direct_feature(memory, 'stt')), patch.dict(CATALOG, {model_id: fixture_entry}), patch(
                 'api.routes.v1.models.model_manager', store), patch(
-                'api.routes.v1.audio.transcriptions.get_transcription_manager', return_value=manager), patch(
-                'api.inference.stt.model.checkpoint', return_value=replace(entry, sha256=fixture_digest)), patch(
+                'api.routes.v1.audio.transcriptions.get_whisper_transcriber', return_value=manager), patch(
+                'api.inference.stt.whisper_transcriber.checkpoint', return_value=replace(entry, sha256=fixture_digest)), patch(
                 'api.services.model_downloads.urlopen', side_effect=source):
             client = TestClient(app)
             case.assertIn(name, client.get('/v1/audio/transcriptions/models').json()['models'])

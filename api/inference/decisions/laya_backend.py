@@ -3,7 +3,7 @@ import os
 
 from api.inference.decisions.laya_python import python_laya_evaluator
 from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 
 def create_laya_evaluator():
@@ -12,7 +12,7 @@ def create_laya_evaluator():
         return python_laya_evaluator
     if backend == 'native':
         return LayaSubprocessEvaluator()
-    raise RuntimeFailure('KADAN_DECISION_BACKEND must be python or native.')
+    raise InferenceFailure('KADAN_DECISION_BACKEND must be python or native.')
 
 
 laya_evaluator = create_laya_evaluator()

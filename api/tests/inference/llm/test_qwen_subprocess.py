@@ -16,7 +16,8 @@ import unittest
 from unittest.mock import patch
 
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
-from api.inference.llm.native import NativeAdapter, NativeProtocolError, NATIVE_HOST_BYTES
+from api.inference.llm.qwen_subprocess import QwenSubprocessAdapter, QWEN_HOST_BYTES
+from api.inference.line_protocol import LineProtocolError
 from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceManager
 
 WORKER = r'''
@@ -61,7 +62,7 @@ class Stream:
     def end(self):pass
 
 
-class NativeAdapterTests(unittest.TestCase):
+class QwenSubprocessAdapterTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -73,7 +74,7 @@ class NativeAdapterTests(unittest.TestCase):
         self.binary.chmod(0o700)
         self.resources = ResourceManager(2*1024**3,{0:1024**3})
         self.tokenizer = Tokenizer()
-        self.adapter = NativeAdapter(SimpleNamespace(id='small'), self.root, self.resources,
+        self.adapter = QwenSubprocessAdapter(SimpleNamespace(id='small'), self.root, self.resources,
             tokenizer_factory=lambda root:self.tokenizer, streamer_factory=Stream,
             worker_path=str(self.binary), load_timeout=.5, step_timeout=.3)
         self.addCleanup(self.cleanup)
@@ -200,14 +201,14 @@ class NativeAdapterTests(unittest.TestCase):
     def test_bad_ready_and_load_timeouts_release_reservations(self):
         for mode in ('badready','planhang','readyhang'):
             self.mode(mode)
-            with self.subTest(mode=mode),self.assertRaises((NativeProtocolError,TimeoutError)):
+            with self.subTest(mode=mode),self.assertRaises((LineProtocolError,TimeoutError)):
                 self.loaded()
             self.assertFalse(self.resources.snapshot()['reservations'])
 
     def test_malformed_steps_crash_and_timeout_poison_child(self):
         for mode in ('badprogress','badeos','crash','oversize','hang'):
             self.mode(mode);self.loaded()
-            with self.subTest(mode=mode),self.assertRaises((NativeProtocolError,TimeoutError)):
+            with self.subTest(mode=mode),self.assertRaises((LineProtocolError,TimeoutError)):
                 self.generate()
             self.assertFalse(self.adapter.is_resident)
             self.adapter._close_locked()  # Runtime disposes failed generations after leases exit.

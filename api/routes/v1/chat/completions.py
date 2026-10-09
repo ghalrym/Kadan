@@ -11,7 +11,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
 from api.memory_manager import memory_manager
 from api.memory_manager.http import infer
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 router = APIRouter(prefix='/v1/chat/completions', tags=['Chat'])
 
@@ -117,10 +117,10 @@ async def chunks(stream, identity, measurement=None, request_started=None):
             if 'finish_reason' in event:
                 finish = event['finish_reason']
         if finish not in ('stop', 'length'):
-            raise RuntimeFailure('Generation ended without a terminal event.', 502)
+            raise InferenceFailure('Generation ended without a terminal event.', 502)
         yield chunk({}, finish, cache)
         yield 'data: [DONE]\n\n'
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         yield event_frame({'error': {'message': str(exc), 'type': 'inference_error', 'code': exc.status_code}})
         yield 'data: [DONE]\n\n'
 

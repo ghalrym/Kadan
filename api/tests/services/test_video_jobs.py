@@ -7,7 +7,7 @@ import unittest
 from api.inference.video import VideoSpec
 from api.inference.resources import ResourceCancelled
 from api.services.video_jobs import VideoJobs
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 
 class Provider:
@@ -43,7 +43,7 @@ class VideoJobsTests(unittest.TestCase):
         self.assertEqual(finished.output_url, f'/v1/videos/{finished.id}/content')
 
     def test_failure_cleans_partial_and_allows_retry(self):
-        with self.assertRaises(RuntimeFailure):
+        with self.assertRaises(InferenceFailure):
             self.jobs.run('a' * 32, 'test', VideoSpec('fail'), threading.Event())
         self.assertEqual(self.jobs.get('a' * 32).status, 'Failed')
         self.assertEqual(list(Path(self.directory.name).iterdir()), [])

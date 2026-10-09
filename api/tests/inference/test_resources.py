@@ -268,7 +268,7 @@ class PhysicalEvictionTests(unittest.TestCase):
         self.assertEqual(events, ['evict'])
         self.assertNotIn('image', manager.snapshot()['reservations'])
 
-    def test_busy_candidate_is_skipped_for_alternative_idle_resident(self):
+    def test_busy_candidate_is_skipped_for_alterinference_idle_resident(self):
         free = [100]
         events = []
         manager = ResourceManager(1000, {0: 1000}, probe=lambda: MemoryCapacity(1000, {0: free[0]}))
