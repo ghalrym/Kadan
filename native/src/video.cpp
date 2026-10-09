@@ -259,4 +259,90 @@ void H3DecoderQkv::execute(std::span<const float> input, const std::string& outp
     cancelled(cancel); // Atomic no-overwrite publication is the completion boundary.
     artifact.publish(output);
 }
+H3QkRope::H3QkRope(std::shared_ptr<Resources> resources) : resources_(std::move(resources)) {
+    check(bool(resources_), "video_resources_required");
+}
+H3QkRope::~H3QkRope() { unload(); }
+Footprint H3QkRope::host(Bytes bytes) const {
+    auto footprint=resources_->snapshot().capacity;
+    for (auto& value:footprint) value=0;
+    footprint[0]=bytes;
+    return footprint;
+}
+void H3QkRope::load(const std::atomic_bool& cancel) {
+    cancelled(cancel);
+    check(!loaded(), "video_already_loaded");
+    Reservation allocation(*resources_,host(resident_bytes));
+    auto frequencies=std::make_unique<float[]>(8);
+    for (std::size_t i=0;i<8;++i) frequencies[i]=1.0f/std::pow(100.0f,float(i)/8.0f);
+    cancelled(cancel);
+    resources_->loaded(allocation.handle);
+    frequencies_=std::move(frequencies);
+    resident_=allocation.handle; allocation.handle=0;
+}
+void H3QkRope::unload() {
+    if (!resident_) return;
+    resources_->begin_eviction(resident_);
+    frequencies_.reset();
+    resources_->released(resident_); resident_=0;
+}
+void H3QkRope::execute(std::span<const float> qkv, std::span<const float> coordinates,
+                     const std::string& output, const std::atomic_bool& cancel,
+                     const std::function<void(std::size_t)>& on_heads) {
+    static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
+    cancelled(cancel);
+    check(loaded(), "video_not_loaded");
+    check(!qkv.empty() && qkv.size()%width==0, "video_input_shape");
+    const auto tokens=qkv.size()/width;
+    check(tokens<=max_tokens, "video_input_limit");
+    check(coordinates.size()==tokens*3, "video_coordinate_shape");
+    Pin pin(*resources_,resident_);
+    Reservation scratch(*resources_,host(scratch_bytes));
+    Artifact artifact(output);
+    const auto header="KADAN_H3_QK_ROPE_V1\n"+std::to_string(tokens)+" 32 3 64\nF32LE\n";
+    artifact.write(header.data(),header.size());
+    std::array<float,24> cosine,sine;
+    std::array<float,192> row;
+    constexpr float two_pi=6.2831853071795864769f;
+    for (std::size_t token=0;token<tokens;++token) {
+        cancelled(cancel);
+        for (std::size_t axis=0;axis<3;++axis) {
+            const auto coordinate=coordinates[token*3+axis];
+            check(std::isfinite(coordinate) && coordinate>=-1 && coordinate<=1, "video_coordinate_range");
+            for (std::size_t i=0;i<8;++i) {
+                const float angle=(two_pi*coordinate)*frequencies_[i];
+                cosine[axis*8+i]=std::cos(angle); sine[axis*8+i]=std::sin(angle);
+            }
+        }
+        for (std::size_t head=0;head<heads;++head) {
+            cancelled(cancel);
+            const auto begin=token*width+head*192;
+            for (std::size_t i=0;i<192;++i) {
+                const float value=qkv[begin+i];
+                check(std::isfinite(value), "video_nonfinite_input");
+                row[i]=value;
+            }
+            for (std::size_t kind=0;kind<2;++kind) {
+                const auto offset=kind*head_dim;
+                float squares=0;
+                for (std::size_t i=0;i<head_dim;++i) squares+=row[offset+i]*row[offset+i];
+                check(std::isfinite(squares), "video_nonfinite_output");
+                const float inverse=1.0f/std::sqrt(squares/64.0f+1e-5f);
+                for (std::size_t i=0;i<head_dim;++i) row[offset+i]*=inverse;
+                // NeoX split-half rotation over 48 channels, not adjacent pairs.
+                for (std::size_t i=0;i<24;++i) {
+                    const float x=row[offset+i],y=row[offset+i+24];
+                    row[offset+i]=x*cosine[i]-y*sine[i];
+                    row[offset+i+24]=y*cosine[i]+x*sine[i];
+                }
+            }
+            for (float value:row) check(std::isfinite(value), "video_nonfinite_output");
+            if (on_heads) on_heads(token*heads+head+1);
+            cancelled(cancel);
+            artifact.write(row.data(),sizeof(row));
+        }
+    }
+    cancelled(cancel);
+    artifact.publish(output);
+}
 } // namespace kadan::video
