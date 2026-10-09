@@ -1,0 +1,62 @@
+--- frozen/queue_image_a.py
++++ proposed/queue_image_a.py
+@@ -1 +1 @@
+-"""Operator procedure for the already reviewed bounded queue activation plan."""
++"""Proposed image-A operator. Requires separate exact-source/bundle execution approval."""
+@@ -7 +7 @@
+-from api_baseline import compare
++from api_baseline import compare, verify
+@@ -10,0 +11,2 @@
++from durable_evidence import append
++from window_supervisor import load_context, arm, LABEL
+@@ -13,0 +16,4 @@
++WINDOW_DIR=Path(os.environ['KADAN_WINDOW_DIRECTORY'])
++WINDOW=load_context(WINDOW_DIR)
++assert time.monotonic()<WINDOW['work_deadline']
++host.COMMAND_DEADLINE=WINDOW['work_deadline']
+@@ -18 +23,0 @@
+-assert COMMIT=='3f5404ca401d831011865e39d2b05695098da893'
+@@ -20,0 +26,2 @@
++assert binding['source_commit']==COMMIT
++assert binding['protocol']=='durable-image-a-bundle-v2'
+@@ -25 +32 @@
+-assert review==dict(protocol='single-api-image-a-v1',source_commit=COMMIT,
++assert review==dict(protocol='single-api-image-a-v2',source_commit=COMMIT,
+@@ -42 +48,0 @@
+- from api_baseline import verify
+@@ -72,2 +78,2 @@
+-assert hashlib.sha256((payloads/'logging.json').read_bytes()).hexdigest()==binding['logging_sha256']
+-started=time.monotonic();end=started+1800;measure_end=started+1200;paused=False;owned=False;baseline=None;passed=False
++assert hashlib.sha256((BUNDLE/'logging.json').read_bytes()).hexdigest()==binding['logging_sha256']
++started=WINDOW['started'];end=WINDOW['operator_end'];measure_end=WINDOW['work_deadline'];paused=False;owned=False;baseline=None;passed=False
+@@ -96 +102,3 @@
+-  finally:self.finish=time.monotonic()
++  finally:
++   self.finish=time.monotonic()
++   append(E/'request-events.jsonl',dict(event='response',label=self.label,job=self.job,start=self.start,finish=self.finish,result=self.result,error=self.error))
+@@ -145,0 +154 @@
++   append(E/'request-events.jsonl',dict(event='admitted',label=label,job=call.job,start=call.start,monotonic=time.monotonic()))
+@@ -160,0 +170 @@
++ arm(WINDOW_DIR,WINDOW,api_id=api_id,identity=identity,others=others,desktop=desktop,temporary_name=NAME,commit=COMMIT)
+@@ -167,0 +178 @@
++ env['PYTHONPATH']='/run/kadan-window-tools'+(':'+env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+@@ -173 +184 @@
+- cmd=['docker','run','-d','--name',NAME,'--network',before['HostConfig']['NetworkMode'],'--memory','256g','--memory-swap','256g','--shm-size','1g','--gpus','"device='+','.join(host.GPUS)+'"','-p','127.0.0.1:18000:8000','--log-driver','json-file','--log-opt','max-size=16m','--log-opt','max-file=4','--env-file',envfile]
++ cmd=['docker','run','-d','--name',NAME,'--label',LABEL+'='+WINDOW['token'],'--network',before['HostConfig']['NetworkMode'],'--memory','256g','--memory-swap','256g','--shm-size','1g','--gpus','"device='+','.join(host.GPUS)+'"','-p','127.0.0.1:18000:8000','--log-driver','json-file','--log-opt','max-size=16m','--log-opt','max-file=4','--env-file',envfile]
+@@ -178 +189,3 @@
+- cmd+=['--mount',f'type=bind,src={payloads}/logging.json,dst=/run/kadan-logging.json,readonly','--entrypoint','python',host.IMAGE,*before['Config']['Cmd'][1:],'--log-config','/run/kadan-logging.json']
++ cmd+=['--mount',f'type=bind,src={E},dst=/run/kadan-window-evidence',
++  '--mount',f'type=bind,src={host.REPO}/docs/real-weight-denoiser,dst=/run/kadan-window-tools,readonly',
++  '--mount',f'type=bind,src={BUNDLE}/logging.json,dst=/run/kadan-logging.json,readonly','--entrypoint','python',host.IMAGE,*before['Config']['Cmd'][1:],'--log-config','/run/kadan-logging.json']
+@@ -279,0 +293 @@
++  signal.signal(signal.SIGTERM,signal.SIG_IGN);signal.signal(signal.SIGINT,signal.SIG_IGN)
+@@ -284,3 +298,6 @@
+-   host.run('docker','stop','--time','5',NAME,check=False)
+-   logs=host.run('docker','logs',NAME,check=False)
+-   state=host.inspect_container(NAME)['State'];assert not state['Running'];host.run('docker','rm',NAME)
++   owned_container=host.inspect_container(NAME)
++   assert owned_container['Config'].get('Labels',{}).get(LABEL)==WINDOW['token'],'QUARANTINE: temporary name has another owner'
++   owned_id=owned_container['Id']
++   host.run('docker','stop','--time','5',owned_id,check=False)
++   logs=host.run('docker','logs',owned_id,check=False)
++   state=host.inspect_container(owned_id)['State'];assert not state['Running'];host.run('docker','rm',owned_id)

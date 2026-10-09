@@ -54,7 +54,7 @@ class DurableEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             argv=command('kadan-reviewed-cpu-test',root,['/usr/bin/python3','script with spaces.py'])
             self.assertIn('--property=Restart=no',argv)
-            self.assertIn('--property=RuntimeMaxSec=1800',argv)
+            self.assertIn('--property=RuntimeMaxSec=900',argv)
             self.assertIn('--property=KillMode=mixed',argv)
             self.assertNotIn('--scope',argv);self.assertNotIn('--wait',argv)
             self.assertEqual(argv[-2:],['/usr/bin/python3','script with spaces.py'])
