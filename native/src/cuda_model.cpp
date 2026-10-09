@@ -56,7 +56,7 @@ struct Model::Impl final:model::Sink {
                 weight_offsets[i]=weight_bytes;state_offsets[i]=state_bytes;weight_bytes=add(weight_bytes,split);state_bytes=add(state_bytes,p.device_bytes-split);}
             global_weights=weight_bytes;global_state=state_bytes;weight_bytes=add(weight_bytes,layout->embedded()-layout->embedding());state_bytes=add(state_bytes,layout->device_bytes()-layout->embedded());
             require(add(weight_bytes,state_bytes)==layout->device_bytes(),"model_split_plan");
-            backing=std::make_shared<serving::WeightBacking>(resources,options.weight_ram_bytes,options.weight_cold_bytes,options.staging_bytes,serving::WeightBacking::default_entry_limit);
+            backing=std::make_shared<serving::WeightBacking>(resources,options.weight_ram_bytes,options.weight_cold_bytes,options.staging_bytes,serving::WeightBacking::model_entry_limit,true);
             manifest->backing(backing);begin_request(cancelled);resources->loaded(handle);loaded=true;return;
         }
         cancel(cancelled);current();int major=0,minor=0;check(cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,device));check(cudaDeviceGetAttribute(&minor,cudaDevAttrComputeCapabilityMinor,device));require(major==8&&minor==6,"requires_sm86");
@@ -129,7 +129,7 @@ struct Model::Impl final:model::Sink {
         }catch(...){cleanup_failed=poisoned=true;if(cursor)cursor->invalidate();return false;}
     }
 };
-std::size_t Model::host_bytes(ModelOptions o){require(o.metadata_bytes>0&&o.staging_bytes>=8&&o.staging_bytes<=32*1024*1024,"model_host_envelopes");return add(add(add(o.metadata_bytes,o.staging_bytes),control_headroom),o.split_residency?serving::WeightBacking::default_control_bytes:0);}
+std::size_t Model::host_bytes(ModelOptions o){require(o.metadata_bytes>0&&o.staging_bytes>=8&&o.staging_bytes<=32*1024*1024,"model_host_envelopes");return add(add(add(o.metadata_bytes,o.staging_bytes),control_headroom),o.split_residency?serving::WeightBacking::model_control_bytes:0);}
 Model::Model(const char* root,ModelOptions o,int device,std::shared_ptr<Resources> r,const std::atomic_bool* cancelled){
     require(r&&device>=0,"model_owner");auto request=r->snapshot().capacity;require(std::size_t(device)+1<request.size(),"model_unbudgeted_device");std::fill(request.begin(),request.end(),0);request[0]=host_bytes(o);if(o.split_residency){require(r->snapshot().used[device+1]==0,"split_requires_exclusive_context");request[device+1]=o.device_headroom;}auto h=r->reserve(Workload::llm,request);
     try{impl_=std::make_unique<Impl>(o,device,r,h);}catch(...){r->released(h);throw;}
@@ -144,6 +144,7 @@ std::size_t Model::device_bytes()const{require(valid(),"model_unavailable");retu
 void Model::begin_request(const std::atomic_bool* c){require(bool(impl_),"model_closed");impl_->begin_request(c);}
 void Model::end_request(){require(bool(impl_),"model_closed");try{impl_->end_request();}catch(...){impl_->poisoned=impl_->cleanup_failed=true;throw;}}
 void Model::park(){require(bool(impl_),"model_closed");try{impl_->park();}catch(...){impl_->poisoned=impl_->cleanup_failed=true;throw;}}
+serving::WeightBacking::Stats Model::cache_stats()const{return impl_&&impl_->backing?impl_->backing->stats():serving::WeightBacking::Stats{};}
 std::size_t Model::retained_bytes()const{return impl_&&impl_->backing?impl_->backing->stats().ram:0;}
 void Model::reset(){require(bool(impl_),"model_closed");impl_->reset();}
 void Model::close(){if(!impl_)return;if(!impl_->cleanup())throw std::runtime_error("model_cleanup_failed_reservation_retained");impl_.reset();}

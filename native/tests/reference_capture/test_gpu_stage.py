@@ -13,7 +13,7 @@ CID='a'*64
 
 
 class GPUStageTests(unittest.TestCase):
-    def sample(self):return Snapshot({UUID:{'index':0,'free_bytes':24000*1024**2,'temperature':50}},(),False)
+    def sample(self):return Snapshot({UUID:{'index':0,'free_bytes':24000*1024**2}},(),False)
 
     def test_exact_one_bos_command_and_second_start_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

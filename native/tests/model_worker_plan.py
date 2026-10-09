@@ -30,7 +30,8 @@ def main():
         result = subprocess.run([worker, '--plan-resident', str(root), '1', str(256 * 1024**2)],
                                 capture_output=True, text=True, timeout=15, check=True)
         fields = result.stdout.split()
-        assert fields[:2] == ['plan', '2'] and int(fields[2]) == 260 * 1024**2
+        assert fields[:2] == ['plan', '3'] and int(fields[2]) == 514 * 1024**2
+        assert len(fields)==9 and int(fields[7])>0 and int(fields[8])>0
         for capacity, metadata in [('0', '268435456'), ('262145', '268435456'),
                                    ('1', '0'), ('1', '268435457'), ('-1', '268435456')]:
             result = subprocess.run([worker, '--plan', str(root), capacity, metadata],

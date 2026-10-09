@@ -1,5 +1,6 @@
 """Chat model selection, loading and generation lifecycle."""
 import asyncio
+import math
 from contextlib import suppress
 import os
 import json
@@ -25,10 +26,13 @@ def read_context_settings(path, configured):
 
 
 class ChatRuntime:
-    def __init__(self, factory=None, resources=None):
+    def __init__(self, factory=None, resources=None, *, generation_timeout=300):
         """Initialize one process-local controller with optional test factory and shared resource
         manager; allocate no model at construction.
         """
+        if type(generation_timeout) not in (int, float) or not math.isfinite(generation_timeout) or generation_timeout <= 0:
+            raise ValueError('Generation timeout must be finite and positive')
+        self.generation_timeout = generation_timeout
         self.state = 'unloaded'
         self.model_id = None
         self.error = None
@@ -97,12 +101,16 @@ class ChatRuntime:
         uses_subprocess = False
         if factory is None:
             backend = os.environ.get('KADAN_LLM_BACKEND', 'python')
-            if backend not in ('python', 'native'):
-                raise InferenceFailure('KADAN_LLM_BACKEND must be python or native.')
-            if backend == 'native':
+            if backend not in ('python', 'native', 'native-resident'):
+                raise InferenceFailure('KADAN_LLM_BACKEND must be python, native or native-resident.')
+            if backend in ('native', 'native-resident'):
                 # Lazy optional backend import preserves startup/default behavior.
                 from api.inference.llm.qwen_subprocess import build_qwen_subprocess
                 factory, uses_subprocess = build_qwen_subprocess, True
+                if backend == 'native-resident':
+                    # Optional protocol adapter; importing it allocates no model.
+                    from api.inference.llm.qwen_residency import build_resident_qwen
+                    factory = build_resident_qwen
         if factory is None:
             # Keep the API available when model dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.
@@ -323,6 +331,10 @@ class ChatRuntime:
             raise InferenceFailure('A chat request is already running. Retry when it finishes.', 429)
         async with self._generation:
             adapter = self.adapter
+            completion_budget = getattr(adapter, 'completion_timeout', None)
+            timeout = self.generation_timeout if completion_budget is None else completion_budget(self.generation_timeout)
+            if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < self.generation_timeout:
+                raise InferenceFailure('Adapter completion timeout is invalid.')
             self._cancel = threading.Event()
             worker = asyncio.create_task(asyncio.to_thread(adapter.generate,
                 [{'role': message.role, 'text': message.text} for message in messages],
@@ -332,7 +344,7 @@ class ChatRuntime:
             self._worker = worker
             try:
                 try:
-                    text = await asyncio.wait_for(asyncio.shield(worker), 300)
+                    text = await asyncio.wait_for(asyncio.shield(worker), timeout)
                 except asyncio.TimeoutError:
                     self._cancel.set()
                     with suppress(Exception):

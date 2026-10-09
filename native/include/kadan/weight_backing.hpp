@@ -13,10 +13,12 @@ namespace kadan::serving {
 class WeightBacking {
 public:
     static constexpr std::size_t default_entry_limit=1024, default_control_bytes=2*1024*1024;
-    struct Stats { Bytes ram, cold, staging; std::size_t entries; Handle transfer; };
+    static constexpr std::size_t model_entry_limit=131072, model_control_bytes=256*1024*1024;
+    struct Stats { Bytes ram=0, cold=0, staging=0; std::size_t entries=0; Handle transfer=0;
+        Bytes capacity=0, hits=0, misses=0, hit_bytes=0, source_bytes=0, evictions=0; };
     using Sink = std::function<void(std::size_t, std::span<const std::uint8_t>)>;
     WeightBacking(std::shared_ptr<Resources>, Bytes ram_limit, Bytes cold_limit,
-                  std::size_t chunk_limit, std::size_t entry_limit = 1024);
+                  std::size_t chunk_limit, std::size_t entry_limit = 1024, bool aggregate = false);
     ~WeightBacking();
     WeightBacking(const WeightBacking&) = delete;
     WeightBacking& operator=(const WeightBacking&) = delete;
@@ -72,5 +74,8 @@ private:
     std::optional<Transfer> transfer_;
     bool busy_ = false;
     std::uint64_t clock_ = 0;
+    // Model mode reserves one fixed cache envelope, not one ledger slot per tensor.
+    Handle aggregate_ = 0;
+    Bytes hits_=0, misses_=0, hit_bytes_=0, source_bytes_=0, evictions_=0;
 };
 } // namespace kadan::serving
