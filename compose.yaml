@@ -27,9 +27,8 @@ services:
 
   migrate:
     build:
-      context: ./api
-      additional_contexts:
-        native: ./native
+      context: .
+      dockerfile: api/Dockerfile
     environment: &database_environment
       <<: *postgres_environment
       POSTGRES_HOST: postgres
@@ -43,9 +42,8 @@ services:
   api:
     stop_grace_period: 5m
     build:
-      context: ./api
-      additional_contexts:
-        native: ./native
+      context: .
+      dockerfile: api/Dockerfile
     init: true
     environment:
       <<: *database_environment

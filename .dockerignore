@@ -1,0 +1,11 @@
+**
+!api/
+!api/**
+!native/
+!native/**
+api/tests/
+**/__pycache__/
+**/*.pyc
+**/.env*
+**/.venv/
+**/build/

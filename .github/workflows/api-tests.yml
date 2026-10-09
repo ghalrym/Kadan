@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build the default CUDA-enabled API image
-        run: docker build --build-context native=./native -t kadan-api:test api
+        run: docker build -f api/Dockerfile -t kadan-api:test .
       - name: Verify installed native runtime and API startup imports
         run: |
           docker run --rm kadan-api:test python -m api.inference.check_install
