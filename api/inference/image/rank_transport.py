@@ -14,6 +14,7 @@ import tempfile
 import time
 from uuid import UUID
 
+from api.inference.image.policy import ImagePolicy
 from api.inference.resources import ResourceCancelled
 
 MAX_FRAME = 65536
@@ -44,39 +45,10 @@ def receive_blocking(connection):
     return value
 
 
-def rank_cpus(allowed, root=Path('/sys/devices/system/cpu')):
-    """Keep the two-CPU ceiling, spreading work across last-level caches if known.
-
-    Adjacent CPU IDs can concentrate both workers on one hot CCD. Both ranks
-    retain the same bounded affinity; this changes placement, not thread count.
-    Missing topology preserves the former deterministic first-two fallback.
-    """
-    cpus = sorted(set(allowed))
-    if not cpus:
-        raise RuntimeError('No allowed CPU for image ranks')
-    domains = {}
-    for cpu in cpus:
-        try:
-            caches = []
-            for cache in (root/f'cpu{cpu}'/'cache').glob('index*'):
-                level = int((cache/'level').read_text())
-                domain = (cache/'shared_cpu_list').read_text().strip()
-                if domain:
-                    caches.append((level, domain))
-            domains[cpu] = max(caches)[1] if caches else None
-        except (OSError, ValueError):
-            domains[cpu] = None
-    first = cpus[0]
-    if domains[first] is not None:
-        for cpu in cpus[1:]:
-            if domains[cpu] is not None and domains[cpu] != domains[first]:
-                return [first, cpu]
-    return cpus[:2]
-
-
 class ProcessRanks:
-    def __init__(self, path, budget, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
+    def __init__(self, path, budget, policy=None, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
         self.path, self.budget, self.worker_module = Path(path), budget, worker_module
+        self.policy = policy or ImagePolicy.from_environment()
         self.guard = guard or self._guard
         self.processes, self.connections = [], []
         self.directory = None
@@ -112,7 +84,7 @@ class ProcessRanks:
         self.owned_processes = None
         self.gone.clear()
         self.directory = tempfile.TemporaryDirectory(prefix='kadan-image-ranks-')
-        cpus = rank_cpus(os.sched_getaffinity(0))
+        cpus = self.policy.affinity(os.sched_getaffinity(0))
         logging.getLogger(__name__).info('rank_affinity session=%s cpus=%s', session, cpus)
         for rank, device in enumerate(devices):
             if cancel is not None and cancel.is_set():
@@ -120,18 +92,23 @@ class ProcessRanks:
             if time.monotonic() >= deadline:
                 raise TimeoutError('Rank startup deadline exhausted')
             parent, child = socket.socketpair()
-            env = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
-                NUMEXPR_NUM_THREADS='1', GLOO_SOCKET_IFNAME='lo', PYTHONDONTWRITEBYTECODE='1')
+            env = dict(os.environ, GLOO_SOCKET_IFNAME='lo', PYTHONDONTWRITEBYTECODE='1')
+            if self.policy.threads is not None:
+                for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+                    env[name] = str(self.policy.threads)
             config = dict(session=session, rank=rank, device=device, devices=list(devices),
                 checkpoint=str(self.path), directory=self.directory.name, cpus=cpus,
+                threads=self.policy.threads, collective_seconds=self.policy.collective_seconds,
+                blocking_sync=self.policy.blocking_sync,
                 execution_bytes=self.budget.execution_bytes, parent_pid=os.getpid())
             try:
-                # Set affinity before Python/sitecustomize can create helper threads.
-                # taskset execs Python in the same PID/process group; parent-death
-                # fencing and process ownership retain their existing identities.
-                process = subprocess.Popen(['/usr/bin/taskset', '--cpu-list', ','.join(map(str, cpus)),
-                    sys.executable, '-m', self.worker_module,
-                    str(child.fileno()), json.dumps(config)], pass_fds=(child.fileno(),),
+                command = [sys.executable, '-m', self.worker_module,
+                    str(child.fileno()), json.dumps(config)]
+                # Explicit affinity applies before Python can create helper threads.
+                # Otherwise the child inherits the deployment's existing CPU mask.
+                if self.policy.cpus is not None:
+                    command = ['/usr/bin/taskset', '--cpu-list', ','.join(map(str, cpus)), *command]
+                process = subprocess.Popen(command, pass_fds=(child.fileno(),),
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True, env=env)
             except BaseException:

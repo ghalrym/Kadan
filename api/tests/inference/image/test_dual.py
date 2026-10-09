@@ -25,7 +25,7 @@ class DualAdmissionTests(unittest.TestCase):
     def test_individual_gpu_and_host_plans_do_not_pool_capacity(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);(path/'weights.safetensors').write_bytes(b'fixture')
-            for host,devices in [(300*GIB,{0:40*GIB}), (300*GIB,{0:40*GIB,1:20*GIB}), (100*GIB,{0:40*GIB,1:40*GIB})]:
+            for host,devices in [(300*GIB,{0:40*GIB}), (300*GIB,{0:40*GIB,1:20*GIB}), (8*GIB,{0:40*GIB,1:40*GIB})]:
                 resources=ResourceManager(host,devices)
                 with self.assertRaises(ResourceExhausted):DualImage(path,resources,devices=[0,1])
                 self.assertEqual(resources.snapshot()['reservations'],{})

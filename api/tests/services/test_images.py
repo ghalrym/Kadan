@@ -212,6 +212,18 @@ class ImageManagerTests(unittest.TestCase):
         self.assertEqual(set(resources.snapshot()['reservations']), {'text'})
         host.release()
 
+    def test_configured_image_host_admission_includes_publication(self):
+        self.manager.backend = None
+        path = Path(self.temp.name)
+        (path / 'weights.safetensors').write_bytes(b'fixture')
+        self.manager.runtime.ensure_resources.return_value = ResourceManager(16 * GIB, {0: 24 * GIB})
+        with patch.dict('os.environ', {'KADAN_IMAGE_HOST_BYTES': str(16 * GIB)}, clear=True):
+            with self.assertRaises(RuntimeFailure) as caught:
+                self.manager.validate_request(None)
+            self.assertEqual(caught.exception.status_code, 503)
+        with patch.dict('os.environ', {'KADAN_IMAGE_HOST_BYTES': str(15 * GIB)}, clear=True):
+            self.manager.validate_request(None)
+
     def test_deployment_offload_setting_validated_and_reconfigures_existing_pipeline(self):
         self.manager.backend=None
         path=Path(self.temp.name)

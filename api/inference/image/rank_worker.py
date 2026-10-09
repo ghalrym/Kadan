@@ -25,6 +25,19 @@ def configure_progress_logging():
     logger.addHandler(logging.StreamHandler(sys.stderr))
 
 
+def configure_execution(torch, config):
+    """Apply validated rank policy after process ownership is established."""
+    if config['threads'] is not None:
+        torch.set_num_threads(config['threads'])
+        torch.set_num_interop_threads(config['threads'])
+    device = config['device']
+    torch.cuda.set_device(device)
+    wait_policy = configure_blocking_sync(device) if config['blocking_sync'] else {'policy': 'default'}
+    torch.cuda.set_per_process_memory_fraction(config['execution_bytes']/torch.cuda.get_device_properties(device).total_memory)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    return wait_policy
+
+
 def main():
     connection = socket.socket(fileno=int(sys.argv[1]))
     config = json.loads(sys.argv[2])
@@ -41,17 +54,12 @@ def main():
     dist = importlib.import_module('torch.distributed')
     diffusers = importlib.import_module('diffusers')
     engine_type = importlib.import_module('api.inference.image.split_pipeline').SplitPipeline
-    torch.set_num_threads(1)
-    torch.set_num_interop_threads(1)
     device, rank = config['device'], config['rank']
-    torch.cuda.set_device(device)
-    wait_policy = configure_blocking_sync(device)
-    torch.cuda.set_per_process_memory_fraction(config['execution_bytes']/torch.cuda.get_device_properties(device).total_memory)
-    torch.backends.cuda.matmul.allow_tf32 = False
+    wait_policy = configure_execution(torch, config)
     def groups(sequence):
         dist.init_process_group('nccl', init_method=(Path(config['directory'])/f'rendezvous-{sequence}').as_uri(),
-            rank=rank, world_size=2, timeout=timedelta(seconds=120), device_id=torch.device('cuda',device))
-        return dist.new_group(backend='gloo', timeout=timedelta(seconds=120))
+            rank=rank, world_size=2, timeout=timedelta(seconds=config['collective_seconds']), device_id=torch.device('cuda',device))
+        return dist.new_group(backend='gloo', timeout=timedelta(seconds=config['collective_seconds']))
 
     pipeline = engine = control = None
     sequence = 0

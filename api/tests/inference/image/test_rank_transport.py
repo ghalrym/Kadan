@@ -7,8 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from api.inference.image.policy import ImagePolicy
 from api.inference.image.rank_session import RankBudget, RankSession
-from api.inference.image.rank_transport import ProcessRanks, encode, rank_cpus
+from api.inference.image.rank_transport import ProcessRanks, encode
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceBusy
 
 
@@ -27,8 +28,8 @@ class ProcessRankTests(unittest.TestCase):
         self.memory={0:0,1:0}
         self.session.close()
 
-    def test_both_rank_startup_threads_share_one_two_cpu_budget(self):
-        expected=rank_cpus(os.sched_getaffinity(0))
+    def test_rank_startup_threads_inherit_deployment_affinity(self):
+        expected=sorted(os.sched_getaffinity(0))
         replies=self.session.execute('a'*32,payload={'prompt':'ok'})
         union=set()
         for reply in replies:
@@ -36,7 +37,17 @@ class ProcessRankTests(unittest.TestCase):
             self.assertEqual(reply['startup_affinity'],expected)
             union.update(reply['main_affinity']);union.update(reply['startup_affinity'])
         self.assertEqual(union,set(expected))
-        self.assertLessEqual(len(union),2)
+
+    def test_explicit_rank_affinity_applies_before_startup_threads(self):
+        expected = sorted(os.sched_getaffinity(0))[:1]
+        self.transport.policy = ImagePolicy.from_environment({
+            'KADAN_IMAGE_CPUS': str(expected), 'KADAN_IMAGE_THREADS': '2'})
+        replies = self.session.execute('a' * 32, payload={'prompt': 'ok'})
+        for reply in replies:
+            self.assertEqual(reply['main_affinity'], expected)
+            self.assertEqual(reply['startup_affinity'], expected)
+            self.assertEqual(reply['threads'], 2)
+            self.assertEqual(reply['omp_threads'], '2')
 
     def test_startup_failure_before_first_child_has_no_false_quarantine(self):
         self.transport.memory_probe=lambda: (_ for _ in ()).throw(OSError('probe unavailable'))
@@ -140,29 +151,6 @@ class ProcessRankTests(unittest.TestCase):
         self.session.operation_timeout=.1
         with self.assertRaises(TimeoutError):self.session.execute('a'*32,payload={'prompt':'wait'})
         self.assertFalse(self.resources.snapshot()['reservations'])
-
-
-class RankCpuPlacementTests(unittest.TestCase):
-    def test_spreads_two_cpus_across_last_level_domains_within_allowed_set(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            for cpu,domain in ((0,'0-7,16-23'),(1,'0-7,16-23'),(8,'8-15,24-31'),(16,'0-7,16-23')):
-                cache=root/f'cpu{cpu}'/'cache/index3';cache.mkdir(parents=True)
-                (cache/'level').write_text('3');(cache/'shared_cpu_list').write_text(domain)
-                lower=root/f'cpu{cpu}'/'cache/index0';lower.mkdir()
-                (lower/'level').write_text('1');(lower/'shared_cpu_list').write_text(str(cpu))
-            self.assertEqual(rank_cpus({16,8,1,0},root),[0,8])
-            self.assertEqual(rank_cpus({0,1},root),[0,1])
-            self.assertEqual(rank_cpus({8},root),[8])
-            (root/'cpu0/cache/index3/level').write_text('unavailable')
-            self.assertEqual(rank_cpus({0,1,8},root),[0,1])
-
-    def test_missing_topology_never_widens_affinity_or_cpu_count(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            self.assertEqual(rank_cpus({7,3,9},root),[3,7])
-            self.assertEqual(rank_cpus({9},root),[9])
-            with self.assertRaises(RuntimeError):rank_cpus(set(),root)
 
 
 class PhysicalOwnerTests(unittest.TestCase):

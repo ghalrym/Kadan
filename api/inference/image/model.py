@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from api.inference.image.policy import ImagePolicy
 from api.inference.decisions.model import clear_failure_frames
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 
@@ -13,7 +14,6 @@ MODEL_ID = 'qwen-image-2.1'
 REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
 SIZES = {'1:1': (2048, 2048), '4:3': (2400, 1792), '3:4': (1792, 2400), '16:9': (2752, 1536)}
 GIB = 1024 ** 3
-WORKSPACE = 8 * GIB
 CONTEXT_BYTES = 512 * 1024**2
 
 
@@ -32,6 +32,7 @@ class NativeImage:
         self.path, self.resources, self.requested, self.modules = path, resources, device, modules
         if offload_mode not in ('sequential', 'component'):
             raise ValueError('Image offload mode must be sequential or component')
+        self.policy = ImagePolicy.from_environment()
         self.offload_mode = offload_mode
         self.component_weights = {name: sum(item.stat().st_size for item in (path/name).glob('*.safetensors'))
             for name in ('text_encoder', 'transformer', 'vae')}
@@ -55,7 +56,7 @@ class NativeImage:
             candidates = [int(self.requested[5:])]
         else:
             candidates = sorted(capacities, key=capacities.get, reverse=True)
-        # Use the shared-placement view when available. On master, reserve()
+        # Use the shared-placement view when available. reserve()
         # remains authoritative and rechecks live capacity before any allocation.
         available = getattr(self.resources, 'available_devices', None)
         if available is not None:
@@ -81,7 +82,7 @@ class NativeImage:
                 if budget > max(self.component_weights.values()):
                     return f'cuda:{gpu}', budget, True
             raise ResourceExhausted('No single-device phase envelope fits the largest image component')
-        whole = self.weights + WORKSPACE
+        whole = self.weights + self.policy.workspace_bytes
         for gpu in candidates:
             if free.get(gpu, 0) >= whole:
                 return f'cuda:{gpu}', whole, False
@@ -91,9 +92,9 @@ class NativeImage:
             if capacities.get(gpu, 0) >= whole:
                 return f'cuda:{gpu}', whole, False
         for gpu in candidates:
-            if capacities.get(gpu, 0) >= WORKSPACE:
-                return f'cuda:{gpu}', WORKSPACE, True
-        raise ResourceExhausted('Qwen Image requires at least 8 GiB on one GPU, or explicit CPU execution')
+            if capacities.get(gpu, 0) >= self.policy.workspace_bytes:
+                return f'cuda:{gpu}', self.policy.workspace_bytes, True
+        raise ResourceExhausted(f'Qwen Image requires {self.policy.workspace_bytes} workspace bytes on one GPU, or explicit CPU execution')
 
     def load(self, cancel=None):
         with self.gate:
@@ -111,7 +112,7 @@ class NativeImage:
                 # Include CPU construction, parked weights, edit input and CPU
                 # output staging. GPU execution gets a separate reservation.
                 self.host = self.resources.reserve(self.owner + ':host', 'image',
-                    host_bytes=self.weights * 2 + WORKSPACE, evict=self.close, cancel_event=cancel)
+                    host_bytes=self.policy.host_budget(self.weights, 2), evict=self.close, cancel_event=cancel)
                 with self.host.lease(cancel):
                     self.pipeline = pipeline_type.from_pretrained(str(self.path), local_files_only=True,
                         torch_dtype=self.torch.float32 if self.device == 'cpu' else self.torch.bfloat16,
