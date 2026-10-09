@@ -48,7 +48,7 @@ int main(int argc,char** argv) {
     rejects([&]{stage.execute(input,attention,root+"/result",cancel);},"video_artifact_publish");
     rejects([&]{stage.execute({},attention,root+"/empty",cancel);},"video_input_shape");
     rejects([&]{stage.execute(std::span<const float>(input.data(),1),attention,root+"/bad",cancel);},"video_input_shape");
-    std::vector<float> oversized(3*2048);
+    std::vector<float> oversized((Stage::max_tokens+1)*2048);
     rejects([&]{stage.execute(oversized,attention,root+"/oversized",cancel);},"video_input_limit");
     rejects([&]{stage.execute(input,attention,root+"/cancelled",cancel,[&](std::size_t rows){check(rows==64);cancel=true;});},"video_cancelled");
     check(!std::filesystem::exists(root+"/cancelled"));cancel=false;
