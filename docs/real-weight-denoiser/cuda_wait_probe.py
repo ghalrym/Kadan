@@ -3,6 +3,14 @@
 No imports of Torch/CUDA at module scope, no model checkpoint or production queue.
 The external supervisor owns admission, sensors, death fencing and hard deadlines.
 """
+import ctypes
+import importlib
+import os
+from pathlib import Path
+import signal
+import sys
+from uuid import UUID
+
 import hashlib
 import json
 import time
@@ -12,12 +20,16 @@ PLAN = dict(seconds=5, maximum_iterations=4096, shape=[2048, 2048], dtype='bfloa
 
 
 def compare(control, candidate):
-    for key in ('device', 'output_sha256', 'shape', 'dtype'):
+    for key in ('device', 'gpu_uuid', 'output_sha256', 'shape', 'dtype'):
         if control[key] != candidate[key]:
             raise ValueError('Control/candidate numerical identity differs: '+key)
     if control['policy'] != 'control' or candidate['policy'] != 'blocking':
         raise ValueError('Expected fresh control and blocking cases')
-    return dict(numerical_equal=True,
+    if control['flags']['before'] & 7 == 4:
+        return dict(numerical_equal=True, intervention=False, verdict='inconclusive: control already blocking')
+    if candidate['flags']['after'] & 7 != 4:
+        raise ValueError('Candidate blocking flags unconfirmed')
+    return dict(numerical_equal=True, intervention=True,
                 control_cpu_per_wall=control['process_cpu_seconds']/control['wall_seconds'],
                 candidate_cpu_per_wall=candidate['process_cpu_seconds']/candidate['wall_seconds'])
 
@@ -31,6 +43,10 @@ def measure(torch, device, policy):
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.cuda.set_device(device)
+    actual_uuid='GPU-'+str(UUID(str(torch.cuda.get_device_properties(device).uuid).removeprefix('GPU-')))
+    expected=json.loads(os.environ['KADAN_EXPECTED_GPU_UUIDS'])
+    if len(expected)!=2 or len(set(expected))!=2 or actual_uuid!=expected[device]:
+        raise RuntimeError('Physical GPU UUID binding differs')
     if policy == 'blocking':
         flags = configure_blocking_sync(device)
     else:
@@ -63,10 +79,28 @@ def measure(torch, device, policy):
         torch.cuda.synchronize(device)
         wall, process, main = time.monotonic()-started, time.process_time()-cpu, time.thread_time()-main_cpu
         raw = result.view(torch.uint8).cpu().numpy().tobytes()
-        return dict(device=device, policy=policy, flags=flags, shape=PLAN['shape'], dtype=PLAN['dtype'],
+        return dict(device=device, gpu_uuid=actual_uuid, policy=policy, flags=flags, shape=PLAN['shape'], dtype=PLAN['dtype'],
                     iterations=iterations, wall_seconds=wall, process_cpu_seconds=process,
                     main_cpu_seconds=main, output_sha256=hashlib.sha256(raw).hexdigest())
 
 
+def owned_child(policy, device, parent, commit):
+    # Fence before importing Torch or any code that might initialize CUDA.
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Parent-death fence failed')
+    if os.getppid() != parent or sorted(os.sched_getaffinity(0)) != [0,8]:
+        raise RuntimeError('Owned probe parent/affinity differs')
+    torch=importlib.import_module('torch')
+    result=measure(torch,device,policy)
+    result.update(commit=commit,pid=os.getpid())
+    output=Path('/evidence')/f'rank-{device}.json'
+    with output.open('x') as stream: json.dump(result,stream)
+
+
 if __name__ == '__main__':
-    print(json.dumps(PLAN, sort_keys=True))
+    if len(sys.argv)==6 and sys.argv[1]=='--owned-child':
+        owned_child(sys.argv[2],int(sys.argv[3]),int(sys.argv[4]),sys.argv[5])
+    elif len(sys.argv)==1:
+        print(json.dumps(PLAN, sort_keys=True))
+    else:
+        raise ValueError('Use the reviewed launch_cuda_wait.py supervisor')
