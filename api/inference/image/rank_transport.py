@@ -41,6 +41,36 @@ def receive_blocking(connection):
     return value
 
 
+def rank_cpus(allowed, root=Path('/sys/devices/system/cpu')):
+    """Keep the two-CPU ceiling, spreading work across last-level caches if known.
+
+    Adjacent CPU IDs can concentrate both workers on one hot CCD. Both ranks
+    retain the same bounded affinity; this changes placement, not thread count.
+    Missing topology preserves the former deterministic first-two fallback.
+    """
+    cpus = sorted(set(allowed))
+    if not cpus:
+        raise RuntimeError('No allowed CPU for image ranks')
+    domains = {}
+    for cpu in cpus:
+        try:
+            caches = []
+            for cache in (root/f'cpu{cpu}'/'cache').glob('index*'):
+                level = int((cache/'level').read_text())
+                domain = (cache/'shared_cpu_list').read_text().strip()
+                if domain:
+                    caches.append((level, domain))
+            domains[cpu] = max(caches)[1] if caches else None
+        except (OSError, ValueError):
+            domains[cpu] = None
+    first = cpus[0]
+    if domains[first] is not None:
+        for cpu in cpus[1:]:
+            if domains[cpu] is not None and domains[cpu] != domains[first]:
+                return [first, cpu]
+    return cpus[:2]
+
+
 class ProcessRanks:
     def __init__(self, path, budget, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
         self.path, self.budget, self.worker_module = Path(path), budget, worker_module
@@ -85,7 +115,8 @@ class ProcessRanks:
         self.owned_processes = None
         self.gone.clear()
         self.directory = tempfile.TemporaryDirectory(prefix='kadan-image-ranks-')
-        cpus = sorted(os.sched_getaffinity(0))[:2]
+        cpus = rank_cpus(os.sched_getaffinity(0))
+        logging.getLogger(__name__).info('rank_affinity session=%s cpus=%s', session, cpus)
         for rank, device in enumerate(devices):
             if cancel is not None and cancel.is_set():
                 raise ResourceCancelled('Rank startup cancelled')

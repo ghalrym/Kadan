@@ -1,4 +1,5 @@
 import threading
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from api.inference.image.rank_session import RankBudget, RankSession
-from api.inference.image.rank_transport import ProcessRanks, encode
+from api.inference.image.rank_transport import ProcessRanks, encode, rank_cpus
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceBusy
 
 
@@ -102,6 +103,29 @@ class ProcessRankTests(unittest.TestCase):
         self.session.operation_timeout=.1
         with self.assertRaises(TimeoutError):self.session.execute('a'*32,payload={'prompt':'wait'})
         self.assertFalse(self.resources.snapshot()['reservations'])
+
+
+class RankCpuPlacementTests(unittest.TestCase):
+    def test_spreads_two_cpus_across_last_level_domains_within_allowed_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for cpu,domain in ((0,'0-7,16-23'),(1,'0-7,16-23'),(8,'8-15,24-31'),(16,'0-7,16-23')):
+                cache=root/f'cpu{cpu}'/'cache/index3';cache.mkdir(parents=True)
+                (cache/'level').write_text('3');(cache/'shared_cpu_list').write_text(domain)
+                lower=root/f'cpu{cpu}'/'cache/index0';lower.mkdir()
+                (lower/'level').write_text('1');(lower/'shared_cpu_list').write_text(str(cpu))
+            self.assertEqual(rank_cpus({16,8,1,0},root),[0,8])
+            self.assertEqual(rank_cpus({0,1},root),[0,1])
+            self.assertEqual(rank_cpus({8},root),[8])
+            (root/'cpu0/cache/index3/level').write_text('unavailable')
+            self.assertEqual(rank_cpus({0,1,8},root),[0,1])
+
+    def test_missing_topology_never_widens_affinity_or_cpu_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            self.assertEqual(rank_cpus({7,3,9},root),[3,7])
+            self.assertEqual(rank_cpus({9},root),[9])
+            with self.assertRaises(RuntimeError):rank_cpus(set(),root)
 
 
 class PhysicalOwnerTests(unittest.TestCase):
