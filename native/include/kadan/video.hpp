@@ -62,4 +62,32 @@ private:
     std::unique_ptr<float[]> weights_;
     Handle resident_ = 0;
 };
+// H3 per-head affine-free Q/K RMSNorm and 48-channel 3D NeoX rotary stage.
+// No learned weights; the resident is an admitted 8-value frequency table.
+class H3QkRope {
+public:
+    static constexpr std::size_t heads=32, head_dim=64, width=6144, max_tokens=8;
+    static constexpr Bytes resident_bytes=8*sizeof(float);
+    static constexpr Bytes scratch_bytes=(3*head_dim+48)*sizeof(float);
+    explicit H3QkRope(std::shared_ptr<Resources> resources);
+    ~H3QkRope();
+    H3QkRope(const H3QkRope&) = delete;
+    H3QkRope& operator=(const H3QkRope&) = delete;
+    void load(const std::atomic_bool& cancel);
+    void unload();
+    bool loaded() const { return frequencies_ != nullptr; }
+    // Serialized owner, atomic cancellation; Resources outlives this stage.
+    // Caller admits both F32 QKV [tokens,32,3,64] and normalized coordinates
+    // [tokens,3] (time,height,width, each in [-1,1]) for the entire call.
+    // Output preserves QKV layout and V bits. Hook observes completed heads;
+    // it must not reenter the stage. No coordinate/token assembly is implied.
+    void execute(std::span<const float> qkv, std::span<const float> coordinates,
+                 const std::string& output, const std::atomic_bool& cancel,
+                 const std::function<void(std::size_t)>& on_heads = {});
+private:
+    Footprint host(Bytes bytes) const;
+    std::shared_ptr<Resources> resources_;
+    std::unique_ptr<float[]> frequencies_;
+    Handle resident_ = 0;
+};
 } // namespace kadan::video
