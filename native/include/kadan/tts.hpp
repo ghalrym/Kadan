@@ -6,23 +6,23 @@
 #include <memory>
 #include <span>
 #include <string>
-namespace kadan::decision {
-// Terminal Laya scorer/action MLP only; caller supplies post-head activations.
+namespace kadan::tts {
+// Qwen3-TTS text projection only; caller supplies one text embedding.
 // One serialized owner. Only cancellation may change concurrently.
-class TerminalHeads {
+class TextProjection {
 public:
-    static constexpr std::size_t hidden=1024, action_input=1028;
-    static constexpr Bytes weight_bytes=1316611*4, metadata_bytes=4*1024*1024;
-    explicit TerminalHeads(std::shared_ptr<Resources> resources);
-    ~TerminalHeads();
-    TerminalHeads(const TerminalHeads&)=delete;
-    TerminalHeads& operator=(const TerminalHeads&)=delete;
+    static constexpr std::size_t hidden=2048;
+    static constexpr Bytes weight_bytes=(2*2048*2048+2*2048)*4, metadata_bytes=4*1024*1024;
+    explicit TextProjection(std::shared_ptr<Resources> resources);
+    ~TextProjection();
+    TextProjection(const TextProjection&)=delete;
+    TextProjection& operator=(const TextProjection&)=delete;
     void load(const char* root,const std::string& basename,const std::atomic_bool& cancel);
     void unload();
     bool loaded() const {return weights_!=nullptr;}
-    // Caller admits input and returned output. Raw scorer/action logits, not answers.
+    // Caller admits input and returned output. Projected embedding, never audio.
     // Optional observation hook cannot reenter the executor.
-    std::array<float,3> execute(std::span<const float> marker,std::span<const float> action,
+    std::array<float,hidden> execute(std::span<const float> input,
         const std::atomic_bool& cancel,const std::function<void()>& observed={});
 private:
     Footprint host(Bytes bytes) const;
