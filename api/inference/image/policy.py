@@ -7,6 +7,7 @@ inherit the deployment unless explicitly set. CUDA wait scheduling is unchanged
 unless blocking sync is requested. These settings do not broaden model support.
 """
 from dataclasses import dataclass
+from datetime import timedelta
 import json
 import math
 import os
@@ -44,7 +45,8 @@ class ImagePolicy:
         per rank, excluding context. CPUS is a JSON array of distinct allowed CPU
         IDs; THREADS is a positive per-rank Torch/BLAS count. Unset values inherit.
         OPERATION_SECONDS/COLLECTIVE_SECONDS/CLEANUP_SECONDS default to 900/120/30;
-        the collective bound cannot exceed the encompassing operation deadline.
+        the collective bound must fit datetime.timedelta and cannot exceed the
+        encompassing operation deadline.
         CUDA_WAIT accepts default or blocking; default preserves driver policy.
         """
         env = os.environ if environment is None else environment
@@ -73,6 +75,10 @@ class ImagePolicy:
             except ValueError as exc:
                 raise ValueError(f'{name} must be finite positive seconds') from exc
             seconds.append(value)
+        try:
+            timedelta(seconds=seconds[1])
+        except OverflowError as exc:
+            raise ValueError('KADAN_IMAGE_COLLECTIVE_SECONDS must fit datetime.timedelta') from exc
         if seconds[1] > seconds[0]:
             raise ValueError('KADAN_IMAGE_COLLECTIVE_SECONDS cannot exceed KADAN_IMAGE_OPERATION_SECONDS')
         wait = env.get('KADAN_IMAGE_CUDA_WAIT', 'default')

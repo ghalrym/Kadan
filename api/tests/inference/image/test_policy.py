@@ -1,4 +1,6 @@
 """CPU coverage of image deployment policy and per-device admission."""
+from datetime import timedelta
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -53,6 +55,20 @@ class ImagePolicyTests(unittest.TestCase):
             for value in values:
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     ImagePolicy.from_environment({name: value})
+
+    def test_collective_deadline_rejects_timedelta_overflow_before_execution(self):
+        rounded_limit = timedelta.max.total_seconds()
+        below_limit = math.nextafter(rounded_limit, 0)
+        policy = ImagePolicy.from_environment({
+            'KADAN_IMAGE_OPERATION_SECONDS': str(rounded_limit),
+            'KADAN_IMAGE_COLLECTIVE_SECONDS': str(below_limit)})
+        self.assertEqual(policy.collective_seconds, below_limit)
+        self.assertLessEqual(timedelta(seconds=policy.collective_seconds), timedelta.max)
+        for value in (rounded_limit, 1e100):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'timedelta'):
+                ImagePolicy.from_environment({
+                    'KADAN_IMAGE_OPERATION_SECONDS': str(value),
+                    'KADAN_IMAGE_COLLECTIVE_SECONDS': str(value)})
 
     def test_worker_inherits_threads_and_cuda_wait_unless_requested(self):
         torch = Mock()
