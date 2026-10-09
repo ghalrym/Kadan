@@ -429,3 +429,13 @@ if(BUILD_TESTING)
   add_test(NAME video-ff-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_ff_fixture.py" "$<TARGET_FILE:video-ff-tests>" "$<TARGET_FILE:kadan-video-ff-component>")
   set_tests_properties(video-ff-component PROPERTIES TIMEOUT 120)
 endif()
+
+# Composed block0 diagnostic over one or two supplied hidden tokens, CPU only.
+add_executable(kadan-video-block-component src/video_block_component.cpp)
+target_link_libraries(kadan-video-block-component PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-block-tests tests/video_block.cpp)
+  target_link_libraries(video-block-tests PRIVATE kadan_video)
+  add_test(NAME video-block-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_block_fixture.py" "$<TARGET_FILE:video-block-tests>" "$<TARGET_FILE:kadan-video-block-component>")
+  set_tests_properties(video-block-component PROPERTIES TIMEOUT 180)
+endif()

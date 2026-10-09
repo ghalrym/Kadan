@@ -171,6 +171,11 @@ void H3DecoderQkv::load(const char* root, const std::string& basename, const std
     Reservation metadata(*resources_, host(metadata_bytes));
     auto budget = std::make_shared<checkpoint::MemoryBudget>(metadata_bytes);
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
+    load_from(shard,cancel);
+}
+void H3DecoderQkv::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel) {
+    cancelled(cancel);
+    check(!loaded(), "video_already_loaded");
     struct Spec { const char* name; std::array<std::uint64_t,5> shape; std::size_t rank; };
     const std::array<Spec,3> specs{{
         {"decoder.transformer_blocks.0.norm1.weight", {2048}, 1},
@@ -215,6 +220,21 @@ void H3DecoderQkv::unload() {
 }
 void H3DecoderQkv::execute(std::span<const float> input, const std::string& output,
                          const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows) {
+    cancelled(cancel);check(loaded(),"video_not_loaded");
+    Pin publication(*resources_,resident_);
+    std::unique_ptr<Artifact> artifact;
+    compute(input, cancel, on_rows, [&](std::span<const float> row) {
+        if (!artifact) {
+            artifact=std::make_unique<Artifact>(output);
+            const auto header="KADAN_H3_DECODER_QKV_V1\n"+std::to_string(input.size()/hidden)+" 32 3 64\nF32LE\n";
+            artifact->write(header.data(),header.size());
+        }
+        artifact->write(row.data(),row.size_bytes());
+    });
+    cancelled(cancel);artifact->publish(output);
+}
+void H3DecoderQkv::compute(std::span<const float> input, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+    const std::function<void(std::span<const float>)>& sink) {
     static_assert(std::endian::native == std::endian::little && sizeof(float) == 4);
     cancelled(cancel);
     check(loaded(), "video_not_loaded");
@@ -223,9 +243,6 @@ void H3DecoderQkv::execute(std::span<const float> input, const std::string& outp
     check(tokens <= max_tokens, "video_input_limit");
     Pin pin(*resources_, resident_);
     Reservation scratch(*resources_, host(scratch_bytes));
-    Artifact artifact(output);
-    const auto header = "KADAN_H3_DECODER_QKV_V1\n" + std::to_string(tokens) + " 32 3 64\nF32LE\n";
-    artifact.write(header.data(), header.size());
     std::array<float,hidden> normalized;
     std::array<float,width> row;
     const auto* norm=weights_.get();
@@ -254,10 +271,9 @@ void H3DecoderQkv::execute(std::span<const float> input, const std::string& outp
             if ((r+1)%64==0 && on_rows) on_rows(token*width+r+1);
         }
         cancelled(cancel);
-        artifact.write(row.data(), sizeof(row));
+        sink(row);
     }
-    cancelled(cancel); // Atomic no-overwrite publication is the completion boundary.
-    artifact.publish(output);
+    cancelled(cancel); // Caller publishes only after every row succeeds.
 }
 H3QkRope::H3QkRope(std::shared_ptr<Resources> resources) : resources_(std::move(resources)) {
     check(bool(resources_), "video_resources_required");
@@ -289,6 +305,21 @@ void H3QkRope::unload() {
 void H3QkRope::execute(std::span<const float> qkv, std::span<const float> coordinates,
                      const std::string& output, const std::atomic_bool& cancel,
                      const std::function<void(std::size_t)>& on_heads) {
+    cancelled(cancel);check(loaded(),"video_not_loaded");
+    Pin publication(*resources_,resident_);
+    std::unique_ptr<Artifact> artifact;
+    compute(qkv, coordinates, cancel, on_heads, [&](std::span<const float> row) {
+        if (!artifact) {
+            artifact=std::make_unique<Artifact>(output);
+            const auto header="KADAN_H3_QK_ROPE_V1\n"+std::to_string(qkv.size()/width)+" 32 3 64\nF32LE\n";
+            artifact->write(header.data(),header.size());
+        }
+        artifact->write(row.data(),row.size_bytes());
+    });
+    cancelled(cancel);artifact->publish(output);
+}
+void H3QkRope::compute(std::span<const float> qkv, std::span<const float> coordinates, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_heads,
+    const std::function<void(std::span<const float>)>& sink) {
     static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
     cancelled(cancel);
     check(loaded(), "video_not_loaded");
@@ -298,9 +329,6 @@ void H3QkRope::execute(std::span<const float> qkv, std::span<const float> coordi
     check(coordinates.size()==tokens*3, "video_coordinate_shape");
     Pin pin(*resources_,resident_);
     Reservation scratch(*resources_,host(scratch_bytes));
-    Artifact artifact(output);
-    const auto header="KADAN_H3_QK_ROPE_V1\n"+std::to_string(tokens)+" 32 3 64\nF32LE\n";
-    artifact.write(header.data(),header.size());
     std::array<float,24> cosine,sine;
     std::array<float,192> row;
     constexpr float two_pi=6.2831853071795864769f;
@@ -339,11 +367,10 @@ void H3QkRope::execute(std::span<const float> qkv, std::span<const float> coordi
             for (float value:row) check(std::isfinite(value), "video_nonfinite_output");
             if (on_heads) on_heads(token*heads+head+1);
             cancelled(cancel);
-            artifact.write(row.data(),sizeof(row));
+            sink(row);
         }
     }
     cancelled(cancel);
-    artifact.publish(output);
 }
 H3DecoderAttention::H3DecoderAttention(std::shared_ptr<Resources> resources) : resources_(std::move(resources)) {
     check(bool(resources_), "video_resources_required");
@@ -361,6 +388,11 @@ void H3DecoderAttention::load(const char* root, const std::string& basename, con
     Reservation metadata(*resources_, host(metadata_bytes));
     auto budget = std::make_shared<checkpoint::MemoryBudget>(metadata_bytes);
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
+    load_from(shard,cancel);
+}
+void H3DecoderAttention::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel) {
+    cancelled(cancel);
+    check(!loaded(), "video_already_loaded");
     struct Spec { const char* name; std::array<std::uint64_t,5> shape; std::size_t rank; };
     const std::array<Spec,2> specs{{
         {"decoder.transformer_blocks.0.attn.to_out.weight", {2048,2048}, 2},
@@ -404,6 +436,21 @@ void H3DecoderAttention::unload() {
 }
 void H3DecoderAttention::execute(std::span<const float> qkv, const std::string& output,
                                 const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows) {
+    cancelled(cancel);check(loaded(),"video_not_loaded");
+    Pin publication(*resources_,resident_);
+    std::unique_ptr<Artifact> artifact;
+    compute(qkv, cancel, on_rows, [&](std::span<const float> row) {
+        if (!artifact) {
+            artifact=std::make_unique<Artifact>(output);
+            const auto header="KADAN_H3_ATTENTION_V1\n"+std::to_string(qkv.size()/width)+" 2048\nF32LE\n";
+            artifact->write(header.data(),header.size());
+        }
+        artifact->write(row.data(),row.size_bytes());
+    });
+    cancelled(cancel);artifact->publish(output);
+}
+void H3DecoderAttention::compute(std::span<const float> qkv, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+    const std::function<void(std::span<const float>)>& sink) {
     static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
     cancelled(cancel);
     check(loaded(), "video_not_loaded");
@@ -417,9 +464,6 @@ void H3DecoderAttention::execute(std::span<const float> qkv, const std::string& 
         if (i%192==0) cancelled(cancel);
         check(std::isfinite(qkv[i]), "video_nonfinite_input");
     }
-    Artifact artifact(output);
-    const auto header="KADAN_H3_ATTENTION_V1\n"+std::to_string(tokens)+" 2048\nF32LE\n";
-    artifact.write(header.data(),header.size());
     std::array<float,max_tokens> probabilities;
     std::array<float,hidden> attended,projected;
     for (std::size_t token=0;token<tokens;++token) {
@@ -458,10 +502,9 @@ void H3DecoderAttention::execute(std::span<const float> qkv, const std::string& 
             if ((r+1)%64==0 && on_rows) on_rows(token*hidden+r+1);
         }
         cancelled(cancel);
-        artifact.write(projected.data(),sizeof(projected));
+        sink(projected);
     }
     cancelled(cancel);
-    artifact.publish(output);
 }
 H3DecoderFeedForward::H3DecoderFeedForward(std::shared_ptr<Resources> resources) : resources_(std::move(resources)) {
     check(bool(resources_), "video_resources_required");
@@ -479,6 +522,11 @@ void H3DecoderFeedForward::load(const char* root, const std::string& basename, c
     Reservation metadata(*resources_, host(metadata_bytes));
     auto budget = std::make_shared<checkpoint::MemoryBudget>(metadata_bytes);
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
+    load_from(shard,cancel);
+}
+void H3DecoderFeedForward::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel) {
+    cancelled(cancel);
+    check(!loaded(), "video_already_loaded");
     struct Spec { const char* name; std::array<std::uint64_t,5> shape; std::size_t rank; };
     const std::array<Spec,7> specs{{
         {"decoder.transformer_blocks.0.scale1", {2048}, 1},
@@ -528,6 +576,21 @@ void H3DecoderFeedForward::unload() {
 void H3DecoderFeedForward::execute(std::span<const float> residual, std::span<const float> attention,
                                   const std::string& output, const std::atomic_bool& cancel,
                                   const std::function<void(std::size_t)>& on_rows) {
+    cancelled(cancel);check(loaded(),"video_not_loaded");
+    Pin publication(*resources_,resident_);
+    std::unique_ptr<Artifact> artifact;
+    compute(residual, attention, cancel, on_rows, [&](std::span<const float> row) {
+        if (!artifact) {
+            artifact=std::make_unique<Artifact>(output);
+            const auto header="KADAN_H3_FEED_FORWARD_V1\n"+std::to_string(residual.size()/hidden)+" 2048\nF32LE\n";
+            artifact->write(header.data(),header.size());
+        }
+        artifact->write(row.data(),row.size_bytes());
+    });
+    cancelled(cancel);artifact->publish(output);
+}
+void H3DecoderFeedForward::compute(std::span<const float> residual, std::span<const float> attention, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+    const std::function<void(std::span<const float>)>& sink) {
     static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
     cancelled(cancel);
     check(loaded(), "video_not_loaded");
@@ -537,9 +600,6 @@ void H3DecoderFeedForward::execute(std::span<const float> residual, std::span<co
     check(attention.size()==residual.size(), "video_attention_shape");
     Pin pin(*resources_,resident_);
     Reservation scratch(*resources_,host(scratch_bytes));
-    Artifact artifact(output);
-    const auto header="KADAN_H3_FEED_FORWARD_V1\n"+std::to_string(tokens)+" 2048\nF32LE\n";
-    artifact.write(header.data(),header.size());
     std::array<float,hidden> sum,normalized,result;
     std::array<float,inner> gate,values;
     const auto* scale1=weights_.get(); const auto* norm=scale1+hidden;
@@ -587,9 +647,63 @@ void H3DecoderFeedForward::execute(std::span<const float> residual, std::span<co
             if((row+1)%64==0 && on_rows) on_rows(token*(expanded+hidden)+expanded+row+1);
         }
         cancelled(cancel);
-        artifact.write(result.data(),sizeof(result));
+        sink(result);
     }
     cancelled(cancel);
-    artifact.publish(output);
+}
+H3DecoderBlock::H3DecoderBlock(std::shared_ptr<Resources> resources)
+    : resources_(std::move(resources)),qkv_(resources_),rope_(resources_),attention_(resources_),ff_(resources_) {}
+Footprint H3DecoderBlock::host(Bytes bytes) const {
+    auto result=resources_->snapshot().capacity;
+    for(auto& value:result)value=0;
+    result[0]=bytes;return result;
+}
+void H3DecoderBlock::load(const char* root, const std::string& basename, const std::atomic_bool& cancel) {
+    cancelled(cancel);check(!executing_,"busy");check(!loaded(),"video_already_loaded");
+    // All weight reads share one O_NOFOLLOW descriptor, including its mutation
+    // checks. Replacing the pathname between stages cannot mix checkpoint files.
+    Reservation metadata(*resources_,host(metadata_bytes));
+    auto budget=std::make_shared<checkpoint::MemoryBudget>(metadata_bytes);
+    checkpoint::Shard shard(root,basename,budget,{1024*1024,2048,4096});
+    try {
+        qkv_.load_from(shard,cancel);rope_.load(cancel);
+        attention_.load_from(shard,cancel);ff_.load_from(shard,cancel);
+        shard.check_unchanged();cancelled(cancel);
+    } catch(...) {unload();throw;}
+}
+void H3DecoderBlock::unload() {
+    check(!executing_,"busy");
+    ff_.unload();attention_.unload();rope_.unload();qkv_.unload();
+}
+void H3DecoderBlock::execute(std::span<const float> input, std::span<const float> coordinates,
+    const std::string& output, const std::atomic_bool& cancel, const Hook& hook) {
+    cancelled(cancel);check(!executing_,"busy");check(loaded(),"video_not_loaded");
+    check(!input.empty() && input.size()%hidden==0,"video_input_shape");
+    const auto tokens=input.size()/hidden;
+    check(tokens<=max_tokens,"video_input_limit");
+    check(coordinates.size()==tokens*3,"video_coordinate_shape");
+    for(float value:coordinates)check(std::isfinite(value)&&value>=-1&&value<=1,"video_coordinate_range");
+    // Keep every resident pinned through the final publication, including hooks.
+    Pin qpin(*resources_,qkv_.resident_),rpin(*resources_,rope_.resident_);
+    Pin apin(*resources_,attention_.resident_),fpin(*resources_,ff_.resident_);
+    struct Active {bool& flag;explicit Active(bool& f):flag(f){flag=true;}~Active(){flag=false;}} active(executing_);
+    Reservation intermediate(*resources_,host(intermediate_bytes));
+    auto buffers=std::make_unique<float[]>(intermediate_bytes/sizeof(float));
+    auto q=std::span<float>(buffers.get(),tokens*6144);
+    auto r=std::span<float>(buffers.get()+max_tokens*6144,tokens*6144);
+    auto a=std::span<float>(buffers.get()+max_tokens*6144*2,tokens*hidden);
+    auto observe=[&](const char* stage){return [&,stage](std::size_t count){if(hook)hook(stage,count);};};
+    auto sink=[](std::span<float> destination){return [destination,offset=std::size_t{0}](std::span<const float> row) mutable {
+        check(offset<=destination.size() && row.size()<=destination.size()-offset,"video_output_shape");
+        std::copy(row.begin(),row.end(),destination.begin()+offset);offset+=row.size();
+    };};
+    qkv_.compute(input,cancel,observe("qkv"),sink(q));
+    rope_.compute(q,coordinates,cancel,observe("rope"),sink(r));
+    attention_.compute(r,cancel,observe("attention"),sink(a));
+    Artifact artifact(output);
+    const auto header="KADAN_H3_BLOCK_V1\n"+std::to_string(tokens)+" 2048\nF32LE\n";
+    artifact.write(header.data(),header.size());
+    ff_.compute(input,a,cancel,observe("feed_forward"),[&](std::span<const float> row){artifact.write(row.data(),row.size_bytes());});
+    cancelled(cancel);artifact.publish(output);
 }
 } // namespace kadan::video
