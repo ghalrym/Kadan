@@ -4,6 +4,7 @@ from datetime import timedelta
 import gc
 import importlib
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -15,6 +16,15 @@ from api.inference.image.rank_transport import encode, receive_blocking
 from api.inference.image.cuda_wait import configure_blocking_sync
 
 
+def configure_progress_logging():
+    # Rank workers do not inherit uvicorn's logging setup. Scope output to this
+    # bounded progress stream instead of enabling verbose dependency logging.
+    logger = logging.getLogger('api.inference.image.split_pipeline')
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(logging.StreamHandler(sys.stderr))
+
+
 def main():
     connection = socket.socket(fileno=int(sys.argv[1]))
     config = json.loads(sys.argv[2])
@@ -24,6 +34,7 @@ def main():
         raise OSError(ctypes.get_errno(), 'Cannot install rank parent-death fence')
     if os.getppid() != config['parent_pid']:
         raise RuntimeError('Rank controller exited during bootstrap')
+    configure_progress_logging()
     os.sched_setaffinity(0, config['cpus'])
     # Optional imports happen only after process ownership is established.
     torch = importlib.import_module('torch')

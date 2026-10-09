@@ -1,3 +1,6 @@
+import io
+import logging
+from unittest.mock import patch
 from types import SimpleNamespace
 import unittest
 
@@ -5,6 +8,7 @@ from PIL import Image
 import torch
 
 from api.inference.image.split_pipeline import SplitPipeline
+from api.inference.image.rank_worker import configure_progress_logging
 from api.inference.resources import ResourceCancelled
 
 
@@ -84,3 +88,17 @@ class SplitRequestTests(unittest.TestCase):
         with self.assertLogs('api.inference.image.split_pipeline',level='INFO') as logs:
             with self.assertRaises(ResourceCancelled):engine.generate('e'*32,'alpha',7)
         self.assertEqual(len(logs.records),6)
+
+    def test_rank_progress_is_emitted_without_uvicorn_logging(self):
+        logger=logging.getLogger('api.inference.image.split_pipeline')
+        previous=(logger.level,logger.propagate,logger.handlers[:])
+        stream=io.StringIO()
+        try:
+            logger.handlers=[];logger.setLevel(logging.WARNING)
+            with patch('api.inference.image.rank_worker.sys.stderr',stream):configure_progress_logging()
+            SplitPipeline(Pipeline(),0,None,Adapter).generate('f'*32,'alpha',7)
+            lines=stream.getvalue().splitlines()
+            self.assertEqual(len(lines),40)
+            self.assertIn('step=40',lines[-1])
+        finally:
+            logger.setLevel(previous[0]);logger.propagate=previous[1];logger.handlers=previous[2]
