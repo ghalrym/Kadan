@@ -89,3 +89,9 @@ test('request cancellation reaches fetch without a success fallback', async () =
   })
   await assert.rejects(requestImages({ prompt: 'Tree' }, controller.signal))
 })
+
+test('successful generation returns deliverable URLs', async () => {
+  const image = { id: 'completed', urls: ['/v1/images/completed/files/0'], seeds: [42] }
+  mockFetch(async () => Response.json({ image }))
+  assert.deepEqual(await requestImages({ prompt: 'Tree', count: 1 }, signal()), image)
+})

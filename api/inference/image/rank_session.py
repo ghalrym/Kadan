@@ -8,6 +8,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import re
 import math
+import logging
 import threading
 import time
 from typing import Protocol
@@ -179,9 +180,14 @@ class RankSession:
                 self.execution.release()
                 self.execution = None
                 self.state = 'parked'
-            except BaseException:
+            except ResourceCancelled:
                 self._stop()
                 raise
+            except Exception:
+                # RAM reuse is optional. A confirmed cold unload also completes
+                # the handoff; uncertain cleanup still raises and retains accounting.
+                self._stop()
+                logging.getLogger(__name__).warning('Image parking failed; confirmed cold unload completed')
 
     def _stop(self):
         if self.cleanup_deadline is None:

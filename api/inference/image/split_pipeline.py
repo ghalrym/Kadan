@@ -68,3 +68,7 @@ class SplitPipeline:
             pipeline.transformer.forward = original
             pipeline.image_processor.postprocess = postprocess
             adapter.close()  # Drop every request prefix on success and failure.
+            # Scheduler timesteps/sigmas are not module buffers: pipeline.to('cpu')
+            # cannot move them when the next modality parks this pipeline.
+            pipeline.scheduler = type(pipeline.scheduler).from_config(pipeline.scheduler.config)
+            pipeline._current_timestep = None
