@@ -30,10 +30,17 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
+  const completed = useRef<ImageSet[]>([])
   useEffect(() => {
     const controller = new AbortController()
     imageHistory(controller.signal)
-      .then((items) => { if (!controller.signal.aborted) setHistory(items) })
+      .then((items) => {
+        if (controller.signal.aborted) return
+        // History may have been read before a submission finished. Keep this
+        // workspace's completed results authoritative over that older snapshot.
+        const ids = new Set(completed.current.map(item => item.id))
+        setHistory([...completed.current, ...items.filter(item => !ids.has(item.id))])
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
           setHistoryError(
@@ -76,6 +83,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         edit ? { image: source.trim(), strength: strength / 100 } : undefined,
       )
       if (active.current === controller && !controller.signal.aborted) {
+        completed.current = [image, ...completed.current.filter(item => item.id !== image.id)]
         setHistory(items => [image, ...items.filter(item => item.id !== image.id)])
         setHistoryError('')
       }
