@@ -20,7 +20,7 @@ CACHE_RAM_BYTES = 256 * MIB
 CACHE_COLD_BYTES = 64 * 1024**3
 
 
-class ResidentAdapter(NativeAdapter):
+class ResidentQwenAdapter(NativeAdapter):
     def __init__(self, *args, cache_ram_bytes=None, **kwargs):
         super().__init__(*args, **kwargs)
         if cache_ram_bytes is not None and (type(cache_ram_bytes) is not int or not 0 <= cache_ram_bytes <= CACHE_COLD_BYTES):
@@ -225,5 +225,5 @@ class ResidentAdapter(NativeAdapter):
         self.quarantined = False
 
 
-def build_resident(entry, path, resources, device='auto', cancel_event=None):
-    return ResidentAdapter(entry, path, resources, device, cancel_event)
+def build_resident_qwen(entry, path, resources, device='auto', cancel_event=None):
+    return ResidentQwenAdapter(entry, path, resources, device, cancel_event)

@@ -13,7 +13,7 @@ from diffusers.image_processor import VaeImageProcessor
 
 import launch_trajectory
 import supervisor_trajectory
-from trajectory_adapter import UlyssesAdapter, validate_transformer_output
+from trajectory_adapter import SequenceParallelQwenTransformer, validate_transformer_output
 from trajectory_contracts import StepOrder, storage_plan, require_review, PROTOCOL, SETTINGS, CRITERIA, verify_run, require_predecessors
 from trace_binding import sha256
 from trajectory_io import measure, normalized_rgba, ArtifactWriter, tensor_identity
@@ -118,7 +118,7 @@ class TrajectoryTests(unittest.TestCase):
         blocks=[SimpleNamespace(forward=Mock(return_value='prefill')) for _ in range(2)]
         norm=SimpleNamespace(forward=lambda hidden,temb,mask:hidden)
         transformer=SimpleNamespace(transformer_blocks=blocks,norm_out=norm)
-        adapter=UlyssesAdapter(transformer,0,None);adapter.install()
+        adapter=SequenceParallelQwenTransformer(transformer,0,None);adapter.install()
         self.assertEqual(blocks[0].forward(), 'prefill')
         adapter.mode='cached';adapter.step=1
         # Zero-stride source avoids allocating a full 256-MiB fixture.
@@ -156,7 +156,7 @@ class TrajectoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):require_predecessors('candidate','commit',reference,repeat)
 
     def test_target_gather_restores_rank_row_order(self):
-        adapter=UlyssesAdapter(None,0,None);adapter.mode='cached'
+        adapter=SequenceParallelQwenTransformer(None,0,None);adapter.mode='cached'
         output=torch.ones(1,8192,64)
         def gather(parts,value):parts[0].copy_(value);parts[1].fill_(2)
         with patch('trajectory_adapter.dist.all_gather',side_effect=gather):full=adapter.gather(output)

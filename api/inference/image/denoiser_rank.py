@@ -12,14 +12,14 @@ import socket
 import sys
 import time
 
-from api.inference.image.rank_transport import encode, receive_blocking
+from api.inference.image.rank_processes import encode_rank_message, receive_rank_message
 from api.inference.image.cuda_wait import configure_blocking_sync
 
 
 def configure_progress_logging():
     # Rank workers do not inherit uvicorn's logging setup. Scope output to this
     # bounded progress stream instead of enabling verbose dependency logging.
-    logger = logging.getLogger('api.inference.image.split_pipeline')
+    logger = logging.getLogger('api.inference.image.two_rank_pipeline')
     logger.setLevel(logging.INFO)
     logger.propagate = False
     logger.addHandler(logging.StreamHandler(sys.stderr))
@@ -53,7 +53,7 @@ def main():
     torch = importlib.import_module('torch')
     dist = importlib.import_module('torch.distributed')
     diffusers = importlib.import_module('diffusers')
-    engine_type = importlib.import_module('api.inference.image.split_pipeline').SplitPipeline
+    engine_type = importlib.import_module('api.inference.image.two_rank_pipeline').TwoRankQwenPipeline
     device, rank = config['device'], config['rank']
     wait_policy = configure_execution(torch, config)
     def groups(sequence):
@@ -65,7 +65,7 @@ def main():
     sequence = 0
     state = 'new'
     while True:
-        command = receive_blocking(connection)
+        command = receive_rank_message(connection)
         started = time.monotonic()
         if command.get('version') != 1 or command.get('session') != config['session'] or command.get('sequence') != sequence+1:
             raise ValueError('Stale or mismatched rank command')
@@ -126,7 +126,7 @@ def main():
                 raise ValueError('Invalid rank lifecycle transition')
             torch.cuda.synchronize(device)
             receipt.update(resident_bytes=torch.cuda.memory_reserved(device), operation_seconds=time.monotonic()-started)
-            connection.sendall(encode(receipt))
+            connection.sendall(encode_rank_message(receipt))
         except BaseException as exc:
             # Never reuse a possibly broken communicator after OOM/peer failure.
             receipt.update(status='error', error=(type(exc).__name__+': '+str(exc))[:512], resident_bytes=0)
@@ -135,7 +135,7 @@ def main():
             print(json.dumps(dict(rank=rank, job=command.get("job"), error=receipt["error"])),
                 file=sys.stderr, flush=True)
             try:
-                connection.sendall(encode(receipt))
+                connection.sendall(encode_rank_message(receipt))
             finally:
                 os._exit(1)
 

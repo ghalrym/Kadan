@@ -21,7 +21,7 @@ class ImageEndpointsTest(unittest.TestCase):
         self.assertEqual(response.json(), {'images': []})
 
     def test_missing_checkpoint_fails_truthfully(self):
-        with patch('api.services.images.image_manager.generate', side_effect=RuntimeFailure('Download Qwen-Image-2.1', 409)):
+        with patch('api.services.image_jobs.image_jobs.generate', side_effect=RuntimeFailure('Download Qwen-Image-2.1', 409)):
             for path, body in [('generations', {'prompt': 'A tree', 'count': 1}),
                                ('edits', {'prompt': 'A tree', 'image': 'inline-source'})]:
                 response = self.client.post('/v1/images/' + path, json=body)

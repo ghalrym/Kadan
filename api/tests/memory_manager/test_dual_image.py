@@ -11,13 +11,13 @@ from uuid import uuid4
 
 from PIL import Image
 
-from api.inference.image.dual import DualImage
-from api.inference.image.feature import ImageFeature
-from api.inference.image.model import GIB, REVISION
+from api.inference.image.two_rank_generation import TwoRankQwenImage
+from api.inference.image.image_requests import ImageRequests
+from api.inference.image.qwen_image_pipeline import GIB, REVISION
 from api.inference.resources import ResourceManager, ResourceCancelled
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue, Job
-from api.services.images import ImageManager
+from api.services.image_jobs import ImageJobs
 from api.services.runtime import RuntimeFailure
 
 
@@ -70,10 +70,10 @@ class DualQueueTests(unittest.IsolatedAsyncioTestCase):
         model=self.root/'model';model.mkdir();(model/'weights.safetensors').write_bytes(b'fixture')
         downloads=SimpleNamespace(get_checkpoint=lambda _:(SimpleNamespace(revision=REVISION),model))
         runtime=SimpleNamespace(ensure_resources=lambda:self.resources)
-        self.images=ImageManager(self.root,downloads,runtime)
-        self.images.native=DualImage(model,self.resources,transport_factory=lambda *_:self.ranks)
+        self.images=ImageJobs(self.root,downloads,runtime)
+        self.images.generator=TwoRankQwenImage(model,self.resources,transport_factory=lambda *_:self.ranks)
         self.manager=object.__new__(MemoryManager)
-        self.manager.features={'llm':self.text,'image':ImageFeature(self.images)}
+        self.manager.features={'llm':self.text,'image':ImageRequests(self.images)}
         self.prefix='kadan:test:dual:'+uuid4().hex+':'
         self.queue=InferenceQueue(self.manager._execute,url=os.environ['KADAN_TEST_REDIS_URL'],prefix=self.prefix,lock_path=self.root/'queue.lock')
         self.manager.queue=self.queue;await self.queue.start()
@@ -94,7 +94,7 @@ class DualQueueTests(unittest.IsolatedAsyncioTestCase):
         for job in (a,b,c,d):await self.queue.wait(job)
         self.assertEqual(self.events,['text:A','text:park','image:B','image:C','image:park','text:D'])
         self.assertEqual(self.ranks.starts,1)
-        self.assertEqual(self.images.native.session.state,'parked')
+        self.assertEqual(self.images.generator.session.state,'parked')
         self.assertEqual(len(self.images.history()),2)
     async def test_queued_cancel_and_invalid_shape_never_park_text(self):
         a=await self.submit_text('A');await self.text.started.wait()
@@ -124,10 +124,10 @@ class DualPreflightTests(unittest.IsolatedAsyncioTestCase):
             text = Text(resources, events)
             await text(SimpleNamespace(label='resident'))
             downloads = SimpleNamespace(get_checkpoint=lambda _: (SimpleNamespace(revision=REVISION), root))
-            images = ImageManager(root / 'outputs', downloads,
+            images = ImageJobs(root / 'outputs', downloads,
                 SimpleNamespace(ensure_resources=lambda: resources))
             manager = object.__new__(MemoryManager)
-            manager.features = {'llm': text, 'image': ImageFeature(images)}
+            manager.features = {'llm': text, 'image': ImageRequests(images)}
             manager.queue = SimpleNamespace(streams={})
             job = Job(id='a' * 32, feature='image', operation='generate', model='qwen-image-2.1',
                 payload={'prompt': 'image', 'count': 1})
@@ -137,14 +137,14 @@ class DualPreflightTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with patch.dict('os.environ', {'KADAN_IMAGE_BACKEND': 'dual',
                         'KADAN_IMAGE_CPUS': f'[{unavailable}]'}, clear=True), patch(
-                        'api.inference.image.rank_transport.ProcessRanks.start') as start:
+                        'api.inference.image.rank_processes.ImageRankProcesses.start') as start:
                     with self.assertRaises(RuntimeFailure) as caught:
                         await manager._execute(job)
                 self.assertEqual(caught.exception.status_code, 422)
                 self.assertEqual(events, ['text:resident'])
                 self.assertIs(text.gpu, resident)
                 self.assertEqual(resources.snapshot(), before)
-                self.assertIsNone(images.native)
+                self.assertIsNone(images.generator)
                 start.assert_not_called()
             finally:
                 images.close()

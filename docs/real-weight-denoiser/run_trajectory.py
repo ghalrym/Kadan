@@ -14,7 +14,7 @@ from diffusers import QwenImage21Pipeline
 
 from bf16_contracts import ULYSSES_SOURCE
 from capture import PROMPT, REVISION
-from trajectory_adapter import UlyssesAdapter, validate_transformer_output
+from trajectory_adapter import SequenceParallelQwenTransformer, validate_transformer_output
 from trajectory_contracts import PROTOCOL, SETTINGS, CRITERIA, StepOrder, verify_run
 from trajectory_io import ArtifactWriter, tensor_identity, measure, normalized_rgba
 from trace_binding import sha256
@@ -53,7 +53,7 @@ def main():
     try:
         phase('verify-reference')
         if case!='reference':verify_run(REFERENCE,'reference',commit)
-        assert sha256('/app/api/inference/image/parallel.py')==ULYSSES_SOURCE
+        assert sha256('/app/api/inference/image/sequence_parallel_attention.py')==ULYSSES_SOURCE
         phase('hash-checkpoint')
         model_root=Path('/models/qwen-image-2.1-'+REVISION)
         checkpoint_files=None
@@ -67,7 +67,7 @@ def main():
         pipeline=QwenImage21Pipeline.from_pretrained('/models/qwen-image-2.1-'+REVISION,local_files_only=True,torch_dtype=torch.bfloat16,use_safetensors=True)
         assert pipeline.transformer.config.causal_condition and len(pipeline.transformer.transformer_blocks)==32
         pipeline.vae.enable_tiling();pipeline.enable_model_cpu_offload(gpu_id=rank)
-        if candidate:adapter=UlyssesAdapter(pipeline.transformer,rank,control);adapter.install()
+        if candidate:adapter=SequenceParallelQwenTransformer(pipeline.transformer,rank,control);adapter.install()
         source_identity=dict(pipeline=sha256(inspect.getfile(QwenImage21Pipeline)),transformer=sha256(inspect.getfile(type(pipeline.transformer))),
             scheduler=sha256(inspect.getfile(type(pipeline.scheduler))),vae=sha256(inspect.getfile(type(pipeline.vae))))
         (OUT/f'cpu-threads-rank-{rank}.json').write_text(json.dumps(dict(intraop=torch.get_num_threads(),interop=torch.get_num_interop_threads(),cpu_max=f'{quota} {period}',affinity_cpus=len(os.sched_getaffinity(0)))))

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.inference.llm.native import HEADROOM_BYTES, PYTHON_HOST_BYTES, NativeProtocolError, WorkerProcess
-from api.inference.llm.native_resident import ResidentAdapter, RESIDENT_HOST_BYTES, CACHE_RAM_BYTES
+from api.inference.llm.qwen_residency import ResidentQwenAdapter, RESIDENT_HOST_BYTES, CACHE_RAM_BYTES
 from api.inference.resources import ResourceExhausted, ResourceManager
 from api.tests.inference.llm.test_native import Tokenizer, Stream
 
@@ -60,12 +60,12 @@ def fixture(root, resources):
     (root/'config.json').write_text(json.dumps({'model_type':'qwen3_5_moe','text_config':{'max_position_embeddings':512}}))
     (root/'mode').write_text('normal')
     binary=root/'worker';binary.write_text('#!'+sys.executable+'\n'+WORKER);binary.chmod(0o700)
-    return ResidentAdapter(SimpleNamespace(id='small'), root, resources,
+    return ResidentQwenAdapter(SimpleNamespace(id='small'), root, resources,
         tokenizer_factory=lambda _:Tokenizer(), streamer_factory=Stream,
         worker_path=str(binary), load_timeout=2, step_timeout=.3)
 
 
-class ResidentAdapterTests(unittest.TestCase):
+class ResidentQwenAdapterTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)

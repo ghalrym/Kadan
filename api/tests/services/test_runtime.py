@@ -11,7 +11,7 @@ from api.inference.resources import MemoryCapacity, ResourceManager
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
 from api.services.runtime import RuntimeFailure, RuntimeManager
-from api.tests.inference.llm.test_native_resident import fixture as resident_fixture
+from api.tests.inference.llm.test_qwen_residency import fixture as resident_fixture
 from api.inference.llm.native import HEADROOM_BYTES
 
 
@@ -58,7 +58,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_backend_selects_exact_planner_before_device_admission(self):
         self.manager._factory = None
         for backend, target in (('native', 'api.inference.llm.native.build_native'),
-                                ('native-resident', 'api.inference.llm.native_resident.build_resident')):
+                                ('native-resident', 'api.inference.llm.qwen_residency.build_resident_qwen')):
             for gpu, device in (('auto', 'auto'), ('1', 'cuda:1')):
                 with patch.dict('os.environ', {'KADAN_LLM_BACKEND': backend, 'KADAN_GPU': gpu}), \
                         patch(target, return_value=self.adapter) as factory, \

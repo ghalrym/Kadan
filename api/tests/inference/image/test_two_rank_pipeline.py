@@ -7,8 +7,8 @@ import unittest
 from PIL import Image
 import torch
 
-from api.inference.image.split_pipeline import SplitPipeline
-from api.inference.image.rank_worker import configure_progress_logging
+from api.inference.image.two_rank_pipeline import TwoRankQwenPipeline
+from api.inference.image.denoiser_rank import configure_progress_logging
 from api.inference.resources import ResourceCancelled
 
 
@@ -54,11 +54,11 @@ class SplitRequestTests(unittest.TestCase):
         pipeline=Pipeline();adapters=[]
         def factory(*args):
             item=Adapter(*args);adapters.append(item);return item
-        engine=SplitPipeline(pipeline,0,None,factory)
+        engine=TwoRankQwenPipeline(pipeline,0,None,factory)
         originals=(pipeline.transformer.forward,pipeline.image_processor.postprocess)
         for index,(prompt,seed) in enumerate([('alpha',3),('beta',9),('alpha',3)]):
             actual,_=engine.generate(str(index)*32,prompt,seed)
-            baseline,_=SplitPipeline(Pipeline(),0,None,Adapter).generate('f'*32,prompt,seed)
+            baseline,_=TwoRankQwenPipeline(Pipeline(),0,None,Adapter).generate('f'*32,prompt,seed)
             self.assertEqual(actual.tobytes(),baseline.tobytes())
             self.assertFalse(hasattr(pipeline.scheduler, 'timesteps'))
             self.assertIsNone(pipeline._current_timestep)
@@ -71,7 +71,7 @@ class SplitRequestTests(unittest.TestCase):
         pipeline=Pipeline();adapters=[]
         def factory(*args):
             item=Adapter(*args);adapters.append(item);return item
-        engine=SplitPipeline(pipeline,1,None,factory)
+        engine=TwoRankQwenPipeline(pipeline,1,None,factory)
         original=pipeline.transformer.forward;pipeline.fail=True
         with self.assertRaises(ResourceCancelled):engine.generate('a'*32,'alpha',7)
         self.assertEqual(pipeline.transformer.forward,original)
@@ -80,29 +80,29 @@ class SplitRequestTests(unittest.TestCase):
         self.assertIsNone(pipeline._current_timestep)
         pipeline.fail=False
         actual,_=engine.generate('b'*32,'beta',5)
-        baseline,_=SplitPipeline(Pipeline(),1,None,Adapter).generate('c'*32,'beta',5)
+        baseline,_=TwoRankQwenPipeline(Pipeline(),1,None,Adapter).generate('c'*32,'beta',5)
         self.assertEqual(actual.tobytes(),baseline.tobytes())
 
     def test_progress_is_bounded_and_only_records_returned_steps(self):
-        pipeline=Pipeline();engine=SplitPipeline(pipeline,0,None,Adapter)
-        with self.assertLogs('api.inference.image.split_pipeline',level='INFO') as logs:
+        pipeline=Pipeline();engine=TwoRankQwenPipeline(pipeline,0,None,Adapter)
+        with self.assertLogs('api.inference.image.two_rank_pipeline',level='INFO') as logs:
             engine.generate('d'*32,'alpha',7)
         self.assertEqual(len(logs.records),40)
         self.assertEqual([r.args[2] for r in logs.records],list(range(1,41)))
         self.assertTrue(all(r.args[3]>=0 and r.args[4]>=0 for r in logs.records))
         pipeline.fail=True
-        with self.assertLogs('api.inference.image.split_pipeline',level='INFO') as logs:
+        with self.assertLogs('api.inference.image.two_rank_pipeline',level='INFO') as logs:
             with self.assertRaises(ResourceCancelled):engine.generate('e'*32,'alpha',7)
         self.assertEqual(len(logs.records),6)
 
     def test_rank_progress_is_emitted_without_uvicorn_logging(self):
-        logger=logging.getLogger('api.inference.image.split_pipeline')
+        logger=logging.getLogger('api.inference.image.two_rank_pipeline')
         previous=(logger.level,logger.propagate,logger.handlers[:])
         stream=io.StringIO()
         try:
             logger.handlers=[];logger.setLevel(logging.WARNING)
-            with patch('api.inference.image.rank_worker.sys.stderr',stream):configure_progress_logging()
-            SplitPipeline(Pipeline(),0,None,Adapter).generate('f'*32,'alpha',7)
+            with patch('api.inference.image.denoiser_rank.sys.stderr',stream):configure_progress_logging()
+            TwoRankQwenPipeline(Pipeline(),0,None,Adapter).generate('f'*32,'alpha',7)
             lines=stream.getvalue().splitlines()
             self.assertEqual(len(lines),40)
             self.assertIn('step=40',lines[-1])

@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from api.inference.feature import UnsupportedFeature
 from api.inference.llm.feature import LLMFeature
 from api.inference.video.feature import VideoFeature
-from api.inference.image.feature import ImageFeature
+from api.inference.image.image_requests import ImageRequests
 from api.inference.stt.feature import STTFeature
 from api.inference.tts.feature import TTSFeature
 from api.inference.decisions.feature import DecisionsFeature
@@ -28,7 +28,7 @@ class MemoryManager:
     def __init__(self, *, runtime=None, decisions=None, transcription=None, videos=None, images=None, queue=None):
         self.llm = LLMFeature(runtime or runtime_manager)
         self.video = VideoFeature(videos or video_jobs)
-        self.image = ImageFeature(images)
+        self.image = ImageRequests(images)
         self.stt = STTFeature(transcription or get_transcription_manager())
         self.tts = TTSFeature()
         self.decisions = DecisionsFeature(decisions or decision_manager)

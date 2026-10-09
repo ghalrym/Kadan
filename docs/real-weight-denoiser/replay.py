@@ -10,7 +10,7 @@ import torch.distributed as dist
 from diffusers.models.transformers.transformer_qwenimage21 import (
     QwenImage21TransformerBlock, QwenImage21KVLayerCache, QwenImage21AdaLayerNormContinuous,
 )
-from api.inference.image.parallel import TokenShard, cached_block, compact_prefix, sequence_to_heads, heads_to_sequence
+from api.inference.image.sequence_parallel_attention import TokenShard, cached_block, compact_prefix, sequence_to_heads, heads_to_sequence
 from capture import digest, REVISION
 from metrics import compare
 

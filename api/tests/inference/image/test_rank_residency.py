@@ -1,7 +1,7 @@
 import threading
 import unittest
 
-from api.inference.image.rank_session import RankBudget, RankSession
+from api.inference.image.rank_residency import ImageRankBudget, ImageRankResidency
 from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted, ResourceRecoveryRequired
 
 
@@ -31,11 +31,11 @@ class FakeRanks:
         return self.confirmed
 
 
-class RankSessionTests(unittest.TestCase):
+class ImageRankResidencyTests(unittest.TestCase):
     def setUp(self):
         self.resources = ResourceManager(1000, {0: 100, 1: 100})
         self.transport = FakeRanks()
-        self.controller = RankSession(self.resources, self.transport, RankBudget(200, (0, 1), 10, 70), enabled=True)
+        self.controller = ImageRankResidency(self.resources, self.transport, ImageRankBudget(200, (0, 1), 10, 70), enabled=True)
 
     def reservations(self):
         return self.resources.snapshot()['reservations']
@@ -173,9 +173,9 @@ class RankSessionTests(unittest.TestCase):
 
     def test_budget_and_time_bounds_are_explicit(self):
         with self.assertRaises(ValueError):
-            RankBudget(100, (0, 1, 0), 10, 20)
+            ImageRankBudget(100, (0, 1, 0), 10, 20)
         with self.assertRaises(ValueError):
-            RankSession(self.resources, self.transport, RankBudget(100, (0, 1), 10, 20), operation_timeout=float('inf'))
+            ImageRankResidency(self.resources, self.transport, ImageRankBudget(100, (0, 1), 10, 20), operation_timeout=float('inf'))
 
 
 if __name__ == '__main__':

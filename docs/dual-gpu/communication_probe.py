@@ -10,7 +10,7 @@ import time
 import torch
 import torch.distributed as dist
 
-from api.inference.image.parallel import sequence_to_heads, heads_to_sequence, gather_target_kv, TokenShard, cached_block, compact_prefix
+from api.inference.image.sequence_parallel_attention import sequence_to_heads, heads_to_sequence, gather_target_kv, TokenShard, cached_block, compact_prefix
 from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21TransformerBlock, QwenImage21KVLayerCache
 
 

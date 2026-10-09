@@ -15,7 +15,7 @@ from diffusers.models.transformers.transformer_qwenimage21 import (
     QwenImage21KVLayerCache, QwenImage21TransformerBlock,
 )
 
-from api.inference.image.parallel import (
+from api.inference.image.sequence_parallel_attention import (
     TokenShard, cached_block, compact_prefix, heads_to_sequence, sequence_to_heads,
 )
 
@@ -103,8 +103,8 @@ def rejection_rank(rank, rendezvous, output):
             mask = torch.ones(1, 6 if case == 'mask' and rank == 1 else 7, dtype=torch.bool)
             started = time.monotonic()
             with patch.object(block.attn.to_q, 'forward', side_effect=AssertionError('Projection reached')), \
-                    patch('api.inference.image.parallel.sequence_to_heads', side_effect=AssertionError('Exchange reached')), \
-                    patch('api.inference.image.parallel.gather_target_kv', side_effect=AssertionError('Exchange reached')):
+                    patch('api.inference.image.sequence_parallel_attention.sequence_to_heads', side_effect=AssertionError('Exchange reached')), \
+                    patch('api.inference.image.sequence_parallel_attention.gather_target_kv', side_effect=AssertionError('Exchange reached')):
                 try:
                     cached_block(block, local, modulation, rotary, prefix, shard, mode=mode,
                         key_valid=mask, request_id='other' if case == 'request' and rank == 1 else 'test',

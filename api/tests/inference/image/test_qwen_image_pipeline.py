@@ -9,11 +9,11 @@ import weakref
 
 from PIL import Image
 
-from api.inference.image.model import NativeImage, GIB, CONTEXT_BYTES
+from api.inference.image.qwen_image_pipeline import QwenImagePipeline, GIB, CONTEXT_BYTES
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceBusy, ResourceExhausted
 
 
-class NativeImageTests(unittest.TestCase):
+class QwenImagePipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -25,39 +25,39 @@ class NativeImageTests(unittest.TestCase):
         self.torch = SimpleNamespace(float32='fp32', bfloat16='bf16', Generator=Mock(),
             cuda=SimpleNamespace(device=lambda _: nullcontext(), empty_cache=Mock(), synchronize=Mock()))
         self.modules = lambda: (self.torch, SimpleNamespace(QwenImage21Pipeline=SimpleNamespace(from_pretrained=self.factory)))
-        self.native = NativeImage(self.path, self.resources, modules=self.modules)
-        self.addCleanup(self.native.close)
+        self.qwen_generator = QwenImagePipeline(self.path, self.resources, modules=self.modules)
+        self.addCleanup(self.qwen_generator.close)
 
     def test_resident_reuse_then_offload_and_reload_under_pressure(self):
-        self.native.generate('Tree', '16:9', [10, 11], threading.Event())
-        self.assertEqual(self.native.device, 'cuda:1')
-        self.assertIsNotNone(self.native.gpu)
+        self.qwen_generator.generate('Tree', '16:9', [10, 11], threading.Event())
+        self.assertEqual(self.qwen_generator.device, 'cuda:1')
+        self.assertIsNotNone(self.qwen_generator.gpu)
         self.pipeline.enable_sequential_cpu_offload.assert_not_called()
         self.assertEqual(self.pipeline.call_args.kwargs['width'], 2752)
         self.assertEqual(self.pipeline.call_args.kwargs['num_inference_steps'], 40)
-        self.native.generate('Other', '1:1', [12], threading.Event())
+        self.qwen_generator.generate('Other', '1:1', [12], threading.Event())
         self.factory.assert_called_once()
         self.assertEqual(len(self.resources.snapshot()['reservations']), 3)
-        self.native.offload_to_ram()
-        self.assertIsNone(self.native.gpu)
-        self.assertIsNotNone(self.native.pipeline)
+        self.qwen_generator.offload_to_ram()
+        self.assertIsNone(self.qwen_generator.gpu)
+        self.assertIsNotNone(self.qwen_generator.pipeline)
         self.pipeline.to.assert_called_with('cpu')
         pressure = self.resources.reserve('pressure', 'video', host_bytes=100 * GIB)
-        self.assertIsNone(self.native.pipeline)
-        self.assertIsNone(self.native.host)
+        self.assertIsNone(self.qwen_generator.pipeline)
+        self.assertIsNone(self.qwen_generator.host)
         pressure.release()
-        self.native.generate('Reload', '1:1', [1], threading.Event())
+        self.qwen_generator.generate('Reload', '1:1', [1], threading.Event())
         self.assertEqual(self.factory.call_count, 2)
 
     def test_sequential_offload_parks_hooks_and_releases_gpu(self):
         with (self.path / 'weights.safetensors').open('wb') as stream:
             stream.truncate(20 * GIB)
-        self.native.weights = 20 * GIB
-        self.native.generate('Edit', '1:1', [1], threading.Event(), image=Image.new('RGBA', (2, 2)))
+        self.qwen_generator.weights = 20 * GIB
+        self.qwen_generator.generate('Edit', '1:1', [1], threading.Event(), image=Image.new('RGBA', (2, 2)))
         self.pipeline.enable_sequential_cpu_offload.assert_called_once_with(gpu_id=1)
         self.pipeline.remove_all_hooks.assert_called_once()
-        self.assertIsNone(self.native.gpu)
-        self.assertIsNotNone(self.native.host)
+        self.assertIsNone(self.qwen_generator.gpu)
+        self.assertIsNotNone(self.qwen_generator.host)
         self.assertEqual(self.pipeline.call_args.kwargs['image'].mode, 'RGBA')
 
     def test_active_leases_prevent_eviction_and_cancellation_clears_residency(self):
@@ -69,35 +69,35 @@ class NativeImageTests(unittest.TestCase):
             kwargs['callback_on_step_end'](self.pipeline, 0, 0, {})
         self.pipeline.side_effect = forward
         with self.assertRaises(ResourceCancelled):
-            self.native.generate('x', '1:1', [1], cancel)
-        self.assertIsNone(self.native.pipeline)
+            self.qwen_generator.generate('x', '1:1', [1], cancel)
+        self.assertIsNone(self.qwen_generator.pipeline)
         self.assertEqual(set(self.resources.snapshot()['reservations']), {'framework-context:1'})
         self.assertEqual(self.resources.snapshot()['reservations']['framework-context:1']['device_bytes'], {1: CONTEXT_BYTES})
 
     def test_explicit_cpu_and_invalid_or_insufficient_gpu_fail_truthfully(self):
-        self.native.requested = 'cpu'
-        self.native.generate('x', '1:1', [1], threading.Event())
+        self.qwen_generator.requested = 'cpu'
+        self.qwen_generator.generate('x', '1:1', [1], threading.Event())
         self.assertEqual(self.factory.call_args.kwargs['torch_dtype'], 'fp32')
-        self.assertIsNone(self.native.gpu)
-        self.native.close()
-        self.native.requested = 'cuda:9'
+        self.assertIsNone(self.qwen_generator.gpu)
+        self.qwen_generator.close()
+        self.qwen_generator.requested = 'cuda:9'
         with self.assertRaises(ResourceExhausted):
-            self.native.load()
-        self.native.requested = '0,1'
+            self.qwen_generator.load()
+        self.qwen_generator.requested = '0,1'
         with self.assertRaises(ValueError):
-            self.native.load()
+            self.qwen_generator.load()
 
     def test_single_gpu_fit_is_preferred_and_capacity_is_never_pooled(self):
-        self.native.weights = 8 * GIB
-        self.assertEqual(self.native._plan(), ('cuda:1', 16 * GIB, False))
-        self.native.weights = 40 * GIB
-        self.assertEqual(self.native._plan(), ('cuda:1', 8 * GIB, True))
-        self.native.requested = 'cuda:0'
-        self.assertEqual(self.native._plan(), ('cuda:0', 8 * GIB, True))
+        self.qwen_generator.weights = 8 * GIB
+        self.assertEqual(self.qwen_generator._plan(), ('cuda:1', 16 * GIB, False))
+        self.qwen_generator.weights = 40 * GIB
+        self.assertEqual(self.qwen_generator._plan(), ('cuda:1', 8 * GIB, True))
+        self.qwen_generator.requested = 'cuda:0'
+        self.assertEqual(self.qwen_generator._plan(), ('cuda:0', 8 * GIB, True))
 
     def test_shared_placement_capacity_view_is_consumed_when_present(self):
         self.resources.available_devices = lambda: {0: 12 * GIB, 1: 0}
-        self.assertEqual(self.native._plan()[0], 'cuda:0')
+        self.assertEqual(self.qwen_generator._plan()[0], 'cuda:0')
 
     def test_exception_frames_are_cleared_before_releasing_reservations(self):
         class Allocation:
@@ -111,7 +111,7 @@ class NativeImageTests(unittest.TestCase):
                     raise ValueError('allocation failure')
                 except ValueError as exc:
                     raise RuntimeError('native failure') from exc
-            self.native.requested = 'cpu'
+            self.qwen_generator.requested = 'cpu'
             self.factory.side_effect = fail if during_load else None
             self.pipeline.side_effect = None if during_load else fail
             release = self.resources._release
@@ -121,34 +121,34 @@ class NativeImageTests(unittest.TestCase):
             self.resources._release = checked_release
             try:
                 with self.assertRaisesRegex(RuntimeError, 'native failure'):
-                    self.native.generate('x', '1:1', [1], threading.Event())
+                    self.qwen_generator.generate('x', '1:1', [1], threading.Event())
                 self.assertEqual(self.resources.snapshot()['reservations'], {})
             finally:
                 self.resources._release = release
 
     def test_context_stays_accounted_and_cannot_be_pressure_evicted(self):
-        self.native.generate('x', '1:1', [1], threading.Event())
-        self.native.close()
+        self.qwen_generator.generate('x', '1:1', [1], threading.Event())
+        self.qwen_generator.close()
         with self.assertRaises(ResourceExhausted):
             self.resources.reserve('full-device', 'llm', device_bytes={1: 24 * GIB})
-        self.native.generate('y', '1:1', [2], threading.Event())
+        self.qwen_generator.generate('y', '1:1', [2], threading.Event())
         self.assertEqual(sum(key.startswith('framework-context:') for key in self.resources.snapshot()['reservations']), 1)
 
     def test_failed_sync_retains_accounting_and_prevents_reuse(self):
-        self.native.generate('x', '1:1', [1], threading.Event())
+        self.qwen_generator.generate('x', '1:1', [1], threading.Event())
         before = self.resources.snapshot()['reservations']
         self.torch.cuda.synchronize.side_effect = RuntimeError('sync uncertain')
         with self.assertRaisesRegex(RuntimeError, 'sync uncertain'):
-            self.native.offload_to_ram()
+            self.qwen_generator.offload_to_ram()
         self.assertEqual(self.resources.snapshot()['reservations'], before)
         with self.assertRaises(ResourceBusy):
-            self.native.load()
+            self.qwen_generator.load()
         self.torch.cuda.synchronize.side_effect = None
-        self.native.close()
+        self.qwen_generator.close()
         self.assertEqual(set(self.resources.snapshot()['reservations']), {'framework-context:1'})
 
     def test_failed_transfer_drops_failure_frames_but_keeps_model_budget(self):
-        self.native.generate('x', '1:1', [1], threading.Event())
+        self.qwen_generator.generate('x', '1:1', [1], threading.Event())
         before = self.resources.snapshot()['reservations']
         references = []
         class Allocation:
@@ -160,44 +160,44 @@ class NativeImageTests(unittest.TestCase):
         self.pipeline.to.side_effect = fail
         caught = None
         try:
-            self.native.offload_to_ram()
+            self.qwen_generator.offload_to_ram()
         except RuntimeError as exc:
             caught = exc
         self.assertIsNotNone(caught)
         self.assertTrue(all(reference() is None for reference in references))
         self.assertEqual(self.resources.snapshot()['reservations'], before)
         self.pipeline.to.side_effect = None
-        self.native.close()
+        self.qwen_generator.close()
 
     def test_component_offload_reserves_phase_envelope_and_keeps_quality_settings(self):
-        self.native.offload_mode='component'
-        self.native.component_weights={'text_encoder':17*GIB,'transformer':14*GIB,'vae':2*GIB}
+        self.qwen_generator.offload_mode='component'
+        self.qwen_generator.component_weights={'text_encoder':17*GIB,'transformer':14*GIB,'vae':2*GIB}
         self.pipeline.model_cpu_offload_seq='text_encoder->transformer->vae'
         self.resources.framework_context(1,CONTEXT_BYTES)
         native_context=self.resources.reserve('native-context','llm',device_bytes={1:CONTEXT_BYTES},offload_on_handoff=False)
         self.addCleanup(native_context.release)
-        self.assertEqual(self.native._plan(),('cuda:1',23*GIB,True))
+        self.assertEqual(self.qwen_generator._plan(),('cuda:1',23*GIB,True))
         def forward(**kwargs):
-            row=self.resources.snapshot()['reservations'][self.native.owner+':gpu']
+            row=self.resources.snapshot()['reservations'][self.qwen_generator.owner+':gpu']
             self.assertEqual(row['device_bytes'],{1:23*GIB})
             self.assertEqual((kwargs['num_inference_steps'],kwargs['width'],kwargs['height']),(40,2048,2048))
             return SimpleNamespace(images=[Image.new('RGB',(2,2))])
         self.pipeline.side_effect=forward
-        self.native.generate('x','1:1',[42],threading.Event())
+        self.qwen_generator.generate('x','1:1',[42],threading.Event())
         self.pipeline.enable_model_cpu_offload.assert_called_once_with(gpu_id=1)
         self.pipeline.enable_sequential_cpu_offload.assert_not_called()
         self.pipeline.vae.enable_tiling.assert_called_once()
         self.pipeline.remove_all_hooks.assert_called_once()
-        self.assertIsNone(self.native.gpu)
+        self.assertIsNone(self.qwen_generator.gpu)
         self.assertEqual(self.factory.call_args.kwargs['torch_dtype'],'bf16')
 
     def test_component_plan_never_spends_another_context_or_pools_cards(self):
-        self.native.offload_mode='component'
-        self.native.component_weights={'text_encoder':24*GIB,'transformer':14*GIB,'vae':2*GIB}
-        with self.assertRaises(ResourceExhausted):self.native.load()
+        self.qwen_generator.offload_mode='component'
+        self.qwen_generator.component_weights={'text_encoder':24*GIB,'transformer':14*GIB,'vae':2*GIB}
+        with self.assertRaises(ResourceExhausted):self.qwen_generator.load()
         self.factory.assert_not_called()
-        self.native.component_weights['text_encoder']=17*GIB
+        self.qwen_generator.component_weights['text_encoder']=17*GIB
         self.pipeline.model_cpu_offload_seq='transformer->vae'
-        with self.assertRaisesRegex(RuntimeError,'Unexpected component'):self.native.generate('x','1:1',[1],threading.Event())
+        with self.assertRaisesRegex(RuntimeError,'Unexpected component'):self.qwen_generator.generate('x','1:1',[1],threading.Event())
         self.pipeline.enable_model_cpu_offload.assert_not_called()
-        self.assertIsNone(self.native.pipeline)
+        self.assertIsNone(self.qwen_generator.pipeline)

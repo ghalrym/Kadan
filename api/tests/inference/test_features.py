@@ -12,7 +12,7 @@ from api.inference.feature import InferenceFeature
 from api.inference.llm.feature import LLMFeature
 from api.inference.video.feature import VideoFeature
 from api.inference.video.h3 import H3Provider, H3_REVISION, GIB
-from api.inference.image.feature import ImageFeature
+from api.inference.image.image_requests import ImageRequests
 from api.inference.stt.feature import STTFeature
 from api.inference.stt.model import TranscriptionManager
 from api.inference.stt.catalog import checkpoint
@@ -142,11 +142,11 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resources.snapshot()['reservations'], {})
             self.assertEqual(jobs.get('a'*32).status, 'Done')
 
-    async def test_image_contract_owns_native_lifecycle(self):
-        service = Mock(native=object())
-        feature = ImageFeature(service)
+    async def test_image_requests_own_generation_lifecycle(self):
+        service = Mock(generator=object())
+        feature = ImageRequests(service)
         self.assertIsInstance(feature, InferenceFeature)
-        self.assertIs(feature.adapter, service.native)
+        self.assertIs(feature.adapter, service.generator)
         with self.assertRaises(RuntimeFailure):
             await feature.load('unimplemented')
         await feature.load('qwen-image-2.1')

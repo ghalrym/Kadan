@@ -10,7 +10,7 @@ import time
 
 
 @contextmanager
-def profile_pipeline(pipeline, torch, device, emit, trace_path=None, *, trace_transformer_index=1, record_shapes=False):
+def profile_qwen_pipeline(pipeline, torch, device, emit, trace_path=None, *, trace_transformer_index=1, record_shapes=False):
     if type(trace_transformer_index) is not int or trace_transformer_index < 1:
         raise ValueError("Transformer trace index must be positive")
     originals = []

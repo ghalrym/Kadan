@@ -147,8 +147,8 @@ class RuntimeManager:
                 factory, native = build_native, True
                 if backend == 'native-resident':
                     # Optional protocol-v2 bridge; no Torch model engine import.
-                    from api.inference.llm.native_resident import build_resident
-                    factory = build_resident
+                    from api.inference.llm.qwen_residency import build_resident_qwen
+                    factory = build_resident_qwen
         if factory is None:
             # Keep the API available when native dependencies are broken so Settings
             # can report the import failure instead of preventing server startup.

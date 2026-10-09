@@ -14,8 +14,8 @@ from uuid import UUID, uuid4
 
 from PIL import Image, UnidentifiedImageError
 
-from api.inference.image import model as qwen_image
-from api.inference.image.dual import DualImage
+from api.inference.image import qwen_image_pipeline
+from api.inference.image.two_rank_generation import TwoRankQwenImage
 from api.inference.decisions.model import clear_failure_frames
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.media import ImageSet
@@ -43,19 +43,19 @@ def decode_source(source):
         raise ValueError('Invalid source image') from exc
 
 
-class ImageManager:
-    def __init__(self, root=None, downloads=model_manager, runtime=runtime_manager, backend=None):
+class ImageJobs:
+    def __init__(self, root=None, downloads=model_manager, chat_runtime=runtime_manager, backend=None):
         self.root = Path(root or os.environ.get('KADAN_MEDIA_DIR', Path.home() / '.local/share/kadan/media')) / 'images'
-        self.downloads, self.runtime, self.backend = downloads, runtime, backend
+        self.downloads, self.chat_runtime, self.backend = downloads, chat_runtime, backend
         self._gate = threading.Lock()
-        self.native = None
+        self.generator = None
 
     def preflight(self):
         try:
-            entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+            entry, path = self.downloads.get_checkpoint(qwen_image_pipeline.MODEL_ID)
         except ValueError as exc:
             raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
-        if entry.revision != qwen_image.REVISION:
+        if entry.revision != qwen_image_pipeline.REVISION:
             raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
         return entry, path
 
@@ -94,15 +94,15 @@ class ImageManager:
         _, path = self.preflight()
         if self.backend is None:
             device, offload_mode = self._configuration()
-            resources = self.runtime.ensure_resources()
+            resources = self.chat_runtime.ensure_resources()
             try:
                 if device == 'dual':
-                    DualImage.validate(prompt, aspect, count, source)
-                    plan = DualImage(path, resources)
+                    TwoRankQwenImage.validate(prompt, aspect, count, source)
+                    plan = TwoRankQwenImage(path, resources)
                 else:
-                    plan = qwen_image.NativeImage(path, resources, device=device, offload_mode=offload_mode)
+                    plan = qwen_image_pipeline.QwenImagePipeline(path, resources, device=device, offload_mode=offload_mode)
                 plan._plan()  # Metadata/capacity only; never imports provider modules.
-                if device != 'dual' and plan.policy.host_budget(plan.weights, 2) + qwen_image.GIB > resources.capacity.host_bytes:
+                if device != 'dual' and plan.policy.host_budget(plan.weights, 2) + qwen_image_pipeline.GIB > resources.capacity.host_bytes:
                     raise ResourceExhausted('Image request exceeds the host memory budget')
             except ResourceExhausted as exc:
                 raise RuntimeFailure(str(exc), 503) from exc
@@ -120,12 +120,12 @@ class ImageManager:
         """
         scratch = None
         try:
-            scratch = self.runtime.ensure_resources().reserve('image:validation:' + uuid4().hex,
-                'image', host_bytes=qwen_image.GIB, cancel_event=cancel, allow_eviction=False)
+            scratch = self.chat_runtime.ensure_resources().reserve('image:validation:' + uuid4().hex,
+                'image', host_bytes=qwen_image_pipeline.GIB, cancel_event=cancel, allow_eviction=False)
             with scratch.lease(cancel):
-                qwen_image.check_cancel(cancel)
+                qwen_image_pipeline.check_cancel(cancel)
                 with decode_source(source):
-                    qwen_image.check_cancel(cancel)
+                    qwen_image_pipeline.check_cancel(cancel)
         except (ResourceBusy, ResourceCancelled, ResourceExhausted) as exc:
             raise RuntimeFailure(str(exc), 503 if isinstance(exc, ResourceExhausted) else 409) from exc
         except (ValueError, OSError) as exc:
@@ -142,12 +142,12 @@ class ImageManager:
             if self.backend is None:
                 # Report a missing checkpoint before requesting any memory.
                 try:
-                    self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+                    self.downloads.get_checkpoint(qwen_image_pipeline.MODEL_ID)
                 except ValueError as exc:
                     raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
                 try:
-                    scratch = self.runtime.ensure_resources().reserve('image:output:' + uuid4().hex,
-                        'image', host_bytes=qwen_image.GIB, cancel_event=cancel)
+                    scratch = self.chat_runtime.ensure_resources().reserve('image:output:' + uuid4().hex,
+                        'image', host_bytes=qwen_image_pipeline.GIB, cancel_event=cancel)
                 except (ResourceBusy, ResourceCancelled, ResourceExhausted) as exc:
                     raise RuntimeFailure(str(exc), 503 if isinstance(exc, ResourceExhausted) else 409) from exc
                 ownership.callback(scratch.release)
@@ -167,18 +167,18 @@ class ImageManager:
         try:
             image = decode_source(source) if source else None
             try:
-                entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+                entry, path = self.downloads.get_checkpoint(qwen_image_pipeline.MODEL_ID)
             except ValueError as exc:
                 raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
-            if entry.revision != qwen_image.REVISION:
+            if entry.revision != qwen_image_pipeline.REVISION:
                 raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
             seeds = [((seed if seed is not None else secrets.randbits(53)) + index) % (2 ** 53) for index in range(count)]
             if self.backend is not None:
-                pictures = self.backend(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, image=image)
+                pictures = self.backend(path, self.chat_runtime.ensure_resources(), prompt, aspect, seeds, cancel, image=image)
             else:
                 self._load(cancel)
-                pictures = self.native.generate(prompt, aspect, seeds, cancel, image=image,
-                    **({"job_id":job_id} if isinstance(self.native, DualImage) else {}))
+                pictures = self.generator.generate(prompt, aspect, seeds, cancel, image=image,
+                    **({"job_id":job_id} if isinstance(self.generator, TwoRankQwenImage) else {}))
             if len(pictures) != count:
                 raise RuntimeError('Image provider returned an unexpected result count')
             identifier = str(uuid4())
@@ -195,9 +195,9 @@ class ImageManager:
                 raise ResourceCancelled('Image generation cancelled')
             stage.rename(self.root / identifier)
             published = True
-            if isinstance(self.native, DualImage):
+            if isinstance(self.generator, TwoRankQwenImage):
                 logging.getLogger(__name__).info("dual_image_published %s", json.dumps(
-                    dict(image_id=identifier, job=job_id, **self.native.last_timing)))
+                    dict(image_id=identifier, job=job_id, **self.generator.last_timing)))
             return result
         except ResourceBusy as exc:
             raise RuntimeFailure(str(exc), 409) from exc
@@ -215,8 +215,8 @@ class ImageManager:
                     shutil.rmtree(stage)
             finally:
                 try:
-                    if not published and self.native is not None:
-                        self.native.close()
+                    if not published and self.generator is not None:
+                        self.generator.close()
                 finally:
                     self._gate.release()
 
@@ -240,28 +240,28 @@ class ImageManager:
 
     def _load(self, cancel=None):
         try:
-            entry, path = self.downloads.get_checkpoint(qwen_image.MODEL_ID)
+            entry, path = self.downloads.get_checkpoint(qwen_image_pipeline.MODEL_ID)
         except ValueError as exc:
             raise RuntimeFailure('Download Qwen-Image-2.1 in Settings before generating images.', 409) from exc
-        if entry.revision != qwen_image.REVISION:
+        if entry.revision != qwen_image_pipeline.REVISION:
             raise RuntimeFailure('Qwen Image checkpoint revision does not match this runtime', 409)
         device, offload_mode = self._configuration()
-        if self.native is not None and (self.native.path != path or self.native.requested != device or self.native.offload_mode != offload_mode):
-            self.native.close()
-            self.native = None
-        if self.native is None:
-            self.native = (DualImage(path, self.runtime.ensure_resources()) if device == 'dual' else
-                qwen_image.NativeImage(path, self.runtime.ensure_resources(), device=device, offload_mode=offload_mode))
-        return self.native.load(cancel)
+        if self.generator is not None and (self.generator.path != path or self.generator.requested != device or self.generator.offload_mode != offload_mode):
+            self.generator.close()
+            self.generator = None
+        if self.generator is None:
+            self.generator = (TwoRankQwenImage(path, self.chat_runtime.ensure_resources()) if device == 'dual' else
+                qwen_image_pipeline.QwenImagePipeline(path, self.chat_runtime.ensure_resources(), device=device, offload_mode=offload_mode))
+        return self.generator.load(cancel)
 
     def offload_to_ram(self, cancel=None):
-        if self.native is not None:
-            self.native.offload_to_ram(cancel)
+        if self.generator is not None:
+            self.generator.offload_to_ram(cancel)
 
     def close(self):
-        if self.native is not None:
-            self.native.close()
-            self.native = None
+        if self.generator is not None:
+            self.generator.close()
+            self.generator = None
 
 
-image_manager = ImageManager()
+image_jobs = ImageJobs()

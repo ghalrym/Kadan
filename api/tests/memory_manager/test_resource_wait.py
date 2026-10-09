@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from uuid import uuid4
 
-from api.inference.image.rank_session import RankBudget, RankSession
+from api.inference.image.rank_residency import ImageRankBudget, ImageRankResidency
 from api.inference.resources import ResourceManager, ResourcePending, ResourceRecoveryRequired
-from api.tests.inference.image.test_rank_session import FakeRanks
+from api.tests.inference.image.test_rank_residency import FakeRanks
 from api.memory_manager.queue import InferenceQueue
 from api.services.runtime import RuntimeFailure
 
@@ -95,7 +95,7 @@ class ResourceWaitTests(unittest.IsolatedAsyncioTestCase):
     async def test_rank_cleanup_uncertainty_fails_without_blocking_fifo(self):
         self.resources = ResourceManager(1000, {0: 100, 1: 100})
         transport = FakeRanks()
-        session = RankSession(self.resources, transport, RankBudget(200, (0, 1), 10, 70), enabled=True)
+        session = ImageRankResidency(self.resources, transport, ImageRankBudget(200, (0, 1), 10, 70), enabled=True)
         session.execute('a' * 32)
         before = self.resources.snapshot()['reservations']
         transport.confirmed = False
@@ -104,7 +104,7 @@ class ResourceWaitTests(unittest.IsolatedAsyncioTestCase):
         async def execute(job):
             self.attempts += 1
             if job.feature == 'video':
-                # Real handoff invokes RankSession.park -> failed acknowledgement
+                # Real handoff invokes ImageRankResidency.park -> failed acknowledgement
                 # -> unconfirmed transport stop, retaining all three reservations.
                 self.resources.offload_workload_devices('image')
             elif job.feature == 'image':

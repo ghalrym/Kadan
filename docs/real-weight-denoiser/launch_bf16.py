@@ -146,7 +146,7 @@ def main():
     require_review(json.loads(args.review_record.read_text()), args.execute_reviewed)
     ci=json.loads(run('gh','run','list','--repo','ghalrym/Kadan','--commit',args.execute_reviewed,'--limit','100','--json','name,status,conclusion,event,headSha').stdout)
     require_ci(ci,args.execute_reviewed)
-    assert sha256(REPO/'api/inference/image/parallel.py')==ULYSSES_SOURCE, 'Ulysses arithmetic changed'
+    assert sha256(REPO/'api/inference/image/sequence_parallel_attention.py')==ULYSSES_SOURCE, 'Ulysses arithmetic changed'
     capture=args.capture.resolve()
     verify_capture(capture)
     assert sum(p.stat().st_size for p in capture.iterdir())<LIMIT, 'Capture exceeds artifact envelope'

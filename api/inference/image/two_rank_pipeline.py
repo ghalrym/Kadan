@@ -8,14 +8,14 @@ import time
 
 import torch
 
-from api.inference.image.split_adapter import UlyssesAdapter, validate_transformer_output
+from api.inference.image.sequence_parallel_transformer import SequenceParallelQwenTransformer, validate_transformer_output
 
 
 logger = logging.getLogger(__name__)
 
 
-class SplitPipeline:
-    def __init__(self, pipeline, rank, control, adapter_factory=UlyssesAdapter):
+class TwoRankQwenPipeline:
+    def __init__(self, pipeline, rank, control, adapter_factory=SequenceParallelQwenTransformer):
         self.pipeline, self.rank, self.control = pipeline, rank, control
         self.adapter_factory = adapter_factory
 

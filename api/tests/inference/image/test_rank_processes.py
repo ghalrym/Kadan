@@ -7,21 +7,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from api.inference.image.policy import ImagePolicy
-from api.inference.image.rank_session import RankBudget, RankSession
-from api.inference.image.rank_transport import ProcessRanks, encode
+from api.inference.image.execution_policy import ImageExecutionPolicy
+from api.inference.image.rank_residency import ImageRankBudget, ImageRankResidency
+from api.inference.image.rank_processes import ImageRankProcesses, encode_rank_message
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceRecoveryRequired
 
 
 class ProcessRankTests(unittest.TestCase):
     def setUp(self):
         self.memory = {0:0,1:0}
-        self.budget = RankBudget(1000,(0,1),10,70)
-        self.transport = ProcessRanks(Path('/unused'), self.budget,
+        self.budget = ImageRankBudget(1000,(0,1),10,70)
+        self.transport = ImageRankProcesses(Path('/unused'), self.budget,
             worker_module='api.tests.inference.image.rank_fixture', guard=lambda:None,
             memory_probe=lambda:dict(self.memory))
         self.resources = ResourceManager(2000,{0:100,1:100})
-        self.session = RankSession(self.resources,self.transport,self.budget,enabled=True,
+        self.session = ImageRankResidency(self.resources,self.transport,self.budget,enabled=True,
             operation_timeout=3,cleanup_timeout=.2)
 
     def tearDown(self):
@@ -40,7 +40,7 @@ class ProcessRankTests(unittest.TestCase):
 
     def test_explicit_rank_affinity_applies_before_startup_threads(self):
         expected = sorted(os.sched_getaffinity(0))[:1]
-        self.transport.policy = ImagePolicy.from_environment({
+        self.transport.policy = ImageExecutionPolicy.from_environment({
             'KADAN_IMAGE_CPUS': str(expected), 'KADAN_IMAGE_THREADS': '2'})
         replies = self.session.execute('a' * 32, payload={'prompt': 'ok'})
         for reply in replies:
@@ -50,10 +50,10 @@ class ProcessRankTests(unittest.TestCase):
             self.assertEqual(reply['omp_threads'], '2')
 
     def test_startup_rechecks_affinity_after_preflight(self):
-        self.transport.policy = ImagePolicy.from_environment({'KADAN_IMAGE_CPUS': '[3]'})
+        self.transport.policy = ImageExecutionPolicy.from_environment({'KADAN_IMAGE_CPUS': '[3]'})
         self.assertEqual(self.transport.policy.affinity({3, 7}), [3])
-        with patch('api.inference.image.rank_transport.os.sched_getaffinity', return_value={7}), patch(
-                'api.inference.image.rank_transport.subprocess.Popen') as launch:
+        with patch('api.inference.image.rank_processes.os.sched_getaffinity', return_value={7}), patch(
+                'api.inference.image.rank_processes.subprocess.Popen') as launch:
             with self.assertRaisesRegex(ValueError, 'CPU affinity'):
                 self.session.execute('a' * 32, payload={'prompt': 'image'})
         launch.assert_not_called()
@@ -90,7 +90,7 @@ class ProcessRankTests(unittest.TestCase):
 
     def test_peer_stderr_is_bounded_and_survives_reap(self):
         self.session.execute('a' * 32, payload={'prompt': 'ok'})
-        with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
+        with self.assertLogs('api.inference.image.rank_processes', level='WARNING') as captured:
             with self.assertRaises((RuntimeError, EOFError)):
                 self.session.execute('b' * 32, payload={'prompt': 'stderr-exit'})
         self.assertLessEqual(len(self.transport.stderr_tails[1]), 8192)
@@ -100,17 +100,17 @@ class ProcessRankTests(unittest.TestCase):
         self.assertFalse(self.resources.snapshot()['reservations'])
 
     def test_error_acknowledgement_is_retained(self):
-        with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
+        with self.assertLogs('api.inference.image.rank_processes', level='WARNING') as captured:
             with self.assertRaises(ValueError):
                 self.session.execute('a' * 32, payload={'prompt': 'oom'})
         self.assertIn('synthetic allocation failure', '\n'.join(captured.output))
     def test_default_resource_admission_releases_rank_ownership(self):
-        self.budget=RankBudget(128*1024**2,(0,1),10,70)
-        self.transport=ProcessRanks(Path('/unused'),self.budget,
+        self.budget=ImageRankBudget(128*1024**2,(0,1),10,70)
+        self.transport=ImageRankProcesses(Path('/unused'),self.budget,
             worker_module='api.tests.inference.image.rank_fixture',
             memory_probe=lambda:dict(self.memory))
         self.resources=ResourceManager(256*1024**2,{0:100,1:100})
-        self.session=RankSession(self.resources,self.transport,self.budget,enabled=True,
+        self.session=ImageRankResidency(self.resources,self.transport,self.budget,enabled=True,
             operation_timeout=3,cleanup_timeout=.2)
         self.session.execute('a'*32,payload={'prompt':'ok'})
         self.transport._guard()
@@ -159,7 +159,7 @@ class ProcessRankTests(unittest.TestCase):
         self.assertFalse(self.resources.snapshot()['reservations'])
 
     def test_deadline_and_bounded_control_message(self):
-        with self.assertRaises(ValueError):encode({'prompt':'x'*65536})
+        with self.assertRaises(ValueError):encode_rank_message({'prompt':'x'*65536})
         self.session.operation_timeout=.1
         with self.assertRaises(TimeoutError):self.session.execute('a'*32,payload={'prompt':'wait'})
         self.assertFalse(self.resources.snapshot()['reservations'])
@@ -168,11 +168,11 @@ class ProcessRankTests(unittest.TestCase):
 class PhysicalOwnerTests(unittest.TestCase):
     def test_duplicate_canonical_devices_reject_before_child_launch(self):
         identity='e30b6419-2c6d-f550-61d6-16166a920dac'
-        transport=ProcessRanks(Path('/unused'),RankBudget(1000,(0,1),10,70),guard=lambda:None)
+        transport=ImageRankProcesses(Path('/unused'),ImageRankBudget(1000,(0,1),10,70),guard=lambda:None)
         torch=SimpleNamespace(cuda=SimpleNamespace(get_device_properties=lambda d:
             SimpleNamespace(uuid=('GPU-' if d else '')+identity)))
-        with patch('api.inference.image.rank_transport.subprocess.Popen') as spawn, \
-                patch('api.inference.image.rank_transport.importlib.import_module',return_value=torch):
+        with patch('api.inference.image.rank_processes.subprocess.Popen') as spawn, \
+                patch('api.inference.image.rank_processes.importlib.import_module',return_value=torch):
             with self.assertRaisesRegex(RuntimeError,'same physical GPU'):
                 transport.start('session',(0,1),time.monotonic()+1,None)
         spawn.assert_not_called()
@@ -182,17 +182,17 @@ class PhysicalOwnerTests(unittest.TestCase):
     def test_torch_bare_uuid_matches_nvml_prefixed_identity(self):
         ids=['e30b6419-2c6d-f550-61d6-16166a920dac','2a2378dd-08c1-6f69-6317-a253d90e76b3']
         for prefix in ('','GPU-'):
-            transport=ProcessRanks(Path('/unused'),RankBudget(1000,(0,1),10,70),guard=lambda:None)
+            transport=ImageRankProcesses(Path('/unused'),ImageRankBudget(1000,(0,1),10,70),guard=lambda:None)
             torch=SimpleNamespace(cuda=SimpleNamespace(get_device_properties=lambda d:SimpleNamespace(uuid=prefix+ids[d])))
             result=SimpleNamespace(stdout='\n'.join('GPU-'+identity+', 42' for identity in ids))
-            with patch('api.inference.image.rank_transport.subprocess.run',return_value=result), \
-                    patch('api.inference.image.rank_transport.importlib.import_module',return_value=torch):
+            with patch('api.inference.image.rank_processes.subprocess.run',return_value=result), \
+                    patch('api.inference.image.rank_processes.importlib.import_module',return_value=torch):
                 self.assertEqual(transport._device_usage(),{0:42*1024**2,1:42*1024**2})
             self.assertEqual(transport.uuids,{d:'GPU-'+value for d,value in enumerate(ids)})
 
     def test_park_checks_owned_pid_even_if_other_gpu_memory_disappears(self):
-        budget=RankBudget(1000,(0,1),10,70)
-        transport=ProcessRanks(Path('/unused'),budget,guard=lambda:None,memory_probe=lambda:{0:0,1:0})
+        budget=ImageRankBudget(1000,(0,1),10,70)
+        transport=ImageRankProcesses(Path('/unused'),budget,guard=lambda:None,memory_probe=lambda:{0:0,1:0})
         transport.uuids={0:'GPU-A',1:'GPU-B'}
         transport.baseline_processes={('GPU-A',10)}
         rows={('GPU-A',10):80,('GPU-A',20):9,('GPU-B',21):9}
@@ -207,7 +207,7 @@ class PhysicalOwnerTests(unittest.TestCase):
         self.assertTrue(transport._owned_fit(64*1024**2,stopped=True))
 
     def test_extra_gpu_process_during_startup_is_not_assumed_owned(self):
-        transport=ProcessRanks(Path('/unused'),RankBudget(1000,(0,1),10,70),guard=lambda:None,memory_probe=lambda:{0:0,1:0})
+        transport=ImageRankProcesses(Path('/unused'),ImageRankBudget(1000,(0,1),10,70),guard=lambda:None,memory_probe=lambda:{0:0,1:0})
         transport.uuids={0:'GPU-A',1:'GPU-B'}
         transport.process_probe=lambda:{('GPU-A',20):9,('GPU-A',22):9,('GPU-B',21):9}
         with self.assertRaises(RuntimeError):transport._confirm_owners()

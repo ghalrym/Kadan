@@ -21,7 +21,7 @@ def loaded_runtime_path(maps):
     return path
 
 
-class Runtime:
+class CudaRuntimeApi:
     def __init__(self):
         path = loaded_runtime_path(Path('/proc/self/maps').read_text())
         # Never introduce a second runtime or silently load a different version.
@@ -70,7 +70,7 @@ def configure_blocking_sync(device, runtime=None):
     """
     if type(device) is not int or device < 0:
         raise ValueError('An explicit nonnegative rank device is required')
-    runtime = Runtime() if runtime is None else runtime
+    runtime = CudaRuntimeApi() if runtime is None else runtime
     version = runtime.version()
     if not 13000 <= version < 14000:
         raise RuntimeError('CUDA 13 runtime required for initialized-context flags')

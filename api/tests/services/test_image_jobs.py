@@ -13,16 +13,16 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from api.inference.image.dual import DualImage
-from api.inference.image.model import GIB, REVISION
-from api.tests.inference.image.test_rank_session import FakeRanks
-from api.inference.image.feature import ImageFeature
+from api.inference.image.two_rank_generation import TwoRankQwenImage
+from api.inference.image.qwen_image_pipeline import GIB, REVISION
+from api.tests.inference.image.test_rank_residency import FakeRanks
+from api.inference.image.image_requests import ImageRequests
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceRecoveryRequired
-from api.services.images import ImageManager, decode_source
+from api.services.image_jobs import ImageJobs, decode_source
 from api.services.runtime import RuntimeFailure
 
 
-class ImageManagerTests(unittest.TestCase):
+class ImageJobsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -30,10 +30,10 @@ class ImageManagerTests(unittest.TestCase):
         self.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.temp.name))
         self.backend = Mock(side_effect=lambda path, resources, prompt, aspect, seeds, cancel, **kwargs:
             [Image.new('RGBA', (3, 2), (255, 0, 0, 100)) for _ in seeds])
-        self.manager = ImageManager(self.temp.name, self.downloads, Mock(), self.backend)
+        self.manager = ImageJobs(self.temp.name, self.downloads, Mock(), self.backend)
 
     def test_layered_dual_failure_has_one_cleanup_deadline_and_explicit_recovery(self):
-        # Exercise execute -> DualImage -> ImageManager finalizers with a clock
+        # Exercise execute -> TwoRankQwenImage -> ImageJobs finalizers with a clock
         # advanced by the failed physical reap, without a slow wall-clock test.
         for failure in ('execute', 'output', 'publication'):
             with self.subTest(failure=failure):
@@ -42,7 +42,7 @@ class ImageManagerTests(unittest.TestCase):
                 resources = ResourceManager(300 * GIB, {0: 24 * GIB, 1: 24 * GIB})
                 ranks = FakeRanks()
                 ranks.output = Mock(side_effect=OSError('bad output'))
-                dual = DualImage(path, resources, devices=[0, 1],
+                dual = TwoRankQwenImage(path, resources, devices=[0, 1],
                     transport_factory=lambda *args: ranks)
                 now, deadlines = [10.0], []
                 dual.session.clock = lambda: now[0]
@@ -54,9 +54,9 @@ class ImageManagerTests(unittest.TestCase):
                 if failure == 'execute':
                     ranks.callback = lambda command: (_ for _ in ()).throw(
                         ResourceCancelled('cancelled')) if command['operation'] == 'execute' else None
-                manager = ImageManager(path / 'outputs', self.downloads, Mock())
-                manager.runtime.ensure_resources.return_value = resources
-                manager.native = dual
+                manager = ImageJobs(path / 'outputs', self.downloads, Mock())
+                manager.chat_runtime.ensure_resources.return_value = resources
+                manager.generator = dual
                 if failure == 'publication':
                     # A completed rank operation followed by publication failure.
                     def generate(*args, **kwargs):
@@ -146,7 +146,7 @@ class ImageManagerTests(unittest.TestCase):
     def test_output_scratch_is_admitted_until_publication_returns_or_fails(self):
         self.manager.backend = None
         resources = ResourceManager(2 * 1024**3, {})
-        self.manager.runtime.ensure_resources.return_value = resources
+        self.manager.chat_runtime.ensure_resources.return_value = resources
         def publish(*args):
             rows = resources.snapshot()['reservations']
             self.assertEqual(len(rows), 1)
@@ -167,7 +167,7 @@ class ImageManagerTests(unittest.TestCase):
             raise ResourceCancelled('cancelled')
         self.backend.side_effect = backend
         async def run():
-            feature = ImageFeature(self.manager)
+            feature = ImageRequests(self.manager)
             task = asyncio.create_task(feature(SimpleNamespace(prompt='x', aspect='1:1', count=1, seed=0)))
             await asyncio.to_thread(started.wait, 2)
             task.cancel()
@@ -205,7 +205,7 @@ class ImageManagerTests(unittest.TestCase):
         resources = ResourceManager(1024**3, {0: 50})
         evict = Mock()
         host = resources.reserve('text', 'llm', host_bytes=1, evict=evict)
-        self.manager.runtime = SimpleNamespace(ensure_resources=lambda: resources)
+        self.manager.chat_runtime = SimpleNamespace(ensure_resources=lambda: resources)
         with self.assertRaises(RuntimeFailure) as caught:
             self.manager.validate_source('invalid')
         self.assertEqual(caught.exception.status_code, 503)
@@ -221,12 +221,12 @@ class ImageManagerTests(unittest.TestCase):
         evict = Mock()
         resident = resources.reserve('text', 'llm', device_bytes={0: 20 * GIB}, evict=evict)
         self.addCleanup(resident.release)
-        self.manager.runtime.ensure_resources.return_value = resources
+        self.manager.chat_runtime.ensure_resources.return_value = resources
         before = resources.snapshot()
         unavailable = max(os.sched_getaffinity(0)) + 1
         with patch.dict('os.environ', {'KADAN_IMAGE_BACKEND': 'dual',
                 'KADAN_IMAGE_CPUS': f'[{unavailable}]'}, clear=True), patch(
-                'api.inference.image.rank_transport.ProcessRanks.start') as start:
+                'api.inference.image.rank_processes.ImageRankProcesses.start') as start:
             with self.assertRaises(RuntimeFailure) as caught:
                 self.manager.validate_request(None, prompt='image', count=1)
         self.assertEqual(caught.exception.status_code, 422)
@@ -239,7 +239,7 @@ class ImageManagerTests(unittest.TestCase):
         self.manager.backend = None
         path = Path(self.temp.name)
         (path / 'weights.safetensors').write_bytes(b'fixture')
-        self.manager.runtime.ensure_resources.return_value = ResourceManager(16 * GIB, {0: 24 * GIB})
+        self.manager.chat_runtime.ensure_resources.return_value = ResourceManager(16 * GIB, {0: 24 * GIB})
         with patch.dict('os.environ', {'KADAN_IMAGE_HOST_BYTES': str(16 * GIB)}, clear=True):
             with self.assertRaises(RuntimeFailure) as caught:
                 self.manager.validate_request(None)
@@ -252,15 +252,15 @@ class ImageManagerTests(unittest.TestCase):
         path=Path(self.temp.name)
         for part in ('text_encoder','transformer','vae'):
             (path/part).mkdir();(path/part/'model.safetensors').write_bytes(b'fixture')
-        self.manager.runtime.ensure_resources.return_value=ResourceManager(100*1024**3,{0:24*1024**3})
+        self.manager.chat_runtime.ensure_resources.return_value=ResourceManager(100*1024**3,{0:24*1024**3})
         with patch.dict('os.environ',{'KADAN_IMAGE_DEVICE':'cuda:0','KADAN_IMAGE_OFFLOAD':'invalid'}):
             with self.assertRaises(RuntimeFailure) as caught:self.manager.validate_request(None)
             self.assertEqual(caught.exception.status_code,422)
         with patch.dict('os.environ',{'KADAN_IMAGE_DEVICE':'cuda:0','KADAN_IMAGE_OFFLOAD':'component'}):
             self.manager.validate_request(None)
             old=Mock(path=path,requested='cuda:0',offload_mode='sequential')
-            self.manager.native=old
-            with patch('api.services.images.qwen_image.NativeImage') as factory:
+            self.manager.generator=old
+            with patch('api.services.image_jobs.qwen_image_pipeline.QwenImagePipeline') as factory:
                 self.manager.load()
                 old.close.assert_called_once()
                 self.assertEqual(factory.call_args.kwargs['offload_mode'],'component')

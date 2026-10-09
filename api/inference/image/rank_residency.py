@@ -18,7 +18,7 @@ from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceRec
 
 
 @dataclass(frozen=True)
-class RankBudget:
+class ImageRankBudget:
     host_bytes: int
     devices: tuple[int, int]
     context_bytes: int
@@ -31,7 +31,7 @@ class RankBudget:
             raise ValueError('Explicit positive per-tier budgets are required')
 
 
-class RankTransport(Protocol):
+class ImageRankTransport(Protocol):
     """Absolute deadlines include all peers; stop must kill/reap owned descendants.
 
     exchange sends a command to both ranks and returns exactly two bounded JSON
@@ -43,8 +43,8 @@ class RankTransport(Protocol):
     def stop(self, deadline: float) -> bool: ...
 
 
-class RankSession:
-    def __init__(self, resources, transport: RankTransport, budget: RankBudget, *,
+class ImageRankResidency:
+    def __init__(self, resources, transport: ImageRankTransport, budget: ImageRankBudget, *,
                  enabled=False, operation_timeout=900, cleanup_timeout=15, clock=time.monotonic):
         if any(not math.isfinite(value) or value <= 0 for value in (operation_timeout, cleanup_timeout)):
             raise ValueError('Finite positive operation and cleanup bounds are required')

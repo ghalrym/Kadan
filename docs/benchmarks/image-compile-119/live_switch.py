@@ -12,15 +12,15 @@ from types import SimpleNamespace
 import diffusers
 import torch
 
-from api.inference.image.model import NativeImage, CONTEXT_BYTES
-from api.inference.image.profiling import profile_pipeline
+from api.inference.image.qwen_image_pipeline import QwenImagePipeline, CONTEXT_BYTES
+from api.inference.image.pipeline_profiling import profile_qwen_pipeline
 from torch._dynamo.backends.registry import lookup_backend
 from torch._dynamo.utils import compile_times
-from api.inference.llm.native_resident import ResidentAdapter
+from api.inference.llm.qwen_residency import ResidentQwenAdapter
 from api.inference.resources import ResourceManager, probe_memory
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue
-from api.services.images import ImageManager
+from api.services.image_jobs import ImageJobs
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeManager, RuntimeFailure
 
@@ -96,7 +96,7 @@ def emit(event, **fields):
         print(json.dumps(row, default=str), flush=True)
 
 
-class ObservedResident(ResidentAdapter):
+class ObservedResident(ResidentQwenAdapter):
     def configure_context(self, configured):
         global FIRST_PID, FIRST_LOAD_IO
         emit('text.load.begin', capacity=configured, snapshot=snapshot())
@@ -173,7 +173,7 @@ class PipelineProxy:
         kwargs['callback_on_step_end'] = step
         emit('image.forward.begin', width=kwargs['width'], height=kwargs['height'],
              steps=kwargs['num_inference_steps'], snapshot=snapshot())
-        with profile_pipeline(self.actual, torch, IMAGE.native.device, emit,
+        with profile_qwen_pipeline(self.actual, torch, IMAGE.native.device, emit,
                 ROOT/f'transformer-{PHASE}-step10.json', trace_transformer_index=10, record_shapes=True):
             result = self.actual(**kwargs)
         emit('image.forward.end', image_s=round(time.monotonic()-IMAGE_START,3), compiled=self.compiled, new_compilations=len(COMPILE_EVENTS)-compile_before, compile_metrics=compile_times(), snapshot=snapshot())
@@ -222,8 +222,8 @@ async def run():
     assert model_manager.configured_context('small') == MANIFEST['text_context']
     image_entry, image_path = model_manager.get_checkpoint('qwen-image-2.1')
     assert image_entry.revision == MANIFEST['image_revision']
-    IMAGE = ImageManager(ROOT/'media', downloads=model_manager, runtime=RUNTIME)
-    IMAGE.native = NativeImage(image_path, RESOURCES, device='cuda:0',
+    IMAGE = ImageJobs(ROOT/'media', downloads=model_manager, runtime=RUNTIME)
+    IMAGE.native = QwenImagePipeline(image_path, RESOURCES, device='cuda:0',
         modules=lambda: (torch, SimpleNamespace(QwenImage21Pipeline=PipelineFactory)),
         offload_mode=MANIFEST['image_offload_mode'])
     manager = MemoryManager(runtime=RUNTIME, images=IMAGE)

@@ -2,10 +2,10 @@
 import torch
 import torch.distributed as dist
 
-from api.inference.image.parallel import TokenShard, cached_block, compact_prefix
+from api.inference.image.sequence_parallel_attention import TokenShard, cached_block, compact_prefix
 
 
-class UlyssesAdapter:
+class SequenceParallelQwenTransformer:
     def __init__(self,transformer,rank,control,request_id):
         self.request_id=request_id
         self.transformer=transformer;self.rank=rank;self.control=control

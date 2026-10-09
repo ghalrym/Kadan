@@ -6,35 +6,35 @@ import time
 
 from PIL import Image
 
-from api.inference.image.model import GIB, CONTEXT_BYTES, check_cancel
-from api.inference.image.policy import ImagePolicy
-from api.inference.image.rank_session import RankBudget, RankSession
-from api.inference.image.rank_transport import ProcessRanks
+from api.inference.image.qwen_image_pipeline import GIB, CONTEXT_BYTES, check_cancel
+from api.inference.image.execution_policy import ImageExecutionPolicy
+from api.inference.image.rank_residency import ImageRankBudget, ImageRankResidency
+from api.inference.image.rank_processes import ImageRankProcesses
 from api.inference.resources import ResourceExhausted
 
 
-class DualImage:
+class TwoRankQwenImage:
     requested = 'dual'
     offload_mode = 'component'
 
-    def __init__(self, path, resources, *, transport_factory=ProcessRanks, devices=None):
+    def __init__(self, path, resources, *, transport_factory=ImageRankProcesses, devices=None):
         self.path, self.resources = path, resources
         devices = json.loads(os.environ.get('KADAN_IMAGE_DEVICES', '[0,1]')) if devices is None else devices
         if not isinstance(devices, (list, tuple)):
             raise ValueError('KADAN_IMAGE_DEVICES must be a JSON pair of logical device IDs')
-        self.policy = ImagePolicy.from_environment()
+        self.policy = ImageExecutionPolicy.from_environment()
         self.weights = sum(p.stat().st_size for p in path.rglob('*.safetensors'))
-        self.budget = RankBudget(self.policy.host_budget(self.weights, 3), tuple(devices),
+        self.budget = ImageRankBudget(self.policy.host_budget(self.weights, 3), tuple(devices),
             CONTEXT_BYTES, self.policy.execution_bytes)
         self._plan()
         self.transport = transport_factory(path, self.budget, self.policy)
-        self.session = RankSession(resources, self.transport, self.budget, enabled=True,
+        self.session = ImageRankResidency(resources, self.transport, self.budget, enabled=True,
             operation_timeout=self.policy.operation_seconds, cleanup_timeout=self.policy.cleanup_seconds)
         self.last_timing = None
 
     def _plan(self):
         # Reject deployment errors before the FIFO parks another resident model.
-        # ProcessRanks.start rechecks the mask in case it changes after preflight.
+        # ImageRankProcesses.start rechecks the mask in case it changes after preflight.
         self.policy.affinity(os.sched_getaffinity(0))
         if not self.weights:
             raise ResourceExhausted('The two-rank checkpoint has no weights')

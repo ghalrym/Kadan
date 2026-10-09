@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21TransformerBlock, QwenImage21AdaLayerNormContinuous
 
-from api.inference.image.parallel import TokenShard, cached_block, compact_prefix, sequence_to_heads, heads_to_sequence
+from api.inference.image.sequence_parallel_attention import TokenShard, cached_block, compact_prefix, sequence_to_heads, heads_to_sequence
 from bf16_contracts import verify_capture, require_pass, aggregate, ULYSSES_SOURCE
 from bf16_numerics import inspect_values, expected_head_ownership, advance_pair
 from replay import module, inputs, eager
@@ -83,7 +83,7 @@ def main():
         with (OUT/f'verdict-history-rank-{rank}.jsonl').open('a') as stream:stream.write(json.dumps(status)+'\n')
     save_status()
     try:
-        assert sha256('/app/api/inference/image/parallel.py')==ULYSSES_SOURCE
+        assert sha256('/app/api/inference/image/sequence_parallel_attention.py')==ULYSSES_SOURCE
         record_phase('verify-packets',rank)
         BASE_MANIFEST=verify_capture(ROOT)
         manifest=verify_contexts(CONTEXTS,BASE_MANIFEST,STEP,os.environ.get('KADAN_CAPTURE_COMMIT',os.environ['KADAN_REVIEWED_COMMIT']))

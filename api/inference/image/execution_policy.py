@@ -25,7 +25,7 @@ def byte_budget(environment: Mapping[str, str], name: str, minimum: int) -> int:
 
 
 @dataclass(frozen=True)
-class ImagePolicy:
+class ImageExecutionPolicy:
     workspace_bytes: int
     host_bytes: int | None
     execution_bytes: int
@@ -37,7 +37,7 @@ class ImagePolicy:
     blocking_sync: bool
 
     @classmethod
-    def from_environment(cls, environment: Mapping[str, str] | None = None) -> 'ImagePolicy':
+    def from_environment(cls, environment: Mapping[str, str] | None = None) -> 'ImageExecutionPolicy':
         """Validate KADAN_IMAGE_* settings before reserving memory or starting ranks.
 
         WORKSPACE_BYTES defaults to 8 GiB. HOST_BYTES, when set, must cover the

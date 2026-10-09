@@ -9,7 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from api.inference.image.rank_transport import ProcessRanks
+from api.inference.image.rank_processes import ImageRankProcesses
 
 
 def event(step=1,job='a'*32,rank=0):
@@ -18,12 +18,12 @@ def event(step=1,job='a'*32,rank=0):
 
 class ProgressTests(unittest.TestCase):
     def transport(self):
-        value=ProcessRanks(Path('/unused'),SimpleNamespace());value.session='owned';value.progress_job='a'*32
+        value=ImageRankProcesses(Path('/unused'),SimpleNamespace());value.session='owned';value.progress_job='a'*32
         return value
 
     def test_fragmented_records_are_immediate_bounded_and_owned(self):
         value=self.transport()
-        with self.assertLogs('api.inference.image.rank_transport',level='INFO') as logs:
+        with self.assertLogs('api.inference.image.rank_processes',level='INFO') as logs:
             data=event();value._progress(0,data[:20]);self.assertFalse(value.progress_steps)
             value._progress(0,data[20:])
             value._progress(0,event()) # duplicate
@@ -42,11 +42,11 @@ class ProgressTests(unittest.TestCase):
 import logging,os,sys,time
 from pathlib import Path
 from types import SimpleNamespace
-from api.inference.image.rank_transport import ProcessRanks
+from api.inference.image.rank_processes import ImageRankProcesses
 r,w=os.pipe();os.set_blocking(r,False)
-t=ProcessRanks(Path('/unused'),SimpleNamespace());t.session='owned';t.progress_job='a'*32
+t=ImageRankProcesses(Path('/unused'),SimpleNamespace());t.session='owned';t.progress_job='a'*32
 t.processes=[SimpleNamespace(stderr=os.fdopen(r,'rb',buffering=0))]
-logger=logging.getLogger('api.inference.image.rank_transport');logger.setLevel(logging.INFO)
+logger=logging.getLogger('api.inference.image.rank_processes');logger.setLevel(logging.INFO)
 logger.addHandler(logging.FileHandler(sys.argv[1]))
 os.write(w,('image_step_returned job='+('a'*32)+' rank=0 step=1 monotonic=1.000000 elapsed_seconds=0.500000\\n').encode())
 t._drain_stderr();print('persisted',flush=True);time.sleep(60)

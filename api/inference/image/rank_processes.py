@@ -14,7 +14,7 @@ import tempfile
 import time
 from uuid import UUID
 
-from api.inference.image.policy import ImagePolicy
+from api.inference.image.execution_policy import ImageExecutionPolicy
 from api.inference.resources import ResourceCancelled
 
 MAX_FRAME = 65536
@@ -23,14 +23,14 @@ PROGRESS_LINE_BYTES = 512
 PROGRESS = re.compile(rb'image_step_returned job=([0-9a-f]{32}) rank=([01]) step=([0-9]{1,2}) monotonic=([0-9]{1,12}\.[0-9]{6}) elapsed_seconds=([0-9]{1,12}\.[0-9]{6})')
 
 
-def encode(value):
+def encode_rank_message(value):
     data = json.dumps(value, allow_nan=False, separators=(',', ':')).encode() + b'\n'
     if len(data) > MAX_FRAME:
         raise ValueError('Rank control frame exceeds 64 KiB')
     return data
 
 
-def receive_blocking(connection):
+def receive_rank_message(connection):
     data = bytearray()
     while not data.endswith(b'\n'):
         part = connection.recv(1)
@@ -45,10 +45,10 @@ def receive_blocking(connection):
     return value
 
 
-class ProcessRanks:
-    def __init__(self, path, budget, policy=None, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
+class ImageRankProcesses:
+    def __init__(self, path, budget, policy=None, *, worker_module='api.inference.image.denoiser_rank', guard=None, memory_probe=None):
         self.path, self.budget, self.worker_module = Path(path), budget, worker_module
-        self.policy = policy or ImagePolicy.from_environment()
+        self.policy = policy or ImageExecutionPolicy.from_environment()
         self.guard = guard or self._guard
         self.processes, self.connections = [], []
         self.directory = None
@@ -235,7 +235,7 @@ class ProcessRanks:
         if command.get('operation')=='execute':
             self.progress_job=command['job']
             self.progress_lines={};self.progress_drop=set();self.progress_steps={}
-        payload = encode(command)
+        payload = encode_rank_message(command)
         pending = {i: bytearray(payload) for i in range(2)}
         buffers = {i: bytearray() for i in range(2)}
         replies = {}

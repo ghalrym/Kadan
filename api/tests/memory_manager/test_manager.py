@@ -16,7 +16,7 @@ from PIL import Image
 from api.inference.resources import ResourceBusy, ResourceManager
 from api.memory_manager import MemoryManager
 from api.inference.feature import InferenceFeature
-from api.inference.image.model import REVISION
+from api.inference.image.qwen_image_pipeline import REVISION
 from api.inference.resources import ResourceCancelled
 from api.memory_manager.queue import InferenceQueue
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
@@ -25,7 +25,7 @@ from api.routes.v1.images.generations import ImageRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
 from api.server import app
 from api.services.video_jobs import VideoJobs
-from api.services.images import ImageManager
+from api.services.image_jobs import ImageJobs
 from api.services.runtime import RuntimeFailure
 from api.tests.inference.stt.test_model import audio_url
 
@@ -96,7 +96,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
             offload_to_ram=lambda cancel: self.resources.offload_workload_devices('speech', cancel))
         downloads = Mock()
         downloads.get_checkpoint.side_effect = ValueError("missing checkpoint")
-        images = ImageManager(self.directory.name, downloads, self.runtime)
+        images = ImageJobs(self.directory.name, downloads, self.runtime)
         self.manager = MemoryManager(runtime=self.runtime, transcription=transcription, images=images)
         await self.manager.queue.redis.aclose()
         self.prefix = f'kadan:test:{uuid.uuid4().hex}:'
@@ -155,7 +155,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_image_generation_and_edit_use_redis_and_publish_real_png(self):
         self.resources = ResourceManager(2 * 1024**3, {0: 50})
-        service = self.manager.image.service
+        service = self.manager.image.image_jobs
         service.downloads.get_checkpoint.side_effect = None
         service.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.directory.name))
         service.backend = Mock(side_effect=lambda *args, **kwargs: [Image.new('RGBA', (2, 2))])
@@ -175,7 +175,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)
 
     async def test_image_queue_cancel_waits_for_native_cleanup_before_retry(self):
-        service = self.manager.image.service
+        service = self.manager.image.image_jobs
         service.downloads.get_checkpoint.side_effect = None
         service.downloads.get_checkpoint.return_value = (SimpleNamespace(revision=REVISION), Path(self.directory.name))
         started, stopped = threading.Event(), threading.Event()

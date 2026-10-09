@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from PIL import Image
 
-from api.inference.image.policy import ImagePolicy
+from api.inference.image.execution_policy import ImageExecutionPolicy
 from api.inference.decisions.model import clear_failure_frames
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 
@@ -17,8 +17,8 @@ GIB = 1024 ** 3
 CONTEXT_BYTES = 512 * 1024**2
 
 
-def native_modules():
-    """Keep optional native imports out of API startup and catalog inspection."""
+def load_qwen_image_dependencies():
+    """Keep optional Qwen image dependencies out of API startup and catalog inspection."""
     return importlib.import_module('torch'), importlib.import_module('diffusers')
 
 
@@ -27,12 +27,12 @@ def check_cancel(cancel):
         raise ResourceCancelled('Image generation cancelled')
 
 
-class NativeImage:
-    def __init__(self, path, resources, device='auto', modules=native_modules, offload_mode='sequential'):
+class QwenImagePipeline:
+    def __init__(self, path, resources, device='auto', modules=load_qwen_image_dependencies, offload_mode='sequential'):
         self.path, self.resources, self.requested, self.modules = path, resources, device, modules
         if offload_mode not in ('sequential', 'component'):
             raise ValueError('Image offload mode must be sequential or component')
-        self.policy = ImagePolicy.from_environment()
+        self.policy = ImageExecutionPolicy.from_environment()
         self.offload_mode = offload_mode
         self.component_weights = {name: sum(item.stat().st_size for item in (path/name).glob('*.safetensors'))
             for name in ('text_encoder', 'transformer', 'vae')}

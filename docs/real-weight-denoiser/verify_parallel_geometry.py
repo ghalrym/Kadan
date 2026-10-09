@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21TransformerBlock
 
-from api.inference.image.parallel import TokenShard, cached_block
+from api.inference.image.sequence_parallel_attention import TokenShard, cached_block
 from capture import digest
 from diagnose_block7 import manual
 from metrics import compare

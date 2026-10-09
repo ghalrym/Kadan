@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock
 
-from api.inference.image.profiling import profile_pipeline
+from api.inference.image.pipeline_profiling import profile_qwen_pipeline
 
 
 class Operation:
@@ -27,7 +27,7 @@ class ProfilingTests(unittest.TestCase):
         rows=[]
         def emit(event, **values):rows.append((event,values))
         with self.assertRaisesRegex(ValueError,'intentional'):
-            with profile_pipeline(pipeline,SimpleNamespace(),'cpu',emit):
+            with profile_qwen_pipeline(pipeline,SimpleNamespace(),'cpu',emit):
                 self.assertEqual(pipeline.encode_prompt(2),2)
                 self.assertEqual(pipeline.transformer.forward(2),3)
                 self.assertEqual(pipeline.vae.decode(2),3)
@@ -47,7 +47,7 @@ class ProfilingTests(unittest.TestCase):
         pipeline.transformer.forward=installed_hook
         rows=[]
         with self.assertRaisesRegex(ValueError,'stage failed'):
-            with profile_pipeline(pipeline,SimpleNamespace(),'cpu',lambda event,**values:rows.append((event,values))):
+            with profile_qwen_pipeline(pipeline,SimpleNamespace(),'cpu',lambda event,**values:rows.append((event,values))):
                 pipeline.transformer.forward(1)
         self.assertIs(pipeline.transformer.forward,installed_hook)
         ends=[v for event,v in rows if event=='image.phase.end']
@@ -55,7 +55,7 @@ class ProfilingTests(unittest.TestCase):
         # A subsequent hook installation also survives the next profile cycle.
         pipeline.transformer.forward=lambda value:value+2
         replacement=pipeline.transformer.forward
-        with profile_pipeline(pipeline,SimpleNamespace(),'cpu',lambda *a,**k:None):
+        with profile_qwen_pipeline(pipeline,SimpleNamespace(),'cpu',lambda *a,**k:None):
             self.assertEqual(pipeline.transformer.forward(1),3)
         self.assertIs(pipeline.transformer.forward,replacement)
 
@@ -65,7 +65,7 @@ class ProfilingTests(unittest.TestCase):
         trace=MagicMock();trace.key_averages.return_value=[]
         factory=MagicMock(return_value=trace)
         torch=SimpleNamespace(profiler=SimpleNamespace(profile=factory,ProfilerActivity=SimpleNamespace(CPU='cpu')))
-        with profile_pipeline(pipeline,torch,'cpu',lambda *a,**k:None,'trace.json',trace_transformer_index=3,record_shapes=True):
+        with profile_qwen_pipeline(pipeline,torch,'cpu',lambda *a,**k:None,'trace.json',trace_transformer_index=3,record_shapes=True):
             for i in range(2):pipeline.transformer.forward(i)
             factory.assert_not_called()
             pipeline.transformer.forward(2)

@@ -6,7 +6,7 @@ import sys
 import time
 import threading
 
-from api.inference.image.rank_transport import encode, receive_blocking
+from api.inference.image.rank_processes import encode_rank_message, receive_rank_message
 
 
 # A helper created before main must already inherit the bounded rank mask.
@@ -20,7 +20,7 @@ def main():
     config = json.loads(sys.argv[2])
     channel = socket.socket(fileno=int(sys.argv[1]))
     while True:
-        command = receive_blocking(channel)
+        command = receive_rank_message(channel)
         marker = command.get('payload', {}).get('prompt', '')
         if marker == 'stderr-exit' and config['rank'] == 1:
             sys.stderr.write('x' * 100000 + 'fixture peer failure detail')
@@ -38,7 +38,7 @@ def main():
             reply.update(status='error',error='OutOfMemoryError: synthetic allocation failure')
         if marker == 'stale' and config['rank'] == 1:
             reply['sequence'] -= 1
-        channel.sendall(encode(reply))
+        channel.sendall(encode_rank_message(reply))
 
 
 if __name__ == '__main__':

@@ -12,13 +12,13 @@ from uuid import uuid4
 
 from PIL import Image
 
-from api.inference.image.model import NativeImage, REVISION, GIB
+from api.inference.image.qwen_image_pipeline import QwenImagePipeline, REVISION, GIB
 from api.inference.resources import MemoryCapacity, ResourceManager
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue
-from api.services.images import ImageManager
+from api.services.image_jobs import ImageJobs
 from api.services.runtime import RuntimeManager, RuntimeFailure
-from api.tests.inference.llm.test_native_resident import fixture
+from api.tests.inference.llm.test_qwen_residency import fixture
 
 
 @unittest.skipUnless(os.getenv('KADAN_TEST_REDIS_URL'), 'Dedicated Redis URL required')
@@ -74,15 +74,15 @@ class ResidentBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.image_factory=Mock(return_value=self.pipeline)
         torch=SimpleNamespace(float32='fp32',bfloat16='bf16',Generator=Mock(),
             cuda=SimpleNamespace(device=lambda _:nullcontext(),empty_cache=Mock(),synchronize=Mock()))
-        self.native_image=NativeImage(image_path,self.resources,modules=lambda:(torch,
+        self.image_pipeline=QwenImagePipeline(image_path,self.resources,modules=lambda:(torch,
             SimpleNamespace(QwenImage21Pipeline=SimpleNamespace(from_pretrained=self.image_factory))))
-        image_generate=self.native_image.generate
+        image_generate=self.image_pipeline.generate
         def generate_image(prompt, aspect, seeds, cancel, image=None):
             self.image_cancel=cancel
             return image_generate(prompt, aspect, seeds, cancel, image=image)
-        self.native_image.generate=generate_image
+        self.image_pipeline.generate=generate_image
         downloads=SimpleNamespace(get_checkpoint=lambda _:(SimpleNamespace(revision=REVISION),image_path))
-        self.images=ImageManager(self.root,downloads,self.runtime);self.images.native=self.native_image
+        self.images=ImageJobs(self.root,downloads,self.runtime);self.images.generator=self.image_pipeline
         self.manager=MemoryManager(runtime=self.runtime,images=self.images)
         await self.manager.queue.redis.aclose()
         self.prefix='kadan:test:'+uuid4().hex+':'
@@ -152,7 +152,7 @@ class ResidentBridgeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeFailure,'synthetic image failure'):await self.manager.queue.wait(b)
         await self.manager.queue.wait(c)
         self.assertLess(self.events.index('image:B:end'),self.events.index('text:C:start'))
-        self.assertIsNone(self.native_image.gpu);self.assertIsNone(self.native_image.host)
+        self.assertIsNone(self.image_pipeline.gpu);self.assertIsNone(self.image_pipeline.host)
         self.assertEqual(self.images.history(),[]);self.assertEqual(self.active,0)
 
     async def test_uncertain_park_prevents_image_execution_and_text_reuse(self):
