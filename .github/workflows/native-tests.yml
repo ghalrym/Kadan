@@ -20,6 +20,30 @@ jobs:
       - name: Test native accounting, formats and bounded checkpoint reads
         run: ctest --test-dir /tmp/kadan-native --output-on-failure -LE full-graph
 
+  h3-decoder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure complete CPU VAE graph
+        run: cmake -S native -B /tmp/kadan-h3 -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
+      - name: Build only decoder and lifecycle test
+        run: cmake --build /tmp/kadan-h3 --target kadan-video-decode video-decode-tests --parallel 2
+      - name: Validate all 36 blocks and RGB frame reconstruction
+        run: ctest --test-dir /tmp/kadan-h3 --output-on-failure -R '^video-decode$'
+
+  h3-conditioning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure complete CPU H3 conditioning graph
+        run: cmake -S native -B /tmp/kadan-h3-text -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
+      - name: Build only conditioning model and lifecycle test
+        run: cmake --build /tmp/kadan-h3-text --target kadan-h3-text-encode h3-text-tests --parallel 2
+      - name: Validate all 50 layers and resource cleanup
+        run: ctest --test-dir /tmp/kadan-h3-text --output-on-failure -R '^h3-text$'
+
   h3-denoiser:
     runs-on: ubuntu-latest
     timeout-minutes: 12

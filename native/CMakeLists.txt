@@ -461,6 +461,33 @@ if(KADAN_ENABLE_DECISIONS)
   endif()
 endif()
 
+# Complete CPU H3 VAE decode; text-to-video generation remains unsupported.
+add_executable(kadan-video-decode src/video_decode.cpp)
+target_link_libraries(kadan-video-decode PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-decode-tests tests/video_decode.cpp)
+  target_link_libraries(video-decode-tests PRIVATE kadan_video)
+  add_test(NAME video-decode COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_decode_fixture.py" "$<TARGET_FILE:video-decode-tests>" "$<TARGET_FILE:kadan-video-decode>")
+  set_tests_properties(video-decode PROPERTIES TIMEOUT 600 LABELS full-graph)
+endif()
+
+# Complete H3 text conditioning model, CPU only.
+add_library(kadan_h3_text src/h3_text.cpp)
+target_link_libraries(kadan_h3_text PUBLIC kadan_checkpoint kadan_resources)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_h3_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+endif()
+
+add_executable(kadan-h3-text-encode src/h3_text_encode.cpp)
+target_link_libraries(kadan-h3-text-encode PRIVATE kadan_h3_text)
+
+if(BUILD_TESTING)
+  add_executable(h3-text-tests tests/h3_text.cpp)
+  target_link_libraries(h3-text-tests PRIVATE kadan_h3_text)
+  add_test(NAME h3-text COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/h3_text_fixture.py" "$<TARGET_FILE:h3-text-tests>" "$<TARGET_FILE:kadan-h3-text-encode>")
+  set_tests_properties(h3-text PROPERTIES TIMEOUT 600 LABELS full-graph)
+endif()
+
 add_library(kadan_h3_denoiser src/h3_denoiser.cpp)
 target_link_libraries(kadan_h3_denoiser PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

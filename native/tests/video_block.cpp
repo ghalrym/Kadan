@@ -32,7 +32,7 @@ int main(int argc,char** argv) {
         const auto resident=inputs+Block::weight_bytes;
         check(block.loaded() && ledger->snapshot().used==Footprint({resident,0}));
         rejects([&]{block.load(root.c_str(),"weights.safetensors",cancel);},"video_already_loaded");
-        auto pressure=ledger->reserve(Workload::video,{288*1024*1024-resident-Block::intermediate_bytes+1,0});
+        auto pressure=ledger->reserve(Workload::video,{288*1024*1024-resident-Block::intermediate_bytes(2)+1,0});
         rejects([&]{block.execute(x,coords,root+"/denied",cancel);},"exhausted");
         check(!std::filesystem::exists(root+"/denied"));ledger->released(pressure);
         for(const std::string stage:{"qkv","rope","attention","feed_forward"}) {
@@ -53,7 +53,7 @@ int main(int argc,char** argv) {
         block.execute(x,coords,root+"/result",cancel,[&](const char* stage,std::size_t){
             ++seen;const std::string name=stage;
             const auto scratch=name=="qkv" ? video::H3DecoderQkv::scratch_bytes : name=="rope" ? video::H3QkRope::scratch_bytes : name=="attention" ? video::H3DecoderAttention::scratch_bytes : video::H3DecoderFeedForward::scratch_bytes;
-            check(ledger->snapshot().used==Footprint({resident+Block::intermediate_bytes+scratch,0}));
+            check(ledger->snapshot().used==Footprint({resident+Block::intermediate_bytes(2)+scratch,0}));
             rejects([&]{block.unload();},"busy");
             rejects([&]{block.execute(x,coords,root+"/reentered",cancel);},"busy");
         });check(seen>0);
@@ -61,7 +61,7 @@ int main(int argc,char** argv) {
         // Resident reuse: one token after a two-token request, without reloading.
         block.execute(std::span<const float>(x.data(),2048),std::span<const float>(coords.data(),3),root+"/reuse",cancel);
         rejects([&]{block.execute({},coords,root+"/empty",cancel);},"video_input_shape");
-        std::vector<float> oversized(6144);
+        std::vector<float> oversized((Block::max_tokens+1)*2048);
         rejects([&]{block.execute(oversized,coords,root+"/oversized",cancel);},"video_input_limit");
         rejects([&]{block.execute(x,{},root+"/shape",cancel);},"video_coordinate_shape");
         coords[0]=2;rejects([&]{block.execute(x,coords,root+"/range",cancel);},"video_coordinate_range");coords[0]=0;
