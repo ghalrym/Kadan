@@ -112,6 +112,13 @@ class MemoryManager:
         preflight_execution = getattr(wrapper, "preflight_execution", None)
         if preflight_execution is not None:
             await preflight_execution(body)
+        # Unconfirmed cleanup from any feature blocks execution across the FIFO.
+        # This checks ownership only; healthy residents and memory contention
+        # retain their existing admission/eviction behavior.
+        for feature in self.features.values():
+            check = getattr(feature, 'check_execution_state', None)
+            if check is not None:
+                check()
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         stream = self.queue.streams.get(job.id) if job.feature == "llm" else None

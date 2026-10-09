@@ -126,6 +126,70 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ['image', 'decision'])
 
 
+    async def test_failed_reap_blocks_other_feature_until_confirmed_cleanup(self):
+        calls = []
+        class ImageLeaf:
+            operations = ('generate',)
+            validate = staticmethod(lambda payload, operation: payload)
+            async def __call__(self, request, **kwargs):
+                calls.append('image')
+                return 'done'
+        self.manager.features['image'] = ImageLeaf()
+        first = await self.manager.queue.submit('decisions', 'generate',
+            body('hang').model_dump(mode='json'), 'laya')
+        for _ in range(200):
+            if self.worker_manager.agent and self.worker_manager.agent.io_ready:
+                break
+            await asyncio.sleep(.01)
+        worker = self.worker_manager.agent
+        self.assertIsNotNone(worker)
+        second = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
+        cancelled = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
+        # The hung first request keeps both later jobs pending until cancellation.
+        await self.manager.queue.cancel(cancelled)
+        with patch.object(worker, 'stop', side_effect=RuntimeError('reap unconfirmed')):
+            await self.manager.queue.cancel(first)
+            with self.assertRaises(RuntimeFailure) as stopped:
+                await asyncio.wait_for(self.manager.queue.wait(first), 2)
+            self.assertEqual(stopped.exception.status_code, 499)
+            self.assertTrue(self.worker_manager._quarantined)
+            self.assertIsNone(worker.process.poll())
+            with self.assertRaises(RuntimeFailure) as blocked:
+                await asyncio.wait_for(self.manager.queue.wait(second), 2)
+            self.assertEqual(blocked.exception.status_code, 503)
+            self.assertIn('cleanup is unconfirmed', str(blocked.exception))
+            with self.assertRaises(RuntimeFailure) as cancelled_result:
+                await asyncio.wait_for(self.manager.queue.wait(cancelled), 2)
+            self.assertEqual(cancelled_result.exception.status_code, 499)
+            self.assertEqual(calls, [])
+            self.assertEqual(sum(row['host_bytes'] for row in
+                self.resources.snapshot()['reservations'].values()), DEFAULT_HOST_BUDGET_BYTES)
+        # Actual stop/reap, not a flag reset, reopens execution and releases RAM.
+        await self.worker_manager.close()
+        self.assertIsNotNone(worker.process.poll())
+        self.assertFalse(self.resources.snapshot()['reservations'])
+        resumed = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
+        self.assertEqual(await asyncio.wait_for(self.manager.queue.wait(resumed), 2), 'done')
+        self.assertEqual(calls, ['image'])
+        response = await self.client.post('/v1/decisions', json=body().model_dump(mode='json', by_alias=True))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    async def test_healthy_cpu_resident_does_not_block_another_feature(self):
+        response = await self.client.post('/v1/decisions', json=body().model_dump(mode='json', by_alias=True))
+        self.assertEqual(response.status_code, 200)
+        worker = self.worker_manager.agent
+        class ImageLeaf:
+            operations = ('generate',)
+            validate = staticmethod(lambda payload, operation: payload)
+            async def __call__(self, request, **kwargs):
+                return 'done'
+        self.manager.features['image'] = ImageLeaf()
+        job = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
+        self.assertEqual(await asyncio.wait_for(self.manager.queue.wait(job), 2), 'done')
+        self.assertIs(self.worker_manager.agent, worker)
+        self.assertIsNone(worker.process.poll())
+
+
 class ExecutionPreflightTests(unittest.IsolatedAsyncioTestCase):
     def manager_and_job(self, wrapper):
         # Only exercise the queue execution boundary; no model or Redis setup.

@@ -167,6 +167,12 @@ class DecisionWorkerManager:
         self._settings()
         await asyncio.to_thread(self.resolve)
 
+    def check_execution_state(self):
+        # A failed reap is unresolved execution, not ordinary memory pressure.
+        # Keep this check nonblocking: only confirmed close clears quarantine.
+        if self._quarantined:
+            raise RuntimeFailure('Decision cleanup is unconfirmed; close the runtime before executing another job.')
+
     def _close_locked(self):
         if self.agent is not None:
             try:
