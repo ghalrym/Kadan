@@ -186,6 +186,15 @@ void binding_and_budget_failures() {
     check(q->used() == 0);
 }
 void half_metadata_limits() {
+    {
+        Fixture signed_fixture;auto admitted=budget();
+        signed_fixture.write("{"+tensor("signed", "I8", "[3]", 0, 3)+"}", {128,0,127});
+        Shard shard(signed_fixture.root.c_str(), "model.safetensors", admitted);
+        check(shard.tensor("signed").dtype==Dtype::i8 && shard.tensor("signed").bytes==3);
+        std::array<std::uint8_t,3> raw{};shard.read_tensor("signed",0,raw);
+        check(raw==std::array<std::uint8_t,3>{128,0,127});
+    }
+
     Fixture f; auto q=budget();
     const auto header="{\"__metadata__\":{\"config\":\""+std::string(2013, 'a')+"\"},"+tensor("half", "F16", "[1]", 0, 2)+"}";
     f.write(header, {0, 60});
