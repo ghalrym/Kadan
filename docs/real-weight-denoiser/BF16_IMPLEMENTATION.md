@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Separate BF16 first-slice implementation — source review pending
 
 Protocol v1 was independently cleared at `1e6e0c64f2db5675af1b5ff15d84bef9e011da64`

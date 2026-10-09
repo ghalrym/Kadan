@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Decision: reject controlled-accumulation candidate v1 for production
 
 Candidate `fp32-partial512-fp64-outputsum-v1` fixes development block 7 but fails

@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # API validation at b57db7173d6735f93244c6300539ef421da9a9f6
 
 Independent review and exact-head API/native CI cleared this execution. API PR run 37875916784 and native PR run 37875916654 passed (push runs 37875912775 and 37875912770 also passed).

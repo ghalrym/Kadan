@@ -1,7 +1,7 @@
 """Independent eager A/B oracle for MR125; no split adapter or trajectory snapshots.
 
 One process executes exactly one frozen case. The outer reviewed launcher owns
-thermal/physical guards, container limits, queue lease and API restoration.
+physical guards, container limits, queue lease and API restoration.
 """
 import argparse
 from functools import wraps

@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Persistent sensor and step-evidence review
 
 The saved image-A attempt at 9c8353f aborted after a sensor command exhausted its

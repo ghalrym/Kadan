@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Independent full-trajectory harness — source review required
 
 This is a separate review-only harness implementing FULL_TRAJECTORY_PROTOCOL_V1.md,

@@ -76,16 +76,46 @@ class ProcessRankTests(unittest.TestCase):
         self.assertEqual(self.transport.processes, [])
         self.assertFalse(self.resources.snapshot()['reservations'])
 
-    def test_error_acknowledgement_and_rejected_temperature_are_retained(self):
+    def test_error_acknowledgement_is_retained(self):
         with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
             with self.assertRaises(ValueError):
                 self.session.execute('a' * 32, payload={'prompt': 'oom'})
         self.assertIn('synthetic allocation failure', '\n'.join(captured.output))
-        with patch.object(self.transport, '_cpu_peak', return_value=80.25):
-            with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
-                with self.assertRaisesRegex(RuntimeError, '80.25'):
-                    self.transport._guard()
-        self.assertIn('cpu_c=80.25', '\n'.join(captured.output))
+    def test_default_resource_guard_runs_without_temperature_sensors(self):
+        self.budget=RankBudget(128*1024**2,(0,1),10,70)
+        self.transport=ProcessRanks(Path('/unused'),self.budget,
+            worker_module='api.tests.inference.image.rank_fixture',
+            memory_probe=lambda:dict(self.memory))
+        self.resources=ResourceManager(256*1024**2,{0:100,1:100})
+        self.session=RankSession(self.resources,self.transport,self.budget,enabled=True,
+            operation_timeout=3,cleanup_timeout=.2)
+        original_glob=Path.glob
+        def no_sensors(path,*args,**kwargs):
+            self.assertNotIn('/sys/class/hwmon',str(path))
+            return original_glob(path,*args,**kwargs)
+        with patch.object(Path,'glob',no_sensors),patch('api.inference.image.rank_transport.subprocess.run',side_effect=AssertionError('unexpected sensor command')):
+            self.session.execute('a'*32,payload={'prompt':'ok'})
+            self.transport._guard()
+            children=list(self.transport.processes)
+            self.session.close()
+        self.assertTrue(all(p.poll() is not None for p in children))
+        self.assertFalse(self.resources.snapshot()['reservations'])
+
+    def test_cancelled_start_checks_before_memory_admission(self):
+        cancel=threading.Event();cancel.set()
+        with patch.object(self.transport,'memory_probe') as probe:
+            with self.assertRaises(ResourceCancelled):
+                self.transport.start('session',(0,1),time.monotonic()+1,cancel)
+        probe.assert_not_called();self.assertIsNone(self.transport.directory)
+
+    def test_default_guard_still_enforces_host_and_device_memory(self):
+        with patch.object(self.transport,'_owned_fit',return_value=False):
+            with self.assertRaisesRegex(RuntimeError,'GPU envelope'):self.transport._guard()
+        self.transport.processes=[SimpleNamespace(pid=999999)]
+        try:
+            with patch.object(self.transport,'_owned_fit',return_value=True),patch.object(Path,'read_text',return_value='VmRSS: 2 kB\n'):
+                with self.assertRaisesRegex(RuntimeError,'host memory'):self.transport._guard()
+        finally:self.transport.processes=[]
 
     def test_active_cancel_waits_for_both_reaps(self):
         self.session.execute('a'*32,payload={'prompt':'ok'})

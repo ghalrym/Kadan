@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # First real-weight gate result: stopped on FP32 violations
 
 Executed reviewed9304851657c8e420f117adcccc14b50610ee48bd after all exact-head

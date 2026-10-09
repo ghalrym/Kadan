@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # BF16 held-out step results
 
 Subsequent replay-only step 39 passed at `03e7ff1`; see STEP39_REPLAY_ONLY_RESULTS.md.

@@ -18,16 +18,12 @@ def command(args):
 
 
 def sample():
-    query='uuid,temperature.gpu,memory.free,memory.used,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.hw_power_brake_slowdown'
+    query='uuid,memory.free,memory.used,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.hw_power_brake_slowdown'
     rows=list(csv.reader(command(['nvidia-smi','--query-gpu='+query,'--format=csv,noheader,nounits']).splitlines()))
-    gpus={row[0].strip():{'temperature_c':float(row[1]),'free_mib':float(row[2]),'used_mib':float(row[3]),
-        'thermal':row[4].strip(),'power_brake':row[5].strip()} for row in rows}
+    gpus={row[0].strip():{'free_mib':float(row[1]),'used_mib':float(row[2]),
+        'thermal':row[3].strip(),'power_brake':row[4].strip()} for row in rows}
     values={line.split(':',1)[0]:line.split(':',1)[1].strip() for line in Path('/proc/meminfo').read_text().splitlines()}
-    temps=[]
-    for label in Path('/sys/class/hwmon').glob('hwmon*/temp*_label'):
-        if label.read_text().strip()=='Tctl':temps.append(float(label.with_name(label.name.replace('_label','_input')).read_text())/1000)
-    if not temps:raise RuntimeError('CPU Tctl telemetry unavailable')
-    return {'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'cpu_tctl_c':max(temps),
+    return {'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
         'host_available_bytes':int(values['MemAvailable'].split()[0])*1024,'gpus':gpus}
 
 
@@ -45,8 +41,6 @@ def reason(row, initial=False):
     cache=ROOT/'compiler-cache'
     if cache.exists() and sum(x.stat().st_size for x in cache.rglob('*') if x.is_file()) > CONFIG['compiler_cache_limit_bytes']:
         return 'compiler disk cache limit'
-    if row['cpu_tctl_c']>=CONFIG['cpu_abort_c']:return 'CPU Tctl threshold'
-    if gpu['temperature_c']>=CONFIG['gpu_abort_c']:return 'GPU1 temperature threshold'
     if gpu['thermal']!='Not Active' or gpu['power_brake']!='Not Active':return 'GPU1 thermal/power-brake flag'
     if row['host_available_bytes']<(CONFIG['physical_host_start_min_bytes'] if initial else CONFIG['host_abort_available_bytes']):return 'host RAM headroom'
     minimum=CONFIG['gpu_budget_bytes']/1024**2 if initial else CONFIG['gpu_abort_free_mib']

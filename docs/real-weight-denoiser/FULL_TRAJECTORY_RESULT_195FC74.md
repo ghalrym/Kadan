@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Full independent BF16 trajectory: v2 passed
 
 Executed source: `195fc7440005c449a57d77f4f312971a3280d22f`, from `/home/andrew/Projects/self-hosting/Kadan`, protocol `full-independent-trajectory-v2-rgba`. The source remained clean and frozen through all three separately admitted windows. This result does not activate or merge production API integration, and the diagnostic Torch/Diffusers runner is not a native C++ image executor.

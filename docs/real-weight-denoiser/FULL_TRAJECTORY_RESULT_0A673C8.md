@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Reviewed v1 reference: output-contract failure
 
 Executed source: `0a673c887897bd4e3f3efb6ba79321157eb922a2`, from the sole main checkout. API/native exact-head CI passed before execution.

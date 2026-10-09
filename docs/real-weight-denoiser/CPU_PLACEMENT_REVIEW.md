@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # CPU budget and thermal attribution follow-up
 
 The failed b57db71 API window recorded 103 safety samples, per-sensor CPU temperatures, GPU process identities/memory, rank PID/session identities and ResourceManager snapshots. It did **not** record per-thread CPU run time, per-thread affinity, process CPU utilization, cgroup CPU counters or host per-core utilization. The recording therefore cannot establish a unique cause for the 80.0 C trip.

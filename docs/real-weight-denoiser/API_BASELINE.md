@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Isolated A/B baseline runner for API validation
 
 `launch_api_baseline.py` defaults to a read-only plan. It does not activate the application split. Execution requires a clean exact source commit, successful exact-head push API/native CI, independent case/source/settings review, an idle Redis FIFO, cool admission and no unexpected GPU owners. The original API container is stopped and retained intact, then the exact captured ID/config is restored after physical cleanup. Other service IDs are checked. Uncertain cleanup leaves the API stopped with a quarantine error.

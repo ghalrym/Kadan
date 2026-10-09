@@ -78,7 +78,6 @@ class ProcessRanks:
     def __init__(self, path, budget, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
         self.path, self.budget, self.worker_module = Path(path), budget, worker_module
         self.guard = guard or self._guard
-        self.cooldown = guard is None
         self.processes, self.connections = [], []
         self.directory = None
         self.last_guard = 0.
@@ -102,20 +101,10 @@ class ProcessRanks:
         self.session = session
         self.stderr_tails = {}
         self.progress_job=None;self.progress_lines={};self.progress_drop=set();self.progress_steps={}
-        if self.cooldown:
-            cool = 0
-            admission_end = min(deadline, time.monotonic()+30)
-            while cool < 5:
-                if cancel is not None and cancel.is_set():
-                    raise ResourceCancelled('Rank cooldown cancelled')
-                if time.monotonic() >= admission_end:
-                    raise TimeoutError('CPU did not reach five cool admission samples')
-                peak = self._cpu_peak()
-                logging.getLogger(__name__).info("rank_admission_sample session=%s cpu_c=%s accepted=%s",
-                    session, peak, peak < 60)
-                cool = cool+1 if peak < 60 else 0
-                if cool < 5:
-                    time.sleep(2)
+        if cancel is not None and cancel.is_set():
+            raise ResourceCancelled('Rank startup cancelled')
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Rank startup deadline exhausted')
         self.baseline = self.memory_probe()
         if set(self.baseline) != set(devices):
             raise RuntimeError("Physical device ownership is unavailable")
@@ -253,16 +242,6 @@ class ProcessRanks:
         return set(current)==set(self.baseline) and all(
             current[d] <= baseline+allowance for d,baseline in self.baseline.items())
 
-    @staticmethod
-    def _cpu_peak():
-        temperatures = []
-        for path in Path('/sys/class/hwmon').glob('hwmon*/temp*_input'):
-            if (path.parent/'name').read_text().strip() in ('k10temp', 'coretemp'):
-                temperatures.append(int(path.read_text()) / 1000)
-        if not temperatures:
-            raise RuntimeError('CPU thermal sensors unavailable')
-        return max(temperatures)
-
     def _guard(self):
         # RSS double-counts shared mappings conservatively. No swap is invented
         # as extra capacity. Unknown readings fail closed while work is active.
@@ -274,16 +253,6 @@ class ProcessRanks:
             rss += int(next(l.split()[1] for l in status.splitlines() if l.startswith('VmRSS:'))) * 1024
         if rss > self.budget.host_bytes:
             raise RuntimeError('Rank host memory exceeded admission')
-        peak = self._cpu_peak()
-        if peak >= 80:
-            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s cpu_c=%s limit_c=80', self.session, peak)
-            raise RuntimeError(f'Image CPU thermal guard reached: {peak} C')
-        output = subprocess.run(['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, timeout=2, check=True)
-        values = [float(value) for value in output.stdout.splitlines()]
-        if not values or max(values) >= 90:
-            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s gpu_c=%s limit_c=90', self.session, values)
-            raise RuntimeError(f'Image GPU thermal guard reached or unavailable: {values}')
 
     def exchange(self, command, deadline, cancel):
         if command.get('operation')=='execute':

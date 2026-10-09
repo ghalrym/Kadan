@@ -46,8 +46,8 @@ def restore_container(before):
 
 
 def gpu_snapshot():
-    lines = run('nvidia-smi', '--query-gpu=uuid,memory.used,memory.free,temperature.gpu', '--format=csv,noheader,nounits').stdout.splitlines()
-    return {v[0].strip(): dict(used=int(v[1]), free=int(v[2]), temperature=int(v[3]))
+    lines = run('nvidia-smi', '--query-gpu=uuid,memory.used,memory.free', '--format=csv,noheader,nounits').stdout.splitlines()
+    return {v[0].strip(): dict(used=int(v[1]), free=int(v[2]))
             for v in (line.split(',') for line in lines)}
 
 
@@ -85,13 +85,10 @@ def no_gpu_owners(desktop):
 
 def guards():
     snap = gpu_snapshot()
-    assert all(snap[g]['free'] >= 256 and snap[g]['temperature'] < 90 for g in GPUS), snap
+    assert all(snap[g]['free'] >= 256 for g in GPUS), snap
     memory = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
     assert int(memory['MemAvailable'].split()[0]) >= 16 * 1024**2, 'Host free memory guard'
-    temperatures = [int(p.read_text()) / 1000 for p in Path('/sys/class/hwmon').glob('hwmon*/temp*_input')
-                    if p.parent.joinpath('name').read_text().strip() in ('k10temp', 'coretemp')]
-    assert temperatures and max(temperatures) < 80, 'CPU temperature unavailable or above guard'
-    return dict(gpu=snap, cpu_temperature=max(temperatures))
+    return dict(gpu=snap)
 
 
 def main():

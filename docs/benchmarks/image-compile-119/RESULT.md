@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Regional compilation candidate: failed GPU fit
 
 Run2026-10-08 19:54:25–20:02:01UTC, isolated physicalGPU1. Source6e9529d;

@@ -104,7 +104,7 @@ calls, VAE/tile count, postprocess, publication, HtoD/DtoH trace time and peak m
 Check output dimensions/visual quality and compare outputs, with deterministic
 limitations stated. Do not claim speedup until measured. Lower resolution, fewer
 steps, quantization or different guidance would be separate quality tradeoffs.
-Keep the existing45-minute run/30-minute image limits, memory/thermal guards,
+Keep the existing45-minute run/30-minute image limits, memory guards and separately operated external monitoring,
 read-only model volume and dedicated Redis; never expose GPU0. Verify final text
 restore and actual application cache reuse using retained bytes and unchanged
 source-read counters, with300-second load/restore and30-second token deadlines.

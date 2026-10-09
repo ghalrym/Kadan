@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Step 39 replay-only extension — awaiting independent review
 
 Step 20 passed; step 39 remains incomplete after the CPU-temperature guard stopped

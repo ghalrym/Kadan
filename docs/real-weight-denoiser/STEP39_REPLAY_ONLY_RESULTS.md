@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Step 39 replay-only result: passed
 
 Independently reviewed source `03e7ff190ef4e29a7356282153bf5da1d6b270a0` completed

@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Local evidence durability proposal (no workload approval)
 
 The 3f5404c single-image window tripped at Unix 1791551821.4595459
@@ -78,7 +80,7 @@ No API edit/restart, model load, GPU work or threshold change was performed.
 ## Original sensor-specific proposal (superseded)
 
 The subsequent user-requested85 C warning/90 C abort implementation and verified
-package-source mapping are documented in CPU_THERMAL_POLICY.md. The original
+package-source mapping are documented in the preserved external CPU policy notes. The original
 proposal below is preserved as the historical audit recommendation.
 
 Installed kernel6.17.9-76061709-generic k10temp (srcversion

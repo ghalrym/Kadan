@@ -1,3 +1,5 @@
+> Historical benchmark record: temperature readings and thresholds below describe the original machine-local procedure, not Kadan runtime policy. Current benchmark temperature monitoring belongs outside the repository; see [external monitoring](/docs/EXTERNAL-BENCHMARK-MONITORING.md).
+
 # Rank-local CUDA blocking-wait candidate
 
 Status: prepared for independent exact-head review. No diagnostic or further image GPU execution has been authorized or run by this change. MR125 remains draft/unmerged; default image backend remains single.
