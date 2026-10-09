@@ -10,7 +10,7 @@ import time
 import launch_trajectory as host
 from launch_api_baseline import restore_exact
 from cuda_wait_probe import PLAN, compare
-from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters
+from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
 
 CASES = ("control", "blocking")
 PROTOCOL = "cuda-wait-short-v1"
@@ -201,12 +201,8 @@ def main():
             host.arm_deadline(cleanup_end)
             # Stop watchdog before recovery; otherwise hot cleanup can interrupt itself.
             signal.signal(signal.SIGUSR1,signal.SIG_IGN)
-            monitor_failure=None
-            if monitor is not None:
-                try:monitor.close()
-                except Exception as exc:
-                    monitor_failure=str(exc);passed=False
-                    (evidence/"watchdog-cleanup-error.json").write_text(json.dumps(dict(error=monitor_failure)))
+            monitor_failure=close_watchdog(monitor)
+            if monitor_failure is not None:passed=False
             if owned and host.run('docker','inspect',NAME,check=False).returncode == 0:
                 host.run('docker','stop','--time','5',NAME,check=False)
                 state = host.inspect_container(NAME)['State']
@@ -228,7 +224,9 @@ def main():
                 for command,key in [('SCARD','unfinished'),('LLEN','pending')]:
                     if host.run('docker','exec','kadan-redis-1','redis-cli',command,'kadan:inference:'+key).stdout.strip()!='0':
                         raise RuntimeError('FIFO not empty after restoration')
-            if monitor_failure is not None:raise RuntimeError(monitor_failure)
+            if monitor_failure is not None:
+                publish_watchdog_error(evidence,monitor_failure)
+                raise RuntimeError(monitor_failure)
         finally:
             signal.setitimer(signal.ITIMER_REAL,0)
             host.COMMAND_DEADLINE=None
