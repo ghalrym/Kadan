@@ -13,7 +13,7 @@ from api.inference.tts.feature import TTSFeature
 from api.inference.decisions.feature import DecisionsFeature
 from api.memory_manager.queue import InferenceQueue, Job
 from api.memory_manager.streaming import QueuedStream
-from api.inference.decisions.model import decision_manager
+from api.inference.decisions.service import decision_manager
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
 from api.inference.stt.model import get_transcription_manager
@@ -109,6 +109,9 @@ class MemoryManager:
             raise RuntimeFailure('Invalid queued inference payload.', 422) from exc
         if getattr(body, 'model', None) is not None and body.model != job.model:
             raise RuntimeFailure('Queued model selection does not match the request.', 422)
+        preflight_execution = getattr(wrapper, "preflight_execution", None)
+        if preflight_execution is not None:
+            await preflight_execution(body)
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         stream = self.queue.streams.get(job.id) if job.feature == "llm" else None
