@@ -7,7 +7,7 @@ import tempfile
 import threading
 
 from api.inference.placement import select_device
-from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
+from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted, ResourcePending
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
 from api.services.runtime import runtime_manager as runtime
@@ -151,8 +151,15 @@ class H3Provider:
                         cancel_event=cancellation, offload_on_handoff=False)
                 leases.enter_context(self._context.lease(cancellation))
                 if self._device is None:
+                    # Retained framework contexts remain charged after handoff.
+                    # Plan within reclaimable headroom, not the whole device cap.
+                    execution_bytes = min(devices[selected] - CONTEXT_BYTES,
+                        resources.available_devices(reclaim=True).get(selected, 0))
+                    required = (entry.estimated_bytes if self._full_resident else 0) + 12 * GIB
+                    if execution_bytes < required:
+                        raise ResourcePending('H3 is waiting for execution residency')
                     self._device = resources.reserve('video:h3:device', 'video',
-                        device_bytes={selected: devices[selected] - CONTEXT_BYTES},
+                        device_bytes={selected: execution_bytes},
                         evict=self._park, cancel_event=cancellation)
                 leases.enter_context(self._device.lease(cancellation))
                 self._selected_device = selected

@@ -1,7 +1,7 @@
 """Pure placement policy shared by native adapters; reservations remain authoritative."""
 from dataclasses import dataclass
 
-from api.inference.resources import ResourceExhausted
+from api.inference.resources import ResourceExhausted, ResourcePending
 
 
 @dataclass(frozen=True)
@@ -74,4 +74,6 @@ def select_device(resources, required_bytes, requested='auto', *, allow_cpu=Fals
             return f'cuda:{max(choices, key=lambda i: (available[i], -i))}'
     if allow_cpu:
         return 'cpu'
+    if any(size >= required_bytes for size in resources.capacity.device_bytes.values()):
+        raise ResourcePending('The selected workload is waiting for device residency')
     raise ResourceExhausted('No GPU can hold this adapter’s whole-model execution budget; its tensor splitting is unsupported')

@@ -36,7 +36,7 @@ class MemoryManager:
             (self.llm, self.video, self.image, self.stt, self.tts, self.decisions)}
         self.queue = queue or InferenceQueue(self._execute,
             url=os.getenv('KADAN_REDIS_URL', 'redis://127.0.0.1:6379/0'),
-            lock_path=model_manager.root / 'inference.lock')
+            lock_path=model_manager.root / 'inference.lock', resources=self.runtime.ensure_resources)
 
     @property
     def runtime(self):
@@ -95,6 +95,9 @@ class MemoryManager:
                 record = await self.queue.get(job_id)
             except KeyError:
                 record = {'state': 'failed', 'error': 'Inference job expired before completion.'}
+            if record['state'] == 'waiting_for_resources':
+                self.videos._update(job_id, status='Queued', progress_text='Waiting for resources', error=None)
+                job = self.videos.get(job_id)
             if record['state'] in ('failed', 'cancelled'):
                 status = 'Failed' if record['state'] == 'failed' else 'Cancelled'
                 self.videos._update(job_id, status=status, progress_text=status, error=record.get('error') or None)

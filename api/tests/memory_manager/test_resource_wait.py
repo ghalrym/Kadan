@@ -1,0 +1,120 @@
+"""Real Redis FIFO waits on resource ownership without replaying published output."""
+import asyncio
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from uuid import uuid4
+
+from api.inference.resources import ResourceManager, ResourceBusy, ResourcePending
+from api.memory_manager.queue import InferenceQueue
+from api.services.runtime import RuntimeFailure
+
+
+@unittest.skipUnless(os.getenv('KADAN_TEST_REDIS_URL'), 'Dedicated Redis required')
+class ResourceWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.resources = ResourceManager(100, {0: 100})
+        self.events = []
+        self.attempts = 0
+        self.prefix = 'kadan:test:' + uuid4().hex + ':'
+        async def execute(job):
+            self.attempts += 1
+            self.resources.offload_workload_devices('llm')
+            handle = self.resources.reserve(job.id, 'video', host_bytes=job.payload.get('bytes', 50))
+            self.events.append(job.feature)
+            handle.release()
+            return job.feature
+        self.queue = InferenceQueue(execute, url=os.environ['KADAN_TEST_REDIS_URL'],
+            lock_path=Path(self.temp.name) / 'consumer.lock', prefix=self.prefix,
+            resources=lambda: self.resources)
+        await self.queue.start()
+
+    async def asyncTearDown(self):
+        await self.queue.close()
+        redis = self.queue.redis
+        keys = [key async for key in redis.scan_iter(match=self.prefix + '*')]
+        if keys:
+            await redis.delete(*keys)
+        await redis.aclose()
+        self.assertFalse(self.resources._listeners)
+        self.temp.cleanup()
+
+    async def state(self, job, expected):
+        async def wait():
+            while (await self.queue.get(job))['state'] != expected:
+                await asyncio.sleep(.01)
+        await asyncio.wait_for(wait(), 3)
+
+    async def test_active_startup_load_waits_then_parks_before_fifo_modalities(self):
+        parked = []
+        held = self.resources.reserve('loading-text', 'llm', device_bytes={0: 90}, evict=lambda: parked.append('text'))
+        lease = held.lease()
+        lease.__enter__()
+        first = await self.queue.submit('stt', 'generate', {})
+        await self.state(first, 'waiting_for_resources')
+        second = await self.queue.submit('image', 'generate', {})
+        third = await self.queue.submit('decisions', 'generate', {})
+        await asyncio.sleep(.15)
+        self.assertEqual(self.attempts, 1)
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.resources.snapshot()['reservations']['loading-text']['active_leases'], 1)
+        lease.__exit__(None, None, None)
+        self.assertEqual(await asyncio.wait_for(self.queue.wait(first), 1), 'stt')
+        await self.queue.wait(second)
+        await self.queue.wait(third)
+        self.assertEqual(self.events, ['stt', 'image', 'decisions'])
+        self.assertEqual(parked, ['text'])
+        self.assertFalse(self.resources.snapshot()['reservations'])
+
+    async def test_capacity_wait_release_and_cancel_preserve_head_order(self):
+        held = self.resources.reserve('external', 'llm', host_bytes=80)
+        first = await self.queue.submit('video', 'generate', {})
+        await self.state(first, 'waiting_for_resources')
+        second = await self.queue.submit('stt', 'generate', {})
+        await self.queue.cancel(first)
+        await self.state(first, 'cancelled')
+        await self.state(second, 'waiting_for_resources')
+        self.assertEqual(self.resources.snapshot()['reservations']['external']['host_bytes'], 80)
+        held.release()
+        self.assertEqual(await asyncio.wait_for(self.queue.wait(second), 1), 'stt')
+        self.assertEqual(self.events, ['stt'])
+
+    async def test_impossible_single_reservation_is_not_an_infinite_retry(self):
+        first = await self.queue.submit('video', 'generate', {'bytes': 101})
+        with self.assertRaises(RuntimeFailure):
+            await asyncio.wait_for(self.queue.wait(first), 1)
+        self.assertEqual((await self.queue.get(first))['state'], 'failed')
+        self.assertEqual(self.attempts, 1)
+        second = await self.queue.submit('stt', 'generate', {})
+        self.assertEqual(await self.queue.wait(second), 'stt')
+
+    async def test_cleanup_uncertainty_keeps_accounting_and_does_not_retry(self):
+        def uncertain():
+            raise RuntimeError('cleanup unconfirmed')
+        self.resources.reserve('quarantined', 'llm', device_bytes={0: 90}, evict=uncertain)
+        first = await self.queue.submit('video', 'generate', {})
+        with self.assertRaisesRegex(RuntimeFailure, 'cleanup unconfirmed'):
+            await asyncio.wait_for(self.queue.wait(first), 1)
+        self.assertIn('quarantined', self.resources.snapshot()['reservations'])
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.attempts, 1)
+
+    async def test_wrapped_transient_failure_waits_and_close_cancels_waiter(self):
+        async def blocked(job):
+            try:
+                raise ResourcePending('temporarily busy')
+            except ResourcePending as error:
+                raise RuntimeFailure('wrapped', 503) from error
+        self.queue.execute = blocked
+        first = await self.queue.submit('video', 'generate', {})
+        await self.state(first, 'waiting_for_resources')
+        await asyncio.wait_for(self.queue.close(), 1)
+        self.assertFalse(self.resources._listeners)
+
+    async def test_change_between_observation_and_wait_is_not_lost(self):
+        revision = self.resources.revision
+        held = self.resources.reserve('test', 'llm', host_bytes=1)
+        held.release()
+        await asyncio.wait_for(self.resources.wait_for_change(revision), .1)

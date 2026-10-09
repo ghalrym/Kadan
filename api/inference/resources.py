@@ -6,6 +6,7 @@ cards never imply a single 48 GiB allocation. Only inactive, evictable residents
 may be removed. Workload adapters use a lease around generation and an exclusive
 lease when they need other GPU residents fully unloaded.
 """
+import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
@@ -24,6 +25,10 @@ class ResourceBusy(RuntimeError):
 
 class ResourceExhausted(RuntimeError):
     pass
+
+
+class ResourcePending(ResourceExhausted):
+    """A supported reservation is temporarily blocked; its FIFO job may wait."""
 
 
 class ResourceCancelled(RuntimeError):
@@ -181,6 +186,7 @@ class Reservation:
         finally:
             with self._manager._lock:
                 state.active -= 1
+                self._manager._changed()
 
 
 class ResourceManager:
@@ -193,6 +199,8 @@ class ResourceManager:
         self.capacity = MemoryCapacity(host_bytes, dict(device_bytes))
         self._probe = probe
         self._lock = threading.RLock()
+        self._revision = 0
+        self._listeners = set()
         # Serialize admission/eviction transactions; callbacks run without the
         # state lock so release() and snapshots are safe from eviction callbacks.
         self._admission = threading.Lock()
@@ -202,6 +210,45 @@ class ResourceManager:
         self._exclusive: str | None = None
         self._used_host = 0
         self._used_devices: dict[int, int] = {}
+
+    @property
+    def revision(self):
+        with self._lock:
+            return self._revision
+
+    def _changed(self):
+        # Callers hold the state lock. Listeners only schedule an event-loop wake;
+        # they never run admission callbacks or acquire another ownership lock.
+        self._revision += 1
+        for notify in tuple(self._listeners):
+            try:
+                notify()
+            except RuntimeError:
+                # A shutting-down event loop cannot invalidate physical cleanup.
+                self._listeners.discard(notify)
+
+    async def wait_for_change(self, revision, timeout=2.0):
+        """Sleep on ownership changes; bounded reprobes cover external allocators.
+
+        Register and compare under one lock so release cannot be lost between
+        observing a revision and going to sleep. Cancellation removes the waiter.
+        """
+        loop = asyncio.get_running_loop()
+        event = asyncio.Event()
+        def notify():
+            loop.call_soon_threadsafe(event.set)
+        with self._lock:
+            if self._revision != revision:
+                return
+            self._listeners.add(notify)
+        try:
+            try:
+                await asyncio.wait_for(event.wait(), timeout)
+            except TimeoutError:
+                pass
+        finally:
+            with self._lock:
+                self._listeners.discard(notify)
 
     @staticmethod
     def _validate(host: int, devices: dict[int, int]):
@@ -246,6 +293,7 @@ class ResourceManager:
         self._used_host += host
         for device, size in devices.items():
             self._used_devices[device] = self._used_devices.get(device, 0) + size
+        self._changed()
         return Reservation(self, owner, token)
 
     def _remove(self, owner):
@@ -254,6 +302,7 @@ class ResourceManager:
         self._used_host -= state.host_bytes
         for device, size in state.device_bytes.items():
             self._used_devices[device] -= size
+        self._changed()
 
     def _physical_fits(self, host, devices):
         """Check fresh probe headroom, or accept when no probe was supplied; callers hold the state lock."""
@@ -319,7 +368,7 @@ class ResourceManager:
                     self._cancelled(cancel_event)
                     return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
                 if not allow_eviction:
-                    raise ResourceExhausted('Insufficient free memory for non-disruptive validation')
+                    raise ResourcePending('Insufficient free memory for non-disruptive validation')
                 candidates = sorted(
                     [key for key, state in self._residents.items() if not state.active and state.evict is not None],
                     key=lambda key: (bool(self._residents[key].host_bytes),
@@ -352,10 +401,10 @@ class ResourceManager:
                     continue
             with self._lock:
                 if not self._fits(host_bytes, devices):
-                    raise ResourceExhausted('Insufficient unreserved RAM/VRAM; active workloads cannot be evicted')
+                    raise ResourcePending('Shared admission is waiting for resident cleanup')
                 self._cancelled(cancel_event)
                 if not self._physical_fits(host_bytes, devices):
-                    raise ResourceExhausted('Physical available memory is below the requested reservation')
+                    raise ResourcePending('Shared admission is waiting for physical memory')
                 return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
 
     def _release(self, owner, token):
@@ -405,6 +454,7 @@ class ResourceManager:
         finally:
             with self._lock:
                 self._exclusive = None
+                self._changed()
 
     def offload_inactive_devices(self, workload: Workload, cancel_event=None):
         """Offload through existing callbacks; preserve host banks and active leases."""
