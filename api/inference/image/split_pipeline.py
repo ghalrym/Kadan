@@ -3,11 +3,15 @@
 Optional GPU imports live in this worker-only module, never API startup.
 """
 from functools import wraps
+import logging
 import time
 
 import torch
 
 from api.inference.image.split_adapter import UlyssesAdapter, validate_transformer_output
+
+
+logger = logging.getLogger(__name__)
 
 
 class SplitPipeline:
@@ -37,7 +41,10 @@ class SplitPipeline:
             result = original(*args, **kwargs)
             if not isinstance(result, tuple) or len(result) != 1:
                 raise ValueError('Unexpected image transformer result')
-            return (validate_transformer_output(adapter.gather(result[0]), mode),)
+            validated = validate_transformer_output(adapter.gather(result[0]), mode)
+            logger.info('image_step_returned job=%s rank=%s step=%s monotonic=%.6f elapsed_seconds=%.6f',
+                        job, self.rank, step, time.monotonic(), time.monotonic()-started)
+            return (validated,)
         @wraps(postprocess)
         def finite_output(image, *args, **kwargs):
             if not bool(torch.isfinite(image).all()):

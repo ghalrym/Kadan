@@ -160,6 +160,10 @@ class BaselineTests(unittest.TestCase):
                     self.assertTrue(report['restored'])
                     self.assertFalse(report['baseline_passed'])
                     self.assertEqual(report['api_id'],'original-id')
+                    self.assertLessEqual(report['restoration_started'],report['container_restored'])
+                    self.assertLessEqual(report['container_restored'],report['ready_verified'])
+                    self.assertGreaterEqual(report['restoration_seconds'],0)
+                    self.assertLessEqual(report['restoration_seconds'],report['elapsed_seconds']+.01)
                 if fault=='source':restore.assert_not_called()
 
     def test_storage_rejects_overlap_and_exhaustion(self):

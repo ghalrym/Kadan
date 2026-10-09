@@ -49,7 +49,9 @@ def restore_exact(before, others, commit, evidence, end, start, passed, identity
     api_id = before['Id']
     if host.run('git','-C',str(host.REPO),'rev-parse','HEAD').stdout.strip()!=commit or host.run('git','-C',str(host.REPO),'status','--porcelain').stdout:
         raise RuntimeError('Source changed during pause')
+    restore_started = time.monotonic()
     host.restore_container(before)
+    container_restored = time.monotonic()
     ready_end=min(time.monotonic()+180,end)
     while True:
         try:
@@ -67,7 +69,9 @@ def restore_exact(before, others, commit, evidence, end, start, passed, identity
     if any(host.inspect_container(name)['Id']!=value for name,value in others.items()): raise RuntimeError('Other service replaced')
     (evidence/'pause-result.json').write_text(json.dumps(dict(restored=True,api_id=api_id,
         config_sha256=identity_digest,elapsed_seconds=time.monotonic()-start,limit_seconds=PAUSE_SECONDS,
-        baseline_passed=passed,lifecycle=lifecycle)))
+        baseline_passed=passed,lifecycle=lifecycle, restoration_started=restore_started,
+        container_restored=container_restored, ready_verified=time.monotonic(),
+        restoration_seconds=time.monotonic()-restore_started)))
 
 
 def main():

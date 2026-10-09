@@ -72,3 +72,15 @@ class SplitRequestTests(unittest.TestCase):
         actual,_=engine.generate('b'*32,'beta',5)
         baseline,_=SplitPipeline(Pipeline(),1,None,Adapter).generate('c'*32,'beta',5)
         self.assertEqual(actual.tobytes(),baseline.tobytes())
+
+    def test_progress_is_bounded_and_only_records_returned_steps(self):
+        pipeline=Pipeline();engine=SplitPipeline(pipeline,0,None,Adapter)
+        with self.assertLogs('api.inference.image.split_pipeline',level='INFO') as logs:
+            engine.generate('d'*32,'alpha',7)
+        self.assertEqual(len(logs.records),40)
+        self.assertEqual([r.args[2] for r in logs.records],list(range(1,41)))
+        self.assertTrue(all(r.args[3]>=0 and r.args[4]>=0 for r in logs.records))
+        pipeline.fail=True
+        with self.assertLogs('api.inference.image.split_pipeline',level='INFO') as logs:
+            with self.assertRaises(ResourceCancelled):engine.generate('e'*32,'alpha',7)
+        self.assertEqual(len(logs.records),6)
