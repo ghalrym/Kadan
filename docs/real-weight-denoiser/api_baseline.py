@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import time
+from uuid import UUID
 
 from trajectory_contracts import CRITERIA, REVISION, StepOrder
 
@@ -23,6 +24,10 @@ CASES = {
 }
 PNG_CAP = 24 * 1024**2
 RUN_CAP = 64 * 1024**2
+
+
+def canonical_device_uuid(value):
+    return 'GPU-'+str(UUID(str(value).removeprefix('GPU-')))
 
 
 def settings(case):
@@ -171,8 +176,9 @@ def main():
     torch.set_num_interop_threads(1)
     torch.cuda.set_device(0)
     device = torch.cuda.get_device_properties(0)
-    if str(device.uuid) != os.environ['KADAN_EXPECTED_GPU_UUID']:
-        raise ValueError('Baseline physical GPU mapping differs')
+    device_uuid = canonical_device_uuid(device.uuid)
+    if device_uuid != os.environ['KADAN_EXPECTED_GPU_UUID']:
+        raise ValueError(f'Baseline physical GPU mapping differs: {device_uuid}')
     torch.cuda.set_per_process_memory_fraction(22*1024**3 / torch.cuda.get_device_properties(0).total_memory)
     torch.backends.cuda.matmul.allow_tf32 = False
     pipeline = None
@@ -189,7 +195,7 @@ def main():
         report['load_seconds'] = time.monotonic()-started
         report['sources'] = {name:digest(inspect.getfile(type(component))) for name,component in
             [('pipeline',pipeline),('transformer',pipeline.transformer),('scheduler',pipeline.scheduler),('vae',pipeline.vae)]}
-        report['device_uuid'] = str(device.uuid)
+        report['device_uuid'] = device_uuid
         report['runtime'] = dict(torch=torch.__version__, diffusers=diffusers.__version__, cuda=torch.version.cuda)
         report['precision'] = dict(matmul_tf32=torch.backends.cuda.matmul.allow_tf32,
             bf16_reduced_precision=torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,

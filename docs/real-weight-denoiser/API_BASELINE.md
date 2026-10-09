@@ -34,3 +34,9 @@ python3 docs/real-weight-denoiser/api_baseline.py --case A \
 ```
 
 It verifies baseline identity/hash and RGBA dimensions, then applies the existing max-channel <=2, RGB mean <=0.5 and alpha mean <=0.5 uint8 thresholds. It reports pixel equality and hashes. A B output must be compared with B, never A. This establishes final-output parity; no B intermediate-trajectory claim is made.
+
+## First hardware admission finding
+
+The first reviewed A attempt at `b4f73fce56a49a26c19252332e2fbfad78c01ef9` rejected device identity before model loading. Torch 2.14's `CUuuid` renders a bare UUID, while `nvidia-smi` prefixes it with `GPU-`. The baseline guard and API physical ownership probe now canonicalize valid UUIDs to the NVML form; actual device identity is still required and unknown values fail closed. CPU regression tests cover bare/prefixed forms. No threshold or resource limit changed.
+
+This attempt produced no baseline image. Its failure/logs/telemetry are retained under `api-baseline-reviewed-b4f73fc-A`, and its bytes must be added to subsequent storage ledgers. Exact original API ID/config restoration and small-model readiness were confirmed after 88.219600576 seconds. A/B and queue tests require the corrected head's independent review and CI before retrying.

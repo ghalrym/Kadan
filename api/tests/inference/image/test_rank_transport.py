@@ -2,6 +2,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from api.inference.image.rank_session import RankBudget, RankSession
@@ -104,6 +105,17 @@ class ProcessRankTests(unittest.TestCase):
 
 
 class PhysicalOwnerTests(unittest.TestCase):
+    def test_torch_bare_uuid_matches_nvml_prefixed_identity(self):
+        ids=['e30b6419-2c6d-f550-61d6-16166a920dac','2a2378dd-08c1-6f69-6317-a253d90e76b3']
+        for prefix in ('','GPU-'):
+            transport=ProcessRanks(Path('/unused'),RankBudget(1000,(0,1),10,70),guard=lambda:None)
+            torch=SimpleNamespace(cuda=SimpleNamespace(get_device_properties=lambda d:SimpleNamespace(uuid=prefix+ids[d])))
+            result=SimpleNamespace(stdout='\n'.join('GPU-'+identity+', 42' for identity in ids))
+            with patch('api.inference.image.rank_transport.subprocess.run',return_value=result), \
+                    patch('api.inference.image.rank_transport.importlib.import_module',return_value=torch):
+                self.assertEqual(transport._device_usage(),{0:42*1024**2,1:42*1024**2})
+            self.assertEqual(transport.uuids,{d:'GPU-'+value for d,value in enumerate(ids)})
+
     def test_park_checks_owned_pid_even_if_other_gpu_memory_disappears(self):
         budget=RankBudget(1000,(0,1),10,70)
         transport=ProcessRanks(Path('/unused'),budget,guard=lambda:None,memory_probe=lambda:{0:0,1:0})

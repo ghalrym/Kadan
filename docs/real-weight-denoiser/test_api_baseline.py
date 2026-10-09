@@ -13,7 +13,7 @@ from unittest.mock import Mock, mock_open, patch
 import torch
 from PIL import Image
 
-from api_baseline import CASES, CRITERIA, PROTOCOL, compare, generate, publish, settings, verify
+from api_baseline import CASES, CRITERIA, PROTOCOL, canonical_device_uuid, compare, generate, publish, settings, verify
 import launch_api_baseline as launcher
 import supervisor_api_baseline as supervisor
 from launch_api_baseline import require_review, restore_exact, storage
@@ -43,6 +43,12 @@ class Pipeline:
 
 
 class BaselineTests(unittest.TestCase):
+    def test_uuid_identity_accepts_torch_and_nvml_forms_without_changing_device(self):
+        identity='e30b6419-2c6d-f550-61d6-16166a920dac'
+        for value in (identity,'GPU-'+identity,identity.upper()):
+            self.assertEqual(canonical_device_uuid(value),'GPU-'+identity)
+        with self.assertRaises(ValueError):canonical_device_uuid('unknown')
+
     def test_default_launcher_has_no_host_or_gpu_calls(self):
         with patch('sys.argv',['launch_api_baseline.py']), patch.object(launcher.host,'run') as run, contextlib.redirect_stdout(io.StringIO()) as output:
             launcher.main()
