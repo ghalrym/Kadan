@@ -35,6 +35,11 @@ void tokenizer(const std::string &root) {
     expect(tok.encode("a[SEP]b", cancel) == std::vector<int>({97, 257, 98}));
     rejects([&] { tok.encode("\xff", cancel); });
     rejects([&] { tok.encode("literal [MASK]", cancel); });
+    expect(tok.encode("[MAS\xe2\x84\xaa]", cancel) == std::vector<int>({91, 77, 65, 83, 75, 93}));
+    auto config = decision::read_json(root + "/tokenizer/tokenizer.json", 8 * MiB);
+    config["added_tokens"][2]["normalized"] = true;
+    decision::Tokenizer normalized_mask(config);
+    rejects([&] { normalized_mask.encode("[MAS\xe2\x84\xaa]", cancel); });
     cancel = true;
     rejects([&] { tok.encode("abc", cancel); });
     rejects([] { decision::parse_json("{\"a\":1,\"a\":2}"); });

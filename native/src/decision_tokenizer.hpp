@@ -24,7 +24,12 @@ class Tokenizer {
     std::array<std::string, 256> bytes_;
     std::unordered_map<std::string, int> vocab_;
     std::unordered_map<std::string, std::pair<int, int>> merges_;
-    std::vector<std::pair<std::string, int>> added_;
+    struct Added {
+        std::string text;
+        int id;
+        bool normalized;
+    };
+    std::vector<Added> added_;
     void *pattern_ = nullptr;
     void ordinary(std::string_view, std::vector<int> &, const std::atomic_bool &) const;
 };

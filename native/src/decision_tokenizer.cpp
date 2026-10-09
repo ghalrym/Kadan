@@ -86,7 +86,7 @@ Tokenizer::Tokenizer(const Json &j) {
                   (!vocab_.contains(s) || vocab_.at(s) == id),
               "decision_added_vocab");
         vocab_[s] = id;
-        added_.emplace_back(s, id);
+        added_.push_back({s, id, t.at("normalized").get<bool>()});
     }
     cls = vocab_.at("[CLS]");
     sep = vocab_.at("[SEP]");
@@ -150,33 +150,48 @@ std::vector<int> Tokenizer::encode(const std::string &input, const std::atomic_b
     u_strFromUTF8(nullptr, 0, &required, input.data(), int32_t(input.size()), &status);
     check(status == U_BUFFER_OVERFLOW_ERROR || U_SUCCESS(status), "decision_utf8");
     status = U_ZERO_ERROR;
-    icu::UnicodeString original = icu::UnicodeString::fromUTF8(input), normalized;
     auto *nfc = icu::Normalizer2::getNFCInstance(status);
     check(U_SUCCESS(status), "decision_nfc");
-    nfc->normalize(original, normalized, status);
-    check(U_SUCCESS(status), "decision_nfc");
-    std::string text;
-    normalized.toUTF8String(text);
+    auto normalize = [&](std::string_view value) {
+        icu::UnicodeString normalized;
+        nfc->normalize(icu::UnicodeString::fromUTF8(value), normalized, status);
+        check(U_SUCCESS(status), "decision_nfc");
+        std::string result;
+        normalized.toUTF8String(result);
+        return result;
+    };
     std::vector<int> out;
-    std::size_t start = 0;
-    while (start < text.size()) {
-        cancel_check(cancel);
-        std::size_t found = text.size();
-        const std::pair<std::string, int> *selected = nullptr;
-        for (auto &token : added_) {
-            auto pos = text.find(token.first, start);
-            if (pos < found ||
-                (pos == found && selected && token.first.size() > selected->first.size())) {
-                found = pos;
-                selected = &token;
+    // Extract non-normalized added tokens from the original input first. NFC
+    // may create their spelling, but must never create a special-token match.
+    auto split = [&](std::string_view text, bool normalized, auto ordinary_part) {
+        std::size_t start = 0;
+        while (start < text.size()) {
+            cancel_check(cancel);
+            std::size_t found = text.size(), length = 0;
+            const Added *selected = nullptr;
+            for (const auto &token : added_) {
+                if (token.normalized != normalized)
+                    continue;
+                auto spelling = normalized ? normalize(token.text) : token.text;
+                auto pos = text.find(spelling, start);
+                if (pos < found || (pos == found && selected && spelling.size() > length)) {
+                    found = pos;
+                    length = spelling.size();
+                    selected = &token;
+                }
             }
+            ordinary_part(text.substr(start, found - start));
+            if (!selected)
+                break;
+            check(selected->id != mask, "decision_literal_mask");
+            out.push_back(selected->id);
+            start = found + length;
         }
-        ordinary(std::string_view(text).substr(start, found - start), out, cancel);
-        if (!selected)
-            break;
-        out.push_back(selected->second);
-        start = found + selected->first.size();
-    }
+    };
+    split(input, false, [&](std::string_view raw) {
+        auto normalized = normalize(raw);
+        split(normalized, true, [&](std::string_view text) { ordinary(text, out, cancel); });
+    });
     return out;
 }
 } // namespace kadan::decision

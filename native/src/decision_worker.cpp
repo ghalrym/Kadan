@@ -2,8 +2,10 @@
 #include "kadan/generation_queue.hpp"
 #include <cblas.h>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <exception>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -97,6 +99,32 @@ bool next_byte(char &value) {
     }
     return false;
 }
+// A stalled reader cannot prevent cancellation or resident cleanup. A partial
+// frame is never retried as another response; publication failure ends the worker.
+void publish_frame(const std::string &result) {
+    std::string frame = result + '\n';
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    std::size_t offset = 0;
+    while (offset < frame.size()) {
+        if (cancelled.load())
+            return;
+        if (std::chrono::steady_clock::now() >= deadline)
+            throw std::runtime_error("decision_stdout_timeout");
+        pollfd output{STDOUT_FILENO, POLLOUT, 0};
+        int ready = poll(&output, 1, 100);
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready < 0 || (output.revents & (POLLERR | POLLHUP | POLLNVAL)))
+            throw std::runtime_error("decision_stdout_poll");
+        if (!ready)
+            continue;
+        auto count = write(STDOUT_FILENO, frame.data() + offset, frame.size() - offset);
+        if (count > 0)
+            offset += std::size_t(count);
+        else if (count < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+            throw std::runtime_error("decision_stdout_write");
+    }
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -111,7 +139,9 @@ int main(int argc, char **argv) {
         std::signal(SIGINT, stop);
         std::signal(SIGTERM, stop);
         std::signal(SIGPIPE, SIG_IGN);
-        std::cout.exceptions(std::ios::badbit | std::ios::failbit);
+        int flags = fcntl(STDOUT_FILENO, F_GETFL);
+        if (flags < 0 || fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) < 0)
+            throw std::runtime_error("decision_stdout_nonblocking");
         constexpr kadan::Bytes io_bytes = 1024 * 1024;
         auto resources = std::make_shared<kadan::Resources>(
             kadan::Footprint{kadan::decision::Executor::envelope_bytes + io_bytes});
@@ -127,7 +157,7 @@ int main(int argc, char **argv) {
                     result = nlohmann::json{{"error", e.what()}}.dump();
                 }
                 if (!cancelled.load())
-                    std::cout << result << '\n' << std::flush;
+                    publish_frame(result);
             };
             std::string line;
             char value;

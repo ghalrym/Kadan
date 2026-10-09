@@ -1,5 +1,7 @@
 """Small deterministic full-model fixture; no ML packages or downloads in CI."""
 import hashlib
+import fcntl
+import time
 import json
 import math
 import os
@@ -137,6 +139,30 @@ def cli_checks(worker, root):
     child.stdin.write(encoded+'\n'); child.stdin.close()
     stderr = child.stderr.read()
     assert child.wait(timeout=5) != 0 and 'resident_bytes=0' in stderr, stderr
+
+    # Fill stdout before spawning: leave its reader open and undrained throughout
+    # SIGTERM and wait. Unlike communicate(), wait cannot unblock publication.
+    reader, writer = os.pipe()
+    fcntl.fcntl(writer, fcntl.F_SETFL, os.O_NONBLOCK)
+    try:
+        while True:
+            os.write(writer, b'x' * 4096)
+    except BlockingIOError:
+        pass
+    child = subprocess.Popen([worker, str(root)], stdin=subprocess.PIPE,
+                             stdout=writer, stderr=subprocess.PIPE, text=True, env=env)
+    os.close(writer)
+    try:
+        child.stdin.write(encoded + '\n'); child.stdin.flush()
+        time.sleep(1)
+        assert child.poll() is None
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=5) == 0
+        assert 'resident_bytes=0' in child.stderr.read()
+    finally:
+        if child.poll() is None:
+            child.kill(); child.wait(timeout=5)
+        child.stdin.close(); child.stderr.close(); os.close(reader)
 
 
 if __name__ == '__main__':
