@@ -18,9 +18,9 @@ with tempfile.TemporaryDirectory() as directory:
     result=subprocess.run(command,input='{}',text=True,capture_output=True)
     assert result.returncode==1 and 'h3_incomplete_frame' in result.stderr and 'resident_bytes=0' in result.stderr
     child=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    child.stdin.write('{}\n');child.stdin.flush()
+    assert json.loads(child.stdout.readline())['error']=='h3_request_string'
     child.send_signal(signal.SIGTERM)
-    # A signal before exec installs handlers may terminate normally by signal.
     stdout,stderr=child.communicate(timeout=10)
-    assert child.returncode in (0,-signal.SIGTERM) and not stdout
-    if child.returncode==0:assert 'resident_bytes=0' in stderr
+    assert child.returncode==0 and not stdout and 'resident_bytes=0' in stderr
     print('PASS malformed recovery, strict fields, bounded frames and cancellation')
