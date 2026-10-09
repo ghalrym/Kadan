@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/resources.hpp"
+#include "kadan/h3_compute.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -97,7 +98,7 @@ public:
 private:
     friend class H3DecoderBlock;
     void compute(std::span<const float> qkv, std::span<const float> coordinates, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_heads,
-                 const std::function<void(std::span<const float>)>& sink);
+                 const std::function<void(std::span<const float>)>& sink, std::size_t token_limit=max_tokens);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> frequencies_;
@@ -188,7 +189,7 @@ private:
     void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block);
     void compute(std::span<const float> input, std::span<const float> coordinates,
                  const std::atomic_bool& cancel, const Hook& hook,
-                 const std::function<void(std::span<const float>)>& sink);
+                 const std::function<void(std::span<const float>)>& sink, H3Compute* accelerator=nullptr);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     H3DecoderQkv qkv_;
@@ -208,7 +209,7 @@ public:
     static constexpr std::size_t max_tokens=H3DecoderInput::max_tokens;
     static constexpr Bytes weight_bytes=(4*hidden+2*hidden+patch_values*hidden+patch_values)*sizeof(float);
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit H3VideoDecoder(std::shared_ptr<Resources> resources);
+    explicit H3VideoDecoder(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={});
     ~H3VideoDecoder();
     H3VideoDecoder(const H3VideoDecoder&)=delete;
     H3VideoDecoder& operator=(const H3VideoDecoder&)=delete;
@@ -221,6 +222,7 @@ public:
 private:
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<H3Compute> compute_;
     H3DecoderInput input_;
     std::unique_ptr<checkpoint::Shard> shard_;
     std::unique_ptr<float[]> weights_;

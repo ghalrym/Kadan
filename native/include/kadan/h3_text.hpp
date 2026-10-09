@@ -1,6 +1,8 @@
 #pragma once
 #include "kadan/checkpoint.hpp"
 #include "kadan/resources.hpp"
+#include "kadan/h3_compute.hpp"
+#include "kadan/h3_tokenizer.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -13,10 +15,10 @@ namespace kadan::video {
 // tokenizer, denoising or video generation registration. Serialized owner.
 class H3TextEncoder {
 public:
-    static constexpr std::size_t hidden=5120, layers=50, vocab=151936, max_tokens=512;
+    static constexpr std::size_t hidden=5120, layers=50, vocab=151936, max_tokens=H3Tokenizer::max_tokens;
     static constexpr Bytes metadata_bytes=4*1024*1024;
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit H3TextEncoder(std::shared_ptr<Resources> resources);
+    explicit H3TextEncoder(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={});
     ~H3TextEncoder();
     H3TextEncoder(const H3TextEncoder&)=delete;
     H3TextEncoder& operator=(const H3TextEncoder&)=delete;
@@ -30,6 +32,7 @@ public:
 private:
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<H3Compute> compute_;
     std::unique_ptr<checkpoint::Shard> shard_;
     Handle metadata_=0;
     bool executing_=false;

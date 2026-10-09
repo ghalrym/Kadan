@@ -337,13 +337,13 @@ void H3QkRope::execute(std::span<const float> qkv, std::span<const float> coordi
     cancelled(cancel);artifact->publish(output);
 }
 void H3QkRope::compute(std::span<const float> qkv, std::span<const float> coordinates, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_heads,
-    const std::function<void(std::span<const float>)>& sink) {
+    const std::function<void(std::span<const float>)>& sink, std::size_t token_limit) {
     static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
     cancelled(cancel);
     check(loaded(), "video_not_loaded");
     check(!qkv.empty() && qkv.size()%width==0, "video_input_shape");
     const auto tokens=qkv.size()/width;
-    check(tokens<=max_tokens, "video_input_limit");
+    check(tokens<=token_limit, "video_input_limit");
     check(coordinates.size()==tokens*3, "video_coordinate_shape");
     Pin pin(*resources_,resident_);
     Reservation scratch(*resources_,host(scratch_bytes));
@@ -715,11 +715,11 @@ void H3DecoderBlock::execute(std::span<const float> input, std::span<const float
     cancelled(cancel);artifact->publish(output);
 }
 void H3DecoderBlock::compute(std::span<const float> input, std::span<const float> coordinates,
-    const std::atomic_bool& cancel, const Hook& hook, const std::function<void(std::span<const float>)>& output) {
+    const std::atomic_bool& cancel, const Hook& hook, const std::function<void(std::span<const float>)>& output, H3Compute* accelerator) {
     cancelled(cancel);check(!executing_,"busy");check(loaded(),"video_not_loaded");
     check(!input.empty() && input.size()%hidden==0,"video_input_shape");
     const auto tokens=input.size()/hidden;
-    check(tokens<=max_tokens,"video_input_limit");
+    check(tokens<=(accelerator?28224+5:max_tokens),"video_input_limit");
     check(coordinates.size()==tokens*3,"video_coordinate_shape");
     for(float value:coordinates)check(std::isfinite(value)&&value>=-1&&value<=1,"video_coordinate_range");
     // Keep every resident pinned through the final publication, including hooks.
@@ -736,14 +736,35 @@ void H3DecoderBlock::compute(std::span<const float> input, std::span<const float
         check(offset<=destination.size() && row.size()<=destination.size()-offset,"video_output_shape");
         std::copy(row.begin(),row.end(),destination.begin()+offset);offset+=row.size();
     };};
+    if(accelerator) {
+        auto normalize=[&](std::span<const float> x,const float* weight,std::span<float> y){
+            for(std::size_t t=0;t<tokens;++t){cancelled(cancel);float squares=0;for(std::size_t c=0;c<hidden;++c)squares+=x[t*hidden+c]*x[t*hidden+c];const float inverse=1/std::sqrt(squares/float(hidden)+1e-5f);for(std::size_t c=0;c<hidden;++c)y[t*hidden+c]=(x[t*hidden+c]*inverse)*weight[c];}
+        };
+        const auto* qnorm=qkv_.weights_.get();const auto* qw=qnorm+hidden;const auto* qb=qw+6144*hidden;
+        normalize(input,qnorm,a);accelerator->dense({qw,6144*hidden},{qb,6144},a,hidden,6144,q,cancel);
+        rope_.compute(q,coordinates,cancel,observe("rope"),sink(r),28224+5);
+        auto query=q.first(tokens*hidden),key=q.subspan(tokens*hidden,tokens*hidden),value=q.subspan(2*tokens*hidden,tokens*hidden);
+        for(std::size_t t=0;t<tokens;++t)for(std::size_t h=0;h<32;++h)for(std::size_t c=0;c<64;++c){const auto at=(t*32+h)*64+c,source=(t*32+h)*192+c;query[at]=r[source];key[at]=r[source+64];value[at]=r[source+128];}
+        accelerator->attention(query,key,value,tokens,32,32,64,false,a,cancel);
+        const auto* aw=attention_.weights_.get();auto attended=r.first(tokens*hidden);
+        accelerator->dense({aw,hidden*hidden},{aw+hidden*hidden,hidden},a,hidden,hidden,attended,cancel);
+        const auto* scale1=ff_.weights_.get();const auto* norm=scale1+hidden;const auto* w1=norm+hidden;const auto* b1=w1+16384*hidden;const auto* w2=b1+16384;const auto* b2=w2+hidden*8192;const auto* scale2=b2+hidden;
+        auto sum=q.first(tokens*hidden);for(std::size_t i=0;i<sum.size();++i)sum[i]=input[i]+attended[i]*scale1[i%hidden];normalize(sum,norm,a);
+        Reservation mlp_admission(*resources_,host(tokens*16384*sizeof(float)));auto expanded=std::make_unique<float[]>(tokens*16384);std::span<float> mlp(expanded.get(),tokens*16384);
+        accelerator->dense({w1,16384*hidden},{b1,16384},a,hidden,16384,mlp,cancel);
+        for(std::size_t t=0;t<tokens;++t){cancelled(cancel);for(std::size_t c=0;c<8192;++c){const float x=mlp[t*16384+c];const float activation=x>=0?x/(1+std::exp(-x)):x*std::exp(x)/(1+std::exp(x));mlp[t*8192+c]=activation*mlp[t*16384+8192+c];}}
+        accelerator->dense({w2,hidden*8192},{b2,hidden},mlp.first(tokens*8192),8192,hidden,a,cancel);
+        for(std::size_t i=0;i<a.size();++i){a[i]=sum[i]+a[i]*scale2[i%hidden];check(std::isfinite(a[i]),"video_nonfinite_output");}
+        cancelled(cancel);output(a);return;
+    }
     qkv_.compute(input,cancel,observe("qkv"),sink(q));
     rope_.compute(q,coordinates,cancel,observe("rope"),sink(r));
     attention_.compute(r,cancel,observe("attention"),sink(a));
     ff_.compute(input,a,cancel,observe("feed_forward"),output);
     cancelled(cancel);
 }
-H3VideoDecoder::H3VideoDecoder(std::shared_ptr<Resources> resources)
-    : resources_(std::move(resources)),input_(resources_) {}
+H3VideoDecoder::H3VideoDecoder(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute)
+    : resources_(std::move(resources)),compute_(std::move(compute)),input_(resources_) {}
 H3VideoDecoder::~H3VideoDecoder() { unload(); }
 Footprint H3VideoDecoder::host(Bytes bytes) const {
     auto result=resources_->snapshot().capacity;
@@ -805,8 +826,9 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
     std::size_t width, const std::string& output, const std::atomic_bool& cancel, const Hook& hook) {
     cancelled(cancel);check(!executing_,"busy");check(loaded(),"video_not_loaded");
     // Check before multiplication, including hostile dimensions and empty axes.
-    check(time && height && width && time<=max_tokens && height<=max_tokens/time &&
-          width<=max_tokens/(time*height),"video_latent_shape_or_limit");
+    const auto token_limit=compute_?28224:max_tokens;
+    check(time && height && width && time<=token_limit && height<=token_limit/time &&
+          width<=token_limit/(time*height),"video_latent_shape_or_limit");
     const auto patches=time*height*width,tokens=patches+5;
     check(normalized.size()==patches*24,"video_input_shape");
     Pin resident(*resources_,resident_),input_pin(*resources_,input_.resident_);
@@ -823,7 +845,12 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         std::copy(row.begin(),row.end(),destination.begin()+offset);offset+=row.size();
     };};
     shard_->check_unchanged();
-    input_.compute(normalized,cancel,[&](std::size_t count){if(hook)hook("input",count);},sink(current.first(patches*hidden)));
+    if(compute_){
+        Reservation input_admission(*resources_,host(patches*48*sizeof(float)));auto scratch=std::make_unique<float[]>(patches*48);std::span<float> latent(scratch.get(),patches*24),projected(scratch.get()+patches*24,patches*24);
+        const auto* mean=input_.weights_.get();const auto* deviation=mean+24;const auto* conv=deviation+24;const auto* bias=conv+576;const auto* embed=bias+24;const auto* embed_bias=embed+49152;
+        for(std::size_t i=0;i<latent.size();++i)latent[i]=normalized[i]*deviation[i%24]+mean[i%24];
+        compute_->dense({conv,576},{bias,24},latent,24,24,projected,cancel);compute_->dense({embed,49152},{embed_bias,2048},projected,24,2048,current.first(patches*hidden),cancel);
+    }else input_.compute(normalized,cancel,[&](std::size_t count){if(hook)hook("input",count);},sink(current.first(patches*hidden)));
     std::copy_n(weights_.get(),4*hidden,current.data()+patches*hidden);
     // Fifth suffix is the inference-only zero class token, not mask_token.
     std::fill(current.begin()+(patches+4)*hidden,current.end(),0.0f);
@@ -840,7 +867,7 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         H3DecoderBlock block(resources_);
         block.load_from(*shard_,cancel,layer);
         if(hook)hook("block_loaded",layer);
-        block.compute(current,coordinates,cancel,[&](const char* stage,std::size_t count){if(hook)hook(stage,count);},sink(next));
+        block.compute(current,coordinates,cancel,[&](const char* stage,std::size_t count){if(hook)hook(stage,count);},sink(next),compute_.get());
         block.unload();std::swap(current,next);
         if(hook)hook("block_completed",layer+1);
     }
@@ -851,6 +878,8 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
     Reservation scratch(*resources_,host(hidden*sizeof(float)));
     std::array<float,hidden> row;
     const auto video_t=time*4,video_h=height*16,video_w=width*16;
+    Reservation output_admission(*resources_,host(compute_?patches*patch_values*sizeof(float):0));
+    std::unique_ptr<float[]> gpu_patches;if(compute_)gpu_patches=std::make_unique<float[]>(patches*patch_values);
     for(std::size_t patch=0;patch<patches;++patch) {
         cancelled(cancel);
         // LayerNorm, not the RMSNorm used inside the transformer blocks.
@@ -864,6 +893,7 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
             row[c]=((current[patch*hidden+c]-mean)*inverse)*norm[c]+bias[c];
             check(std::isfinite(row[c]),"video_nonfinite_output");
         }
+        if(compute_){std::copy(row.begin(),row.end(),next.begin()+patch*hidden);continue;}
         const auto lt=patch/(height*width),lh=(patch/width)%height,lw=patch%width;
         for(std::size_t r=0;r<patch_values;++r) {
             if(r%64==0)cancelled(cancel);
@@ -874,6 +904,10 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
             frames[((channel*video_t+lt*4+pt)*video_h+lh*16+ph)*video_w+lw*16+pw]=value;
             if((r+1)%64==0 && hook)hook("output",patch*patch_values+r+1);
         }
+    }
+    if(compute_){
+        std::span<float> projected(gpu_patches.get(),patches*patch_values);compute_->dense({projection,patch_values*hidden},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel);
+        for(std::size_t patch=0;patch<patches;++patch){cancelled(cancel);const auto lt=patch/(height*width),lh=(patch/width)%height,lw=patch%width;for(std::size_t r=0;r<patch_values;++r){const auto channel=r/1024,pt=(r/256)%4,ph=(r/16)%16,pw=r%16;frames[((channel*video_t+lt*4+pt)*video_h+lh*16+ph)*video_w+lw*16+pw]=projected[patch*patch_values+r];}}
     }
     cancelled(cancel);shard_->check_unchanged();
     Artifact artifact(output);

@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/resources.hpp"
+#include "kadan/h3_compute.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -13,17 +14,18 @@ struct H3GenerationRequest {
     std::uint64_t seed=0;
 };
 struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae; };
-// Complete bounded CPU text-to-silent-video path. Joint audio latents participate
+// Native text-to-silent-video path with a bounded CPU reference and optional CUDA execution. Joint audio latents participate
 // in denoising; audio waveform decoding is not implemented. Output is YUV4MPEG2
 // 4:4:4 or MP4 (ffmpeg codec child) at 24 fps. F32/F64 execution, not BF16/GPU numerical parity.
 class H3Generation {
 public:
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit H3Generation(std::shared_ptr<Resources> resources);
+    explicit H3Generation(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={});
     void execute(const H3GenerationPaths&,const H3GenerationRequest&,
                  const std::atomic_bool&,const Hook& = {});
 private:
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<H3Compute> compute_;
     bool busy_=false;
 };
 namespace h3 {

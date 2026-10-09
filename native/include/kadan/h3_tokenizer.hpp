@@ -7,7 +7,9 @@
 namespace kadan::video {
 class H3Tokenizer {
 public:
-    static constexpr std::size_t max_input_bytes=8192,max_tokens=512;
+    // 8,000 API Unicode characters: at most 32,000 UTF-8 input bytes.
+    // Allow canonical-normalization expansion; execution still requires admission.
+    static constexpr std::size_t max_input_bytes=32000,max_tokens=128000;
     explicit H3Tokenizer(std::shared_ptr<Resources>);
     ~H3Tokenizer();
     H3Tokenizer(const H3Tokenizer&)=delete;
