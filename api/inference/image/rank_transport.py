@@ -1,6 +1,7 @@
 """Bounded two-process control transport; no request queue and no tensor IPC."""
 import importlib
 import json
+import logging
 import os
 from pathlib import Path
 import selectors
@@ -14,6 +15,7 @@ import time
 from api.inference.resources import ResourceCancelled
 
 MAX_FRAME = 65536
+STDERR_TAIL_BYTES = 8192
 
 
 def encode(value):
@@ -53,10 +55,14 @@ class ProcessRanks:
         self.baseline = None
         self.uuids = None
         self.gone = set()
+        self.stderr_tails = {}
+        self.session = None
 
     def start(self, session, devices, deadline, cancel):
         if self.processes or self.directory is not None:
             raise RuntimeError('Previous rank ownership has not been reaped')
+        self.session = session
+        self.stderr_tails = {}
         if self.cooldown:
             cool = 0
             admission_end = min(deadline, time.monotonic()+30)
@@ -65,7 +71,10 @@ class ProcessRanks:
                     raise ResourceCancelled('Rank cooldown cancelled')
                 if time.monotonic() >= admission_end:
                     raise TimeoutError('CPU did not reach five cool admission samples')
-                cool = cool+1 if self._cpu_peak() < 60 else 0
+                peak = self._cpu_peak()
+                logging.getLogger(__name__).info("rank_admission_sample session=%s cpu_c=%s accepted=%s",
+                    session, peak, peak < 60)
+                cool = cool+1 if peak < 60 else 0
                 if cool < 5:
                     time.sleep(2)
         self.baseline = self.memory_probe()
@@ -90,7 +99,7 @@ class ProcessRanks:
             try:
                 process = subprocess.Popen([sys.executable, '-m', self.worker_module,
                     str(child.fileno()), json.dumps(config)], pass_fds=(child.fileno(),),
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True, env=env)
             except BaseException:
                 parent.close()
@@ -98,8 +107,30 @@ class ProcessRanks:
             finally:
                 child.close()
             self.processes.append(process)
+            os.set_blocking(process.stderr.fileno(), False)
             self.connections.append(parent)
             parent.setblocking(False)
+
+    def _drain_stderr(self):
+        # No files or background threads: retain only an 8 KiB tail per rank.
+        # Bound each drain so a noisy child cannot monopolize the supervisor.
+        for rank, process in enumerate(self.processes):
+            if process.stderr is None or process.stderr.closed:
+                continue
+            for _ in range(8):
+                try:
+                    data = os.read(process.stderr.fileno(), STDERR_TAIL_BYTES)
+                except BlockingIOError:
+                    break
+                if not data:
+                    break
+                self.stderr_tails[rank] = (self.stderr_tails.get(rank, b'') + data)[-STDERR_TAIL_BYTES:]
+
+    def _report_stderr(self):
+        self._drain_stderr()
+        for rank, data in self.stderr_tails.items():
+            logging.getLogger(__name__).warning("rank_stderr session=%s rank=%s tail=%s",
+                self.session, rank, json.dumps(data.decode('utf-8', errors='replace')))
 
     def _device_usage(self):
         # Optional Torch access is only used after shared admission; resource
@@ -171,13 +202,16 @@ class ProcessRanks:
             rss += int(next(l.split()[1] for l in status.splitlines() if l.startswith('VmRSS:'))) * 1024
         if rss > self.budget.host_bytes:
             raise RuntimeError('Rank host memory exceeded admission')
-        if self._cpu_peak() >= 80:
-            raise RuntimeError('Image CPU thermal guard reached')
+        peak = self._cpu_peak()
+        if peak >= 80:
+            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s cpu_c=%s limit_c=80', self.session, peak)
+            raise RuntimeError(f'Image CPU thermal guard reached: {peak} C')
         output = subprocess.run(['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=2, check=True)
         values = [float(value) for value in output.stdout.splitlines()]
         if not values or max(values) >= 90:
-            raise RuntimeError('Image GPU thermal guard reached or unavailable')
+            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s gpu_c=%s limit_c=90', self.session, values)
+            raise RuntimeError(f'Image GPU thermal guard reached or unavailable: {values}')
 
     def exchange(self, command, deadline, cancel):
         payload = encode(command)
@@ -188,6 +222,7 @@ class ProcessRanks:
             for rank, connection in enumerate(self.connections):
                 selector.register(connection, selectors.EVENT_READ | selectors.EVENT_WRITE, rank)
             while len(replies) != 2:
+                self._drain_stderr()
                 if cancel is not None and cancel.is_set():
                     raise ResourceCancelled('Rank transaction cancelled')
                 if time.monotonic() >= deadline:
@@ -218,6 +253,9 @@ class ProcessRanks:
                             value = json.loads(frame)
                             if not isinstance(value, dict):
                                 raise ValueError('Invalid rank acknowledgement')
+                            if value.get('status') == 'error':
+                                logging.getLogger(__name__).warning('rank_error session=%s job=%s rank=%s error=%s',
+                                    self.session, command.get('job'), rank, json.dumps(str(value.get('error', ''))[:512]))
                             replies[rank] = value
                             selector.unregister(key.fileobj)
         if command["operation"] == "ready":
@@ -230,6 +268,12 @@ class ProcessRanks:
         return [replies[0], replies[1]]
 
     def stop(self, deadline):
+        try:
+            return self._stop(deadline)
+        finally:
+            self._report_stderr()
+
+    def _stop(self, deadline):
         # Kill whole owned process groups; never infer physical cleanup from EOF.
         for process in self.processes:
             if process.pid in self.gone:
@@ -256,6 +300,10 @@ class ProcessRanks:
             return False
         for connection in self.connections:
             connection.close()
+        self._drain_stderr()
+        for process in self.processes:
+            if process.stderr is not None:
+                process.stderr.close()
         self.processes.clear()
         self.connections.clear()
         self.baseline = None

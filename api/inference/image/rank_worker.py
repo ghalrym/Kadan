@@ -109,6 +109,10 @@ def main():
         except BaseException as exc:
             # Never reuse a possibly broken communicator after OOM/peer failure.
             receipt.update(status='error', error=(type(exc).__name__+': '+str(exc))[:512], resident_bytes=0)
+            # Preserve the bounded cause even if the controller observes exit
+            # before reading the socket acknowledgement. Do not echo payloads.
+            print(json.dumps(dict(rank=rank, job=command.get("job"), error=receipt["error"])),
+                file=sys.stderr, flush=True)
             try:
                 connection.sendall(encode(receipt))
             finally:

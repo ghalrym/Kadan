@@ -14,6 +14,10 @@ def main():
     while True:
         command = receive_blocking(channel)
         marker = command.get('payload', {}).get('prompt', '')
+        if marker == 'stderr-exit' and config['rank'] == 1:
+            sys.stderr.write('x' * 100000 + 'fixture peer failure detail')
+            sys.stderr.flush()
+            os._exit(2)
         if marker == 'peer-exit' and config['rank'] == 1:
             os._exit(2)
         if marker == 'wait':

@@ -36,3 +36,9 @@ Pinned existing runtime, CPU-only, disposable Redis with no live data: full API 
 
 - `dual-image-api-tests-offline.log` SHA-256: `e664a09a6d45346d88765da0c6c3f17056353eecdefa773ac2e95c149273ea08`.
 - `dual-image-api-focused-final.log` SHA-256: `1c8a43867422209485266a9602a3db969f14f36cc12bad6ef8d225ffc85dcb60`.
+
+## Review corrections
+
+Layered execution, output-decoding and publication failures share one absolute cleanup deadline, with service-level quarantine tests. Explicit later recovery is separate. Rank stderr retains an 8 KiB in-memory tail per child and is reported on cleanup; bounded error acknowledgements are logged without request payloads. Worker failures also write the bounded cause to stderr to survive an exit/socket race. Admission logs include rejected CPU readings; runtime thermal failures include the measured values. Validation must retain these logs with a bounded external log sink.
+
+The existing API container was inspected directly: Docker `ShmSize` and `df -B1 /dev/shm` both report **17,179,869,184 bytes (16 GiB)**, with zero used at inspection. This exceeds the 1 GiB used in the validated NCCL SHM runs. A temporary validation container must set its shared-memory limit explicitly and verify it again; do not infer it from Compose defaults.

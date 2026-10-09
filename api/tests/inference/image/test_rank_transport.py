@@ -2,6 +2,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from api.inference.image.rank_session import RankBudget, RankSession
 from api.inference.image.rank_transport import ProcessRanks, encode
@@ -49,6 +50,28 @@ class ProcessRankTests(unittest.TestCase):
                     self.session.execute('b'*32,payload={'prompt':marker})
                 self.assertTrue(all(p.poll() is not None for p in children))
                 self.assertFalse(self.resources.snapshot()['reservations'])
+
+    def test_peer_stderr_is_bounded_and_survives_reap(self):
+        self.session.execute('a' * 32, payload={'prompt': 'ok'})
+        with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
+            with self.assertRaises((RuntimeError, EOFError)):
+                self.session.execute('b' * 32, payload={'prompt': 'stderr-exit'})
+        self.assertLessEqual(len(self.transport.stderr_tails[1]), 8192)
+        self.assertTrue(self.transport.stderr_tails[1].endswith(b'fixture peer failure detail'))
+        self.assertIn('fixture peer failure detail', '\n'.join(captured.output))
+        self.assertEqual(self.transport.processes, [])
+        self.assertFalse(self.resources.snapshot()['reservations'])
+
+    def test_error_acknowledgement_and_rejected_temperature_are_retained(self):
+        with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
+            with self.assertRaises(ValueError):
+                self.session.execute('a' * 32, payload={'prompt': 'oom'})
+        self.assertIn('synthetic allocation failure', '\n'.join(captured.output))
+        with patch.object(self.transport, '_cpu_peak', return_value=80.25):
+            with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
+                with self.assertRaisesRegex(RuntimeError, '80.25'):
+                    self.transport._guard()
+        self.assertIn('cpu_c=80.25', '\n'.join(captured.output))
 
     def test_active_cancel_waits_for_both_reaps(self):
         self.session.execute('a'*32,payload={'prompt':'ok'})
