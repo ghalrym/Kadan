@@ -50,7 +50,8 @@ int main(int argc,char**argv){try{
     for(auto op:{Op::free,Op::sync}){auto r=manager();std::size_t before=0;{Model m(argv[1],o,0,r);inject(op);rejected([&]{m.close();});check(r->snapshot().used[0]==Model::host_bytes(o)&&r->snapshot().used[1]==layout.device_bytes()+512);before=syncs;rejected([&]{m.close();});}check(before==syncs&&r->snapshot().residents==1);for(auto[ptr,n]:allocations){std::free(ptr);used-=n;}allocations.clear();pending=false;}
     {auto options=o;options.split_residency=true;options.weight_ram_bytes=2*1024*1024;options.weight_cold_bytes=2*1024*1024;
         auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});
-        Model m(argv[1],options,0,r);check(used==layout.device_bytes()&&m.retained_bytes()>0);
+        Model m(argv[1],options,0,r);std::size_t packed=0;for(const auto& item:manifest.items())packed+=item.payload_bytes;
+        check(used==layout.device_bytes()&&m.retained_bytes()==packed&&m.cache_stats().source_bytes==packed);
         auto inspect=[&]{
             std::size_t weight_bytes=layout.embedded()-layout.embedding();for(const auto& l:layout.layers())weight_bytes+=l.plan.moe_offset+l.plan.moe.scratch_offset;
             const std::uint8_t* base=nullptr;for(auto[ptr,n]:allocations)if(n==weight_bytes){check(!base);base=static_cast<const std::uint8_t*>(ptr);}check(base);
@@ -67,7 +68,9 @@ int main(int argc,char**argv){try{
         check(m.valid()&&m.tokens()==0);inspect();m.step(2,false);m.park();check(used==0&&m.retained_bytes()==retained&&r->snapshot().used[1]==options.device_headroom);
         auto parked=r->snapshot().used[1];check(parked==options.device_headroom);
         bool blocked=false;try{r->reserve(kadan::Workload::image,{0,layout.device_bytes()+1});}catch(...){blocked=true;}check(blocked&&r->snapshot().used[1]==parked);
-        m.begin_request();check(used==layout.device_bytes()&&m.valid());inspect();m.step(2,false);m.close();check(used==0&&r->snapshot().residents==0);
+        auto before_cache=m.cache_stats();m.begin_request();check(used==layout.device_bytes()&&m.valid());inspect();
+        auto after_cache=m.cache_stats();check(after_cache.ram==before_cache.ram&&after_cache.source_bytes==before_cache.source_bytes&&after_cache.hits>before_cache.hits&&after_cache.evictions==0);
+        m.step(2,false);m.close();check(used==0&&r->snapshot().residents==0);
     }
     for(int scenario=0;scenario<6;++scenario){auto options=o;options.split_residency=true;options.weight_ram_bytes=65536;options.weight_cold_bytes=2*1024*1024;
         auto r=std::make_shared<kadan::Resources>(kadan::Footprint{Model::host_bytes(options)+options.weight_ram_bytes,layout.device_bytes()+options.device_headroom});

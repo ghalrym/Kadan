@@ -46,7 +46,7 @@ int main(int argc,char**argv){
         require(std::signal(SIGALRM,expired)!=SIG_ERR,"watchdog");alarm(60);
         int count=0;check(cudaGetDeviceCount(&count));require(count==1,"exactly_one_visible_device_required");check(cudaSetDevice(0));
         kadan::cuda::ModelOptions options{8,16*1024*1024,1024,512*1024*1024};
-        auto ledger=[&]{return std::make_shared<kadan::Resources>(kadan::Footprint{32*1024*1024,arena+options.device_headroom});};
+        auto ledger=[&]{return std::make_shared<kadan::Resources>(kadan::Footprint{320*1024*1024,arena+options.device_headroom});};
         auto legacy_resources=ledger();Capture legacy;
         {Model model(argv[2],options,0,legacy_resources);legacy=capture(model);model.close();}empty(legacy_resources);
         const auto baseline=free_bytes();options.split_residency=true;options.weight_ram_bytes=1024*1024;options.weight_cold_bytes=128*1024;
@@ -56,14 +56,15 @@ int main(int argc,char**argv){
             model.begin_request();equal(legacy,capture(model));model.park();
             std::cout<<"PARK model_gpu_allocations=0 context_envelope="<<r->snapshot().used[1]<<" actual_gpu_free="<<free_bytes()<<'\n';
             require(r->snapshot().used[1]==options.device_headroom&&model.retained_bytes()==retained,"park_accounting");
-            model.begin_request();equal(legacy,capture(model));
+            auto before=model.cache_stats();model.begin_request();equal(legacy,capture(model));
+            auto after=model.cache_stats();require(after.source_bytes==before.source_bytes&&after.hits>before.hits,"reload_not_from_ram");
             std::atomic_bool cancelled=true;bool rejected=false;try{model.step(2,false,&cancelled);}catch(const std::exception&){rejected=true;}
             require(rejected,"cancel_not_observed");model.end_request();model.begin_request();equal(legacy,capture(model));model.close();}
         empty(r);require(free_bytes()>=baseline,"physical_gpu_leak_after_close");
         auto failed=ledger();bool rejected=false;
         try{Model bad(argv[3],options,0,failed);}catch(const std::exception&){rejected=true;}
         require(rejected,"bad_payload_accepted");empty(failed);require(free_bytes()>=baseline,"physical_gpu_leak_after_failed_load");
-        auto tight=std::make_shared<kadan::Resources>(kadan::Footprint{32*1024*1024,arena+options.device_headroom-1});rejected=false;
+        auto tight=std::make_shared<kadan::Resources>(kadan::Footprint{320*1024*1024,arena+options.device_headroom-1});rejected=false;
         try{Model bad(argv[2],options,0,tight);}catch(const std::exception&){rejected=true;}
         require(rejected,"budget_overrun");empty(tight);require(free_bytes()>=baseline,"physical_gpu_leak_after_admission");alarm(0);
         std::cout<<"PASS split-vs-legacy: 4 cycles x 3 tokens x 16 logits bit-exact; selections/EOS/progress equal; arena="<<arena

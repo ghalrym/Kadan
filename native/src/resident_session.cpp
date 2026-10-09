@@ -62,6 +62,10 @@ void resident_session(ResidentEngine& engine,std::shared_ptr<Resources> resource
         }else if(op=="park"){
             require(id==0&&!active&&!queue.pending()&&!(fields>>extra),"invalid_park");queue.evict_idle();cleanup();engine.park();
             output<<"parked "<<identity<<" 0\n";
+        }else if(op=="cache"){
+            require(id==0&&!active&&!(fields>>extra),"invalid_cache");
+            auto s=engine.cache_stats();
+            output<<"cache "<<identity<<" 0 "<<s.capacity<<' '<<s.ram<<' '<<s.cold<<' '<<s.hits<<' '<<s.misses<<' '<<s.hit_bytes<<' '<<s.source_bytes<<' '<<s.evictions<<' '<<s.entries<<'\n';
         }else if(op=="close"){
             require(id==0&&!(fields>>extra),"invalid_close");break;
         }else throw std::runtime_error("unknown_command");

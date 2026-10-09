@@ -5,6 +5,7 @@
 namespace kadan::serving {
 namespace {
 void require(bool value, const char* error) { if (!value) throw std::runtime_error(error); }
+void count(Bytes& target, Bytes value) { target += std::min(value, std::numeric_limits<Bytes>::max()-target); }
 void cancel(const std::atomic_bool* flag) {
     require(!flag || !flag->load(std::memory_order_relaxed), "weight_cancelled");
 }
@@ -15,17 +16,19 @@ struct Busy {
 };
 }
 WeightBacking::WeightBacking(std::shared_ptr<Resources> resources, Bytes ram_limit,
-                             Bytes cold_limit, std::size_t chunk_limit, std::size_t entry_limit)
+                             Bytes cold_limit, std::size_t chunk_limit, std::size_t entry_limit, bool aggregate)
     : resources_(std::move(resources)), ram_limit_(ram_limit), cold_limit_(cold_limit),
       chunk_limit_(chunk_limit), entry_limit_(entry_limit) {
     require(resources_ && chunk_limit && chunk_limit <= 32 * 1024 * 1024 &&
-            entry_limit && entry_limit <= 65536, "weight_limits");
+            entry_limit && entry_limit <= model_entry_limit, "weight_limits");
     require(ram_limit <= resources_->snapshot().capacity[0], "weight_ram_limit");
+    if (aggregate && ram_limit) { aggregate_=resources_->reserve(Workload::llm,host(ram_limit)); resources_->loaded(aggregate_); }
 }
 WeightBacking::~WeightBacking() {
     // An unacknowledged external destination cannot be presumed freed. Its full
     // reservation deliberately remains in the shared ledger (quarantine).
     for (auto& [key, entry] : entries_) drop(entry);
+    if(aggregate_) { resources_->begin_eviction(aggregate_); resources_->released(aggregate_); }
 }
 void WeightBacking::idle() const { require(!busy_ && !transfer_, "weight_busy"); }
 Footprint WeightBacking::host(Bytes bytes) const {
@@ -55,13 +58,14 @@ void WeightBacking::add(std::string key, Workload workload,
 }
 void WeightBacking::drop(Entry& entry) {
     if (!entry.ram) return;
-    resources_->begin_eviction(entry.reservation);
+    if (!aggregate_) resources_->begin_eviction(entry.reservation);
     entry.ram.reset(); // Physical host free precedes accounting release.
-    resources_->released(entry.reservation);
-    entry.reservation = 0; ram_ -= entry.bytes;
+    if (!aggregate_) resources_->released(entry.reservation);
+    entry.reservation = 0; ram_ -= entry.bytes; count(evictions_,1);
 }
 bool WeightBacking::room_for_reservations(std::size_t count) {
     idle(); require(count <= Resources::max_residents, "weight_reservation_count");
+    if(aggregate_) return resources_->snapshot().residents <= Resources::max_residents-count;
     while (resources_->snapshot().residents > Resources::max_residents - count) {
         auto victim=entries_.end();
         for(auto it=entries_.begin();it!=entries_.end();++it)
@@ -82,26 +86,26 @@ bool WeightBacking::retain(const std::string& key, const std::atomic_bool* cance
     if (entry.bytes > ram_limit_) return false; // Cold streaming, never oversubscribe RAM.
     // Evict only this store's immutable host cache. Never release external state.
     auto available = [&] {
-        auto s = resources_->snapshot(); return s.capacity[0] - s.used[0];
+        auto s = resources_->snapshot(); return aggregate_ ? ram_limit_ - ram_ : s.capacity[0] - s.used[0];
     };
-    while (entry.bytes > ram_limit_ - ram_ || entry.bytes > available() || resources_->snapshot().residents >= Resources::max_residents) {
+    while (entry.bytes > ram_limit_ - ram_ || entry.bytes > available() || (!aggregate_ && resources_->snapshot().residents >= Resources::max_residents)) {
         auto victim = entries_.end();
         for (auto it = entries_.begin(); it != entries_.end(); ++it)
             if (it->second.ram && (victim == entries_.end() || it->second.age < victim->second.age)) victim = it;
         if (victim == entries_.end()) return false;
         drop(victim->second);
     }
-    const auto reservation = resources_->reserve(entry.workload, host(entry.bytes));
+    const auto reservation = aggregate_ ? aggregate_ : resources_->reserve(entry.workload, host(entry.bytes));
     try {
         auto data = std::make_unique<std::uint8_t[]>(std::size_t(entry.bytes));
         for (std::size_t at = 0; at < entry.bytes;) {
             cancel(cancelled); auto n = std::min<Bytes>(chunk_limit_, entry.bytes - at);
-            entry.source->read_tensor(entry.tensor, at, {data.get() + at, std::size_t(n)}); at += n;
+            entry.source->read_tensor(entry.tensor, at, {data.get() + at, std::size_t(n)}); count(source_bytes_,n); at += n;
         }
         cancel(cancelled); entry.source->check_unchanged();
-        resources_->loaded(reservation);
+        if (!aggregate_) resources_->loaded(reservation);
         entry.ram = std::move(data); entry.reservation = reservation; ram_ += entry.bytes; touch(entry);
-    } catch (...) { resources_->released(reservation); throw; }
+    } catch (...) { if (!aggregate_) resources_->released(reservation); throw; }
     return true;
 }
 void WeightBacking::read_through(const std::string& key, Workload workload,
@@ -113,15 +117,25 @@ void WeightBacking::read_through(const std::string& key, Workload workload,
     if (found == entries_.end()) {
         const auto bytes = source->tensor(tensor).bytes;
         if (entries_.size() >= entry_limit_ || bytes > cold_limit_ - cold_) {
-            source->read_tensor(tensor, offset, destination); cancel(cancelled); return;
+            count(misses_,1); source->read_tensor(tensor, offset, destination); count(source_bytes_,destination.size()); cancel(cancelled); return;
         }
         add(key, workload, source, tensor); found = entries_.find(key);
     }
     auto& entry = found->second;
     require(entry.source == source && entry.tensor == tensor && entry.workload == workload, "weight_source_changed");
     require(offset <= entry.bytes && destination.size() <= entry.bytes - offset, "weight_read_bounds");
-    if (retain(key, cancelled)) std::copy_n(entry.ram.get() + offset, destination.size(), destination.begin());
-    else source->read_tensor(tensor, offset, destination);
+    const bool hit=bool(entry.ram);
+    if(hit) { count(hits_,1); count(hit_bytes_,destination.size()); }
+    else count(misses_,1);
+    auto state=resources_->snapshot();
+    // Automatic row reads never evict another tensor to fill a miss. Alternating
+    // weight/scale reads must not reload whole tensors on every row/chunk.
+    const bool fits=entry.bytes<=ram_limit_-ram_ && (aggregate_ ||
+        (entry.bytes<=state.capacity[0]-state.used[0] && state.residents<Resources::max_residents));
+    if (hit || (fits && retain(key, cancelled))) {
+        entry.source->check_unchanged(); touch(entry);
+        std::copy_n(entry.ram.get() + offset, destination.size(), destination.begin());
+    } else { source->read_tensor(tensor, offset, destination); count(source_bytes_,destination.size()); }
     cancel(cancelled);
 }
 Handle WeightBacking::begin_transfer(const std::string& key, Footprint destination) {
@@ -154,7 +168,7 @@ void WeightBacking::copy(Handle id, const Sink& sink, const std::atomic_bool* ca
         cancel(cancelled); const auto n = std::size_t(std::min<Bytes>(chunk_limit_, entry.bytes - at));
         const std::uint8_t* bytes;
         if (entry.ram) bytes = entry.ram.get() + at;
-        else { entry.source->read_tensor(entry.tensor, at, {transfer_->staging.get(), n}); bytes = transfer_->staging.get(); }
+        else { entry.source->read_tensor(entry.tensor, at, {transfer_->staging.get(), n}); count(source_bytes_,n); bytes = transfer_->staging.get(); }
         sink(at, {bytes, n}); at += n;
     }
     cancel(cancelled); entry.source->check_unchanged(); touch(entry);
@@ -179,6 +193,6 @@ void WeightBacking::cleaned(Handle id, bool success) {
     resources_->released(id); transfer_.reset();
 }
 WeightBacking::Stats WeightBacking::stats() const {
-    return {ram_, cold_, transfer_ ? transfer_->bytes : 0, entries_.size(), transfer_ ? transfer_->reservation : 0};
+    return {ram_, cold_, transfer_ ? transfer_->bytes : 0, entries_.size(), transfer_ ? transfer_->reservation : 0, ram_limit_, hits_, misses_, hit_bytes_, source_bytes_, evictions_};
 }
 } // namespace kadan::serving
