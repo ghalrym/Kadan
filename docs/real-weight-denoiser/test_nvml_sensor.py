@@ -2,6 +2,8 @@ import ctypes
 import json
 import sys
 import time
+import threading
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -53,6 +55,44 @@ class NVMLTests(unittest.TestCase):
         reply=reader.sample(timeout=1);self.assertEqual(reader.process.pid,pid)
         self.assertEqual(reply['spawn_to_exec_seconds'],0)
         reader.close();reader.close();self.assertIsNotNone(reader.process.poll())
+
+    def test_close_during_blocked_popen_reaps_before_any_request(self):
+        reader=self.reader('import time;time.sleep(60)')
+        entered=threading.Event();release=threading.Event();children=[];errors=[]
+        popen=subprocess.Popen
+        def blocked(*args,**kwargs):
+            entered.set()
+            if not release.wait(2):raise RuntimeError('test release timeout')
+            child=popen(*args,**kwargs)
+            child.stdin=Mock(wraps=child.stdin)
+            children.append(child)
+            return child
+        def sample():
+            try:reader.sample(timeout=1)
+            except Exception as exc:errors.append(exc)
+        with patch('nvml_sensor.subprocess.Popen',side_effect=blocked):
+            worker=threading.Thread(target=sample)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                started=time.monotonic();reader.close()
+                self.assertLess(time.monotonic()-started,.2)
+                self.assertIsNone(reader.process)
+                release.set();worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(children),1)
+                children[0].stdin.write.assert_not_called()
+                self.assertIsNotNone(children[0].poll())
+                self.assertTrue(children[0].stdout.closed)
+                self.assertEqual(len(errors),1)
+                self.assertRegex(str(errors[0]),'closed during startup')
+                self.assertIsNone(reader.process)
+                with self.assertRaisesRegex(RuntimeError,'closed'):reader.sample(timeout=1)
+            finally:
+                release.set();worker.join(3)
+                for child in children:
+                    if child.poll() is None:child.kill();child.wait(timeout=1)
+                    child.stdin.close();child.stdout.close()
 
     def test_hung_driver_helper_has_bounded_timeout_and_cleanup(self):
         reader=self.reader('import time;time.sleep(60)')

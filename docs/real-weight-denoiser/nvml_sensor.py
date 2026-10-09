@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from uuid import UUID
 
 MAX_REPLY = 8192
@@ -67,25 +68,38 @@ class NVMLReader:
     def __init__(self, uuids, command=None):
         self.command=command or [sys.executable,str(Path(__file__).resolve()),json.dumps(list(uuids)),str(os.getpid())]
         self.process=None;self.closed=False;self.sequence=0
+        self.state_lock=threading.Lock()
 
     def sample(self, *, timeout):
-        if self.closed:raise RuntimeError('NVML reader closed')
+        with self.state_lock:
+            if self.closed:raise RuntimeError('NVML reader closed')
+            process=self.process
         started=time.monotonic();deadline=started+timeout;spawn_seconds=0
-        if self.process is None:
-            self.process=subprocess.Popen(self.command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+        if process is None:
+            # Popen can block. Never hold the state lock across process/pipe I/O.
+            process=subprocess.Popen(self.command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,bufsize=0,start_new_session=True)
             spawn_seconds=time.monotonic()-started
-            os.set_blocking(self.process.stdout.fileno(),False)
+            with self.state_lock:
+                closed=self.closed
+                if not closed:self.process=process
+            if closed:
+                # close() may have returned while Popen was still in progress.
+                # The spawning thread owns this unpublished child and must reap
+                # it before any command write or propagation to error logging.
+                self._reap(process,time.monotonic()+.2)
+                raise RuntimeError('NVML reader closed during startup')
+            os.set_blocking(process.stdout.fileno(),False)
         self.sequence+=1
         # At most one tiny command is outstanding, so the pipe cannot fill.
-        self.process.stdin.write((str(self.sequence)+'\n').encode())
+        process.stdin.write((str(self.sequence)+'\n').encode())
         data=bytearray()
         with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout,selectors.EVENT_READ)
+            selector.register(process.stdout,selectors.EVENT_READ)
             while b'\n' not in data:
                 remaining=deadline-time.monotonic()
                 if remaining<=0 or not selector.select(remaining):raise TimeoutError('NVML acquisition deadline')
-                chunk=os.read(self.process.stdout.fileno(),MAX_REPLY+1-len(data))
+                chunk=os.read(process.stdout.fileno(),MAX_REPLY+1-len(data))
                 if not chunk:raise RuntimeError('NVML helper exited without sample')
                 data.extend(chunk)
                 if len(data)>MAX_REPLY:raise ValueError('Oversized NVML response')
@@ -99,10 +113,14 @@ class NVMLReader:
         return reply
 
     def close(self, deadline=None):
-        self.closed=True
-        process=self.process
+        with self.state_lock:
+            self.closed=True
+            process=self.process
         if process is None:return
-        deadline=time.monotonic()+.2 if deadline is None else deadline
+        self._reap(process,time.monotonic()+.2 if deadline is None else deadline)
+
+    @staticmethod
+    def _reap(process, deadline):
         if process.poll() is None:process.kill()
         process.wait(timeout=max(0,deadline-time.monotonic()))
         for stream in (process.stdin,process.stdout):
