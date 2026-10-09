@@ -43,3 +43,15 @@ jobs:
         run: cmake --build /tmp/kadan-h3-text --target kadan-h3-text-encode h3-text-tests --parallel 2
       - name: Validate all 50 layers and resource cleanup
         run: ctest --test-dir /tmp/kadan-h3-text --output-on-failure -R '^h3-text$'
+
+  h3-denoiser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure complete CPU H3 denoiser
+        run: cmake -S native -B /tmp/kadan-h3-denoiser -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
+      - name: Build only denoiser and lifecycle test
+        run: cmake --build /tmp/kadan-h3-denoiser --target kadan-h3-denoise h3-denoiser-tests --parallel 2
+      - name: Validate all 50 blocks, Turbo and resource cleanup
+        run: ctest --test-dir /tmp/kadan-h3-denoiser --output-on-failure -R '^h3-denoiser$'
