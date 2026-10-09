@@ -79,8 +79,8 @@ struct Tensor {
 // Unicode metadata fails closed; no recursive skip of arbitrary JSON is used.
 class HeaderParser {
 public:
-    HeaderParser(std::string_view text, std::pmr::memory_resource* resource)
-        : text_(text), resource_(resource) {}
+    HeaderParser(std::string_view text, std::pmr::memory_resource* resource, std::size_t metadata_limit)
+        : text_(text), resource_(resource), metadata_limit_(metadata_limit) {}
     void parse(std::pmr::vector<Tensor>& tensors, std::size_t limit) {
         require(!text_.empty() && text_[0] == '{', "header_start");
         expect('{'); bool metadata = false;
@@ -116,7 +116,7 @@ private:
         if (c >= 'A' && c <= 'F') return c - 'A' + 10;
         throw std::invalid_argument("json_escape");
     }
-    std::pmr::string string() {
+    std::pmr::string string(std::size_t limit = 512) {
         expect('"'); std::pmr::string result(resource_);
         while (position_ < text_.size()) {
             unsigned char c = text_[position_++];
@@ -136,7 +136,7 @@ private:
                     default: throw std::invalid_argument("json_escape");
                 }
             }
-            require(result.size() < 512, "json_string_limit"); result += static_cast<char>(c);
+            require(result.size() < limit, "json_string_limit"); result += static_cast<char>(c);
         }
         throw std::invalid_argument("unterminated_string");
     }
@@ -154,7 +154,7 @@ private:
         do {
             auto key = string();
             require(keys.size() < 1024 && std::find(keys.begin(), keys.end(), key) == keys.end(), "metadata_key_limit_or_duplicate");
-            keys.push_back(std::move(key)); expect(':'); string();
+            keys.push_back(std::move(key)); expect(':'); string(metadata_limit_);
         } while (take(','));
         expect('}');
     }
@@ -167,6 +167,7 @@ private:
                 if (dtype == "U8") tensor.dtype = Dtype::u8;
                 else if (dtype == "F8_E4M3") tensor.dtype = Dtype::fp8;
                 else if (dtype == "F32") tensor.dtype = Dtype::fp32;
+                else if (dtype == "F16") tensor.dtype = Dtype::fp16;
                 else if (dtype == "BF16") tensor.dtype = Dtype::bf16;
                 else throw std::invalid_argument("unsupported_dtype");
             } else if (key == "shape") {
@@ -183,12 +184,13 @@ private:
             require(!(fields & bit), "duplicate_tensor_field"); fields |= bit;
         } while (take(','));
         expect('}'); require(fields == 7, "missing_tensor_field");
-        const auto width = tensor.dtype == Dtype::fp32 ? 4U : tensor.dtype == Dtype::bf16 ? 2U : 1U;
+        const auto width = tensor.dtype == Dtype::fp32 ? 4U : (tensor.dtype == Dtype::bf16 || tensor.dtype == Dtype::fp16) ? 2U : 1U;
         require(tensor.end >= tensor.begin && tensor.end - tensor.begin == mul(tensor.elements(), width), "tensor_byte_size");
     }
     std::string_view text_;
     std::size_t position_ = 0;
     std::pmr::memory_resource* resource_;
+    std::size_t metadata_limit_;
 };
 } // namespace
 
@@ -256,7 +258,7 @@ Shard::Shard(const char* root, std::string_view shard_name, std::shared_ptr<Memo
     impl_->data_begin = add(8, header_size);
     std::pmr::vector<std::uint8_t> header(budget.get()); header.resize(header_size);
     read_at(impl_->file.value, 8, header);
-    HeaderParser parser({reinterpret_cast<const char*>(header.data()), header.size()}, budget.get());
+    HeaderParser parser({reinterpret_cast<const char*>(header.data()), header.size()}, budget.get(), limits.metadata_value_bytes);
     parser.parse(impl_->tensors, limits.tensors);
     auto& tensors = impl_->tensors;
     std::sort(tensors.begin(), tensors.end(), [](const auto& a, const auto& b) {
