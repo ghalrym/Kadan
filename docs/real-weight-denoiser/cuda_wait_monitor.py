@@ -48,17 +48,19 @@ class ThermalWatch:
                 for line in result.stdout.splitlines():
                     uuid,used,free,temp=[x.strip() for x in line.split(',')]
                     rows[uuid]=dict(used=int(used),free=int(free),temperature=int(temp))
-                if any(g not in rows or rows[g]['temperature']>=90 or rows[g]['free']<256 for g in self.gpus):
+                accepted=all(g in rows and rows[g]['temperature']<90 and rows[g]['free']>=256 for g in self.gpus)
+                with (self.evidence/'watchdog.jsonl').open('a') as stream:
+                    stream.write(json.dumps(dict(monotonic=now,cpu_temperature=peak,gpu=rows,accepted=accepted))+'\n')
+                if not accepted:
                     raise RuntimeError('GPU sensor/headroom guard')
                 memory=dict(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())
                 if int(memory['MemAvailable'].split()[0])<16*1024**2:raise RuntimeError('Host free memory guard')
-                with (self.evidence/'watchdog.jsonl').open('a') as stream:
-                    stream.write(json.dumps(dict(monotonic=now,cpu_temperature=peak,gpu=rows))+'\n')
                 self.ready.set()
                 next_sample += .5
                 self.stop_event.wait(max(0,next_sample-time.monotonic()))
         except BaseException as exc:
             self.error=f'{type(exc).__name__}: {exc}'[:1000]
+            (self.evidence/'watchdog-error.json').write_text(json.dumps(dict(error=self.error)))
             self.ready.set()
             # Interrupt a slow Docker/control command immediately, not next poll.
             os.kill(os.getpid(),signal.SIGUSR1)
