@@ -18,6 +18,9 @@ class DecisionsFeature:
         # Route-owned models import lazily to avoid the manager construction cycle.
         from api.routes.v1.decisions import DecisionRequest
         return DecisionRequest.model_validate(payload)
+    async def preflight_execution(self, request):
+        if hasattr(self.service, "preflight"):
+            await self.service.preflight()
     async def load(self, model=None):
         await self.service.load()
         return self.adapter

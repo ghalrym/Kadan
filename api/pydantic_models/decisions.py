@@ -1,5 +1,5 @@
 from typing import Annotated, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChoiceOption(BaseModel):
@@ -22,6 +22,8 @@ class ScoreQuestion(BaseModel):
 
 
 class NoulQuestion(BaseModel):
+    # Redis payloads use field names; HTTP requests use the existing aliases.
+    model_config = ConfigDict(populate_by_name=True)
     key: str = Field(min_length=1)
     instructions: str = Field(min_length=1)
     type: Literal["Noul"]
