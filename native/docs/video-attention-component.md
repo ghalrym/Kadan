@@ -23,11 +23,13 @@ no explicit scale and no causal flag. Thus the scale is `1/sqrt(64) = 1/8` and
 every query sees every supplied key, including later positions. The CUDA backend
 also explicitly selects `causal=False`; no CUDA implementation is added here.
 
-The decoder rejects `t_causal=True`. Its `apply_mask_preprocess` changes tokens
-and coordinates before transformer execution; this is not an attention-score
-mask. This component accepts no mask argument and does not claim to implement
-that preprocessing or tile/suffix assembly. A small sequence is a numerical
-probe, not a crop equivalent to full-sequence decoder output.
+The decoder rejects `t_causal=True`. Its mask hooks are no-ops in inference:
+`apply_mask_preprocess` returns tokens/coordinates unchanged and rejects training
+with masking enabled; postprocessing also returns unchanged tokens, rejecting
+training/drop masking. No score mask is passed to attention. This component
+accepts no mask argument and does not implement training-mask modes or tile/suffix
+assembly. A small sequence is a numerical probe, not a crop equivalent to
+full-sequence decoder output.
 
 Only `decoder.transformer_blocks.0.attn.to_out.weight` [2048,2048] and `.bias`
 [2048] are loaded from the F16 checkpoint. Matrix layout is [output,input]. The
@@ -100,8 +102,8 @@ intra/inter-op pools each one. No GPU, full decoder or generation test ran.
    feed-forward projections and feed-forward residual; validate against pinned
    source and real checkpoint at each boundary.
 2. Assemble the actual latent grid, learned register tokens and zero suffix,
-   corresponding 3D positions and supported mask preprocessing/postprocessing.
-   Generalize execution to complete tile sequences with explicit bounded
+   corresponding 3D positions; preserve the inference no-op mask hooks and reject
+   unsupported training-mask modes. Generalize execution to complete tile sequences with explicit bounded
    attention workspace; 1–8-token probes cannot stand in for full attention.
 3. Execute all 36 decoder blocks with layer-indexed weights and bounded residency,
    then final normalization/output projection, suffix removal, 3D unpacking and
