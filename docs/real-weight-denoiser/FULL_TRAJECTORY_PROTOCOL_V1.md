@@ -40,8 +40,15 @@ The candidate gathers target rows in their original order before its own schedul
 update. Validate explicit layout ownership; a mutually cancelling permutation cannot
 stand in for a correct layout.
 
+Run and validate the eager repeatability trajectory first, including every prediction
+and post-scheduler latent gate, before candidate admission or candidate output observation.
+
 At the end, compare final latent and independently decoded floating RGB output before
-quantization. Save lossless PNGs of each path and compare the final uint8 pixels.
+quantization. Reject nonfinite raw VAE output before `(image * 0.5 + 0.5).clamp(0,1)`.
+The float comparison point is the pinned processor NumPy output: float32 NHWC
+`(1,2048,2048,3)`, normalized display RGB interpreted as sRGB, with no added gamma or
+color-profile conversion. The comparison is in this encoded RGB space, not linear light.
+Use the pinned processor's uint8 rounding through `numpy_to_pil`; no alternate quantizer. Save lossless PNGs of each path and compare the final uint8 pixels.
 A successful teacher-forced block comparison cannot replace this trajectory gate.
 
 ## Proposed fixed acceptance criteria
@@ -85,7 +92,8 @@ aggregate diagnostic quota, runtime CPU strictly below 80°C, GPU below 90°C,
 900-second stage cap, 2,100-second total pause and 600-second recovery reserve.
 Do not extend bounds if a complete stage cannot fit; return for protocol review.
 
-The current cached-step harness cannot execute this protocol. First implement and
+The separate review-only implementation is described in FULL_TRAJECTORY_IMPLEMENTATION.md.
+The cached-step harness cannot execute this protocol. First implement and
 CPU-test the review-only pipeline adapter, independent-state contracts, tensor storage
 plan, cancellation/worker cleanup, labelled thermal telemetry and exact API restoration.
 Obtain independent protocol and exact-source review, green exact-head CI and explicit
