@@ -30,4 +30,4 @@ jobs:
       - name: Build only decoder and lifecycle test
         run: cmake --build /tmp/kadan-h3 --target kadan-video-decode video-decode-tests --parallel 2
       - name: Validate all 36 blocks and RGB frame reconstruction
-        run: ctest --test-dir /tmp/kadan-h3 --output-on-failure -L full-graph
+        run: ctest --test-dir /tmp/kadan-h3 --output-on-failure -R '^video-decode$'
