@@ -15,16 +15,16 @@
 
 namespace {
 std::atomic_bool cancelled{false};
-void stop(int) { cancelled.store(true); }
-using Queue = kadan::serving::GenerationQueue;
+void request_stop(int) { cancelled.store(true); }
+using kadan::serving::GenerationQueue;
 
 // Synchronous executor ownership lasts through completion and cleanup. The
 // transport supplies request order; the shared queue owns resident admission.
-class Driver {
+class DecisionWorker {
   public:
-    Driver(std::shared_ptr<kadan::Resources> resources, std::string root)
+    DecisionWorker(std::shared_ptr<kadan::Resources> resources, std::string root)
         : queue_(resources), executor_(resources), root_(std::move(root)) {}
-    ~Driver() { shutdown(); }
+    ~DecisionWorker() { shutdown(); }
     std::string execute(const std::string &request) {
         auto id = queue_.submit(
             {root_, kadan::Workload::decision, {kadan::decision::Executor::envelope_bytes}});
@@ -32,14 +32,14 @@ class Driver {
         std::string result;
         while (queue_.pending()) {
             auto action = queue_.poll();
-            if (action.kind == Queue::Kind::load) {
+            if (action.kind == GenerationQueue::Kind::load) {
                 try {
                     executor_.load(root_, cancelled, action.reservation);
                 } catch (...) {
                     error = std::current_exception();
                 }
                 queue_.loaded(id, !error);
-            } else if (action.kind == Queue::Kind::execute) {
+            } else if (action.kind == GenerationQueue::Kind::execute) {
                 try {
                     result = executor_.execute(request, cancelled);
                 } catch (...) {
@@ -48,7 +48,7 @@ class Driver {
                 if (cancelled.load())
                     queue_.cancel(id);
                 queue_.completed(id, !error);
-            } else if (action.kind == Queue::Kind::cleanup) {
+            } else if (action.kind == GenerationQueue::Kind::cleanup) {
                 executor_.unload(); // Free physical allocations before acknowledgement.
                 queue_.cleaned(action.reservation, true);
             } else {
@@ -64,21 +64,21 @@ class Driver {
     void shutdown() {
         queue_.stop();
         auto action = queue_.poll();
-        if (action.kind == Queue::Kind::cleanup) {
+        if (action.kind == GenerationQueue::Kind::cleanup) {
             executor_.unload();
             queue_.cleaned(action.reservation, true);
         }
     }
 
   private:
-    Queue queue_;
+    GenerationQueue queue_;
     kadan::decision::Executor executor_;
     std::string root_;
 };
 
 // Polling stdin lets SIGTERM cancel an idle worker as well as model execution.
 // A line is one request; no later input can overtake its execution/publication.
-bool next_byte(char &value) {
+bool read_request_byte(char &value) {
     while (!cancelled.load()) {
         pollfd input{STDIN_FILENO, POLLIN, 0};
         int ready = poll(&input, 1, 100);
@@ -136,8 +136,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("usage: kadan-decision-worker CHECKPOINT_ROOT (one request "
                                      "JSON per line on stdin)");
         openblas_set_num_threads(1);
-        std::signal(SIGINT, stop);
-        std::signal(SIGTERM, stop);
+        std::signal(SIGINT, request_stop);
+        std::signal(SIGTERM, request_stop);
         std::signal(SIGPIPE, SIG_IGN);
         int flags = fcntl(STDOUT_FILENO, F_GETFL);
         if (flags < 0 || fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) < 0)
@@ -148,11 +148,11 @@ int main(int argc, char **argv) {
         auto io = resources->reserve(kadan::Workload::decision, {io_bytes});
         std::exception_ptr failure;
         try {
-            Driver driver(resources, std::filesystem::canonical(argv[1]).string());
+            DecisionWorker worker(resources, std::filesystem::canonical(argv[1]).string());
             auto publish = [&](const std::string &line) {
                 std::string result;
                 try {
-                    result = driver.execute(line);
+                    result = worker.execute(line);
                 } catch (const std::exception &e) {
                     result = nlohmann::json{{"error", e.what()}}.dump();
                 }
@@ -161,7 +161,7 @@ int main(int argc, char **argv) {
             };
             std::string line;
             char value;
-            while (next_byte(value)) {
+            while (read_request_byte(value)) {
                 if (value != '\n') {
                     if (line.size() >= 65536)
                         throw std::runtime_error("decision_request_size");
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
             }
             if (!line.empty() && !cancelled.load())
                 publish(line);
-            driver.shutdown();
+            worker.shutdown();
         } catch (...) {
             failure = std::current_exception();
         }
