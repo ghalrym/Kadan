@@ -45,7 +45,7 @@ save actual/reference tensors per rank in a separate fixed reserve.
 
 The raw tensor returned by VAE decode is checked for nonfinite values before calling
 the pinned image processor, so clipping cannot hide infinities. The processor's NumPy
-output is float32 NHWC `(1,2048,2048,4)` in [0,1], RGBA with RGB interpreted as sRGB and alpha as linear coverageA,
+output is float32 NHWC `(1,2048,2048,4)` in [0,1], RGBA with RGB interpreted as sRGB and alpha as linear coverage,
 without additional gamma/profile conversion; comparisons are not linear-light metrics.
 Use the pinned `numpy_to_pil` rounding to produce RGBA uint8 `(2048,2048,4)` and PNG.
 

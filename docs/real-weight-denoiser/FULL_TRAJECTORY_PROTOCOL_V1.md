@@ -46,7 +46,7 @@ and post-scheduler latent gate, before candidate admission or candidate output o
 At the end, compare final latent and independently decoded floating RGBA output before
 quantization. Reject nonfinite raw VAE output before `(image * 0.5 + 0.5).clamp(0,1)`.
 The float comparison point is the pinned processor NumPy output: float32 NHWC
-`(1,2048,2048,4)`, normalized RGBA with RGB interpreted as sRGB and alpha as linear coverageA, with no added gamma or
+`(1,2048,2048,4)`, normalized RGBA with RGB interpreted as sRGB and alpha as linear coverage, with no added gamma or
 color-profile conversion. The comparison is in this encoded RGB space plus alpha, not linear light.
 Use the pinned processor's uint8 rounding through `numpy_to_pil`; no alternate quantizer. Save lossless PNGs of each path and compare the final uint8 pixels.
 A successful teacher-forced block comparison cannot replace this trajectory gate.
