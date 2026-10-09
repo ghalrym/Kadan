@@ -19,6 +19,8 @@ for line in sys.stdin:
     q = json.loads(line)
     state = q['state']
     if state == 'hang': time.sleep(60)
+    if len(state.encode('utf-8')) > 16384:
+        print('{"error":"decision_empty_or_long_text"}', flush=True); continue
     if state == 'eof': break
     if state == 'large':
         print('x'*70000, flush=True); continue

@@ -122,7 +122,8 @@ def answers_for(questions, response):
     if set(response) == {'error'}:
         # Only request-domain rejections are client errors. Checkpoint, transport
         # and implementation failures never fall back to a Python model.
-        client_errors = {'decision_literal_mask', 'decision_text_size', 'decision_state_token_budget',
+        client_errors = {'decision_literal_mask', 'decision_text_size', 'decision_empty_or_long_text',
+                         'decision_state_token_budget',
                          'decision_head_token_budget', 'decision_instruction_token_budget',
                          'decision_option_token_budget', 'decision_request_size',
                          'decision_choice_options', 'decision_score_levels'}

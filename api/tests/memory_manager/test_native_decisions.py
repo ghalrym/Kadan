@@ -72,6 +72,19 @@ class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, status, response.text)
             self.assertFalse(self.resources.snapshot()['reservations'])
 
+    async def test_unicode_native_byte_limit_is_a_client_error(self):
+        # Character-valid HTTP input can exceed the native UTF-8 byte limit.
+        request = body('🙂' * 5000)
+        self.assertLess(len(request.model_dump_json()), 16000)
+        self.assertGreater(len(request.state.encode('utf-8')), 16384)
+        response = await self.client.post('/v1/decisions', json=request.model_dump(mode='json', by_alias=True))
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn('decision_empty_or_long_text', response.json()['detail'])
+        self.assertIsNone(self.native.agent)
+        self.assertFalse(self.resources.snapshot()['reservations'])
+        again = await self.client.post('/v1/decisions', json=body().model_dump(mode='json', by_alias=True))
+        self.assertEqual(again.status_code, 200, again.text)
+
     async def test_fifo_cancel_waits_for_child_before_image_and_later_decision(self):
         events = []
         native = self.native
