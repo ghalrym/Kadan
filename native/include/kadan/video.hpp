@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 
+namespace kadan::checkpoint { class Shard; }
 namespace kadan::video {
 // Real H3 video VAE decoder input stage only. Not a video generation backend.
 // Serialized executor ownership: the queue owner must not call concurrently.
@@ -57,6 +58,10 @@ public:
                  const std::atomic_bool& cancel,
                  const std::function<void(std::size_t)>& on_rows = {});
 private:
+    friend class H3DecoderBlock;
+    void compute(std::span<const float> input, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+                 const std::function<void(std::span<const float>)>& sink);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
@@ -85,6 +90,9 @@ public:
                  const std::string& output, const std::atomic_bool& cancel,
                  const std::function<void(std::size_t)>& on_heads = {});
 private:
+    friend class H3DecoderBlock;
+    void compute(std::span<const float> qkv, std::span<const float> coordinates, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_heads,
+                 const std::function<void(std::span<const float>)>& sink);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> frequencies_;
@@ -112,6 +120,10 @@ public:
                  const std::atomic_bool& cancel,
                  const std::function<void(std::size_t)>& on_rows = {});
 private:
+    friend class H3DecoderBlock;
+    void compute(std::span<const float> qkv, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+                 const std::function<void(std::span<const float>)>& sink);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
@@ -138,9 +150,41 @@ public:
                  const std::string& output, const std::atomic_bool& cancel,
                  const std::function<void(std::size_t)>& on_rows = {});
 private:
+    friend class H3DecoderBlock;
+    void compute(std::span<const float> residual, std::span<const float> attention, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
+                 const std::function<void(std::span<const float>)>& sink);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
     Handle resident_ = 0;
+};
+// One admitted block-0 CPU execution over supplied hidden tokens/3D coordinates.
+// Owns all four resident stages; no disk intermediates, no queue/backend registration.
+// Serialized owner. Caller admits input/coordinates through return. Hooks must not
+// reenter; atomic cancellation is the only cross-thread operation.
+class H3DecoderBlock {
+public:
+    static constexpr std::size_t hidden=2048, max_tokens=2;
+    static constexpr Bytes weight_bytes=H3DecoderQkv::weight_bytes+H3QkRope::resident_bytes+
+        H3DecoderAttention::weight_bytes+H3DecoderFeedForward::weight_bytes;
+    static constexpr Bytes metadata_bytes=H3DecoderInput::metadata_bytes;
+    // Two QKV arrays and projected attention at the maximum admitted token count.
+    static constexpr Bytes intermediate_bytes=max_tokens*(6144*2+hidden)*sizeof(float);
+    using Hook=std::function<void(const char*,std::size_t)>;
+    explicit H3DecoderBlock(std::shared_ptr<Resources> resources);
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void unload();
+    bool loaded() const { return ff_.loaded(); }
+    void execute(std::span<const float> input, std::span<const float> coordinates,
+                 const std::string& output, const std::atomic_bool& cancel, const Hook& hook={});
+private:
+    Footprint host(Bytes bytes) const;
+    std::shared_ptr<Resources> resources_;
+    H3DecoderQkv qkv_;
+    H3QkRope rope_;
+    H3DecoderAttention attention_;
+    H3DecoderFeedForward ff_;
+    bool executing_=false;
 };
 } // namespace kadan::video
