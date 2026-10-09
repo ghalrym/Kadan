@@ -15,7 +15,7 @@ from api.inference.tts.feature import TTSFeature
 from api.inference.decisions.feature import DecisionsFeature
 from api.memory_manager.queue import InferenceQueue, Job
 from api.memory_manager.streaming import QueuedStream
-from api.inference.decisions.model import decision_manager
+from api.inference.decisions.service import decision_manager
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
 from api.inference.stt.model import get_transcription_manager
