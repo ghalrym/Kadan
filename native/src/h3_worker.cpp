@@ -31,7 +31,7 @@ int main(int argc,char** argv){
   {
    auto run=[&](const std::string& frame){
     std::array<std::unordered_set<std::string>,17> keys;std::size_t events=0;const auto object=Json::parse(frame,[&](int depth,Json::parse_event_t event,Json& v){check(depth>=0&&depth<16&&++events<20000,"h3_request_json_limit");if(event==Json::parse_event_t::object_start)keys[depth+1].clear();if(event==Json::parse_event_t::key)check(keys[depth].insert(v.get<std::string>()).second,"h3_request_duplicate_key");return true;});check(object.is_object()&&object.size()<=7,"h3_request_object");for(auto it=object.begin();it!=object.end();++it)check(it.key()=="prompt"||it.key()=="output"||it.key()=="width"||it.key()=="height"||it.key()=="frames"||it.key()=="updates"||it.key()=="seed","h3_request_field");
-    kadan::video::H3GenerationRequest request;request.prompt=string(object,"prompt",8192);request.output=string(object,"output",4096);request.width=number(object,"width",64);request.height=number(object,"height",64);request.frames=number(object,"frames",5);request.updates=number(object,"updates",8);request.seed=number(object,"seed",0);
+    kadan::video::H3GenerationRequest request;request.prompt=string(object,"prompt",8192);request.output=string(object,"output",4096);request.width=number(object,"width",64);request.height=number(object,"height",64);request.frames=number(object,"frames",22);request.updates=number(object,"updates",8);request.seed=number(object,"seed",0);
     // No idle tensor residency: each stage streams and charges its actual peak
     // into the SAME ledger before allocation. The FIFO ticket holds only model
     // identity, not a second overlapping copy of that execution reservation.

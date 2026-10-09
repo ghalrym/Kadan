@@ -9,7 +9,7 @@
 namespace kadan::video {
 struct H3GenerationRequest {
     std::string prompt, output;
-    std::size_t width=64, height=64, frames=5, updates=8;
+    std::size_t width=64, height=64, frames=22, updates=8;
     std::uint64_t seed=0;
 };
 struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae; };
@@ -27,6 +27,9 @@ private:
     bool busy_=false;
 };
 namespace h3 {
+// Seven latent tokens decode to 28 raw frames. Drop three frames from each
+// 20-frame subclip; blend the previous five-frame tail into the new head.
+void temporal_join(std::span<float> raw, std::span<float> tail, std::size_t plane, bool previous);
 std::vector<float> sigmas(std::size_t updates,float shift);
 void advance(std::span<float> state,std::span<const float> velocity,float current,float next);
 // Maps normalized packed [T,H/2,W/2,24*2*2] to VAE [T,H,W,24].
