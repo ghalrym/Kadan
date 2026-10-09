@@ -7,8 +7,7 @@ import type {
 export type ImageOptions = ApiRoutesV1ImagesGenerationsImageRequest
 /**
  * Send typed generation settings, or edit settings when source is supplied.
- * Forward the abort signal and reject network/HTTP failures. Even a 2xx metadata
- * response is rejected because this contract has no deliverable image URLs.
+ * Forward the abort signal, reject failures and require deliverable image URLs.
  */
 export async function requestImages(
   options: ImageOptions,
@@ -31,15 +30,16 @@ export async function requestImages(
       `Image request failed (HTTP ${response.response?.status}). Check your inputs and retry.`,
     )
   }
-  // The current API has metadata only, with no deliverable image URLs. Never
-  // turn a successful-looking placeholder into a fabricated generated image.
-  throw new Error(
-    'The API returned metadata without image files. No generated image is available.',
-  )
+  const image = response.data?.image
+  if (!image?.urls?.length || image.urls.some(url => !url.trim()))
+    throw new Error(
+      'The API returned metadata without image files. No generated image is available.',
+    )
+  return image
 }
 /**
  * Fetch the image metadata list with caller-controlled cancellation.
- * Reject unavailable or non-array history; entries are not playable image files.
+ * Reject unavailable or non-array history; preserve returned artifact URLs.
  */
 export async function imageHistory(signal: AbortSignal): Promise<ImageSet[]> {
   const result = await listImages({ signal })

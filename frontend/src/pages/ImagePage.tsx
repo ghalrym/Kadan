@@ -19,7 +19,7 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
 function ImageWorkspace({ edit }: { edit: boolean }) {
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
-  const [count, setCount] = useState<1 | 2 | 4>(4)
+  const [count, setCount] = useState<1 | 2 | 4>(1)
   const [seed, setSeed] = useState('')
   const source = '' // Upload transport is not implemented; keep the original disabled placeholder.
   const [strength, setStrength] = useState(65)
@@ -30,10 +30,17 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
+  const completed = useRef<ImageSet[]>([])
   useEffect(() => {
     const controller = new AbortController()
     imageHistory(controller.signal)
-      .then((items) => { if (!controller.signal.aborted) setHistory(items) })
+      .then((items) => {
+        if (controller.signal.aborted) return
+        // History may have been read before a submission finished. Keep this
+        // workspace's completed results authoritative over that older snapshot.
+        const ids = new Set(completed.current.map(item => item.id))
+        setHistory([...completed.current, ...items.filter(item => !ids.has(item.id))])
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
           setHistoryError(
@@ -65,7 +72,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     setBusy(true)
     setError('')
     try {
-      await requestImages(
+      const image = await requestImages(
         {
           prompt: prompt.trim(),
           aspect,
@@ -75,6 +82,11 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         controller.signal,
         edit ? { image: source.trim(), strength: strength / 100 } : undefined,
       )
+      if (active.current === controller && !controller.signal.aborted) {
+        completed.current = [image, ...completed.current.filter(item => item.id !== image.id)]
+        setHistory(items => [image, ...items.filter(item => item.id !== image.id)])
+        setHistoryError('')
+      }
     } catch (error) {
       if (active.current === controller)
         setError(
@@ -113,7 +125,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!loading && !historyError && history.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
-        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map(seed => <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
+        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.urls?.length ? item.urls.map((url, index) => <a key={url} href={url} target="_blank" rel="noreferrer"><img className={`generated-image aspect-${item.aspect}`} src={url} alt={`${item.prompt} · Image ${index + 1}`} loading="lazy" /></a>) : <MediaPlaceholder aspect={item.aspect} label="Image unavailable" />}</div></section>)}
       </div>
     </div>
   )

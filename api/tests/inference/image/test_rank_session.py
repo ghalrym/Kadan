@@ -123,13 +123,24 @@ class RankSessionTests(unittest.TestCase):
         self.controller.close(recover=True)
         self.assertFalse(self.reservations())
 
-    def test_park_requires_zero_model_residency_from_both_ranks(self):
+    def test_failed_park_cold_unloads_before_next_modality_admission(self):
         self.controller.execute('a' * 32)
         self.transport.mutate = lambda c, r: [r[0], dict(r[1], resident_bytes=1)]
-        with self.assertRaises(ValueError):
-            self.controller.park()
+        self.controller.park()
         self.assertEqual(self.transport.stops, 1)
         self.assertFalse(self.reservations())
+        self.assertEqual(self.controller.state, 'closed')
+        next_model = self.resources.reserve('next', 'speech', host_bytes=200, device_bytes={0: 90, 1: 90})
+        next_model.release()
+
+    def test_failed_park_with_uncertain_cleanup_blocks_next_modality(self):
+        self.controller.execute('a' * 32)
+        self.transport.mutate = lambda c, r: [r[0], dict(r[1], resident_bytes=1)]
+        self.transport.confirmed = False
+        with self.assertRaises(ResourceBusy):
+            self.controller.park()
+        self.assertEqual(self.controller.state, 'quarantined')
+        self.assertTrue(self.reservations())
 
     def test_one_absolute_deadline_covers_load_and_execute(self):
         now = [10.]
