@@ -173,7 +173,7 @@ class PipelineProxy:
         kwargs['callback_on_step_end'] = step
         emit('image.forward.begin', width=kwargs['width'], height=kwargs['height'],
              steps=kwargs['num_inference_steps'], snapshot=snapshot())
-        with profile_qwen_pipeline(self.actual, torch, IMAGE.native.device, emit,
+        with profile_qwen_pipeline(self.actual, torch, IMAGE.generator.device, emit,
                 ROOT/f'transformer-{PHASE}-step10.json', trace_transformer_index=10, record_shapes=True):
             result = self.actual(**kwargs)
         emit('image.forward.end', image_s=round(time.monotonic()-IMAGE_START,3), compiled=self.compiled, new_compilations=len(COMPILE_EVENTS)-compile_before, compile_metrics=compile_times(), snapshot=snapshot())
@@ -222,8 +222,8 @@ async def run():
     assert model_manager.configured_context('small') == MANIFEST['text_context']
     image_entry, image_path = model_manager.get_checkpoint('qwen-image-2.1')
     assert image_entry.revision == MANIFEST['image_revision']
-    IMAGE = ImageJobs(ROOT/'media', downloads=model_manager, runtime=RUNTIME)
-    IMAGE.native = QwenImagePipeline(image_path, RESOURCES, device='cuda:0',
+    IMAGE = ImageJobs(ROOT/'media', downloads=model_manager, chat_runtime=RUNTIME)
+    IMAGE.generator = QwenImagePipeline(image_path, RESOURCES, device='cuda:0',
         modules=lambda: (torch, SimpleNamespace(QwenImage21Pipeline=PipelineFactory)),
         offload_mode=MANIFEST['image_offload_mode'])
     manager = MemoryManager(runtime=RUNTIME, images=IMAGE)
@@ -247,7 +247,7 @@ async def run():
             value = await manager._execute(job)
             emit('fifo.end', label=label, job_id=job.id, snapshot=snapshot())
             if job.feature == 'image':
-                assert IMAGE.native.gpu is None
+                assert IMAGE.generator.gpu is None
                 assert torch.cuda.memory_allocated(0) <= CONTEXT_BYTES, 'Compiled state exceeded retained framework context allowance'
             return value
         except BaseException as exc:
@@ -305,7 +305,7 @@ async def run():
             (ROOT/f'answer-{index}.json').write_text(json.dumps(answer,indent=2,default=str))
         assert not abort.is_set()
         assert RUNTIME.adapter.worker.process.pid == FIRST_PID
-        assert IMAGE.native.pipeline is not None and IMAGE.native.gpu is None
+        assert IMAGE.generator.pipeline is not None and IMAGE.generator.gpu is None
         after = proc(FIRST_PID)
         cache = RUNTIME.adapter.cache_stats()
         assert PARK_CACHE['retained_bytes'] == RUNTIME.adapter.packed_weight_bytes
