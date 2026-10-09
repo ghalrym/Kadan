@@ -40,7 +40,7 @@ class ReplayOnlyTests(unittest.TestCase):
     def test_missing_sensor_is_logged_and_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(RuntimeError):check_cpu(directory,'replay',[])
-            with patch('api.inference.cpu_thermal.read_cpu_sensors',side_effect=OSError('sensor vanished')):
+            with patch('cpu_thermal.read_cpu_sensors',side_effect=OSError('sensor vanished')):
                 with self.assertRaises(RuntimeError):check_cpu(directory,'replay')
             rows=[json.loads(x) for x in (Path(directory)/'cpu-thermal.jsonl').read_text().splitlines()]
             self.assertEqual(len(rows),2);self.assertIn('sensor vanished',rows[1]['sensors'][0]['error'])
