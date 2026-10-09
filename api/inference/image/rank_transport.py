@@ -15,6 +15,7 @@ import time
 from uuid import UUID
 
 from api.inference.resources import ResourceCancelled
+from api.inference.cpu_thermal import CpuMonitor
 
 MAX_FRAME = 65536
 STDERR_TAIL_BYTES = 8192
@@ -82,6 +83,7 @@ class ProcessRanks:
         self.processes, self.connections = [], []
         self.directory = None
         self.last_guard = 0.
+        self.cpu_monitor = CpuMonitor()
         self.memory_probe = memory_probe or self._device_usage
         self.process_probe = self._compute_processes if memory_probe is None else None
         self.baseline_processes = set()
@@ -253,15 +255,14 @@ class ProcessRanks:
         return set(current)==set(self.baseline) and all(
             current[d] <= baseline+allowance for d,baseline in self.baseline.items())
 
-    @staticmethod
-    def _cpu_peak():
-        temperatures = []
-        for path in Path('/sys/class/hwmon').glob('hwmon*/temp*_input'):
-            if (path.parent/'name').read_text().strip() in ('k10temp', 'coretemp'):
-                temperatures.append(int(path.read_text()) / 1000)
-        if not temperatures:
-            raise RuntimeError('CPU thermal sensors unavailable')
-        return max(temperatures)
+    def _cpu_peak(self):
+        sample=self.cpu_monitor.sample()
+        level=logging.WARNING if sample['warning'] or not sample['accepted'] else logging.INFO
+        logging.getLogger(__name__).log(level,'rank_cpu_sample session=%s sample=%s',
+            self.session,json.dumps(sample))
+        if not sample['accepted']:
+            raise RuntimeError(f"Image CPU thermal guard: {sample['peak_c']} C; policy={sample['policy']}; errors={sample['mapping_errors']}")
+        return sample['peak_c']
 
     def _guard(self):
         # RSS double-counts shared mappings conservatively. No swap is invented
@@ -274,10 +275,7 @@ class ProcessRanks:
             rss += int(next(l.split()[1] for l in status.splitlines() if l.startswith('VmRSS:'))) * 1024
         if rss > self.budget.host_bytes:
             raise RuntimeError('Rank host memory exceeded admission')
-        peak = self._cpu_peak()
-        if peak >= 80:
-            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s cpu_c=%s limit_c=80', self.session, peak)
-            raise RuntimeError(f'Image CPU thermal guard reached: {peak} C')
+        self._cpu_peak()
         output = subprocess.run(['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=2, check=True)
         values = [float(value) for value in output.stdout.splitlines()]

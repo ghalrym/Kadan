@@ -81,11 +81,11 @@ class ProcessRankTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.session.execute('a' * 32, payload={'prompt': 'oom'})
         self.assertIn('synthetic allocation failure', '\n'.join(captured.output))
-        with patch.object(self.transport, '_cpu_peak', return_value=80.25):
+        with patch.object(self.transport.cpu_monitor, 'sample', return_value=dict(accepted=False,warning=False,peak_c=90.25,policy='5955wx-k10temp-85-90-v1',mapping_errors=[],abort_c=90)):
             with self.assertLogs('api.inference.image.rank_transport', level='WARNING') as captured:
-                with self.assertRaisesRegex(RuntimeError, '80.25'):
+                with self.assertRaisesRegex(RuntimeError, '90.25'):
                     self.transport._guard()
-        self.assertIn('cpu_c=80.25', '\n'.join(captured.output))
+        self.assertIn('90.25', '\n'.join(captured.output))
 
     def test_active_cancel_waits_for_both_reaps(self):
         self.session.execute('a'*32,payload={'prompt':'ok'})

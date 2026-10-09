@@ -1,8 +1,9 @@
 # Reviewed-host CPU software test policy
 
 Andrew requested85 C warning and90 C abort for future software test windows.
-`thermal_policy.py` and `thermal_guard.py` implement that policy for the verified
-5955WX host only. This is software supervision, not a firmware setting or a change
+`api/inference/cpu_thermal.py` owns the shared policy used by both the host
+`thermal_guard.py` and the Python rank transport. The verified5955WX profile receives85/90;
+other CPUs retain an explicit conservative75/80 software policy. This is software supervision, not a firmware setting or a change
 to hardware throttling/protection. No GPU window has run under the new policy.
 
 AMD lists the5955WX maximum operating junction temperature as95 C:
@@ -38,9 +39,12 @@ and bit-for-bit compared with source.
 
 All three are mandatory. Any additional correctly numbered Tccd1..8 channel on the
 same verified device is also evaluated, not discarded. Unexpected labels (including
-an unexpected Tdie), driver/PCI/CPU/kernel/module changes, duplicate identities,
+an unexpected Tdie on the verified profile), invalid driver/PCI mapping, duplicate identities,
 missing mandatory channels, read errors and invalid numbers reject the sample and
-record the unresolved mapping. hwmon numbering may change; discovery checks labels,
+record the unresolved mapping. CPU/kernel/module identities outside the reviewed
+profile select the logged conservative75/80 policy; this does not claim an AMD
+junction margin for unknown hardware. Missing CPU identity fails closed. A valid
+per-owner sensor inventory is frozen, and later additions/removals reject the sample. hwmon numbering may change; discovery checks labels,
 channel filenames and physical PCI identity. Every available numeric reading is
 retained even when its label or metadata is unreadable.
 
@@ -57,16 +61,22 @@ The historical80.75 C Tccd3 /69.125 C Tctl sample would pass this CPU temperatur
 policy if supplied with a verified current mapping; that is a policy comparison,
 not retrospective evidence that the failed image request succeeded.
 
-This change affects the host test guard. The live Python rank transport has its
-own80 C guard and remains unchanged to preserve the no-GPU/no-restart boundary.
-Consequently an API image test can still be stopped by that independent80 C guard.
-A separate reviewed API integration change is required before claiming the complete
-API window uses85/90. Frozen earlier launchers with literal80 C also remain historical
-artifacts; do not use them as the new policy entry point. Existing approved bundles
-are not rewritten, and new source/config bindings require independent review before
-any GPU execution.
+Both host and transport use the same monitor and assessments. The old transport
+`peak>=80` check is removed for the verified profile; no threshold is bypassed by
+subtracting an offset or filtering a CCD. Transport admission still requires five
+samples below60 C; CPU readings taking1 s or longer are stale. The independent host
+watchdog retains its separate blocked-read abort thread. GPU guards are unchanged.
+
+This is a review branch based on the existing API integration branch, not master
+(which does not yet contain ProcessRanks). Live bind-mounted API files were not
+replaced, so the running deployment stays on its previous policy until review and
+activation. No service restart, model load or GPU execution was performed.
 
 Deterministic tests cover every sensor at84.999/85/89.999/90/90.001, cool admission,
 hot CCD with cool Tctl, unknown/new/duplicate/missing sensors, unreadable metadata,
 changed CPU/kernel/module identity, warning persistence and abort persistence.
 Existing watchdog tests cover stale data and blocked sensor/evidence I/O independently.
+
+The focused CPU suite passed62 tests, including host/transport agreement at80,80.75,
+85,89.999 and90 on each sensor; generic AMD/Intel fallback, sensor disappearance,
+missing hwmon names retaining numeric values, stale reads, and rank cleanup.

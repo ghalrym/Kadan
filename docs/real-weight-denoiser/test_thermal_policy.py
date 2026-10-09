@@ -44,7 +44,9 @@ class ThermalPolicyTests(unittest.TestCase):
 
     def test_changed_cpu_module_or_kernel_requires_review(self):
         for key in IDENTITY:
-            self.assertFalse(evaluate(rows(),dict(IDENTITY,**{key:'different'}))['accepted'])
+            result=evaluate(rows(80),dict(IDENTITY,**{key:'different'}))
+            self.assertFalse(result['accepted']);self.assertEqual(result['abort_c'],80)
+            self.assertFalse(result['mapping_verified'])
 
     def test_warning_logged_and_all_readings_persisted(self):
         with tempfile.TemporaryDirectory() as directory:
