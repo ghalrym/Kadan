@@ -30,4 +30,4 @@ jobs:
       - name: Build only conditioning model and lifecycle test
         run: cmake --build /tmp/kadan-h3-text --target kadan-h3-text-encode h3-text-tests --parallel 2
       - name: Validate all 50 layers and resource cleanup
-        run: ctest --test-dir /tmp/kadan-h3-text --output-on-failure -L full-graph
+        run: ctest --test-dir /tmp/kadan-h3-text --output-on-failure -R '^h3-text$'
