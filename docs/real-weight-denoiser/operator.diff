@@ -29,28 +29,30 @@
 -started=time.monotonic();end=started+1800;measure_end=started+1200;paused=False;owned=False;baseline=None;passed=False
 +assert hashlib.sha256((BUNDLE/'logging.json').read_bytes()).hexdigest()==binding['logging_sha256']
 +started=WINDOW['started'];end=WINDOW['operator_end'];measure_end=WINDOW['work_deadline'];paused=False;owned=False;baseline=None;passed=False
-@@ -96 +102,3 @@
+@@ -96 +102,5 @@
 -  finally:self.finish=time.monotonic()
 +  finally:
-+   self.finish=time.monotonic()
-+   append(E/'request-events.jsonl',dict(event='response',label=self.label,job=self.job,start=self.start,finish=self.finish,result=self.result,error=self.error))
-@@ -145,0 +154 @@
++   finished=time.monotonic()
++   try:append(E/'request-events.jsonl',dict(event='response',label=self.label,job=self.job,start=self.start,finish=finished,result=self.result,error=self.error))
++   except Exception as exc:self.error='Response evidence failure: '+str(exc)
++   finally:self.finish=finished
+@@ -145,0 +156 @@
 +   append(E/'request-events.jsonl',dict(event='admitted',label=label,job=call.job,start=call.start,monotonic=time.monotonic()))
-@@ -160,0 +170 @@
+@@ -160,0 +172 @@
 + arm(WINDOW_DIR,WINDOW,api_id=api_id,identity=identity,others=others,desktop=desktop,temporary_name=NAME,commit=COMMIT)
-@@ -167,0 +178 @@
+@@ -167,0 +180 @@
 + env['PYTHONPATH']='/run/kadan-window-tools'+(':'+env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
-@@ -173 +184 @@
+@@ -173 +186 @@
 - cmd=['docker','run','-d','--name',NAME,'--network',before['HostConfig']['NetworkMode'],'--memory','256g','--memory-swap','256g','--shm-size','1g','--gpus','"device='+','.join(host.GPUS)+'"','-p','127.0.0.1:18000:8000','--log-driver','json-file','--log-opt','max-size=16m','--log-opt','max-file=4','--env-file',envfile]
 + cmd=['docker','run','-d','--name',NAME,'--label',LABEL+'='+WINDOW['token'],'--network',before['HostConfig']['NetworkMode'],'--memory','256g','--memory-swap','256g','--shm-size','1g','--gpus','"device='+','.join(host.GPUS)+'"','-p','127.0.0.1:18000:8000','--log-driver','json-file','--log-opt','max-size=16m','--log-opt','max-file=4','--env-file',envfile]
-@@ -178 +189,3 @@
+@@ -178 +191,3 @@
 - cmd+=['--mount',f'type=bind,src={payloads}/logging.json,dst=/run/kadan-logging.json,readonly','--entrypoint','python',host.IMAGE,*before['Config']['Cmd'][1:],'--log-config','/run/kadan-logging.json']
 + cmd+=['--mount',f'type=bind,src={E},dst=/run/kadan-window-evidence',
 +  '--mount',f'type=bind,src={host.REPO}/docs/real-weight-denoiser,dst=/run/kadan-window-tools,readonly',
 +  '--mount',f'type=bind,src={BUNDLE}/logging.json,dst=/run/kadan-logging.json,readonly','--entrypoint','python',host.IMAGE,*before['Config']['Cmd'][1:],'--log-config','/run/kadan-logging.json']
-@@ -279,0 +293 @@
+@@ -279,0 +295 @@
 +  signal.signal(signal.SIGTERM,signal.SIG_IGN);signal.signal(signal.SIGINT,signal.SIG_IGN)
-@@ -284,3 +298,6 @@
+@@ -284,3 +300,6 @@
 -   host.run('docker','stop','--time','5',NAME,check=False)
 -   logs=host.run('docker','logs',NAME,check=False)
 -   state=host.inspect_container(NAME)['State'];assert not state['Running'];host.run('docker','rm',NAME)

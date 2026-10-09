@@ -100,8 +100,10 @@ class Call:
    r=c.getresponse();body=r.read(1024**2);self.result=dict(status=r.status,body=json.loads(body));c.close()
   except BaseException as exc:self.error=str(exc)
   finally:
-   self.finish=time.monotonic()
-   append(E/'request-events.jsonl',dict(event='response',label=self.label,job=self.job,start=self.start,finish=self.finish,result=self.result,error=self.error))
+   finished=time.monotonic()
+   try:append(E/'request-events.jsonl',dict(event='response',label=self.label,job=self.job,start=self.start,finish=finished,result=self.result,error=self.error))
+   except Exception as exc:self.error='Response evidence failure: '+str(exc)
+   finally:self.finish=finished
 def get(path):
  with urllib.request.urlopen('http://127.0.0.1:18000'+path,timeout=3) as r:return json.load(r)
 def sample():

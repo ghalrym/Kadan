@@ -1,4 +1,7 @@
+import ast
+import http.client
 import json
+import time
 import logging
 import os
 from pathlib import Path
@@ -7,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 from durable_evidence import ImageEvents, append
 from local_evidence_run import command
@@ -49,6 +53,29 @@ class DurableEvidenceTests(unittest.TestCase):
                 handler.handle(logging.LogRecord('api.test',logging.INFO,'',0,message,(),None))
             self.assertEqual(len(path.read_text().splitlines()),3)
             self.assertNotIn('unrelated',path.read_text())
+
+    def test_response_completion_waits_for_receipt_and_fails_closed(self):
+        # Extract only the operator's HTTP-call class; never execute its preflight
+        # or service/GPU code. Exercise the actual committed run method.
+        source=ast.parse(Path(__file__).with_name('reviewed_image_a.py').read_text())
+        node=next(n for n in source.body if isinstance(n,ast.ClassDef) and n.name=='Call')
+        namespace=dict(http=http,json=json,time=time,E=Path('/unused'))
+        exec(compile(ast.Module(body=[node],type_ignores=[]),'reviewed_image_a.py','exec'),namespace)
+        for failure in (False,True):
+            call=object.__new__(namespace['Call'])
+            call.label='A';call.payload={};call.route='/fixture';call.result=None
+            call.error=None;call.job='job';call.start=0;call.finish=None
+            response=Mock(status=200);response.read.return_value=b'{}'
+            connection=Mock();connection.getresponse.return_value=response
+            def receipt(path,record):
+                self.assertIsNone(call.finish)
+                self.assertEqual(record['result']['status'],200)
+                if failure:raise OSError('disk full')
+            namespace['append']=receipt
+            with patch('http.client.HTTPConnection',return_value=connection):call.run()
+            self.assertIsNotNone(call.finish)
+            if failure:self.assertIn('Response evidence failure',call.error)
+            else:self.assertIsNone(call.error)
 
     def test_local_manager_lifetime_and_no_restart(self):
         with tempfile.TemporaryDirectory() as root:
