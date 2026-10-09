@@ -117,4 +117,30 @@ private:
     std::unique_ptr<float[]> weights_;
     Handle resident_ = 0;
 };
+// Block 0 tail from caller-owned pre-attention residual and attention output.
+// Two-token CPU diagnostic only; no full decoder or generation registration.
+class H3DecoderFeedForward {
+public:
+    static constexpr std::size_t hidden=2048, inner=8192, expanded=16384, max_tokens=2;
+    static constexpr Bytes weight_bytes=(expanded*hidden+hidden*inner+expanded+4*hidden)*sizeof(float);
+    static constexpr Bytes metadata_bytes=H3DecoderInput::metadata_bytes;
+    static constexpr Bytes scratch_bytes=(3*hidden+2*inner)*sizeof(float);
+    explicit H3DecoderFeedForward(std::shared_ptr<Resources> resources);
+    ~H3DecoderFeedForward();
+    H3DecoderFeedForward(const H3DecoderFeedForward&) = delete;
+    H3DecoderFeedForward& operator=(const H3DecoderFeedForward&) = delete;
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void unload();
+    bool loaded() const { return weights_ != nullptr; }
+    // Serialized owner; both inputs are admitted F32 [tokens,2048] until return.
+    // Hook observes cumulative w1/w2 rows in groups of 64; must not reenter.
+    void execute(std::span<const float> residual, std::span<const float> attention,
+                 const std::string& output, const std::atomic_bool& cancel,
+                 const std::function<void(std::size_t)>& on_rows = {});
+private:
+    Footprint host(Bytes bytes) const;
+    std::shared_ptr<Resources> resources_;
+    std::unique_ptr<float[]> weights_;
+    Handle resident_ = 0;
+};
 } // namespace kadan::video

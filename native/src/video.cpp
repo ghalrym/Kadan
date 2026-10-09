@@ -463,4 +463,133 @@ void H3DecoderAttention::execute(std::span<const float> qkv, const std::string& 
     cancelled(cancel);
     artifact.publish(output);
 }
+H3DecoderFeedForward::H3DecoderFeedForward(std::shared_ptr<Resources> resources) : resources_(std::move(resources)) {
+    check(bool(resources_), "video_resources_required");
+}
+H3DecoderFeedForward::~H3DecoderFeedForward() { unload(); }
+Footprint H3DecoderFeedForward::host(Bytes bytes) const {
+    auto footprint = resources_->snapshot().capacity;
+    for (auto& value : footprint) value = 0;
+    footprint[0] = bytes;
+    return footprint;
+}
+void H3DecoderFeedForward::load(const char* root, const std::string& basename, const std::atomic_bool& cancel) {
+    cancelled(cancel);
+    check(!loaded(), "video_already_loaded");
+    Reservation metadata(*resources_, host(metadata_bytes));
+    auto budget = std::make_shared<checkpoint::MemoryBudget>(metadata_bytes);
+    checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
+    struct Spec { const char* name; std::array<std::uint64_t,5> shape; std::size_t rank; };
+    const std::array<Spec,7> specs{{
+        {"decoder.transformer_blocks.0.scale1", {2048}, 1},
+        {"decoder.transformer_blocks.0.norm2.weight", {2048}, 1},
+        {"decoder.transformer_blocks.0.ff.w1.weight", {16384,2048}, 2},
+        {"decoder.transformer_blocks.0.ff.w1.bias", {16384}, 1},
+        {"decoder.transformer_blocks.0.ff.w2.weight", {2048,8192}, 2},
+        {"decoder.transformer_blocks.0.ff.w2.bias", {2048}, 1},
+        {"decoder.transformer_blocks.0.scale2", {2048}, 1}
+    }};
+    for (const auto& spec : specs) {
+        auto tensor = shard.tensor(spec.name);
+        check(tensor.dtype == checkpoint::Dtype::fp16 && tensor.rank == spec.rank, "video_tensor_layout");
+        for (std::size_t i=0; i<spec.rank; ++i) check(tensor.shape[i] == spec.shape[i], "video_tensor_layout");
+    }
+    Reservation allocation(*resources_, host(weight_bytes));
+    auto weights = std::make_unique<float[]>(weight_bytes / sizeof(float));
+    // Fixed 4-KiB stack transfer staging is explicitly charged.
+    Reservation staging(*resources_, host(4096));
+    std::array<std::uint8_t,4096> buffer;
+    std::size_t destination = 0;
+    for (const auto& spec : specs) {
+        auto tensor = shard.tensor(spec.name);
+        for (std::size_t offset=0; offset<tensor.bytes;) {
+            cancelled(cancel);
+            auto count = std::min<std::size_t>(buffer.size(), tensor.bytes-offset);
+            shard.read_tensor(spec.name, offset, {buffer.data(), count});
+            for (std::size_t i=0; i<count; i+=2)
+                weights[destination++] = half(std::uint16_t(buffer[i]) | (std::uint16_t(buffer[i+1]) << 8));
+            offset += count;
+        }
+    }
+    shard.check_unchanged();
+    cancelled(cancel);
+    resources_->loaded(allocation.handle);
+    weights_ = std::move(weights);
+    resident_ = allocation.handle;
+    allocation.handle = 0;
+}
+void H3DecoderFeedForward::unload() {
+    if (!resident_) return;
+    resources_->begin_eviction(resident_);
+    weights_.reset();
+    resources_->released(resident_);
+    resident_ = 0;
+}
+void H3DecoderFeedForward::execute(std::span<const float> residual, std::span<const float> attention,
+                                  const std::string& output, const std::atomic_bool& cancel,
+                                  const std::function<void(std::size_t)>& on_rows) {
+    static_assert(std::endian::native == std::endian::little && sizeof(float)==4);
+    cancelled(cancel);
+    check(loaded(), "video_not_loaded");
+    check(!residual.empty() && residual.size()%hidden==0, "video_input_shape");
+    const auto tokens=residual.size()/hidden;
+    check(tokens<=max_tokens, "video_input_limit");
+    check(attention.size()==residual.size(), "video_attention_shape");
+    Pin pin(*resources_,resident_);
+    Reservation scratch(*resources_,host(scratch_bytes));
+    Artifact artifact(output);
+    const auto header="KADAN_H3_FEED_FORWARD_V1\n"+std::to_string(tokens)+" 2048\nF32LE\n";
+    artifact.write(header.data(),header.size());
+    std::array<float,hidden> sum,normalized,result;
+    std::array<float,inner> gate,values;
+    const auto* scale1=weights_.get(); const auto* norm=scale1+hidden;
+    const auto* w1=norm+hidden; const auto* b1=w1+expanded*hidden;
+    const auto* w2=b1+expanded; const auto* b2=w2+hidden*inner;
+    const auto* scale2=b2+hidden;
+    for (std::size_t token=0;token<tokens;++token) {
+        cancelled(cancel);
+        float squares=0;
+        for (std::size_t c=0;c<hidden;++c) {
+            const auto x=residual[token*hidden+c],a=attention[token*hidden+c];
+            check(std::isfinite(x) && std::isfinite(a), "video_nonfinite_input");
+            sum[c]=x+a*scale1[c];
+            squares+=sum[c]*sum[c];
+        }
+        check(std::isfinite(squares), "video_nonfinite_output");
+        const float inverse=1.0f/std::sqrt(squares/float(hidden)+1e-5f);
+        for (std::size_t c=0;c<hidden;++c) {
+            normalized[c]=(sum[c]*inverse)*norm[c];
+            check(std::isfinite(normalized[c]), "video_nonfinite_output");
+        }
+        for (std::size_t row=0;row<expanded;++row) {
+            if(row%64==0) cancelled(cancel);
+            float value=b1[row];
+            for(std::size_t c=0;c<hidden;++c) value+=w1[row*hidden+c]*normalized[c];
+            check(std::isfinite(value), "video_nonfinite_output");
+            (row<inner ? gate[row] : values[row-inner])=value;
+            if((row+1)%64==0 && on_rows) on_rows(token*(expanded+hidden)+row+1);
+        }
+        cancelled(cancel);
+        for(std::size_t c=0;c<inner;++c) {
+            // Stable SiLU, first half is the gate, second half the value.
+            const float x=gate[c];
+            const float activation=x>=0 ? x/(1.0f+std::exp(-x)) : x*std::exp(x)/(1.0f+std::exp(x));
+            values[c]=activation*values[c];
+            check(std::isfinite(values[c]), "video_nonfinite_output");
+        }
+        for(std::size_t row=0;row<hidden;++row) {
+            if(row%64==0) cancelled(cancel);
+            float value=b2[row];
+            for(std::size_t c=0;c<inner;++c) value+=w2[row*inner+c]*values[c];
+            check(std::isfinite(value), "video_nonfinite_output");
+            result[row]=sum[row]+value*scale2[row];
+            check(std::isfinite(result[row]), "video_nonfinite_output");
+            if((row+1)%64==0 && on_rows) on_rows(token*(expanded+hidden)+expanded+row+1);
+        }
+        cancelled(cancel);
+        artifact.write(result.data(),sizeof(result));
+    }
+    cancelled(cancel);
+    artifact.publish(output);
+}
 } // namespace kadan::video
