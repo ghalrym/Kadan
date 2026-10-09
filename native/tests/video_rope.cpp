@@ -42,7 +42,7 @@ int main(int argc,char** argv){
     rejects([&]{stage.execute({},coordinates,root+"/empty",cancel);},"video_input_shape");
     rejects([&]{stage.execute({qkv.data(),1},coordinates,root+"/shape",cancel);},"video_input_shape");
     rejects([&]{stage.execute(qkv,{},root+"/coords",cancel);},"video_coordinate_shape");
-    std::vector<float> oversized(9*6144);
+    std::vector<float> oversized((Stage::max_tokens+1)*6144);
     rejects([&]{stage.execute(oversized,coordinates,root+"/oversized",cancel);},"video_input_limit");
     for(std::size_t stop:{1,256}){
         rejects([&]{stage.execute(qkv,coordinates,root+"/cancel",cancel,[&](std::size_t n){if(n==stop)cancel=true;});},"video_cancelled");

@@ -461,6 +461,16 @@ if(KADAN_ENABLE_DECISIONS)
   endif()
 endif()
 
+# Complete CPU H3 VAE decode; text-to-video generation remains unsupported.
+add_executable(kadan-video-decode src/video_decode.cpp)
+target_link_libraries(kadan-video-decode PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-decode-tests tests/video_decode.cpp)
+  target_link_libraries(video-decode-tests PRIVATE kadan_video)
+  add_test(NAME video-decode COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_decode_fixture.py" "$<TARGET_FILE:video-decode-tests>" "$<TARGET_FILE:kadan-video-decode>")
+  set_tests_properties(video-decode PROPERTIES TIMEOUT 600 LABELS full-graph)
+endif()
+
 # Complete H3 text conditioning model, CPU only.
 add_library(kadan_h3_text src/h3_text.cpp)
 target_link_libraries(kadan_h3_text PUBLIC kadan_checkpoint kadan_resources)
