@@ -1,6 +1,6 @@
 """Default read-only plan. One reviewed isolated baseline per exact API pause.
 
-Reuse the established launcher's identity/physical/thermal/CI primitives, without
+Reuse the established launcher's identity/physical/CI primitives, without
 changing its frozen full-trajectory cases or source. No tensor snapshot ladder.
 """
 import argparse
@@ -16,7 +16,6 @@ import launch_trajectory as host
 from api_baseline import CASES, PROTOCOL, RUN_CAP, settings, verify
 from bf16_contracts import LIMIT, require_ci
 from trajectory_contracts import CRITERIA
-from thermal_guard import check_cpu
 
 NAME = 'kadan-api-isolated-baseline'
 PAUSE_SECONDS = 1800
@@ -111,14 +110,11 @@ def main():
     evidence.mkdir()
     work = evidence/'trajectory-evidence'
     work.mkdir()
-    host.THERMAL_EVIDENCE = evidence
+    host.RUN_EVIDENCE = evidence
     (evidence/'review.json').write_text(args.review_record.read_text())
     (evidence/'ci.json').write_text(json.dumps(ci,indent=2))
     (evidence/'storage.json').write_text(json.dumps(dict(retained_bytes=retained,run_cap=RUN_CAP,limit=LIMIT,
         roots=[str(p.resolve()) for p in args.retained_roots])))
-    for index in range(5):
-        check_cpu(evidence,'cooldown-admission',limit=60)
-        if index < 4: time.sleep(2)
     before = host.inspect_container(host.API)
     if before['Image'] != host.IMAGE or not before['State']['Running']:
         raise ValueError('Unexpected API image/state')

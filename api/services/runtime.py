@@ -78,11 +78,30 @@ class RuntimeManager:
                     memory=self.resources.snapshot() if self.resources else None)
 
     def ensure_resources(self):
-        """Initialize shared budgets once, including when CPU decisions load before chat."""
+        """Initialize shared admission from currently free host and per-device memory.
+
+        Host admission defaults to 80% of available RAM. Device admission leaves
+        20% free, capped at 1 GiB, so larger cards do not lose a disproportionate
+        part of their capacity. KADAN_GPU_HEADROOM_BYTES sets a fixed per-device
+        reserve; KADAN_HOST_BUDGET_BYTES and KADAN_GPU_BUDGET_BYTES override total
+        admission. Explicit budgets must fit current physical free memory and
+        take precedence over default headroom. Every later reservation also
+        checks physical availability; these estimates are not allocator caps.
+        """
         with self._resources_lock:
             if self.resources is None:
                 available = probe_memory()
-                budgets = {index: int(size * .8) for index, size in available.device_bytes.items()}
+                headroom = os.environ.get('KADAN_GPU_HEADROOM_BYTES')
+                host = os.environ.get('KADAN_HOST_BUDGET_BYTES')
+                for name, raw in [('KADAN_GPU_HEADROOM_BYTES', headroom), ('KADAN_HOST_BUDGET_BYTES', host)]:
+                    if raw is not None and (not raw.isascii() or not raw.isdecimal()
+                                            or (name == 'KADAN_HOST_BUDGET_BYTES' and int(raw) <= 0)):
+                        raise RuntimeFailure(f'{name} must be an integer byte count')
+                host_bytes = int(available.host_bytes * .8) if host is None else int(host)
+                if host_bytes > available.host_bytes:
+                    raise RuntimeFailure('KADAN_HOST_BUDGET_BYTES exceeds currently available host memory')
+                budgets = {index: max(0, size - (min(size - int(size * .8), 1024**3)
+                    if headroom is None else int(headroom))) for index, size in available.device_bytes.items()}
                 override = os.environ.get('KADAN_GPU_BUDGET_BYTES')
                 if override is not None:
                     try:
@@ -98,7 +117,7 @@ class RuntimeManager:
                     except (ValueError, TypeError) as exc:
                         raise RuntimeFailure('KADAN_GPU_BUDGET_BYTES must be a nonempty JSON object of GPU indices '
                                              'to positive byte budgets within currently free device memory.') from exc
-                self.resources = ResourceManager(int(available.host_bytes * .8),
+                self.resources = ResourceManager(host_bytes,
                     budgets, probe=probe_memory)
             return self.resources
 

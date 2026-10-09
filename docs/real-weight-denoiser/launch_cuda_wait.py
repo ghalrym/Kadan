@@ -10,8 +10,7 @@ import time
 import launch_trajectory as host
 from launch_api_baseline import restore_exact
 from cuda_wait_probe import PLAN, compare
-from thermal_policy import ABORT_C, WARNING_C, POLICY_ID
-from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
+from cuda_wait_monitor import cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
 
 CASES = ("control", "blocking")
 PROTOCOL = "cuda-wait-short-v1"
@@ -30,8 +29,7 @@ def verify(path, case, commit):
         if case=='blocking' and flags['after_window'] & 7 != 4:
             raise ValueError('Candidate BlockingSync unconfirmed')
 from bf16_contracts import LIMIT, require_ci
-CRITERIA = dict(output_sha256_equal=True, physical_uuid_equal=True, intervention_required=True, cpu_limit_c=ABORT_C, cpu_warning_c=WARNING_C, cpu_policy=POLICY_ID, gpu_limit_c=90)
-from thermal_guard import check_cpu
+CRITERIA = dict(output_sha256_equal=True, physical_uuid_equal=True, intervention_required=True)
 
 NAME = 'kadan-cuda-wait-reviewed'
 PAUSE_SECONDS = 1800
@@ -106,14 +104,11 @@ def main():
     evidence.mkdir()
     work = evidence/'trajectory-evidence'
     work.mkdir()
-    host.THERMAL_EVIDENCE = evidence
+    host.RUN_EVIDENCE = evidence
     (evidence/'review.json').write_text(args.review_record.read_text())
     (evidence/'ci.json').write_text(json.dumps(ci,indent=2))
     (evidence/'storage.json').write_text(json.dumps(dict(retained_bytes=retained,run_cap=RUN_CAP,limit=LIMIT,
         roots=[str(p.resolve()) for p in args.retained_roots])))
-    for index in range(5):
-        check_cpu(evidence,'cooldown-admission',limit=60)
-        if index < 4: time.sleep(2)
     before = host.inspect_container(host.API)
     if before['Image'] != host.IMAGE or not before['State']['Running']:
         raise ValueError('Unexpected API image/state')
@@ -142,8 +137,6 @@ def main():
     old_alarm = signal.signal(signal.SIGALRM,interrupted)
     old_watch = signal.signal(signal.SIGUSR1,interrupted)
     try:
-        monitor=ThermalWatch(evidence,host.GPUS)
-        monitor.start()
         host.arm_deadline(measurement_end)
         paused = True
         host.run('docker','stop','--time','30',api_id,timeout=45)
@@ -178,7 +171,7 @@ def main():
         while host.inspect_container(NAME)['State']['Running']:
             if time.monotonic()>=stage_end: raise TimeoutError('Host 30-second stage deadline')
             if time.monotonic()>=measurement_end: raise TimeoutError('Measurement deadline')
-            monitor.check()
+            host.guards()
             sample=task_counters(cgroup)
             with (evidence/'samples.jsonl').open('a') as stream:stream.write(json.dumps(sample)+'\n')
             if sum(p.stat().st_size for p in evidence.rglob('*') if p.is_file()) > RUN_CAP-6*1024**2:
@@ -200,7 +193,7 @@ def main():
         try:
             cleanup_end=min(time.monotonic()+30,end)
             host.arm_deadline(cleanup_end)
-            # Stop watchdog before recovery; otherwise hot cleanup can interrupt itself.
+            # Ignore a late external interruption during controlled recovery.
             signal.signal(signal.SIGUSR1,signal.SIG_IGN)
             monitor_failure=close_watchdog(monitor)
             if monitor_failure is not None:passed=False

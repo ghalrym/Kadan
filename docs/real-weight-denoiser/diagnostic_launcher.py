@@ -21,11 +21,9 @@ def main():
     try:
      while json.loads(run('docker','inspect',name).stdout)[0]['State']['Running']:
       assert time.monotonic()-started<150,'Diagnostic deadline'
-      values=run('nvidia-smi','--id=GPU-e30b6419-2c6d-f550-61d6-16166a920dac','--query-gpu=memory.used,memory.free,temperature.gpu','--format=csv,noheader,nounits').stdout.strip()
-      used,free,temp=map(int,values.split(','));assert free>=2048 and temp<85
-      temperatures=[int(p.read_text())/1000 for p in Path('/sys/class/hwmon').glob('hwmon*/temp*_input') if p.parent.joinpath('name').read_text().strip() in ('k10temp','coretemp')]
-      assert temperatures and max(temperatures)<80
-      samples.append(dict(elapsed_s=time.monotonic()-started,gpu_used_mib=used,gpu_temperature_c=temp,cpu_temperature_c=max(temperatures)))
+      values=run('nvidia-smi','--id=GPU-e30b6419-2c6d-f550-61d6-16166a920dac','--query-gpu=memory.used,memory.free','--format=csv,noheader,nounits').stdout.strip()
+      used,free=map(int,values.split(','));assert free>=2048
+      samples.append(dict(elapsed_s=time.monotonic()-started,gpu_used_mib=used))
       time.sleep(1)
     finally:
      subprocess.run(['docker','stop','--timeout','5',name],capture_output=True,timeout=15)

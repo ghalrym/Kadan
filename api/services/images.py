@@ -102,7 +102,7 @@ class ImageManager:
                 else:
                     plan = qwen_image.NativeImage(path, resources, device=device, offload_mode=offload_mode)
                 plan._plan()  # Metadata/capacity only; never imports provider modules.
-                if device != 'dual' and plan.weights * 2 + qwen_image.WORKSPACE + qwen_image.GIB > resources.capacity.host_bytes:
+                if device != 'dual' and plan.policy.host_budget(plan.weights, 2) + qwen_image.GIB > resources.capacity.host_bytes:
                     raise ResourceExhausted('Image request exceeds the host memory budget')
             except ResourceExhausted as exc:
                 raise RuntimeFailure(str(exc), 503) from exc

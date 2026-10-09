@@ -49,6 +49,21 @@ services:
       KADAN_MODEL_DIR: /var/lib/kadan/models
       KADAN_GPU: ${KADAN_GPU:-auto}
       KADAN_IMAGE_OFFLOAD: ${KADAN_IMAGE_OFFLOAD:-sequential}
+      KADAN_IMAGE_BACKEND: ${KADAN_IMAGE_BACKEND:-single}
+      # Unset optional settings are omitted; the application validates defaults.
+      KADAN_HOST_BUDGET_BYTES:
+      KADAN_GPU_BUDGET_BYTES:
+      KADAN_GPU_HEADROOM_BYTES:
+      KADAN_IMAGE_DEVICES:
+      KADAN_IMAGE_WORKSPACE_BYTES:
+      KADAN_IMAGE_HOST_BYTES:
+      KADAN_IMAGE_DUAL_EXECUTION_BYTES:
+      KADAN_IMAGE_CPUS:
+      KADAN_IMAGE_THREADS:
+      KADAN_IMAGE_OPERATION_SECONDS:
+      KADAN_IMAGE_COLLECTIVE_SECONDS:
+      KADAN_IMAGE_CLEANUP_SECONDS:
+      KADAN_IMAGE_CUDA_WAIT:
       KADAN_WHISPER_DEVICE: ${KADAN_WHISPER_DEVICE:-auto}
     deploy:
       resources:

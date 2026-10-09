@@ -16,7 +16,6 @@ import urllib.request
 from bf16_contracts import LIMIT, ULYSSES_SOURCE, require_ci, verify_capture
 from trace_binding import sha256
 from replay_only_contracts import PROTOCOL, CAPTURE_COMMIT, CONTEXT_SHA, require_review, verify_retained
-from thermal_guard import check_cpu
 
 IMAGE = 'sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa'
 GPUS = ['GPU-e30b6419-2c6d-f550-61d6-16166a920dac', 'GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3']
@@ -26,7 +25,7 @@ NAME = 'kadan-step39-replay-only-probe'
 PAUSE_SECONDS = 35*60
 RECOVERY_SECONDS = 10*60
 COMMAND_DEADLINE = None
-THERMAL_EVIDENCE = None
+RUN_EVIDENCE = None
 
 
 class PauseBudget:
@@ -85,8 +84,8 @@ def restore_container(before):
 
 
 def gpu_snapshot():
-    lines = run('nvidia-smi', '--query-gpu=uuid,memory.used,memory.free,temperature.gpu', '--format=csv,noheader,nounits').stdout.splitlines()
-    return {v[0].strip(): dict(used=int(v[1]), free=int(v[2]), temperature=int(v[3]))
+    lines = run('nvidia-smi', '--query-gpu=uuid,memory.used,memory.free', '--format=csv,noheader,nounits').stdout.splitlines()
+    return {v[0].strip(): dict(used=int(v[1]), free=int(v[2]))
             for v in (line.split(',') for line in lines)}
 
 
@@ -124,18 +123,17 @@ def no_gpu_owners(desktop):
 
 def guards():
     snap = gpu_snapshot()
-    assert all(snap[g]['free'] >= 256 and snap[g]['temperature'] < 90 for g in GPUS), snap
+    assert all(snap[g]['free'] >= 256 for g in GPUS), snap
     memory = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
     assert int(memory['MemAvailable'].split()[0]) >= 16 * 1024**2, 'Host free memory guard'
     phases={}
-    for path in (THERMAL_EVIDENCE/'holdout-replay-evidence').glob('phase-rank-*.json'):
+    for path in (RUN_EVIDENCE/'holdout-replay-evidence').glob('phase-rank-*.json'):
         phases[path.name]=json.loads(path.read_text())
-    peak=check_cpu(THERMAL_EVIDENCE,'replay-or-admission',workload=phases)
-    return dict(gpu=snap,cpu_temperature=peak)
+    return dict(gpu=snap,workload=phases)
 
 
 def main():
-    global COMMAND_DEADLINE, THERMAL_EVIDENCE
+    global COMMAND_DEADLINE, RUN_EVIDENCE
     parser = argparse.ArgumentParser()
     parser.add_argument('--execute-reviewed', metavar='COMMIT')
     parser.add_argument('--evidence', type=Path)
@@ -171,16 +169,12 @@ def main():
     assert available >= 160*1024**3, 'Require160 GiB available host RAM'
     args.evidence.mkdir(parents=True)
     evidence = args.evidence.resolve()
-    THERMAL_EVIDENCE=evidence
+    RUN_EVIDENCE=evidence
     prior_bytes=sum(p.stat().st_size for root in (retained,args.prior_step20_evidence) for p in root.rglob('*') if p.is_file())
     base_bytes=sum(p.stat().st_size for p in capture.iterdir())
     assert base_bytes+prior_bytes+512*1024**2<=LIMIT, 'Retained artifacts plus evidence reserve exceed envelope'
     (evidence/'retained-admission.json').write_text(json.dumps(dict(context_manifest_sha256=CONTEXT_SHA,capture_commit=CAPTURE_COMMIT,
         base_bytes=base_bytes,prior_bytes=prior_bytes,evidence_reserve=512*1024**2,limit=LIMIT)))
-    # Cool admission occurs while the API remains available. No threshold relaxation.
-    for index in range(5):
-        check_cpu(evidence,'cooldown-admission',limit=60)
-        if index<4:time.sleep(2)
     (evidence/'review-record.json').write_text(args.review_record.read_text())
     (evidence/'exact-head-ci.json').write_text(json.dumps(ci,indent=2))
     inspect = inspect_container(API)

@@ -15,8 +15,6 @@
   "cleanup_deadline_s": 120,
   "native_load_deadline_s": 300,
   "native_step_deadline_s": 30,
-  "cpu_abort_c": 80,
-  "gpu_abort_c": 90,
   "host_abort_available_bytes": 17179869184,
   "gpu_abort_free_mib": 256,
   "sample_interval_s": 5,

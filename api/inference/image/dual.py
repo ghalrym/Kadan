@@ -7,6 +7,7 @@ import time
 from PIL import Image
 
 from api.inference.image.model import GIB, CONTEXT_BYTES, check_cancel
+from api.inference.image.policy import ImagePolicy
 from api.inference.image.rank_session import RankBudget, RankSession
 from api.inference.image.rank_transport import ProcessRanks
 from api.inference.resources import ResourceExhausted
@@ -21,26 +22,34 @@ class DualImage:
         devices = json.loads(os.environ.get('KADAN_IMAGE_DEVICES', '[0,1]')) if devices is None else devices
         if not isinstance(devices, (list, tuple)):
             raise ValueError('KADAN_IMAGE_DEVICES must be a JSON pair of logical device IDs')
-        self.budget = RankBudget(128*GIB, tuple(devices), CONTEXT_BYTES, 20*GIB)
+        self.policy = ImagePolicy.from_environment()
         self.weights = sum(p.stat().st_size for p in path.rglob('*.safetensors'))
+        self.budget = RankBudget(self.policy.host_budget(self.weights, 3), tuple(devices),
+            CONTEXT_BYTES, self.policy.execution_bytes)
         self._plan()
-        self.transport = transport_factory(path, self.budget)
+        self.transport = transport_factory(path, self.budget, self.policy)
         self.session = RankSession(resources, self.transport, self.budget, enabled=True,
-            operation_timeout=900, cleanup_timeout=30)
+            operation_timeout=self.policy.operation_seconds, cleanup_timeout=self.policy.cleanup_seconds)
         self.last_timing = None
 
     def _plan(self):
-        if not self.weights or self.weights*3 + 8*GIB > self.budget.host_bytes:
-            raise ResourceExhausted('Two-rank checkpoint/staging exceeds the fixed 128 GiB host envelope')
-        if self.resources.capacity.host_bytes < self.budget.host_bytes + GIB:
-            raise ResourceExhausted('Two-rank image execution requires 129 GiB host admission including publication')
-        if any(self.resources.capacity.device_bytes.get(d,0) < self.budget.context_bytes+self.budget.execution_bytes+CONTEXT_BYTES for d in self.budget.devices):
-            raise ResourceExhausted('Two-rank images require 21 GiB on each of two visible devices; capacities cannot be pooled')
+        # Reject deployment errors before the FIFO parks another resident model.
+        # ProcessRanks.start rechecks the mask in case it changes after preflight.
+        self.policy.affinity(os.sched_getaffinity(0))
+        if not self.weights:
+            raise ResourceExhausted('The two-rank checkpoint has no weights')
+        required_host = self.budget.host_bytes + GIB
+        if self.resources.capacity.host_bytes < required_host:
+            raise ResourceExhausted(f'Two-rank image execution requires {required_host} host bytes including publication')
+        required_device = self.budget.context_bytes + self.budget.execution_bytes + CONTEXT_BYTES
+        if any(self.resources.capacity.device_bytes.get(device, 0) < required_device
+                for device in self.budget.devices):
+            raise ResourceExhausted(f'Two-rank images require {required_device} bytes on each visible device; capacities cannot be pooled')
 
     @staticmethod
     def validate(prompt, aspect, count, image=None):
         if image is not None or aspect != '1:1' or count != 1:
-            raise ValueError('Experimental two-rank images support one 2048-square text-to-image output; edits and other sizes are unavailable')
+            raise ValueError('Two-rank images support one 2048-square text-to-image output; edits and other sizes are unavailable')
         if not isinstance(prompt,str) or not 0 < len(prompt) <= 2000:
             raise ValueError('Two-rank prompt must contain 1 to 2000 characters')
 

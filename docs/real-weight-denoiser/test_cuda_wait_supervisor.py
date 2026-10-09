@@ -1,4 +1,6 @@
+import ast
 import json
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +19,19 @@ class WaitSupervisorTests(unittest.TestCase):
              patch('supervisor_cuda_wait.time.monotonic',side_effect=[11,12]):
             cleanup(children,20)
         self.assertEqual(events,[('kill',100),('kill',101),('wait',9),('wait',8)])
+
+    def test_running_loop_enforces_resource_admission(self):
+        # Execute the actual running-container loop only, with synthetic process
+        # telemetry; no preflight, Docker launch or GPU work is evaluated.
+        tree=ast.parse(Path(launch.__file__).read_text())
+        loop=next(node for node in ast.walk(tree) if isinstance(node,ast.While)
+            and 'inspect_container' in ast.unparse(node.test))
+        guard=Mock(side_effect=RuntimeError('Host free memory guard'))
+        namespace=dict(host=SimpleNamespace(inspect_container=lambda name:{'State':{'Running':True}},guards=guard),
+            NAME='fixture',time=SimpleNamespace(monotonic=lambda:0),stage_end=1,measurement_end=1)
+        with self.assertRaisesRegex(RuntimeError,'Host free memory guard'):
+            exec(compile(ast.Module(body=[loop],type_ignores=[]),'running-loop','exec'),namespace)
+        guard.assert_called_once()
 
     def test_review_binds_exact_settings_and_head(self):
         record=dict(protocol=launch.PROTOCOL,source_commit='a'*40,case='control',

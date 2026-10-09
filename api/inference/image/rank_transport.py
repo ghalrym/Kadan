@@ -14,6 +14,7 @@ import tempfile
 import time
 from uuid import UUID
 
+from api.inference.image.policy import ImagePolicy
 from api.inference.resources import ResourceCancelled
 
 MAX_FRAME = 65536
@@ -44,41 +45,11 @@ def receive_blocking(connection):
     return value
 
 
-def rank_cpus(allowed, root=Path('/sys/devices/system/cpu')):
-    """Keep the two-CPU ceiling, spreading work across last-level caches if known.
-
-    Adjacent CPU IDs can concentrate both workers on one hot CCD. Both ranks
-    retain the same bounded affinity; this changes placement, not thread count.
-    Missing topology preserves the former deterministic first-two fallback.
-    """
-    cpus = sorted(set(allowed))
-    if not cpus:
-        raise RuntimeError('No allowed CPU for image ranks')
-    domains = {}
-    for cpu in cpus:
-        try:
-            caches = []
-            for cache in (root/f'cpu{cpu}'/'cache').glob('index*'):
-                level = int((cache/'level').read_text())
-                domain = (cache/'shared_cpu_list').read_text().strip()
-                if domain:
-                    caches.append((level, domain))
-            domains[cpu] = max(caches)[1] if caches else None
-        except (OSError, ValueError):
-            domains[cpu] = None
-    first = cpus[0]
-    if domains[first] is not None:
-        for cpu in cpus[1:]:
-            if domains[cpu] is not None and domains[cpu] != domains[first]:
-                return [first, cpu]
-    return cpus[:2]
-
-
 class ProcessRanks:
-    def __init__(self, path, budget, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
+    def __init__(self, path, budget, policy=None, *, worker_module='api.inference.image.rank_worker', guard=None, memory_probe=None):
         self.path, self.budget, self.worker_module = Path(path), budget, worker_module
+        self.policy = policy or ImagePolicy.from_environment()
         self.guard = guard or self._guard
-        self.cooldown = guard is None
         self.processes, self.connections = [], []
         self.directory = None
         self.last_guard = 0.
@@ -102,20 +73,10 @@ class ProcessRanks:
         self.session = session
         self.stderr_tails = {}
         self.progress_job=None;self.progress_lines={};self.progress_drop=set();self.progress_steps={}
-        if self.cooldown:
-            cool = 0
-            admission_end = min(deadline, time.monotonic()+30)
-            while cool < 5:
-                if cancel is not None and cancel.is_set():
-                    raise ResourceCancelled('Rank cooldown cancelled')
-                if time.monotonic() >= admission_end:
-                    raise TimeoutError('CPU did not reach five cool admission samples')
-                peak = self._cpu_peak()
-                logging.getLogger(__name__).info("rank_admission_sample session=%s cpu_c=%s accepted=%s",
-                    session, peak, peak < 60)
-                cool = cool+1 if peak < 60 else 0
-                if cool < 5:
-                    time.sleep(2)
+        if cancel is not None and cancel.is_set():
+            raise ResourceCancelled('Rank startup cancelled')
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Rank startup deadline exhausted')
         self.baseline = self.memory_probe()
         if set(self.baseline) != set(devices):
             raise RuntimeError("Physical device ownership is unavailable")
@@ -123,7 +84,7 @@ class ProcessRanks:
         self.owned_processes = None
         self.gone.clear()
         self.directory = tempfile.TemporaryDirectory(prefix='kadan-image-ranks-')
-        cpus = rank_cpus(os.sched_getaffinity(0))
+        cpus = self.policy.affinity(os.sched_getaffinity(0))
         logging.getLogger(__name__).info('rank_affinity session=%s cpus=%s', session, cpus)
         for rank, device in enumerate(devices):
             if cancel is not None and cancel.is_set():
@@ -131,18 +92,23 @@ class ProcessRanks:
             if time.monotonic() >= deadline:
                 raise TimeoutError('Rank startup deadline exhausted')
             parent, child = socket.socketpair()
-            env = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
-                NUMEXPR_NUM_THREADS='1', GLOO_SOCKET_IFNAME='lo', PYTHONDONTWRITEBYTECODE='1')
+            env = dict(os.environ, GLOO_SOCKET_IFNAME='lo', PYTHONDONTWRITEBYTECODE='1')
+            if self.policy.threads is not None:
+                for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+                    env[name] = str(self.policy.threads)
             config = dict(session=session, rank=rank, device=device, devices=list(devices),
                 checkpoint=str(self.path), directory=self.directory.name, cpus=cpus,
+                threads=self.policy.threads, collective_seconds=self.policy.collective_seconds,
+                blocking_sync=self.policy.blocking_sync,
                 execution_bytes=self.budget.execution_bytes, parent_pid=os.getpid())
             try:
-                # Set affinity before Python/sitecustomize can create helper threads.
-                # taskset execs Python in the same PID/process group; parent-death
-                # fencing and process ownership retain their existing identities.
-                process = subprocess.Popen(['/usr/bin/taskset', '--cpu-list', ','.join(map(str, cpus)),
-                    sys.executable, '-m', self.worker_module,
-                    str(child.fileno()), json.dumps(config)], pass_fds=(child.fileno(),),
+                command = [sys.executable, '-m', self.worker_module,
+                    str(child.fileno()), json.dumps(config)]
+                # Explicit affinity applies before Python can create helper threads.
+                # Otherwise the child inherits the deployment's existing CPU mask.
+                if self.policy.cpus is not None:
+                    command = ['/usr/bin/taskset', '--cpu-list', ','.join(map(str, cpus)), *command]
+                process = subprocess.Popen(command, pass_fds=(child.fileno(),),
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True, env=env)
             except BaseException:
@@ -253,16 +219,6 @@ class ProcessRanks:
         return set(current)==set(self.baseline) and all(
             current[d] <= baseline+allowance for d,baseline in self.baseline.items())
 
-    @staticmethod
-    def _cpu_peak():
-        temperatures = []
-        for path in Path('/sys/class/hwmon').glob('hwmon*/temp*_input'):
-            if (path.parent/'name').read_text().strip() in ('k10temp', 'coretemp'):
-                temperatures.append(int(path.read_text()) / 1000)
-        if not temperatures:
-            raise RuntimeError('CPU thermal sensors unavailable')
-        return max(temperatures)
-
     def _guard(self):
         # RSS double-counts shared mappings conservatively. No swap is invented
         # as extra capacity. Unknown readings fail closed while work is active.
@@ -274,16 +230,6 @@ class ProcessRanks:
             rss += int(next(l.split()[1] for l in status.splitlines() if l.startswith('VmRSS:'))) * 1024
         if rss > self.budget.host_bytes:
             raise RuntimeError('Rank host memory exceeded admission')
-        peak = self._cpu_peak()
-        if peak >= 80:
-            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s cpu_c=%s limit_c=80', self.session, peak)
-            raise RuntimeError(f'Image CPU thermal guard reached: {peak} C')
-        output = subprocess.run(['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, timeout=2, check=True)
-        values = [float(value) for value in output.stdout.splitlines()]
-        if not values or max(values) >= 90:
-            logging.getLogger(__name__).warning('rank_thermal_rejected session=%s gpu_c=%s limit_c=90', self.session, values)
-            raise RuntimeError(f'Image GPU thermal guard reached or unavailable: {values}')
 
     def exchange(self, command, deadline, cancel):
         if command.get('operation')=='execute':

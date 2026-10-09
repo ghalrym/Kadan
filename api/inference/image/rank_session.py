@@ -107,7 +107,7 @@ class RankSession:
 
     def _prepare(self, deadline, cancel):
         if not self.enabled:
-            raise ResourceBusy('Experimental two-rank lifecycle is disabled')
+            raise ResourceBusy('Two-rank lifecycle is disabled')
         self._cancel(cancel)
         if self.state == 'ready':
             return

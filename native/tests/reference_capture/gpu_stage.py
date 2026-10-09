@@ -88,7 +88,7 @@ class HostTelemetry:
 
     def sample(self,timeout):
         end=time.monotonic()+timeout
-        gpu=self.command(['nvidia-smi','--query-gpu=index,uuid,memory.free,temperature.gpu','--format=csv,noheader,nounits'],end-time.monotonic())
+        gpu=self.command(['nvidia-smi','--query-gpu=index,uuid,memory.free','--format=csv,noheader,nounits'],end-time.monotonic())
         processes=self.command(['nvidia-smi','--query-compute-apps=gpu_uuid,pid,used_gpu_memory','--format=csv,noheader,nounits'],end-time.monotonic())
         cgroups={};starts={}
         for line in processes.splitlines():

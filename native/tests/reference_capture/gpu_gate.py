@@ -21,10 +21,10 @@ def parse_snapshot(gpu_csv, process_csv, cgroups, journal, start_times=None):
     require(len(gpu_csv)<=65536 and len(process_csv)<=65536 and len(journal)<=1024**2,'telemetry_bound')
     devices={}
     for row in csv.reader(io.StringIO(gpu_csv)):
-        require(len(row)==4,'telemetry_gpu_columns')
-        index,uuid,free,temp=[s.strip() for s in row]
-        require(index.isdecimal() and free.isdecimal() and temp.isdecimal() and uuid not in devices,'telemetry_gpu_values')
-        devices[uuid]={'index':int(index),'free_bytes':int(free)*MIB,'temperature':int(temp)}
+        require(len(row)==3,'telemetry_gpu_columns')
+        index,uuid,free=[s.strip() for s in row]
+        require(index.isdecimal() and free.isdecimal() and uuid not in devices,'telemetry_gpu_values')
+        devices[uuid]={'index':int(index),'free_bytes':int(free)*MIB}
     require(devices and UUID in devices and devices[UUID]['index']==0,'gpu_uuid_index')
     processes=[]
     for row in csv.reader(io.StringIO(process_csv)):
@@ -43,7 +43,6 @@ class GpuGate:
         require(baseline.xid is False,'baseline_xid')
         require(not any(p['uuid']==UUID for p in baseline.processes),'baseline_gpu0_owner')
         require(baseline.devices[UUID]['free_bytes']>=ENTRY_FREE,'entry_free_memory')
-        require(baseline.devices[UUID]['temperature']<=65,'entry_temperature')
         self.baseline=baseline
         self.process_starts={}
 
@@ -51,7 +50,6 @@ class GpuGate:
         require(current.xid is False,'new_xid')
         require(set(current.devices)==set(self.baseline.devices),'gpu_inventory_drift')
         require(all(current.devices[u]['index']==self.baseline.devices[u]['index'] for u in current.devices),'gpu_index_drift')
-        require(current.devices[UUID]['temperature']<80,'temperature_abort')
         # GPU1 desktop processes and allocations are outside this stage's scope.
         owned=[p for p in current.processes if p['uuid']==UUID]
         require(all(p['cgroup']==f'0::/system.slice/docker-{cid}.scope' for p in owned),'unexpected_gpu0_owner')

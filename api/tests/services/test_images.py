@@ -3,6 +3,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+import os
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -211,6 +212,40 @@ class ImageManagerTests(unittest.TestCase):
         evict.assert_not_called()
         self.assertEqual(set(resources.snapshot()['reservations']), {'text'})
         host.release()
+
+    def test_unavailable_rank_cpu_rejects_before_changing_text_residency(self):
+        self.manager.backend = None
+        path = Path(self.temp.name)
+        (path / 'weights.safetensors').write_bytes(b'fixture')
+        resources = ResourceManager(100 * GIB, {0: 24 * GIB, 1: 24 * GIB})
+        evict = Mock()
+        resident = resources.reserve('text', 'llm', device_bytes={0: 20 * GIB}, evict=evict)
+        self.addCleanup(resident.release)
+        self.manager.runtime.ensure_resources.return_value = resources
+        before = resources.snapshot()
+        unavailable = max(os.sched_getaffinity(0)) + 1
+        with patch.dict('os.environ', {'KADAN_IMAGE_BACKEND': 'dual',
+                'KADAN_IMAGE_CPUS': f'[{unavailable}]'}, clear=True), patch(
+                'api.inference.image.rank_transport.ProcessRanks.start') as start:
+            with self.assertRaises(RuntimeFailure) as caught:
+                self.manager.validate_request(None, prompt='image', count=1)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn('CPU affinity', str(caught.exception))
+        self.assertEqual(resources.snapshot(), before)
+        evict.assert_not_called()
+        start.assert_not_called()
+
+    def test_configured_image_host_admission_includes_publication(self):
+        self.manager.backend = None
+        path = Path(self.temp.name)
+        (path / 'weights.safetensors').write_bytes(b'fixture')
+        self.manager.runtime.ensure_resources.return_value = ResourceManager(16 * GIB, {0: 24 * GIB})
+        with patch.dict('os.environ', {'KADAN_IMAGE_HOST_BYTES': str(16 * GIB)}, clear=True):
+            with self.assertRaises(RuntimeFailure) as caught:
+                self.manager.validate_request(None)
+            self.assertEqual(caught.exception.status_code, 503)
+        with patch.dict('os.environ', {'KADAN_IMAGE_HOST_BYTES': str(15 * GIB)}, clear=True):
+            self.manager.validate_request(None)
 
     def test_deployment_offload_setting_validated_and_reconfigures_existing_pipeline(self):
         self.manager.backend=None

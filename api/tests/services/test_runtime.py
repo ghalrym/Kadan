@@ -266,7 +266,7 @@ class ResourceBudgetTests(unittest.TestCase):
                 patch('api.services.runtime.probe_memory', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
             return manager.ensure_resources().capacity
 
-    def test_default_budgets_unchanged(self):
+    def test_small_capacity_keeps_proportional_headroom(self):
         self.assertEqual(self.budgets(), MemoryCapacity(1600, {0: 800, 1: 1200}))
 
     def test_explicit_budget_changes_only_named_gpu(self):

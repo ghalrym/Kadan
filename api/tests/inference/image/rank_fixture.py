@@ -32,7 +32,8 @@ def main():
             time.sleep(60)
         reply = dict(command, rank=config['rank'], device=config['device'], status='ok',
             resident_bytes=0 if command['operation']=='park' else 1,
-            main_affinity=sorted(os.sched_getaffinity(0)), startup_affinity=startup_affinity)
+            main_affinity=sorted(os.sched_getaffinity(0)), startup_affinity=startup_affinity,
+            threads=config['threads'], omp_threads=os.environ.get('OMP_NUM_THREADS'))
         if marker == 'oom' and config['rank'] == 1:
             reply.update(status='error',error='OutOfMemoryError: synthetic allocation failure')
         if marker == 'stale' and config['rank'] == 1:
