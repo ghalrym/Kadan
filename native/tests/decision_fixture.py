@@ -57,5 +57,6 @@ if __name__=='__main__':
         result=json.loads(subprocess.check_output([sys.argv[2],str(root),'weights.safetensors',str(root/'input')]))
         expected=reference(weights,values);actual=[result['score'],*result['actions']]
         assert max(abs(a-b) for a,b in zip(actual,expected))<1e-7,(actual,expected)
+        assert result['resident_bytes_at_publication']==(2052+3)*4
         assert result['resident_bytes']==0 and not result['full_decision_inference']
         print('PASS: scalar scorer/action reference and cleanup')

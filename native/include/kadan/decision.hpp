@@ -20,7 +20,7 @@ public:
     void load(const char* root,const std::string& basename,const std::atomic_bool& cancel);
     void unload();
     bool loaded() const {return weights_!=nullptr;}
-    // Caller admits input. Returns raw scorer and two action logits, not answers.
+    // Caller admits input and returned output. Raw scorer/action logits, not answers.
     // Optional observation hook cannot reenter the executor.
     std::array<float,3> execute(std::span<const float> marker,std::span<const float> action,
         const std::atomic_bool& cancel,const std::function<void()>& observed={});

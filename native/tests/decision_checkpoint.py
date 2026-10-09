@@ -52,6 +52,7 @@ def main(binary, checkpoint):
             errors=[abs(a-b) for a,b in zip(output,expected)]
             assert all(math.isfinite(x) for x in output)
             assert all(error<=1e-4+1e-4*abs(reference) for error,reference in zip(errors,expected)),(name,output,expected)
+            assert actual['resident_bytes_at_publication']==(2052+3)*4
             assert actual['resident_bytes']==0 and actual['full_decision_inference'] is False and actual['gpu_execution'] is False
             rows.append(dict(case=name,input_sha256=hashlib.sha256(data).hexdigest(),actual=output,reference=expected,max_absolute_error=max(errors)))
     after=checkpoint.stat();assert (before.st_size,before.st_mtime_ns,before.st_ino)==(after.st_size,after.st_mtime_ns,after.st_ino)
