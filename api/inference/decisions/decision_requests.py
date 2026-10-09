@@ -4,14 +4,14 @@ from api.inference.feature import native_call
 from api.services.runtime import finish_cleanup
 
 
-class DecisionsFeature:
+class DecisionRequests:
     operations = ('generate',)
     name, workload = 'decisions', 'decision'
-    def __init__(self, service):
-        self.service = service
+    def __init__(self, evaluator):
+        self.evaluator = evaluator
     @property
     def adapter(self):
-        return self.service.agent
+        return self.evaluator.agent
     def select(self, request):
         return 'laya'
     def validate(self, payload, operation):
@@ -19,20 +19,20 @@ class DecisionsFeature:
         from api.routes.v1.decisions import DecisionRequest
         return DecisionRequest.model_validate(payload)
     def check_execution_state(self):
-        check = getattr(self.service, 'check_execution_state', None)
+        check = getattr(self.evaluator, 'check_execution_state', None)
         if check is not None:
             check()
     async def preflight_execution(self, request):
-        if hasattr(self.service, "preflight"):
-            await self.service.preflight()
+        if hasattr(self.evaluator, "preflight"):
+            await self.evaluator.preflight()
     async def load(self, model=None):
-        await self.service.load()
+        await self.evaluator.load()
         return self.adapter
     async def offload_to_ram(self):
-        if hasattr(self.service, 'offload_to_ram'):
-            await native_call(self.service.offload_to_ram)
+        if hasattr(self.evaluator, 'offload_to_ram'):
+            await native_call(self.evaluator.offload_to_ram)
     async def unload(self):
-        await finish_cleanup(asyncio.create_task(self.service.close()))
+        await finish_cleanup(asyncio.create_task(self.evaluator.close()))
     async def __call__(self, request, *, model=None, operation='generate', job_id=None):
-        answers = await self.service.evaluate(request.state, request.questions)
+        answers = await self.evaluator.evaluate(request.state, request.questions)
         return [answer.model_dump(mode='json') if hasattr(answer, 'model_dump') else answer for answer in answers]

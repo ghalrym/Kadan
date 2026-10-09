@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from api.inference.decisions.model import load_laya, preflight, parse_answer, translate_questions, clear_tokenizer_cache
+from api.inference.decisions.laya_python import load_laya, preflight, parse_answer, translate_questions, clear_tokenizer_cache
 from api.services.runtime import RuntimeFailure
-from api.tests.inference.decisions.test_model import questions
+from api.tests.inference.decisions.test_laya_python import questions
 
 
 @unittest.skipUnless(importlib.util.find_spec('laya'), 'Optional pinned Laya runtime is not installed')

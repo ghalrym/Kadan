@@ -8,10 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from api.inference.decisions.worker import DecisionWorkerManager, DEFAULT_HOST_BUDGET_BYTES, resolve_worker_command
-from api.inference.decisions.service import create_manager
-from api.inference.decisions import native as legacy_adapter
-from api.inference.decisions import worker as worker_adapter
+from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator, DEFAULT_HOST_BUDGET_BYTES, resolve_laya_command
+from api.inference.decisions.laya_backend import create_laya_evaluator
 from api.inference.resources import ResourceManager
 from api.routes.v1.decisions import DecisionRequest
 from api.services.runtime import RuntimeFailure
@@ -56,7 +54,7 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.script = self.root / 'worker.py'
         self.script.write_text(SCRIPT)
         self.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES * 2, {})
-        self.manager = DecisionWorkerManager(self.resources, resolve=lambda: [sys.executable, str(self.script)])
+        self.manager = LayaSubprocessEvaluator(self.resources, resolve=lambda: [sys.executable, str(self.script)])
 
     async def asyncTearDown(self):
         await self.manager.close()
@@ -136,21 +134,12 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 503)
         self.assertIsNone(self.manager.agent)
 
-    def test_legacy_imports_keep_worker_and_helper_contracts(self):
-        self.assertIs(legacy_adapter.NativeDecisionManager, DecisionWorkerManager)
-        self.assertIs(legacy_adapter.DecisionProcess, worker_adapter.DecisionWorkerProcess)
-        self.assertIs(legacy_adapter.command, resolve_worker_command)
-        self.assertIs(legacy_adapter.decode, worker_adapter.decode_response_frame)
-        self.assertIs(legacy_adapter.answers_for, worker_adapter.parse_worker_answers)
-        self.assertEqual(legacy_adapter.RAM_BYTES, DEFAULT_HOST_BUDGET_BYTES)
-        self.assertEqual(legacy_adapter.FRAME_BYTES, worker_adapter.MAX_FRAME_BYTES)
-
     def test_explicit_backend_and_preflight_no_fallback(self):
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'native'}):
-            self.assertIsInstance(create_manager(), DecisionWorkerManager)
+            self.assertIsInstance(create_laya_evaluator(), LayaSubprocessEvaluator)
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'invalid'}):
             with self.assertRaises(RuntimeFailure):
-                create_manager()
+                create_laya_evaluator()
         with patch.dict(os.environ, {'KADAN_NATIVE_DECISION_WORKER': '/missing/worker'}):
             with self.assertRaises(RuntimeFailure):
-                resolve_worker_command()
+                resolve_laya_command()

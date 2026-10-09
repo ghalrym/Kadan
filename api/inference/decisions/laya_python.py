@@ -191,7 +191,7 @@ def parse_answer(question, answer):
                confidence=confidence, probabilities=probabilities)
 
 
-class DecisionManager:
+class LayaPythonEvaluator:
     def __init__(self, loader=load_laya, resources=None, check=preflight, ram_bytes=None):
         """Create an unloaded specialist; injected dependencies allow CPU-free lifecycle tests."""
         self.loader, self.resources, self.check = loader, resources, check
@@ -382,4 +382,4 @@ class DecisionManager:
             self.reservation = None
 
 
-decision_manager = DecisionManager()
+python_laya_evaluator = LayaPythonEvaluator()

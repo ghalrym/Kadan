@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from api.inference.resources import ResourceManager, ResourceExhausted
 from api.routes.v1.decisions import DecisionRequest
-from api.inference.decisions.model import DecisionManager, parse_answer, translate_questions
+from api.inference.decisions.laya_python import LayaPythonEvaluator, parse_answer, translate_questions
 from api.services.runtime import RuntimeFailure, RuntimeManager
 
 
@@ -53,7 +53,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.agent = Mock()
         self.agent.predict.return_value = dict(answers={'urgent': dict(type='noul', noul=.7)}, usage={})
         self.loader = Mock(return_value=self.agent)
-        self.manager = DecisionManager(self.loader, self.resources, check=Mock(), ram_bytes=60)
+        self.manager = LayaPythonEvaluator(self.loader, self.resources, check=Mock(), ram_bytes=60)
         self.qs = [questions()[2]]
 
     async def asyncTearDown(self):
@@ -112,7 +112,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_chat_load_required_and_shared_manager_initialized_once(self):
         runtime = RuntimeManager(resources=self.resources)
         self.manager.resources = None
-        with patch('api.inference.decisions.model.runtime_manager', runtime):
+        with patch('api.inference.decisions.laya_python.runtime_manager', runtime):
             await self.manager.evaluate('state', self.qs)
         self.assertEqual(runtime.state, 'unloaded')
         self.assertIs(self.manager.resources, runtime.ensure_resources())

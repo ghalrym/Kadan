@@ -1,18 +1,18 @@
 """Explicit backend selection. Python remains the production default."""
 import os
 
-from api.inference.decisions.model import decision_manager as python_manager
-from api.inference.decisions.worker import DecisionWorkerManager
+from api.inference.decisions.laya_python import python_laya_evaluator
+from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator
 from api.services.runtime import RuntimeFailure
 
 
-def create_manager():
+def create_laya_evaluator():
     backend = os.getenv('KADAN_DECISION_BACKEND', 'python')
     if backend == 'python':
-        return python_manager
+        return python_laya_evaluator
     if backend == 'native':
-        return DecisionWorkerManager()
+        return LayaSubprocessEvaluator()
     raise RuntimeFailure('KADAN_DECISION_BACKEND must be python or native.')
 
 
-decision_manager = create_manager()
+laya_evaluator = create_laya_evaluator()

@@ -11,13 +11,13 @@ from uuid import uuid4
 from fastapi import FastAPI
 import httpx
 
-from api.inference.decisions.worker import DecisionWorkerManager, DEFAULT_HOST_BUDGET_BYTES
+from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator, DEFAULT_HOST_BUDGET_BYTES
 from api.inference.resources import ResourceManager
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue, Job
 from api.routes.v1.decisions import router
 from api.services.runtime import RuntimeFailure
-from api.tests.inference.decisions.test_worker import SCRIPT, body
+from api.tests.inference.decisions.test_laya_subprocess import SCRIPT, body
 
 
 @unittest.skipUnless(os.getenv('KADAN_TEST_REDIS_URL'), 'Dedicated Redis URL required')
@@ -28,7 +28,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
         script = root / 'worker.py'
         script.write_text(SCRIPT)
         self.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES * 2, {})
-        self.worker_manager = DecisionWorkerManager(self.resources, resolve=lambda: [sys.executable, str(script)])
+        self.worker_manager = LayaSubprocessEvaluator(self.resources, resolve=lambda: [sys.executable, str(script)])
         self.manager = MemoryManager(decisions=self.worker_manager, queue=object())
         self.manager.features = {'decisions': self.manager.decisions}
         self.prefix = 'kadan:test:' + uuid4().hex + ':'

@@ -21,7 +21,7 @@ import time
 
 from huggingface_hub import snapshot_download
 
-from api.inference.decisions.model import DEFAULT_MODEL, DEFAULT_REVISION, parse_answer
+from api.inference.decisions.laya_python import DEFAULT_MODEL, DEFAULT_REVISION, parse_answer
 from api.inference.feature import native_call as run_with_cancellation
 from api.inference.llm.native import NativeProtocolError as WorkerProtocolError, WorkerProcess, check_cancel
 from api.inference.resources import ResourceBusy, ResourceExhausted
@@ -32,7 +32,7 @@ DEFAULT_HOST_BUDGET_BYTES = 3 * 1024**3 + 2 * 1024**2
 MAX_FRAME_BYTES = 65536
 
 
-def resolve_worker_command():
+def resolve_laya_command():
     binary = Path(os.getenv('KADAN_NATIVE_DECISION_WORKER', '/opt/kadan/bin/kadan-decision-worker')).expanduser()
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise RuntimeFailure('Decision worker is unavailable; configure KADAN_NATIVE_DECISION_WORKER.')
@@ -53,7 +53,7 @@ def resolve_worker_command():
     return [str(binary.resolve()), str(root.resolve())]
 
 
-def decode_response_frame(frame):
+def decode_laya_response(frame):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -69,7 +69,7 @@ def decode_response_frame(frame):
         raise WorkerProtocolError('Invalid decision JSON') from error
 
 
-class DecisionWorkerProcess(WorkerProcess):
+class LayaJsonlProcess(WorkerProcess):
     """Reuse owned process-group cleanup with bounded UTF-8 JSONL transport."""
     def exchange(self, request, timeout, cancel=None):
         check_cancel(cancel)
@@ -113,10 +113,10 @@ class DecisionWorkerProcess(WorkerProcess):
                 if extra or offset != len(frame):
                     raise WorkerProtocolError('Unexpected decision response ordering')
                 self.buffer.clear()
-                return decode_response_frame(line)
+                return decode_laya_response(line)
 
 
-def parse_worker_answers(questions, response):
+def parse_laya_responses(questions, response):
     if not isinstance(response, dict):
         raise WorkerProtocolError('Decision response must be an object')
     if set(response) == {'error'}:
@@ -144,8 +144,8 @@ def parse_worker_answers(questions, response):
     return result
 
 
-class DecisionWorkerManager:
-    def __init__(self, resources=None, resolve=resolve_worker_command, process_factory=DecisionWorkerProcess):
+class LayaSubprocessEvaluator:
+    def __init__(self, resources=None, resolve=resolve_laya_command, process_factory=LayaJsonlProcess):
         self.resources, self.resolve, self.process_factory = resources, resolve, process_factory
         self.agent = self.reservation = None
         self._lock = threading.Lock()
@@ -212,7 +212,7 @@ class DecisionWorkerManager:
                     request = json.dumps(dict(state=state,
                         questions=[q.model_dump(mode='json', by_alias=True) for q in questions]),
                         ensure_ascii=False, allow_nan=False, separators=(',', ':'))
-                    result = parse_worker_answers(questions, self.agent.exchange(request, timeout, cancel))
+                    result = parse_laya_responses(questions, self.agent.exchange(request, timeout, cancel))
                     check_cancel(cancel)
                     return result
             except BaseException as error:
