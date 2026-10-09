@@ -1,7 +1,8 @@
 """Proposed image-A operator. Requires separate exact-source/bundle execution approval."""
 import sys,os,json,time,signal,tempfile,hashlib,http.client,threading,urllib.request,socket
 from pathlib import Path
-sys.path.insert(0,'/home/andrew/Projects/self-hosting/Kadan/docs/real-weight-denoiser')
+TOOLS=Path('/home/andrew/Documents/Codex/2026-10-08/task-4/machine-local-benchmark-tools/harness')
+sys.path.insert(0,str(TOOLS))
 import launch_trajectory as host
 from launch_api_baseline import restore_exact
 from api_baseline import compare, verify
@@ -9,7 +10,7 @@ from thermal_guard import check_cpu
 from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
 from bf16_contracts import require_ci
 from durable_evidence import append
-from window_supervisor import load_context, arm, LABEL
+from window_supervisor import load_context, arm, record_memory_baseline, LABEL
 
 ROOT=Path('/home/andrew/Documents/Codex/2026-10-08/task-4')
 COMMIT=os.environ['KADAN_REVIEWED_QUEUE_COMMIT']
@@ -24,12 +25,15 @@ assert KIND=='a', 'This reviewed window permits exactly image A'
 BUNDLE=Path(__file__).resolve().parent
 binding=json.loads((BUNDLE/'binding.json').read_text())
 assert binding['source_commit']==COMMIT
-assert binding['protocol']=='durable-image-a-bundle-v2'
+assert binding['protocol']=='external-durable-image-a-bundle-v3'
+assert binding['external_tools']==str(TOOLS)
+for name,digest in binding['external_runtime'].items():
+ assert hashlib.sha256((TOOLS/name).read_bytes()).hexdigest()==digest
 assert binding['wrapper_sha256']==hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 for name,digest in binding['runtime'].items():
  assert hashlib.sha256((host.REPO/name).read_bytes()).hexdigest()==digest
 review=json.loads(Path(sys.argv[2]).read_text())
-assert review==dict(protocol='single-api-image-a-v2',source_commit=COMMIT,
+assert review==dict(protocol='single-api-image-a-v3',source_commit=COMMIT,
  binding_sha256=hashlib.sha256((BUNDLE/'binding.json').read_bytes()).hexdigest(),
  decision='approved-for-bounded-execution')
 ci=json.loads(host.run('gh','run','list','--repo','ghalrym/Kadan','--commit',COMMIT,'--limit','100',
@@ -175,6 +179,7 @@ try:
  while not host.no_gpu_owners(desktop) and time.monotonic()<stop_end:time.sleep(1)
  assert host.no_gpu_owners(desktop)
  baseline=host.gpu_snapshot();assert all(baseline[g]['free']>=23040 for g in host.GPUS)
+ record_memory_baseline(WINDOW_DIR,WINDOW,baseline)
  env=dict(v.split('=',1) for v in before['Config']['Env'])
  env.update(KADAN_IMAGE_BACKEND='dual',KADAN_IMAGE_DEVICES='[0,1]',KADAN_GPU='1',KADAN_GPU_BUDGET_BYTES='{"0":24159191040,"1":24159191040}',CUDA_VISIBLE_DEVICES='0,1',NVIDIA_VISIBLE_DEVICES=','.join(host.GPUS),PYTHONDONTWRITEBYTECODE='1')
  env['PYTHONPATH']='/run/kadan-window-tools'+(':'+env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
@@ -189,7 +194,7 @@ try:
   if not mount['RW']:spec+=',readonly'
   cmd+=['--mount',spec]
  cmd+=['--mount',f'type=bind,src={E},dst=/run/kadan-window-evidence',
-  '--mount',f'type=bind,src={host.REPO}/docs/real-weight-denoiser,dst=/run/kadan-window-tools,readonly',
+  '--mount',f'type=bind,src={TOOLS},dst=/run/kadan-window-tools,readonly',
   '--mount',f'type=bind,src={BUNDLE}/logging.json,dst=/run/kadan-logging.json,readonly','--entrypoint','python',host.IMAGE,*before['Config']['Cmd'][1:],'--log-config','/run/kadan-logging.json']
  try:
   owned=True;host.run(*cmd)

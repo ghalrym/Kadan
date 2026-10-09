@@ -19,7 +19,7 @@ from holdout_contracts import PROTOCOL, require_review, require_step, require_pr
 
 IMAGE = 'sha256:eed6c0b1208855f89e27093c2ad6abaada302919260787524e5c901ee56f57aa'
 GPUS = ['GPU-e30b6419-2c6d-f550-61d6-16166a920dac', 'GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3']
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path('/home/andrew/Projects/self-hosting/Kadan')
 API = 'kadan-api-1'
 NAME = 'kadan-heldout-bf16-reviewed-probe'
 PAUSE_SECONDS = 35*60

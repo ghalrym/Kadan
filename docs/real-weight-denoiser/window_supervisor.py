@@ -66,6 +66,30 @@ def arm(directory,ctx,*,api_id,identity,others,desktop,temporary_name,commit):
         source_dir=str(host.REPO),source_commit=commit))
 
 
+def require_memory_baseline(baseline):
+    if (not isinstance(baseline,dict) or set(baseline)!=set(host.GPUS)
+            or any(type(value) is not int or value<0 for value in baseline.values())):
+        raise RuntimeError('QUARANTINE: released-memory baseline unavailable or invalid')
+    return baseline
+
+
+def record_memory_baseline(directory,ctx,rows):
+    if time.monotonic()>=ctx['work_deadline']:raise TimeoutError('work deadline exhausted before baseline')
+    baseline={gpu:rows[gpu]['used'] for gpu in host.GPUS}
+    require_memory_baseline(baseline)
+    write_once(Path(directory)/'memory-baseline.json',dict(token=ctx['token'],end=ctx['end'],gpu_used_mib=baseline))
+
+
+def require_memory_released(baseline,rows):
+    require_memory_baseline(baseline)
+    if not isinstance(rows,dict):raise RuntimeError('QUARANTINE: GPU memory reading unavailable')
+    for gpu,used in baseline.items():
+        current=rows.get(gpu,{}).get('used')
+        if type(current) is not int or current<0 or current>used+128:
+            raise RuntimeError('QUARANTINE: GPU memory not returned to baseline plus 128 MiB')
+
+
+
 class DockerOps:
     def __init__(self,end):self.end=end
 
@@ -103,6 +127,13 @@ class DockerOps:
             if clear:return
             if time.monotonic()>=end:raise RuntimeError('QUARANTINE: physical owners remain')
             time.sleep(min(.2,end-time.monotonic()))
+
+    def memory_released(self,baseline):
+        previous=host.COMMAND_DEADLINE
+        host.COMMAND_DEADLINE=min(self.end,time.monotonic()+3)
+        try:rows=host.gpu_snapshot()
+        finally:host.COMMAND_DEADLINE=previous
+        require_memory_released(baseline,rows)
 
     def start(self,container_id):
         result=self.run('docker','start',container_id,cap=45)
@@ -144,8 +175,13 @@ def recover(ctx,record,ops):
     named=ops.inspect(host.API)
     if original is None or named is None or named['Id']!=record['api_id'] or digest(original)!=record['identity']:
         raise RuntimeError('QUARANTINE: original API identity changed')
+    if original['State']['Running'] and temporary is not None:
+        raise RuntimeError('QUARANTINE: original API overlaps owned workload')
     if not original['State']['Running']:
-        ops.physical_clear(record['desktop']);ops.start(record['api_id'])
+        baseline=require_memory_baseline(record.get('gpu_used_mib'))
+        ops.physical_clear(record['desktop'])
+        ops.memory_released(baseline)
+        ops.start(record['api_id'])
     ops.ready(record['api_id'])
     if digest(ops.inspect(record['api_id']))!=record['identity']:
         raise RuntimeError('original API configuration changed during restoration')
@@ -170,8 +206,14 @@ def supervise(child,ctx,*,stopping,clock=time.monotonic,sleep=time.sleep):
 
 def recovery_action(directory,ctx):
     path=Path(directory)/'recovery.json'
-    record=json.loads(path.read_text()) if path.exists() else None
     try:
+        record=json.loads(path.read_text()) if path.exists() else None
+        baseline_path=Path(directory)/'memory-baseline.json'
+        if record is not None and baseline_path.exists():
+            baseline=json.loads(baseline_path.read_text())
+            if baseline['token']!=ctx['token'] or baseline['end']!=ctx['end']:
+                raise ValueError('memory_baseline_context_mismatch')
+            record=dict(record,gpu_used_mib=require_memory_baseline(baseline.get('gpu_used_mib')))
         result=recover(ctx,record,DockerOps(ctx['end']))
     except Exception as exc:
         append(Path(directory)/'recovery-events.jsonl',dict(unix_time=time.time(),monotonic=time.monotonic(),

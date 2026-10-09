@@ -1,0 +1,1 @@
+External machine-local source snapshot for review only. Do not merge this branch into product branches. PR137 removes product thermal policy independently. No execution approval or GPU run is implied.
