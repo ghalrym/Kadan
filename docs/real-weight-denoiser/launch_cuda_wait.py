@@ -10,6 +10,7 @@ import time
 import launch_trajectory as host
 from launch_api_baseline import restore_exact
 from cuda_wait_probe import PLAN, compare
+from thermal_policy import ABORT_C, WARNING_C, POLICY_ID
 from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
 
 CASES = ("control", "blocking")
@@ -29,7 +30,7 @@ def verify(path, case, commit):
         if case=='blocking' and flags['after_window'] & 7 != 4:
             raise ValueError('Candidate BlockingSync unconfirmed')
 from bf16_contracts import LIMIT, require_ci
-CRITERIA = dict(output_sha256_equal=True, physical_uuid_equal=True, intervention_required=True, cpu_limit_c=80, gpu_limit_c=90)
+CRITERIA = dict(output_sha256_equal=True, physical_uuid_equal=True, intervention_required=True, cpu_limit_c=ABORT_C, cpu_warning_c=WARNING_C, cpu_policy=POLICY_ID, gpu_limit_c=90)
 from thermal_guard import check_cpu
 
 NAME = 'kadan-cuda-wait-reviewed'

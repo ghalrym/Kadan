@@ -75,7 +75,11 @@ event filtering and service command boundaries. A real two-second CPU-only user
 service wrote its receipt after the launcher exited, Result=success, ExecMainStatus=0.
 No API edit/restart, model load, GPU work or threshold change was performed.
 
-## Sensor-specific policy proposal, not implemented
+## Original sensor-specific proposal (superseded)
+
+The subsequent user-requested85 C warning/90 C abort implementation and verified
+package-source mapping are documented in CPU_THERMAL_POLICY.md. The original
+proposal below is preserved as the historical audit recommendation.
 
 Installed kernel6.17.9-76061709-generic k10temp (srcversion
 A594DFB9AAE185D37A6B0D8) exposes PCI0000:00:18.3 temp1=Tctl, temp5=Tccd3,

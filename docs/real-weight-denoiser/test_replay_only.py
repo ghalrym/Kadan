@@ -10,6 +10,8 @@ import launch_replay_only
 import replay_bounded
 from replay_only_contracts import require_review, PROTOCOL, CONTEXT_SHA, verify_retained
 from thermal_guard import check_cpu, read_cpu_sensors
+from thermal_policy import IDENTITY
+from test_thermal_policy import rows as sensor_rows
 
 
 class ReplayOnlyTests(unittest.TestCase):
@@ -27,13 +29,13 @@ class ReplayOnlyTests(unittest.TestCase):
 
     def test_rejected_thermal_sample_is_persisted_with_phase(self):
         with tempfile.TemporaryDirectory() as directory:
-            rows=[dict(driver='k10temp',label='Tctl',path='sensor',celsius=80.)]
-            with self.assertRaises(RuntimeError):check_cpu(directory,'replay',rows,workload={'rank0':'cpu-audit:teacher-19'})
+            rows=sensor_rows(90.)
+            with self.assertRaises(RuntimeError):check_cpu(directory,'replay',rows,identity=IDENTITY,workload={'rank0':'cpu-audit:teacher-19'})
             sample=json.loads((Path(directory)/'cpu-thermal.jsonl').read_text())
-            self.assertEqual(sample['peak_c'],80.);self.assertFalse(sample['accepted'])
+            self.assertEqual(sample['peak_c'],90.);self.assertFalse(sample['accepted'])
             self.assertEqual(sample['sensors'],rows);self.assertEqual(sample['workload']['rank0'],'cpu-audit:teacher-19')
-            self.assertEqual(check_cpu(directory,'replay',[dict(celsius=79.999)]),79.999)
-            with self.assertRaises(ValueError):check_cpu(directory,'replay',rows,limit=81)
+            self.assertEqual(check_cpu(directory,'replay',sensor_rows(79.999),identity=IDENTITY),79.999)
+            with self.assertRaises(ValueError):check_cpu(directory,'replay',rows,limit=91,identity=IDENTITY)
 
     def test_missing_sensor_is_logged_and_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
