@@ -171,7 +171,7 @@ def main():
         while host.inspect_container(NAME)['State']['Running']:
             if time.monotonic()>=stage_end: raise TimeoutError('Host 30-second stage deadline')
             if time.monotonic()>=measurement_end: raise TimeoutError('Measurement deadline')
-            monitor.check()
+            host.guards()
             sample=task_counters(cgroup)
             with (evidence/'samples.jsonl').open('a') as stream:stream.write(json.dumps(sample)+'\n')
             if sum(p.stat().st_size for p in evidence.rglob('*') if p.is_file()) > RUN_CAP-6*1024**2:
@@ -193,7 +193,7 @@ def main():
         try:
             cleanup_end=min(time.monotonic()+30,end)
             host.arm_deadline(cleanup_end)
-            # Stop watchdog before recovery; otherwise hot cleanup can interrupt itself.
+            # Ignore a late external interruption during controlled recovery.
             signal.signal(signal.SIGUSR1,signal.SIG_IGN)
             monitor_failure=close_watchdog(monitor)
             if monitor_failure is not None:passed=False
