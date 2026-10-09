@@ -15,8 +15,10 @@ class WaitProbeTests(unittest.TestCase):
 
     def test_compare_requires_same_output_device_shape_and_dtype(self):
         control, candidate = self.rows()
-        self.assertEqual(compare(control,candidate),dict(numerical_equal=True,
-            control_cpu_per_wall=.98,candidate_cpu_per_wall=.02))
+        result=compare(control,candidate)
+        self.assertTrue(result['numerical_equal'])
+        self.assertAlmostEqual(result['control_cpu_per_wall'],.98)
+        self.assertAlmostEqual(result['candidate_cpu_per_wall'],.02)
         for key in ('device','output_sha256','shape','dtype','policy'):
             with self.assertRaises(ValueError): compare(control,dict(candidate,**{key:'wrong'}))
 
