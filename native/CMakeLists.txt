@@ -409,3 +409,13 @@ if(BUILD_TESTING)
   add_test(NAME video-rope-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_rope_fixture.py" "$<TARGET_FILE:video-rope-tests>" "$<TARGET_FILE:kadan-video-rope-component>")
   set_tests_properties(video-rope-component PROPERTIES TIMEOUT 30)
 endif()
+
+# Bounded H3 block 0 attention/output projection, CPU diagnostic only.
+add_executable(kadan-video-attention-component src/video_attention_component.cpp)
+target_link_libraries(kadan-video-attention-component PRIVATE kadan_video)
+if(BUILD_TESTING)
+  add_executable(video-attention-tests tests/video_attention.cpp)
+  target_link_libraries(video-attention-tests PRIVATE kadan_video)
+  add_test(NAME video-attention-component COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/video_attention_fixture.py" "$<TARGET_FILE:video-attention-tests>" "$<TARGET_FILE:kadan-video-attention-component>")
+  set_tests_properties(video-attention-component PROPERTIES TIMEOUT 60)
+endif()

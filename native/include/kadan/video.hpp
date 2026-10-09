@@ -90,4 +90,31 @@ private:
     std::unique_ptr<float[]> frequencies_;
     Handle resident_ = 0;
 };
+// Block 0 non-causal attention over supplied post-RoPE QKV, then to_out.
+// Caller assembles the complete sequence; this bounded component is not a decoder.
+class H3DecoderAttention {
+public:
+    static constexpr std::size_t heads=32, head_dim=64, hidden=2048, width=6144, max_tokens=8;
+    static constexpr Bytes weight_bytes=(hidden*hidden+hidden)*sizeof(float);
+    static constexpr Bytes metadata_bytes=H3DecoderInput::metadata_bytes;
+    static constexpr Bytes scratch_bytes=(hidden*2+max_tokens)*sizeof(float);
+    explicit H3DecoderAttention(std::shared_ptr<Resources> resources);
+    ~H3DecoderAttention();
+    H3DecoderAttention(const H3DecoderAttention&) = delete;
+    H3DecoderAttention& operator=(const H3DecoderAttention&) = delete;
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void unload();
+    bool loaded() const { return weights_ != nullptr; }
+    // Serialized owner; caller admits F32 [tokens,32,3,64] for the whole call.
+    // No mask, causal mode or dropout. Hook observes completed projection rows
+    // in groups of 64 and must not reenter. Output is [tokens,2048], not frames.
+    void execute(std::span<const float> qkv, const std::string& output,
+                 const std::atomic_bool& cancel,
+                 const std::function<void(std::size_t)>& on_rows = {});
+private:
+    Footprint host(Bytes bytes) const;
+    std::shared_ptr<Resources> resources_;
+    std::unique_ptr<float[]> weights_;
+    Handle resident_ = 0;
+};
 } // namespace kadan::video
