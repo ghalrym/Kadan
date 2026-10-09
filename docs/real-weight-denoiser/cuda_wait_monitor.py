@@ -30,6 +30,7 @@ class ThermalWatch:
         self.stop_event.set()
         self.thread.join(timeout=1)
         if self.thread.is_alive(): raise RuntimeError('Thermal monitor teardown unconfirmed')
+        if self.error is not None: raise RuntimeError('Independent thermal monitor: '+self.error)
 
     def _run(self):
         previous = None
@@ -94,3 +95,17 @@ def task_counters(cgroup, proc=Path('/proc')):
             rows.append(dict(pid=int(pid),start_ticks=start,threads=threads))
         except (FileNotFoundError,ProcessLookupError):continue
     return dict(monotonic=time.monotonic(),clock_ticks=os.sysconf('SC_CLK_TCK'),processes=rows)
+
+
+def close_watchdog(monitor):
+    """Return a late failure without I/O or exceptions blocking owner teardown."""
+    if monitor is None:return None
+    try:monitor.close()
+    except Exception as exc:return str(exc)
+    return None
+
+
+def publish_watchdog_error(evidence, error):
+    """Only called after physical cleanup and safe restoration; best effort."""
+    try:(Path(evidence)/'watchdog-cleanup-error.json').write_text(json.dumps(dict(error=error)))
+    except OSError:pass

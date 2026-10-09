@@ -5,9 +5,10 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters
+from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters, close_watchdog, publish_watchdog_error
+from supervisor_cuda_wait import cleanup
 import launch_cuda_wait as launch
 
 
@@ -35,6 +36,27 @@ class WaitMonitorTests(unittest.TestCase):
             with patch('cuda_wait_monitor.check_cpu',side_effect=RuntimeError('hot')), patch('cuda_wait_monitor.Path.write_text',side_effect=OSError('disk')), patch('cuda_wait_monitor.os.kill') as kill:
                 with self.assertRaises(OSError):monitor._run()
             kill.assert_called_once()
+
+    def test_late_failure_after_join_is_not_success(self):
+        monitor=ThermalWatch('/unused',['GPU-one'])
+        monitor.thread=Mock()
+        monitor.thread.join.side_effect=lambda timeout:setattr(monitor,'error','late hot sample')
+        monitor.thread.is_alive.return_value=False
+        self.assertIn('late hot sample',close_watchdog(monitor))
+
+    def test_late_failure_and_error_write_failure_do_not_skip_teardown(self):
+        monitor=Mock();monitor.close.side_effect=RuntimeError('late hot sample')
+        child=Mock(pid=123)
+        events=[]
+        with patch('cuda_wait_monitor.Path.write_text',side_effect=OSError('disk')) as write, patch('supervisor_cuda_wait.os.killpg',side_effect=lambda *args:events.append('kill')), patch('supervisor_cuda_wait.time.monotonic',return_value=1):
+            failure=close_watchdog(monitor)
+            write.assert_not_called() # No evidence I/O before owner teardown.
+            cleanup([child],30)
+            events.append('restored')
+            publish_watchdog_error('/unused',failure)
+        self.assertEqual(events,['kill','restored'])
+        child.wait.assert_called_once_with(timeout=29)
+        self.assertIn('late hot sample',failure)
 
     def test_missed_cadence_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
