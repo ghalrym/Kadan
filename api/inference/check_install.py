@@ -6,14 +6,13 @@ def main():
     import accelerate
     import safetensors
     import torch
-    import laya
     from transformers import AutoTokenizer, GptOssForCausalLM, Qwen3_5MoeForCausalLM
     from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
     from api.inference.llm.model_adapter import build_runtime
     from api.inference.llm.qwen import build_qwen
     from api.inference.llm.glm import build_glm
 
-    assert all((accelerate, safetensors, laya, AutoTokenizer, GptOssForCausalLM,
+    assert all((accelerate, safetensors, AutoTokenizer, GptOssForCausalLM,
                 Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
     from api.inference.tts.check_install import check_speech_install
     check_speech_install()

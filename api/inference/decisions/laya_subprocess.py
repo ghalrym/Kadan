@@ -21,7 +21,8 @@ import time
 
 from huggingface_hub import snapshot_download
 
-from api.inference.decisions.laya_python import DEFAULT_MODEL, DEFAULT_REVISION, parse_answer
+from api.inference.decisions.laya_checkpoint import DEFAULT_MODEL, DEFAULT_REVISION
+from api.inference.decisions.laya_answers import parse_answer
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess, check_cancel
 from api.inference.resources import ResourceBusy, ResourceExhausted

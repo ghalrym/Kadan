@@ -11,7 +11,7 @@ from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExh
 from api.services.model_downloads import model_manager
 from api.services.model_catalog import H3_INT8_REVISION
 from api.services.chat_runtime import chat_runtime
-from api.inference.decisions.laya_python import clear_failure_frames
+from api.inference.failure_cleanup import clear_failure_frames
 
 H3_REVISION = H3_INT8_REVISION
 SGLANG_REVISION = 'f048d5aa4bc1bcad7fa2c60d067590d83d6dbe4a'

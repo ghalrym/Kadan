@@ -18,12 +18,10 @@ from api.inference.stt.whisper_transcriber import WhisperTranscriber
 from api.inference.stt.catalog import checkpoint
 from api.inference.tts.speech_requests import SpeechRequests
 from api.inference.decisions.decision_requests import DecisionRequests
-from api.inference.decisions.laya_python import LayaPythonEvaluator
 from api.inference.resources import ResourceManager, ResourceBusy
 from api.inference.errors import InferenceFailure
 from api.services.video_jobs import VideoJobs
 from api.tests.inference.stt.test_whisper_transcriber import audio_url
-from api.tests.inference.decisions.test_laya_python import questions
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
 from api.routes.v1.decisions import DecisionRequest
@@ -91,24 +89,6 @@ class RequestExecutorContractTests(unittest.IsolatedAsyncioTestCase):
                 await feature.unload()
                 self.assertIsNone(feature.adapter)
                 self.assertEqual(resources.snapshot()['reservations'], {})
-
-    async def test_cpu_decisions_load_is_prediction_free_and_offload_preserves_agent(self):
-        resources = ResourceManager(100, {})
-        native = Mock()
-        native.predict.return_value = {'answers':{'urgent':{'type':'noul','noul':.7}},'usage':{}}
-        loader = Mock(return_value=native)
-        feature = DecisionRequests(LayaPythonEvaluator(loader, resources, check=Mock(), ram_bytes=60))
-        self.assertIsInstance(feature, RequestExecutor)
-        self.assertIs(await feature.load(), native)
-        native.predict.assert_not_called()
-        await feature.offload_to_ram()
-        self.assertIs(feature.adapter, native)
-        result = await feature(DecisionRequest(state='state', questions=[questions()[2]]))
-        self.assertEqual(result[0]['value'], .7)
-        loader.assert_called_once()
-        await feature.unload()
-        self.assertIsNone(feature.adapter)
-        self.assertEqual(resources.snapshot()['reservations'], {})
 
     async def test_video_explicit_load_park_generation_and_unload_share_provider(self):
         resources = ResourceManager(400 * GIB, {0:18 * GIB})

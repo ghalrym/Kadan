@@ -20,7 +20,7 @@ from api.services.model_downloads import model_manager
 from api.inference.errors import InferenceFailure
 from api.services.chat_runtime import chat_runtime
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
-from api.inference.decisions.laya_python import clear_failure_frames
+from api.inference.failure_cleanup import clear_failure_frames
 
 
 class WhisperTranscriber:

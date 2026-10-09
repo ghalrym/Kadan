@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator, DEFAULT_HOST_BUDGET_BYTES, resolve_laya_command
 from api.inference.decisions.laya_backend import create_laya_evaluator
+from api.inference.decisions.decision_requests import DecisionRequests
 from api.inference.resources import ResourceManager
 from api.routes.v1.decisions import DecisionRequest
 from api.inference.errors import InferenceFailure
@@ -137,9 +138,26 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
     def test_explicit_backend_and_preflight_no_fallback(self):
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'native'}):
             self.assertIsInstance(create_laya_evaluator(), LayaSubprocessEvaluator)
-        with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'invalid'}):
-            with self.assertRaises(InferenceFailure):
-                create_laya_evaluator()
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsInstance(create_laya_evaluator(), LayaSubprocessEvaluator)
+        for backend in ('python', 'invalid', ''):
+            with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': backend}):
+                with self.assertRaises(InferenceFailure):
+                    create_laya_evaluator()
         with patch.dict(os.environ, {'KADAN_NATIVE_DECISION_WORKER': '/missing/worker'}):
             with self.assertRaises(InferenceFailure):
                 resolve_laya_command()
+
+    async def test_request_executor_load_park_call_and_close_owns_one_worker(self):
+        executor = DecisionRequests(self.manager)
+        self.assertIsNone(await executor.load())
+        self.assertIsNone(executor.adapter)
+        result = await executor(body())
+        worker = executor.adapter
+        await executor.offload_to_ram()
+        self.assertEqual([item['type'] for item in result], ['Choice', 'Score', 'Noul'])
+        self.assertIs(executor.adapter, worker)
+        await executor.unload()
+        self.assertIsNotNone(worker.process.poll())
+        self.assertIsNone(executor.adapter)
+        self.assertEqual(self.resources.snapshot()['reservations'], {})

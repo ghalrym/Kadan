@@ -4,8 +4,6 @@ torch==2.14.1
 transformers==5.17.0
 accelerate==1.10.1
 safetensors==0.8.0
-# Embedded CPU decisions; no Laya HTTP server or GPU extras.
-laya @ git+https://github.com/NandhaKishorM/laya.git@8a6e1328cce2460a0e5aa348ad465bb1b5821cd2
 
 # Native official Whisper checkpoints; audio decoding uses PCM arrays, not ffmpeg.
 openai-whisper==20250625
