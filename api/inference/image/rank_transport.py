@@ -129,7 +129,11 @@ class ProcessRanks:
                 checkpoint=str(self.path), directory=self.directory.name, cpus=cpus,
                 execution_bytes=self.budget.execution_bytes, parent_pid=os.getpid())
             try:
-                process = subprocess.Popen([sys.executable, '-m', self.worker_module,
+                # Set affinity before Python/sitecustomize can create helper threads.
+                # taskset execs Python in the same PID/process group; parent-death
+                # fencing and process ownership retain their existing identities.
+                process = subprocess.Popen(['/usr/bin/taskset', '--cpu-list', ','.join(map(str, cpus)),
+                    sys.executable, '-m', self.worker_module,
                     str(child.fileno()), json.dumps(config)], pass_fds=(child.fileno(),),
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True, env=env)

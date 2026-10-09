@@ -4,8 +4,16 @@ import os
 import socket
 import sys
 import time
+import threading
 
 from api.inference.image.rank_transport import encode, receive_blocking
+
+
+# A helper created before main must already inherit the bounded rank mask.
+startup_affinity = []
+startup_thread = threading.Thread(target=lambda: startup_affinity.extend(sorted(os.sched_getaffinity(0))))
+startup_thread.start()
+startup_thread.join()
 
 
 def main():
@@ -23,7 +31,8 @@ def main():
         if marker == 'wait':
             time.sleep(60)
         reply = dict(command, rank=config['rank'], device=config['device'], status='ok',
-            resident_bytes=0 if command['operation']=='park' else 1)
+            resident_bytes=0 if command['operation']=='park' else 1,
+            main_affinity=sorted(os.sched_getaffinity(0)), startup_affinity=startup_affinity)
         if marker == 'oom' and config['rank'] == 1:
             reply.update(status='error',error='OutOfMemoryError: synthetic allocation failure')
         if marker == 'stale' and config['rank'] == 1:

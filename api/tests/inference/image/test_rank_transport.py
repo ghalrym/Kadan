@@ -1,4 +1,5 @@
 import threading
+import os
 import tempfile
 import time
 import unittest
@@ -25,6 +26,17 @@ class ProcessRankTests(unittest.TestCase):
     def tearDown(self):
         self.memory={0:0,1:0}
         self.session.close()
+
+    def test_both_rank_startup_threads_share_one_two_cpu_budget(self):
+        expected=rank_cpus(os.sched_getaffinity(0))
+        replies=self.session.execute('a'*32,payload={'prompt':'ok'})
+        union=set()
+        for reply in replies:
+            self.assertEqual(reply['main_affinity'],expected)
+            self.assertEqual(reply['startup_affinity'],expected)
+            union.update(reply['main_affinity']);union.update(reply['startup_affinity'])
+        self.assertEqual(union,set(expected))
+        self.assertLessEqual(len(union),2)
 
     def test_startup_failure_before_first_child_has_no_false_quarantine(self):
         self.transport.memory_probe=lambda: (_ for _ in ()).throw(OSError('probe unavailable'))
