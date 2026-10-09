@@ -56,7 +56,7 @@ H3Generation::H3Generation(std::shared_ptr<Resources> resources):resources_(std:
 void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequest& request,const std::atomic_bool& cancel,const Hook& hook){
     static_assert(std::endian::native==std::endian::little);stop(cancel);Active active(busy_);
     check(request.width>=32&&request.width<=128&&request.width%32==0&&request.height>=32&&request.height<=128&&request.height%32==0,"h3_generation_dimensions");
-    check(request.frames>=5&&request.frames<=90&&(request.frames-5)%17==0,"h3_generation_frames");check(!request.output.empty(),"h3_generation_output");
+    check(request.frames>=5&&request.frames<=90&&(request.frames-5)%17==0,"h3_generation_frames");check(!request.output.empty()&&request.output.size()<=4096&&request.output.find('\0')==std::string::npos,"h3_generation_output");
     check(!std::filesystem::exists(request.output)&&!std::filesystem::is_symlink(request.output),"h3_generation_output_exists");
     const bool mp4=std::filesystem::path(request.output).extension()==".mp4";
     check(mp4||std::filesystem::path(request.output).extension()==".y4m","h3_generation_output_format");
