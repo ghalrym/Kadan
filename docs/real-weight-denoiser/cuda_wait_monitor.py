@@ -60,10 +60,12 @@ class ThermalWatch:
                 self.stop_event.wait(max(0,next_sample-time.monotonic()))
         except BaseException as exc:
             self.error=f'{type(exc).__name__}: {exc}'[:1000]
-            (self.evidence/'watchdog-error.json').write_text(json.dumps(dict(error=self.error)))
-            self.ready.set()
-            # Interrupt a slow Docker/control command immediately, not next poll.
-            os.kill(os.getpid(),signal.SIGUSR1)
+            try:
+                (self.evidence/'watchdog-error.json').write_text(json.dumps(dict(error=self.error)))
+            finally:
+                self.ready.set()
+                # Evidence I/O failure must not suppress the abort signal.
+                os.kill(os.getpid(),signal.SIGUSR1)
 
 
 def cgroup_identity(pid, proc=Path('/proc'), sysfs=Path('/sys/fs/cgroup')):
