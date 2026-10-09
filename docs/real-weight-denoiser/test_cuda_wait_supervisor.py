@@ -31,7 +31,7 @@ class WaitSupervisorTests(unittest.TestCase):
             path=Path(root)
             for device in (0,1):
                 (path/f'rank-{device}.json').write_text(json.dumps(dict(device=device,policy='control',
-                    commit='a'*40,gpu_uuid=launch.host.GPUS[device])))
+                    commit='a'*40,gpu_uuid=launch.host.GPUS[device],flags={'before':0,'after':0,'after_window':0})))
             launch.verify(path,'control','a'*40)
             row=json.loads((path/'rank-1.json').read_text());row['gpu_uuid']=launch.host.GPUS[0]
             (path/'rank-1.json').write_text(json.dumps(row))

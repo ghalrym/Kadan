@@ -9,7 +9,8 @@ import time
 
 import launch_trajectory as host
 from launch_api_baseline import restore_exact
-from cuda_wait_probe import PLAN
+from cuda_wait_probe import PLAN, compare
+from cuda_wait_monitor import ThermalWatch, cgroup_identity, task_counters
 
 CASES = ("control", "blocking")
 PROTOCOL = "cuda-wait-short-v1"
@@ -20,6 +21,13 @@ def verify(path, case, commit):
         row=json.loads((path/f"rank-{device}.json").read_text())
         if row["policy"]!=case or row["device"]!=device or row["commit"]!=commit or row["gpu_uuid"]!=host.GPUS[device]:
             raise ValueError("Probe result identity differs")
+        flags=row['flags']
+        if flags['after_window']!=flags['after']:
+            raise ValueError('Probe flags changed during window')
+        if case=='control' and (flags['before'] & 7 == 4 or flags['after_window'] & 7 == 4):
+            raise ValueError('Inconclusive: control already BlockingSync; stop before candidate')
+        if case=='blocking' and flags['after_window'] & 7 != 4:
+            raise ValueError('Candidate BlockingSync unconfirmed')
 from bf16_contracts import LIMIT, require_ci
 CRITERIA = dict(output_sha256_equal=True, physical_uuid_equal=True, intervention_required=True, cpu_limit_c=80, gpu_limit_c=90)
 from thermal_guard import check_cpu
@@ -59,6 +67,7 @@ def main():
     parser.add_argument('--review-record', type=Path)
     parser.add_argument('--evidence', type=Path)
     parser.add_argument('--retained-roots', nargs='+', type=Path)
+    parser.add_argument('--control-evidence', type=Path)
     args = parser.parse_args()
     if not args.execute_reviewed:
         print(json.dumps(dict(protocol=PROTOCOL, cases={case:settings(case) for case in CASES},
@@ -79,6 +88,13 @@ def main():
     require_ci(ci,commit)
     if host.run('docker','inspect',NAME,check=False).returncode == 0:
         raise ValueError('Probe name already owned')
+    if args.case=='blocking':
+        if args.control_evidence is None:raise ValueError('Reviewed same-head control evidence required')
+        verify(args.control_evidence/'trajectory-evidence','control',commit)
+        if not json.loads((args.control_evidence/'pause-result.json').read_text())['restored']:
+            raise ValueError('Control API restoration unconfirmed')
+        if not any(args.control_evidence.resolve().is_relative_to(p.resolve()) for p in args.retained_roots):
+            raise ValueError('Control evidence must be included in retained storage roots')
     retained = storage(args.retained_roots,args.evidence)
     if shutil.disk_usage(args.evidence.parent).free < 64*1024**3:
         raise ValueError('Require 64 GiB free disk')
@@ -118,11 +134,15 @@ def main():
     baseline = None
     owned = False
     passed = False
+    monitor = None
     def interrupted(signum, frame): raise InterruptedError(f'Baseline launcher signal {signum}')
     old_term = signal.signal(signal.SIGTERM,interrupted)
     old_int = signal.signal(signal.SIGINT,interrupted)
     old_alarm = signal.signal(signal.SIGALRM,interrupted)
+    old_watch = signal.signal(signal.SIGUSR1,interrupted)
     try:
+        monitor=ThermalWatch(evidence,host.GPUS)
+        monitor.start()
         host.arm_deadline(measurement_end)
         paused = True
         host.run('docker','stop','--time','30',api_id,timeout=45)
@@ -148,24 +168,28 @@ def main():
             '--env','OMP_NUM_THREADS=1','--env','MKL_NUM_THREADS=1','--env','OPENBLAS_NUM_THREADS=1',
             '--entrypoint','python',host.IMAGE,'/probe/supervisor_cuda_wait.py',args.case,commit]
         owned = True  # A timed-out docker create may still have created this unique name.
-        host.run(*command)
         stage_end=time.monotonic()+30
         host.arm_deadline(min(stage_end,measurement_end))
+        host.run(*command)
+        container=host.inspect_container(NAME)
+        cgroup,limits=cgroup_identity(container['State']['Pid'])
+        (evidence/'actual-limits.json').write_text(json.dumps(limits))
         while host.inspect_container(NAME)['State']['Running']:
             if time.monotonic()>=stage_end: raise TimeoutError('Host 30-second stage deadline')
             if time.monotonic()>=measurement_end: raise TimeoutError('Measurement deadline')
-            sample = host.guards()
-            sample['monotonic']=time.monotonic()
-            sample['compute_processes']=host.run('nvidia-smi','--query-compute-apps=gpu_uuid,pid,used_memory','--format=csv,noheader,nounits').stdout
-            sample['threads']=host.run('docker','top',NAME,'-eLo','pid,lwp,comm,pcpu,time,psr',check=False).stdout
-            sample['cgroup_memory']=host.run('docker','exec',NAME,'cat','/sys/fs/cgroup/memory.current',check=False).stdout.strip()
-            with (evidence/'samples.jsonl').open('a') as stream: stream.write(json.dumps(sample)+'\n')
+            monitor.check()
+            sample=task_counters(cgroup)
+            with (evidence/'samples.jsonl').open('a') as stream:stream.write(json.dumps(sample)+'\n')
             if sum(p.stat().st_size for p in evidence.rglob('*') if p.is_file()) > RUN_CAP-6*1024**2:
                 raise RuntimeError('Evidence cap reached; reserve logs and restoration metadata')
             time.sleep(1)
         state = host.inspect_container(NAME)['State']
         if state['OOMKilled'] or state['ExitCode'] != 0: raise RuntimeError('Baseline process failed')
         verify(work,args.case,commit)
+        if args.case=='blocking':
+            comparisons=[compare(json.loads((args.control_evidence/'trajectory-evidence'/f'rank-{d}.json').read_text()),
+                json.loads((work/f'rank-{d}.json').read_text())) for d in (0,1)]
+            (evidence/'comparison.json').write_text(json.dumps(comparisons))
         passed = True
     except BaseException as exc:
         (evidence/'failure.json').write_text(json.dumps(dict(type=type(exc).__name__,message=str(exc)[:2000])))
@@ -175,6 +199,14 @@ def main():
         try:
             cleanup_end=min(time.monotonic()+30,end)
             host.arm_deadline(cleanup_end)
+            # Stop watchdog before recovery; otherwise hot cleanup can interrupt itself.
+            signal.signal(signal.SIGUSR1,signal.SIG_IGN)
+            monitor_failure=None
+            if monitor is not None:
+                try:monitor.close()
+                except Exception as exc:
+                    monitor_failure=str(exc);passed=False
+                    (evidence/"watchdog-cleanup-error.json").write_text(json.dumps(dict(error=monitor_failure)))
             if owned and host.run('docker','inspect',NAME,check=False).returncode == 0:
                 host.run('docker','stop','--time','5',NAME,check=False)
                 state = host.inspect_container(NAME)['State']
@@ -196,12 +228,14 @@ def main():
                 for command,key in [('SCARD','unfinished'),('LLEN','pending')]:
                     if host.run('docker','exec','kadan-redis-1','redis-cli',command,'kadan:inference:'+key).stdout.strip()!='0':
                         raise RuntimeError('FIFO not empty after restoration')
+            if monitor_failure is not None:raise RuntimeError(monitor_failure)
         finally:
             signal.setitimer(signal.ITIMER_REAL,0)
             host.COMMAND_DEADLINE=None
             signal.signal(signal.SIGTERM,old_term)
             signal.signal(signal.SIGINT,old_int)
             signal.signal(signal.SIGALRM,old_alarm)
+            signal.signal(signal.SIGUSR1,old_watch)
 
 
 if __name__ == '__main__':
