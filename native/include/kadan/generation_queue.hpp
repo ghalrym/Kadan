@@ -29,7 +29,7 @@ public:
     Handle submit(Model model) {
         require(!stopping_, "stopping");
         require(!model.key.empty() && model.key.size() <= 256, "model_key");
-        require(model.workload == Workload::llm || model.workload == Workload::image, "workload");
+        require(model.workload == Workload::llm || model.workload == Workload::image || model.workload == Workload::decision, "workload");
         const auto capacity = resources_->snapshot().capacity;
         require(model.bytes.size() == capacity.size(), "budget_shape");
         for (std::size_t i = 0; i < capacity.size(); ++i)

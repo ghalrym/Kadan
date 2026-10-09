@@ -45,7 +45,7 @@ void WeightBacking::add(std::string key, Workload workload,
     idle();
     require(!key.empty() && key.size() <= 256 && !tensor.empty() && tensor.size() <= 1024 && source,
             "weight_identity");
-    require(workload == Workload::llm || workload == Workload::image, "weight_workload");
+    require(workload == Workload::llm || workload == Workload::image || workload == Workload::decision, "weight_workload");
     require(entries_.size() < entry_limit_ && !entries_.contains(key), "weight_entry_limit_or_duplicate");
     source->check_unchanged();
     auto bytes = source->tensor(tensor).bytes;

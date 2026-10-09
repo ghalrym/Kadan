@@ -11,8 +11,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - name: Install optional CPU decision dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev
       - name: Configure CPU-only C++20 worker
-        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=ON -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
       - name: Build with bounded parallelism
         run: cmake --build /tmp/kadan-native --parallel 2
       - name: Test native accounting, formats and bounded checkpoint reads

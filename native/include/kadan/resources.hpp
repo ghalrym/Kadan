@@ -100,6 +100,12 @@ public:
         for (std::size_t i = 0; i < used_.size(); ++i) used_[i] -= r.bytes[i];
         residents_.erase(handle);
     }
+    Resident reservation(Handle handle) const {
+        std::lock_guard lock(mutex_);
+        auto it=residents_.find(handle);
+        if(it==residents_.end()) throw std::runtime_error("stale_handle");
+        return it->second;
+    }
     Snapshot snapshot() const {
         std::lock_guard lock(mutex_);
         return {capacity_, used_, residents_.size()};
