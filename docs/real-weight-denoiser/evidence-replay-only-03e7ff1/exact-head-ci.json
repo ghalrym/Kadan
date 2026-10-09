@@ -1,0 +1,30 @@
+[
+  {
+    "conclusion": "success",
+    "event": "pull_request",
+    "headSha": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+    "name": "Native worker CPU tests",
+    "status": "completed"
+  },
+  {
+    "conclusion": "success",
+    "event": "pull_request",
+    "headSha": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+    "name": "API tests",
+    "status": "completed"
+  },
+  {
+    "conclusion": "success",
+    "event": "push",
+    "headSha": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+    "name": "Native worker CPU tests",
+    "status": "completed"
+  },
+  {
+    "conclusion": "success",
+    "event": "push",
+    "headSha": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+    "name": "API tests",
+    "status": "completed"
+  }
+]

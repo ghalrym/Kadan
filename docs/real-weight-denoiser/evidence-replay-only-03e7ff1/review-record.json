@@ -1,0 +1,8 @@
+{
+  "protocol": "bf16-step39-replay-only-v1",
+  "source_commit": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+  "context_manifest_sha256": "9ceff1294a8aecf4a3211ab952d5b8f3beeec151fc8640431d536e2257c0fafa",
+  "decision": "approved-for-bounded-execution",
+  "reviewer": "Independent review relayed by parent thread",
+  "review_reference": "01a11767-879a-728b-a932-8da474177028: replay-only step39 independent review and explicit execution authorization"
+}

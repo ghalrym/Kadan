@@ -1,5 +1,8 @@
 # BF16 held-out step results
 
+Subsequent replay-only step 39 passed at `03e7ff1`; see STEP39_REPLAY_ONLY_RESULTS.md.
+The report below preserves the original interrupted attempt unchanged.
+
 Executed independently reviewed commit
 `f0b4eefc615a6370fb6bb43a13264a0128e0ea13` with unchanged criteria and resource
 bounds. Step 20 passed. Step 39 capture succeeded, but replay was interrupted by

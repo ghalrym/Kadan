@@ -1,0 +1,8 @@
+{
+  "intraop": 1,
+  "interop": 1,
+  "affinity_cpus": 32,
+  "cpu_max": "200000 100000",
+  "replay_commit": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+  "capture_commit": "f0b4eefc615a6370fb6bb43a13264a0128e0ea13"
+}

@@ -1,0 +1,119 @@
+{
+  "executed_commit": "03e7ff190ef4e29a7356282153bf5da1d6b270a0",
+  "step39": "passed",
+  "numerical_boundaries": 172,
+  "violations": 0,
+  "nonfinite": 0,
+  "max_abs_error": 0.0,
+  "supervisor": {
+    "returncode": 0,
+    "elapsed_s": 376.488894663009,
+    "torchrun_reaped": true
+  },
+  "thermal_samples": 322,
+  "peak_cpu_sample": {
+    "unix_time": 1791505307.0706575,
+    "phase": "replay-or-admission",
+    "workload": {
+      "phase-rank-0.json": {
+        "phase": "cpu-audit:chain-32-5",
+        "unix_time": 1791505305.6655157,
+        "rank": 0
+      },
+      "phase-rank-1.json": {
+        "phase": "cpu-audit:chain-32-5",
+        "unix_time": 1791505305.665524,
+        "rank": 1
+      }
+    },
+    "sensors": [
+      {
+        "path": "/sys/class/hwmon/hwmon3/temp1_input",
+        "driver": "k10temp",
+        "label": "Tctl",
+        "celsius": 74.625
+      },
+      {
+        "path": "/sys/class/hwmon/hwmon3/temp5_input",
+        "driver": "k10temp",
+        "label": "Tccd3",
+        "celsius": 54.75
+      },
+      {
+        "path": "/sys/class/hwmon/hwmon3/temp7_input",
+        "driver": "k10temp",
+        "label": "Tccd5",
+        "celsius": 79.0
+      }
+    ],
+    "peak_c": 79.0,
+    "threshold_c": 80,
+    "accepted": true
+  },
+  "cooldown_peaks": [
+    50.0,
+    48.75,
+    49.25,
+    48.0,
+    47.125
+  ],
+  "gpu_peak_mib": {
+    "GPU-e30b6419-2c6d-f550-61d6-16166a920dac": 17202,
+    "GPU-2a2378dd-08c1-6f69-6317-a253d90e76b3": 16959
+  },
+  "gpu_max_c": 79,
+  "container_memory_peak_bytes": 2983563264,
+  "cpu_stat_first": {
+    "usage_usec": 280268,
+    "user_usec": 237532,
+    "system_usec": 42735,
+    "nice_usec": 239000,
+    "core_sched.force_idle_usec": 0,
+    "nr_periods": 6,
+    "nr_throttled": 0,
+    "throttled_usec": 0,
+    "nr_bursts": 0,
+    "burst_usec": 0
+  },
+  "cpu_stat_last": {
+    "usage_usec": 568210081,
+    "user_usec": 545835605,
+    "system_usec": 22374475,
+    "nice_usec": 545824000,
+    "core_sched.force_idle_usec": 0,
+    "nr_periods": 3760,
+    "nr_throttled": 1308,
+    "throttled_usec": 6452300,
+    "nr_bursts": 0,
+    "burst_usec": 0
+  },
+  "cpu_stat_deltas": {
+    "usage_usec": 567929813,
+    "user_usec": 545598073,
+    "system_usec": 22331740,
+    "nice_usec": 545585000,
+    "core_sched.force_idle_usec": 0,
+    "nr_periods": 3754,
+    "nr_throttled": 1308,
+    "throttled_usec": 6452300,
+    "nr_bursts": 0,
+    "burst_usec": 0
+  },
+  "restoration": {
+    "id": "1efcf5729f776dd90bbc0611c63a474bc696cadc0d48b9011fbb320e167b6499",
+    "started_at": "2026-10-09T00:23:40.031972854Z",
+    "healthy": "healthy",
+    "native_state": "ready",
+    "native_model": "small",
+    "pause": {
+      "elapsed_s": 456.4442212300055,
+      "limit_s": 2100,
+      "restored": true
+    }
+  },
+  "causality": "No proof that CPU oversubscription caused the earlier stop; multiple conditions differ and historical rejected sample was not recorded",
+  "full_trajectory": "not-run",
+  "decoded_image": "not-run",
+  "production_activation": false,
+  "cpu_stat_scope": "first through last successful sample; final container-exit empty sample excluded"
+}
