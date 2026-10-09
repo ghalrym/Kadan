@@ -8,8 +8,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from api.inference.decisions.native import NativeDecisionManager, RAM_BYTES, command
+from api.inference.decisions.worker import DecisionWorkerManager, DEFAULT_HOST_BUDGET_BYTES, resolve_worker_command
 from api.inference.decisions.service import create_manager
+from api.inference.decisions import native as legacy_adapter
+from api.inference.decisions import worker as worker_adapter
 from api.inference.resources import ResourceManager
 from api.routes.v1.decisions import DecisionRequest
 from api.services.runtime import RuntimeFailure
@@ -47,14 +49,14 @@ def body(state='hello café'):
         dict(key='n', type='Noul', instructions='true?', trueWhen='yes', falseWhen='no')])
 
 
-class NativeDecisionTests(unittest.IsolatedAsyncioTestCase):
+class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.script = self.root / 'worker.py'
         self.script.write_text(SCRIPT)
-        self.resources = ResourceManager(RAM_BYTES * 2, {})
-        self.manager = NativeDecisionManager(self.resources, resolve=lambda: [sys.executable, str(self.script)])
+        self.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES * 2, {})
+        self.manager = DecisionWorkerManager(self.resources, resolve=lambda: [sys.executable, str(self.script)])
 
     async def asyncTearDown(self):
         await self.manager.close()
@@ -71,8 +73,8 @@ class NativeDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[2].probabilities, None)
         self.assertEqual(await self.evaluate(), result)
         self.assertIs(worker, self.manager.agent)
-        self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), RAM_BYTES)
-        reservation = self.resources.reserve('pressure', 'image', host_bytes=RAM_BYTES + 1)
+        self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), DEFAULT_HOST_BUDGET_BYTES)
+        reservation = self.resources.reserve('pressure', 'image', host_bytes=DEFAULT_HOST_BUDGET_BYTES + 1)
         self.assertIsNotNone(worker.process.poll())
         self.assertIsNone(self.manager.agent)
         reservation.release()
@@ -121,25 +123,34 @@ class NativeDecisionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(worker, 'stop', side_effect=RuntimeError('reap failed')):
             with self.assertRaises(RuntimeError):
                 await self.manager.close()
-            self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), RAM_BYTES)
+            self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), DEFAULT_HOST_BUDGET_BYTES)
             with self.assertRaises(RuntimeFailure):
                 await self.evaluate()
         await self.manager.close()
         self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), 0)
 
     async def test_admission_precedes_spawn(self):
-        self.manager.resources = ResourceManager(RAM_BYTES - 1, {})
+        self.manager.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES - 1, {})
         with self.assertRaises(RuntimeFailure) as caught:
             await self.evaluate()
         self.assertEqual(caught.exception.status_code, 503)
         self.assertIsNone(self.manager.agent)
 
+    def test_legacy_imports_keep_worker_and_helper_contracts(self):
+        self.assertIs(legacy_adapter.NativeDecisionManager, DecisionWorkerManager)
+        self.assertIs(legacy_adapter.DecisionProcess, worker_adapter.DecisionWorkerProcess)
+        self.assertIs(legacy_adapter.command, resolve_worker_command)
+        self.assertIs(legacy_adapter.decode, worker_adapter.decode_response_frame)
+        self.assertIs(legacy_adapter.answers_for, worker_adapter.parse_worker_answers)
+        self.assertEqual(legacy_adapter.RAM_BYTES, DEFAULT_HOST_BUDGET_BYTES)
+        self.assertEqual(legacy_adapter.FRAME_BYTES, worker_adapter.MAX_FRAME_BYTES)
+
     def test_explicit_backend_and_preflight_no_fallback(self):
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'native'}):
-            self.assertIsInstance(create_manager(), NativeDecisionManager)
+            self.assertIsInstance(create_manager(), DecisionWorkerManager)
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'invalid'}):
             with self.assertRaises(RuntimeFailure):
                 create_manager()
         with patch.dict(os.environ, {'KADAN_NATIVE_DECISION_WORKER': '/missing/worker'}):
             with self.assertRaises(RuntimeFailure):
-                command()
+                resolve_worker_command()

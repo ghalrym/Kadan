@@ -11,25 +11,25 @@ from uuid import uuid4
 from fastapi import FastAPI
 import httpx
 
-from api.inference.decisions.native import NativeDecisionManager, RAM_BYTES
+from api.inference.decisions.worker import DecisionWorkerManager, DEFAULT_HOST_BUDGET_BYTES
 from api.inference.resources import ResourceManager
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue
 from api.routes.v1.decisions import router
 from api.services.runtime import RuntimeFailure
-from api.tests.inference.decisions.test_native import SCRIPT, body
+from api.tests.inference.decisions.test_worker import SCRIPT, body
 
 
 @unittest.skipUnless(os.getenv('KADAN_TEST_REDIS_URL'), 'Dedicated Redis URL required')
-class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
+class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         script = root / 'worker.py'
         script.write_text(SCRIPT)
-        self.resources = ResourceManager(RAM_BYTES * 2, {})
-        self.native = NativeDecisionManager(self.resources, resolve=lambda: [sys.executable, str(script)])
-        self.manager = MemoryManager(decisions=self.native, queue=object())
+        self.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES * 2, {})
+        self.worker_manager = DecisionWorkerManager(self.resources, resolve=lambda: [sys.executable, str(script)])
+        self.manager = MemoryManager(decisions=self.worker_manager, queue=object())
         self.manager.features = {'decisions': self.manager.decisions}
         self.prefix = 'kadan:test:' + uuid4().hex + ':'
         self.manager.queue = InferenceQueue(self.manager._execute, url=os.environ['KADAN_TEST_REDIS_URL'],
@@ -50,7 +50,7 @@ class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
         if keys:
             await redis.delete(*keys)
         await redis.aclose()
-        await self.native.close()
+        await self.worker_manager.close()
         self.assertFalse(self.resources.snapshot()['reservations'])
         self.temp.cleanup()
 
@@ -61,10 +61,10 @@ class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([answer['type'] for answer in answers], ['Choice', 'Score', 'Noul'])
         self.assertEqual(answers[0]['value'], 'red')
         self.assertIsNone(answers[2]['probabilities'])
-        worker = self.native.agent
+        worker = self.worker_manager.agent
         again = await self.client.post('/v1/decisions', json=body().model_dump(mode='json', by_alias=True))
         self.assertEqual(again.json(), response.json())
-        self.assertIs(worker, self.native.agent)
+        self.assertIs(worker, self.worker_manager.agent)
 
     async def test_http_errors_remain_typed_and_cleanup(self):
         for state, status in [('reject', 422), ('wrong', 502)]:
@@ -72,29 +72,29 @@ class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, status, response.text)
             self.assertFalse(self.resources.snapshot()['reservations'])
 
-    async def test_unicode_native_byte_limit_is_a_client_error(self):
-        # Character-valid HTTP input can exceed the native UTF-8 byte limit.
+    async def test_unicode_worker_byte_limit_is_a_client_error(self):
+        # Character-valid HTTP input can exceed the worker UTF-8 byte limit.
         request = body('🙂' * 5000)
         self.assertLess(len(request.model_dump_json()), 16000)
         self.assertGreater(len(request.state.encode('utf-8')), 16384)
         response = await self.client.post('/v1/decisions', json=request.model_dump(mode='json', by_alias=True))
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn('decision_empty_or_long_text', response.json()['detail'])
-        self.assertIsNone(self.native.agent)
+        self.assertIsNone(self.worker_manager.agent)
         self.assertFalse(self.resources.snapshot()['reservations'])
         again = await self.client.post('/v1/decisions', json=body().model_dump(mode='json', by_alias=True))
         self.assertEqual(again.status_code, 200, again.text)
 
     async def test_fifo_cancel_waits_for_child_before_image_and_later_decision(self):
         events = []
-        native = self.native
+        worker_manager = self.worker_manager
         class ImageLeaf:
             operations = ('generate',)
             validate = staticmethod(lambda payload, operation: payload)
             async def offload_to_ram(self):
                 pass
             async def __call__(self, request, **kwargs):
-                self_test.assertIsNone(native.agent)
+                self_test.assertIsNone(worker_manager.agent)
                 self_test.assertFalse(self_test.resources.snapshot()['reservations'])
                 events.append('image')
                 return {'ok': True}
@@ -109,10 +109,10 @@ class NativeDecisionBridgeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.manager.decisions.__class__, '__call__', record):
             first = await self.manager.queue.submit('decisions', 'generate', body('hang').model_dump(mode='json'), 'laya')
             for _ in range(200):
-                if native.agent and native.agent.io_ready:
+                if worker_manager.agent and worker_manager.agent.io_ready:
                     break
                 await asyncio.sleep(.01)
-            worker = native.agent
+            worker = worker_manager.agent
             self.assertIsNotNone(worker)
             second = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
             third = await self.manager.queue.submit('decisions', 'generate', body().model_dump(mode='json'), 'laya')

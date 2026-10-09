@@ -2,7 +2,7 @@
 import os
 
 from api.inference.decisions.model import decision_manager as python_manager
-from api.inference.decisions.native import NativeDecisionManager
+from api.inference.decisions.worker import DecisionWorkerManager
 from api.services.runtime import RuntimeFailure
 
 
@@ -11,7 +11,7 @@ def create_manager():
     if backend == 'python':
         return python_manager
     if backend == 'native':
-        return NativeDecisionManager()
+        return DecisionWorkerManager()
     raise RuntimeFailure('KADAN_DECISION_BACKEND must be python or native.')
 
 
