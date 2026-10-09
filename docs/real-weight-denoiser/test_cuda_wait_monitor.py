@@ -29,6 +29,13 @@ class WaitMonitorTests(unittest.TestCase):
                 monitor._run()
             query.assert_not_called();kill.assert_called_once()
 
+    def test_evidence_failure_cannot_suppress_abort(self):
+        with tempfile.TemporaryDirectory() as root:
+            monitor=ThermalWatch(root,['GPU-one'])
+            with patch('cuda_wait_monitor.check_cpu',side_effect=RuntimeError('hot')), patch('cuda_wait_monitor.Path.write_text',side_effect=OSError('disk')), patch('cuda_wait_monitor.os.kill') as kill:
+                with self.assertRaises(OSError):monitor._run()
+            kill.assert_called_once()
+
     def test_missed_cadence_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
             monitor=ThermalWatch(root,['GPU-one'])
