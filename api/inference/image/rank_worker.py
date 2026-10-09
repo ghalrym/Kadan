@@ -12,6 +12,7 @@ import sys
 import time
 
 from api.inference.image.rank_transport import encode, receive_blocking
+from api.inference.image.cuda_wait import configure_blocking_sync
 
 
 def main():
@@ -33,6 +34,7 @@ def main():
     torch.set_num_interop_threads(1)
     device, rank = config['device'], config['rank']
     torch.cuda.set_device(device)
+    wait_policy = configure_blocking_sync(device)
     torch.cuda.set_per_process_memory_fraction(config['execution_bytes']/torch.cuda.get_device_properties(device).total_memory)
     torch.backends.cuda.matmul.allow_tf32 = False
     def groups(sequence):
@@ -50,7 +52,7 @@ def main():
             raise ValueError('Stale or mismatched rank command')
         sequence += 1
         operation = command['operation']
-        receipt = dict(command, rank=rank, device=device, status='ok')
+        receipt = dict(command, rank=rank, device=device, status='ok', cuda_wait=wait_policy)
         try:
             if operation == 'ready' and state == 'new':
                 control = groups(sequence)
