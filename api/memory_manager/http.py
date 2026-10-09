@@ -4,7 +4,9 @@ from contextlib import suppress
 
 from fastapi import HTTPException
 
-from api.services.runtime import RuntimeFailure, finish_cleanup
+from api.inference.errors import InferenceFailure
+
+from api.inference.cancellation import await_cleanup
 
 
 async def infer(request, call):
@@ -21,7 +23,7 @@ async def infer(request, call):
             generation.cancel()
             raise HTTPException(499, 'Client disconnected; inference cancelled.')
         return await generation
-    except RuntimeFailure as exc:
+    except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     finally:
         watcher.cancel()
@@ -29,4 +31,4 @@ async def infer(request, call):
             generation.cancel()
         for task in (generation, watcher):
             with suppress(asyncio.CancelledError, Exception):
-                await finish_cleanup(task)
+                await await_cleanup(task)

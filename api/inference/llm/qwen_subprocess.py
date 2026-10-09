@@ -1,4 +1,4 @@
-"""Opt-in original C++/CUDA worker adapter; no native execution on module import.
+"""Opt-in original C++/CUDA worker adapter; no model execution on module import.
 
 The Python parent owns global admission and tokenization. The child owns one
 bounded arena and does greedy token steps; its accounting is a sub-budget.
@@ -7,147 +7,32 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
-import selectors
-import signal
 import subprocess
 import threading
 import time
 from uuid import uuid4
 
 from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
+from api.inference.line_protocol import LineProtocolError, LineProtocolProcess, check_cancel
 from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceExhausted
 
 MIB = 1024**2
 METADATA_BYTES = 256 * MIB
-NATIVE_HOST_BYTES = 258 * MIB
+QWEN_HOST_BYTES = 258 * MIB
 PYTHON_HOST_BYTES = 512 * MIB
 HEADROOM_BYTES = 512 * MIB
-MAX_FRAME = 4096
-
-
-class NativeProtocolError(RuntimeError):
-    pass
-
-
-def check_cancel(event):
-    if event is not None and event.is_set():
-        raise InterruptedError('Native inference cancelled')
 
 
 def numbers(line, prefix, count):
     parts = line.split()
     if parts[:len(prefix)] != prefix or len(parts) != len(prefix) + count:
-        raise NativeProtocolError('Invalid native worker response')
+        raise LineProtocolError('Invalid inference subprocess response')
     values = parts[len(prefix):]
     if any(not item.isascii() or not item.isdecimal() or len(item) > 20 for item in values):
-        raise NativeProtocolError('Invalid native worker integer')
+        raise LineProtocolError('Invalid inference subprocess integer')
     return [int(item) for item in values]
 
-
-class WorkerProcess:
-    """Single-owner bounded IPC, draining stderr while awaiting every reply."""
-    def __init__(self):
-        # Construct without side effects. The adapter must own this handle
-        # before start() can spawn or perform fallible pipe/selector setup.
-        self.process = self.selector = None
-        self.buffer = bytearray()
-        self.diagnostics = bytearray()
-        self.closed = False
-        self.io_ready = False
-
-    def start(self, command):
-        if self.process is not None or self.closed:
-            raise RuntimeError('Native process handle cannot be reused')
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
-        self.selector = selectors.DefaultSelector()
-        for stream, kind in ((self.process.stdout, 'out'), (self.process.stderr, 'err')):
-            os.set_blocking(stream.fileno(), False)
-            self.selector.register(stream, selectors.EVENT_READ, kind)
-        self.io_ready = True
-
-    def _pump(self, deadline, cancel):
-        check_cancel(cancel)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError('Native worker deadline expired')
-        for key, _ in self.selector.select(min(.05, remaining)):
-            data = os.read(key.fileobj.fileno(), 4096)
-            if not data:
-                self.selector.unregister(key.fileobj)
-            elif key.data == 'err':
-                self.diagnostics.extend(data)
-                del self.diagnostics[:-8192]
-            else:
-                self.buffer.extend(data)
-                if len(self.buffer) > MAX_FRAME:
-                    raise NativeProtocolError('Native worker frame too large')
-
-    def read(self, timeout, cancel=None):
-        deadline = time.monotonic() + timeout
-        while b'\n' not in self.buffer:
-            if not self.selector.get_map():
-                raise NativeProtocolError('Native worker exited without a complete reply')
-            self._pump(deadline, cancel)
-        line, _, rest = self.buffer.partition(b'\n')
-        self.buffer = bytearray(rest)
-        try:
-            text = line.decode('ascii')
-        except UnicodeDecodeError as error:
-            raise NativeProtocolError('Non-ASCII native worker frame') from error
-        if text.startswith('error '):
-            raise NativeProtocolError('Native worker failed: ' + self.diagnostics.decode('utf-8', errors='replace')[-1000:])
-        return text
-
-    def exchange(self, command, timeout, cancel=None):
-        check_cancel(cancel)
-        if self.buffer or self.process.poll() is not None:
-            raise NativeProtocolError('Native worker unavailable or sent unsolicited data')
-        data = (command + '\n').encode('ascii')
-        if len(data) > 128:
-            raise NativeProtocolError('Native command too large')
-        # One small command at a time; no pipelining can fill this pipe.
-        self.process.stdin.write(data)
-        return self.read(timeout, cancel)
-
-    def finish(self, timeout=5):
-        deadline = time.monotonic() + timeout
-        while self.process.poll() is None or self.selector.get_map():
-            self._pump(deadline, None)
-            if self.buffer:
-                raise NativeProtocolError('Unexpected trailing worker output')
-        if self.process.returncode != 0:
-            raise NativeProtocolError('Native worker exit was not successful')
-
-    def stop(self):
-        """Return only after owned child exit; on wait failure retain parent accounting.
-
-        The reviewed native worker never forks. Signal its owned process group
-        while the leader is live; never signal a reaped/reusable PID.
-        """
-        if self.closed:
-            return
-        if self.process is None:
-            self.closed = True
-            return
-        if self.process.poll() is None:
-            try:
-                os.killpg(self.process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        try:
-            self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            os.killpg(self.process.pid, signal.SIGKILL)
-            self.process.wait(timeout=5)  # Failure propagates: no release claim.
-        finally:
-            if self.process.poll() is not None:
-                if self.selector is not None:
-                    self.selector.close()
-                for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-                    stream.close()
-                self.closed = True
 
 
 def load_tokenizer(path):
@@ -170,26 +55,26 @@ def text_streamer(tokenizer, emit):
     return Stream()
 
 
-class NativeAdapter:
+class QwenSubprocessAdapter:
     def __init__(self, entry, path, resources, device='auto', cancel_event=None,
                  *, tokenizer_factory=load_tokenizer, streamer_factory=text_streamer,
                  worker_path=None, load_timeout=1800, step_timeout=300):
         if entry.id != 'small':
-            raise ValueError('The native backend currently supports only the small Qwen checkpoint')
+            raise ValueError('The Qwen subprocess currently supports only the small Qwen checkpoint')
         self.root = Path(path).resolve()
         config_path = self.root / 'config.json'
         if config_path.stat().st_size > 65536:
-            raise ValueError('Native checkpoint config is too large')
+            raise ValueError('Qwen checkpoint config is too large')
         self.config = json.loads(config_path.read_text())
         if self.config.get('model_type') != 'qwen3_5_moe':
-            raise ValueError('Native backend requires qwen3_5_moe metadata')
+            raise ValueError('Qwen subprocess requires qwen3_5_moe metadata')
         self.binary = Path(worker_path or os.environ.get('KADAN_NATIVE_WORKER', '/opt/kadan/bin/kadan-model-worker'))
         if not self.binary.is_absolute() or not self.binary.is_file() or not os.access(self.binary, os.X_OK):
             raise ValueError('KADAN_NATIVE_WORKER must name an installed absolute executable path')
         self.resources, self.device, self.cancel = resources, device, cancel_event
         self.tokenizer_factory, self.streamer_factory = tokenizer_factory, streamer_factory
         self.load_timeout, self.step_timeout = load_timeout, step_timeout
-        self.owner = 'native-llm:' + uuid4().hex
+        self.owner = 'qwen-subprocess:' + uuid4().hex
         self.host = self.reservation = self.worker = self.tokenizer = None
         self.capacity = self.vocabulary = self.arena = 0
         self._lock = threading.Lock()
@@ -206,13 +91,13 @@ class NativeAdapter:
 
     def _configure_context_locked(self, configured):
         if self._closed:
-            raise RuntimeError('Native adapter is closed')
+            raise RuntimeError('Qwen adapter is closed')
         supported, effective = resolve_context(self.config, configured)
         if effective > 262144:
-            raise ContextLimitError('Native worker context exceeds its reviewed 262144-token bound')
+            raise ContextLimitError('Inference subprocess context exceeds its reviewed 262144-token bound')
         if self.worker is not None:
             if effective != self.capacity:
-                raise ContextLimitError('Unload native worker before changing its context')
+                raise ContextLimitError('Unload inference subprocess before changing its context')
             return
         self.configured_context_limit = configured
         self.supported_context_limit = supported
@@ -220,9 +105,9 @@ class NativeAdapter:
         self.capacity = effective
         try:
             self.host = self.resources.reserve(self.owner + ':host', 'llm',
-                host_bytes=NATIVE_HOST_BYTES + PYTHON_HOST_BYTES, evict=self._evict, cancel_event=self.cancel)
+                host_bytes=QWEN_HOST_BYTES + PYTHON_HOST_BYTES, evict=self._evict, cancel_event=self.cancel)
             with self.host.lease(self.cancel):
-                planner = WorkerProcess()
+                planner = LineProtocolProcess()
                 # Publish ownership before spawn and fallible IPC setup.
                 self.worker = planner
                 planner.start([str(self.binary), '--plan', str(self.root), str(effective), str(METADATA_BYTES)])
@@ -230,8 +115,8 @@ class NativeAdapter:
                 planner.finish()
                 planner.stop()
                 self.worker = None
-                if host != NATIVE_HOST_BYTES or capacity != effective or not 0 < vocab <= 262144 or not 0 < arena or not 0 < staging <= MIB:
-                    raise NativeProtocolError('Native plan violates the adapter bounds')
+                if host != QWEN_HOST_BYTES or capacity != effective or not 0 < vocab <= 262144 or not 0 < arena or not 0 < staging <= MIB:
+                    raise LineProtocolError('Qwen plan violates the adapter bounds')
                 self.vocabulary, self.arena = vocab, arena
                 self.device = select_device(self.resources, arena + HEADROOM_BYTES, self.device)
                 index = int(self.device[5:])
@@ -239,12 +124,12 @@ class NativeAdapter:
                     device_bytes={index: arena + HEADROOM_BYTES}, evict=self._evict, cancel_event=self.cancel)
                 with self.reservation.lease(self.cancel):
                     self.tokenizer = self.tokenizer_factory(self.root)
-                    self.worker = WorkerProcess()
+                    self.worker = LineProtocolProcess()
                     self.worker.start([str(self.binary), '--serve', str(self.root), str(index),
                         str(effective), str(host), str(arena + HEADROOM_BYTES), str(HEADROOM_BYTES)])
                     ready = numbers(self.worker.read(self.load_timeout, self.cancel), ['ready', '1'], 4)
                     if ready != [vocab, effective, arena, host]:
-                        raise NativeProtocolError('Native worker readiness differs from admitted plan')
+                        raise LineProtocolError('Inference subprocess readiness differs from admitted plan')
         except BaseException:
             self._close_locked()
             raise
@@ -262,7 +147,7 @@ class NativeAdapter:
 
     def _evict(self):
         if not self._lock.acquire(blocking=False):
-            raise ResourceBusy('Native worker is active')
+            raise ResourceBusy('Inference subprocess is active')
         try:
             self._close_locked()
         finally:
@@ -276,7 +161,7 @@ class NativeAdapter:
             try:
                 if self.is_resident:
                     if self.worker.exchange('close', 5) != 'closed 0':
-                        raise NativeProtocolError('Native close did not confirm zero reservations')
+                        raise LineProtocolError('Qwen close did not confirm zero reservations')
                     self.worker.finish()
             finally:
                 self._close_locked()
@@ -284,7 +169,7 @@ class NativeAdapter:
     def _step(self, token, stop, expected, cancel):
         selected, eos, progress = numbers(self.worker.exchange(f'step {token} {int(stop)}', self.step_timeout, cancel), ['token'], 3)
         if selected >= self.vocabulary or eos not in (0,1) or progress != expected:
-            raise NativeProtocolError('Native step violates vocabulary/EOS/progress contract')
+            raise LineProtocolError('Qwen step violates vocabulary/EOS/progress contract')
         return selected, bool(eos)
 
     def generate(self, messages, max_new_tokens=256, cancel_event=None, on_event=None, conversation_id=None):
@@ -302,7 +187,7 @@ class NativeAdapter:
                     raise
             check_cancel(cancel_event)
             if not self.is_resident:
-                raise RuntimeError('Native worker is unloaded; explicitly load it again')
+                raise RuntimeError('Inference subprocess is unloaded; explicitly load it again')
             if type(max_new_tokens) is not int or not 1 <= max_new_tokens <= 1024:
                 raise ContextLimitError('Output token limit must be between 1 and 1024')
             chat = [{'role': m['role'], 'content': m.get('text', m.get('content', ''))} for m in messages]
@@ -312,9 +197,9 @@ class NativeAdapter:
                 if isinstance(tokens, Mapping):
                     tokens = tokens['input_ids']
                 if not isinstance(tokens, list) or not tokens or any(type(t) is not int or not 0 <= t < self.vocabulary for t in tokens):
-                    raise ContextLimitError('Tokenizer returned invalid native input IDs')
+                    raise ContextLimitError('Tokenizer returned invalid Qwen input IDs')
                 if len(tokens) + max_new_tokens > self.capacity:
-                    raise ContextLimitError(f'Prompt ({len(tokens)}) plus output budget ({max_new_tokens}) exceeds native context {self.capacity}; nothing was truncated')
+                    raise ContextLimitError(f'Prompt ({len(tokens)}) plus output budget ({max_new_tokens}) exceeds Qwen context {self.capacity}; nothing was truncated')
                 generated = []
                 streamer = self.streamer_factory(self.tokenizer, on_event) if on_event else None
                 started = time.monotonic()
@@ -322,7 +207,7 @@ class NativeAdapter:
                 reason = 'length'
                 try:
                     if self.worker.exchange('reset', self.step_timeout, cancel_event) != 'ok reset':
-                        raise NativeProtocolError('Native reset failed')
+                        raise LineProtocolError('Qwen reset failed')
                     for index, token in enumerate(tokens):
                         selected, eos = self._step(token, False, index+1, cancel_event)
                     for index in range(max_new_tokens):
@@ -359,5 +244,5 @@ class NativeAdapter:
                     raise
 
 
-def build_native(entry, path, resources, device='auto', cancel_event=None):
-    return NativeAdapter(entry, path, resources, device, cancel_event)
+def build_qwen_subprocess(entry, path, resources, device='auto', cancel_event=None):
+    return QwenSubprocessAdapter(entry, path, resources, device, cancel_event)

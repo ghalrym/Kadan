@@ -16,7 +16,7 @@ from api.inference.resources import ResourceManager
 from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue, Job
 from api.routes.v1.decisions import router
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 from api.tests.inference.decisions.test_laya_subprocess import SCRIPT, body
 
 
@@ -30,7 +30,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES * 2, {})
         self.worker_manager = LayaSubprocessEvaluator(self.resources, resolve=lambda: [sys.executable, str(script)])
         self.manager = MemoryManager(decisions=self.worker_manager, queue=object())
-        self.manager.features = {'decisions': self.manager.decisions}
+        self.manager.request_executors = {'decisions': self.manager.decisions}
         self.prefix = 'kadan:test:' + uuid4().hex + ':'
         self.manager.queue = InferenceQueue(self.manager._execute, url=os.environ['KADAN_TEST_REDIS_URL'],
             prefix=self.prefix, lock_path=root / 'queue.lock')
@@ -99,7 +99,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
                 events.append('image')
                 return {'ok': True}
         self_test = self
-        self.manager.features['image'] = ImageLeaf()
+        self.manager.request_executors['image'] = ImageLeaf()
         original = self.manager.decisions.__class__.__call__
         # Record real decision completion; wrapper still validates and uses IPC.
         async def record(wrapper, request, **kwargs):
@@ -117,7 +117,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
             second = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
             third = await self.manager.queue.submit('decisions', 'generate', body().model_dump(mode='json'), 'laya')
             await self.manager.queue.cancel(first)
-            with self.assertRaises(RuntimeFailure) as caught:
+            with self.assertRaises(InferenceFailure) as caught:
                 await self.manager.queue.wait(first)
             self.assertEqual(caught.exception.status_code, 499)
             self.assertIsNotNone(worker.process.poll())
@@ -134,7 +134,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
             async def __call__(self, request, **kwargs):
                 calls.append('image')
                 return 'done'
-        self.manager.features['image'] = ImageLeaf()
+        self.manager.request_executors['image'] = ImageLeaf()
         first = await self.manager.queue.submit('decisions', 'generate',
             body('hang').model_dump(mode='json'), 'laya')
         for _ in range(200):
@@ -149,16 +149,16 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.queue.cancel(cancelled)
         with patch.object(worker, 'stop', side_effect=RuntimeError('reap unconfirmed')):
             await self.manager.queue.cancel(first)
-            with self.assertRaises(RuntimeFailure) as stopped:
+            with self.assertRaises(InferenceFailure) as stopped:
                 await asyncio.wait_for(self.manager.queue.wait(first), 2)
             self.assertEqual(stopped.exception.status_code, 499)
             self.assertTrue(self.worker_manager._quarantined)
             self.assertIsNone(worker.process.poll())
-            with self.assertRaises(RuntimeFailure) as blocked:
+            with self.assertRaises(InferenceFailure) as blocked:
                 await asyncio.wait_for(self.manager.queue.wait(second), 2)
             self.assertEqual(blocked.exception.status_code, 503)
             self.assertIn('cleanup is unconfirmed', str(blocked.exception))
-            with self.assertRaises(RuntimeFailure) as cancelled_result:
+            with self.assertRaises(InferenceFailure) as cancelled_result:
                 await asyncio.wait_for(self.manager.queue.wait(cancelled), 2)
             self.assertEqual(cancelled_result.exception.status_code, 499)
             self.assertEqual(calls, [])
@@ -183,7 +183,7 @@ class DecisionWorkerBridgeTests(unittest.IsolatedAsyncioTestCase):
             validate = staticmethod(lambda payload, operation: payload)
             async def __call__(self, request, **kwargs):
                 return 'done'
-        self.manager.features['image'] = ImageLeaf()
+        self.manager.request_executors['image'] = ImageLeaf()
         job = await self.manager.queue.submit('image', 'generate', {}, 'synthetic-image')
         self.assertEqual(await asyncio.wait_for(self.manager.queue.wait(job), 2), 'done')
         self.assertIs(self.worker_manager.agent, worker)
@@ -194,7 +194,7 @@ class ExecutionPreflightTests(unittest.IsolatedAsyncioTestCase):
     def manager_and_job(self, wrapper):
         # Only exercise the queue execution boundary; no model or Redis setup.
         manager = object.__new__(MemoryManager)
-        manager.features = {'decisions': wrapper}
+        manager.request_executors = {'decisions': wrapper}
         job = Job(id='a' * 32, feature='decisions', operation='generate', payload={})
         return manager, job
 
@@ -229,11 +229,11 @@ class ExecutionPreflightTests(unittest.IsolatedAsyncioTestCase):
             operations = ('generate',)
             validate = staticmethod(lambda payload, operation: payload)
             async def preflight_execution(self, request):
-                raise RuntimeFailure('Checkpoint unavailable.', 503)
+                raise InferenceFailure('Checkpoint unavailable.', 503)
             async def __call__(self, request, **kwargs):
                 raise AssertionError('Rejected preflight must not execute')
         manager, job = self.manager_and_job(Leaf())
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await manager._execute(job)
         self.assertEqual(caught.exception.status_code, 503)
 

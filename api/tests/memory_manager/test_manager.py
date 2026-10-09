@@ -12,7 +12,7 @@ import httpx
 
 from api.inference.resources import ResourceBusy, ResourceManager
 from api.memory_manager import MemoryManager
-from api.inference.feature import InferenceFeature
+from api.inference.request_execution import RequestExecutor
 from api.memory_manager.queue import InferenceQueue
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
 from api.routes.v1.chat.completions import CompletionRequest
@@ -20,8 +20,8 @@ from api.routes.v1.images.generations import ImageRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
 from api.server import app
 from api.services.video_jobs import VideoJobs
-from api.services.runtime import RuntimeFailure
-from api.tests.inference.stt.test_model import audio_url
+from api.inference.errors import InferenceFailure
+from api.tests.inference.stt.test_whisper_transcriber import audio_url
 
 
 class Resident:
@@ -86,7 +86,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         async def unload():
             pass
         self.runtime = SimpleNamespace(adapter=None, unload=unload, model_id='selected-llm', ensure_resources=lambda: self.resources, complete=complete)
-        transcription = SimpleNamespace(native=None, selected=lambda: 'tiny', transcribe=transcribe, close=lambda: None,
+        transcription = SimpleNamespace(whisper_model=None, selected=lambda: 'tiny', transcribe=transcribe, close=lambda: None,
             offload_to_ram=lambda cancel: self.resources.offload_workload_devices('speech', cancel))
         self.manager = MemoryManager(runtime=self.runtime, transcription=transcription)
         await self.manager.queue.redis.aclose()
@@ -110,7 +110,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         features = [self.manager.llm, self.manager.video, self.manager.image, self.manager.stt,
                     self.manager.tts, self.manager.decisions]
         self.assertEqual(len({id(feature) for feature in features}), 6)
-        self.assertTrue(all(isinstance(feature, InferenceFeature) and callable(feature) for feature in features))
+        self.assertTrue(all(isinstance(feature, RequestExecutor) and callable(feature) for feature in features))
         chat = CompletionRequest(messages=[{'role': 'user', 'text': 'Hello'}])
         self.assertEqual(await self.manager.submit(chat, feature='llm'), 'reply')
         first_weights = self.llm.weights
@@ -137,14 +137,14 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unavailable_feature_is_queued_without_moving_resident(self):
         self.llm.infer()
-        with self.assertRaisesRegex(RuntimeFailure, 'No image provider'):
+        with self.assertRaisesRegex(InferenceFailure, 'No image provider'):
             await self.manager.submit(ImageRequest(prompt='tree'), feature='image')
         self.assertIsNotNone(self.llm.device)
         self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)
 
     async def test_invalid_durable_payload_fails_and_next_request_succeeds(self):
         job_id = await self.manager.queue.submit('llm', 'generate', {'messages': []}, 'selected-llm')
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.manager.queue.wait(job_id)
         self.assertEqual(caught.exception.status_code, 422)
         self.assertEqual(await self.manager.submit(CompletionRequest(messages=[{'role': 'user', 'text': 'Hi'}]), feature='llm'), 'reply')
@@ -209,7 +209,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.llm.infer()
         with self.llm.device.lease():
             job = await self.manager.submit(VideoGenerationRequest(prompt='test'), feature='video')
-            with self.assertRaises(RuntimeFailure):
+            with self.assertRaises(InferenceFailure):
                 await self.manager.queue.wait(job.id)
             self.assertEqual((await self.manager.video_job(job.id)).status, 'Failed')
 

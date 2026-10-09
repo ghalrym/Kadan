@@ -1,8 +1,8 @@
 """Explicitly unsupported image adapter; no fake model or residency."""
-from api.inference.feature import UnsupportedFeature
+from api.inference.request_execution import UnavailableRequestExecutor
 
 
-class ImageFeature(UnsupportedFeature):
+class ImageRequests(UnavailableRequestExecutor):
     operations = ('generate', 'edit')
     name, workload = 'image', 'image'
     def __init__(self):

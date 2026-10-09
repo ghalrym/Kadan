@@ -83,7 +83,7 @@ class GlmTests(unittest.TestCase):
         self.assertTrue(all(b.is_meta for b in model.buffers()))
         self.assertFalse(set(dict(model.named_buffers())) - set(model.state_dict()))
 
-    def test_native_glm_hybrid_with_host_experts(self):
+    def test_inference_glm_hybrid_with_host_experts(self):
         try:
             from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig
             from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel

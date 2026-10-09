@@ -15,7 +15,7 @@ import torch
 
 from api.inference.tts.qwen import QwenSpeechProvider, QwenSpeechSession
 from api.inference.resources import ResourceCancelled, ResourceManager
-from api.inference.tts.runtime import SpeechInput, SpeechPlan, SpeechRegistry, SpeechRuntime
+from api.inference.tts.speech_runtime import SpeechInput, SpeechPlan, SpeechRegistry, SpeechRuntime
 from api.inference.tts.catalog import SPEECH_MODELS
 
 

@@ -18,7 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from api.services.runtime import RuntimeFailure, finish_cleanup
+from api.inference.errors import InferenceFailure
+
+from api.inference.cancellation import await_cleanup
 
 log = logging.getLogger(__name__)
 
@@ -118,7 +120,7 @@ class InferenceQueue:
             identity = self._lock()
             await self.redis.set(self.key('volume'), identity, nx=True)
             if await self.redis.get(self.key('volume')) != identity:
-                raise RuntimeFailure('Redis inference namespace belongs to a different model volume.')
+                raise InferenceFailure('Redis inference namespace belongs to a different model volume.')
             # The old process has relinquished its kernel lock. Never replay an
             # uncertain inference; callers must deliberately submit a new job.
             for job_id in await self.redis.smembers(self.key('unfinished')):
@@ -126,10 +128,10 @@ class InferenceQueue:
             await self.redis.delete(self.key('pending'))
             self._ready, self.error = True, None
             self._consumer = asyncio.create_task(self._consume(), name='kadan-inference-consumer')
-        except (OSError, RedisError, RuntimeFailure) as exc:
+        except (OSError, RedisError, InferenceFailure) as exc:
             self.error = f'Inference queue unavailable: {exc}'
             self._unlock()
-            raise RuntimeFailure(self.error) from exc
+            raise InferenceFailure(self.error) from exc
 
     def _unlock(self):
         if self._lock_file is not None:
@@ -138,11 +140,11 @@ class InferenceQueue:
 
     async def submit(self, feature, operation, payload, model=None, *, stream=None):
         if not self._ready:
-            raise RuntimeFailure(self.error or 'Inference queue is stopping.')
+            raise InferenceFailure(self.error or 'Inference queue is stopping.')
         job = Job(id=uuid.uuid4().hex, feature=feature, operation=operation, model=model, payload=payload)
         encoded = job.model_dump_json()
         if len(encoded.encode()) > self.max_payload:
-            raise RuntimeFailure('Inference request exceeds the queue payload limit.', 413)
+            raise InferenceFailure('Inference request exceeds the queue payload limit.', 413)
         if stream is not None:
             self.streams[job.id] = stream
         try:
@@ -155,13 +157,13 @@ class InferenceQueue:
             cleanup = asyncio.create_task(self.redis.eval(_CANCEL, 3, self.key('pending'),
                 self.key('unfinished'), self.key('job:' + job.id), job.id, self.retention))
             with suppress(RedisError, asyncio.CancelledError):
-                await finish_cleanup(cleanup)
+                await await_cleanup(cleanup)
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            raise RuntimeFailure('Redis inference queue is unavailable.') from exc
+            raise InferenceFailure('Redis inference queue is unavailable.') from exc
         if not accepted:
             self.streams.pop(job.id, None)
-            raise RuntimeFailure('Inference queue is full. Retry after a job completes.', 429)
+            raise InferenceFailure('Inference queue is full. Retry after a job completes.', 429)
         self._wake.set()
         return job.id
 
@@ -173,7 +175,7 @@ class InferenceQueue:
             values = await self.redis.hmget(self.key('job:' + job_id), fields)
             record = {key: value for key, value in zip(fields, values) if value is not None}
         except RedisError as exc:
-            raise RuntimeFailure('Redis inference queue is unavailable.') from exc
+            raise InferenceFailure('Redis inference queue is unavailable.') from exc
         if not record:
             raise KeyError(job_id)
         return record
@@ -183,11 +185,11 @@ class InferenceQueue:
             await self.get(job_id)
             await self.redis.eval(_CANCEL, 3, self.key('pending'), self.key('unfinished'),
                 self.key('job:' + job_id), job_id, self.retention)
-        except (RedisError, RuntimeFailure) as exc:
+        except (RedisError, InferenceFailure) as exc:
             # The local consumer must still stop if cancellation cannot reach Redis.
             if self._active_id == job_id and self._active is not None:
                 self._active.cancel()
-            raise RuntimeFailure('Redis inference cancellation is unavailable.') from exc
+            raise InferenceFailure('Redis inference cancellation is unavailable.') from exc
         self._wake.set()
 
     async def wait(self, job_id):
@@ -198,18 +200,18 @@ class InferenceQueue:
                 if state == 'succeeded':
                     return json.loads(record['result'])
                 if state in ('failed', 'cancelled'):
-                    raise RuntimeFailure(record.get('error') or 'Inference cancelled.',
+                    raise InferenceFailure(record.get('error') or 'Inference cancelled.',
                                          int(record.get('status') or (499 if state == 'cancelled' else 503)))
                 if not self._ready:
-                    raise RuntimeFailure(self.error or 'Inference queue stopped.')
+                    raise InferenceFailure(self.error or 'Inference queue stopped.')
                 await asyncio.sleep(.05)
-        except (asyncio.CancelledError, RuntimeFailure):
+        except (asyncio.CancelledError, InferenceFailure):
             # Do not return ownership while a native thread is still running.
-            with suppress(RuntimeFailure, KeyError):
+            with suppress(InferenceFailure, KeyError):
                 await self.cancel(job_id)
             if self._active_id == job_id and self._active is not None:
                 with suppress(asyncio.CancelledError, Exception):
-                    await finish_cleanup(self._active)
+                    await await_cleanup(self._active)
             raise
 
     async def _finish(self, job_id, state, result=None, error='', status=503):
@@ -250,7 +252,7 @@ class InferenceQueue:
             if not self._active.done():
                 self._active.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await finish_cleanup(self._active)
+                await await_cleanup(self._active)
             self._active = self._active_id = None
 
     async def _consume(self):
@@ -277,7 +279,7 @@ class InferenceQueue:
         self._wake.set()
         try:
             if self._consumer is not None:
-                await finish_cleanup(self._consumer)
+                await await_cleanup(self._consumer)
         finally:
             self._consumer = None
             try:

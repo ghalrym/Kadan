@@ -67,16 +67,16 @@ class DecisionRouteTests(unittest.TestCase):
 
     def test_service_errors_preserve_typed_failure_status(self):
         from unittest.mock import AsyncMock, patch
-        from api.services.runtime import RuntimeFailure
+        from api.inference.errors import InferenceFailure
         for status in (422, 502):
-            with patch('api.routes.v1.decisions.memory_manager.submit', AsyncMock(side_effect=RuntimeFailure('invalid', status))):
+            with patch('api.routes.v1.decisions.memory_manager.submit', AsyncMock(side_effect=InferenceFailure('invalid', status))):
                 self.assertEqual(self.client.post('/v1/decisions', json=self.body).status_code, status)
 
     def test_unloaded_and_busy_runtime_status_are_preserved(self):
         from unittest.mock import AsyncMock, patch
-        from api.services.runtime import RuntimeFailure
+        from api.inference.errors import InferenceFailure
         for status in (503, 429):
-            with patch('api.routes.v1.decisions.memory_manager.submit', AsyncMock(side_effect=RuntimeFailure('not ready', status))):
+            with patch('api.routes.v1.decisions.memory_manager.submit', AsyncMock(side_effect=InferenceFailure('not ready', status))):
                 self.assertEqual(self.client.post('/v1/decisions', json=self.body).status_code, status)
 
     def test_duplicate_option_keys_rejected_before_inference(self):

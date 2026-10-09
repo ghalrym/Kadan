@@ -12,7 +12,7 @@ from api.inference.decisions.laya_subprocess import LayaSubprocessEvaluator, DEF
 from api.inference.decisions.laya_backend import create_laya_evaluator
 from api.inference.resources import ResourceManager
 from api.routes.v1.decisions import DecisionRequest
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 
 SCRIPT = '''import json, sys, time
 for line in sys.stdin:
@@ -89,7 +89,7 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         worker = self.manager.agent
         self.assertIsNotNone(worker)
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.evaluate()
         self.assertEqual(caught.exception.status_code, 429)
         task.cancel()
@@ -102,7 +102,7 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_protocol_errors_cleanup_without_fallback(self):
         for state, status in [('large',502), ('duplicate',502), ('wrong',502), ('eof',502), ('reject',422)]:
             with self.subTest(state=state):
-                with self.assertRaises(RuntimeFailure) as caught:
+                with self.assertRaises(InferenceFailure) as caught:
                     await self.evaluate(state)
                 self.assertEqual(caught.exception.status_code, status)
                 self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), 0)
@@ -110,7 +110,7 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_timeout_is_bounded_and_reaped(self):
         with patch.dict(os.environ, {'KADAN_NATIVE_DECISION_TIMEOUT_SECONDS': '.05'}):
-            with self.assertRaises(RuntimeFailure) as caught:
+            with self.assertRaises(InferenceFailure) as caught:
                 await self.evaluate('hang')
         self.assertEqual(caught.exception.status_code, 504)
         self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), 0)
@@ -122,14 +122,14 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await self.manager.close()
             self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), DEFAULT_HOST_BUDGET_BYTES)
-            with self.assertRaises(RuntimeFailure):
+            with self.assertRaises(InferenceFailure):
                 await self.evaluate()
         await self.manager.close()
         self.assertEqual(sum(row['host_bytes'] for row in self.resources.snapshot()['reservations'].values()), 0)
 
     async def test_admission_precedes_spawn(self):
         self.manager.resources = ResourceManager(DEFAULT_HOST_BUDGET_BYTES - 1, {})
-        with self.assertRaises(RuntimeFailure) as caught:
+        with self.assertRaises(InferenceFailure) as caught:
             await self.evaluate()
         self.assertEqual(caught.exception.status_code, 503)
         self.assertIsNone(self.manager.agent)
@@ -138,8 +138,8 @@ class DecisionWorkerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'native'}):
             self.assertIsInstance(create_laya_evaluator(), LayaSubprocessEvaluator)
         with patch.dict(os.environ, {'KADAN_DECISION_BACKEND': 'invalid'}):
-            with self.assertRaises(RuntimeFailure):
+            with self.assertRaises(InferenceFailure):
                 create_laya_evaluator()
         with patch.dict(os.environ, {'KADAN_NATIVE_DECISION_WORKER': '/missing/worker'}):
-            with self.assertRaises(RuntimeFailure):
+            with self.assertRaises(InferenceFailure):
                 resolve_laya_command()

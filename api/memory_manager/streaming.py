@@ -5,7 +5,7 @@ from contextlib import suppress
 import threading
 import time
 
-from api.services.runtime import finish_cleanup
+from api.inference.cancellation import await_cleanup
 
 
 class QueuedStream:
@@ -57,6 +57,6 @@ class QueuedStream:
             if not self.waiter.done():
                 self.waiter.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await finish_cleanup(self.waiter)
+                await await_cleanup(self.waiter)
         if self.job_id is not None:
             self.queue.streams.pop(self.job_id, None)

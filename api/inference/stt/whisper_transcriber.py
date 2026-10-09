@@ -1,4 +1,4 @@
-"""Native Whisper inference with Kadan-owned memory and no implicit downloads."""
+"""Whisper inference with Kadan-owned memory and no implicit downloads."""
 import base64
 import binascii
 from functools import lru_cache
@@ -17,19 +17,20 @@ import numpy as np
 from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCancelled
 from api.services.model_downloads import model_manager
-from api.services.runtime import RuntimeFailure, runtime_manager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import chat_runtime
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 from api.inference.decisions.laya_python import clear_failure_frames
 
 
-class TranscriptionManager:
+class WhisperTranscriber:
     def __init__(self, factory=None, resources=None, store=None):
         """Construct coordination only; allocate weights on an explicit request."""
         self.factory = factory
         self.resources = resources
         self.store = store or model_manager
         self.lock = threading.Lock()
-        self.native = None
+        self.whisper_model = None
         self.name = None
         self.host_reservation = self.device_reservation = None
         self.device = 'cpu'
@@ -55,8 +56,8 @@ class TranscriptionManager:
         return name
 
     def _offload_locked(self):
-        if self.device != 'cpu' and self.native is not None:
-            self.native.to('cpu')
+        if self.device != 'cpu' and self.whisper_model is not None:
+            self.whisper_model.to('cpu')
             torch = sys.modules.get('torch')
             if torch is not None and torch.cuda.is_initialized():
                 with torch.cuda.device(self.device):
@@ -70,7 +71,7 @@ class TranscriptionManager:
     def _clear_locked(self):
         # Pressure eviction disposes weights directly. Copying CUDA weights to
         # RAM immediately before disposal would require avoidable host headroom.
-        self.native = self.name = None
+        self.whisper_model = self.name = None
         gc.collect()
         torch = sys.modules.get('torch')
         if self.device != 'cpu' and torch is not None and torch.cuda.is_initialized():
@@ -106,17 +107,17 @@ class TranscriptionManager:
             self._clear_locked()
 
     def _load_locked(self, entry, name, resources, device, device_budget, cancel):
-        if self.native is None:
+        if self.whisper_model is None:
             _, directory = self.store.get_checkpoint(f'whisper-{entry.name}')
             path = directory / f'{entry.name}.pt'
             if not path.is_file() or path.is_symlink():
-                raise RuntimeFailure('Download this Whisper checkpoint completely in Settings.', 409)
+                raise InferenceFailure('Download this Whisper checkpoint completely in Settings.', 409)
             with path.open('rb') as source:
                 if hashlib.file_digest(source, 'sha256').hexdigest() != entry.sha256:
-                    raise RuntimeFailure('Whisper checkpoint integrity verification failed.', 409)
+                    raise InferenceFailure('Whisper checkpoint integrity verification failed.', 409)
             if cancel.is_set():
                 raise ResourceCancelled('Transcription cancelled')
-            self.native = (self.factory or load_whisper)(str(path), device='cpu')
+            self.whisper_model = (self.factory or load_whisper)(str(path), device='cpu')
             self.name = name
         if self.device != device:
             self._offload_locked()
@@ -124,10 +125,10 @@ class TranscriptionManager:
                 self.device_reservation = resources.reserve('whisper:device', 'speech',
                     device_bytes={int(device[5:]): device_budget}, evict=self._offload, cancel_event=cancel)
                 try:
-                    self.native.to(device)
+                    self.whisper_model.to(device)
                     self.device = device
                 except BaseException:
-                    self.native.to('cpu')
+                    self.whisper_model.to('cpu')
                     self.device_reservation.release()
                     self.device_reservation = None
                     raise
@@ -145,9 +146,9 @@ class TranscriptionManager:
         name = model or self.selected()
         entry = checkpoint(name)
         if entry.name not in get_whisper_checkpoints():
-            raise RuntimeFailure('Whisper checkpoint is not enabled in this version.', 422)
+            raise InferenceFailure('Whisper checkpoint is not enabled in this version.', 422)
         with self.lock:
-            resources = self.resources or runtime_manager.ensure_resources()
+            resources = self.resources or chat_runtime.ensure_resources()
             device = os.environ.get('KADAN_WHISPER_DEVICE', 'auto')
             if self.name != name:
                 self._clear_locked()
@@ -160,16 +161,16 @@ class TranscriptionManager:
                     self._load_locked(entry, name, resources, device, entry.device_memory_gib * 1024**3, cancel)
             except BaseException as exc:
                 clear_failure_frames(exc)
-                if self.native is None:
+                if self.whisper_model is None:
                     self._clear_locked()
                 raise
             finally:
-                if self.native is None and self.host_reservation is not None:
+                if self.whisper_model is None and self.host_reservation is not None:
                     self.host_reservation.release()
                     self.host_reservation = None
 
     def offload_to_ram(self, cancel=None):
-        resources = self.resources or runtime_manager.ensure_resources()
+        resources = self.resources or chat_runtime.ensure_resources()
         resources.offload_workload_devices('speech', cancel)
 
     def transcribe(self, audio, model=None, language=None, cancel=None):
@@ -177,16 +178,16 @@ class TranscriptionManager:
         cancel = cancel or threading.Event()
         name = model or self.selected()
         if name is None:
-            raise RuntimeFailure('No Whisper checkpoint is enabled in this version.', 503)
+            raise InferenceFailure('No Whisper checkpoint is enabled in this version.', 503)
         entry = checkpoint(name)
         if entry.name not in get_whisper_checkpoints():
-            raise RuntimeFailure('Whisper checkpoint is not enabled in this version.', 422)
+            raise InferenceFailure('Whisper checkpoint is not enabled in this version.', 422)
         if entry.name.endswith('.en') and language not in (None, 'en'):
-            raise RuntimeFailure('This Whisper checkpoint supports English only.', 422)
+            raise InferenceFailure('This Whisper checkpoint supports English only.', 422)
         if not audio.startswith('data:audio/wav;base64,'):
-            raise RuntimeFailure('Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.', 422)
+            raise InferenceFailure('Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.', 422)
         if not self.lock.acquire(blocking=False):
-            raise RuntimeFailure('A transcription is already running.', 409)
+            raise InferenceFailure('A transcription is already running.', 409)
         audio_reservation = None
         samples = payload = frames = None
         hooks = []
@@ -198,7 +199,7 @@ class TranscriptionManager:
         try:
             check_cancel()
             device = os.environ.get('KADAN_WHISPER_DEVICE', 'auto')
-            resources = self.resources or runtime_manager.ensure_resources()
+            resources = self.resources or chat_runtime.ensure_resources()
             budget = entry.memory_gib * 1024**3
             device_budget = entry.device_memory_gib * 1024**3
             device = self._select_device(resources, entry, device, len(audio) * 16)
@@ -223,31 +224,31 @@ class TranscriptionManager:
                             raise ValueError('WAV contains no audio or is truncated')
                         samples = np.frombuffer(frames, dtype='<i2').astype(np.float32) / 32768.0
                 except (ValueError, EOFError, wave.Error, binascii.Error) as exc:
-                    raise RuntimeFailure(f'Invalid audio: {exc}', 422) from exc
+                    raise InferenceFailure(f'Invalid audio: {exc}', 422) from exc
                 self._load_locked(entry, name, resources, device, device_budget, cancel)
                 if self.device_reservation is not None:
                     leases.enter_context(self.device_reservation.lease(cancel))
-                # Native Whisper has no cancellation argument. Module boundaries
+                # Whisper has no cancellation argument. Module boundaries
                 # provide cooperative interruption without freeing live tensors.
-                if hasattr(self.native, 'modules'):
-                    hooks = [module.register_forward_pre_hook(check_cancel) for module in self.native.modules()]
+                if hasattr(self.whisper_model, 'modules'):
+                    hooks = [module.register_forward_pre_hook(check_cancel) for module in self.whisper_model.modules()]
                 check_cancel()
-                result = self.native.transcribe(samples, language='en' if entry.name.endswith('.en') else language,
+                result = self.whisper_model.transcribe(samples, language='en' if entry.name.endswith('.en') else language,
                     task='transcribe', fp16=device != 'cpu', verbose=None)
                 check_cancel()
                 if not isinstance(result, dict) or not isinstance(result.get('text'), str):
-                    raise RuntimeFailure('Whisper returned an invalid transcript.', 502)
+                    raise InferenceFailure('Whisper returned an invalid transcript.', 502)
                 return {'text': result['text'], 'raw_text': result['text'],
                         'language': result.get('language', language or 'en'), 'model': entry.name,
                         'formatting_status': 'disabled'}
         except Exception as exc:
             clear_failure_frames(exc)
-            if not isinstance(exc, (RuntimeFailure, ResourceCancelled)):
+            if not isinstance(exc, (InferenceFailure, ResourceCancelled)):
                 self._clear_locked()
-            if isinstance(exc, (RuntimeFailure, ResourceCancelled)):
+            if isinstance(exc, (InferenceFailure, ResourceCancelled)):
                 raise
             status = 503 if isinstance(exc, (ResourceBusy, ResourceExhausted, ValueError, OSError)) else 502
-            raise RuntimeFailure(f'Transcription failed: {exc}', status) from exc
+            raise InferenceFailure(f'Transcription failed: {exc}', status) from exc
         finally:
             for hook in hooks:
                 hook.remove()
@@ -260,7 +261,7 @@ class TranscriptionManager:
                     torch.cuda.empty_cache()
             if audio_reservation is not None:
                 audio_reservation.release()
-            if self.native is None and self.host_reservation is not None:
+            if self.whisper_model is None and self.host_reservation is not None:
                 self.host_reservation.release()
                 self.host_reservation = None
             self.lock.release()
@@ -272,7 +273,7 @@ def load_whisper(path, device):
     try:
         import whisper
     except ImportError as exc:
-        raise RuntimeFailure('Install the pinned Whisper inference dependencies before transcription.') from exc
+        raise InferenceFailure('Install the pinned Whisper inference dependencies before transcription.') from exc
     return whisper.load_model(path, device=device)
 
 
@@ -280,15 +281,15 @@ _manager_lock = threading.Lock()
 
 
 @lru_cache(maxsize=1)
-def _cached_transcription_manager():
-    return TranscriptionManager()
+def _cached_whisper_transcriber():
+    return WhisperTranscriber()
 
 
-def get_transcription_manager():
+def get_whisper_transcriber():
     """Lazily share one coordinator, including concurrent first requests.
 
     Hold the lock outside lru_cache so the first result is cached before another
     caller can construct a manager with a separate admission lock.
     """
     with _manager_lock:
-        return _cached_transcription_manager()
+        return _cached_whisper_transcriber()

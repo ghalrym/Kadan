@@ -3,7 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.memory_manager import memory_manager
 from api.memory_manager.http import infer
-from api.inference.stt.model import get_transcription_manager
+from api.inference.stt.whisper_transcriber import get_whisper_transcriber
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
@@ -61,13 +61,13 @@ class WhisperSelection(BaseModel):
 @router.get('/models', operation_id='getWhisperModels')
 def get_models() -> WhisperModels:
     """List all unique official checkpoints and the persisted selection."""
-    return WhisperModels(models=list(get_whisper_checkpoints()), selected=get_transcription_manager().selected())
+    return WhisperModels(models=list(get_whisper_checkpoints()), selected=get_whisper_transcriber().selected())
 
 
 @router.put('/models', operation_id='selectWhisperModel')
 def select_model(body: WhisperSelection) -> WhisperModels:
     try:
-        get_transcription_manager().select(body.model)
+        get_whisper_transcriber().select(body.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:

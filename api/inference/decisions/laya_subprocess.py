@@ -22,11 +22,12 @@ import time
 from huggingface_hub import snapshot_download
 
 from api.inference.decisions.laya_python import DEFAULT_MODEL, DEFAULT_REVISION, parse_answer
-from api.inference.feature import native_call as run_with_cancellation
-from api.inference.llm.native import NativeProtocolError as WorkerProtocolError, WorkerProcess, check_cancel
+from api.inference.cancellation import run_cancellable_thread
+from api.inference.line_protocol import LineProtocolError, LineProtocolProcess, check_cancel
 from api.inference.resources import ResourceBusy, ResourceExhausted
 from api.services.model_downloads import model_manager
-from api.services.runtime import RuntimeFailure, runtime_manager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import chat_runtime
 
 DEFAULT_HOST_BUDGET_BYTES = 3 * 1024**3 + 2 * 1024**2
 MAX_FRAME_BYTES = 65536
@@ -35,21 +36,21 @@ MAX_FRAME_BYTES = 65536
 def resolve_laya_command():
     binary = Path(os.getenv('KADAN_NATIVE_DECISION_WORKER', '/opt/kadan/bin/kadan-decision-worker')).expanduser()
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
-        raise RuntimeFailure('Decision worker is unavailable; configure KADAN_NATIVE_DECISION_WORKER.')
+        raise InferenceFailure('Decision worker is unavailable; configure KADAN_NATIVE_DECISION_WORKER.')
     model = os.getenv('KADAN_LAYA_MODEL', DEFAULT_MODEL)
     root = Path(model).expanduser()
     if not root.is_dir():
         revision = os.getenv('KADAN_LAYA_REVISION', DEFAULT_REVISION if model == DEFAULT_MODEL else '')
         if not re.fullmatch('[0-9a-f]{40}', revision):
-            raise RuntimeFailure('KADAN_LAYA_REVISION must pin a commit SHA.')
+            raise InferenceFailure('KADAN_LAYA_REVISION must pin a commit SHA.')
         try:
             root = Path(snapshot_download(model, revision=revision,
                 cache_dir=model_manager.root / 'hub', local_files_only=True))
         except Exception as error:
-            raise RuntimeFailure('Laya checkpoint is not cached; configure a complete local checkpoint.') from error
+            raise InferenceFailure('Laya checkpoint is not cached; configure a complete local checkpoint.') from error
     for name in ('rl_agent_config.json', 'model.safetensors', 'tokenizer/tokenizer.json', 'encoder/config.json'):
         if not (root / name).is_file():
-            raise RuntimeFailure(f'Laya checkpoint is incomplete: missing {name}.')
+            raise InferenceFailure(f'Laya checkpoint is incomplete: missing {name}.')
     return [str(binary.resolve()), str(root.resolve())]
 
 
@@ -58,26 +59,26 @@ def decode_laya_response(frame):
         result = {}
         for key, value in items:
             if key in result:
-                raise WorkerProtocolError('Duplicate worker response field')
+                raise LineProtocolError('Duplicate worker response field')
             result[key] = value
         return result
     def constant(_):
-        raise WorkerProtocolError('Nonfinite worker response')
+        raise LineProtocolError('Nonfinite worker response')
     try:
         return json.loads(frame.decode('utf-8'), object_pairs_hook=pairs, parse_constant=constant)
     except (ValueError, UnicodeError, RecursionError) as error:
-        raise WorkerProtocolError('Invalid decision JSON') from error
+        raise LineProtocolError('Invalid decision JSON') from error
 
 
-class LayaJsonlProcess(WorkerProcess):
+class LayaJsonlProcess(LineProtocolProcess):
     """Reuse owned process-group cleanup with bounded UTF-8 JSONL transport."""
     def exchange(self, request, timeout, cancel=None):
         check_cancel(cancel)
         if self.buffer or self.process.poll() is not None:
-            raise WorkerProtocolError('Decision worker unavailable or sent unsolicited data')
+            raise LineProtocolError('Decision worker unavailable or sent unsolicited data')
         frame = request.encode('utf-8') + b'\n'
         if len(frame) > MAX_FRAME_BYTES + 1:
-            raise RuntimeFailure('Decision request exceeds its byte limit.', 422)
+            raise InferenceFailure('Decision request exceeds its byte limit.', 422)
         deadline = time.monotonic() + timeout
         offset = 0
         os.set_blocking(self.process.stdin.fileno(), False)
@@ -100,25 +101,25 @@ class LayaJsonlProcess(WorkerProcess):
                 if not data:
                     self.selector.unregister(key.fileobj)
                     if key.data == 'out':
-                        raise WorkerProtocolError('Decision worker closed its response pipe')
+                        raise LineProtocolError('Decision worker closed its response pipe')
                 elif key.data == 'err':
                     self.diagnostics.extend(data)
                     del self.diagnostics[:-8192]
                 else:
                     self.buffer.extend(data)
                     if len(self.buffer) > MAX_FRAME_BYTES + 1:
-                        raise WorkerProtocolError('Decision response exceeds its byte limit')
+                        raise LineProtocolError('Decision response exceeds its byte limit')
             if b'\n' in self.buffer:
                 line, _, extra = self.buffer.partition(b'\n')
                 if extra or offset != len(frame):
-                    raise WorkerProtocolError('Unexpected decision response ordering')
+                    raise LineProtocolError('Unexpected decision response ordering')
                 self.buffer.clear()
                 return decode_laya_response(line)
 
 
 def parse_laya_responses(questions, response):
     if not isinstance(response, dict):
-        raise WorkerProtocolError('Decision response must be an object')
+        raise LineProtocolError('Decision response must be an object')
     if set(response) == {'error'}:
         # Only request-domain rejections are client errors. Checkpoint, transport
         # and implementation failures never fall back to a Python model.
@@ -129,15 +130,15 @@ def parse_laya_responses(questions, response):
                          'decision_choice_options', 'decision_score_levels'}
         error = response['error']
         status = 422 if isinstance(error, str) and error in client_errors else 502
-        raise RuntimeFailure('Decision rejected the request: ' + str(error)[:200], status)
+        raise InferenceFailure('Decision rejected the request: ' + str(error)[:200], status)
     if set(response) != {'answers'} or not isinstance(response['answers'], list) or len(response['answers']) != len(questions):
-        raise WorkerProtocolError('Invalid decision answer count')
+        raise LineProtocolError('Invalid decision answer count')
     result = []
     for question, answer in zip(questions, response['answers']):
         if (not isinstance(answer, dict) or set(answer) != {'key', 'type', 'value', 'confidence', 'probabilities'}
                 or answer['key'] != question.key or answer['type'] != question.type
                 or (question.type == 'Noul' and answer['probabilities'] is not None)):
-            raise WorkerProtocolError('Invalid decision answer fields or order')
+            raise LineProtocolError('Invalid decision answer fields or order')
         result.append(parse_answer(question, dict(type=question.type.lower(),
             **{question.type.lower(): answer['value']}, answer_confidence=answer['confidence'],
             probabilities=answer['probabilities'])))
@@ -150,7 +151,7 @@ class LayaSubprocessEvaluator:
         self.agent = self.reservation = None
         self._lock = threading.Lock()
         self._generation = asyncio.Lock()
-        self._owner = f'native-decisions:{id(self)}'
+        self._owner = f'laya-subprocess:{id(self)}'
         self._quarantined = False
 
     def _settings(self):
@@ -160,7 +161,7 @@ class LayaSubprocessEvaluator:
             if budget < DEFAULT_HOST_BUDGET_BYTES or not math.isfinite(timeout) or not 0 < timeout <= 3600:
                 raise ValueError()
         except ValueError as error:
-            raise RuntimeFailure('Invalid decision RAM budget or timeout configuration.') from error
+            raise InferenceFailure('Invalid decision RAM budget or timeout configuration.') from error
         return budget, timeout
 
     async def preflight(self):
@@ -171,7 +172,7 @@ class LayaSubprocessEvaluator:
         # A failed reap is unresolved execution, not ordinary memory pressure.
         # Keep this check nonblocking: only confirmed close clears quarantine.
         if self._quarantined:
-            raise RuntimeFailure('Decision cleanup is unconfirmed; close the runtime before executing another job.')
+            raise InferenceFailure('Decision cleanup is unconfirmed; close the runtime before executing another job.')
 
     def _close_locked(self):
         if self.agent is not None:
@@ -197,10 +198,10 @@ class LayaSubprocessEvaluator:
     def _run(self, state, questions, cancel):
         with self._lock:
             if self._quarantined:
-                raise RuntimeFailure('Decision cleanup is unconfirmed; restart or close the runtime.')
+                raise InferenceFailure('Decision cleanup is unconfirmed; restart or close the runtime.')
             budget, timeout = self._settings()
             argv = self.resolve()
-            self.resources = self.resources or runtime_manager.ensure_resources()
+            self.resources = self.resources or chat_runtime.ensure_resources()
             try:
                 if self.reservation is None:
                     self.reservation = self.resources.reserve(self._owner, 'decision', host_bytes=budget,
@@ -220,18 +221,18 @@ class LayaSubprocessEvaluator:
                 # confirmed first; a failed reap deliberately keeps admission.
                 self._close_locked()
                 if isinstance(error, (ResourceBusy, ResourceExhausted)):
-                    raise RuntimeFailure(str(error), 503) from error
+                    raise InferenceFailure(str(error), 503) from error
                 if isinstance(error, TimeoutError):
-                    raise RuntimeFailure('Decision worker timed out.', 504) from error
-                if isinstance(error, (WorkerProtocolError, OSError)):
-                    raise RuntimeFailure('Decision worker failed: ' + str(error), 502) from error
+                    raise InferenceFailure('Decision worker timed out.', 504) from error
+                if isinstance(error, (LineProtocolError, OSError)):
+                    raise InferenceFailure('Decision worker failed: ' + str(error), 502) from error
                 raise
 
     async def evaluate(self, state, questions):
         if self._generation.locked():
-            raise RuntimeFailure('Decisions are active.', 429)
+            raise InferenceFailure('Decisions are active.', 429)
         async with self._generation:
-            return await run_with_cancellation(self._run, state, questions)
+            return await run_cancellable_thread(self._run, state, questions)
 
     async def load(self):
         # Model loading is owned by the first admitted worker request.
@@ -242,12 +243,12 @@ class LayaSubprocessEvaluator:
         if self._generation.locked():
             raise ResourceBusy('Decisions are active')
         if self._quarantined:
-            raise RuntimeFailure('Decision cleanup is unconfirmed.')
+            raise InferenceFailure('Decision cleanup is unconfirmed.')
         # This CPU executor never acquires device residency.
 
     async def close(self):
         async with self._generation:
-            await run_with_cancellation(self._close)
+            await run_cancellable_thread(self._close)
 
     def _close(self, cancel):
         with self._lock:

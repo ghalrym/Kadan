@@ -1,22 +1,23 @@
-"""One Redis consumer coordinating six concrete native feature wrappers."""
+"""One Redis consumer coordinating six concrete request executors."""
 from contextlib import AsyncExitStack
 import logging
 import os
 
 from pydantic import ValidationError
 
-from api.inference.llm.feature import LLMFeature
-from api.inference.video.feature import VideoFeature
-from api.inference.image.feature import ImageFeature
-from api.inference.stt.feature import STTFeature
-from api.inference.tts.feature import TTSFeature
+from api.inference.llm.chat_requests import ChatRequests
+from api.inference.video.video_requests import VideoRequests
+from api.inference.image.image_requests import ImageRequests
+from api.inference.stt.transcription_requests import TranscriptionRequests
+from api.inference.tts.speech_requests import SpeechRequests
 from api.inference.decisions.decision_requests import DecisionRequests
 from api.memory_manager.queue import InferenceQueue, Job
 from api.memory_manager.streaming import QueuedStream
 from api.inference.decisions.laya_backend import laya_evaluator
 from api.services.model_downloads import model_manager
-from api.services.runtime import RuntimeFailure, runtime_manager
-from api.inference.stt.model import get_transcription_manager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import chat_runtime
+from api.inference.stt.whisper_transcriber import get_whisper_transcriber
 from api.services.video_jobs import video_jobs
 
 log = logging.getLogger(__name__)
@@ -24,13 +25,13 @@ log = logging.getLogger(__name__)
 
 class MemoryManager:
     def __init__(self, *, runtime=None, decisions=None, transcription=None, videos=None, queue=None):
-        self.llm = LLMFeature(runtime or runtime_manager)
-        self.video = VideoFeature(videos or video_jobs)
-        self.image = ImageFeature()
-        self.stt = STTFeature(transcription or get_transcription_manager())
-        self.tts = TTSFeature()
+        self.llm = ChatRequests(runtime or chat_runtime)
+        self.video = VideoRequests(videos or video_jobs)
+        self.image = ImageRequests()
+        self.stt = TranscriptionRequests(transcription or get_whisper_transcriber())
+        self.tts = SpeechRequests()
         self.decisions = DecisionRequests(decisions or laya_evaluator)
-        self.features = {feature.name: feature for feature in
+        self.request_executors = {feature.name: feature for feature in
             (self.llm, self.video, self.image, self.stt, self.tts, self.decisions)}
         self.queue = queue or InferenceQueue(self._execute,
             url=os.getenv('KADAN_REDIS_URL', 'redis://127.0.0.1:6379/0'),
@@ -38,22 +39,22 @@ class MemoryManager:
 
     @property
     def runtime(self):
-        return self.llm.service
+        return self.llm.chat_runtime
 
     @property
     def transcription(self):
-        return self.stt.service
+        return self.stt.transcriber
 
     @property
     def videos(self):
-        return self.video.service
+        return self.video.video_jobs
 
     @videos.setter
-    def videos(self, service):
-        self.video.service = service
+    def videos(self, video_jobs):
+        self.video.video_jobs = video_jobs
 
     async def submit(self, body, *, feature, operation='generate'):
-        wrapper = self.features[feature]
+        wrapper = self.request_executors[feature]
         model = wrapper.select(body)
         preflight = getattr(wrapper, 'preflight', None)
         if preflight is not None:
@@ -73,7 +74,7 @@ class MemoryManager:
         try:
             await self.queue.start()
             return True
-        except RuntimeFailure:
+        except InferenceFailure:
             log.exception('Cannot start inference queue')
             return False
 
@@ -83,7 +84,7 @@ class MemoryManager:
         finally:
             # ExitStack keeps attempting cleanup if any native close fails.
             async with AsyncExitStack() as cleanup:
-                for feature in self.features.values():
+                for feature in self.request_executors.values():
                     cleanup.push_async_callback(feature.unload)
 
     async def video_job(self, job_id):
@@ -100,22 +101,22 @@ class MemoryManager:
         return job
 
     async def _execute(self, job: Job):
-        wrapper = self.features[job.feature]
+        wrapper = self.request_executors[job.feature]
         if job.operation not in wrapper.operations:
-            raise RuntimeFailure('Unsupported inference operation.', 422)
+            raise InferenceFailure('Unsupported inference operation.', 422)
         try:
             body = wrapper.validate(job.payload, job.operation)
         except ValidationError as exc:
-            raise RuntimeFailure('Invalid queued inference payload.', 422) from exc
+            raise InferenceFailure('Invalid queued inference payload.', 422) from exc
         if getattr(body, 'model', None) is not None and body.model != job.model:
-            raise RuntimeFailure('Queued model selection does not match the request.', 422)
+            raise InferenceFailure('Queued model selection does not match the request.', 422)
         preflight_execution = getattr(wrapper, "preflight_execution", None)
         if preflight_execution is not None:
             await preflight_execution(body)
         # Unconfirmed cleanup from any feature blocks execution across the FIFO.
         # This checks ownership only; healthy residents and memory contention
         # retain their existing admission/eviction behavior.
-        for feature in self.features.values():
+        for feature in self.request_executors.values():
             check = getattr(feature, 'check_execution_state', None)
             if check is not None:
                 check()

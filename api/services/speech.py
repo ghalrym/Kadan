@@ -2,12 +2,12 @@
 import base64
 import threading
 
-from api.inference.tts.runtime import SpeechInput, SpeechRuntime, SpeechUnavailable, wav_duration
+from api.inference.tts.speech_runtime import SpeechInput, SpeechRuntime, SpeechUnavailable, wav_duration
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.inference.tts.providers import speech_registry
-from api.services.runtime import runtime_manager
+from api.services.chat_runtime import chat_runtime
 
-speech_runtime = SpeechRuntime(speech_registry, runtime_manager.ensure_resources)
+speech_runtime = SpeechRuntime(speech_registry, chat_runtime.ensure_resources)
 
 
 def validate_request(request: dict) -> str:

@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from api.inference.decisions.laya_python import load_laya, preflight, parse_answer, translate_questions, clear_tokenizer_cache
-from api.services.runtime import RuntimeFailure
+from api.inference.errors import InferenceFailure
 from api.tests.inference.decisions.test_laya_python import questions
 
 
@@ -48,7 +48,7 @@ class LayaContractTests(unittest.TestCase):
         del cls.agent
         cls.directory.cleanup()
 
-    def test_cpu_native_typed_outputs(self):
+    def test_cpu_inference_typed_outputs(self):
         self.assertEqual(self.agent.device.type, 'cpu')
         definitions = translate_questions(questions())
         preflight(self.agent, 'Service failed', definitions)
@@ -74,7 +74,7 @@ class LayaContractTests(unittest.TestCase):
         with patch.dict('os.environ', {}, clear=True), \
                 patch('huggingface_hub.snapshot_download', side_effect=LocalEntryNotFoundError('not cached')), \
                 patch('laya.load') as loader:
-            with self.assertRaisesRegex(RuntimeFailure, 'persistent model cache'):
+            with self.assertRaisesRegex(InferenceFailure, 'persistent model cache'):
                 load_laya()
             loader.assert_not_called()
 
@@ -87,13 +87,13 @@ class LayaContractTests(unittest.TestCase):
         encoder_path.write_text(json.dumps(config))
         try:
             with patch.dict('os.environ', {'KADAN_LAYA_MODEL': str(path)}), patch('laya.load') as loader:
-                with self.assertRaises(RuntimeFailure):
+                with self.assertRaises(InferenceFailure):
                     load_laya()
                 loader.assert_not_called()
         finally:
             encoder_path.write_text(original)
         with patch.dict('os.environ', {'KADAN_LAYA_MODEL': str(path), 'KADAN_LAYA_RAM_BYTES': '1'}), patch('laya.load') as loader:
-            with self.assertRaises(RuntimeFailure):
+            with self.assertRaises(InferenceFailure):
                 load_laya()
             loader.assert_not_called()
 
@@ -106,6 +106,6 @@ class LayaContractTests(unittest.TestCase):
             cases.append(('state', {'cause': definition}))
         cases.append(('[MASK]', definitions))
         for state, question_defs in cases:
-            with self.subTest(state=state[:20], questions=question_defs), self.assertRaises(RuntimeFailure) as caught:
+            with self.subTest(state=state[:20], questions=question_defs), self.assertRaises(InferenceFailure) as caught:
                 preflight(self.agent, state, question_defs)
             self.assertEqual(caught.exception.status_code, 422)

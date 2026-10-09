@@ -48,7 +48,7 @@ class StreamingGenerationTests(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             self.run_generation(emit=disconnected)
 
-    def test_native_timing_excludes_eos_and_prefill_from_decode_rate(self):
+    def test_inference_timing_excludes_eos_and_prefill_from_decode_rate(self):
         clock = [0.0]
         events = []
         with patch('api.inference.llm.generation.time.monotonic', side_effect=lambda: clock[0]):

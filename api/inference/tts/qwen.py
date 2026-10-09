@@ -9,7 +9,7 @@ import threading
 
 from api.inference.placement import select_device
 from api.inference.resources import ResourceCancelled
-from api.inference.tts.runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechResult, SpeechUnavailable
+from api.inference.tts.speech_runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechResult, SpeechUnavailable
 from api.services.model_downloads import model_manager
 from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
 from api.inference.tts import enabled as speech_enabled

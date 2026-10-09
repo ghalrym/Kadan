@@ -10,7 +10,7 @@ from fastapi import HTTPException, Request
 from api.server import app
 import api.server as server
 from api.services.model_downloads import ModelManager
-from api.services.runtime import RuntimeManager
+from api.services.chat_runtime import ChatRuntime
 from api.routes.v1.chat.completions import CompletionRequest, create_completion
 
 
@@ -19,14 +19,14 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.models = ModelManager(Path(temporary.name))
-        self.runtime = RuntimeManager()
+        self.runtime = ChatRuntime()
         for target, value in (
-            ('api.routes.model_lifecycle.runtime_manager', self.runtime),
+            ('api.routes.model_lifecycle.chat_runtime', self.runtime),
             ('api.routes.v1.chat.completions.memory_manager.submit', self.complete),
             ('api.server.memory_manager', Mock(start=AsyncMock(), close=AsyncMock())),
             ('api.services.model_downloads.model_manager', self.models),
-            ('api.services.runtime.model_manager', self.models),
-            ('api.server.runtime_manager', self.runtime),
+            ('api.services.chat_runtime.model_manager', self.models),
+            ('api.server.chat_runtime', self.runtime),
             ('api.server.model_manager', self.models),
         ):
             patched = patch(target, value)
@@ -79,7 +79,7 @@ class ModelLifecycleRouteTests(unittest.TestCase):
         import json
         from api.services.model_catalog import CATALOG
         from api.inference.resources import ResourceManager
-        from api.tests.services.test_runtime import Adapter
+        from api.tests.services.test_chat_runtime import Adapter
         from unittest.mock import Mock
         entry = CATALOG['small']
         path = self.models._checkpoint_directory(entry)

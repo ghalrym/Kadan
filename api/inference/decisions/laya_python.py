@@ -25,7 +25,8 @@ import threading
 from api.inference.placement import select_device
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.decisions import ChoiceAnswer, ScoreAnswer, NoulAnswer
-from api.services.runtime import RuntimeFailure, runtime_manager
+from api.inference.errors import InferenceFailure
+from api.services.chat_runtime import chat_runtime
 from api.services.model_downloads import model_manager
 
 log = logging.getLogger(__name__)
@@ -55,23 +56,23 @@ def load_laya():
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
     except ImportError as exc:
-        raise RuntimeFailure(f'Decision runtime import failed: {exc}') from exc
+        raise InferenceFailure(f'Decision runtime import failed: {exc}') from exc
     model = os.environ.get('KADAN_LAYA_MODEL', DEFAULT_MODEL)
     revision = os.environ.get('KADAN_LAYA_REVISION', DEFAULT_REVISION if model == DEFAULT_MODEL else '')
     path = Path(model).expanduser()
     if not path.is_dir():
         if not re.fullmatch(r'[0-9a-f]{40}', revision):
-            raise RuntimeFailure('KADAN_LAYA_REVISION must pin the selected Hub model to a commit SHA.')
+            raise InferenceFailure('KADAN_LAYA_REVISION must pin the selected Hub model to a commit SHA.')
         try:
             path = Path(snapshot_download(model, revision=revision, cache_dir=model_manager.root / 'hub',
                 allow_patterns=['rl_agent_config.json', 'model.safetensors', 'tokenizer/*', 'encoder/*']))
         except LocalEntryNotFoundError as exc:
-            raise RuntimeFailure('Laya checkpoint is unavailable in the persistent model cache. '
+            raise InferenceFailure('Laya checkpoint is unavailable in the persistent model cache. '
                 'Download the pinned checkpoint or configure KADAN_LAYA_MODEL with its complete local directory.') from exc
     # Laya otherwise falls back to the encoder named in its training config.
     for name in ('rl_agent_config.json', 'model.safetensors', 'tokenizer/tokenizer.json', 'encoder/config.json'):
         if not (path / name).is_file():
-            raise RuntimeFailure(f'Laya checkpoint is incomplete: missing {name}.')
+            raise InferenceFailure(f'Laya checkpoint is incomplete: missing {name}.')
     validate_checkpoint_budget(path)
     try:
         return laya.load(str(path.resolve()), device='cpu', fast=False, compile=False)
@@ -108,12 +109,12 @@ def validate_checkpoint_budget(path):
             or type(config.get('head_max_len', 192)) is not int or not 0 < config.get('head_max_len', 192) <= 1024
             or type(config.get('head_layers', 2)) is not int or not 0 <= config.get('head_layers', 2) <= 2
             or len(config.get('act_costs', {})) > 8):
-        raise RuntimeFailure('Unsupported Laya checkpoint dimensions; use a compatible ModernBERT checkpoint.')
+        raise InferenceFailure('Unsupported Laya checkpoint dimensions; use a compatible ModernBERT checkpoint.')
     with safe_open(path / 'model.safetensors', framework='pt', device='cpu') as weights:
         parameter_bytes = sum(math.prod(weights.get_slice(key).get_shape()) * 4 for key in weights.keys())
     budget = int(os.environ.get('KADAN_LAYA_RAM_BYTES', DEFAULT_RAM_BYTES))
     if parameter_bytes > 500_000_000 * 4 or parameter_bytes + (path / 'model.safetensors').stat().st_size + 1024 ** 3 > budget:
-        raise RuntimeFailure('Laya checkpoint exceeds its configured RAM admission budget.')
+        raise InferenceFailure('Laya checkpoint exceeds its configured RAM admission budget.')
 
 
 def translate_questions(questions):
@@ -145,7 +146,7 @@ def preflight(agent, state, questions):
         # Upstream replaces literal mask tokens. Refuse that lossy transformation.
         options = render_options(question)
         if tok.mask_token in state or tok.mask_token in question['ins'] or any(tok.mask_token in option for option in options):
-            raise RuntimeFailure('State and questions cannot contain the tokenizer mask token.', 422)
+            raise InferenceFailure('State and questions cannot contain the tokenizer mask token.', 422)
         full = [tok.cls_token_id] + _encode_question_text(
             tok, f"{question['t']} question: {question['ins']}", add_special_tokens=False) + [tok.sep_token_id]
         for option in options:
@@ -154,14 +155,14 @@ def preflight(agent, state, questions):
         actual, _, _ = build_head(tok, question, agent.cfg.get('head_max_len', 192))
         state_ids = encode_text(tok, state, add_special_tokens=False)['input_ids']
         if full != actual or len(full) + len(state_ids) + 1 > agent.cfg.get('max_len', 512):
-            raise RuntimeFailure(f'Question {key!r} or state exceeds the Laya token budget; shorten it.', 422)
+            raise InferenceFailure(f'Question {key!r} or state exceeds the Laya token budget; shorten it.', 422)
 
 
 def parse_answer(question, answer):
     """Validate typed decision output without boolean or integer coercion."""
     kind = question.type.lower()
     if not isinstance(answer, dict) or answer.get('type') != kind:
-        raise RuntimeFailure('Laya returned an invalid answer type.', 502)
+        raise InferenceFailure('Laya returned an invalid answer type.', 502)
     value = answer.get(kind)
     numeric = lambda number: type(number) in (int, float) and math.isfinite(number)
     if question.type == 'Choice':
@@ -186,7 +187,7 @@ def parse_answer(question, answer):
                 or abs(sum(probabilities.values()) - 1) > .01):
             valid = False
     if not valid:
-        raise RuntimeFailure('Laya returned an invalid typed value or probability.', 502)
+        raise InferenceFailure('Laya returned an invalid typed value or probability.', 502)
     return cls(key=question.key, type=question.type, value=value,
                confidence=confidence, probabilities=probabilities)
 
@@ -231,7 +232,7 @@ class LayaPythonEvaluator:
         self._release_device()
 
     def offload_to_ram(self, cancel=None):
-        (self.resources or runtime_manager.ensure_resources()).offload_workload_devices('decision', cancel)
+        (self.resources or chat_runtime.ensure_resources()).offload_workload_devices('decision', cancel)
 
     def _place(self, resources, cancel):
         # Injected lightweight test agents have no model weights; never claim GPU residency for them.
@@ -265,7 +266,7 @@ class LayaPythonEvaluator:
 
     def _run(self, state, questions, cancel):
         """Keep loading and each prediction leased until the worker truly finishes."""
-        resources = self.resources or runtime_manager.ensure_resources()
+        resources = self.resources or chat_runtime.ensure_resources()
         self.resources = resources
         try:
             if self.agent is None:
@@ -274,9 +275,9 @@ class LayaPythonEvaluator:
                     try:
                         budget = int(os.environ.get('KADAN_LAYA_RAM_BYTES', DEFAULT_RAM_BYTES))
                     except ValueError as exc:
-                        raise RuntimeFailure('KADAN_LAYA_RAM_BYTES must be an integer byte budget.') from exc
+                        raise InferenceFailure('KADAN_LAYA_RAM_BYTES must be an integer byte budget.') from exc
                     if budget < DEFAULT_RAM_BYTES:
-                        raise RuntimeFailure('Laya RAM admission must reserve at least 4 GiB including transient workspace.')
+                        raise InferenceFailure('Laya RAM admission must reserve at least 4 GiB including transient workspace.')
                 if self.reservation is not None:
                     self.reservation.release()
                 self.reservation = resources.reserve(self._owner, 'decision', host_bytes=budget,
@@ -305,17 +306,17 @@ class LayaPythonEvaluator:
                     document = self.agent.predict(state, {question.key: definitions[question.key]})
                     usage = document.get('usage', {})
                     if usage.get('truncated') or usage.get('state_tokens_dropped') or usage.get('truncated_questions') or usage.get('options'):
-                        raise RuntimeFailure('Laya truncated the input; shorten the state or question.', 422)
+                        raise InferenceFailure('Laya truncated the input; shorten the state or question.', 422)
                     output = document.get('answers')
                     if not isinstance(output, dict) or set(output) != {question.key}:
-                        raise RuntimeFailure('Laya returned mismatched question keys.', 502)
+                        raise InferenceFailure('Laya returned mismatched question keys.', 502)
                     answers.append(parse_answer(question, output[question.key]))
                 return answers
         except (ResourceBusy, ResourceExhausted) as exc:
-            raise RuntimeFailure(str(exc), 503) from exc
+            raise InferenceFailure(str(exc), 503) from exc
         except ResourceCancelled:
             return []
-        except RuntimeFailure as exc:
+        except InferenceFailure as exc:
             clear_failure_frames(exc)
             raise
         except Exception as exc:
@@ -324,7 +325,7 @@ class LayaPythonEvaluator:
             log.exception('Laya evaluation failed')
             clear_failure_frames(exc)
             gc.collect()
-            raise RuntimeFailure('Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
+            raise InferenceFailure('Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
         finally:
             # Failed construction must not retain an empty, non-evictable budget.
             if self.agent is None and self.reservation is not None:
@@ -350,7 +351,7 @@ class LayaPythonEvaluator:
     async def evaluate(self, state, questions):
         """Reject overlap and wait for synchronous CPU work after cancellation."""
         if self._generation.locked():
-            raise RuntimeFailure('A decision evaluation is already active.', 429)
+            raise InferenceFailure('A decision evaluation is already active.', 429)
         async with self._generation:
             cancel = threading.Event()
             worker = asyncio.create_task(asyncio.to_thread(self._run, state, questions, cancel))

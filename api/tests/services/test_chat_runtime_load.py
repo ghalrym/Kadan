@@ -10,8 +10,9 @@ from unittest.mock import Mock, patch
 from api.inference.resources import ResourceManager
 from api.services.model_catalog import CATALOG
 from api.services.model_downloads import ModelManager
-from api.services.runtime import RuntimeManager, RuntimeFailure
-from api.tests.services.test_runtime import Adapter
+from api.services.chat_runtime import ChatRuntime
+from api.inference.errors import InferenceFailure
+from api.tests.services.test_chat_runtime import Adapter
 
 
 class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -28,11 +29,11 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
         complete = patch.object(self.models, '_checkpoint_complete', return_value=True)
         complete.start()
         self.addCleanup(complete.stop)
-        singleton = patch('api.services.runtime.model_manager', self.models)
+        singleton = patch('api.services.chat_runtime.model_manager', self.models)
         singleton.start()
         self.addCleanup(singleton.stop)
         self.factory = Mock(side_effect=lambda *args, **kwargs: Adapter())
-        self.runtime = RuntimeManager(self.factory, ResourceManager(1000, {0: 1000}))
+        self.runtime = ChatRuntime(self.factory, ResourceManager(1000, {0: 1000}))
         self.addAsyncCleanup(self.runtime.close)
 
     async def ready(self, model='small', **kwargs):
@@ -104,11 +105,11 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
         old = await self.ready()
         before = (self.models.root / 'context.json').read_bytes()
         for value in (131073, True, '65536', 0):
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.runtime.load('medium', value)
             self.assertEqual(error.exception.status_code, 422)
         with patch.object(self.models, '_checkpoint_complete', return_value=False):
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.runtime.load('medium', 65536)
             self.assertEqual(error.exception.status_code, 409)
         self.assertFalse(old.closed)
@@ -127,7 +128,7 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
             responses = await asyncio.gather(self.runtime.load('small', 65536), self.runtime.load('small', 65536))
             self.assertEqual([r['state'] for r in responses], ['loading', 'loading'])
             await asyncio.to_thread(entered.wait, 1)
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.runtime.load('medium', 65536)
             self.assertEqual(error.exception.status_code, 409)
         finally:
@@ -139,7 +140,7 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_generation_rejects_switch_without_mutation(self):
         old = await self.ready()
         async with self.runtime._generation:
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.runtime.load('medium', 32768)
         self.assertEqual(error.exception.status_code, 409)
         self.assertFalse(old.closed)
@@ -149,7 +150,7 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
         old = await self.ready()
         files = {name: (self.models.root / name).read_bytes() for name in ('context.json', 'selection.json')}
         with patch.object(self.models, 'select', side_effect=OSError('disk full')):
-            with self.assertRaises(RuntimeFailure) as error:
+            with self.assertRaises(InferenceFailure) as error:
                 await self.runtime.load('medium', 32768)
         self.assertEqual(error.exception.status_code, 503)
         self.assertTrue(old.closed)
@@ -214,7 +215,7 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
             await entered.wait()
             try:
                 self.assertEqual(self.runtime.state, 'unloading')
-                with self.assertRaises(RuntimeFailure):
+                with self.assertRaises(InferenceFailure):
                     await self.runtime.complete([], None)
             finally:
                 finish.set()
