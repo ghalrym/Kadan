@@ -17,13 +17,13 @@ from api.inference.stt.feature import STTFeature
 from api.inference.stt.model import TranscriptionManager
 from api.inference.stt.catalog import checkpoint
 from api.inference.tts.feature import TTSFeature
-from api.inference.decisions.feature import DecisionsFeature
-from api.inference.decisions.model import DecisionManager
+from api.inference.decisions.decision_requests import DecisionRequests
+from api.inference.decisions.laya_python import LayaPythonEvaluator
 from api.inference.resources import ResourceManager, ResourceBusy
 from api.services.runtime import RuntimeFailure
 from api.services.video_jobs import VideoJobs
 from api.tests.inference.stt.test_model import audio_url
-from api.tests.inference.decisions.test_model import questions
+from api.tests.inference.decisions.test_laya_python import questions
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
 from api.routes.v1.decisions import DecisionRequest
@@ -97,7 +97,7 @@ class FeatureContractTests(unittest.IsolatedAsyncioTestCase):
         native = Mock()
         native.predict.return_value = {'answers':{'urgent':{'type':'noul','noul':.7}},'usage':{}}
         loader = Mock(return_value=native)
-        feature = DecisionsFeature(DecisionManager(loader, resources, check=Mock(), ram_bytes=60))
+        feature = DecisionRequests(LayaPythonEvaluator(loader, resources, check=Mock(), ram_bytes=60))
         self.assertIsInstance(feature, InferenceFeature)
         self.assertIs(await feature.load(), native)
         native.predict.assert_not_called()

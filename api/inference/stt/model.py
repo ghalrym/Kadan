@@ -19,7 +19,7 @@ from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCan
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
-from api.inference.decisions.model import clear_failure_frames
+from api.inference.decisions.laya_python import clear_failure_frames
 
 
 class TranscriptionManager:

@@ -10,10 +10,10 @@ from api.inference.video.feature import VideoFeature
 from api.inference.image.feature import ImageFeature
 from api.inference.stt.feature import STTFeature
 from api.inference.tts.feature import TTSFeature
-from api.inference.decisions.feature import DecisionsFeature
+from api.inference.decisions.decision_requests import DecisionRequests
 from api.memory_manager.queue import InferenceQueue, Job
 from api.memory_manager.streaming import QueuedStream
-from api.inference.decisions.model import decision_manager
+from api.inference.decisions.laya_backend import laya_evaluator
 from api.services.model_downloads import model_manager
 from api.services.runtime import RuntimeFailure, runtime_manager
 from api.inference.stt.model import get_transcription_manager
@@ -29,7 +29,7 @@ class MemoryManager:
         self.image = ImageFeature()
         self.stt = STTFeature(transcription or get_transcription_manager())
         self.tts = TTSFeature()
-        self.decisions = DecisionsFeature(decisions or decision_manager)
+        self.decisions = DecisionRequests(decisions or laya_evaluator)
         self.features = {feature.name: feature for feature in
             (self.llm, self.video, self.image, self.stt, self.tts, self.decisions)}
         self.queue = queue or InferenceQueue(self._execute,
@@ -109,6 +109,16 @@ class MemoryManager:
             raise RuntimeFailure('Invalid queued inference payload.', 422) from exc
         if getattr(body, 'model', None) is not None and body.model != job.model:
             raise RuntimeFailure('Queued model selection does not match the request.', 422)
+        preflight_execution = getattr(wrapper, "preflight_execution", None)
+        if preflight_execution is not None:
+            await preflight_execution(body)
+        # Unconfirmed cleanup from any feature blocks execution across the FIFO.
+        # This checks ownership only; healthy residents and memory contention
+        # retain their existing admission/eviction behavior.
+        for feature in self.features.values():
+            check = getattr(feature, 'check_execution_state', None)
+            if check is not None:
+                check()
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         stream = self.queue.streams.get(job.id) if job.feature == "llm" else None

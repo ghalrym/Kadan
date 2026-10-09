@@ -158,7 +158,7 @@ def preflight(agent, state, questions):
 
 
 def parse_answer(question, answer):
-    """Validate native typed output without boolean or integer coercion."""
+    """Validate typed decision output without boolean or integer coercion."""
     kind = question.type.lower()
     if not isinstance(answer, dict) or answer.get('type') != kind:
         raise RuntimeFailure('Laya returned an invalid answer type.', 502)
@@ -191,7 +191,7 @@ def parse_answer(question, answer):
                confidence=confidence, probabilities=probabilities)
 
 
-class DecisionManager:
+class LayaPythonEvaluator:
     def __init__(self, loader=load_laya, resources=None, check=preflight, ram_bytes=None):
         """Create an unloaded specialist; injected dependencies allow CPU-free lifecycle tests."""
         self.loader, self.resources, self.check = loader, resources, check
@@ -234,7 +234,7 @@ class DecisionManager:
         (self.resources or runtime_manager.ensure_resources()).offload_workload_devices('decision', cancel)
 
     def _place(self, resources, cancel):
-        # Injected lightweight test agents have no native model; never claim GPU residency for them.
+        # Injected lightweight test agents have no model weights; never claim GPU residency for them.
         if self.loader is not load_laya:
             return
         budget = self.ram_bytes or int(os.environ.get('KADAN_LAYA_RAM_BYTES', DEFAULT_RAM_BYTES))
@@ -321,10 +321,10 @@ class DecisionManager:
         except Exception as exc:
             # A failed constructor's traceback can own its partially loaded model.
             # Clear completed frames before returning the reservation to the pool.
-            log.exception('Native Laya evaluation failed')
+            log.exception('Laya evaluation failed')
             clear_failure_frames(exc)
             gc.collect()
-            raise RuntimeFailure('Native Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
+            raise RuntimeFailure('Laya evaluation failed; check checkpoint configuration and runtime dependencies.') from exc
         finally:
             # Failed construction must not retain an empty, non-evictable budget.
             if self.agent is None and self.reservation is not None:
@@ -382,4 +382,4 @@ class DecisionManager:
             self.reservation = None
 
 
-decision_manager = DecisionManager()
+python_laya_evaluator = LayaPythonEvaluator()
