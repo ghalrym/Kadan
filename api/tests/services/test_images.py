@@ -12,9 +12,11 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from api.inference.image.model import REVISION
+from api.inference.image.dual import DualImage
+from api.inference.image.model import GIB, REVISION
+from api.tests.inference.image.test_rank_session import FakeRanks
 from api.inference.image.feature import ImageFeature
-from api.inference.resources import ResourceManager, ResourceCancelled
+from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled
 from api.services.images import ImageManager, decode_source
 from api.services.runtime import RuntimeFailure
 
@@ -28,6 +30,63 @@ class ImageManagerTests(unittest.TestCase):
         self.backend = Mock(side_effect=lambda path, resources, prompt, aspect, seeds, cancel, **kwargs:
             [Image.new('RGBA', (3, 2), (255, 0, 0, 100)) for _ in seeds])
         self.manager = ImageManager(self.temp.name, self.downloads, Mock(), self.backend)
+
+    def test_layered_dual_failure_has_one_cleanup_deadline_and_explicit_recovery(self):
+        # Exercise execute -> DualImage -> ImageManager finalizers with a clock
+        # advanced by the failed physical reap, without a slow wall-clock test.
+        for failure in ('execute', 'output', 'publication'):
+            with self.subTest(failure=failure):
+                path = Path(self.temp.name)
+                (path / 'weights.safetensors').write_bytes(b'fixture')
+                resources = ResourceManager(300 * GIB, {0: 24 * GIB, 1: 24 * GIB})
+                ranks = FakeRanks()
+                ranks.output = Mock(side_effect=OSError('bad output'))
+                dual = DualImage(path, resources, devices=[0, 1],
+                    transport_factory=lambda *args: ranks)
+                now, deadlines = [10.0], []
+                dual.session.clock = lambda: now[0]
+                def stop(deadline):
+                    deadlines.append(deadline)
+                    now[0] = deadline
+                    return False
+                ranks.stop = stop
+                if failure == 'execute':
+                    ranks.callback = lambda command: (_ for _ in ()).throw(
+                        ResourceCancelled('cancelled')) if command['operation'] == 'execute' else None
+                manager = ImageManager(path / 'outputs', self.downloads, Mock())
+                manager.runtime.ensure_resources.return_value = resources
+                manager.native = dual
+                if failure == 'publication':
+                    # A completed rank operation followed by publication failure.
+                    def generate(*args, **kwargs):
+                        dual.session.execute('a' * 32)
+                        picture = Mock()
+                        picture.save.side_effect = OSError('disk failure')
+                        return [picture]
+                    dual.generate = generate
+                with patch.object(manager, '_load', return_value=dual):
+                    with self.assertRaises(ResourceBusy):
+                        manager.generate('x', '1:1', 1, 42, threading.Event(), job_id='a' * 32)
+                self.assertEqual(deadlines, [40.0])
+                self.assertEqual(now[0], 40.0)
+                self.assertEqual(dual.session.state, 'quarantined')
+                rows = resources.snapshot()['reservations']
+                self.assertTrue(all(dual.session.owner + ':' + tier in rows
+                    for tier in ('host', 'context', 'execution')))
+                self.assertFalse(any(key.startswith('image:output:') for key in rows))
+                self.assertEqual(manager.history(), [])
+                with self.assertRaises(ResourceBusy):
+                    manager.close()
+                with self.assertRaises(ResourceBusy):
+                    dual.session.execute('b' * 32)
+                self.assertEqual(deadlines, [40.0])
+                # A separate operator recovery, never an automatic finalizer.
+                ranks.stop = lambda deadline: deadlines.append(deadline) or True
+                dual.session.close(recover=True)
+                self.assertEqual(deadlines, [40.0, 70.0])
+                self.assertEqual(dual.session.state, 'closed')
+                self.assertFalse(any(key.startswith(dual.session.owner)
+                    for key in resources.snapshot()['reservations']))
 
     def test_real_png_publication_history_and_seed_reproducibility(self):
         result = self.manager.generate('Tree', '4:3', 2, 20, threading.Event())

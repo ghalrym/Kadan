@@ -70,7 +70,7 @@ class ProcessRankTests(unittest.TestCase):
         self.assertTrue(all(p.poll() is not None for p in children))
         self.assertEqual(len(self.resources.snapshot()['reservations']),3)
         with self.assertRaises(ResourceBusy):self.session.execute('b'*32)
-        self.memory[1]=0;self.session.close()
+        self.memory[1]=0;self.session.close(recover=True)
         self.assertFalse(self.resources.snapshot()['reservations'])
 
     def test_deadline_and_bounded_control_message(self):

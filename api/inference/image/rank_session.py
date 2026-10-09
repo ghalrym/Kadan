@@ -58,6 +58,7 @@ class RankSession:
         self.sequence = 0
         self.last_job = None
         self.started = False
+        self.cleanup_deadline = None
 
     @contextmanager
     def _ownership(self):
@@ -146,6 +147,7 @@ class RankSession:
                 raise ResourceBusy('Reentrant rank execution is forbidden')
             if job_id == self.last_job:
                 raise ValueError('Never replay the previous submitted job automatically')
+            self.cleanup_deadline = None
             deadline = self.clock() + self.operation_timeout
             try:
                 preparing = self.clock()
@@ -169,6 +171,7 @@ class RankSession:
                 return
             if self.state != 'ready':
                 raise ResourceBusy('Cannot park an active rank transaction')
+            self.cleanup_deadline = None
             try:
                 self._exchange('park', self.clock() + self.operation_timeout, cancel)
                 # Both ranks synchronized/freed model allocations. CUDA contexts
@@ -181,10 +184,12 @@ class RankSession:
                 raise
 
     def _stop(self):
+        if self.cleanup_deadline is None:
+            self.cleanup_deadline = self.clock() + self.cleanup_timeout
         confirmed = not self.started
-        if self.started:
+        if self.started and self.clock() < self.cleanup_deadline:
             try:
-                confirmed = self.transport.stop(self.clock() + self.cleanup_timeout) is True
+                confirmed = self.transport.stop(self.cleanup_deadline) is True
             except BaseException:
                 confirmed = False
         if not confirmed:
@@ -198,13 +203,16 @@ class RankSession:
         self.started = False
         self.state = 'closed'
 
-    def close(self):
-        # Explicit recovery may retry reap after quarantine; no new job can do so.
+    def close(self, *, recover=False):
+        # Layered failure cleanup shares one deadline. Only a separately invoked
+        # recovery may renew it; eviction and request finalizers must not do so.
         if not self.gate.acquire(blocking=False):
             raise ResourceBusy('Rank session is active')
         try:
             if self.state in ('running', 'starting'):
                 raise ResourceBusy('Cannot close an active rank transaction')
+            if recover:
+                self.cleanup_deadline = None
             self._stop()
         finally:
             self.gate.release()

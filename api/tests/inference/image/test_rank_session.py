@@ -120,7 +120,7 @@ class RankSessionTests(unittest.TestCase):
         with self.assertRaises(ResourceBusy):
             self.controller.execute('b' * 32)
         self.transport.confirmed = True
-        self.controller.close()
+        self.controller.close(recover=True)
         self.assertFalse(self.reservations())
 
     def test_park_requires_zero_model_residency_from_both_ranks(self):
