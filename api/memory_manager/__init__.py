@@ -2,6 +2,7 @@
 from contextlib import AsyncExitStack
 import logging
 import os
+import time
 
 from pydantic import ValidationError
 
@@ -120,9 +121,12 @@ class MemoryManager:
         if not isinstance(wrapper, UnsupportedFeature):
             # The Redis consumer remains the sole global FIFO executor. Await
             # physical parking before the next feature can reserve or execute.
+            handoff_started = time.monotonic()
             for other in self.features.values():
                 if other is not wrapper:
                     await other.offload_to_ram()
+            log.info("inference_handoff job=%s feature=%s seconds=%.6f",
+                job.id, job.feature, time.monotonic()-handoff_started)
         # Each callable owns its heterogeneous request/result adaptation and its
         # atomic native load/restore/inference transaction. No model dispatch here.
         stream = self.queue.streams.get(job.id) if job.feature == "llm" else None

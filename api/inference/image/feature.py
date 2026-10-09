@@ -23,7 +23,8 @@ class ImageFeature:
         self.service.preflight()
 
     async def preflight_execution(self, request):
-        await native_call(self.service.validate_request, getattr(request, 'image', None))
+        await native_call(lambda cancel: self.service.validate_request(getattr(request, 'image', None), cancel,
+            prompt=request.prompt, aspect=request.aspect, count=request.count))
 
     def validate(self, payload, operation):
         # Route-owned models import lazily to avoid manager construction cycles.
@@ -47,5 +48,5 @@ class ImageFeature:
             raise RuntimeFailure('Unsupported image model or operation.', 422)
         source = request.image if operation == 'edit' else None
         result = await native_call(lambda cancel: self.service.generate(request.prompt,
-            request.aspect, request.count, request.seed, cancel, source))
+            request.aspect, request.count, request.seed, cancel, source, job_id=job_id))
         return {'image': result.model_dump(mode='json')}

@@ -1,0 +1,38 @@
+# Opt-in persistent two-rank image API integration
+
+Default `KADAN_IMAGE_BACKEND=single` preserves the existing image and native text behavior. No deployment setting or image was changed by this PR. This is Python/Torch control and image execution around the validated sequence split, not a native C++ image model. The independent full-trajectory result at `195fc7440005c449a57d77f4f312971a3280d22f` remains preserved; that one-shot result does not prove this persistent integration.
+
+## Working scope and admission
+
+The opt-in setting is `KADAN_IMAGE_BACKEND=dual`, with `KADAN_IMAGE_DEVICES` a JSON array of exactly two distinct logical CUDA indices (default `[0,1]`). The API container must actually expose those devices and its shared per-device resource budgets must include them. Merely setting the environment variable on the current one-device deployment will reject admission.
+
+This first version accepts one text-to-image output, aspect `1:1`, 2048×2048, 40 BF16 steps, prompt length 1–2000 characters and one seed. It explicitly invokes `true_cfg_scale=1.0` and KV caching. Image edits, multiple images and other aspects are rejected during preflight, before text is parked. The existing HTTP models reject unknown negative-prompt/CFG fields. Broader inputs need their own numerical coverage; the UI default count of four will therefore be rejected on this experimental backend. No UI change is bundled.
+
+## Ownership and memory
+
+The existing Redis consumer is the only queue. The image feature passes the existing FIFO job ID through the service to both rank commands. There is no second queue or cache-affinity bypass. Each request has an absolute 900-second load/restore/execute budget; control JSON is bounded at 64 KiB. Each rank has a private socket and process group, and installs Linux parent-death SIGKILL before importing Torch. One intra-op/inter-op thread per rank and common two-core affinity limit CPU concurrency. Initial construction requires five CPU readings below 60°C; active CPU/GPU guards remain 80°C/90°C. Collective timeout is 120 seconds.
+
+One atomic execution reservation covers both cards independently: **20 GiB allocator envelope per rank**, plus **512 MiB retained child CUDA context per rank**. A further **512 MiB process-lifetime API framework context per device** is charged separately. This 20 GiB allocator cap is intentionally explicit and differs from the diagnostic 22 GiB cap; the diagnostic observed approximately 17–18 GiB physical GPU peaks, but actual persistent fit and parked context size still require reviewed GPU testing. The host envelope is 128 GiB across both workers, plus the service's existing 1 GiB output admission. RSS monitoring conservatively counts both processes, including shared mappings. There is no swap-as-RAM assumption.
+
+Consecutive image requests keep both rank processes and CPU model banks, with component offload cycling components as required. On text handoff both ranks synchronize, detach offload hooks, move components to RAM, destroy both NCCL/Gloo communicators and empty allocator caches. Torch reserved bytes must be zero and each rank's driver-reported residency must fit its separately charged context envelope. Restore constructs fresh communicators with a new rendezvous identity before reuse. Host weights and child context reservations remain until actual pressure eviction/close. Pressure eviction kills/reaps the rank pair before dropping CPU and GPU charges; later requests reconstruct from the existing checkpoint storage. This PR does not add a disk swap tier or duplicate weight files. Private PNG staging is bounded at 24 MiB and removed after publication or rank cleanup.
+
+The supervisor resolves logical CUDA UUIDs, records existing driver process identities before rank startup, and requires exactly one new owner per selected GPU after readiness. Extra/ambiguous owners fail closed. Park checks each identified process, not aggregate free memory; unrelated memory release cannot mask a rank leak. Close requires both process groups reaped and both driver process entries gone. Cancellation, OOM, timeout, stale replies and peer loss fence the complete pair. Uncertain reap or physical disappearance quarantines all reservations and prevents reuse. Cleanup gets a separate bounded 30-second budget; process/driver probes have bounded timeouts. The original FIFO cancellation path waits for the synchronous adapter cleanup before handing off.
+
+## Request isolation
+
+Every request constructs a new Ulysses adapter with its unique job identity, an empty prefix dictionary, a fresh scheduler reconstructed from config and a new CPU generator seeded for that request. Hook installation/restoration is scoped by `try/finally`; prefix caches are discarded on success and failure. No cached CFG branch is reused. Adapter arithmetic remains the validated shard-once/gather-once path. The production worker performs no reference tensor comparisons, trajectory snapshots or checkpoint hashing on the hot request path. Finite output and control/resource safety checks remain.
+
+## Validation and next gate
+
+CPU validation covers two real child processes, reuse/park/restore, cancellation, stale/failed peers, bounded frames/deadlines, physical ownership ambiguity, quarantine after reap, separate GPU budgets, unsupported-scope preflight, synthetic A→B→A against fresh isolated engines, and hook/prefix cleanup on failure. Dedicated Redis tests cover text→image→image→text FIFO, queued cancellation, active cleanup before the next text job, and atomic publication. Synthetic arithmetic is not GPU model fidelity.
+
+Before enablement, independent review must approve the exact PR head and CI. Then run real GPU A→B→A with different prompts/seeds against isolated baselines, including text→image→text switching, successful RAM parking, cancelled request cleanup and driver residency. Compare final outputs without the expensive per-step audit artifacts. If park cannot fit the charged context envelope, stop and report rather than pretending parking succeeded.
+
+Normal end-to-end measurement follows review and scoped activation. Record HTTP request elapsed time including queue/switch/publication; correlate `dual_image_published` by output image ID with its FIFO job. `inference_handoff` records time parking other features. `dual_image_timing` reports previous state, both rank execution times, load/restore preparation and total adapter time. Report cold load, consecutive image reuse and text-switch cases separately; do not subtract costs or present the earlier instrumented correctness timing as normal API performance. Record the exact source/runtime/devices and restore the previous deployment after the bounded validation. Keep API integration unmerged pending Andrew's review.
+
+## Local validation evidence
+
+Pinned existing runtime, CPU-only, disposable Redis with no live data: full API suite **458 tests passed, 2 skipped**, followed by **38 focused tests passed** after the final parking/cancellation changes. The skipped tests require a target GPU and a pinned upstream H3 source provided separately by CI. The initial full-suite attempt had one tokenizer-download setup error; the successful rerun used the already installed tokenizer read-only with networking disabled. No new image GPU execution or end-to-end benchmark has occurred.
+
+- `dual-image-api-tests-offline.log` SHA-256: `e664a09a6d45346d88765da0c6c3f17056353eecdefa773ac2e95c149273ea08`.
+- `dual-image-api-focused-final.log` SHA-256: `1c8a43867422209485266a9602a3db969f14f36cc12bad6ef8d225ffc85dcb60`.

@@ -4,6 +4,8 @@ import binascii
 from contextlib import ExitStack
 from io import BytesIO
 import os
+import logging
+import json
 from pathlib import Path
 import secrets
 import shutil
@@ -13,6 +15,7 @@ from uuid import UUID, uuid4
 from PIL import Image, UnidentifiedImageError
 
 from api.inference.image import model as qwen_image
+from api.inference.image.dual import DualImage
 from api.inference.decisions.model import clear_failure_frames
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.pydantic_models.media import ImageSet
@@ -86,16 +89,20 @@ class ImageManager:
         except (ValueError, OSError) as exc:
             raise RuntimeFailure('Image not found', 404) from exc
 
-    def validate_request(self, source, cancel=None):
+    def validate_request(self, source, cancel=None, *, prompt=None, aspect="1:1", count=1):
         """Reject unavailable config/capacity without loading or moving models."""
         _, path = self.preflight()
         if self.backend is None:
             device, offload_mode = self._configuration()
             resources = self.runtime.ensure_resources()
             try:
-                plan = qwen_image.NativeImage(path, resources, device=device, offload_mode=offload_mode)
+                if device == 'dual':
+                    DualImage.validate(prompt, aspect, count, source)
+                    plan = DualImage(path, resources)
+                else:
+                    plan = qwen_image.NativeImage(path, resources, device=device, offload_mode=offload_mode)
                 plan._plan()  # Metadata/capacity only; never imports provider modules.
-                if plan.weights * 2 + qwen_image.WORKSPACE + qwen_image.GIB > resources.capacity.host_bytes:
+                if device != 'dual' and plan.weights * 2 + qwen_image.WORKSPACE + qwen_image.GIB > resources.capacity.host_bytes:
                     raise ResourceExhausted('Image request exceeds the host memory budget')
             except ResourceExhausted as exc:
                 raise RuntimeFailure(str(exc), 503) from exc
@@ -128,7 +135,7 @@ class ImageManager:
             if scratch is not None:
                 scratch.release()
 
-    def generate(self, prompt, aspect, count, seed, cancel, source=None):
+    def generate(self, prompt, aspect, count, seed, cancel, source=None, *, job_id=None):
         # Keep decoded input/output and PNG staging admitted even if a parked
         # pipeline is evicted between its forward and atomic publication.
         with ExitStack() as ownership:
@@ -146,12 +153,12 @@ class ImageManager:
                 ownership.callback(scratch.release)
                 ownership.enter_context(scratch.lease(cancel))
             try:
-                return self._generate(prompt, aspect, count, seed, cancel, source)
+                return self._generate(prompt, aspect, count, seed, cancel, source, **({"job_id":job_id} if job_id is not None else {}))
             except BaseException as exc:
                 clear_failure_frames(exc)
                 raise
 
-    def _generate(self, prompt, aspect, count, seed, cancel, source=None):
+    def _generate(self, prompt, aspect, count, seed, cancel, source=None, *, job_id=None):
         """Hold process ownership through generation, cleanup and atomic publication."""
         if not self._gate.acquire(blocking=False):
             raise RuntimeFailure('Image generation is already active', 409)
@@ -170,7 +177,8 @@ class ImageManager:
                 pictures = self.backend(path, self.runtime.ensure_resources(), prompt, aspect, seeds, cancel, image=image)
             else:
                 self._load(cancel)
-                pictures = self.native.generate(prompt, aspect, seeds, cancel, image=image)
+                pictures = self.native.generate(prompt, aspect, seeds, cancel, image=image,
+                    **({"job_id":job_id} if isinstance(self.native, DualImage) else {}))
             if len(pictures) != count:
                 raise RuntimeError('Image provider returned an unexpected result count')
             identifier = str(uuid4())
@@ -187,6 +195,9 @@ class ImageManager:
                 raise ResourceCancelled('Image generation cancelled')
             stage.rename(self.root / identifier)
             published = True
+            if isinstance(self.native, DualImage):
+                logging.getLogger(__name__).info("dual_image_published %s", json.dumps(
+                    dict(image_id=identifier, job=job_id, **self.native.last_timing)))
             return result
         except ResourceBusy as exc:
             raise RuntimeFailure(str(exc), 409) from exc
@@ -215,6 +226,11 @@ class ImageManager:
 
     @staticmethod
     def _configuration():
+        backend = os.environ.get('KADAN_IMAGE_BACKEND', 'single')
+        if backend == 'dual':
+            return 'dual', 'component'
+        if backend != 'single':
+            raise RuntimeFailure('KADAN_IMAGE_BACKEND must be single or dual', 422)
         configured = os.environ.get('KADAN_IMAGE_DEVICE', os.environ.get('KADAN_GPU', 'auto'))
         device = 'cuda:' + configured if configured.isdecimal() else configured
         mode = os.environ.get('KADAN_IMAGE_OFFLOAD', 'sequential')
@@ -234,7 +250,8 @@ class ImageManager:
             self.native.close()
             self.native = None
         if self.native is None:
-            self.native = qwen_image.NativeImage(path, self.runtime.ensure_resources(), device=device, offload_mode=offload_mode)
+            self.native = (DualImage(path, self.runtime.ensure_resources()) if device == 'dual' else
+                qwen_image.NativeImage(path, self.runtime.ensure_resources(), device=device, offload_mode=offload_mode))
         return self.native.load(cancel)
 
     def offload_to_ram(self, cancel=None):
