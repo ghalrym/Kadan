@@ -43,11 +43,11 @@ stand in for a correct layout.
 Run and validate the eager repeatability trajectory first, including every prediction
 and post-scheduler latent gate, before candidate admission or candidate output observation.
 
-At the end, compare final latent and independently decoded floating RGB output before
+At the end, compare final latent and independently decoded floating RGBA output before
 quantization. Reject nonfinite raw VAE output before `(image * 0.5 + 0.5).clamp(0,1)`.
 The float comparison point is the pinned processor NumPy output: float32 NHWC
-`(1,2048,2048,3)`, normalized display RGB interpreted as sRGB, with no added gamma or
-color-profile conversion. The comparison is in this encoded RGB space, not linear light.
+`(1,2048,2048,4)`, normalized RGBA with RGB interpreted as sRGB and alpha as linear coverageA, with no added gamma or
+color-profile conversion. The comparison is in this encoded RGB space plus alpha, not linear light.
 Use the pinned processor's uint8 rounding through `numpy_to_pil`; no alternate quantizer. Save lossless PNGs of each path and compare the final uint8 pixels.
 A successful teacher-forced block comparison cannot replace this trajectory gate.
 
@@ -59,9 +59,9 @@ These criteria are proposals awaiting independent review, not accepted results:
 - Every denoiser prediction, every post-scheduler latent and final latent: existing
   atol=rtol=0.02, zero violating elements and zero nonfinite elements. Report each
   step separately, worst coordinates and global aggregate; do not average failures away.
-- Decoded float RGB in [0,1], before uint8 conversion: absolute tolerance 2/255,
+- Decoded float RGBA in [0,1], before uint8 conversion: absolute tolerance 2/255,
   relative tolerance 0, zero violations/nonfinite; mean absolute error at most 0.5/255.
-- Final lossless uint8 RGB: maximum channel difference at most 2 and mean absolute
+- Final lossless uint8 RGBA: maximum channel difference at most 2 and mean absolute
   channel difference at most 0.5 across the complete 2048×2048 image. Both criteria
   must pass. Pixel comparison is the gate; visual/perceptual measures are diagnostic.
 - Same-path repeatability must be checked before attributing a candidate discrepancy
@@ -107,3 +107,7 @@ must predeclare warmup/repeats and include text encoding, offload/transfers, pre
 all denoising steps, scheduler, VAE and output preparation under identical settings.
 Production readiness additionally needs API scheduling/cancellation/memory-accounting
 integration and review. Passing this one image case would not authorize activation.
+
+## RGBA correction after reviewed reference failure
+
+Protocol identity is now `full-independent-trajectory-v2-rgba`. The pinned VAE has `out_channels=4`; its processor preserves alpha and its PNG is RGBA. No channel is discarded or composited. Maximum-error checks include all four channels. RGB and alpha each independently satisfy the original mean-error bound, so alpha cannot dilute RGB error. The floating artifact is named `float-rgba.pt`. Thresholds, model settings and execution guards are unchanged. A fresh exact-head review and a new reference/repeat/candidate sequence are required; the failed v1 reference is never admitted as a predecessor.

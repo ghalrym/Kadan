@@ -16,7 +16,7 @@ from bf16_contracts import ULYSSES_SOURCE
 from capture import PROMPT, REVISION
 from trajectory_adapter import UlyssesAdapter, validate_transformer_output
 from trajectory_contracts import PROTOCOL, SETTINGS, CRITERIA, StepOrder, verify_run
-from trajectory_io import ArtifactWriter, tensor_identity, measure, normalized_rgb
+from trajectory_io import ArtifactWriter, tensor_identity, measure, normalized_rgba
 from trace_binding import sha256
 
 OUT=Path('/evidence');REFERENCE=Path('/reference')
@@ -145,15 +145,15 @@ def main():
             if not finite:preserve_failure('raw-vae-before-clipping',image)
             consensus(finite,'raw-vae-before-clipping')
             assert not args and kwargs.get('output_type')=='pil'
-            phase('image-postprocess');rgb=normalized_rgb(image,postprocess)
-            assert rgb.shape==(1,2048,2048,3) and rgb.dtype==np.float32
-            record_tensor('float-rgb.pt',torch.from_numpy(rgb),'float')
-            images=pipeline.image_processor.numpy_to_pil(rgb)
+            phase('image-postprocess');rgba=normalized_rgba(image,postprocess)
+            assert rgba.shape==(1,2048,2048,4) and rgba.dtype==np.float32
+            record_tensor('float-rgba.pt',torch.from_numpy(rgba),'float')
+            images=pipeline.image_processor.numpy_to_pil(rgba)
             pixels=torch.from_numpy(np.asarray(images[0]).copy())
-            assert pixels.dtype==torch.uint8 and pixels.shape==(2048,2048,3)
+            assert pixels.dtype==torch.uint8 and pixels.shape==(2048,2048,4)
             record_tensor('pixels.pt',pixels,'pixel')
             if rank==0:
-                writer.admit(16*1024**2);images[0].save(OUT/'output.png');assert (OUT/'output.png').stat().st_size<=16*1024**2;writer.record('output.png')
+                writer.admit(24*1024**2);images[0].save(OUT/'output.png');assert (OUT/'output.png').stat().st_size<=24*1024**2;writer.record('output.png')
             return images
         pipeline.image_processor.postprocess=image_postprocess
         torch.cuda.synchronize();request_started=time.monotonic();phase('request-start-text-encoding')

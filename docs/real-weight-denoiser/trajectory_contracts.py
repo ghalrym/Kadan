@@ -7,15 +7,15 @@ REVISION='d26bb61231c349cf6b7896fa83353113880e1ba3'
 PROMPT='A single red apple on a plain white table, soft natural daylight, realistic still-life photograph.'
 from trace_binding import sha256
 
-PROTOCOL='full-independent-trajectory-v1'
+PROTOCOL='full-independent-trajectory-v2-rgba'
 CASES=('reference','repeat','candidate')
 SETTINGS=dict(checkpoint=REVISION,seed=42,prompt=PROMPT,width=2048,height=2048,steps=40,
     dtype='bfloat16',true_cfg_scale=1.0,use_kv_cache=True,compilation=False,component_offload=True)
 CRITERIA=dict(latent_atol=.02,latent_rtol=.02,float_atol=2/255,float_mae=.5/255,pixel_max=2,pixel_mae=.5,violations=0,nonfinite=0)
 # 81 BF16 tensors: initial + prediction/post-latent at each step, each 16384x64.
-# RGB float32 + uint8 + conservative lossless PNG cap; serialization cap per tensor.
-PER_RUN_PLAN=dict(step_tensor_bytes=81*16384*64*2,float_rgb_bytes=2048*2048*3*4,
-    uint8_rgb_bytes=2048*2048*3,png_cap_bytes=16*1024**2,serialization_margin_bytes=83*65536)
+# RGBA float32 + uint8 + conservative lossless PNG cap; serialization cap per tensor.
+PER_RUN_PLAN=dict(step_tensor_bytes=81*16384*64*2,float_rgba_bytes=2048*2048*4*4,
+    uint8_rgba_bytes=2048*2048*4,png_cap_bytes=24*1024**2,serialization_margin_bytes=83*65536)
 RUN_CAP=sum(PER_RUN_PLAN.values())
 FAILURE_RESERVE=256*1024**2
 LOG_RESERVE=128*1024**2
@@ -61,7 +61,7 @@ def verify_run(root,case,commit):
     if manifest['protocol']!=PROTOCOL or manifest['case']!=case or manifest['source_commit']!=commit or manifest['settings']!=SETTINGS or manifest['criteria']!=CRITERIA:
         raise ValueError('Prior run identity mismatch')
     if manifest.get('raw_vae_finite') is not True or manifest['status']!='passed' or manifest['completed_steps']!=40:raise ValueError('Prior full run did not pass')
-    expected={'initial.pt','float-rgb.pt','pixels.pt','output.png','input-identity.json'}
+    expected={'initial.pt','float-rgba.pt','pixels.pt','output.png','input-identity.json'}
     expected|={f'{kind}-{step:02}.pt' for kind in ('prediction','latent') for step in range(40)}
     names=[row['file'] for row in manifest['artifacts']]
     if len(names)!=len(set(names)) or set(names)!=expected:raise ValueError('Incomplete/duplicate full trajectory artifacts')

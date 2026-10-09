@@ -7,14 +7,16 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch, mock_open
 
+import numpy as np
 import torch
+from diffusers.image_processor import VaeImageProcessor
 
 import launch_trajectory
 import supervisor_trajectory
 from trajectory_adapter import UlyssesAdapter, validate_transformer_output
 from trajectory_contracts import StepOrder, storage_plan, require_review, PROTOCOL, SETTINGS, CRITERIA, verify_run, require_predecessors
 from trace_binding import sha256
-from trajectory_io import measure, normalized_rgb, ArtifactWriter, tensor_identity
+from trajectory_io import measure, normalized_rgba, ArtifactWriter, tensor_identity
 
 
 class TrajectoryTests(unittest.TestCase):
@@ -47,9 +49,34 @@ class TrajectoryTests(unittest.TestCase):
         self.assertFalse(measure(torch.full((4,),1/255),ref,'float')['passed'])
         post=Mock()
         for value in (float('nan'),float('inf'),-float('inf')):
-            with self.assertRaises(AssertionError):normalized_rgb(torch.tensor([value]),post)
+            with self.assertRaises(AssertionError):normalized_rgba(torch.tensor([value]),post)
         post.assert_not_called()
-        normalized_rgb(torch.ones(1),post);self.assertEqual(post.call_args.kwargs,{'output_type':'np'})
+        post.return_value=np.zeros((1,2,2,4),dtype=np.float32)
+        normalized_rgba(torch.ones(1),post,width=2,height=2);self.assertEqual(post.call_args.kwargs,{'output_type':'np'})
+
+    def test_pinned_processor_preserves_rgba_and_alpha_rounding(self):
+        processor=VaeImageProcessor()
+        raw=torch.tensor([-.5,0.,.5,1.],dtype=torch.bfloat16).reshape(1,4,1,1)
+        rgba=normalized_rgba(raw,processor.postprocess,width=1,height=1)
+        np.testing.assert_array_equal(rgba,np.array([[[[.25,.5,.75,1.]]]],dtype=np.float32))
+        image=processor.numpy_to_pil(rgba)[0]
+        self.assertEqual(image.mode,'RGBA')
+        self.assertEqual(image.getpixel((0,0)),(64,128,191,255))
+        reference=torch.from_numpy(rgba.copy())
+        changed=reference.clone();changed[...,3]-=3/255
+        self.assertFalse(measure(changed,reference,'float')['passed'])
+        pixels=torch.tensor([[[64,128,191,255]]],dtype=torch.uint8)
+        altered=pixels.clone();altered[...,3]=252
+        self.assertFalse(measure(altered,pixels,'pixel')['passed'])
+        altered[...,3]=254
+        self.assertFalse(measure(altered,pixels,'pixel')['passed'])
+        changed=reference.clone();changed[...,0:3]-=.6/255
+        self.assertFalse(measure(changed,reference,'float')['passed'])
+
+    def test_rgb_or_wrong_dtype_contract_reports_actual_shape(self):
+        for value in (np.zeros((1,2,2,3),dtype=np.float32),np.zeros((1,2,2,4),dtype=np.float64)):
+            with self.assertRaisesRegex(ValueError,'Expected float32 RGBA'):
+                normalized_rgba(torch.ones(1),Mock(return_value=value),width=2,height=2)
 
     def test_latent_gate_not_replaced_by_image_gate(self):
         self.assertFalse(measure(torch.tensor([.1]),torch.zeros(1),'latent')['passed'])
@@ -108,7 +135,7 @@ class TrajectoryTests(unittest.TestCase):
 
     def fixture_run(self,root,case,reference=None):
         stage=root/'trajectory-evidence';stage.mkdir(parents=True)
-        names=['initial.pt','float-rgb.pt','pixels.pt','output.png','input-identity.json']
+        names=['initial.pt','float-rgba.pt','pixels.pt','output.png','input-identity.json']
         names += [f'{kind}-{step:02}.pt' for kind in ('prediction','latent') for step in range(40)]
         rows=[]
         for name in names:

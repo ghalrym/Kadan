@@ -45,19 +45,19 @@ save actual/reference tensors per rank in a separate fixed reserve.
 
 The raw tensor returned by VAE decode is checked for nonfinite values before calling
 the pinned image processor, so clipping cannot hide infinities. The processor's NumPy
-output is float32 NHWC `(1,2048,2048,3)` in [0,1], display RGB interpreted as sRGB,
+output is float32 NHWC `(1,2048,2048,4)` in [0,1], RGBA with RGB interpreted as sRGB and alpha as linear coverageA,
 without additional gamma/profile conversion; comparisons are not linear-light metrics.
-Use the pinned `numpy_to_pil` rounding to produce RGB uint8 `(2048,2048,3)` and PNG.
+Use the pinned `numpy_to_pil` rounding to produce RGBA uint8 `(2048,2048,4)` and PNG.
 
-Predictions/latents retain atol=rtol=0.02, zero violations/nonfinite. Float RGB retains
-max absolute 2/255 and mean absolute 0.5/255. Uint8 RGB retains max channel difference
+Predictions/latents retain atol=rtol=0.02, zero violations/nonfinite. Float RGBA retains
+max absolute 2/255 and mean absolute 0.5/255. Uint8 RGBA retains max channel difference
 2 and mean absolute channel difference 0.5. Both pixel limits must pass. The eager
 repeat must satisfy the same gates before candidate output is observed. Thresholds
 are not selected from output data.
 
 ## Streaming storage plan
 
-Only initial latent, 40 predictions, 40 post-scheduler latents, final normalized RGB,
+Only initial latent, 40 predictions, 40 post-scheduler latents, final normalized RGBA,
 uint8 pixels, one PNG and compact identity/reports are stored. No block activations
 or weight packets are recorded. Tensor snapshots clone compact CPU storage so a view
 cannot accidentally serialize its backing allocation. The writer rejects overwrites,
@@ -66,17 +66,17 @@ artifact has a size and SHA. Host monitoring counts all historical and new artif
 
 | Budget item | Bytes |
 |---|---:|
-| Retained historical artifacts measured at preparation | 31,748,605,262 |
+| Retained history plus failed v1 admission/reference | 31,918,958,030 |
 | BF16 step snapshots per run (81 × 16384 × 64 × 2) | 169,869,312 |
-| Float RGB per run | 50,331,648 |
-| Uint8 RGB per run | 12,582,912 |
-| PNG cap per run | 16,777,216 |
+| Float RGBA per run | 67,108,864 |
+| Uint8 RGBA per run | 16,777,216 |
+| PNG cap per run | 25,165,824 |
 | Per-run serialization/metadata margin | 5,439,488 |
-| Per-run cap | 255,000,576 |
-| Three run caps | 765,001,728 |
+| Per-run cap | 284,360,704 |
+| Three run caps | 853,082,112 |
 | Failure reserve, both ranks | 268,435,456 |
 | Logs/telemetry reserve | 134,217,728 |
-| Projected total | 32,916,260,174 |
+| Projected total | 33,174,693,326 |
 | Unchanged total ceiling | 34,359,738,368 |
 
 Admission recalculates actual bytes. For later cases it conservatively counts already
@@ -114,8 +114,12 @@ owned-process cancellation cleanup. GPU numerical correctness, complete-run memo
 fit and time fit remain unverified. Exact-source independent review and execution
 authorization are required before each bounded run. No API merge or activation.
 
-Validation at publication: **61 CPU tests passed** in the pinned image with no GPU
+Validation after the RGBA correction: **64 CPU tests passed** in the pinned image with no GPU
 access. Python syntax checks, whitespace checks and the launcher's read-only plan
 also passed. All three execution cases must use the same reviewed frozen source
 commit; keep run evidence outside the checkout until the sequence completes so
 publishing interim results does not change its identity.
+
+## RGBA correction after reviewed reference failure
+
+Protocol identity is now `full-independent-trajectory-v2-rgba`. The pinned VAE has `out_channels=4`; its processor preserves alpha and its PNG is RGBA. No channel is discarded or composited. Maximum-error checks include all four channels. RGB and alpha each independently satisfy the original mean-error bound, so alpha cannot dilute RGB error. The floating artifact is named `float-rgba.pt`. Thresholds, model settings and execution guards are unchanged. A fresh exact-head review and a new reference/repeat/candidate sequence are required; the failed v1 reference is never admitted as a predecessor.

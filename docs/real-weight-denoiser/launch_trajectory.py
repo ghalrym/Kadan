@@ -176,7 +176,8 @@ def main():
     THERMAL_EVIDENCE=evidence
     roots=[path.resolve() for path in args.prior_evidence]
     historical=[capture.parents[1]/name for name in ('holdout-reviewed-f0b4eef-step20','holdout-reviewed-f0b4eef-step39','replay-only-reviewed-03e7ff1')]
-    assert set(historical)<=set(roots), 'All retained historical artifact roots must count against storage'
+    failed_v1=[capture.parents[1]/name for name in ('trajectory-reviewed-0a673c8-reference','trajectory-reviewed-0a673c8-reference-r2')]
+    assert set(historical+failed_v1)<=set(roots), 'All retained historical and failed v1 artifact roots must count against storage'
     for rank in (0,1):
         accepted=json.loads((historical[-1]/'holdout-replay-evidence'/f'verdict-rank-{rank}.json').read_text())
         assert accepted['heldout_step']=='passed' and accepted['step_index']==39

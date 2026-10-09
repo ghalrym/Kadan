@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from metrics import compare
@@ -28,6 +29,15 @@ def measure(actual,reference,kind):
     row['passed']=row['violations']==0 and row['nonfinite']==0
     if kind=='float':row['passed'] &= bool(((actual>=0)&(actual<=1)).all()) and row['mae']<=CRITERIA['float_mae']
     if kind=='pixel':row['passed'] &= row['mae']<=CRITERIA['pixel_mae']
+    if kind in ('float','pixel') and actual.ndim>=3 and actual.shape[-1]==4:
+        # Preserve the original RGB mean gate; alpha cannot dilute RGB errors.
+        limit=CRITERIA['float_mae' if kind=='float' else 'pixel_mae']
+        row['channel_group_mae']={}
+        for name,index in (('rgb',slice(0,3)),('alpha',slice(3,4))):
+            a=actual[...,index].reshape(-1);r=reference[...,index].reshape(-1)
+            error=sum(float((x.double()-y.double()).abs().sum()) for x,y in zip(a.split(262144),r.split(262144)))
+            row['channel_group_mae'][name]=error/a.numel()
+        row['passed'] &= all(value<=limit for value in row['channel_group_mae'].values())
     return row
 
 
@@ -49,6 +59,10 @@ class ArtifactWriter:
         payload=json.dumps(value,indent=2);self.admit(len(payload.encode()));p.write_text(payload);self.record(name)
 
 
-def normalized_rgb(image,postprocess):
+def normalized_rgba(image,postprocess,*,width=2048,height=2048):
     if not bool(torch.isfinite(image).all()):raise AssertionError('Nonfinite raw VAE output before clipping')
-    return postprocess(image,output_type='np')
+    rgba=postprocess(image,output_type='np')
+    expected=(1,height,width,4)
+    if rgba.shape!=expected or rgba.dtype!=np.float32:
+        raise ValueError(f'Expected float32 RGBA {expected}; got {rgba.dtype} {rgba.shape}')
+    return rgba
