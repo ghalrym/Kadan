@@ -19,6 +19,10 @@ jobs:
         run: cmake --build /tmp/kadan-native --parallel 2
       - name: Test native accounting, formats and bounded checkpoint reads
         run: ctest --test-dir /tmp/kadan-native --output-on-failure -LE full-graph
+      - name: Verify installed native text worker and runtime dependencies
+        run: |
+          cmake --install /tmp/kadan-native --prefix /tmp/kadan-model-installed --component model-runtime
+          python3 native/tests/model_worker_plan.py /tmp/kadan-model-installed/bin/kadan-model-worker
 
   h3-decoder:
     runs-on: ubuntu-latest

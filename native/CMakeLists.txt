@@ -835,3 +835,17 @@ if(BUILD_TESTING)
  add_executable(whisper-dispatch-reference tests/whisper_dispatch_reference.cpp)
  target_link_libraries(whisper-dispatch-reference PRIVATE kadan_whisper)
 endif()
+
+# Install the resident text executor beside the other owned native workers.
+install(TARGETS kadan-model-worker
+  RUNTIME_DEPENDENCIES
+    PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+    POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+  RUNTIME DESTINATION libexec COMPONENT model-runtime
+  LIBRARY DESTINATION lib COMPONENT model-runtime)
+install(PROGRAMS packaging/run_model_worker.sh DESTINATION bin RENAME kadan-model-worker COMPONENT model-runtime)
+if(KADAN_ENABLE_CUDA AND BUILD_TESTING)
+  add_executable(kadan-h3-attention-race tests/h3_attention_race.cpp)
+  target_link_libraries(kadan-h3-attention-race PRIVATE kadan_h3_cuda)
+  # Explicit authorized CUDA validation only; never run by CPU CTest.
+endif()

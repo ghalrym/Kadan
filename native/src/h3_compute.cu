@@ -75,6 +75,8 @@ template<class Real> __global__ void online_softmax(Real* scores,Real* output,Re
     for(unsigned k=t;k<keys;k+=256){Real v=scores[q*keys+k];if(!attention_visible(first_query+q,first_key+k,causal_queries,window,offset))v=-INFINITY;scores[q*keys+k]=v;m=fmax(m,v);}reduction[t]=m;__syncthreads();
     for(unsigned stride=128;stride;stride/=2){if(t<stride)reduction[t]=fmax(reduction[t],reduction[t+stride]);__syncthreads();}
     const Real next=fmax(maxima[q],reduction[0]);const Real alpha=isfinite(maxima[q])?exp(maxima[q]-next):0;Real total=0;
+    // All warps must consume the maximum before shared storage becomes sums.
+    __syncthreads();
     for(unsigned k=t;k<keys;k+=256){const Real v=scores[q*keys+k];const Real p=isfinite(v)?exp(v-next):0;scores[q*keys+k]=p;total+=p;}reduction[t]=total;__syncthreads();
     for(unsigned stride=128;stride;stride/=2){if(t<stride)reduction[t]+=reduction[t+stride];__syncthreads();}
     for(unsigned c=t;c<dim;c+=256)output[q*dim+c]*=alpha;
