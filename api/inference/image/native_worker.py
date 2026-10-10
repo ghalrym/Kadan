@@ -1,4 +1,5 @@
 """Native image IPC and retained CPU ownership; model execution stays in C++."""
+from contextlib import ExitStack
 import base64
 import io
 import json
@@ -13,6 +14,7 @@ import uuid
 from PIL import Image
 
 from api.inference.errors import InferenceFailure
+from api.inference.native_compute import NativeCompute, native_compute
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceCancelled
 from api.services.model_downloads import model_manager
@@ -58,6 +60,8 @@ class NativeImageSession:
         self.checkpoint, self.binary, self.process_factory = checkpoint, binary, process_factory
         self.child = self.workspace = self.baseline = None
         self.quarantined = False
+        self.compute = NativeCompute("IMAGE")
+        self.parked = False
 
     def check_execution_state(self):
         if self.quarantined:
@@ -69,7 +73,7 @@ class NativeImageSession:
         self.workspace = Path(tempfile.mkdtemp(prefix='kadan-image-'))
         self.child = self.process_factory()
         self.child.start([str(self.binary), str(self.checkpoint), str(self.workspace)],
-                         env={**os.environ, 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'})
+                         env=self.compute.environment())
         try:
             ready = self.child.read(1200, cancel).split()
         except InterruptedError as error:
@@ -77,6 +81,18 @@ class NativeImageSession:
         if len(ready) != 3 or ready[:2] != ['ready', '1'] or not ready[2].isdigit() or not 0 < int(ready[2]) <= HOST_BUDGET:
             raise LineProtocolError('Invalid native image ready response')
         self.baseline = int(ready[2])
+
+    def restore(self, cancel):
+        if self.parked:
+            if self.child.exchange('resume', 60, cancel).split() != ['resumed']:
+                raise LineProtocolError('Native image resume was not acknowledged')
+            self.parked = False
+
+    def offload_to_ram(self):
+        if self.compute.devices and not self.parked:
+            if self.child.exchange('park', 60, threading.Event()).split() != ['parked']:
+                raise LineProtocolError('Native image GPU cleanup was not acknowledged')
+            self.parked = True
 
     def generate(self, request, cancel):
         self.check_execution_state()
@@ -111,7 +127,7 @@ class NativeImageSession:
             seeds.append(current)
         return {'image': dict(id=uuid.uuid4().hex, mode='Generate', prompt=request.prompt,
             aspect={'1:1': 'square', '4:3': 'landscape', '3:4': 'portrait'}[request.aspect],
-            seeds=seeds, meta=f'{width}×{height} · {steps} steps · native CPU',
+            seeds=seeds, meta=f'{width}×{height} · {steps} steps · native {self.compute.mode.upper()}',
             images_base64=images, mime_type='image/png')}
 
     def unload(self):
@@ -125,6 +141,7 @@ class NativeImageSession:
             shutil.rmtree(self.workspace)
         self.child = self.workspace = self.baseline = None
         self.quarantined = False
+        self.parked = False
 
 
 class NativeImageRuntime:
@@ -133,6 +150,7 @@ class NativeImageRuntime:
         self.resources, self.prepare_plan, self.session_factory = resources, prepare_plan, session_factory
         self.session = self.reservation = self.identity = self.cancel = None
         self.gate = threading.Lock()
+        self.device_reservation = None
 
     def check_execution_state(self):
         if self.session is not None:
@@ -141,9 +159,23 @@ class NativeImageRuntime:
     def _unload(self):
         if self.session is not None:
             self.session.unload()
+        if self.device_reservation is not None:
+            self.device_reservation.release()
+            self.device_reservation = None
         if self.reservation is not None:
             self.reservation.release()
         self.session = self.reservation = self.identity = None
+
+    def _park(self):
+        if not self.gate.acquire(blocking=False):
+            raise ResourceBusy('Image worker is active')
+        try:
+            self.session.offload_to_ram()
+            if self.device_reservation is not None:
+                self.device_reservation.release()
+                self.device_reservation = None
+        finally:
+            self.gate.release()
 
     def _evict(self):
         if not self.gate.acquire(blocking=False):
@@ -173,17 +205,29 @@ class NativeImageRuntime:
             self.check_execution_state()
             plan = self.prepare_plan()
             resources = self.resources()
+            compute = native_compute('IMAGE', resources)
+            identity = (plan, compute.identity)
             resources.offload_inactive_devices('image', cancel)
-            if self.identity != plan:
+            if self.identity != identity:
                 self._unload()
                 self.reservation = resources.reserve('image-host-' + uuid.uuid4().hex, 'image',
                     host_bytes=PROCESS_BUDGET, evict=self._evict, cancel_event=cancel)
             try:
-                with self.reservation.lease(cancel):
+                with ExitStack() as leases:
+                    leases.enter_context(self.reservation.lease(cancel))
+                    if compute.devices and self.device_reservation is None:
+                        self.device_reservation = resources.reserve('image-device-' + uuid.uuid4().hex, 'image',
+                            device_bytes=compute.device_bytes, evict=self._park, cancel_event=cancel)
+                    if self.device_reservation is not None:
+                        leases.enter_context(self.device_reservation.lease(cancel))
                     if self.session is None:
                         self.session = self.session_factory(*plan)
+                        self.session.compute = compute
                         self.session.load(cancel)
-                        self.identity = plan
+                        self.identity = identity
+                    restore = getattr(self.session, 'restore', None)
+                    if restore is not None:
+                        restore(cancel)
                     check_cancel(cancel)
                     return self.session.generate(request, cancel) if request is not None else None
             except BaseException:

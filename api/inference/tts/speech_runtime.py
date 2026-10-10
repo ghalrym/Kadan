@@ -202,6 +202,7 @@ class SpeechRuntime:
         try:
             if cancel.is_set():
                 raise ResourceCancelled('Speech generation cancelled')
+            self._resources().offload_inactive_devices('tts', cancel)
             request, provider = self.registry.resolve(request)
             if not provider.enabled(request.model_id):
                 raise SpeechUnavailable('This speech checkpoint integration is not enabled.')

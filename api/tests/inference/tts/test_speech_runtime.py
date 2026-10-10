@@ -177,10 +177,10 @@ class SpeechLifecycleTests(unittest.TestCase):
             self.runtime.generate(self.request, self.cancel)
         self.assertEqual(self.provider.loads, 0)
 
-    def test_failed_admission_does_not_load(self):
+    def test_non_evictable_gpu_handoff_does_not_load(self):
         other = self.resources.reserve('busy', 'llm', 800, {0: 800})
         try:
-            with self.assertRaises(ResourceExhausted):
+            with self.assertRaises(ResourceBusy):
                 self.runtime.generate(self.request, self.cancel)
             self.assertEqual(self.provider.loads, 0)
         finally:

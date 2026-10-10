@@ -1,4 +1,5 @@
 """Owned C++ Whisper CPU process; Python handles WAV transport and admission only."""
+from contextlib import ExitStack, nullcontext
 import base64
 import binascii
 import hashlib
@@ -16,6 +17,7 @@ import wave
 import numpy as np
 
 from api.inference.errors import InferenceFailure
+from api.inference.native_compute import NativeCompute, native_compute
 from api.inference.failure_cleanup import clear_failure_frames
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceCancelled
@@ -32,15 +34,16 @@ def cancelled(event):
         raise ResourceCancelled('Transcription cancelled')
 
 
-def resolve(model):
+def resolve(model, compute=None):
+    compute = compute or NativeCompute("WHISPER")
     entry = checkpoint(model)
     binary = Path(os.environ['KADAN_NATIVE_WHISPER_WORKER'])
     root = Path(os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT', ''))
     assets = Path(os.environ.get('KADAN_NATIVE_WHISPER_ASSET_ROOT', ''))
     if not binary.is_absolute() or not root.is_absolute() or not assets.is_absolute():
         raise InferenceFailure('Configure absolute native Whisper worker, model and asset paths.')
-    capability = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True)
-    if capability.stdout != f'whisper 1 cpu en {MAX_PCM} {HOST_BUDGET}\n'.encode():
+    capability = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True, env=compute.environment())
+    if capability.stdout != f'whisper 1 {compute.mode} en {MAX_PCM} {HOST_BUDGET}\n'.encode():
         raise InferenceFailure('Unsupported native Whisper worker capabilities.')
     report_path = root / 'export.json'
     if report_path.stat().st_size > 16384:
@@ -94,6 +97,9 @@ class NativeWhisper:
         self.baseline = None
         self.quarantined = False
         self.owner = f'whisper-native:{id(self)}'
+        self.compute = None
+        self.device_admission = None
+        self.parked = False
 
     def check_execution_state(self):
         if self.quarantined:
@@ -107,6 +113,9 @@ class NativeWhisper:
         except BaseException:
             self.quarantined = True
             raise
+        if self.device_admission is not None:
+            self.device_admission.release()
+            self.device_admission = None
         if self.admission is not None:
             self.admission.release()
             self.admission = None
@@ -115,6 +124,8 @@ class NativeWhisper:
             self.workspace = None
         self.model = self.baseline = None
         self.quarantined = False
+        self.compute = None
+        self.parked = False
 
     def close(self):
         with self.lock:
@@ -128,22 +139,55 @@ class NativeWhisper:
         finally:
             self.lock.release()
 
+    def _park(self):
+        if not self.lock.acquire(blocking=False):
+            raise ResourceBusy('Whisper is executing')
+        try:
+            if self.child.exchange('park', 60, threading.Event()).split() != ['parked']:
+                raise LineProtocolError('Whisper GPU cleanup was not acknowledged')
+            self.parked = True
+            if self.device_admission is not None:
+                self.device_admission.release()
+                self.device_admission = None
+        finally:
+            self.lock.release()
+
     def offload_to_ram(self, cancel=None):
-        cancelled(cancel)  # CPU weights remain resident until host pressure/close.
+        (self.resources or chat_runtime.ensure_resources()).offload_workload_devices('speech', cancel)
+
+    def _device_lease(self, cancel):
+        return self.device_admission.lease(cancel) if self.device_admission is not None else nullcontext()
+
+    def _admit_device(self, resources, cancel):
+        if self.compute.devices and self.device_admission is None:
+            self.device_admission = resources.reserve(self.owner + ':device', 'speech',
+                device_bytes=self.compute.device_bytes, evict=self._park, cancel_event=cancel)
 
     def _load(self, model, cancel):
         cancelled(cancel)
         self.check_execution_state()
-        if self.model == model and self.child is not None:
-            return
-        command = self.resolver(model)
-        self._close()
         resources = self.resources or chat_runtime.ensure_resources()
+        compute = native_compute('WHISPER', resources)
+        resources.offload_inactive_devices('speech', cancel)
+        if self.model == model and self.child is not None and self.compute == compute:
+            self._admit_device(resources, cancel)
+            with self._device_lease(cancel):
+                if self.parked:
+                    if self.child.exchange('resume', 60, cancel).split() != ['resumed']:
+                        raise LineProtocolError('Whisper resume was not acknowledged')
+                    self.parked = False
+            return
+        command = resolve(model, compute) if self.resolver is resolve else self.resolver(model)
+        self._close()
+        self.compute = compute
         self.admission = resources.reserve(self.owner, 'speech', host_bytes=PROCESS_BUDGET, evict=self.evict, cancel_event=cancel)
-        with self.admission.lease(cancel):
+        with ExitStack() as leases:
+            leases.enter_context(self.admission.lease(cancel))
+            self._admit_device(resources, cancel)
+            leases.enter_context(self._device_lease(cancel))
             self.workspace = Path(tempfile.mkdtemp(prefix='kadan-whisper-'))
             self.child = self.process_factory()
-            self.child.start([*command, str(self.workspace)], env={**os.environ, 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'})
+            self.child.start([*command, str(self.workspace)], env=self.compute.environment())
             ready = self.child.read(600, cancel).split()
             if len(ready) != 3 or ready[:2] != ['ready', '1'] or not ready[2].isdigit() or not 0 < int(ready[2]) <= HOST_BUDGET:
                 raise LineProtocolError('Invalid native Whisper ready response')
@@ -175,7 +219,7 @@ class NativeWhisper:
                 with transient.lease(cancel):
                     samples = pcm(audio)
                     self._load(model, cancel)
-                    with self.admission.lease(cancel):
+                    with self.admission.lease(cancel), self._device_lease(cancel):
                         (self.workspace / 'pcm.f32').write_bytes(samples)
                         output = self.workspace / 'text.txt'
                         if output.exists():

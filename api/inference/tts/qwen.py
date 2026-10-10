@@ -14,6 +14,7 @@ from api.inference.tts.speech_runtime import SpeechInput, SpeechModel, SpeechPla
 from api.services.model_downloads import model_manager
 from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
 from api.inference.tts import enabled as speech_enabled
+from api.inference.native_compute import native_compute
 from api.inference.tts.native_worker import NativeSpeechSession, PROCESS_BUDGET, verify_tokenizer, validate as validate_native
 
 
@@ -78,8 +79,9 @@ class QwenSpeechProvider:
                 verify_tokenizer(checkpoint, tokenizer)
             except (OSError, KeyError, ValueError, TypeError) as error:
                 raise SpeechUnavailable("Invalid or missing native TTS tokenizer export.") from error
-            return SpeechPlan(('qwen-native', model.id, model.revision, str(checkpoint), str(binary), str(tokenizer)),
-                PROCESS_BUDGET, lambda: NativeSpeechSession(checkpoint, tokenizer, binary, model.name))
+            compute = native_compute('TTS', resources)
+            return SpeechPlan(('qwen-native', model.id, model.revision, str(checkpoint), str(binary), str(tokenizer), *compute.identity),
+                PROCESS_BUDGET, lambda: NativeSpeechSession(checkpoint, tokenizer, binary, model.name, compute=compute), compute.device_bytes)
         device = os.environ.get('KADAN_QWEN_TTS_DEVICE', 'auto')
         budget = model.estimated_bytes * 3 + 2 * 1024**3
         if resources is not None:

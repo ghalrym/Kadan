@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+
+from api.inference.native_compute import NativeCompute
 
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceCancelled
@@ -35,9 +38,11 @@ class NativeSpeechSession:
     Process termination/reaping finishes before unload returns. A failed reap
     propagates, leaving SpeechRuntime's admission reserved for a retry.
     """
-    def __init__(self, checkpoint, tokenizer, binary, name, process_factory=LineProtocolProcess):
+    def __init__(self, checkpoint, tokenizer, binary, name, process_factory=LineProtocolProcess, compute=None):
         self.checkpoint, self.tokenizer, self.binary, self.name = checkpoint, tokenizer, binary, name
         self.process_factory = process_factory
+        self.compute = compute or NativeCompute("TTS")
+        self.parked = False
         self.child = self.workspace = self.baseline = None
         self.quarantined = False
 
@@ -53,7 +58,7 @@ class NativeSpeechSession:
         self.workspace = Path(tempfile.mkdtemp(prefix='kadan-tts-'))
         self.child = self.process_factory()
         self.child.start([str(self.binary), str(self.checkpoint), str(self.tokenizer), str(self.workspace)],
-                         env={**os.environ, 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'})
+                         env=self.compute.environment())
         try:
             ready = self.child.read(600, cancel).split()
         except InterruptedError as error:
@@ -66,9 +71,16 @@ class NativeSpeechSession:
         check_cancel(cancel)
         if self.child is None or self.baseline is None:
             raise SpeechUnavailable('Native speech session is not loaded.')
+        if self.parked:
+            if self.child.exchange('resume', 60, cancel).split() != ['resumed']:
+                raise LineProtocolError('Native speech resume was not acknowledged')
+            self.parked = False
 
     def offload_to_ram(self):
-        pass  # CPU resident; host pressure invokes unload through SpeechRuntime.
+        if self.compute.devices and not self.parked:
+            if self.child.exchange('park', 60, threading.Event()).split() != ['parked']:
+                raise LineProtocolError('Native speech GPU cleanup was not acknowledged')
+            self.parked = True
 
     def generate(self, request, cancel):
         validate(request)
@@ -106,6 +118,7 @@ class NativeSpeechSession:
             self.workspace = None
         self.baseline = None
         self.quarantined = False
+        self.parked = False
 
 
 def verify_tokenizer(checkpoint, tokenizer):
