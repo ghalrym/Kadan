@@ -1,5 +1,8 @@
 """Real Redis lifecycle tests. CI provisions Redis; no fake broker semantics."""
 import asyncio
+import base64
+import io
+import json
 import os
 import subprocess
 import sys
@@ -10,6 +13,7 @@ import unittest
 import uuid
 from types import SimpleNamespace
 
+from PIL import Image
 from redis.asyncio import Redis
 
 from api.inference.cancellation import run_cancellable_thread
@@ -313,3 +317,41 @@ asyncio.run(main())
             failed = False
             await self.queue.close()
             await other.close()
+
+    async def test_full_resolution_image_result_uses_bounded_artifact_transport(self):
+        stream = io.BytesIO()
+        Image.new('RGBA', (2752, 1536), (255, 0, 0, 255)).save(stream, format='PNG', compress_level=0)
+        encoded = base64.b64encode(stream.getvalue()).decode('ascii')
+        self.assertGreater(len(encoded), self.queue.max_payload)
+        for count in (1, 4):
+            expected = {'image': {'images_base64': [encoded] * count, 'mime_type': 'image/png'}}
+            async def execute(job):return expected
+            self.queue.execute = execute
+            job = await self.queue.submit('image', 'generate', {'count': count})
+            result = await self.queue.wait(job)
+            self.assertEqual(result, expected)
+            record = await self.queue.get(job)
+            self.assertEqual(record['artifact'], '1')
+            self.assertLess(len(record['result']), 256)
+            self.assertLessEqual(sum(p.stat().st_size for p in self.queue.artifacts.root.iterdir()), self.queue.artifacts.max_bytes)
+            # Metadata stays compact in Redis; the returned PNG remains full size.
+            with Image.open(io.BytesIO(base64.b64decode(result['image']['images_base64'][0]))) as image:
+                self.assertEqual(image.size, (2752, 1536))
+
+    async def test_cancelled_large_result_discards_artifact(self):
+        job = 'e' * 32
+        await self.queue.redis.hset(self.queue.key('job:' + job), mapping={'state': 'running', 'cancel': '1'})
+        await self.queue._finish(job, 'succeeded', result={'image': 'x' * (self.queue.max_payload + 1)}, feature='image')
+        self.assertFalse(self.queue.artifacts.path(job).exists())
+        self.assertEqual((await self.queue.get(job))['state'], 'cancelled')
+
+    async def test_full_artifact_storage_fails_job_and_fifo_continues(self):
+        self.queue.artifacts.max_bytes = 1
+        async def execute(job):
+            return {'image': 'x' * (self.queue.max_payload + 1)} if job.feature == 'image' else {'ok': True}
+        self.queue.execute = execute
+        large = await self.queue.submit('image', 'generate', {})
+        next_job = await self.queue.submit('llm', 'generate', {})
+        with self.assertRaises(InferenceFailure):await self.queue.wait(large)
+        self.assertEqual(await self.queue.wait(next_job), {'ok': True})
+        self.assertEqual(list(self.queue.artifacts.root.iterdir()), [])

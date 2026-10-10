@@ -13,12 +13,14 @@ import logging
 import os
 from pathlib import Path
 import uuid
+import time
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from api.inference.errors import InferenceFailure
+from api.memory_manager.result_artifacts import ResultArtifacts
 
 from api.inference.cancellation import await_cleanup
 
@@ -66,7 +68,7 @@ if redis.call('HGET', KEYS[2], 'cancel') == '1' then state = 'cancelled' end
 local status = ARGV[5]
 local result = ARGV[3]
 if state == 'cancelled' then status = '499'; result = 'null' end
-redis.call('HSET', KEYS[2], 'state', state, 'result', result, 'error', ARGV[4], 'status', status)
+redis.call('HSET', KEYS[2], 'state', state, 'result', result, 'error', ARGV[4], 'status', status, 'artifact', state == 'succeeded' and ARGV[7] or '')
 redis.call('HDEL', KEYS[2], 'job')
 redis.call('SREM', KEYS[1], ARGV[1])
 redis.call('EXPIRE', KEYS[2], ARGV[6])
@@ -83,6 +85,7 @@ class InferenceQueue:
         self.redis = Redis.from_url(url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2)
         self.prefix, self.limit, self.retention, self.max_payload = prefix, limit, retention, max_payload
         self.lock_path = Path(lock_path)
+        self.artifacts = ResultArtifacts(self.lock_path.with_name(self.lock_path.name + ".results"), retention)
         self._lock_file = None
         self._consumer = None
         self._active = None
@@ -93,6 +96,7 @@ class InferenceQueue:
         self.streams = {}
         self._shutdown_cleanup = None
         self._closing = None
+        self._artifact_sweep = 0.0
 
     def key(self, suffix):
         return self.prefix + suffix
@@ -173,7 +177,7 @@ class InferenceQueue:
         if len(job_id) != 32 or any(c not in '0123456789abcdef' for c in job_id):
             raise KeyError(job_id)
         try:
-            fields = ('state', 'cancel', 'result', 'error', 'status')
+            fields = ('state', 'cancel', 'result', 'error', 'status', 'artifact')
             values = await self.redis.hmget(self.key('job:' + job_id), fields)
             record = {key: value for key, value in zip(fields, values) if value is not None}
         except RedisError as exc:
@@ -200,7 +204,8 @@ class InferenceQueue:
                 record = await self.get(job_id)
                 state = record['state']
                 if state == 'succeeded':
-                    return json.loads(record['result'])
+                    result = json.loads(record['result'])
+                    return self.artifacts.read(job_id, result) if record.get('artifact') == '1' else result
                 if state in ('failed', 'cancelled'):
                     raise InferenceFailure(record.get('error') or 'Inference cancelled.',
                                          int(record.get('status') or (499 if state == 'cancelled' else 503)))
@@ -216,12 +221,18 @@ class InferenceQueue:
                     await await_cleanup(self._active)
             raise
 
-    async def _finish(self, job_id, state, result=None, error='', status=503):
+    async def _finish(self, job_id, state, result=None, error='', status=503, feature=None):
         encoded = json.dumps(result, allow_nan=False)
+        artifact = ''
         if len(encoded.encode()) > self.max_payload:
-            raise ValueError('Inference result exceeds the queue payload limit')
-        await self.redis.eval(_FINISH, 2, self.key('unfinished'), self.key('job:' + job_id),
-            job_id, state, encoded, error[:2000], status, self.retention)
+            if feature != 'image' or state != 'succeeded':
+                raise ValueError('Inference result exceeds the queue payload limit')
+            encoded = json.dumps(self.artifacts.store(job_id, encoded))
+            artifact = '1'
+        terminal = await self.redis.eval(_FINISH, 2, self.key('unfinished'), self.key('job:' + job_id),
+            job_id, state, encoded, error[:2000], status, self.retention, artifact)
+        if artifact and terminal != 'succeeded':
+            self.artifacts.discard(job_id)
 
     async def _run(self, job_id):
         record = await self.get(job_id)
@@ -247,8 +258,8 @@ class InferenceQueue:
                 await self._finish(job_id, 'failed', error=str(exc), status=getattr(exc, 'status_code', 502))
             else:
                 try:
-                    await self._finish(job_id, 'succeeded', result=result)
-                except (TypeError, ValueError):
+                    await self._finish(job_id, 'succeeded', result=result, feature=job.feature)
+                except (TypeError, ValueError, OSError):
                     await self._finish(job_id, 'failed', error='Inference returned an invalid or oversized JSON result.', status=502)
         finally:
             if not self._active.done():
@@ -260,6 +271,9 @@ class InferenceQueue:
     async def _consume(self):
         try:
             while self._ready:
+                if time.monotonic() - self._artifact_sweep >= min(60, self.retention):
+                    self.artifacts.prune()
+                    self._artifact_sweep = time.monotonic()
                 job_id = await self.redis.eval(_CLAIM, 1, self.key('pending'), self.key('job:'))
                 if job_id:
                     await self._run(job_id)

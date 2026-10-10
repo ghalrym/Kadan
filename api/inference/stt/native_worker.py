@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import struct
 import subprocess
 import tempfile
@@ -29,6 +30,8 @@ from api.services.model_downloads import model_manager
 HOST_BUDGET = 16 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
 MAX_PCM = 480000
+DIMENSIONS = ('n_mels', 'n_audio_ctx', 'n_audio_state', 'n_audio_head', 'n_audio_layer',
+              'n_vocab', 'n_text_ctx', 'n_text_state', 'n_text_head', 'n_text_layer')
 
 
 def cancelled(event):
@@ -57,17 +60,32 @@ def resolve(model, compute=None, resources=None, cancel=None):
     capability = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True, env=compute.environment())
     if capability.stdout != f'whisper 1 {compute.mode} en {MAX_PCM} {HOST_BUDGET}\n'.encode():
         raise InferenceFailure('Unsupported native Whisper worker capabilities.')
+    def regular(path, maximum):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= maximum:
+            raise InferenceFailure('Invalid native Whisper regular file.')
+        return info
     report_path = root / 'export.json'
+    regular(report_path, 16384)
     if report_path.stat().st_size > 16384:
         raise InferenceFailure('Invalid Whisper export manifest.')
     report = json.loads(report_path.read_text())
+    dimensions = report.get('dimensions', {})
+    if set(dimensions) != set(DIMENSIONS) or any(type(dimensions[k]) is not int or not 0 < dimensions[k] <= 52000 for k in DIMENSIONS):
+        raise InferenceFailure('Invalid Whisper dimensions metadata.')
+    dimensions_path = root / 'dimensions.txt'
+    regular(dimensions_path, 1024)
+    if dimensions_path.read_text(encoding='ascii').split() != [str(dimensions[k]) for k in DIMENSIONS]:
+        raise InferenceFailure('Whisper dimensions do not match export metadata.')
     weight = root / 'model.safetensors'
+    regular(weight, 8 * 1024**3)
     if report['source_sha256'] != entry.sha256 or weight.stat().st_size != report['output_bytes']:
         raise InferenceFailure('Native Whisper export does not match the selected checkpoint.')
     with weight.open('rb') as stream:
         if digest_file(stream) != report['output_sha256']:
             raise InferenceFailure('Native Whisper export integrity verification failed.')
     assets_report = assets / 'assets.json'
+    regular(assets_report, 16384)
     if assets_report.stat().st_size > 16384:
         raise InferenceFailure('Invalid Whisper asset manifest.')
     metadata = json.loads(assets_report.read_text())

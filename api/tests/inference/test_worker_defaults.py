@@ -69,17 +69,28 @@ class WorkerDefaultTests(unittest.TestCase):
             root=Path(folder); model=root/'native/whisper/tiny';assets=model/'assets';assets.mkdir(parents=True)
             weight=b'fixture weights';tokens=b'fixture tokens';mel=b'fixture mel'
             digest=lambda data:hashlib.sha256(data).hexdigest()
+            dimensions=dict(n_mels=80,n_audio_ctx=1500,n_audio_state=384,n_audio_head=6,n_audio_layer=4,n_vocab=51865,n_text_ctx=448,n_text_state=384,n_text_head=6,n_text_layer=4)
+            (model/'dimensions.txt').write_text(' '.join(map(str,dimensions.values()))+'\n')
             (model/'model.safetensors').write_bytes(weight)
             (model/'export.json').write_text(json.dumps({'source_sha256':checkpoint('tiny').sha256,
-                'output_bytes':len(weight),'output_sha256':digest(weight),'dimensions':{'n_vocab':51865,'n_mels':80}}))
+                'output_bytes':len(weight),'output_sha256':digest(weight),'dimensions':dimensions}))
             (assets/'english.tokens').write_bytes(tokens);(assets/'mel-80.f32').write_bytes(mel)
             (assets/'assets.json').write_text(json.dumps({'language':'en','whisper_version':'20250625','vocabulary':51865,
                 'token_sha256':digest(tokens),'mel_sha256':{'80':digest(mel)}}))
             with patch('api.inference.stt.native_worker.model_manager',SimpleNamespace(root=root)),patch(
                     'api.inference.stt.native_worker.subprocess.run',return_value=SimpleNamespace(stdout=f'whisper 1 cpu en {MAX_PCM} {HOST_BUDGET}\n'.encode())) as capabilities:
                 result=resolve('tiny')
+                for key in dimensions:
+                    altered=dimensions.copy();altered[key]+=1
+                    (model/'dimensions.txt').write_text(' '.join(map(str,altered.values()))+'\n')
+                    with self.subTest(dimension=key),self.assertRaisesRegex(InferenceFailure,'dimensions'):
+                        resolve('tiny')
+                (model/'dimensions.txt').unlink()
+                (root/'linked-dimensions.txt').write_text(' '.join(map(str,dimensions.values()))+'\n')
+                (model/'dimensions.txt').symlink_to(root/'linked-dimensions.txt')
+                with self.assertRaisesRegex(InferenceFailure,'regular file'):resolve('tiny')
             self.assertEqual(result,['/opt/kadan/bin/kadan-whisper-worker',str(model),'model.safetensors',str(model/'dimensions.txt'),str(assets)])
-            capabilities.assert_called_once()
+            self.assertEqual(capabilities.call_count,12)
 
     def test_speech_wrapper_preload_allows_empty_script_without_generation(self):
         provider=QwenSpeechProvider();session=Mock()
