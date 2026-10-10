@@ -28,11 +28,11 @@ class LineProtocolProcess:
         self.closed = False
         self.io_ready = False
 
-    def start(self, command):
+    def start(self, command, *, env=None):
         if self.process is not None or self.closed:
             raise RuntimeError('Inference process handle cannot be reused')
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+                                        stderr=subprocess.PIPE, bufsize=0, start_new_session=True, env=env)
         self.selector = selectors.DefaultSelector()
         for stream, kind in ((self.process.stdout, 'out'), (self.process.stderr, 'err')):
             os.set_blocking(stream.fileno(), False)

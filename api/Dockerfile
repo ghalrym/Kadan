@@ -1,14 +1,19 @@
 # Build from the repository root; .dockerignore admits API/native source only.
-FROM python:3.12-slim AS native-build
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS cuda-toolkit
+
+FROM python:3.12-slim-bookworm AS native-build
+COPY --from=cuda-toolkit /usr/local/cuda-12.6 /usr/local/cuda-12.6
+ENV PATH=/usr/local/cuda-12.6/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64
 RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON \
+      -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON \
     && cmake --build /build --target kadan-decision-worker kadan-h3-worker --parallel 2 \
     && cmake --install /build --prefix /out --component decision-runtime \
-    && cmake --install /build --prefix /out --component h3-runtime
+    && cmake --install /build --prefix /out --component h3-runtime \
+    && /out/bin/kadan-h3-worker --capabilities | python -c 'import json,sys; assert json.load(sys.stdin)["cuda"] is True'
 
 FROM python:3.12-slim AS h3
 ENV PYTHONDONTWRITEBYTECODE=1 SGLANG_BUILD_RUST_EXTS=none

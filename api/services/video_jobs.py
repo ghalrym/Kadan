@@ -31,7 +31,7 @@ class VideoJobs:
             return module.LTXProvider()
         if model_id == 'h3-fl2va-int8-turbo':
             try:
-                module = importlib.import_module('api.inference.video.h3')
+                module = importlib.import_module('api.inference.video.h3_worker')
             except ImportError as exc:
                 raise RuntimeError('The H3 native provider is not installed.') from exc
             return module.H3Provider(model_id)
@@ -41,6 +41,12 @@ class VideoJobs:
         if model_id not in self._providers:
             self._providers[model_id] = self.factory(model_id)
         return self._providers[model_id]
+
+    def check_execution_state(self):
+        for provider in self._providers.values():
+            check = getattr(provider, "check_execution_state", None)
+            if check is not None:
+                check()
 
     def load(self, model_id, cancel):
         self.provider(model_id).load(cancel)

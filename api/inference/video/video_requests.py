@@ -12,6 +12,8 @@ class VideoRequests:
     @property
     def adapter(self):
         return self.video_jobs.provider(self.model) if self.model is not None else None
+    def check_execution_state(self):
+        self.video_jobs.check_execution_state()
     def select(self, request):
         return request.model
     def validate(self, payload, operation):
