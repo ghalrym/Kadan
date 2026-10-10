@@ -29,6 +29,10 @@ class Worker:
         self.cancel = False
         self.bad_ledger = False
         self.cache_budget = 0
+        self.controls = []
+        self.bad_park = False
+        self.bad_resume = False
+        self.cancel_resume = False
         self.calls = []
     def start(self, command, *, env=None):
         assert env['KADAN_H3_DEVICES'] == '0,1'
@@ -39,6 +43,14 @@ class Worker:
             raise TimeoutError('unconfirmed child')
         self.stopped = True
     def exchange(self, request, timeout, cancel=None):
+        if 'control' in request:
+            self.controls.append(request['control'])
+            if request['control']=='resume' and self.cancel_resume:
+                cancel.set()
+                raise ResourceCancelled('resume cancelled')
+            return dict(state='parked' if request['control']=='park' else 'resumed',
+                resident_bytes=self.cache_budget, device_resident_bytes=[1,0] if
+                (self.bad_park and request['control']=='park') or (self.bad_resume and request['control']=='resume') else [0,0])
         self.calls.append(request)
         if self.cancel:
             cancel.set()
@@ -100,7 +112,13 @@ class H3WorkerTests(unittest.TestCase):
         assert worker.calls[0]['short_edge'] == 480 and worker.calls[0]['duration'] == 4
         assert worker.calls[0]['updates'] == 4 and not worker.stopped
         resources.offload_inactive_devices('llm')
-        assert worker.stopped and provider._context is None
+        assert not worker.stopped and provider._context is None and provider._host is not None
+        self.assertEqual(worker.controls, ['park'])
+        self.assertEqual(sum(sum(r['device_bytes'].values()) for r in resources.snapshot()['reservations'].values()), 0)
+        provider.generate(spec(), self.root/'resumed.mp4', threading.Event())
+        self.assertEqual(worker.controls, ['park', 'resume'])
+        self.assertFalse(worker.stopped)
+        provider.close()
         assert not list(self.root.glob('.h3-*'))
 
     def test_cache_capacity_is_frozen_and_admitted_before_spawn(self):
@@ -133,6 +151,39 @@ class H3WorkerTests(unittest.TestCase):
             self.assertEqual(reserve.call_args.kwargs['host_bytes'], PROCESS_HOST_BUDGET+32*GIB)
         self.assertFalse(worker.started)
         self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_bad_park_ack_reaps_before_host_or_context_release(self):
+        resources, worker, provider = setup(self)
+        provider.load(threading.Event())
+        worker.bad_park = worker.fail_stop = True
+        with self.assertRaises(TimeoutError):
+            provider.offload_to_ram()
+        self.assertIsNotNone(provider._host)
+        self.assertIsNotNone(provider._context)
+        self.assertTrue(resources.snapshot()['reservations'])
+        with self.assertRaises(InferenceFailure):
+            provider.check_execution_state()
+        worker.fail_stop = False
+        provider.close()
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_control_failure_with_confirmed_reap_releases_all_ownership(self):
+        for control in ('park', 'resume', 'cancel_resume'):
+            with self.subTest(control=control):
+                resources, worker, provider = setup(self)
+                provider.load(threading.Event())
+                if control=='park':
+                    worker.bad_park=True
+                    action=provider.offload_to_ram
+                else:
+                    provider.offload_to_ram()
+                    worker.bad_resume=control=='resume'
+                    worker.cancel_resume=control=='cancel_resume'
+                    action=lambda:provider.load(threading.Event())
+                with self.assertRaises((LineProtocolError,ResourceCancelled)):
+                    action()
+                self.assertTrue(worker.stopped)
+                self.assertEqual(resources.snapshot()['reservations'], {})
 
 
     def test_admission_before_spawn(self):

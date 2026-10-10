@@ -166,10 +166,11 @@ class H3Provider:
         self.model_id, self.resources = model_id, resources
         self.resolve, self.process_factory = resolve, process_factory
         self._lock = threading.Lock()
-        self._worker = self._codec = self._context = self._execution = self._workspace = None
+        self._worker = self._codec = self._host = self._context = self._execution = self._workspace = None
         self._quarantined = False
         self._devices = None
         self._cache_budget = 0
+        self._parked = False
         self._owner = f'h3-native:{id(self)}'
 
     def validate(self, spec):
@@ -200,7 +201,7 @@ class H3Provider:
         except BaseException:
             self._quarantined = True
             raise
-        for field in ('_execution', '_context'):
+        for field in ('_execution', '_context', '_host'):
             reservation = getattr(self, field)
             if reservation is not None:
                 reservation.release()
@@ -210,6 +211,7 @@ class H3Provider:
             self._workspace = None
         self._quarantined = False
         self._devices = None
+        self._parked = False
 
     def close(self):
         with self._lock:
@@ -224,8 +226,33 @@ class H3Provider:
             self._lock.release()
 
     def offload_to_ram(self, cancellation=None):
-        check_cancel(cancellation)
-        self.close()  # No idle tensor bank: reap both CUDA contexts on handoff.
+        (self.resources or chat_runtime.ensure_resources()).offload_workload_devices('video', cancellation)
+
+    def _park(self):
+        if not self._lock.acquire(blocking=False):
+            raise ResourceBusy('H3 is executing')
+        try:
+            if self._worker is not None and not self._parked:
+                try:
+                    self._control('park', 'parked', threading.Event())
+                except BaseException:
+                    self._close_locked()  # Failed ACK requires confirmed reap.
+                    raise
+                self._parked = True
+            if self._context is not None:
+                self._context.release()
+                self._context = None
+        finally:
+            self._lock.release()
+
+    def _control(self, command, state, cancel):
+        response = self._worker.exchange({'control': command}, 60, cancel)
+        if (not isinstance(response, dict) or set(response) != {'state', 'resident_bytes', 'device_resident_bytes'}
+                or response['state'] != state or type(response['resident_bytes']) is not int
+                or not 0 <= response['resident_bytes'] <= self._cache_budget
+                or response['device_resident_bytes'] != [0, 0]
+                or any(type(n) is not int for n in response['device_resident_bytes'])):
+            raise LineProtocolError('H3 device handoff was not acknowledged')
 
     def load(self, cancellation):
         self._use(None, None, cancellation)
@@ -278,14 +305,19 @@ class H3Provider:
                     # A zero tensor ledger does not prove allocator arenas or CUDA
                     # host caches returned their pages. Retain the full process host
                     # envelope until reaping, including while its GPU work is idle.
-                    if self._context is None:
+                    if self._host is None:
                         # Freeze against usable configured capacity, not transient
                         # pressure. The shared queue waits for this whole envelope.
                         self._cache_budget = min(MAX_WEIGHT_CACHE_BYTES, max(0,
                             resources.snapshot()['host_capacity_bytes'] - PROCESS_HOST_BUDGET))
-                        self._context = resources.reserve(self._owner + ':context', 'video',
-                            host_bytes=PROCESS_HOST_BUDGET + self._cache_budget, device_bytes={i: CONTEXT_BUDGET for i in devices},
+                        self._host = resources.reserve(self._owner + ':host', 'video',
+                            host_bytes=PROCESS_HOST_BUDGET + self._cache_budget,
                             evict=self._evict, cancel_event=cancel)
+                    leases.enter_context(self._host.lease(cancel))
+                    if self._context is None:
+                        self._context = resources.reserve(self._owner + ':context', 'video',
+                            device_bytes={i: CONTEXT_BUDGET for i in devices},
+                            evict=self._park, cancel_event=cancel)
                     leases.enter_context(self._context.lease(cancel))
                     if spec is not None:
                         self._execution = resources.reserve(self._owner + ':execution', 'video',
@@ -297,6 +329,9 @@ class H3Provider:
                         self._worker.start(command, env=dict(os.environ, KADAN_H3_DEVICES=value,
                             KADAN_H3_WEIGHT_CACHE_BYTES=str(self._cache_budget)))
                         self._devices = value
+                    if self._parked:
+                        self._control('resume', 'resumed', cancel)
+                        self._parked = False
                     if spec is None:
                         return
                     if output.exists() or output.is_symlink():

@@ -44,8 +44,18 @@ int main(int argc,char** argv){
   auto cache=kadan::video::h3_weight_cache(resources,paths,cache_limit,cancelled);
   kadan::video::H3Generation model(resources,execution.compute,cache);
   {
+   bool parked=false;
    auto run=[&](const std::string& frame){
-    std::array<std::unordered_set<std::string>,17> keys;std::size_t events=0;const auto object=Json::parse(frame,[&](int depth,Json::parse_event_t event,Json& v){check(depth>=0&&depth<16&&++events<20000,"h3_request_json_limit");if(event==Json::parse_event_t::object_start)keys[depth+1].clear();if(event==Json::parse_event_t::key)check(keys[depth].insert(v.get<std::string>()).second,"h3_request_duplicate_key");return true;});check(object.is_object()&&object.size()<=7,"h3_request_object");for(auto it=object.begin();it!=object.end();++it)check(it.key()=="prompt"||it.key()=="output"||it.key()=="width"||it.key()=="height"||it.key()=="frames"||it.key()=="updates"||it.key()=="seed"||it.key()=="short_edge"||it.key()=="aspect"||it.key()=="duration","h3_request_field");
+    std::array<std::unordered_set<std::string>,17> keys;std::size_t events=0;const auto object=Json::parse(frame,[&](int depth,Json::parse_event_t event,Json& v){check(depth>=0&&depth<16&&++events<20000,"h3_request_json_limit");if(event==Json::parse_event_t::object_start)keys[depth+1].clear();if(event==Json::parse_event_t::key)check(keys[depth].insert(v.get<std::string>()).second,"h3_request_duplicate_key");return true;});check(object.is_object()&&object.size()<=7,"h3_request_object");
+    if(object.contains("control")){
+        check(object.size()==1,"h3_control_fields");const auto command=string(object,"control",8);
+        check(command=="park"||command=="resume","h3_control_command");
+        if(command=="park"){if(execution.compute)execution.compute->release_devices();parked=true;}else parked=false;
+        const auto used=resources->snapshot().used;for(std::size_t i=1;i<used.size();++i)check(used[i]==0,"h3_control_cleanup_unconfirmed");
+        return Json{{"state",command=="park"?"parked":"resumed"},{"resident_bytes",used[0]-1024*1024},
+            {"device_resident_bytes",std::vector<kadan::Bytes>(used.begin()+1,used.end())}}.dump();
+    }
+    check(!parked,"h3_worker_parked");for(auto it=object.begin();it!=object.end();++it)check(it.key()=="prompt"||it.key()=="output"||it.key()=="width"||it.key()=="height"||it.key()=="frames"||it.key()=="updates"||it.key()=="seed"||it.key()=="short_edge"||it.key()=="aspect"||it.key()=="duration","h3_request_field");
     kadan::video::H3GenerationRequest request;request.prompt=string(object,"prompt",kadan::video::H3Tokenizer::max_input_bytes);request.output=string(object,"output",4096);request.width=number(object,"width",64);request.height=number(object,"height",64);request.frames=number(object,"frames",22);request.updates=number(object,"updates",8);request.seed=number(object,"seed",0);
     if(object.contains("short_edge")||object.contains("aspect")||object.contains("duration")){
         check(!object.contains("width")&&!object.contains("height")&&!object.contains("frames"),"h3_request_profile_conflict");
