@@ -4,7 +4,7 @@ using namespace kadan;
 void check(bool b){if(!b)throw std::runtime_error("weight_test_failed");}
 template<class F>void fails(F f){try{f();}catch(const std::exception&){return;}throw std::runtime_error("expected_failure");}
 struct Fake final:WeightDeviceOperations {
-    Resources& resources;std::map<void*,Bytes> pointers;unsigned copies=0,frees=0;std::string fail;
+    Resources& resources;std::map<void*,Bytes> pointers;unsigned copies=0,frees=0;std::string fail;bool fail_free=false;
     std::atomic_bool* cancellation=nullptr;Bytes free_bytes=1024;bool oom=false;
     Bytes available_weight_bytes()override{return free_bytes;}
     explicit Fake(Resources& r):resources(r){}
@@ -20,7 +20,7 @@ struct Fake final:WeightDeviceOperations {
         if(cancellation)cancellation->store(true);
         if(fail=="copy")throw std::runtime_error("copy");
     }
-    void free_weight(void* p)override{if(fail=="free")throw std::runtime_error("free");check(pointers.erase(p)==1);++frees;}
+    void free_weight(void* p)override{if(fail=="free"||fail_free)throw std::runtime_error("free");check(pointers.erase(p)==1);++frees;}
     void synchronize_weights()override{if(fail=="sync")throw std::runtime_error("sync");}
 };
 int main(){
@@ -51,6 +51,12 @@ int main(){
     {
         Resources r({host,1024});Fake gpu(r);DeviceWeights bank(r,0,Workload::video,64,gpu);gpu.cancellation=&cancel;
         fails([&]{bank.retain(key,bytes,cancel);});check(bank.allocated()==0&&gpu.pointers.empty());cancel=false;bank.release();
+    }
+    {
+        Resources r({host,1024});Fake gpu(r);DeviceWeights bank(r,0,Workload::image,64,gpu);
+        gpu.fail="copy";gpu.fail_free=true;bool combined=false;
+        try{bank.retain(key,bytes,cancel);}catch(const OperationCleanupError& e){combined=true;check(exception_message(e.operation)=="copy"&&exception_message(e.cleanup)=="free");}
+        check(combined&&bank.quarantined()&&bank.allocated()==32&&r.snapshot().used==Footprint({host,64}));
     }
     for(const auto* failure:{"free","sync"}){
         Resources r({host,1024});Fake gpu(r);DeviceWeights bank(r,0,Workload::image,64,gpu);

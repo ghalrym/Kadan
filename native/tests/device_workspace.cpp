@@ -10,14 +10,14 @@ struct Counters {
     Bytes allocated=0,peak=0;
     unsigned allocations=0,frees=0,creates=0,destroys=0,resets=0;
     bool handle=false;
-    std::string fail;
+    std::string fail,cleanup_fail;
     std::vector<std::string> events;
     std::set<std::thread::id> threads;
 };
 struct FakeOperations final:DeviceOperations {
     Resources& resources;std::shared_ptr<Counters> counts;int device;
     FakeOperations(Resources& r,std::shared_ptr<Counters> c,int d):resources(r),counts(std::move(c)),device(d){}
-    void event(const char* name){counts->events.emplace_back(name);counts->threads.insert(std::this_thread::get_id());if(counts->fail==name)throw std::runtime_error(name);}
+    void event(const char* name){counts->events.emplace_back(name);counts->threads.insert(std::this_thread::get_id());if(counts->fail==name||counts->cleanup_fail==name)throw std::runtime_error(name);}
     void select(int d)override{check(d==device);event("select");}
     void allocate(Bytes bytes)override{
         check(!counts->allocated&&resources.snapshot().used[device+1]>=bytes);
@@ -31,6 +31,17 @@ struct FakeOperations final:DeviceOperations {
     void reset()override{check(!counts->allocated&&!counts->handle);event("reset");++counts->resets;}
 };
 std::unique_ptr<DeviceOperations> fake(Resources& r,std::shared_ptr<Counters> c,int d=0){return std::make_unique<FakeOperations>(r,std::move(c),d);}
+void operation_and_cleanup_errors(){
+    Resources r({1024,512});auto c=std::make_shared<Counters>();DeviceWorkspace w(r,0,Workload::image,fake(r,c));
+    c->fail="configure";c->cleanup_fail="destroy";bool combined=false;
+    try{w.ensure(128);}catch(const OperationCleanupError& e){combined=true;check(exception_message(e.operation)=="configure"&&exception_message(e.cleanup)=="destroy");check(std::string(e.what()).find("configure")!=std::string::npos&&std::string(e.what()).find("destroy")!=std::string::npos);}
+    check(combined&&w.quarantined()&&r.snapshot().used[1]==128);
+    Resources other({1024,512});auto d=std::make_shared<Counters>();DeviceThread thread(other,0,Workload::image,fake(other,d));std::atomic_bool failed=false;
+    auto result=thread.submit_work([&](DeviceWorkspace& workspace){workspace.ensure(64);d->fail="synchronize";throw std::invalid_argument("request_error");},&failed);
+    combined=false;try{result.get();}catch(const OperationCleanupError& e){combined=true;check(exception_message(e.operation)=="request_error"&&exception_message(e.cleanup)=="synchronize");}
+    check(combined&&failed.load()&&other.snapshot().used[1]==64);
+    bool original=false;try{rethrow_after_cleanup(std::make_exception_ptr(std::invalid_argument("original")),[]{});}catch(const std::invalid_argument& e){original=std::string(e.what())=="original";}check(original);
+}
 void reuse_growth_and_release(){
     Resources r({1024,512});auto c=std::make_shared<Counters>();DeviceWorkspace w(r,0,Workload::image,fake(r,c));
     w.ensure(128);w.synchronize();w.ensure(64);w.ensure(128);
@@ -120,7 +131,7 @@ void bounded_mailbox(){
 }
 }
 int main(){
-    reuse_growth_and_release();accounting_and_construction_failures();uncertain_cleanup_stays_charged();
+    operation_and_cleanup_errors();reuse_growth_and_release();accounting_and_construction_failures();uncertain_cleanup_stays_charged();
     reset_failure_keeps_context_accounting();persistent_threads_and_cancel();selection_failure_never_uses_default_device();destruction_does_not_acknowledge_failed_cleanup();bounded_mailbox();
     std::cout<<"Mock device workspace lifecycle passed (no CUDA or inference)\n";
 }

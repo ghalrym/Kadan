@@ -29,10 +29,10 @@ struct Layout {
 // CUDA calls stay on the persistent thread that owns this selected device.
 class CudaDeviceOperations final:public DeviceOperations,public WeightDeviceOperations {
 public:
-    void* data=nullptr;cublasHandle_t blas=nullptr;const std::atomic_bool* cancellation=nullptr;const std::atomic_bool* failed=nullptr;Bytes scratch_bytes=0;
+    void* data=nullptr;cublasHandle_t blas=nullptr;const std::atomic_bool* cancellation=nullptr;const std::atomic_bool* failed=nullptr;Bytes scratch_bytes=0;const Bytes scratch_limit;
     DeviceWeights weights;
-    CudaDeviceOperations(Resources& resources,int device,Workload workload,Bytes limit):weights(resources,device,workload,limit,*this){}
-    Bytes available_weight_bytes() override {std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total));constexpr Bytes scratch=2ULL*1024*1024*1024;const auto remaining=scratch>scratch_bytes?scratch-scratch_bytes:0;return free>remaining?free-remaining:0;}
+    CudaDeviceOperations(Resources& resources,int device,Workload workload,Bytes limit,Bytes scratch):scratch_limit(scratch),weights(resources,device,workload,limit,*this){}
+    Bytes available_weight_bytes() override {std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total));const auto remaining=scratch_limit>scratch_bytes?scratch_limit-scratch_bytes:0;return free>remaining?free-remaining:0;}
     void* allocate_weight(Bytes bytes) override {void* pointer=nullptr;const auto status=cudaMalloc(&pointer,bytes);if(status==cudaErrorMemoryAllocation){cudaGetLastError();return nullptr;}checked(status);return pointer;}
     void copy_weight(void* pointer,std::size_t offset,std::span<const std::byte> source) override {checked(cudaMemcpy(static_cast<char*>(pointer)+offset,source.data(),source.size(),cudaMemcpyHostToDevice));}
     void free_weight(void* pointer) override {checked(cudaFree(pointer));}
@@ -128,7 +128,7 @@ class Compute final:public H3Compute {
     template<class F>void split(std::size_t rows,const std::atomic_bool& cancel,F function,bool weighted=false){
         std::lock_guard lock(operation_mutex_);
         require(!quarantined_.load(),"h3_cuda_cleanup_unconfirmed");
-        if(cancel.load()){release_scratch_locked();throw std::runtime_error("h3_cuda_cancelled");}
+        if(cancel.load())rethrow_after_cleanup(std::make_exception_ptr(std::runtime_error("h3_cuda_cancelled")),[&]{release_scratch_locked();});
         if(replan_)plan_weights_locked();
         std::atomic_bool failed=false;std::vector<std::future<void>> tasks;tasks.reserve(threads_.size());std::exception_ptr error;
         try{for(std::size_t d=0;d<threads_.size();++d){const auto begin=weighted?weight_boundary(rows,weight_capacities_,d):rows*d/threads_.size(),end=weighted?weight_boundary(rows,weight_capacities_,d+1):rows*(d+1)/threads_.size();if(begin==end)continue;
@@ -140,9 +140,8 @@ class Compute final:public H3Compute {
         }}catch(...){failed=true;error=std::current_exception();}
         for(auto& t:tasks)try{t.get();}catch(...){if(!error)error=std::current_exception();}
         if(error||cancel.load()){
-            release_scratch_locked();
-            if(error)std::rethrow_exception(error);
-            throw std::runtime_error("h3_cuda_cancelled");
+            if(!error)error=std::make_exception_ptr(std::runtime_error("h3_cuda_cancelled"));
+            rethrow_after_cleanup(error,[&]{release_scratch_locked();});
         }
     }
     static void validate(std::span<const float> x,std::span<const float> bias,std::size_t in,std::size_t out,std::span<float> y){
@@ -159,15 +158,17 @@ class Compute final:public H3Compute {
             if constexpr(quant){if(columns){begin*=4;end*=4;}}
             const auto first_output=columns?begin:0,last_output=columns?end:total_out;
             if(columns){begin=0;end=x.size()/in;}
-            const auto chunk_columns=projection_columns(in,last_output-first_output,sizeof(Weight),precise,quant?4:1);
+            auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());
+            const auto plan=projection_plan(in,last_output-first_output,sizeof(Weight),precise,quant?4:1,arena.scratch_limit);
+            const auto chunk_columns=plan.columns;
             for(auto first_column=first_output;first_column<last_output;first_column+=chunk_columns){
             const auto out=std::min(chunk_columns,last_output-first_column);
             auto weights=source?std::span<const Weight>{}:all_weights.subspan(first_column*in,out*in);
             const auto bias=all_bias.empty()?all_bias:all_bias.subspan(first_column,out);
             const auto scales=all_scales.empty()?all_scales:all_scales.subspan(first_column,out);
-            stop(cancel,failed);const auto tile=std::min<std::size_t>(256,end-begin);
+            stop(cancel,failed);const auto tile=std::min(plan.rows,end-begin);
             // Establish device/thread ownership before any retained allocation.
-            device_workspace.ensure(256);auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());
+            device_workspace.ensure(256);
             const auto weight_count=product(in,out);
             const DeviceWeights::Key key{identity?*identity:WeightIdentity{},first_column*in,weight_count,sizeof(Weight)};
             void* retained=identity?arena.weights.find(key):nullptr;
@@ -217,10 +218,10 @@ public:
         weight_reservations_.resize(capacity.size());weight_capacities_.resize(devices_.size());
         const auto used=resources_->snapshot().used;
         for(int device:devices_){
-            const Bytes scratch=2ULL*1024*1024*1024;
             const auto available=capacity[device+1]-used[device+1];
+            const Bytes scratch=std::min<Bytes>(2ULL*1024*1024*1024,available);
             const Bytes limit=available>scratch?available-scratch:0;
-            threads_.push_back(std::make_unique<DeviceThread>(*resources_,device,workload_,std::make_unique<CudaDeviceOperations>(*resources_,device,workload_,limit)));
+            threads_.push_back(std::make_unique<DeviceThread>(*resources_,device,workload_,std::make_unique<CudaDeviceOperations>(*resources_,device,workload_,limit,scratch)));
         }
     }
     template<class Real> void attention_impl(std::span<const float> q,std::span<const float> k,std::span<const float> v,std::size_t n,std::size_t heads,std::size_t kv_heads,std::size_t dim,bool causal,std::span<float> y,const std::atomic_bool& cancel,std::size_t key_tokens=0,std::size_t causal_queries=0,std::size_t window=0,std::size_t offset=0){
@@ -230,20 +231,29 @@ public:
         const auto head_values=product(n,dim),key_values=product(key_tokens,dim);require(q.size()==product(head_values,heads)&&k.size()==product(key_values,kv_heads)&&v.size()==k.size()&&y.size()==q.size(),"h3_cuda_attention_shape");
         for(auto input:{q,k,v}){require(!overlap(y.data(),y.size_bytes(),input.data(),input.size_bytes()),"h3_cuda_alias");for(float x:input)require(std::isfinite(x),"h3_cuda_nonfinite_input");}
         split(heads,cancel,[&](DeviceWorkspace& device_workspace,std::size_t first,std::size_t last,const std::atomic_bool& failed){
-            stop(cancel,failed);const auto query_tile=std::min<std::size_t>(128,n),key_tile=std::min<std::size_t>(4096,key_tokens);Layout l;
-            const auto dq=l.add(head_values*sizeof(Real)),dk=l.add(key_values*sizeof(Real)),dv=l.add(key_values*sizeof(Real)),dy=l.add(query_tile*dim*sizeof(Real)),scores=l.add(query_tile*key_tile*sizeof(Real)),maximum=l.add(query_tile*sizeof(Real)),total=l.add(query_tile*sizeof(Real)),workspace=l.add(8*1024*1024);
-            HostAdmission admission(*resources_,(head_values+key_values*2+query_tile*dim)*sizeof(Real),workload_);
-            auto memory=std::make_unique<Real[]>(head_values+key_values*2+query_tile*dim);auto hq=memory.get(),hk=hq+head_values,hv=hk+key_values,hy=hv+key_values;
-            device_workspace.ensure(l.bytes);auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());checked(cublasSetWorkspace(arena.blas,arena.at<void>(workspace),8*1024*1024));
+            stop(cancel,failed);auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());
+            const auto plan=attention_plan(n,key_tokens,dim,sizeof(Real),arena.scratch_limit);
+            const auto query_tile=plan.queries,key_tile=plan.keys;
+            const auto query_storage=(plan.full_heads?n:query_tile)*dim,key_storage=(plan.full_heads?key_tokens:key_tile)*dim;Layout l;
+            const auto dq=l.add(query_storage*sizeof(Real)),dk=l.add(key_storage*sizeof(Real)),dv=l.add(key_storage*sizeof(Real)),dy=l.add(query_tile*dim*sizeof(Real)),scores=l.add(query_tile*key_tile*sizeof(Real)),maximum=l.add(query_tile*sizeof(Real)),total=l.add(query_tile*sizeof(Real)),workspace=l.add(8*1024*1024);
+            HostAdmission admission(*resources_,(query_storage+key_storage*2+query_tile*dim)*sizeof(Real),workload_);
+            auto memory=std::make_unique_for_overwrite<Real[]>(query_storage+key_storage*2+query_tile*dim);auto hq=memory.get(),hk=hq+query_storage,hv=hk+key_storage,hy=hv+key_storage;
+            device_workspace.ensure(l.bytes);checked(cublasSetWorkspace(arena.blas,arena.at<void>(workspace),8*1024*1024));
             for(std::size_t h=first;h<last;++h){stop(cancel,failed);const auto kh=h/(heads/kv_heads);
-                for(std::size_t t=0;t<n;++t)for(std::size_t c=0;c<dim;++c)hq[t*dim+c]=q[(t*heads+h)*dim+c];
-                for(std::size_t t=0;t<key_tokens;++t)for(std::size_t c=0;c<dim;++c){hk[t*dim+c]=k[(t*kv_heads+kh)*dim+c];hv[t*dim+c]=v[(t*kv_heads+kh)*dim+c];}
-                checked(cudaMemcpy(arena.at<void>(dq),hq,head_values*sizeof(Real),cudaMemcpyHostToDevice));checked(cudaMemcpy(arena.at<void>(dk),hk,key_values*sizeof(Real),cudaMemcpyHostToDevice));checked(cudaMemcpy(arena.at<void>(dv),hv,key_values*sizeof(Real),cudaMemcpyHostToDevice));
-                for(std::size_t start=0;start<n;start+=query_tile){stop(cancel,failed);const auto rows=std::min(query_tile,n-start);checked(cudaMemset(arena.at<void>(dy),0,rows*dim*sizeof(Real)));initialize_attention<<<1,128>>>(arena.at<Real>(maximum),arena.at<Real>(total),unsigned(rows));checked(cudaGetLastError());
-                    for(std::size_t key=0;key<key_tokens;key+=key_tile){stop(cancel,failed);const auto keys=std::min(key_tile,key_tokens-key);const Real scale=1/std::sqrt(Real(dim)),zero=0,one=1;
-                        checked(gemm<Real>(arena.blas,CUBLAS_OP_T,CUBLAS_OP_N,int(keys),int(rows),int(dim),scale,arena.at<Real>(dk)+key*dim,int(dim),arena.at<Real>(dq)+start*dim,int(dim),zero,arena.at<Real>(scores),int(keys)));
+                auto pack_query=[&](std::size_t start,std::size_t rows){
+                    for(std::size_t t=0;t<rows;++t){if(t%64==0)stop(cancel,failed);for(std::size_t c=0;c<dim;++c)hq[t*dim+c]=q[((start+t)*heads+h)*dim+c];}
+                    checked(cudaMemcpy(arena.at<void>(dq),hq,rows*dim*sizeof(Real),cudaMemcpyHostToDevice));
+                };
+                auto pack_keys=[&](std::size_t start,std::size_t rows){
+                    for(std::size_t t=0;t<rows;++t){if(t%64==0)stop(cancel,failed);for(std::size_t c=0;c<dim;++c){hk[t*dim+c]=k[((start+t)*kv_heads+kh)*dim+c];hv[t*dim+c]=v[((start+t)*kv_heads+kh)*dim+c];}}
+                    checked(cudaMemcpy(arena.at<void>(dk),hk,rows*dim*sizeof(Real),cudaMemcpyHostToDevice));checked(cudaMemcpy(arena.at<void>(dv),hv,rows*dim*sizeof(Real),cudaMemcpyHostToDevice));
+                };
+                if(plan.full_heads){pack_query(0,n);pack_keys(0,key_tokens);}
+                for(std::size_t start=0;start<n;start+=query_tile){stop(cancel,failed);const auto rows=std::min(query_tile,n-start);if(!plan.full_heads)pack_query(start,rows);checked(cudaMemset(arena.at<void>(dy),0,rows*dim*sizeof(Real)));initialize_attention<<<1,128>>>(arena.at<Real>(maximum),arena.at<Real>(total),unsigned(rows));checked(cudaGetLastError());
+                    for(std::size_t key=0;key<key_tokens;key+=key_tile){stop(cancel,failed);const auto keys=std::min(key_tile,key_tokens-key);if(!plan.full_heads)pack_keys(key,keys);const Real scale=1/std::sqrt(Real(dim)),zero=0,one=1;
+                        checked(gemm<Real>(arena.blas,CUBLAS_OP_T,CUBLAS_OP_N,int(keys),int(rows),int(dim),scale,arena.at<Real>(dk)+(plan.full_heads?key*dim:0),int(dim),arena.at<Real>(dq)+(plan.full_heads?start*dim:0),int(dim),zero,arena.at<Real>(scores),int(keys)));
                         online_softmax<<<unsigned(rows),256>>>(arena.at<Real>(scores),arena.at<Real>(dy),arena.at<Real>(maximum),arena.at<Real>(total),unsigned(keys),unsigned(dim),unsigned(start),unsigned(key),unsigned(causal_queries),unsigned(window),unsigned(offset));checked(cudaGetLastError());
-                        checked(gemm<Real>(arena.blas,CUBLAS_OP_N,CUBLAS_OP_N,int(dim),int(rows),int(keys),one,arena.at<Real>(dv)+key*dim,int(dim),arena.at<Real>(scores),int(keys),one,arena.at<Real>(dy),int(dim)));checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(gemm<Real>(arena.blas,CUBLAS_OP_N,CUBLAS_OP_N,int(dim),int(rows),int(keys),one,arena.at<Real>(dv)+(plan.full_heads?key*dim:0),int(dim),arena.at<Real>(scores),int(keys),one,arena.at<Real>(dy),int(dim)));checked(cudaStreamSynchronize(cudaStreamLegacy));
                     }
                     divide_attention<<<unsigned((rows*dim+255)/256),256>>>(arena.at<Real>(dy),arena.at<Real>(total),unsigned(rows),unsigned(dim));checked(cudaGetLastError());checked(cudaMemcpy(hy,arena.at<void>(dy),rows*dim*sizeof(Real),cudaMemcpyDeviceToHost));stop(cancel,failed);
                     for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<dim;++c)y[((start+t)*heads+h)*dim+c]=hy[t*dim+c];

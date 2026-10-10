@@ -1,4 +1,5 @@
 #pragma once
+#include "kadan/cleanup_error.hpp"
 #include "kadan/resources.hpp"
 #include <algorithm>
 #include <atomic>
@@ -64,8 +65,7 @@ public:
             if(!handle_){operations_->create_handle();handle_=true;operations_->configure_handle();}
         } catch (...) {
             const auto error=std::current_exception();
-            release(); // Cleanup failure takes precedence and retains accounting.
-            std::rethrow_exception(error);
+            rethrow_after_cleanup(error,[&]{release();});
         }
     }
     void synchronize() {
@@ -139,7 +139,7 @@ public:
     std::future<void> submit_work(std::function<void(DeviceWorkspace&)> function,std::atomic_bool* failed=nullptr) {
         return submit([function=std::move(function),failed](DeviceWorkspace& workspace){
             try {function(workspace);workspace.synchronize();}
-            catch (...) {if(failed)*failed=true;const auto error=std::current_exception();workspace.release();std::rethrow_exception(error);}
+            catch (...) {if(failed)*failed=true;const auto error=std::current_exception();rethrow_after_cleanup(error,[&]{workspace.release();});}
         });
     }
     std::future<void> submit(std::function<void(DeviceWorkspace&)> function) {

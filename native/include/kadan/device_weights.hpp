@@ -1,4 +1,5 @@
 #pragma once
+#include "kadan/cleanup_error.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/resources.hpp"
 #include <algorithm>
@@ -71,8 +72,7 @@ public:
             operations_.synchronize_weights();stop(cancel);return entry->second.pointer;
         }catch(...){
             const auto error=std::current_exception();
-            try{drop(entry);}catch(...){quarantined_=true;throw;}
-            std::rethrow_exception(error);
+            rethrow_after_cleanup(error,[&]{try{drop(entry);}catch(...){quarantined_=true;throw;}});
         }
     }
     void release(){

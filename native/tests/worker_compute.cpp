@@ -22,6 +22,32 @@ int main(){
  check(projection_columns(3072,96768,1,false,4)%4==0);
  check(projection_columns(24,24,4,false,1)==24);
  fails([]{projection_columns(2147483647,4,4,true,1);});
+ // Pure workspace arithmetic: independently include every aligned CUDA slice.
+ const auto aligned=[](std::initializer_list<Bytes> sizes){Bytes n=0;for(auto size:sizes){n=(n+255)/256*256;n+=size;}return (n+255)/256*256;};
+ for(Bytes limit:{16ULL*1024*1024,64ULL*1024*1024,2ULL*1024*1024*1024}){
+  for(std::size_t width:{1U,4U})for(bool precise:{false,true})for(std::size_t in:{24U,3072U,4096U,16384U}){
+   const auto plan=projection_plan(in,96768,width,precise,width==1?4:1,limit);
+   const Bytes t=plan.rows,o=plan.columns,w=in*o;
+   const auto bytes=aligned({w*width,o*4,o*4,t*in*4,t*in*4,t*in,t*4,t*o*4,t*o*4,8*1024*1024,precise?w*8:0,precise?t*in*8:0,precise?t*o*8:0});
+   check(bytes<=plan.bytes&&plan.bytes<=limit&&o>0&&t>0&&t<=256&&(width!=1||o%4==0));
+  }
+  for(std::size_t width:{4U,8U})for(std::size_t n:{1U,129U,18432U})for(std::size_t keys:{3U,4097U,18432U}){
+   const auto plan=attention_plan(n,keys,2048,width,limit);const Bytes q=plan.queries,k=plan.keys;
+   const Bytes qs=(plan.full_heads?n:q)*2048,ks=(plan.full_heads?keys:k)*2048;
+   check(aligned({qs*width,ks*width,ks*width,q*2048*width,q*k*width,q*width,q*width,8*1024*1024})<=plan.bytes&&plan.bytes<=limit);
+   std::size_t queries_seen=0,keys_seen=0;
+   for(std::size_t start=0;start<n;start+=q)queries_seen+=std::min<std::size_t>(q,n-start);
+   for(std::size_t start=0;start<keys;start+=k)keys_seen+=std::min<std::size_t>(k,keys-start);
+   check(queries_seen==n&&keys_seen==keys);
+  }
+ }
+ const auto normal=projection_plan(4096,4096,4,false,1,2ULL*1024*1024*1024);
+ check(normal.rows==256&&normal.columns==4096);
+ const auto small=projection_plan(4096,4096,4,false,1,16ULL*1024*1024);check(small.bytes<=16ULL*1024*1024&&small.columns<4096);
+ check(attention_plan(18432,18432,1024,4,2ULL*1024*1024*1024).full_heads);
+ check(!attention_plan(18432,18432,1024,4,16ULL*1024*1024).full_heads);
+ fails([]{attention_plan(1,1,1,4,8*1024*1024);});
+ fails([]{projection_plan(4096,4096,4,false,1,8*1024*1024);});
  unsigned attempts=0,pauses=0;bool cancellation=false;
  wait_for_device_allocation([&]{return cancellation;},[&]{return ++attempts==3;},[&]{++pauses;});check(attempts==3&&pauses==2);
  attempts=0;pauses=0;bool interrupted=false;
