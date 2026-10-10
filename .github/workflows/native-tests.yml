@@ -18,6 +18,6 @@ jobs:
       - name: Configure CPU unit targets
         run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
       - name: Build only unit targets
-        run: cmake --build /tmp/kadan-native --target generation-queue-tests weight-backing-tests resource-tests quantization-tests checkpoint-tests cuda-plan-tests fp8-plan-tests placement-tests sequence-state-tests h3-profile-tests worker-compute-tests --parallel 2
+        run: cmake --build /tmp/kadan-native --target generation-queue-tests weight-backing-tests resource-tests quantization-tests checkpoint-tests cuda-plan-tests fp8-plan-tests placement-tests sequence-state-tests h3-profile-tests worker-compute-tests device-workspace-tests --parallel 2
       - name: Run unit tests
         run: ctest --test-dir /tmp/kadan-native --output-on-failure

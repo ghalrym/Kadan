@@ -52,7 +52,7 @@ int main(int argc,char** argv){
     // into the SAME ledger before allocation. The FIFO ticket holds only model
     // identity, not a second overlapping copy of that execution reservation.
     const auto id=queue.submit({"h3/streamed",kadan::Workload::video,kadan::video::h3_host(*resources,0)});std::exception_ptr failure;
-    while(queue.pending()){auto action=queue.poll();if(action.kind==Queue::Kind::load){queue.loaded(id,true);}else if(action.kind==Queue::Kind::execute){try{model.execute(paths,request,cancelled);}catch(...){failure=std::current_exception();}if(cancelled.load())queue.cancel(id);queue.completed(id,false);}else if(action.kind==Queue::Kind::cleanup){queue.cleaned(action.reservation,true);}else throw std::runtime_error("h3_queue_stalled");}
+    while(queue.pending()){auto action=queue.poll();if(action.kind==Queue::Kind::load){queue.loaded(id,true);}else if(action.kind==Queue::Kind::execute){try{model.execute(paths,request,cancelled);}catch(...){failure=std::current_exception();}if(execution.compute)try{execution.compute->release_scratch();}catch(...){failure=std::current_exception();}if(cancelled.load())queue.cancel(id);queue.completed(id,false);}else if(action.kind==Queue::Kind::cleanup){queue.cleaned(action.reservation,true);}else throw std::runtime_error("h3_queue_stalled");}
     if(failure)std::rethrow_exception(failure);
     const auto used=resources->snapshot().used;std::vector<kadan::Bytes> devices(used.begin()+1,used.end());
     return Json{{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",!paths.audio_vae.empty()},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();

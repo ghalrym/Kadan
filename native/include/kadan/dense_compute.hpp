@@ -18,6 +18,8 @@ inline bool projection_split_columns(std::size_t rows,std::size_t devices){retur
 class DenseCompute {
 public:
  virtual ~DenseCompute() = default;
+ // Request boundary: release reusable scratch before reporting completion.
+ virtual void release_scratch() {}
  // Dedicated worker only: synchronize and destroy its process-local contexts.
  virtual void release_devices() {}
  // Return false to retain the model's CPU attention. Q/K/V use [token,head,dim].

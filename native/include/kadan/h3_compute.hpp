@@ -22,8 +22,9 @@ public:
         std::size_t group,std::span<float> output,const std::atomic_bool& cancel)=0;
 };
 // Optional CUDA implementation, built only with KADAN_ENABLE_CUDA. The caller
-// owns CUDA context residency in its process/queue budget. This object does not
-// reset devices or evict another executor. Empty/duplicate/unbudgeted devices
-// are rejected. Work is split by activation rows; the checkpoint is unchanged.
+// owns CUDA context residency in its process/queue budget. Only explicit
+// release_devices resets its dedicated worker contexts after scratch cleanup;
+// callers must not share those contexts with another executor. Empty, duplicate
+// and unbudgeted devices are rejected. Work is split by activation rows; the checkpoint is unchanged.
 std::shared_ptr<H3Compute> h3_cuda_compute(std::shared_ptr<Resources>,std::vector<int> devices);
 }

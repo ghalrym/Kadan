@@ -5,7 +5,9 @@ using namespace kadan;
 void check(bool b){if(!b)throw std::runtime_error("compute_plan_test");}
 template<class F>void fails(F f){try{f();}catch(const std::invalid_argument&){return;}throw std::runtime_error("expected_rejection");}
 struct FakeContext final:DenseCompute {
- bool fail=false;std::size_t releases=0;
+ bool fail=false,scratch_fail=false;std::size_t releases=0,scratch_releases=0;
+ std::shared_ptr<Resources> resources;Handle scratch=0;
+ void release_scratch()override{++scratch_releases;if(scratch_fail)throw std::runtime_error("scratch_cleanup_unconfirmed");if(scratch){resources->released(scratch);scratch=0;}}
  void dense(std::span<const float>,std::span<const float>,std::span<const float>,std::size_t,std::size_t,std::span<float>,const std::atomic_bool&,bool)override{}
  void release_devices()override{++releases;if(fail)throw std::runtime_error("cleanup_unconfirmed");}
 };
@@ -26,6 +28,8 @@ int main(){
  fails([&]{compute_plan(1024,"0,1",budget,false);});fails([&]{compute_plan(0,"","",true);});
  WorkerCompute owned(cpu,Workload::image);auto h=owned.resources->reserve(Workload::image,host_footprint(*owned.resources,1024));fails([&]{compute_plan(1024,"1","",true);});owned.resources->released(h);owned.idle();check(owned.resources->snapshot().used==Footprint{0});
  WorkerCompute parked(ComputePlan{{1024,1024},{}},Workload::tts);auto context=std::make_shared<FakeContext>();parked.compute=context;parked.context={0,512};parked.resume();check(parked.resources->snapshot().used==Footprint({0,512}));
+ context->resources=parked.resources;context->scratch=parked.resources->reserve(Workload::tts,{0,128});
+ context->scratch_fail=true;bool scratch_failed=false;try{parked.park();}catch(const std::runtime_error&){scratch_failed=true;}check(scratch_failed&&context->releases==0&&parked.context_handle&&parked.resources->snapshot().used[1]==640);context->scratch_fail=false;parked.idle();check(!context->scratch&&parked.resources->snapshot().used[1]==512);
  context->fail=true;bool failed=false;try{parked.park();}catch(const std::runtime_error&){failed=true;}check(failed&&parked.context_handle&&parked.resources->snapshot().used[1]==512);
  context->fail=false;parked.park();check(!parked.context_handle&&parked.resources->snapshot().used[1]==0);parked.resume();
  auto active=parked.resources->reserve(Workload::tts,{0,128});const auto calls=context->releases;failed=false;try{parked.park();}catch(const std::runtime_error&){failed=true;}check(failed&&context->releases==calls&&parked.resources->snapshot().used[1]==640);parked.resources->released(active);parked.park();check(parked.resources->snapshot().residents==0);
