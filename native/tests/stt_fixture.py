@@ -18,8 +18,17 @@ def main(binary):
                 assert result['mel']==[-1.5]*(bins*(n//160))
                 assert result['resident_bytes_at_publication']==(bins*201+n+bins*(n//160))*4
                 assert result['resident_bytes']==0 and not result['full_transcription'] and not result['gpu_execution']
-            for raw in (bytes(200*4),bytes(16001*4),bytes(805),struct.pack('<f',float('nan'))+bytes(200*4)):
+            for raw in (bytes(200*4),bytes(480001*4),bytes(805),struct.pack('<f',float('nan'))+bytes(200*4)):
                 pcm.write_bytes(raw)
                 assert subprocess.run([binary,str(bins),str(bank),str(pcm)],capture_output=True).returncode!=0
+        # Empty input is a valid zero-padded Whisper window, but not a raw STFT.
+        pcm.write_bytes(b'')
+        result=json.loads(subprocess.check_output([binary,'128',str(bank),str(pcm),'--window']))
+        assert result['frames']==3000 and result['mel']==[-1.5]*(128*3000)
+        assert result['resident_bytes_at_publication']==(128*201+128*3000)*4
+        assert result['resident_bytes']==0 and not result['full_transcription'] and not result['gpu_execution']
+        assert subprocess.run([binary,'128',str(bank),str(pcm),'--invalid'],capture_output=True).returncode!=0
+        pcm.write_bytes(bytes(480001*4))
+        assert subprocess.run([binary,'128',str(bank),str(pcm),'--window'],capture_output=True).returncode!=0
         bank.write_bytes(b'');assert subprocess.run([binary,'80',str(bank),str(pcm)],capture_output=True).returncode!=0
 if __name__=='__main__':main(sys.argv[1])
