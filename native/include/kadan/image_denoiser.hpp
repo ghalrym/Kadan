@@ -13,7 +13,7 @@ public:
     ~Denoiser();
     Denoiser(const Denoiser&)=delete;
     Denoiser& operator=(const Denoiser&)=delete;
-    void load(const char* root,std::span<const std::string> shards,DenoiserConfig,const std::atomic_bool&);
+    void load(const char* root,std::span<const std::string> shards,DenoiserConfig,const std::atomic_bool&,const Hook& hook={});
     void unload();
     // F32 latent [height*width,channels], condition [text,context], velocity of
     // latent shape. All caller buffers are caller-admitted; timestep in [0,1].

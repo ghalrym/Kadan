@@ -14,7 +14,7 @@ public:
     using Hook=std::function<void(std::size_t)>;
     explicit VaeDecoder(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~VaeDecoder();
-    void load(const char* root,const std::string& shard,VaeConfig,const std::atomic_bool&);
+    void load(const char* root,const std::string& shard,VaeConfig,const std::atomic_bool&,const Hook& hook={});
     void decode(std::span<const float>,std::size_t height,std::size_t width,std::span<float>,const std::atomic_bool&,const Hook& = {});
     void unload();
 private:
