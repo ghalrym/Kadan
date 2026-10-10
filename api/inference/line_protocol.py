@@ -43,11 +43,23 @@ class LineProtocolProcess:
             self.selector.register(stream, selectors.EVENT_READ, kind)
         self.io_ready = True
 
+    def _failure(self, message, error_type=LineProtocolError):
+        # Read only already-available stderr, never wait for a failing child.
+        if self.process is not None and self.process.stderr is not None:
+            try:
+                self.diagnostics.extend(os.read(self.process.stderr.fileno(), 8192))
+                del self.diagnostics[:-8192]
+            except (BlockingIOError, ValueError):
+                pass
+        error = error_type(message)
+        error.diagnostics = bytes(self.diagnostics)
+        return error
+
     def _pump(self, deadline, cancel):
         check_cancel(cancel)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError('Inference subprocess deadline expired')
+            raise self._failure('Inference subprocess deadline expired', TimeoutError)
         for key, _ in self.selector.select(min(.05, remaining)):
             data = os.read(key.fileobj.fileno(), 4096)
             if not data:
@@ -58,41 +70,34 @@ class LineProtocolProcess:
             else:
                 self.buffer.extend(data)
                 if len(self.buffer) > MAX_FRAME:
-                    raise LineProtocolError('Inference subprocess frame too large')
+                    raise self._failure('Inference subprocess frame too large')
 
     def read(self, timeout, cancel=None):
         deadline = time.monotonic() + timeout
         while b'\n' not in self.buffer:
             if not self.selector.get_map():
-                raise LineProtocolError('Inference subprocess exited without a complete reply')
+                raise self._failure('Inference subprocess exited without a complete reply')
             self._pump(deadline, cancel)
         line, _, rest = self.buffer.partition(b'\n')
         self.buffer = bytearray(rest)
         try:
             text = line.decode('ascii')
         except UnicodeDecodeError as error:
-            raise LineProtocolError('Non-ASCII inference subprocess frame') from error
+            raise self._failure('Non-ASCII inference subprocess frame') from error
         if text == 'error' or text.startswith('error '):
-            # The worker writes diagnostics before its terminal error frame. Drain
-            # any bytes already available if stdout was selected first.
-            try:
-                self.diagnostics.extend(os.read(self.process.stderr.fileno(), 8192))
-                del self.diagnostics[:-8192]
-            except BlockingIOError:
-                pass
             safe_codes = {f'image_{stage}_failed' for stage in
                           ('startup', 'load', 'generate', 'park', 'resume', 'cleanup')}
             code = text.partition(' ')[2]
             message = 'Inference subprocess failed'
             if code in safe_codes:
                 message += ': ' + code
-            raise LineProtocolError(message, diagnostics=bytes(self.diagnostics))
+            raise self._failure(message)
         return text
 
     def exchange(self, command, timeout, cancel=None):
         check_cancel(cancel)
         if self.buffer or self.process.poll() is not None:
-            raise LineProtocolError('Inference subprocess unavailable or sent unsolicited data')
+            raise self._failure('Inference subprocess unavailable or sent unsolicited data')
         data = (command + '\n').encode('ascii')
         if len(data) > 128:
             raise LineProtocolError('Protocol command too large')
@@ -105,9 +110,9 @@ class LineProtocolProcess:
         while self.process.poll() is None or self.selector.get_map():
             self._pump(deadline, None)
             if self.buffer:
-                raise LineProtocolError('Unexpected trailing worker output')
+                raise self._failure('Unexpected trailing worker output')
         if self.process.returncode != 0:
-            raise LineProtocolError('Inference subprocess exit was not successful')
+            raise self._failure('Inference subprocess exit was not successful')
 
     def stop(self):
         """Return only after owned child exit; on wait failure retain parent accounting.

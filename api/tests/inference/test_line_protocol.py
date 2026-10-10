@@ -32,3 +32,24 @@ class ErrorTests(unittest.TestCase):
 
     def test_untrusted_error_payload_is_not_public(self):
         self.assertEqual(str(self.failure(b'error private-path-and-token\n')), 'Inference subprocess failed')
+
+    def test_abrupt_failures_retain_private_stderr(self):
+        cases = [
+            ('pass', False, LineProtocolError, 'complete reply'),
+            ('import time; time.sleep(3)', False, TimeoutError, 'deadline'),
+            ('os.write(1, b"\\xff\\n")', False, LineProtocolError, 'Non-ASCII'),
+            ('os.write(1, b"x" * 5000)', False, LineProtocolError, 'frame too large'),
+            ('raise SystemExit(1)', True, LineProtocolError, 'exit was not successful'),
+        ]
+        for ending, finish, kind, message in cases:
+            with self.subTest(ending=ending):
+                child = LineProtocolProcess()
+                try:
+                    child.start([sys.executable, '-c',
+                        'import os; os.write(2, b"text_layer 30\\nprivate-path-and-token\\n"); ' + ending])
+                    with self.assertRaisesRegex(kind, message) as raised:
+                        (child.finish if finish else child.read)(1)
+                    self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
+                    self.assertNotIn('private-path-and-token', str(raised.exception))
+                finally:
+                    child.stop()

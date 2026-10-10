@@ -3,6 +3,7 @@ from contextlib import ExitStack
 import base64
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -18,6 +19,8 @@ from api.inference.native_compute import NativeCompute, native_compute
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceCancelled
 from api.services.model_downloads import model_manager
+
+log = logging.getLogger(__name__)
 
 MODEL = 'qwen-image-2.1'
 REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
@@ -231,7 +234,15 @@ class NativeImageRuntime:
                         restore(cancel)
                     check_cancel(cancel)
                     return self.session.generate(request, cancel) if request is not None else None
-            except BaseException:
+            except BaseException as error:
+                if isinstance(error, (LineProtocolError, TimeoutError)):
+                    # Operational logs are private; only the safe protocol message
+                    # crosses the API boundary. Capture before unloading the child.
+                    child = getattr(self.session, 'child', None)
+                    diagnostics = (getattr(error, 'diagnostics', b'') or
+                                   getattr(child, 'diagnostics', b''))[-8192:]
+                    log.error('Image worker failure: %s; worker diagnostics: %s', error,
+                              diagnostics.decode('utf-8', errors='replace'))
                 self._unload()
                 raise
         finally:

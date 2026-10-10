@@ -1,6 +1,7 @@
 """Native image adapter sharing the existing request FIFO and memory owner."""
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.errors import InferenceFailure
+from api.inference.line_protocol import LineProtocolError
 from api.inference.image.native_worker import MODEL, NativeImageRuntime, prepare, validate
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.services.chat_runtime import chat_runtime
@@ -47,6 +48,10 @@ class ImageRequests:
         except (ResourceExhausted, ResourceBusy, ResourceCancelled) as error:
             code = 499 if isinstance(error, ResourceCancelled) else 409 if isinstance(error, ResourceBusy) else 503
             raise InferenceFailure(str(error), code) from error
+        except TimeoutError as error:
+            raise InferenceFailure('Native image worker timed out.') from error
+        except LineProtocolError as error:
+            raise InferenceFailure(str(error)) from error
         except InferenceFailure:
             raise
         except Exception as error:
