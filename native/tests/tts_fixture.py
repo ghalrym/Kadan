@@ -38,4 +38,15 @@ if __name__=='__main__':
         assert max(abs(a-b) for a,b in zip(result['projected'],expected))<1e-7
         assert result['resident_bytes_at_publication']==2*2048*4
         assert result['resident_bytes']==0 and not result['full_tts_generation']
+        rows=values+[x*.5 for x in values]+[0.0]*2048
+        (root/'sequence').write_bytes(struct.pack(f'<{len(rows)}f',*rows))
+        result=json.loads(subprocess.check_output([sys.argv[2],str(root),'weights.safetensors',str(root/'sequence'),'--sequence']))
+        expected=[.5*((.25*x+.125)/(1+math.exp(-(.25*x+.125))))-.0625 for x in rows]
+        assert len(result['projected'])==len(rows) and result['tokens']==3
+        assert max(abs(a-b) for a,b in zip(result['projected'],expected))<1e-7
+        assert result['resident_bytes_at_publication']==2*len(rows)*4
+        assert result['resident_bytes']==0 and not result['full_tts_generation'] and not result['gpu_execution']
+        for path,mode,error in [('sequence',[],'tts_input_size'),('input',['--bogus'],'tts_mode')]:
+            failed=subprocess.run([sys.argv[2],str(root),'weights.safetensors',str(root/path),*mode],capture_output=True,text=True)
+            assert failed.returncode==1 and error in failed.stderr
         print('PASS: bounded TTS projection closed-form oracle and cleanup')
