@@ -1,3 +1,4 @@
+#include "kadan/worker_compute.hpp"
 #include "kadan/tts_generator.hpp"
 #include "kadan/tts_audio.hpp"
 #include "kadan/tts_tokenizer.hpp"
@@ -16,7 +17,7 @@ constexpr kadan::Bytes budget=24ULL*1024*1024*1024;
 std::atomic_bool cancelled{false};
 void signal_cancel(int){cancelled.store(true);}
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
-struct Admission{kadan::Resources& r;kadan::Handle h;Admission(kadan::Resources& resources,kadan::Bytes n):r(resources),h(r.reserve(kadan::Workload::tts,{n})){}~Admission(){r.released(h);}};
+struct Admission{kadan::Resources& r;kadan::Handle h;Admission(kadan::Resources& resources,kadan::Bytes n):r(resources),h(r.reserve(kadan::Workload::tts,kadan::host_footprint(r,n))){}~Admission(){r.released(h);}};
 std::string text_file(const std::string& path){std::ifstream file(path,std::ios::binary|std::ios::ate);check(bool(file)&&file.tellg()>0&&file.tellg()<=32000,"tts_input_size");std::string text(std::size_t(file.tellg()),'\0');file.seekg(0);file.read(text.data(),text.size());check(bool(file),"tts_input_read");return text;}
 void publish(const std::string& path,std::span<const float> samples){
     std::vector<std::uint8_t> bytes(44+samples.size()*2);auto word=[&](std::size_t at,std::uint32_t n,std::size_t width){for(std::size_t i=0;i<width;++i)bytes[at+i]=std::uint8_t(n>>(8*i));};
@@ -31,21 +32,21 @@ void publish(const std::string& path,std::span<const float> samples){
 int main(int argc,char** argv){
     static_assert(std::atomic_bool::is_always_lock_free);
     try{
-        if(argc==2&&std::string(argv[1])=="--capabilities"){std::cout<<"tts 1 cpu English Ryan 300 "<<budget<<'\n';return 0;}
+        if(argc==2&&std::string(argv[1])=="--capabilities"){std::cout<<"tts 1 "<<(kadan::worker_compute_plan(budget,"KADAN_TTS_DEVICES").devices.empty()?"cpu":"cuda")<<" English Ryan 300 "<<budget<<'\n';return 0;}
         check(argc==4,"usage: kadan-tts-worker MODEL_ROOT TOKENIZER_JSON WORKSPACE");
         std::signal(SIGTERM,signal_cancel);std::signal(SIGINT,signal_cancel);
-        auto r=std::make_shared<kadan::Resources>(kadan::Footprint{budget});
+        kadan::WorkerCompute execution(kadan::worker_compute_plan(budget,"KADAN_TTS_DEVICES"),kadan::Workload::tts);auto r=execution.resources;
         {
             Admission process_workspace(*r,256*1024*1024);
             kadan::tts::TextTokenizer tokenizer(r);tokenizer.load(argv[2],cancelled);std::cerr<<"tokenizer_loaded\n";
-            kadan::tts::CodeGenerator generator(r);generator.load(argv[1],"model.safetensors",{},cancelled);std::cerr<<"talker_loaded\n";
-            kadan::tts::AudioDecoder decoder(r);const auto audio_root=std::string(argv[1])+"/speech_tokenizer";decoder.load(audio_root.c_str(),"model.safetensors",{},cancelled);std::cerr<<"decoder_loaded\n";
+            kadan::tts::CodeGenerator generator(r,execution.compute);generator.load(argv[1],"model.safetensors",{},cancelled);std::cerr<<"talker_loaded\n";
+            kadan::tts::AudioDecoder decoder(r,execution.compute);const auto audio_root=std::string(argv[1])+"/speech_tokenizer";decoder.load(audio_root.c_str(),"model.safetensors",{},cancelled);std::cerr<<"decoder_loaded\n";
             const auto baseline=r->snapshot().used[0];std::cout<<"ready 1 "<<baseline<<'\n'<<std::flush;
             while(!cancelled.load()){
                 std::string command;char c;while(std::cin.get(c)&&c!='\n'){check(command.size()<32,"tts_command_bound");command+=c;}
                 if(!std::cin&&command.empty())break;
                 if(command=="quit")break;
-                check(command=="speak","tts_command");std::size_t frames=0;
+                if(command=="park"){execution.park();std::cout<<"parked\n"<<std::flush;continue;}if(command=="resume"){execution.resume();std::cout<<"resumed\n"<<std::flush;continue;}check(command=="speak","tts_command");execution.resume();std::size_t frames=0;
                 {
                     Admission admitted(*r,32000+2048*4+300*16*4+300*1920*6+44);
                     auto text=text_file(std::string(argv[3])+"/text.txt");std::array<std::uint32_t,2048> tokens;auto count=tokenizer.encode(text,tokens,cancelled);std::vector<std::uint32_t> codes(300*16);
@@ -54,9 +55,9 @@ int main(int argc,char** argv){
                     decoder.decode(std::span(codes).first(frames*16),audio,cancelled,[](const char* phase,std::size_t i){std::cerr<<"audio_"<<phase<<' '<<i<<'\n';});
                     publish(std::string(argv[3])+"/audio.wav",audio);
                 }
-                check(r->snapshot().used[0]==baseline,"tts_scratch_leak");std::cout<<"done "<<44+frames*1920*2<<' '<<frames<<' '<<baseline<<'\n'<<std::flush;
+                check(r->snapshot().used[0]==baseline,"tts_scratch_leak");execution.idle();std::cout<<"done "<<44+frames*1920*2<<' '<<frames<<' '<<baseline<<'\n'<<std::flush;
             }
         }
-        check(r->snapshot().used[0]==0,"tts_cleanup_leak");std::cout<<"closed 0\n"<<std::flush;
+        check(r->snapshot().used[0]==0,"tts_cleanup_leak");execution.park();execution.idle();std::cout<<"closed 0\n"<<std::flush;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';std::cout<<"error\n"<<std::flush;return 1;}
 }

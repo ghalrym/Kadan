@@ -27,10 +27,12 @@ std::vector<Spec> layout(DenoiserConfig d){std::vector<Spec> out;auto add=[&](st
 std::size_t locate(const std::vector<std::unique_ptr<checkpoint::Shard>>& shards,const std::string& name){std::size_t found=shards.size();for(std::size_t i=0;i<shards.size();++i){try{shards[i]->tensor(name);}catch(const std::invalid_argument& e){if(std::string(e.what())=="missing_tensor")continue;throw;}need(found==shards.size(),"image_duplicate_tensor");found=i;}need(found<shards.size(),"image_missing_tensor");return found;}
 }
 struct Denoiser::Impl{
+ std::shared_ptr<DenseCompute> compute;
  Lease metadata;DenoiserConfig d;std::vector<Spec> specs;std::map<std::string,std::size_t,std::less<>> names;std::unique_ptr<Buffer> weights;std::vector<std::unique_ptr<TransformerBlock>> blocks;
- Impl(Resources& r,DenoiserConfig config):metadata(r,16*1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
+ Impl(Resources& r,DenoiserConfig config,std::shared_ptr<DenseCompute> c):compute(std::move(c)),metadata(r,16*1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
  std::span<const float> weight(const std::string& n){const auto& s=specs.at(names.at(n));return {weights->data.get()+s.offset,s.count};}
  void linear(const std::string& name,std::span<const float> x,std::span<float> y,std::size_t rows,std::size_t in,std::size_t out,const std::atomic_bool& cancel){auto w=weight(name+".weight");need(w.size()==in*out&&x.size()==rows*in&&y.size()==rows*out,"image_projection_shape");
+  if(compute){compute->dense(w,{},x,in,out,y,cancel);finite(y);return;}
 #ifdef KADAN_IMAGE_BLAS
   openblas_set_num_threads(1);
   for(std::size_t at=0;at<rows;at+=16){stop(cancel);auto count=std::min(std::size_t(16),rows-at);cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,int(count),int(out),int(in),1,x.data()+at*in,int(in),w.data(),int(in),0,y.data()+at*out,int(out));}
@@ -40,14 +42,14 @@ struct Denoiser::Impl{
   finite(y);}
 
 };
-Denoiser::Denoiser(std::shared_ptr<Resources> r):resources_(std::move(r)){need(bool(resources_),"image_resources");}
+Denoiser::Denoiser(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 Denoiser::~Denoiser(){unload();}
-void Denoiser::load(const char* root,std::span<const std::string> files,DenoiserConfig d,const std::atomic_bool& cancel){Busy active(busy_);stop(cancel);need(!model_,"image_load_state");need(d.layers>0&&d.layers<=32&&d.context>0&&d.context<=4096&&d.channels>0&&d.channels<=64&&d.block.state>0&&d.block.state<=4096&&files.size()>0&&files.size()<=4,"image_denoiser_config");need(std::set<std::string>(files.begin(),files.end()).size()==files.size(),"image_duplicate_shard");auto m=std::make_unique<Impl>(*resources_,d);Lease parser(*resources_,files.size()*16*1024*1024);std::vector<std::unique_ptr<checkpoint::Shard>> shards;
+void Denoiser::load(const char* root,std::span<const std::string> files,DenoiserConfig d,const std::atomic_bool& cancel){Busy active(busy_);stop(cancel);need(!model_,"image_load_state");need(d.layers>0&&d.layers<=32&&d.context>0&&d.context<=4096&&d.channels>0&&d.channels<=64&&d.block.state>0&&d.block.state<=4096&&files.size()>0&&files.size()<=4,"image_denoiser_config");need(std::set<std::string>(files.begin(),files.end()).size()==files.size(),"image_duplicate_shard");auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,files.size()*16*1024*1024);std::vector<std::unique_ptr<checkpoint::Shard>> shards;
  for(const auto& file:files)shards.push_back(std::make_unique<checkpoint::Shard>(root,file,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{2*1024*1024,4096,4096}));
  for(auto& s:m->specs){s.shard=locate(shards,s.name);auto t=shards[s.shard]->tensor(s.name);need((t.dtype==checkpoint::Dtype::bf16||t.dtype==checkpoint::Dtype::fp32)&&t.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),t.shape.begin()),"image_tensor_layout");}
  const auto& last=m->specs.back();m->weights=std::make_unique<Buffer>(*resources_,last.offset+last.count);Lease staging(*resources_,4096);std::array<std::uint8_t,4096> bytes;
  for(const auto& s:m->specs){auto& shard=*shards[s.shard];auto type=shard.tensor(s.name).dtype;const std::size_t width=type==checkpoint::Dtype::bf16?2:4;for(std::size_t at=0;at<s.count;){stop(cancel);auto count=std::min(bytes.size()/width,s.count-at);shard.read_tensor(s.name,at*width,{bytes.data(),count*width});for(std::size_t i=0;i<count;++i){std::uint32_t bits=0;for(std::size_t j=0;j<width;++j)bits|=std::uint32_t(bytes[i*width+j])<<(8*j);float v=std::bit_cast<float>(width==2?bits<<16:bits);need(std::isfinite(v),"image_nonfinite_weight");m->weights->data[s.offset+at+i]=v;}at+=count;}}
- for(std::size_t i=0;i<d.layers;++i){stop(cancel);auto block=std::make_unique<TransformerBlock>(resources_);block->load(root,files,i,d.block,cancel);m->blocks.push_back(std::move(block));}
+ for(std::size_t i=0;i<d.layers;++i){stop(cancel);auto block=std::make_unique<TransformerBlock>(resources_,compute_);block->load(root,files,i,d.block,cancel);m->blocks.push_back(std::move(block));}
  for(const auto& shard:shards){shard->check_unchanged();}
  stop(cancel);resources_->loaded(m->weights->lease.h);model_=std::move(m);
 }

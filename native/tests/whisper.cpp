@@ -1,3 +1,4 @@
+#include "dense_reference.hpp"
 #include "kadan/whisper.hpp"
 #include <array>
 #include <iostream>
@@ -7,7 +8,7 @@ using namespace kadan;
 void check(bool b){if(!b)throw std::runtime_error("test_failed");}
 template<class F>void rejects(F f,const char* text){try{f();}catch(const std::exception& e){if(e.what()==std::string(text))return;throw;}throw std::runtime_error("expected_failure");}
 int main(int argc,char** argv){
-    check(argc==2);auto r=std::make_shared<Resources>(Footprint{64*1024*1024,0});std::atomic_bool cancel{false};stt::Whisper model(r);
+    check(argc==2);auto r=std::make_shared<Resources>(Footprint{64*1024*1024,0});std::atomic_bool cancel{false};auto compute=test_dense();stt::Whisper model(r,compute);
     stt::WhisperDimensions d{4,5,8,2,2,17,7,8,2,2};std::vector<float> mel(40,.125f),audio(40),logits(17);std::array<std::uint32_t,2> prompt{1,2};
     rejects([&]{model.encode(mel,audio,cancel);},"whisper_not_loaded");
     cancel=true;rejects([&]{model.load(argv[1],"weights.safetensors",d,cancel);},"whisper_cancelled");cancel=false;
@@ -35,6 +36,7 @@ int main(int argc,char** argv){
     rejects([&]{model.decode({},audio,logits,cancel);},"whisper_input_shape");
     prompt[1]=17;rejects([&]{model.decode(prompt,audio,logits,cancel);},"whisper_token_range");prompt[1]=2;
     mel[0]=std::numeric_limits<float>::infinity();rejects([&]{model.encode(mel,audio,cancel);},"whisper_nonfinite");mel[0]=0;
+    if(compute){compute->fail=true;rejects([&]{model.encode(mel,audio,cancel);},"test_compute_failure");compute->fail=false;check(r->snapshot().used==resident);}
     auto pressure=r->reserve(Workload::speech,{r->snapshot().capacity[0]-resident[0],0});
     rejects([&]{model.encode(mel,audio,cancel);},"exhausted");rejects([&]{model.decode(prompt,audio,logits,cancel);},"exhausted");r->released(pressure);
     for(const auto operation:{0,1,2}){
@@ -44,5 +46,5 @@ int main(int argc,char** argv){
     rejects([&]{model.encode(mel,audio,cancel,[](const char*,std::size_t){throw std::runtime_error("hook_failure");});},"hook_failure");check(r->snapshot().used==resident);
     model.unload();model.unload();check(r->snapshot().residents==0);
     {stt::Whisper scoped(r);scoped.load(argv[1],"half.safetensors",d,cancel);scoped.encode(mel,audio,cancel);scoped.decode(prompt,audio,logits,cancel);}
-    check(r->snapshot().residents==0);std::cout<<"Whisper full network lifecycle passed\n";
+    check(r->snapshot().residents==0);check_dense(compute);std::cout<<"Whisper full network lifecycle passed\n";
 }

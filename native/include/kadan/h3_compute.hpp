@@ -1,5 +1,5 @@
 #pragma once
-#include "kadan/resources.hpp"
+#include "kadan/dense_compute.hpp"
 #include <atomic>
 #include <memory>
 #include <span>
@@ -8,7 +8,7 @@ namespace kadan::video {
 // Synchronous host-span boundary. Caller admits all host tensors through return.
 // Implementations admit their own staging/device allocations before allocation.
 // Each method finishes all devices before returning (including cancellation).
-class H3Compute {
+class H3Compute : public DenseCompute {
 public:
     virtual ~H3Compute() = default;
     virtual void attention(std::span<const float> query,std::span<const float> key,

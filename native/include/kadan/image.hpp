@@ -1,5 +1,5 @@
 #pragma once
-#include "kadan/resources.hpp"
+#include "kadan/dense_compute.hpp"
 #include <array>
 #include <atomic>
 #include <functional>
@@ -14,7 +14,7 @@ struct BlockConfig {std::size_t state=4096,heads=32,head_dim=128,intermediate=12
 class TransformerBlock {
 public:
     using Hook=std::function<void(const char*)>;
-    explicit TransformerBlock(std::shared_ptr<Resources>);
+    explicit TransformerBlock(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~TransformerBlock();
     TransformerBlock(const TransformerBlock&)=delete;
     TransformerBlock& operator=(const TransformerBlock&)=delete;
@@ -27,6 +27,6 @@ public:
         std::size_t text,std::size_t height,std::size_t width,std::span<float> output,
         const std::atomic_bool&,const Hook& hook={});
 private:
-    struct Impl;std::shared_ptr<Resources> resources_;std::unique_ptr<Impl> model_;bool busy_=false;
+    struct Impl;std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;std::unique_ptr<Impl> model_;bool busy_=false;
 };
 }

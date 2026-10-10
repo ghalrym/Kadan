@@ -1,5 +1,5 @@
 #pragma once
-#include "kadan/resources.hpp"
+#include "kadan/dense_compute.hpp"
 #include <array>
 #include <atomic>
 #include <functional>
@@ -25,7 +25,7 @@ struct GeneratedCodes{std::size_t frames;bool stopped;};
 class CodeGenerator{
 public:
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit CodeGenerator(std::shared_ptr<Resources> resources);
+    explicit CodeGenerator(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~CodeGenerator();
     CodeGenerator(const CodeGenerator&)=delete;
     CodeGenerator& operator=(const CodeGenerator&)=delete;
@@ -38,7 +38,7 @@ public:
         std::size_t minimum_frames=2,float repetition_penalty=1.05f);
 private:
     struct Impl;
-    std::shared_ptr<Resources> resources_;
+    std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;
     std::unique_ptr<Impl> model_;
     bool busy_=false;
 };

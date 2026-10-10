@@ -31,10 +31,12 @@ std::vector<Spec> layout(BlockConfig d){std::vector<Spec> out;auto add=[&](std::
 void validate(BlockConfig d){need(d.state>0&&d.state<=4096&&d.heads>0&&d.heads<=32&&d.head_dim>0&&d.head_dim<=128&&d.state==d.heads*d.head_dim&&d.intermediate>0&&d.intermediate<=12288,"image_config");std::size_t sum=0;for(auto a:d.axes){need(a%2==0,"image_rope_config");sum+=a;}need(sum==d.head_dim,"image_rope_config");}
 }
 struct TransformerBlock::Impl{
+ std::shared_ptr<DenseCompute> compute;
  Lease metadata;BlockConfig d;std::vector<Spec> specs;std::map<std::string,std::size_t,std::less<>> names;std::unique_ptr<Buffer> weights;
- Impl(Resources& r,BlockConfig config):metadata(r,1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
+ Impl(Resources& r,BlockConfig config,std::shared_ptr<DenseCompute> c):compute(std::move(c)),metadata(r,1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
  std::span<const float> weight(const std::string& n){const auto& s=specs.at(names.at(n));return {weights->data.get()+s.offset,s.count};}
  void linear(const std::string& name,std::span<const float> x,std::span<float> y,std::size_t rows,std::size_t in,std::size_t out,const std::atomic_bool& cancel){auto w=weight(name+".weight");need(w.size()==in*out&&x.size()==rows*in&&y.size()==rows*out,"image_projection_shape");
+  if(compute){compute->dense(w,{},x,in,out,y,cancel);finite(y);return;}
 #ifdef KADAN_IMAGE_BLAS
   openblas_set_num_threads(1);
   for(std::size_t at=0;at<rows;at+=16){stop(cancel);auto count=std::min(std::size_t(16),rows-at);cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,int(count),int(out),int(in),1,x.data()+at*in,int(in),w.data(),int(in),0,y.data()+at*out,int(out));}
@@ -50,10 +52,10 @@ struct TransformerBlock::Impl{
   }
  }finite(x);}
 };
-TransformerBlock::TransformerBlock(std::shared_ptr<Resources> r):resources_(std::move(r)){need(bool(resources_),"image_resources");}
+TransformerBlock::TransformerBlock(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 TransformerBlock::~TransformerBlock(){unload();}
 void TransformerBlock::load(const char* root,const std::string& filename,std::size_t block,BlockConfig d,const std::atomic_bool& cancel){const std::array<std::string,1> files{filename};load(root,files,block,d,cancel);}
-void TransformerBlock::load(const char* root,std::span<const std::string> files,std::size_t block,BlockConfig d,const std::atomic_bool& cancel){Busy active(busy_);stop(cancel);need(!model_&&block<32,"image_load_state");validate(d);need(!files.empty()&&files.size()<=4&&std::set<std::string>(files.begin(),files.end()).size()==files.size(),"image_shards");auto m=std::make_unique<Impl>(*resources_,d);Lease parser(*resources_,files.size()*16*1024*1024);std::vector<std::unique_ptr<checkpoint::Shard>> shards;
+void TransformerBlock::load(const char* root,std::span<const std::string> files,std::size_t block,BlockConfig d,const std::atomic_bool& cancel){Busy active(busy_);stop(cancel);need(!model_&&block<32,"image_load_state");validate(d);need(!files.empty()&&files.size()<=4&&std::set<std::string>(files.begin(),files.end()).size()==files.size(),"image_shards");auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,files.size()*16*1024*1024);std::vector<std::unique_ptr<checkpoint::Shard>> shards;
  for(const auto& filename:files){shards.push_back(std::make_unique<checkpoint::Shard>(root,filename,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{2*1024*1024,4096,4096}));}
  auto prefix="transformer_blocks."+std::to_string(block)+".";
  for(auto& spec:m->specs){std::size_t found=shards.size();for(std::size_t i=0;i<shards.size();++i){try{shards[i]->tensor(prefix+spec.name);}catch(const std::invalid_argument& e){if(std::string(e.what())=="missing_tensor")continue;throw;}need(found==shards.size(),"image_duplicate_tensor");found=i;}need(found<shards.size(),"image_missing_tensor");spec.shard=found;auto t=shards[found]->tensor(prefix+spec.name);need((t.dtype==checkpoint::Dtype::bf16||t.dtype==checkpoint::Dtype::fp32)&&t.rank==spec.shape.size()&&std::equal(spec.shape.begin(),spec.shape.end(),t.shape.begin()),"image_tensor_layout");}
@@ -67,6 +69,8 @@ void TransformerBlock::execute(std::span<const float> input,std::span<const floa
  Buffer x(*resources_,input.size()),n(*resources_,input.size()),q(*resources_,input.size()),k(*resources_,input.size()),v(*resources_,input.size()),mix(*resources_,input.size()),delta(*resources_,input.size()),scores(*resources_,rows),gate(*resources_,rows*d.intermediate),up(*resources_,rows*d.intermediate);std::copy(input.begin(),input.end(),x.data.get());
  m.norm_mod(x.span(),modulation,n.span(),rows,text,0,cancel);for(auto item:{std::pair{"attn.to_q",q.span()},std::pair{"attn.to_k",k.span()},std::pair{"attn.to_v",v.span()}})m.linear(item.first,n.span(),item.second,rows,d.state,d.state,cancel);m.rotate(q.span(),"attn.norm_q",rows,text,height,width,cancel);m.rotate(k.span(),"attn.norm_k",rows,text,height,width,cancel);
  if(hook)hook("qkv");
+ stop(cancel);
+ if(!(m.compute&&m.compute->attend(q.span(),k.span(),v.span(),rows,rows,d.heads,d.heads,d.head_dim,text,0,0,mix.span(),cancel)))
  for(std::size_t t=0;t<rows;++t){const auto allowed=t<text?t+1:rows;for(std::size_t h=0;h<d.heads;++h){stop(cancel);float maximum=-INFINITY;for(std::size_t s=0;s<allowed;++s){float value=0;for(std::size_t c=0;c<d.head_dim;++c)value+=q.data[t*d.state+h*d.head_dim+c]*k.data[s*d.state+h*d.head_dim+c];scores.data[s]=value/std::sqrt(float(d.head_dim));maximum=std::max(maximum,scores.data[s]);}double sum=0;for(std::size_t s=0;s<allowed;++s){scores.data[s]=std::exp(scores.data[s]-maximum);sum+=scores.data[s];}need(sum>0&&std::isfinite(sum),"image_nonfinite");for(std::size_t c=0;c<d.head_dim;++c){float value=0;for(std::size_t s=0;s<allowed;++s)value+=float(scores.data[s]/sum)*v.data[s*d.state+h*d.head_dim+c];mix.data[t*d.state+h*d.head_dim+c]=value;}}}
  m.linear("attn.to_out.0",mix.span(),delta.span(),rows,d.state,d.state,cancel);for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<d.state;++c)x.data[t*d.state+c]+=std::tanh(modulation[(t<text?4*d.state:0)+d.state+c])*delta.data[t*d.state+c];if(hook)hook("attention");
  m.norm_mod(x.span(),modulation,n.span(),rows,text,1,cancel);m.linear("img_mlp.gate_layer",n.span(),gate.span(),rows,d.state,d.intermediate,cancel);m.linear("img_mlp.proj",n.span(),up.span(),rows,d.state,d.intermediate,cancel);for(std::size_t i=0;i<gate.n;++i)gate.data[i]=silu(gate.data[i])*up.data[i];m.linear("img_mlp.out",gate.span(),delta.span(),rows,d.intermediate,d.state,cancel);

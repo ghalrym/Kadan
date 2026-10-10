@@ -62,14 +62,16 @@ void validate(WhisperDimensions d){
 }
 }
 struct Whisper::Impl {
+ std::shared_ptr<DenseCompute> compute;
     Lease metadata;WhisperDimensions d;std::vector<Spec> layout;std::map<std::string,std::size_t,std::less<>> index;
     std::unique_ptr<Buffer> weights;
-    Impl(Resources& r,WhisperDimensions dims):metadata(r,8*1024*1024),d(dims),layout(specs(dims)){
+    Impl(Resources& r,WhisperDimensions dims,std::shared_ptr<DenseCompute> c):compute(std::move(c)),metadata(r,8*1024*1024),d(dims),layout(specs(dims)){
         for(std::size_t i=0;i<layout.size();++i)index.emplace(layout[i].name,i);
     }
     std::span<const float> w(const std::string& name)const{const auto& s=layout.at(index.at(name));return {weights->data.get()+s.offset,s.count};}
     void linear(const std::string& p,std::span<const float> x,std::span<float> y,std::size_t in,std::size_t out,const std::atomic_bool& cancel,bool bias=true){
         const auto matrix=w(p+".weight");const auto b=bias?w(p+".bias"):std::span<const float>{};
+        if(compute){compute->dense(matrix,b,x,in,out,y,cancel);finite(y);return;}
 #ifdef KADAN_WHISPER_BLAS
         for(std::size_t row=0;row<x.size()/in;row+=16){
             stop(cancel);const auto count=std::min<std::size_t>(16,x.size()/in-row);
@@ -95,6 +97,7 @@ struct Whisper::Impl {
         Buffer q(r,x.size()),k(r,source.size()),v(r,source.size()),mixed(r,x.size()),scores(r,keys);
         linear(p+".query",x,q.span(),n,n,cancel);linear(p+".key",source,k.span(),n,n,cancel,false);linear(p+".value",source,v.span(),n,n,cancel);
         const float scale=1/std::sqrt(float(width));
+        if(!(compute&&compute->attend(q.span(),k.span(),v.span(),rows,keys,heads,heads,width,causal?rows:0,0,0,mixed.span(),cancel)))
         for(std::size_t row=0;row<rows;++row)for(std::size_t h=0;h<heads;++h){stop(cancel);float maximum=-std::numeric_limits<float>::infinity();const auto limit=causal?row+1:keys;
             for(std::size_t j=0;j<limit;++j){float score=0;for(std::size_t c=0;c<width;++c)score+=q.data[row*n+h*width+c]*k.data[j*n+h*width+c];score*=scale;scores.data[j]=score;maximum=std::max(maximum,score);}
             double total=0;for(std::size_t j=0;j<limit;++j){scores.data[j]=std::exp(scores.data[j]-maximum);total+=scores.data[j];}
@@ -119,10 +122,11 @@ struct Whisper::Impl {
         for(std::size_t row=0;row<tokens.size();++row)for(std::size_t c=0;c<d.text_state;++c)x.data[row*d.text_state+c]=embedding[tokens[row]*d.text_state+c]+position[row*d.text_state+c];
         for(std::size_t i=0;i<d.text_layers;++i){stop(cancel);if(hook)hook("decoder",i);block(r,"decoder.blocks."+std::to_string(i),x.span(),audio,d.text_state,d.text_heads,cancel);}
         norm("decoder.ln",x.span(),normalized.span(),d.text_state,cancel);
+        if(compute){compute->dense(embedding,{},normalized.span().last(d.text_state),d.text_state,d.vocabulary,output,cancel);finite(output);return;}
         for(std::size_t id=0;id<d.vocabulary;++id){if(id%32==0)stop(cancel);float value=0;for(std::size_t c=0;c<d.text_state;++c)value+=normalized.data[(tokens.size()-1)*d.text_state+c]*embedding[id*d.text_state+c];output[id]=value;}finite(output);stop(cancel);
     }
 };
-Whisper::Whisper(std::shared_ptr<Resources> r):resources_(std::move(r)){require(bool(resources_),"whisper_resources_required");}
+Whisper::Whisper(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){require(bool(resources_),"whisper_resources_required");}
 Whisper::~Whisper(){unload();}
 bool Whisper::loaded()const{return bool(model_);}
 void Whisper::load(const char* root,const std::string& name,WhisperDimensions dims,const std::atomic_bool& cancel){
@@ -130,7 +134,7 @@ void Whisper::load(const char* root,const std::string& name,WhisperDimensions di
 #ifdef KADAN_WHISPER_BLAS
     require(openblas_get_num_threads()==1,"whisper_blas_thread_limit");
 #endif
-    auto m=std::make_unique<Impl>(*resources_,dims);Lease parser(*resources_,16*1024*1024);
+    auto m=std::make_unique<Impl>(*resources_,dims,compute_);Lease parser(*resources_,16*1024*1024);
     checkpoint::Shard shard(root,name,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),{4*1024*1024,4096,4096});
     require(shard.tensor_count()==m->layout.size(),"whisper_tensor_count");
     for(const auto& s:m->layout){const auto t=shard.tensor(s.name);require((t.dtype==checkpoint::Dtype::fp32||t.dtype==checkpoint::Dtype::fp16||t.dtype==checkpoint::Dtype::bf16)&&t.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),t.shape.begin()),"whisper_tensor_layout");}
@@ -152,6 +156,13 @@ void Whisper::encode(std::span<const float> mel,std::span<float> encoded,const s
     Buffer first(*resources_,frames*d.audio_state),second(*resources_,encoded.size());
     auto convolution=[&](const char* p,std::span<const float> x,std::span<float> y,std::size_t in,std::size_t time,std::size_t stride,bool band_major){
         const auto w=m.w(std::string(p)+".weight"),b=m.w(std::string(p)+".bias");const auto out_time=(time+stride-1)/stride;
+        if(m.compute){
+            constexpr std::size_t tile=64;Buffer packed(*resources_,tile*in*3);
+            for(std::size_t at=0;at<out_time;at+=tile){stop(cancel);const auto count=std::min(tile,out_time-at);
+                for(std::size_t t=0;t<count;++t)for(std::size_t c=0;c<in;++c)for(int k=0;k<3;++k){const auto source=std::ptrdiff_t((at+t)*stride)+k-1;packed.data[(t*in+c)*3+k]=source>=0&&source<std::ptrdiff_t(time)?x[band_major?c*time+source:source*in+c]:0;}
+                auto target=y.subspan(at*d.audio_state,count*d.audio_state);m.compute->dense(w,b,packed.span().first(count*in*3),in*3,d.audio_state,target,cancel);for(float& v:target)v=gelu(v);
+            }finite(y);return;
+        }
         for(std::size_t t=0;t<out_time;++t){stop(cancel);for(std::size_t o=0;o<d.audio_state;++o){float value=b[o];for(std::size_t c=0;c<in;++c)for(int k=0;k<3;++k){const auto source=std::ptrdiff_t(t*stride)+k-1;if(source>=0&&source<std::ptrdiff_t(time))value+=x[band_major?c*time+source:source*in+c]*w[(o*in+c)*3+k];}y[t*d.audio_state+o]=gelu(value);}}
         finite(y);
     };

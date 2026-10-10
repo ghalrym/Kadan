@@ -1,5 +1,5 @@
 #pragma once
-#include "kadan/resources.hpp"
+#include "kadan/dense_compute.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -16,7 +16,7 @@ struct WhisperDimensions {
 class Whisper {
 public:
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit Whisper(std::shared_ptr<Resources> resources);
+    explicit Whisper(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~Whisper();
     Whisper(const Whisper&)=delete;
     Whisper& operator=(const Whisper&)=delete;
@@ -40,7 +40,7 @@ public:
                 std::span<const std::uint32_t> first_suppressed={});
 private:
     struct Impl;
-    std::shared_ptr<Resources> resources_;
+    std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;
     std::unique_ptr<Impl> model_;
     bool busy_=false;
 };

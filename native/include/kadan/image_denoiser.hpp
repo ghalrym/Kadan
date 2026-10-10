@@ -1,3 +1,4 @@
+#include "kadan/dense_compute.hpp"
 #pragma once
 #include "kadan/image.hpp"
 #include <vector>
@@ -8,7 +9,7 @@ struct DenoiserConfig {BlockConfig block;std::size_t layers=32,context=4096,chan
 class Denoiser {
 public:
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit Denoiser(std::shared_ptr<Resources>);
+    explicit Denoiser(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~Denoiser();
     Denoiser(const Denoiser&)=delete;
     Denoiser& operator=(const Denoiser&)=delete;
@@ -20,6 +21,6 @@ public:
         std::size_t text,std::size_t height,std::size_t width,float timestep,
         std::span<float> velocity,const std::atomic_bool&,const Hook& hook={});
 private:
-    struct Impl;std::shared_ptr<Resources> resources_;std::unique_ptr<Impl> model_;bool busy_=false;
+    struct Impl;std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;std::unique_ptr<Impl> model_;bool busy_=false;
 };
 }

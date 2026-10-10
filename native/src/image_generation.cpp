@@ -22,12 +22,13 @@ Json read(const std::string& path){std::ifstream f(path,std::ios::binary|std::io
 constexpr const char* prefix="<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n";
 }
 struct Generator::Impl {
+ std::shared_ptr<DenseCompute> compute;
  Lease metadata;PromptTokenizer tokenizer;TextEncoder text;Denoiser denoiser;VaeDecoder vae;std::array<float,64> mean,stddev;
- Impl(std::shared_ptr<Resources> r):metadata(*r,32*1024*1024),tokenizer(r),text(r),denoiser(r),vae(r){}
+ Impl(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> c):compute(c),metadata(*r,32*1024*1024),tokenizer(r),text(r,c),denoiser(r,c),vae(r,c){}
 };
-Generator::Generator(std::shared_ptr<Resources> r):resources_(std::move(r)){need(bool(resources_),"image_resources");}
+Generator::Generator(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 Generator::~Generator(){unload();}
-void Generator::load(const std::string& root,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(!model_,"image_generator_loaded");auto m=std::make_unique<Impl>(resources_);
+void Generator::load(const std::string& root,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(!model_,"image_generator_loaded");auto m=std::make_unique<Impl>(resources_,compute_);
  auto text=read(root+"/text_encoder/config.json").at("text_config");need(text.at("vocab_size")==151936&&text.at("hidden_size")==4096&&text.at("num_hidden_layers")==36&&text.at("num_attention_heads")==32&&text.at("num_key_value_heads")==8&&text.at("head_dim")==128&&text.at("intermediate_size")==12288&&text.at("rope_theta")==5000000&&text.at("rms_norm_eps")==1e-6&&!text.at("attention_bias").get<bool>(),"image_text_config_contract");
  auto v=read(root+"/vae/config.json");need(v.at("decoder_base_dim")==144&&v.at("z_dim")==64&&v.at("dim_mult")==Json::array({1,2,4,8,8})&&v.at("num_res_blocks")==2&&v.at("out_channels")==4&&v.at("is_residual")==true&&v.at("patch_size").is_null()&&v.at("temperal_downsample")==Json::array({false,true,true,true}),"image_vae_config_contract");need(v.at("latents_mean").size()==64&&v.at("latents_std").size()==64,"image_latent_normalization");for(std::size_t i=0;i<64;++i){m->mean[i]=v.at("latents_mean")[i];m->stddev[i]=v.at("latents_std")[i];need(std::isfinite(m->mean[i])&&std::isfinite(m->stddev[i])&&m->stddev[i]>0,"image_latent_normalization");}
  auto s=read(root+"/scheduler/scheduler_config.json");need(s.at("_class_name")=="FlowMatchEulerDiscreteScheduler"&&s.at("base_image_seq_len")==256&&s.at("max_image_seq_len")==8192&&s.at("base_shift")==.5&&s.at("max_shift")==.9&&s.at("shift_terminal")==.02&&s.at("time_shift_type")=="exponential"&&s.at("use_dynamic_shifting")==true&&s.at("num_train_timesteps")==1000,"image_scheduler_contract");for(auto key:{"invert_sigmas","stochastic_sampling","use_beta_sigmas","use_exponential_sigmas","use_karras_sigmas"})need(s.at(key)==false,"image_scheduler_contract");

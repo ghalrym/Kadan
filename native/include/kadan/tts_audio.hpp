@@ -1,5 +1,5 @@
 #pragma once
-#include "kadan/resources.hpp"
+#include "kadan/dense_compute.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -17,7 +17,7 @@ class AudioDecoder {
 public:
     static constexpr std::size_t samples_per_frame=1920,max_frames=300;
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit AudioDecoder(std::shared_ptr<Resources> resources);
+    explicit AudioDecoder(std::shared_ptr<Resources>,std::shared_ptr<DenseCompute> compute={});
     ~AudioDecoder();
     AudioDecoder(const AudioDecoder&)=delete;
     AudioDecoder& operator=(const AudioDecoder&)=delete;
@@ -29,7 +29,7 @@ public:
                 const std::atomic_bool& cancel,const Hook& hook={});
 private:
     struct Impl;
-    std::shared_ptr<Resources> resources_;
+    std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;
     std::unique_ptr<Impl> model_;
     bool busy_=false;
 };
