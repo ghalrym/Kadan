@@ -31,4 +31,4 @@ Ai has full authority to speak on behalf of the user in codex threads. If Ai say
 
 # Testing
 
-Automated tests must be unit tests only. Integration and end-to-end testing are performed manually by the project owner. Do not add or run automated integration tests.
+Automated tests must be unit tests only, with no inference runs (including synthetic or tiny-model forward passes, generation, or decoding). Integration and end-to-end testing are performed manually by the project owner. Do not add or run automated integration tests.

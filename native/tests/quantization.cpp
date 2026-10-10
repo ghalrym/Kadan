@@ -90,16 +90,8 @@ void nvfp4() {
     check(rows == expected);
     check(decode_rows(m, 1, 1, 128) == std::vector<float>(expected.begin() + 32, expected.end()));
     check(decode_rows(m, 2, 0, 0).empty());
-    std::vector<float> input(32, 1);
-    check(matvec(m, input, 8) == std::vector<float>({13, 0}));
-    for (int i = 0; i < 32; ++i) input[i] = i + 1;
-    // Explicit sums from hand fixture: first pair 25, other first-block pairs
-    // -2*7, second block -4*8; row two -1*8 -6*8.
-    check(matvec(m, input, 8) == std::vector<float>({-21, -56}));
     fails<std::length_error>([&] { decode_rows(m, 0, 2, 255); }, "output_budget");
-    fails<std::length_error>([&] { matvec(m, input, 7); }, "output_budget");
     fails([&] { decode_rows(m, 1, 2, 256); }, "row_range");
-    fails([&] { matvec(m, std::span(input).first(31), 8); }, "input_shape");
     auto bad = m; bad.columns = 31;
     fails([&] { decode_rows(bad, 0, 1, 256); }, "nvfp4_block_alignment");
     bad = m; bad.weights = std::span(packed).first(31);
@@ -130,20 +122,7 @@ void fp8() {
     const std::array<float, 2> scales{2, .5F};
     Matrix m{Encoding::modelopt_fp8, 2, 3, weights, {}, scales};
     check(decode_rows(m, 0, 2, 24) == std::vector<float>({2, -4, .00390625F, 224, -0.F, .25F}));
-    const std::array<float, 3> input{1, 2, 256};
-    check(matvec(m, input, 8) == std::vector<float>({-5, 288}));
-    auto scalar = m; scalar.multipliers = std::span(scales).first(1);
-    check(matvec(scalar, input, 8) == std::vector<float>({-5, 1152}));
-    auto invalid = weights; invalid[5] = 0x7f; auto bad = m; bad.weights = invalid;
-    fails([&] { matvec(bad, input, 8); }, "nonfinite_weight");
-    bad = m; bad.block_scales = weights;
-    fails([&] { matvec(bad, input, 8); }, "unexpected_block_scales");
-    bad = m; bad.multipliers = {};
-    fails([&] { matvec(bad, input, 8); }, "fp8_scale_shape");
-    auto bad_input = input; bad_input[0] = std::numeric_limits<float>::infinity();
-    fails([&] { matvec(m, bad_input, 8); }, "nonfinite_input");
-    bad_input.fill(std::numeric_limits<float>::max());
-    fails<std::overflow_error>([&] { matvec(m, bad_input, 8); }, "nonfinite_result");
+
 }
 } // namespace
 int main() {

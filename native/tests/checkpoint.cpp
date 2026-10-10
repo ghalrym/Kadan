@@ -74,7 +74,6 @@ void loading_and_lifetime() {
             auto projection = shard.load_modelopt_rows("p", 1, 1, 13);
             check(projection.view().rows == 1 && projection.view().columns == 16);
             check(kadan::quantization::decode_rows(projection.view(), 0, 1, 64) == std::vector<float>(16, 4));
-            check(kadan::quantization::matvec(projection.view(), std::vector<float>(16, 1), 4) == std::vector<float>({64}));
             check(quota->used() == metadata_bytes + 13);
             retained = std::make_unique<Projection>(std::move(projection));
             fails([&] { shard.load_modelopt_rows("p", 2, 1, 13); }, "projection_shape");
