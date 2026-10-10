@@ -7,7 +7,7 @@ import torch
 from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as hf
 from transformers.integrations import hub_kernels
 
-from api.inference.llm.qwen import build_qwen
+from .qwen_reference import build_qwen
 from api.inference.llm.context import configure_context
 from api.inference.resources import ResourceManager
 from .artifacts import require, sha256

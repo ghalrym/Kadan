@@ -14,13 +14,12 @@
     "torch/version.py": "86bad1aa31351afc840c225024f16a76b6821c354ed618df523d4554f26d16e0"
   },
   "reference_sources": {
-    "api/inference/llm/qwen.py": "a4c7c1b0a6be1dc11b882ef018102a4c26eb1bd926cb85fd397bea7e22aad71b",
-    "api/inference/llm/quantization.py": "79fc17d2147b955c23f37885d922881bf4c7a7a7360dfa83d65a949f41f26850",
-    "api/inference/llm/placed_cache.py": "9dc801444c8a2084f1dc2c4d10f7dc62d807b5f635fb686c2d319a6e50fdc0f4",
-    "api/inference/llm/offload.py": "197a234eb376811406b93affbba8d73d2d5cb60a2734b72bac5edeb1d17dfbe6",
-    "api/inference/llm/checkpoint.py": "ff2f0359daa070d184ed24f5a28340ac5468c9804735c7b437626cbc8ce1ade0",
     "api/inference/llm/context.py": "5fee5c42e77038a4be67bb14557c367c295c3c33720a0c5f7273d24d8879e17b",
-    "api/inference/resources.py": "7433cee20ba296da1747f55f286d472222adcc029762d56892b8af484af5618c"
+    "api/inference/resources.py": "7433cee20ba296da1747f55f286d472222adcc029762d56892b8af484af5618c",
+    "native/tests/reference_capture/qwen_reference.py": "b8b8bd7766a9eab4a8b0ea8252d11d2410e3ec4f51b0d5bcc179a6c3d3065866",
+    "native/tests/reference_capture/checkpoint.py": "ff2f0359daa070d184ed24f5a28340ac5468c9804735c7b437626cbc8ce1ade0",
+    "native/tests/reference_capture/quantization.py": "79fc17d2147b955c23f37885d922881bf4c7a7a7360dfa83d65a949f41f26850",
+    "native/tests/reference_capture/offload.py": "197a234eb376811406b93affbba8d73d2d5cb60a2734b72bac5edeb1d17dfbe6"
   },
   "functions": {
     "Qwen3_5MoeRMSNormGated": {

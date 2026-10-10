@@ -1,5 +1,6 @@
 """Hand-authored format/diagnostic failures; no model or numerical dependency."""
 import json
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -20,6 +21,16 @@ from native.tests.reference_capture import run_fixtures
 class ArtifactTests(unittest.TestCase):
     def setUp(self):
         self.data = encode(2, 0, False, [4., 2., 1.])
+
+    def test_pinned_reference_sources_exist_and_match(self):
+        root = Path(__file__).resolve().parents[3]
+        pins = json.loads(Path(__file__).with_name('backend-pins.json').read_text())
+        for name, expected in pins['reference_sources'].items():
+            with self.subTest(source=name):
+                self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        backend = Path(__file__).with_name('cpu_backend.py').read_text()
+        self.assertIn('from .qwen_reference import build_qwen', backend)
+        self.assertFalse((root / 'api/inference/llm/qwen.py').exists())
 
     def test_roundtrip_lowest_greedy_tie_and_signed_zero(self):
         self.assertEqual(decode(self.data)['logits'], [4.,2.,1.])
