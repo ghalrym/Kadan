@@ -806,6 +806,8 @@ target_link_libraries(kadan_image_generation PUBLIC kadan_image_tokenizer kadan_
 target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 add_executable(kadan-image-worker src/image_worker.cpp)
 target_link_libraries(kadan-image-worker PRIVATE kadan_image_generation nlohmann_json::nlohmann_json)
+add_test(NAME image-worker-errors COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/image_worker_errors.py" "$<TARGET_FILE:kadan-image-worker>")
+set_tests_properties(image-worker-errors PROPERTIES TIMEOUT 15)
 if(BUILD_TESTING)
   add_executable(image-generation-tests tests/image_generation.cpp)
   target_link_libraries(image-generation-tests PRIVATE kadan_image_generation)

@@ -9,7 +9,11 @@ MAX_FRAME = 4096
 
 
 class LineProtocolError(RuntimeError):
-    pass
+    def __init__(self, message, *, diagnostics=b''):
+        super().__init__(message)
+        # Retain bounded local debugging context without exposing stderr in API errors.
+        self.diagnostics = diagnostics[-8192:]
+
 
 
 def check_cancel(event):
@@ -68,8 +72,21 @@ class LineProtocolProcess:
             text = line.decode('ascii')
         except UnicodeDecodeError as error:
             raise LineProtocolError('Non-ASCII inference subprocess frame') from error
-        if text.startswith('error '):
-            raise LineProtocolError('Inference subprocess failed: ' + self.diagnostics.decode('utf-8', errors='replace')[-1000:])
+        if text == 'error' or text.startswith('error '):
+            # The worker writes diagnostics before its terminal error frame. Drain
+            # any bytes already available if stdout was selected first.
+            try:
+                self.diagnostics.extend(os.read(self.process.stderr.fileno(), 8192))
+                del self.diagnostics[:-8192]
+            except BlockingIOError:
+                pass
+            safe_codes = {f'image_{stage}_failed' for stage in
+                          ('startup', 'load', 'generate', 'park', 'resume', 'cleanup')}
+            code = text.partition(' ')[2]
+            message = 'Inference subprocess failed'
+            if code in safe_codes:
+                message += ': ' + code
+            raise LineProtocolError(message, diagnostics=bytes(self.diagnostics))
         return text
 
     def exchange(self, command, timeout, cancel=None):
