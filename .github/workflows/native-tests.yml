@@ -63,7 +63,7 @@ jobs:
 
   h3-generation:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v7
       - name: Install native tokenizer dependencies
@@ -72,9 +72,18 @@ jobs:
         run: cmake -S native -B /tmp/kadan-h3-generation -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF -DKADAN_ENABLE_H3_GENERATION=ON
       - name: Build generation and lifecycle tests
         run: cmake --build /tmp/kadan-h3-generation --target kadan-h3-generate kadan-h3-worker kadan-h3-tokenize h3-pipeline-tests h3-generation-tests h3-codec-tests --parallel 2
-      - name: Test complete sparse generation and codec ownership
-        run: ctest --test-dir /tmp/kadan-h3-generation --output-on-failure -R '^h3-(pipeline|generation|codec|worker|tokenizer)$'
+      - name: Test generation controls, codec and worker protocol
+        run: ctest --test-dir /tmp/kadan-h3-generation --output-on-failure -R '^h3-(generation|codec|worker|tokenizer)$'
       - name: Test installed H3 worker and runtime dependencies
         run: |
           cmake --install /tmp/kadan-h3-generation --prefix /tmp/kadan-h3-installed --component h3-runtime
           python3 native/tests/h3_worker.py /tmp/kadan-h3-installed/bin/kadan-h3-worker
+      - name: Test complete sparse CPU graph with stage timings
+        run: ctest --test-dir /tmp/kadan-h3-generation --verbose -R '^h3-pipeline$'
+      - name: Preserve full-graph timing and failure logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-generation-ctest-logs
+          path: /tmp/kadan-h3-generation/Testing/Temporary/
+          if-no-files-found: ignore

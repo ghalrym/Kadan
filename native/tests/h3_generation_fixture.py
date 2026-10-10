@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from h3_text_fixture import fixture as text_fixture
 from h3_denoiser_fixture import fixture as denoiser_fixture
 from video_decode_fixture import fixture as vae_fixture
@@ -32,8 +33,14 @@ def tokenizer_fixture(path):
 if __name__=='__main__':
     with tempfile.TemporaryDirectory() as directory:
         root=Path(directory)
-        tokenizer_fixture(root/'tokenizer.json')
-        text_fixture(root/'text.safetensors')
-        denoiser_fixture(root)
-        vae_fixture(root/'vae.safetensors')
+        started=time.monotonic()
+        for name, create in (
+            ('tokenizer', lambda: tokenizer_fixture(root/'tokenizer.json')),
+            ('text', lambda: text_fixture(root/'text.safetensors')),
+            ('denoiser', lambda: denoiser_fixture(root)),
+            ('vae', lambda: vae_fixture(root/'vae.safetensors')),
+        ):
+            before=time.monotonic()
+            create()
+            print(f'fixture={name} seconds={time.monotonic()-before:.3f} elapsed_seconds={time.monotonic()-started:.3f}', flush=True)
         subprocess.run([sys.argv[1],str(root)],check=True)
