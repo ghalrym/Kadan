@@ -384,7 +384,7 @@ if(BUILD_TESTING)
   target_link_libraries(stt-tests PRIVATE kadan_stt)
   add_test(NAME stt-component COMMAND stt-tests)
   add_test(NAME stt-component-cli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/stt_fixture.py" "$<TARGET_FILE:kadan-stt-component>")
-  set_tests_properties(stt-component stt-component-cli PROPERTIES TIMEOUT 30)
+  set_tests_properties(stt-component stt-component-cli PROPERTIES TIMEOUT 120)
 endif()
 
 # H3 block 0 pre-attention projection only; no video generation backend.

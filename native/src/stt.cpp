@@ -63,12 +63,27 @@ void LogMel::unload(){
     filters_.reset();tables_.reset();bins_=0;
     resources_->released(resident_);resident_=0;
 }
+void LogMel::execute_window(std::span<const float> pcm,std::span<float> output,
+        const std::atomic_bool& cancel,const std::function<void(std::size_t)>& observed){
+    cancelled(cancel);check(loaded(),"stt_not_loaded");
+    check(pcm.size()<=max_samples,"stt_sample_count");
+    check(output.size()==bins_*(max_samples/hop),"stt_output_shape");
+    const auto in=reinterpret_cast<std::uintptr_t>(pcm.data()),out=reinterpret_cast<std::uintptr_t>(output.data());
+    check(pcm.empty() || (out>=in ? out-in>=pcm.size_bytes() : in-out>=output.size_bytes()),"stt_buffer_overlap");
+    Reservation admission(*resources_,host(max_samples*sizeof(float)));
+    auto padded=std::make_unique<float[]>(max_samples);
+    for(std::size_t start=0;start<pcm.size();start+=4096){
+        cancelled(cancel);
+        std::copy_n(pcm.data()+start,std::min<std::size_t>(4096,pcm.size()-start),padded.get()+start);
+    }
+    execute({padded.get(),max_samples},output,cancel,observed);
+}
 void LogMel::execute(std::span<const float> pcm,std::span<float> output,
         const std::atomic_bool& cancel,const std::function<void(std::size_t)>& observed){
     cancelled(cancel);check(loaded(),"stt_not_loaded");
     const auto count=frames(pcm.size());check(output.size()==bins_*count,"stt_output_shape");
     const auto in=reinterpret_cast<std::uintptr_t>(pcm.data()),out=reinterpret_cast<std::uintptr_t>(output.data());
-    check(out>=in+pcm.size_bytes() || in>=out+output.size_bytes(),"stt_buffer_overlap");
+    check(out>=in ? out-in>=pcm.size_bytes() : in-out>=output.size_bytes(),"stt_buffer_overlap");
     for(float v:pcm)check(std::isfinite(v),"stt_nonfinite_input");
     Pin pin(*resources_,resident_);Reservation scratch(*resources_,host(scratch_bytes));
     std::array<double,fft> windowed;

@@ -19,15 +19,19 @@ void read(std::ifstream& stream,float* destination,std::size_t bytes){
 int main(int argc,char** argv){
     static_assert(std::endian::native==std::endian::little && sizeof(float)==4);
     try {
-        if(argc!=4)throw std::runtime_error("usage: kadan-stt-component BINS FILTER_F32LE PCM16KHZ_F32LE");
+        if(argc!=4 && argc!=5)throw std::runtime_error("usage: kadan-stt-component BINS FILTER_F32LE PCM16KHZ_F32LE [--window]");
+        const bool window=argc==5;
+        if(window && std::string(argv[4])!="--window")throw std::runtime_error("stt_mode");
         const std::string argument=argv[1];
         if(argument!="80" && argument!="128")throw std::runtime_error("stt_mel_bins");
         const std::size_t bins=argument=="80"?80:128;
         std::ifstream bank(argv[2],std::ios::binary|std::ios::ate),pcm(argv[3],std::ios::binary|std::ios::ate);
         const auto bank_bytes=size(bank),pcm_bytes=size(pcm);
         if(bank_bytes!=bins*201*4 || pcm_bytes%4)throw std::runtime_error("stt_input_size");
-        const auto samples=pcm_bytes/4,frames=kadan::stt::LogMel::frames(samples),values=bins*frames;
-        auto ledger=std::make_shared<kadan::Resources>(kadan::Footprint{2*1024*1024});
+        const auto samples=pcm_bytes/4;
+        if(samples>kadan::stt::LogMel::max_samples)throw std::runtime_error("stt_sample_count");
+        const auto frames=kadan::stt::LogMel::frames(window?kadan::stt::LogMel::max_samples:samples),values=bins*frames;
+        auto ledger=std::make_shared<kadan::Resources>(kadan::Footprint{8*1024*1024});
         struct Admission{std::shared_ptr<kadan::Resources> r;kadan::Handle h;~Admission(){r->released(h);}};
         std::cout.exceptions(std::ios::badbit|std::ios::failbit);
         std::signal(SIGINT,stop);std::signal(SIGTERM,stop);
@@ -37,7 +41,9 @@ int main(int argc,char** argv){
             read(bank,filters.get(),bank_bytes);read(pcm,input.get(),pcm_bytes);
             std::atomic_bool cancel{interrupted!=0};kadan::stt::LogMel frontend(ledger);
             frontend.load(bins,{filters.get(),bank_bytes/4},cancel);
-            frontend.execute({input.get(),samples},{output.get(),values},cancel,[&](std::size_t){cancel=interrupted!=0;});
+            const auto observe=[&](std::size_t){cancel=interrupted!=0;};
+            if(window)frontend.execute_window({input.get(),samples},{output.get(),values},cancel,observe);
+            else frontend.execute({input.get(),samples},{output.get(),values},cancel,observe);
             frontend.unload();
             if(interrupted)throw std::runtime_error("stt_cancelled");
             std::cout<<std::setprecision(9)<<"{\"bins\":"<<bins<<",\"frames\":"<<frames<<",\"mel\":[";
