@@ -1,6 +1,15 @@
 """Admission, FIFO handoff and child ownership without model or GPU execution."""
+import sys
+from api.services.video_jobs import VideoJobs
+from api.inference.video.video_requests import VideoRequests
+from api.inference.video.h3_worker import H3Process
+from api.memory_manager import MemoryManager
+from api.memory_manager.queue import Job
 from pathlib import Path
 import threading
+import shutil
+import subprocess
+import json
 
 import os
 import tempfile
@@ -145,8 +154,6 @@ class H3WorkerTests(unittest.TestCase):
                 decode_response(frame)
 
     def test_service_selects_cpp_and_forwards_quarantine(self):
-        from api.services.video_jobs import VideoJobs
-        from api.inference.video.video_requests import VideoRequests
         jobs = VideoJobs(root=self.root)
         provider = jobs.provider('h3-fl2va-int8-turbo')
         self.assertIsInstance(provider, H3Provider)
@@ -166,6 +173,21 @@ class H3WorkerTests(unittest.TestCase):
         self.assertFalse(parked)
         self.assertFalse(worker.started)
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
+    def test_real_codec_preserves_frame_count(self):
+        raw, output = self.root/'raw.y4m', self.root/'out.mp4'
+        raw.write_bytes(b'YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n' +
+                        (b'FRAME\n' + bytes([128])*(64*64*3))*2)
+        provider = H3Provider()
+        try:
+            provider._encode(raw, output, 2, threading.Event())
+            report = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-count_frames',
+                '-show_entries', 'stream=width,height,nb_read_frames', '-of', 'json', str(output)]))
+            self.assertEqual(report['streams'], [dict(width=64, height=64, nb_read_frames='2')])
+            self.assertIsNone(provider._codec)
+        finally:
+            provider.close()
+
     def test_precancelled_codec_never_spawns(self):
         _, _, provider = setup(self)
         event = threading.Event(); event.set()
@@ -174,7 +196,6 @@ class H3WorkerTests(unittest.TestCase):
         self.assertIsNone(provider._codec)
 
     def test_codec_cancellation_reaps_before_releasing(self):
-        import sys
         _, worker, provider = setup(self)
         codec = self.root/'ffmpeg'
         codec.write_text(f'#!{sys.executable}\nimport time\nprint("frame=1", flush=True)\ntime.sleep(60)\n')
@@ -195,8 +216,6 @@ class H3WorkerTests(unittest.TestCase):
         self.assertFalse((self.root/'out.mp4').exists())
 
     def test_real_json_transport_handles_unicode_and_stderr(self):
-        import sys
-        from api.inference.video.h3_worker import H3Process
         child = H3Process()
         code = 'import sys,json; r=json.loads(sys.stdin.readline()); sys.stderr.write("x"*20000); print(json.dumps({"length":len(r["prompt"])}),flush=True)'
         try:
@@ -220,10 +239,6 @@ class H3WorkerTests(unittest.TestCase):
 
 class H3QueueBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_unconfirmed_video_cleanup_blocks_other_workload(self):
-        from api.memory_manager import MemoryManager
-        from api.memory_manager.queue import Job
-        from api.services.video_jobs import VideoJobs
-        from api.inference.video.video_requests import VideoRequests
         jobs = VideoJobs()
         jobs.provider('h3-fl2va-int8-turbo')._quarantined = True
         class Image:

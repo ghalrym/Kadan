@@ -49,9 +49,31 @@ struct H3Tokenizer::Impl {
         std::unique_ptr<pcre2_match_data,decltype(&pcre2_match_data_free)> match(pcre2_match_data_create_from_pattern(pattern.get(),nullptr),pcre2_match_data_free);check(bool(match),"h3_tokenizer_memory");std::unique_ptr<pcre2_match_context,decltype(&pcre2_match_context_free)> context(pcre2_match_context_create(nullptr),pcre2_match_context_free);check(bool(context),"h3_tokenizer_memory");pcre2_set_match_limit(context.get(),1000000);pcre2_set_depth_limit(context.get(),1000);
         std::size_t written=0;auto emit=[&](std::uint32_t id){check(written<output.size()&&written<max_tokens,"h3_tokenizer_token_limit");output[written++]=id;};
         auto ordinary=[&](std::string_view raw){icu::UnicodeString unicode;nfc->normalize(icu::UnicodeString::fromUTF8(raw),unicode,status);check(U_SUCCESS(status),"h3_tokenizer_nfc");std::string text;unicode.toUTF8String(text);check(text.size()<=max_tokens,"h3_tokenizer_normalized_size");std::size_t at=0;
-            while(at<text.size()){stop(cancel);check(pcre2_match(pattern.get(),reinterpret_cast<PCRE2_SPTR>(text.data()),text.size(),at,PCRE2_ANCHORED,match.get(),context.get())>0,"h3_tokenizer_match");auto* bounds=pcre2_get_ovector_pointer(match.get());check(bounds[0]==at&&bounds[1]>at,"h3_tokenizer_match_range");std::vector<std::string> pieces;pieces.reserve(bounds[1]-at);for(std::size_t i=at;i<bounds[1];++i)pieces.push_back(bytes[static_cast<unsigned char>(text[i])]);
-                while(pieces.size()>1){stop(cancel);std::size_t best=std::numeric_limits<std::size_t>::max(),where=0;for(std::size_t i=0;i+1<pieces.size();++i){auto entry=merges.find(pieces[i]+'\0'+pieces[i+1]);if(entry!=merges.end()&&entry->second<best){best=entry->second;where=i;}}if(best==std::numeric_limits<std::size_t>::max())break;pieces[where]+=pieces[where+1];pieces.erase(pieces.begin()+where+1);}
-                for(const auto& piece:pieces) emit(vocab.at(piece));
+            while(at<text.size()){stop(cancel);check(pcre2_match(pattern.get(),reinterpret_cast<PCRE2_SPTR>(text.data()),text.size(),at,PCRE2_ANCHORED,match.get(),context.get())>0,"h3_tokenizer_match");auto* bounds=pcre2_get_ovector_pointer(match.get());check(bounds[0]==at&&bounds[1]>at,"h3_tokenizer_match_range");// Stable node indices preserve the leftmost tie rule. Only the two
+                // neighbours of a merge need new heap entries; generations reject
+                // obsolete candidates without repeated full-sequence scans.
+                constexpr auto none=std::numeric_limits<std::size_t>::max();
+                struct Node {std::string value;std::size_t previous,next,generation=0;};
+                struct Candidate {std::size_t rank,left,left_generation,right_generation;};
+                struct Later {bool operator()(const Candidate& a,const Candidate& b)const{return a.rank>b.rank||(a.rank==b.rank&&a.left>b.left);}};
+                const auto count=bounds[1]-at;
+                std::vector<Node> nodes;nodes.reserve(count);
+                for(std::size_t i=0;i<count;++i){stop(cancel);nodes.push_back({bytes[static_cast<unsigned char>(text[at+i])],i?i-1:none,i+1<count?i+1:none});}
+                // At most N initial and two entries per merge; this storage and
+                // all nodes fit the already admitted 32 MiB scratch envelope.
+                std::vector<Candidate> heap;heap.reserve(3*count);
+                auto offer=[&](std::size_t left){if(left==none||nodes[left].next==none)return;const auto right=nodes[left].next;const auto found=merges.find(nodes[left].value+'\0'+nodes[right].value);if(found!=merges.end()){heap.push_back({found->second,left,nodes[left].generation,nodes[right].generation});std::push_heap(heap.begin(),heap.end(),Later{});}};
+                for(std::size_t i=0;i<count;++i)offer(i);
+                while(!heap.empty()){
+                    stop(cancel);const auto candidate=heap.front();std::pop_heap(heap.begin(),heap.end(),Later{});heap.pop_back();auto& left=nodes[candidate.left];
+                    if(left.value.empty()||left.generation!=candidate.left_generation||left.next==none)continue;
+                    auto& right=nodes[left.next];if(right.generation!=candidate.right_generation)continue;
+                    left.value+=right.value;left.next=right.next;++left.generation;
+                    if(left.next!=none)nodes[left.next].previous=candidate.left;
+                    std::string{}.swap(right.value);++right.generation;
+                    offer(left.previous);offer(candidate.left);
+                }
+                for(std::size_t i=0;i!=none;i=nodes[i].next)emit(vocab.at(nodes[i].value));
                 at=bounds[1];
             }
         };
