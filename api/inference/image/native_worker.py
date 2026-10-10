@@ -23,7 +23,7 @@ MODEL = 'qwen-image-2.1'
 REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
 HOST_BUDGET = 80 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
-SIZES = {'1:1': (128, 128), '4:3': (128, 96), '3:4': (96, 128)}
+SIZES = {'1:1': (2048, 2048), '4:3': (2400, 1792), '3:4': (1792, 2400), '16:9': (2752, 1536)}
 
 
 def check_cancel(cancel):
@@ -113,7 +113,7 @@ class NativeImageSession:
                 raise ResourceCancelled('Image generation cancelled') from error
             if reply != ['done', str(self.baseline)]:
                 raise LineProtocolError('Invalid native image completion response')
-            if output.is_symlink() or not output.is_file() or not 0 < output.stat().st_size <= 1024**2:
+            if output.is_symlink() or not output.is_file() or not 0 < output.stat().st_size <= width * height * 4 + 1024**2:
                 raise LineProtocolError('Invalid native image artifact')
             data = output.read_bytes()
             with Image.open(io.BytesIO(data)) as image:
@@ -124,7 +124,7 @@ class NativeImageSession:
             images.append(base64.b64encode(data).decode('ascii'))
             seeds.append(current)
         return {'image': dict(id=uuid.uuid4().hex, mode='Generate', prompt=request.prompt,
-            aspect={'1:1': 'square', '4:3': 'landscape', '3:4': 'portrait'}[request.aspect],
+            aspect={'1:1': 'square', '4:3': 'landscape', '3:4': 'portrait', '16:9': 'wide'}[request.aspect],
             seeds=seeds, meta=f'{width}×{height} · {steps} steps · native {self.compute.mode.upper()}',
             images_base64=images, mime_type='image/png')}
 

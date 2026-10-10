@@ -88,7 +88,7 @@ class WorkerDefaultTests(unittest.TestCase):
         wrapper=SpeechRequests(runtime)
         store=SimpleNamespace(root=Path('/models'),get_checkpoint=Mock(return_value=(SimpleNamespace(revision='0c0e3051f131929182e2c023b9537f8b1c68adfe'),Path('/checkpoint'))))
         with patch('api.inference.tts.qwen.model_manager',store),patch.object(Path,'is_file',return_value=True),patch(
-                'api.inference.tts.qwen.verify_tokenizer'),patch('api.inference.tts.qwen.NativeSpeechSession',return_value=session):
+                'api.inference.tts.qwen.verify_tokenizer'),patch('api.inference.tts.qwen.ensure_assets'),patch('api.inference.tts.qwen.NativeSpeechSession',return_value=session):
             self.assertIs(asyncio.run(wrapper.load('qwen-tts-1.7b-custom')),session)
             asyncio.run(wrapper.load('qwen-tts-1.7b-custom'))
             session.load.assert_called_once();session.generate.assert_not_called()

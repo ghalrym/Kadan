@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 capabilities=json.loads(subprocess.check_output([sys.argv[1],"--capabilities"],text=True))
-assert capabilities==dict(protocol=1,cuda=False,audio=False,host_budget=128*1024**3,device_budget=2*1024**3)
+assert capabilities==dict(protocol=1,cuda=False,audio=True,host_budget=128*1024**3,device_budget=2*1024**3)
 
 with tempfile.TemporaryDirectory() as directory:
     root=Path(directory)

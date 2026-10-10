@@ -24,7 +24,7 @@ class NativeProviderTests(unittest.TestCase):
         with patch('api.inference.tts.qwen.verify_tokenizer') as verify:
             plan=self.provider.prepare(self.request)
         verify.assert_called_once();self.assertEqual(plan.host_bytes,PROCESS_BUDGET);self.assertEqual(plan.device_bytes,{})
-        self.assertIsInstance(plan.create(),NativeSpeechSession);self.assertEqual(len(self.provider.models()),1);self.assertFalse(self.provider.models()[0].supports_instruction)
+        self.assertIsInstance(plan.create(),NativeSpeechSession);self.assertEqual(len(self.provider.models()),1);self.assertTrue(self.provider.models()[0].supports_instruction)
     def test_missing_export_is_configuration_failure(self):
         with patch('api.inference.tts.qwen.verify_tokenizer',side_effect=FileNotFoundError()):
             with self.assertRaises(SpeechUnavailable):self.provider.prepare(self.request)

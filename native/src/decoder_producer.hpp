@@ -103,7 +103,12 @@ struct DecoderProducer {
     }
     void mixture(StateStep token){
         cursor.check_step(token);check(detail::moe_route(c.moe,moe,work(1)));status();std::array<unsigned,8> selected{};
-        check(cudaMemcpy(selected.data(),moe.selected,c.moe.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));std::sort(selected.begin(),selected.begin()+c.moe.top_k);
+        check(cudaMemcpy(selected.data(),moe.selected,c.moe.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));// Eight routes do not need the STL introsort threshold of sixteen.
+        for(std::size_t i=1;i<selected.size()&&i<c.moe.top_k;++i){
+            const auto value=selected[i];auto j=i;
+            while(j>0&&selected[j-1]>value){selected[j]=selected[j-1];--j;}
+            selected[j]=value;
+        }
         for(std::size_t i=0;i<c.moe.top_k;++i){require(selected[i]<c.moe.experts&&(i==0||selected[i]!=selected[i-1]),"decoder_device_route");expert(selected[i],c.moe.intermediate);}
         expert(c.moe.experts,c.moe.shared_intermediate);check(detail::moe_finish(c.moe,moe,work(2)));
     }

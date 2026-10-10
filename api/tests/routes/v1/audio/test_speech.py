@@ -90,9 +90,15 @@ class NativeDefaultSpeechRouteTests(unittest.TestCase):
                 self.assertEqual(self.client.post('/v1/audio/speech',json={**self.body,**extra}).status_code,200)
         self.assertEqual(self.submit.await_count,2)
     def test_unsupported_or_oversized_input_is_422_before_queue(self):
-        for extra in ({'voice':{'mode':'custom','speaker':'Vivian'}},{'language':'French'},
+        for extra in ({'voice':{'mode':'custom','speaker':'Unknown'}},{'language':'Klingon'},
                       {'script':'x'*32001},{'script':'é'*16001}):
             with self.subTest(extra=list(extra)):
                 response=self.client.post('/v1/audio/speech',json={**self.body,**extra})
                 self.assertEqual(response.status_code,422,response.text)
         self.submit.assert_not_awaited()
+
+    def test_supported_languages_speakers_and_instruction_reach_queue(self):
+        with patch('api.routes.v1.audio.speech.memory_manager.submit', new=AsyncMock(return_value=self.submit.return_value)) as submit:
+            response=self.client.post('/v1/audio/speech',json={**self.body,'language':'Japanese','voice':{'mode':'custom','speaker':'Ono_Anna','instruction':'Warmly'}})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(submit.call_args.args[0].language,'Japanese')

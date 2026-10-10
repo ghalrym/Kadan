@@ -35,10 +35,10 @@ int main(int argc,char** argv){
 #else
    constexpr bool cuda=false;
 #endif
-   std::cout<<Json{{"protocol",1},{"cuda",cuda},{"audio",false},{"host_budget",128ULL*1024*1024*1024},{"device_budget",2ULL*1024*1024*1024}}.dump()<<'\n';return 0;
+   std::cout<<Json{{"protocol",1},{"cuda",cuda},{"audio",true},{"host_budget",128ULL*1024*1024*1024},{"device_budget",2ULL*1024*1024*1024}}.dump()<<'\n';return 0;
   }
-  check(argc==6,"usage: kadan-h3-worker TOKENIZER TEXT DENOISER TURBO VAE (JSON lines on stdin)");std::signal(SIGINT,request_stop);std::signal(SIGTERM,request_stop);std::signal(SIGPIPE,SIG_IGN);const auto flags=fcntl(STDOUT_FILENO,F_GETFL);check(flags>=0&&fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK)==0,"h3_stdout_nonblocking");
-  auto execution=kadan::video::h3_execution(1536ULL*1024*1024);auto resources=execution.resources;Io io(resources);Queue queue(resources);kadan::video::H3Generation model(resources,execution.compute);const kadan::video::H3GenerationPaths paths{argv[1],argv[2],argv[3],argv[4],argv[5]};
+  check(argc==6||argc==7,"usage: kadan-h3-worker TOKENIZER TEXT DENOISER TURBO VAE [AUDIO_VAE] (JSON lines on stdin)");std::signal(SIGINT,request_stop);std::signal(SIGTERM,request_stop);std::signal(SIGPIPE,SIG_IGN);const auto flags=fcntl(STDOUT_FILENO,F_GETFL);check(flags>=0&&fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK)==0,"h3_stdout_nonblocking");
+  auto execution=kadan::video::h3_execution(1536ULL*1024*1024);auto resources=execution.resources;Io io(resources);Queue queue(resources);kadan::video::H3Generation model(resources,execution.compute);const kadan::video::H3GenerationPaths paths{argv[1],argv[2],argv[3],argv[4],argv[5],argc==7?argv[6]:""};
   {
    auto run=[&](const std::string& frame){
     std::array<std::unordered_set<std::string>,17> keys;std::size_t events=0;const auto object=Json::parse(frame,[&](int depth,Json::parse_event_t event,Json& v){check(depth>=0&&depth<16&&++events<20000,"h3_request_json_limit");if(event==Json::parse_event_t::object_start)keys[depth+1].clear();if(event==Json::parse_event_t::key)check(keys[depth].insert(v.get<std::string>()).second,"h3_request_duplicate_key");return true;});check(object.is_object()&&object.size()<=7,"h3_request_object");for(auto it=object.begin();it!=object.end();++it)check(it.key()=="prompt"||it.key()=="output"||it.key()=="width"||it.key()=="height"||it.key()=="frames"||it.key()=="updates"||it.key()=="seed"||it.key()=="short_edge"||it.key()=="aspect"||it.key()=="duration","h3_request_field");
@@ -55,7 +55,7 @@ int main(int argc,char** argv){
     while(queue.pending()){auto action=queue.poll();if(action.kind==Queue::Kind::load){queue.loaded(id,true);}else if(action.kind==Queue::Kind::execute){try{model.execute(paths,request,cancelled);}catch(...){failure=std::current_exception();}if(cancelled.load())queue.cancel(id);queue.completed(id,false);}else if(action.kind==Queue::Kind::cleanup){queue.cleaned(action.reservation,true);}else throw std::runtime_error("h3_queue_stalled");}
     if(failure)std::rethrow_exception(failure);
     const auto used=resources->snapshot().used;std::vector<kadan::Bytes> devices(used.begin()+1,used.end());
-    return Json{{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",false},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();
+    return Json{{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",!paths.audio_vae.empty()},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();
    };
    std::string frame;char c;while(read_byte(c)){if(c!='\n'){check(frame.size()<65536,"h3_request_size");frame+=c;}else if(!frame.empty()){std::string reply;try{reply=run(frame);}catch(const std::exception& e){reply=Json{{"error",e.what()}}.dump();}publish(reply);frame.clear();}}
    check(frame.empty()||cancelled.load(),"h3_incomplete_frame");queue.stop();auto action=queue.poll();if(action.kind==Queue::Kind::cleanup)queue.cleaned(action.reservation,true);

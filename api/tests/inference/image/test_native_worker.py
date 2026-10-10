@@ -1,11 +1,12 @@
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import threading
 import unittest
 from PIL import Image
 from api.inference.errors import InferenceFailure
-from api.inference.image.native_worker import NativeImageRuntime, NativeImageSession, PROCESS_BUDGET
+from api.inference.image.native_worker import NativeImageRuntime, NativeImageSession, PROCESS_BUDGET, SIZES
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
 
 class Child:
@@ -18,7 +19,9 @@ class Child:
         if self.failure:raise self.failure
         assert command=='generate'
         if self.bad_artifact:(self.workspace/'image.png').write_bytes(b'bad')
-        else:Image.new('RGBA',(128,128),(255,0,0,255)).save(self.workspace/'image.png')
+        else:
+            request=json.loads((self.workspace/'request.json').read_text())
+            Image.new('RGBA',(request['width'],request['height']),(255,0,0,255)).save(self.workspace/'image.png')
         return self.report or 'done 1024'
     def stop(self):
         self.stops+=1
@@ -35,6 +38,16 @@ class NativeTests(unittest.TestCase):
         for _ in range(2):self.assertEqual(len(self.run_request()['image']['images_base64']),1)
         self.assertEqual(self.child.starts,1);self.assertEqual(self.child.requests,2);self.assertEqual(next(iter(self.resources.snapshot()['reservations'].values()))['host_bytes'],PROCESS_BUDGET)
         self.runtime.unload();self.assertEqual(self.resources.snapshot()['reservations'],{});self.assertEqual(self.child.stops,1)
+    def test_all_original_profiles_dispatch_and_validate_artifact(self):
+        expected={'1:1':(2048,2048),'4:3':(2400,1792),'3:4':(1792,2400),'16:9':(2752,1536)}
+        self.assertEqual(SIZES,expected)
+        for aspect,size in expected.items():
+            self.request.aspect=aspect
+            result=self.run_request()['image']
+            sent=json.loads((self.session.workspace/'request.json').read_text())
+            self.assertEqual((sent['width'],sent['height']),size)
+            self.assertIn(f'{size[0]}×{size[1]}',result['meta'])
+        self.assertEqual(self.child.starts,1)
     def test_precancel_no_spawn(self):
         event=threading.Event();event.set()
         with self.assertRaises(ResourceCancelled):self.runtime.run(self.request,event)
@@ -69,7 +82,7 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(self.child.starts,0)
         finally:pressure.release()
     def test_invalid_options_before_spawn(self):
-        for aspect,seed in [('16:9',0),('1:1',2**64)]:
+        for aspect,seed in [('5:2',0),('1:1',2**64)]:
             self.request.aspect=aspect;self.request.seed=seed
             with self.assertRaises(InferenceFailure):self.run_request()
         self.assertEqual(self.child.starts,0)

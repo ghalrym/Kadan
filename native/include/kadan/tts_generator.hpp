@@ -17,6 +17,8 @@ struct VoicePrompt{
     std::uint32_t text_bos=151672,text_eos=151673,text_pad=151671;
     std::uint32_t think=2154,think_bos=2156,language=2050,think_eos=2157,speaker=3061;
     std::uint32_t codec_pad=2148,codec_bos=2149,codec_eos=2150;
+    bool automatic_language=false;
+    std::uint32_t nothink=2155;
 };
 struct GeneratedCodes{std::size_t frames;bool stopped;};
 // Full custom-voice, non-streaming talker and residual-code predictor. Greedy
@@ -35,7 +37,8 @@ public:
     // must report truncation; this is not a complete speech result.
     GeneratedCodes generate(std::span<const std::uint32_t> text,const VoicePrompt& voice,
         std::span<std::uint32_t> codes,const std::atomic_bool& cancel,const Hook& hook={},
-        std::size_t minimum_frames=2,float repetition_penalty=1.05f);
+        std::size_t minimum_frames=2,float repetition_penalty=1.05f,
+        std::span<const std::uint32_t> instruction={});
 private:
     struct Impl;
     std::shared_ptr<Resources> resources_;std::shared_ptr<DenseCompute> compute_;

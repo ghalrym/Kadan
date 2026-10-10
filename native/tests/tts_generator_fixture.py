@@ -52,4 +52,8 @@ if __name__=='__main__':
     with tempfile.TemporaryDirectory() as directory:
         root=Path(directory)
         for kind in ('valid','nan','wrong','eos'):fixture(root/(kind+'.safetensors'),kind)
+        controls=dict(codec_think_id=2154,codec_think_bos_id=2156,codec_think_eos_id=2157,codec_nothink_id=2155,codec_pad_id=2148,codec_bos_id=2149,codec_eos_token_id=2150,
+            codec_language_id=dict(chinese=2055,english=2050,german=2053,italian=2070,portuguese=2071,spanish=2054,japanese=2058,korean=2064,french=2061,russian=2069,beijing_dialect=2074,sichuan_dialect=2062),
+            spk_id=dict(serena=3066,vivian=3065,uncle_fu=3010,ryan=3061,aiden=2861,ono_anna=2873,sohee=2864,eric=2875,dylan=2878),spk_is_dialect=dict(eric='sichuan_dialect',dylan='beijing_dialect'))
+        (root/'config.json').write_text(json.dumps(dict(talker_config=controls)))
         subprocess.run([sys.argv[1],str(root)],check=True)

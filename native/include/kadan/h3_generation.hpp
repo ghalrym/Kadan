@@ -13,10 +13,10 @@ struct H3GenerationRequest {
     std::size_t width=64, height=64, frames=22, updates=8;
     std::uint64_t seed=0;
 };
-struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae; };
-// Native text-to-silent-video path with a bounded CPU reference and optional CUDA execution. Joint audio latents participate
-// in denoising; audio waveform decoding is not implemented. Output is YUV4MPEG2
-// 4:4:4 or MP4 (ffmpeg codec child) at 24 fps. F32/F64 execution, not BF16/GPU numerical parity.
+struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae, audio_vae; };
+// Native joint video/audio path with optional CUDA execution. With audio_vae,
+// output is MP4 with stereo32kHz audio, or diagnostic YUV4MPEG2 plus OUTPUT.wav.
+// An empty audio_vae permits silent diagnostic fixtures. F32/F64, not BF16 parity.
 class H3Generation {
 public:
     using Hook=std::function<void(const char*,std::size_t)>;

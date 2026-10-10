@@ -1,4 +1,5 @@
 import io
+import json
 from pathlib import Path
 import threading
 import unittest
@@ -16,7 +17,7 @@ class Child:
     def exchange(self,command,timeout,cancel=None):
         self.requests+=1
         if self.failure:raise self.failure
-        assert command=='speak' and (self.workspace/'text.txt').read_text()=='Hello Andrew.'
+        assert command=='speak' and json.loads((self.workspace/'request.json').read_text())['script']=='Hello Andrew.'
         out=io.BytesIO()
         with wave.open(out,'wb') as source:source.setparams((1,2,24000,0,'NONE','NONE'));source.writeframes(b'\0\0'*1920)
         (self.workspace/'audio.wav').write_bytes(out.getvalue())
@@ -45,6 +46,13 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(self.child.starts,1);self.assertEqual(self.child.requests,2)
         values=list(self.resources.snapshot()['reservations'].values());self.assertEqual(len(values),1);self.assertEqual(values[0]['host_bytes'],PROCESS_BUDGET);self.assertEqual(values[0]['active_leases'],0)
         self.runtime.unload();self.assertEqual(self.resources.snapshot()['reservations'],{});self.assertEqual(self.child.stops,1)
+    def test_controls_are_forwarded_without_reloading(self):
+        for speaker,language,instruction in [('Vivian','Chinese','warm'),('Ono_Anna','Japanese',''),('Ryan','Auto','')]:
+            self.request=SpeechInput('Hello Andrew.',dict(mode='custom',speaker=speaker,instruction=instruction),language,'qwen-tts-1.7b-custom')
+            self.run_request()
+            sent=json.loads((self.session.workspace/'request.json').read_text())
+            self.assertEqual(sent,dict(script='Hello Andrew.',speaker=speaker,language=language,instruction=instruction))
+        self.assertEqual(self.child.starts,1)
     def test_precancel_does_not_spawn(self):
         event=threading.Event();event.set()
         with self.assertRaises(ResourceCancelled):self.runtime.generate(self.request,event)
@@ -71,7 +79,7 @@ class NativeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'ready'):self.run_request()
         self.assertEqual(self.child.stops,1);self.assertEqual(self.resources.snapshot()['reservations'],{})
     def test_unsupported_options_do_not_spawn(self):
-        for request in [SpeechInput('Hi',dict(mode='custom',speaker='Vivian'),'English','qwen-tts-1.7b-custom'),SpeechInput('Hi',dict(mode='custom',speaker='Ryan'),'French','qwen-tts-1.7b-custom')]:
+        for request in [SpeechInput('Hi',dict(mode='custom',speaker='Unknown'),'English','qwen-tts-1.7b-custom'),SpeechInput('Hi',dict(mode='custom',speaker='Ryan'),'Klingon','qwen-tts-1.7b-custom')]:
             with self.assertRaises(ValueError):self.runtime.generate(request,threading.Event())
         self.assertEqual(self.child.starts,0)
     def test_memory_pressure_does_not_spawn(self):

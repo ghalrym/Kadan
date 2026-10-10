@@ -8,6 +8,7 @@ import tempfile
 import threading
 
 from api.inference.native_compute import NativeCompute
+from api.inference.tts.catalog import SPEAKERS, LANGUAGES
 
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceCancelled
@@ -19,10 +20,11 @@ MODEL = 'qwen-tts-1.7b-custom'
 
 
 def validate(request, *, allow_empty=False):
-    if (request.model_id != MODEL or request.language not in ('Auto', 'English')
-            or request.voice.get('mode') != 'custom' or request.voice.get('speaker') != 'Ryan'
-            or request.voice.get('instruction')):
-        raise ValueError('Native TTS currently supports the 1.7B CustomVoice checkpoint, English and Ryan without instruction control.')
+    if (request.model_id != MODEL or request.language not in LANGUAGES
+            or request.voice.get('mode') != 'custom' or request.voice.get('speaker') not in SPEAKERS):
+        raise ValueError('Select a supported CustomVoice speaker and language for the native 1.7B checkpoint.')
+    if len(request.voice.get('instruction', '').encode('utf-8')) > 8000:
+        raise ValueError('Native speech instructions support at most 8000 UTF-8 bytes.')
     if allow_empty and request.script == '':
         return
     if not request.script.strip() or not 1 <= len(request.script.encode('utf-8')) <= 32000:
@@ -89,7 +91,9 @@ class NativeSpeechSession:
         if not request.script:
             raise SpeechUnavailable("Native TTS requires nonempty text.")
         self.restore(cancel)
-        (self.workspace / 'text.txt').write_text(request.script, encoding='utf-8')
+        (self.workspace / 'request.json').write_text(json.dumps(dict(script=request.script,
+            speaker=request.voice['speaker'], language=request.language,
+            instruction=request.voice.get('instruction', ''))), encoding='utf-8')
         output = self.workspace / 'audio.wav'
         if output.exists():
             output.unlink()

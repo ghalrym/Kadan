@@ -1,4 +1,5 @@
 #include "kadan/h3_generation.hpp"
+#include "kadan/h3_audio.hpp"
 #include "h3_codec.hpp"
 #include "kadan/h3_tokenizer.hpp"
 #include "kadan/h3_text.hpp"
@@ -22,13 +23,21 @@ struct Admission { std::shared_ptr<Resources> r; Handle id; Admission(std::share
 struct Workspace {
     std::string dir;
     explicit Workspace(const std::string& output){dir=(std::filesystem::path(output).parent_path()/".kadan-h3-XXXXXX").string();check(mkdtemp(dir.data())!=nullptr,"h3_generation_temp");}
-    ~Workspace(){for(const auto* name:{"features","frames","video","encoded"})unlink((dir+"/"+name).c_str());rmdir(dir.c_str());}
+    ~Workspace(){for(const auto* name:{"features","frames","video","encoded","audio"})unlink((dir+"/"+name).c_str());rmdir(dir.c_str());}
     std::string path(const char* name)const{return dir+"/"+name;}
 };
 void read_tensor(const std::string& path,const std::string& header,std::span<float> out){
     std::ifstream in(path,std::ios::binary);std::string actual(header.size(),'\0');in.read(actual.data(),actual.size());check(actual==header,"h3_generation_tensor_header");in.read(reinterpret_cast<char*>(out.data()),out.size_bytes());check(bool(in)&&in.peek()==std::char_traits<char>::eof(),"h3_generation_tensor_bytes");for(float v:out)check(std::isfinite(v),"h3_generation_nonfinite");
 }
 template<class Model> void load(Model& model,const std::string& path,const std::atomic_bool& cancel){const std::filesystem::path p(path);model.load(p.parent_path().c_str(),p.filename().string(),cancel);}
+void write_audio(const std::string& path,std::span<const float> samples,const std::atomic_bool& cancel){
+    check(samples.size()>0&&samples.size()<=2*640*800,"h3_audio_output_shape");
+    std::ofstream out(path,std::ios::binary|std::ios::trunc);check(bool(out),"h3_audio_output_open");
+    auto word=[&](std::uint32_t value,std::size_t n){for(std::size_t i=0;i<n;++i)out.put(char(value>>(8*i)));};
+    out.write("RIFF",4);word(36+samples.size()*2,4);out.write("WAVEfmt ",8);word(16,4);word(1,2);word(2,2);word(32000,4);word(128000,4);word(4,2);word(16,2);out.write("data",4);word(samples.size()*2,4);
+    for(std::size_t i=0;i<samples.size();++i){if(i%4096==0)stop(cancel);check(std::isfinite(samples[i]),"h3_audio_output_nonfinite");word(std::uint16_t(std::clamp(std::lround(samples[i]*32768),-32768L,32767L)),2);}
+    out.close();check(bool(out),"h3_audio_output_write");
+}
 void noise(std::span<float> output,std::mt19937_64& random){
     // Explicit Box-Muller transform, independent of STL normal_distribution.
     constexpr double tau=6.283185307179586476925286766559;
@@ -99,7 +108,14 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
     for(std::size_t channel=0;channel<2;++channel)for(std::size_t z=0;z<at;++z){auto i=nt+nv+channel*at+z;positions[i*3]=float(nt+z);positions[i*3+2]=axis(channel? w/2-1:0,w);tags[i]=2;}
     H3Denoiser denoiser(resources_,compute_);load(denoiser,paths.denoiser,cancel);const std::filesystem::path adapter(paths.turbo);denoiser.load_turbo(adapter.parent_path().c_str(),adapter.filename().string(),cancel);
     for(std::size_t step=0;step<request.updates;++step){stop(cancel);h3::timesteps(times,nt,nv,video_sigmas[step],audio_sigmas[step]);denoiser.execute({text,video,audio,positions,times,tags},dv,da,cancel,hook);h3::advance(video,dv,video_sigmas[step],video_sigmas[step+1]);h3::advance(audio,da,audio_sigmas[step],audio_sigmas[step+1]);if(hook)hook("denoise_completed",step+1);}
-    denoiser.unload();std::vector<float> latent(video.size());h3::unpack(video,latent,t,h,w);
+    denoiser.unload();
+    if(!paths.audio_vae.empty()){
+        Admission audio_output(resources_,at*800*2*sizeof(float)+8192);
+        std::vector<float> waveform(at*800*2);H3AudioDecoder audio_decoder(resources_);
+        const std::filesystem::path asset(paths.audio_vae);audio_decoder.load(asset.parent_path().c_str(),asset.filename().string(),{},cancel);
+        audio_decoder.decode(audio,at,waveform,cancel,[&](const char* phase,std::size_t index){if(hook)hook((std::string("audio_")+phase).c_str(),index);});audio_decoder.unload();write_audio(workspace.path("audio"),waveform,cancel);if(hook)hook("audio_decoded",at*800);
+    }
+    std::vector<float> latent(video.size());h3::unpack(video,latent,t,h,w);
     H3VideoDecoder decoder(resources_,compute_);load(decoder,paths.vae,cancel);std::vector<float> chunk(7*h*w*24),frames(3*28*request.height*request.width),tail(3*5*request.height*request.width);std::vector<unsigned char> pixels(3*request.height*request.width);
     std::ofstream output(workspace.path("video"),std::ios::binary|std::ios::trunc);check(bool(output),"h3_generation_output_open");output<<"YUV4MPEG2 W"<<request.width<<" H"<<request.height<<" F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n";
     std::size_t written=0;const auto plane=request.width*request.height;constexpr float means[]={.485f,.456f,.406f},stds[]={.229f,.224f,.225f};
@@ -113,7 +129,10 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
         if(start+7==t)for(std::size_t f=23;f<28;++f)write_frame(f);
     }
     decoder.unload();check(written==request.frames,"h3_generation_frame_count");output.close();check(bool(output),"h3_generation_output_close");stop(cancel);
-    std::string final=workspace.path("video");if(mp4){Admission codec(resources_,256ULL*1024*1024);h3::encode_mp4(final,workspace.path("encoded"),cancel,request.frames);final=workspace.path("encoded");}
-    int fd=open(final.c_str(),O_RDONLY|O_CLOEXEC);check(fd>=0,"h3_generation_output_sync");const int sync=fsync(fd);close(fd);check(sync==0,"h3_generation_output_sync");stop(cancel);check(link(final.c_str(),request.output.c_str())==0,"h3_generation_output_publish");
+    std::string final=workspace.path("video");if(mp4){Admission codec(resources_,256ULL*1024*1024);h3::encode_mp4(final,workspace.path("encoded"),cancel,request.frames,paths.audio_vae.empty()?std::string{}:workspace.path("audio"));final=workspace.path("encoded");}
+    int fd=open(final.c_str(),O_RDONLY|O_CLOEXEC);check(fd>=0,"h3_generation_output_sync");const int sync=fsync(fd);close(fd);check(sync==0,"h3_generation_output_sync");stop(cancel);
+    const auto sidecar=request.output+".wav";bool audio_published=false;
+    if(!mp4&&!paths.audio_vae.empty()){check(link(workspace.path("audio").c_str(),sidecar.c_str())==0,"h3_audio_output_publish");audio_published=true;}
+    if(link(final.c_str(),request.output.c_str())!=0){if(audio_published)unlink(sidecar.c_str());throw std::runtime_error("h3_generation_output_publish");}
 }
 }

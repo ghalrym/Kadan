@@ -10,6 +10,7 @@ import threading
 import shutil
 import subprocess
 import json
+import wave
 
 import os
 import tempfile
@@ -47,8 +48,10 @@ class Worker:
         with raw.open('wb') as stream:
             stream.write(header)
             stream.truncate(len(header) + 107*(6 + 864*480*3))
+        with wave.open(str(raw)+'.wav','wb') as audio:
+            audio.setparams((2,2,32000,0,'NONE','NONE'));audio.writeframes(b'\0'*round(107*5/3)*800*4)
         return dict(output=str(raw), width=864, height=480, frames=107,
-                    audio=False, resident_bytes=0, device_resident_bytes=[1, 0] if self.bad_ledger else [0, 0])
+                    audio=True, resident_bytes=0, device_resident_bytes=[1, 0] if self.bad_ledger else [0, 0])
 
 
 def setup(monkeypatch, **kwargs):
@@ -180,12 +183,17 @@ class H3WorkerTests(unittest.TestCase):
         raw, output = self.root/'raw.y4m', self.root/'out.mp4'
         raw.write_bytes(b'YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n' +
                         (b'FRAME\n' + bytes([128])*(64*64*3))*2)
+        with wave.open(str(raw)+'.wav','wb') as audio:
+            audio.setparams((2,2,32000,0,'NONE','NONE'));audio.writeframes(b'\0'*round(2*5/3)*800*4)
         provider = H3Provider()
         try:
             provider._encode(raw, output, 2, threading.Event())
             report = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-count_frames',
-                '-show_entries', 'stream=width,height,nb_read_frames', '-of', 'json', str(output)]))
-            self.assertEqual(report['streams'], [dict(width=64, height=64, nb_read_frames='2')])
+                '-show_entries', 'stream=codec_type,width,height,nb_read_frames,sample_rate,channels', '-of', 'json', str(output)]))
+            self.assertEqual(report['streams'][0],dict(codec_type='video',width=64,height=64,nb_read_frames='2'))
+            self.assertEqual(report['streams'][1]['codec_type'],'audio')
+            self.assertEqual(report['streams'][1]['sample_rate'],'32000')
+            self.assertEqual(report['streams'][1]['channels'],2)
             self.assertIsNone(provider._codec)
         finally:
             provider.close()

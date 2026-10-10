@@ -21,12 +21,15 @@ def save(path,model,bfloat):
     encoded=json.dumps(header).encode();path.write_bytes(struct.pack('<Q',len(encoded))+encoded+data)
 
 
-def reference(model,frames):
+def reference(model,frames,variant):
     def text(ids):return model.text_projection(model.model.text_embedding(torch.tensor([ids])))
     def codec(ids):return model.model.codec_embedding(torch.tensor([ids]))
     pad=text([5]);bos=text([3]);end=text([4])
-    prefix=codec([16,17,18,19,20,21])+torch.cat([pad]*5+[bos],dim=1)
-    inputs=torch.cat([text([0,1,2]),prefix,text([6,7])+codec([21]),end+codec([21]),pad+codec([22])],dim=1)
+    speaker=19 if variant&2 else 20;language=17 if variant&2 else 18
+    ids=[16,17,19,speaker,21] if variant&1 else [16,17,language,19,speaker,21]
+    prefix=codec(ids)+torch.cat([pad]*(len(ids)-1)+[bos],dim=1)
+    lead=[text([8,9,10])] if variant&2 else []
+    inputs=torch.cat(lead+[text([0,1,2]),prefix,text([6,7])+codec([21]),end+codec([21]),pad+codec([22])],dim=1)
     result=[];previous=set()
     for frame in range(frames):
         hidden=model.model(inputs_embeds=inputs,use_cache=False).last_hidden_state[:,-1:]
@@ -59,9 +62,10 @@ def main(binary):
             with tempfile.TemporaryDirectory() as directory,torch.no_grad():
                 root=Path(directory);save(root/'weights.safetensors',model,bfloat)
                 for frames in (1,3,6):
-                    expected=reference(model,frames);actual=json.loads(subprocess.check_output([binary,str(root),str(frames)]))
-                    assert actual['codes']==expected,(seed,bfloat,frames,actual,expected)
-                    assert actual['resident_bytes']==0 and not actual['stopped']
-                    rows.append(dict(seed=seed,dtype='BF16' if bfloat else 'F32',frames=frames,codes=expected))
+                    for variant in range(4):
+                        expected=reference(model,frames,variant);actual=json.loads(subprocess.check_output([binary,str(root),str(frames),str(variant)]))
+                        assert actual['codes']==expected,(seed,bfloat,frames,variant,actual,expected)
+                        assert actual['resident_bytes']==0 and not actual['stopped']
+                        rows.append(dict(seed=seed,dtype='BF16' if bfloat else 'F32',frames=frames,variant=variant,codes=expected))
     print(json.dumps(dict(cases=rows,case_count=len(rows),gpu_execution=False,real_checkpoint_validated=False),indent=2),file=REPORT)
 if __name__=='__main__':main(sys.argv[1])

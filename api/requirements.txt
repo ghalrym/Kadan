@@ -9,3 +9,4 @@ httpx==0.28.1
 -r requirements-runtime.txt
 
 redis==6.4.0
+Pillow==11.3.0

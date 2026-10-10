@@ -18,6 +18,7 @@ import numpy as np
 
 from api.inference.errors import InferenceFailure
 from api.inference.native_compute import NativeCompute, native_compute
+from api.inference.native_assets import ensure_assets
 from api.inference.failure_cleanup import clear_failure_frames
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceCancelled
@@ -35,12 +36,22 @@ def cancelled(event):
         raise ResourceCancelled('Transcription cancelled')
 
 
-def resolve(model, compute=None):
+def resolve(model, compute=None, resources=None, cancel=None):
+    def digest_file(stream):
+        digest = hashlib.sha256()
+        while chunk := stream.read(1024 * 1024):
+            cancelled(cancel)
+            digest.update(chunk)
+        return digest.hexdigest()
     compute = compute or NativeCompute("WHISPER")
     entry = checkpoint(model)
     binary = Path(os.environ.get('KADAN_NATIVE_WHISPER_WORKER') or '/opt/kadan/bin/kadan-whisper-worker')
     root = Path(os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT') or model_manager.root / 'native/whisper' / entry.name)
     assets = Path(os.environ.get('KADAN_NATIVE_WHISPER_ASSET_ROOT') or root / 'assets')
+    if not root.exists() and not os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT'):
+        _, source = model_manager.get_checkpoint('whisper-' + entry.name)
+        ensure_assets('whisper', source / (entry.name + '.pt'), root,
+            resources or chat_runtime.ensure_resources(), cancel, entry.sha256)
     if not binary.is_absolute() or not root.is_absolute() or not assets.is_absolute():
         raise InferenceFailure('Configure absolute native Whisper worker, model and asset paths.')
     capability = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True, env=compute.environment())
@@ -54,7 +65,7 @@ def resolve(model, compute=None):
     if report['source_sha256'] != entry.sha256 or weight.stat().st_size != report['output_bytes']:
         raise InferenceFailure('Native Whisper export does not match the selected checkpoint.')
     with weight.open('rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != report['output_sha256']:
+        if digest_file(stream) != report['output_sha256']:
             raise InferenceFailure('Native Whisper export integrity verification failed.')
     assets_report = assets / 'assets.json'
     if assets_report.stat().st_size > 16384:
@@ -68,7 +79,7 @@ def resolve(model, compute=None):
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 8 * 1024**2:
             raise InferenceFailure('Invalid native Whisper asset file.')
         with path.open('rb') as stream:
-            if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+            if digest_file(stream) != expected:
                 raise InferenceFailure('Native Whisper asset integrity verification failed.')
     return [str(binary), str(root), weight.name, str(root / 'dimensions.txt'), str(assets)]
 
@@ -178,7 +189,7 @@ class NativeWhisper:
                         raise LineProtocolError('Whisper resume was not acknowledged')
                     self.parked = False
             return
-        command = resolve(model, compute) if self.resolver is resolve else self.resolver(model)
+        command = resolve(model, compute, resources, cancel) if self.resolver is resolve else self.resolver(model)
         self._close()
         self.compute = compute
         self.admission = resources.reserve(self.owner, 'speech', host_bytes=PROCESS_BUDGET, evict=self.evict, cancel_event=cancel)

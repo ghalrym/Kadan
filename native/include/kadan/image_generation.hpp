@@ -6,7 +6,7 @@
 #include <span>
 #include <string>
 namespace kadan::image {
-struct ImageRequest { std::string prompt;std::size_t width=128,height=128,steps=4;std::uint64_t seed=0; };
+struct ImageRequest { std::string prompt;std::size_t width=2048,height=2048,steps=50;std::uint64_t seed=0; };
 // Complete checkpoint-specific text-to-image pipeline, single CPU image. Editing
 // and CFG are not supported by this boundary. Executors own separate pipelines.
 class Generator {

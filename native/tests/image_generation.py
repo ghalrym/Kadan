@@ -8,4 +8,5 @@ with tempfile.TemporaryDirectory() as directory:
   if tag==b'IDAT':compressed+=body
   at+=count+12
  assert tags==[b'IHDR',b'IDAT',b'IEND'];assert zlib.decompress(compressed)==(bytes([0])+bytes([0,255,128,255])*2)*2
+ wide=(root/'wide.png').read_bytes();assert struct.unpack('>II',wide[16:24])==(2752,1536);assert len(wide)>16*1024**2
  print('PNG pixels, integrity, exclusive publication, cancellation and request bounds passed')

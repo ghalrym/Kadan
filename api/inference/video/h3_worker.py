@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import wave
 
 from api.inference.errors import InferenceFailure
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
@@ -101,7 +102,7 @@ def resolve_command(model_id):
         raise InferenceFailure('Native H3 worker is unavailable; configure KADAN_NATIVE_H3_WORKER.')
     # This mode only reports compile-time capabilities: no model or CUDA context.
     result = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True)
-    expected = dict(protocol=1, cuda=True, audio=False, host_budget=HOST_BUDGET, device_budget=DEVICE_BUDGET)
+    expected = dict(protocol=1, cuda=True, audio=True, host_budget=HOST_BUDGET, device_budget=DEVICE_BUDGET)
     if decode_response(result.stdout) != expected:
         raise InferenceFailure('H3 requires the CUDA native worker with protocol 1.')
     entry, checkpoint = model_manager.get_checkpoint(model_id)
@@ -110,9 +111,9 @@ def resolve_command(model_id):
     names = ('FL2VA/tokenizer/tokenizer.json', 'FL2VA/text_encoder/model.safetensors',
              'FL2VA/transformer/model.safetensors',
              'loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
-             'FL2VA/video_vae/model.safetensors')
+             'FL2VA/video_vae/model.safetensors', 'FL2VA/audio_vae/model.safetensors')
     paths = [checkpoint / name for name in names]
-    if not all(path.is_file() for path in paths):
+    if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
         raise InferenceFailure('H3 checkpoint is incomplete.')
     if shutil.which('ffmpeg') is None:
         raise InferenceFailure('H3 requires the FFmpeg codec executable.')
@@ -123,7 +124,7 @@ def validate_artifact(response, raw, spec):
     fields = {'output', 'width', 'height', 'frames', 'audio', 'resident_bytes', 'device_resident_bytes'}
     if not isinstance(response, dict) or set(response) != fields:
         raise LineProtocolError('H3 generation failed: ' + str(response)[:200])
-    if (response['output'] != str(raw) or response['audio'] is not False
+    if (response['output'] != str(raw) or response['audio'] is not True
             or type(response['resident_bytes']) is not int or response['resident_bytes'] != 0
             or response['device_resident_bytes'] != [0, 0]
             or any(type(n) is not int or n != 0 for n in response['device_resident_bytes'])):
@@ -144,6 +145,16 @@ def validate_artifact(response, raw, spec):
     expected_header = f'YUV4MPEG2 W{width} H{height} F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n'.encode()
     if header != expected_header or raw.stat().st_size != len(header) + frames * (6 + width * height * 3):
         raise LineProtocolError('H3 artifact is truncated or has an invalid header')
+    audio = Path(str(raw) + '.wav')
+    expected_samples = round(frames * 5 / 3) * 800
+    if audio.is_symlink() or not audio.is_file() or audio.stat().st_size != 44 + expected_samples * 4:
+        raise LineProtocolError('H3 audio artifact is missing or truncated')
+    try:
+        with wave.open(str(audio), 'rb') as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getnframes()) != (2, 2, 32000, expected_samples):
+                raise LineProtocolError('H3 audio format or duration mismatch')
+    except (wave.Error, EOFError) as error:
+        raise LineProtocolError('H3 audio header is invalid') from error
     return frames
 
 
@@ -224,7 +235,9 @@ class H3Provider:
         check_cancel(cancel)
         self._codec = LineProtocolProcess()
         self._codec.start([shutil.which('ffmpeg'), '-nostdin', '-v', 'error', '-n',
-            '-threads', '1', '-i', str(raw), '-an', '-c:v', 'libx264', '-threads', '1',
+            '-threads', '1', '-i', str(raw), '-i', str(raw) + '.wav',
+            '-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-b:a', '192k',
+            '-c:v', 'libx264', '-threads', '1',
             '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-progress', 'pipe:1',
             '-nostats', '-fs', str(raw.stat().st_size + 16 * 1024**2), str(target)])
         deadline = time.monotonic() + 3600
