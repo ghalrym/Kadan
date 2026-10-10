@@ -644,3 +644,58 @@ if(KADAN_ENABLE_WHISPER_BLAS)
   target_compile_definitions(kadan_whisper PRIVATE KADAN_WHISPER_BLAS=1)
   target_link_libraries(kadan_whisper PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()
+
+add_library(kadan_tts_audio src/tts_audio.cpp)
+target_link_libraries(kadan_tts_audio PUBLIC kadan_checkpoint kadan_resources)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_tts_audio PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+endif()
+
+add_executable(kadan-tts-audio-decode src/tts_audio_decode.cpp)
+target_link_libraries(kadan-tts-audio-decode PRIVATE kadan_tts_audio)
+if(BUILD_TESTING)
+  add_executable(tts-audio-tests tests/tts_audio.cpp)
+  target_link_libraries(tts-audio-tests PRIVATE kadan_tts_audio)
+  add_test(NAME tts-audio COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tts_audio_fixture.py" "$<TARGET_FILE:tts-audio-tests>")
+  set_tests_properties(tts-audio PROPERTIES TIMEOUT 120)
+endif()
+
+add_library(kadan_tts_generator src/tts_generator.cpp)
+target_link_libraries(kadan_tts_generator PUBLIC kadan_checkpoint kadan_resources)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_tts_generator PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(tts-generator-tests tests/tts_generator.cpp)
+  target_link_libraries(tts-generator-tests PRIVATE kadan_tts_generator)
+  add_test(NAME tts-generator COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tts_generator_fixture.py" "$<TARGET_FILE:tts-generator-tests>")
+  set_tests_properties(tts-generator PROPERTIES TIMEOUT 120)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(tts-generator-reference tests/tts_generator_reference.cpp)
+  target_link_libraries(tts-generator-reference PRIVATE kadan_tts_generator)
+endif()
+
+option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
+if(KADAN_ENABLE_TTS_WORKER)
+  find_package(nlohmann_json 3.10 REQUIRED)
+  find_package(ICU REQUIRED COMPONENTS uc i18n)
+  find_library(KADAN_TTS_PCRE2 pcre2-8 REQUIRED)
+  add_library(kadan_tts_tokenizer src/tts_tokenizer.cpp)
+  target_link_libraries(kadan_tts_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TTS_PCRE2})
+  target_compile_options(kadan_tts_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_executable(kadan-tts-tokenize src/tts_tokenize.cpp)
+  target_link_libraries(kadan-tts-tokenize PRIVATE kadan_tts_tokenizer)
+  add_executable(kadan-tts-worker src/tts_worker.cpp)
+  target_link_libraries(kadan-tts-worker PRIVATE kadan_tts_generator kadan_tts_audio kadan_tts_tokenizer)
+  target_compile_options(kadan-tts-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  install(TARGETS kadan-tts-worker
+    RUNTIME_DEPENDENCIES
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+    RUNTIME DESTINATION libexec COMPONENT tts-runtime
+    LIBRARY DESTINATION lib COMPONENT tts-runtime)
+  install(PROGRAMS packaging/run_tts_worker.sh DESTINATION bin RENAME kadan-tts-worker COMPONENT tts-runtime)
+endif()

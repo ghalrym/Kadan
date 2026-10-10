@@ -5,6 +5,7 @@ import gc
 import io
 import logging
 import os
+from pathlib import Path
 import threading
 
 from api.inference.placement import select_device
@@ -13,6 +14,7 @@ from api.inference.tts.speech_runtime import SpeechInput, SpeechModel, SpeechPla
 from api.services.model_downloads import model_manager
 from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
 from api.inference.tts import enabled as speech_enabled
+from api.inference.tts.native_worker import NativeSpeechSession, PROCESS_BUDGET, verify_tokenizer, validate as validate_native
 
 
 log = logging.getLogger(__name__)
@@ -20,6 +22,9 @@ log = logging.getLogger(__name__)
 
 class QwenSpeechProvider:
     def models(self):
+        if os.environ.get("KADAN_NATIVE_TTS_WORKER"):
+            model = SPEECH_MODELS["qwen-tts-1.7b-custom"]
+            return (SpeechModel(model.id, model.name, model.mode, ("Ryan",), False, "Ryan"),)
         return tuple(SpeechModel(item.id, item.name, item.mode,
             SPEAKERS if item.mode == 'custom' else (), item.id == 'qwen-tts-1.7b-custom',
             'Ryan' if item.mode == 'custom' else None)
@@ -29,6 +34,9 @@ class QwenSpeechProvider:
         return model_id in speech_enabled.ENABLED_SPEECH_MODELS
 
     def validate(self, request: SpeechInput):
+        if os.environ.get("KADAN_NATIVE_TTS_WORKER"):
+            validate_native(request)
+            return
         if request.language not in LANGUAGES:
             raise ValueError('Unsupported speech language')
         voice = request.voice
@@ -60,6 +68,18 @@ class QwenSpeechProvider:
             raise SpeechUnavailable(str(exc)) from exc
         if entry.revision != model.revision:
             raise SpeechUnavailable('The selected Qwen checkpoint revision does not match the adapter.')
+        if os.environ.get('KADAN_NATIVE_TTS_WORKER'):
+            validate_native(request)
+            binary = Path(os.environ['KADAN_NATIVE_TTS_WORKER'])
+            tokenizer = Path(os.environ.get('KADAN_NATIVE_TTS_TOKENIZER', ''))
+            if not binary.is_absolute() or not tokenizer.is_absolute() or not binary.is_file() or not tokenizer.is_file():
+                raise SpeechUnavailable('Configure absolute native TTS worker and tokenizer paths.')
+            try:
+                verify_tokenizer(checkpoint, tokenizer)
+            except (OSError, KeyError, ValueError, TypeError) as error:
+                raise SpeechUnavailable("Invalid or missing native TTS tokenizer export.") from error
+            return SpeechPlan(('qwen-native', model.id, model.revision, str(checkpoint), str(binary), str(tokenizer)),
+                PROCESS_BUDGET, lambda: NativeSpeechSession(checkpoint, tokenizer, binary, model.name))
         device = os.environ.get('KADAN_QWEN_TTS_DEVICE', 'auto')
         budget = model.estimated_bytes * 3 + 2 * 1024**3
         if resources is not None:

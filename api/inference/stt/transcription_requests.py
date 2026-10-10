@@ -10,6 +10,10 @@ class TranscriptionRequests:
     @property
     def adapter(self):
         return getattr(self.transcriber, "_cpp", None) or self.transcriber.whisper_model
+    def check_execution_state(self):
+        check = getattr(self.adapter, "check_execution_state", None)
+        if check is not None:
+            check()
     def select(self, request):
         return request.model or self.transcriber.selected()
     def validate(self, payload, operation):
