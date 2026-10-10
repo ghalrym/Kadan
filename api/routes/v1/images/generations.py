@@ -12,7 +12,8 @@ class ImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
-    seed: int | None = Field(default=None, ge=0)
+    seed: int | None = Field(default=None, ge=0, le=2**64 - 1)
+    steps: int = Field(default=50, ge=2, le=100)
 
 
 class ImageResponse(BaseModel):
@@ -21,5 +22,5 @@ class ImageResponse(BaseModel):
 
 @router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="generateImages")
 async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
-    """Queue validated inference; unavailable providers still return HTTP 503."""
+    """Generate PNG images through the optional native CPU worker and shared FIFO."""
     return await infer(request, memory_manager.submit(body, feature='image', operation='generate'))
