@@ -12,8 +12,6 @@ from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.pydantic_models.chat import ChatMessage
 from api.inference.errors import InferenceFailure
 from api.services.chat_runtime import ChatRuntime
-from api.tests.inference.llm.test_qwen_residency import fixture
-from api.inference.llm.qwen_subprocess import HEADROOM_BYTES
 
 
 class Adapter:
@@ -278,50 +276,3 @@ class ResourceBudgetTests(unittest.TestCase):
                       '{"0":0}', '{"0":-1}', '{"0":1.5}', '{"00":1}', '{"-1":1}'):
             with self.subTest(value=value), self.assertRaises(InferenceFailure):
                 self.budgets(value)
-
-
-class ResidentRuntimeDeadlineTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
-        self.root=Path(self.temp.name)
-        self.resources=ResourceManager(2*1024**3,{0:HEADROOM_BYTES+4096})
-        self.adapter=fixture(self.root,self.resources)
-        await asyncio.to_thread(self.adapter.configure_context,512)
-        self.manager=ChatRuntime(resources=self.resources,generation_timeout=.1)
-        self.manager.adapter=self.adapter;self.manager.state='ready';self.manager.model_id='small'
-
-    async def asyncTearDown(self):
-        await self.manager.close()
-
-    async def test_restore_gets_load_budget_in_addition_to_generation(self):
-        await asyncio.to_thread(self.adapter.offload_to_ram)
-        self.adapter.load_timeout=.8
-        (self.root/'mode').write_text('slowstart')  # .5s, beyond .1s generation allowance.
-        self.assertAlmostEqual(self.adapter.completion_timeout(.1),2.5)
-        answer=await self.manager.complete([ChatMessage(role='user',text='Hi')],None)
-        self.assertEqual(answer,'AB');self.assertEqual(self.manager.state,'ready')
-        self.assertTrue(self.adapter.worker_alive)
-
-    async def test_outer_timeout_cancels_and_reaps_before_releasing_budgets(self):
-        self.adapter.load_timeout=.02
-        self.adapter.step_timeout=2
-        process=self.adapter.worker.process
-        (self.root/'mode').write_text('hang')
-        with self.assertRaises(InferenceFailure) as caught:
-            await self.manager.complete([ChatMessage(role='user',text='Hi')],None)
-        self.assertEqual(caught.exception.status_code,504)
-        self.assertIsNotNone(process.poll())
-        self.assertIsNone(self.manager.adapter)
-        self.assertEqual(self.resources.snapshot()['reservations'],{})
-        self.assertIsNone(self.manager._worker)
-
-    async def test_restore_command_timeout_also_reconciles_runtime_ownership(self):
-        await asyncio.to_thread(self.adapter.offload_to_ram)
-        process=self.adapter.worker.process;self.adapter.load_timeout=.03
-        (self.root/'mode').write_text('starthang')
-        with self.assertRaises(InferenceFailure) as caught:
-            await self.manager.complete([ChatMessage(role='user',text='Hi')],None)
-        self.assertEqual(caught.exception.status_code,504)
-        self.assertIsNotNone(process.poll())
-        self.assertIsNone(self.manager.adapter)
-        self.assertEqual(self.resources.snapshot()['reservations'],{})

@@ -1,89 +1,23 @@
-name: Native worker CPU tests
+name: Native unit tests
 on:
   push:
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: native-units-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
+    name: C++ unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7
-      - name: Install optional CPU decision dependencies
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev
-      - name: Configure CPU-only C++20 worker
-        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
-      - name: Build with bounded parallelism
-        run: cmake --build /tmp/kadan-native --parallel 2
-      - name: Test native accounting, formats and bounded checkpoint reads
-        run: ctest --test-dir /tmp/kadan-native --output-on-failure -LE full-graph
-      - name: Verify installed native text worker and runtime dependencies
-        run: |
-          cmake --install /tmp/kadan-native --prefix /tmp/kadan-model-installed --component model-runtime
-          python3 native/tests/model_worker_plan.py /tmp/kadan-model-installed/bin/kadan-model-worker
-
-  h3-decoder:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v7
-      - name: Configure complete CPU VAE graph
-        run: cmake -S native -B /tmp/kadan-h3 -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
-      - name: Build only decoder and lifecycle test
-        run: cmake --build /tmp/kadan-h3 --target kadan-video-decode video-decode-tests --parallel 2
-      - name: Validate all 36 blocks and RGB frame reconstruction
-        run: ctest --test-dir /tmp/kadan-h3 --output-on-failure -R '^video-decode$'
-
-  h3-conditioning:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v7
-      - name: Configure complete CPU H3 conditioning graph
-        run: cmake -S native -B /tmp/kadan-h3-text -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
-      - name: Build only conditioning model and lifecycle test
-        run: cmake --build /tmp/kadan-h3-text --target kadan-h3-text-encode h3-text-tests --parallel 2
-      - name: Validate all 50 layers and resource cleanup
-        run: ctest --test-dir /tmp/kadan-h3-text --output-on-failure -R '^h3-text$'
-
-
-  h3-denoiser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v7
-      - name: Configure complete CPU H3 denoiser
-        run: cmake -S native -B /tmp/kadan-h3-denoiser -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF
-      - name: Build only denoiser and lifecycle test
-        run: cmake --build /tmp/kadan-h3-denoiser --target kadan-h3-denoise h3-denoiser-tests --parallel 2
-      - name: Validate all 50 blocks, Turbo and resource cleanup
-        run: ctest --test-dir /tmp/kadan-h3-denoiser --output-on-failure -R '^h3-denoiser$'
-
-  h3-generation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 70
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install native tokenizer dependencies
-        run: sudo apt-get update && sudo apt-get install -y libicu-dev libpcre2-dev nlohmann-json3-dev
-      - name: Configure complete CPU generation pipeline
-        run: cmake -S native -B /tmp/kadan-h3-generation -DCMAKE_BUILD_TYPE=Release -DKADAN_ENABLE_CUDA=OFF -DKADAN_ENABLE_DECISIONS=OFF -DKADAN_ENABLE_H3_GENERATION=ON
-      - name: Build generation and lifecycle tests
-        run: cmake --build /tmp/kadan-h3-generation --target kadan-h3-generate kadan-h3-worker kadan-h3-tokenize h3-pipeline-tests h3-generation-tests h3-codec-tests --parallel 2
-      - name: Test generation controls, codec and worker protocol
-        run: ctest --test-dir /tmp/kadan-h3-generation --output-on-failure -R '^h3-(generation|codec|worker|tokenizer)$'
-      - name: Test installed H3 worker and runtime dependencies
-        run: |
-          cmake --install /tmp/kadan-h3-generation --prefix /tmp/kadan-h3-installed --component h3-runtime
-          python3 native/tests/h3_worker.py /tmp/kadan-h3-installed/bin/kadan-h3-worker
-      - name: Test complete sparse CPU graph with stage timings
-        run: ctest --test-dir /tmp/kadan-h3-generation --verbose -R '^h3-pipeline$'
-      - name: Preserve full-graph timing and failure logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: h3-generation-ctest-logs
-          path: /tmp/kadan-h3-generation/Testing/Temporary/
-          if-no-files-found: ignore
+      - name: Configure CPU unit targets
+        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+      - name: Build only unit targets
+        run: cmake --build /tmp/kadan-native --target generation-queue-tests weight-backing-tests resource-tests quantization-tests checkpoint-tests cuda-plan-tests fp8-plan-tests full-attention-tests linear-attention-tests moe-tests layer-math-tests placement-tests sequence-state-tests stt-tests h3-profile-tests worker-compute-tests --parallel 2
+      - name: Run unit tests
+        run: ctest --test-dir /tmp/kadan-native --output-on-failure

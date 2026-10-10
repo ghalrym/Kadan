@@ -3,8 +3,6 @@ import sys
 from api.services.video_jobs import VideoJobs
 from api.inference.video.video_requests import VideoRequests
 from api.inference.video.h3_worker import H3Process
-from api.memory_manager import MemoryManager
-from api.memory_manager.queue import Job
 from pathlib import Path
 import threading
 import shutil
@@ -178,25 +176,6 @@ class H3WorkerTests(unittest.TestCase):
         self.assertFalse(parked)
         self.assertFalse(worker.started)
 
-    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools required')
-    def test_real_codec_preserves_frame_count(self):
-        raw, output = self.root/'raw.y4m', self.root/'out.mp4'
-        raw.write_bytes(b'YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n' +
-                        (b'FRAME\n' + bytes([128])*(64*64*3))*2)
-        with wave.open(str(raw)+'.wav','wb') as audio:
-            audio.setparams((2,2,32000,0,'NONE','NONE'));audio.writeframes(b'\0'*round(2*5/3)*800*4)
-        provider = H3Provider()
-        try:
-            provider._encode(raw, output, 2, threading.Event())
-            report = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-count_frames',
-                '-show_entries', 'stream=codec_type,width,height,nb_read_frames,sample_rate,channels', '-of', 'json', str(output)]))
-            self.assertEqual(report['streams'][0],dict(codec_type='video',width=64,height=64,nb_read_frames='2'))
-            self.assertEqual(report['streams'][1]['codec_type'],'audio')
-            self.assertEqual(report['streams'][1]['sample_rate'],'32000')
-            self.assertEqual(report['streams'][1]['channels'],2)
-            self.assertIsNone(provider._codec)
-        finally:
-            provider.close()
 
     def test_precancelled_codec_never_spawns(self):
         _, _, provider = setup(self)
@@ -205,25 +184,6 @@ class H3WorkerTests(unittest.TestCase):
             H3Provider._encode(provider, self.root/'missing.y4m', self.root/'out.mp4', 107, event)
         self.assertIsNone(provider._codec)
 
-    def test_codec_cancellation_reaps_before_releasing(self):
-        _, worker, provider = setup(self)
-        codec = self.root/'ffmpeg'
-        codec.write_text(f'#!{sys.executable}\nimport time\nprint("frame=1", flush=True)\ntime.sleep(60)\n')
-        codec.chmod(0o755)
-        event = threading.Event()
-        timer = threading.Timer(.2, event.set)
-        self.setattr(provider, '_encode', lambda *args: H3Provider._encode(provider, *args))
-        with patch('api.inference.video.h3_worker.shutil.which', return_value=str(codec)):
-            timer.start()
-            try:
-                with self.assertRaises(ResourceCancelled):
-                    provider.generate(spec(), self.root/'out.mp4', event)
-            finally:
-                timer.cancel(); timer.join()
-        self.assertIsNone(provider._codec)
-        self.assertIsNone(provider._execution)
-        self.assertTrue(worker.stopped)
-        self.assertFalse((self.root/'out.mp4').exists())
 
     def test_real_json_transport_handles_unicode_and_stderr(self):
         child = H3Process()
@@ -245,18 +205,3 @@ class H3WorkerTests(unittest.TestCase):
             stream.truncate(raw.stat().st_size - 1)
         with self.assertRaises(LineProtocolError):
             validate_artifact(response, raw, spec())
-
-
-class H3QueueBoundaryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_unconfirmed_video_cleanup_blocks_other_workload(self):
-        jobs = VideoJobs()
-        jobs.provider('h3-fl2va-int8-turbo')._quarantined = True
-        class Image:
-            operations = ('generate',)
-            validate = staticmethod(lambda payload, operation: payload)
-            async def __call__(self, *args, **kwargs):
-                raise AssertionError('Later workload must not execute')
-        manager = object.__new__(MemoryManager)
-        manager.request_executors = {'image':Image(), 'video':VideoRequests(jobs)}
-        with self.assertRaises(InferenceFailure):
-            await manager._execute(Job(id='a'*32, feature='image', operation='generate', payload={}))

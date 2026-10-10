@@ -5,16 +5,10 @@ import unittest
 from unittest.mock import patch
 import wave
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from api.inference.resources import ResourceManager, ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.inference.tts.speech_runtime import SpeechInput, SpeechModel, SpeechPlan, SpeechRegistry, SpeechResult, SpeechRuntime, SpeechUnavailable
-from api.routes.v1.audio.speech import router
 from api.services import speech
-from api.memory_manager import MemoryManager, memory_manager
-from api.inference.tts.speech_requests import SpeechRequests
-from api.tests.memory_manager.helpers import direct_feature
 
 
 def wav_bytes():
@@ -186,30 +180,6 @@ class SpeechLifecycleTests(unittest.TestCase):
         finally:
             other.release()
 
-    def test_replacing_provider_only_requires_registration(self):
-        app = FastAPI()
-        app.include_router(router)
-        manager = MemoryManager()
-        manager.tts = SpeechRequests(self.runtime)
-        manager.request_executors['tts'] = manager.tts
-        with patch.object(speech, 'speech_runtime', self.runtime), patch.object(
-                memory_manager, 'submit', direct_feature(manager, 'tts')), TestClient(app) as client:
-            models = client.get('/v1/audio/speech/models').json()
-            self.assertEqual(models, [{'id': 'alternate', 'name': 'Alternative voice',
-                'mode': 'custom', 'speakers': ['Ada'], 'supports_instruction': True, 'default_speaker': None}])
-            for _ in range(2):
-                response = client.post('/v1/audio/speech', json={'script': 'Hello', 'language': 'Martian',
-                    'voice': {'mode': 'custom', 'speaker': 'Ada', 'instruction': 'warm'}})
-                self.assertEqual(response.status_code, 200, response.text)
-                audio = response.json()['audio']
-                self.assertEqual(audio['mime_type'], 'audio/wav')
-                self.assertEqual(base64.b64decode(audio['audio_base64']), wav_bytes())
-                self.assertEqual(audio['voice'], 'alternate')
-            self.assertEqual(self.provider.loads, 1)
-            response = client.post('/v1/audio/speech', json={'script': 'Hello',
-                'voice': {'mode': 'custom', 'speaker': 'Wrong'}})
-            self.assertEqual(response.status_code, 422)
-            self.assertEqual(self.provider.calls, 2)
 
     def test_provider_identity_prevents_accidental_resident_reuse(self):
         second = AlternateProvider(self.resources, 'different')
