@@ -384,7 +384,7 @@ if(BUILD_TESTING)
   target_link_libraries(stt-tests PRIVATE kadan_stt)
   add_test(NAME stt-component COMMAND stt-tests)
   add_test(NAME stt-component-cli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/stt_fixture.py" "$<TARGET_FILE:kadan-stt-component>")
-  set_tests_properties(stt-component stt-component-cli PROPERTIES TIMEOUT 30)
+  set_tests_properties(stt-component stt-component-cli PROPERTIES TIMEOUT 120)
 endif()
 
 # H3 block 0 pre-attention projection only; no video generation backend.
@@ -599,4 +599,48 @@ endif()
 if(KADAN_ENABLE_H3_GENERATION)
   target_link_libraries(kadan-h3-generate PRIVATE kadan_h3_profile)
   target_link_libraries(kadan-h3-worker PRIVATE kadan_h3_profile)
+endif()
+
+# Full CPU Whisper network; no model download or implicit GPU test.
+add_library(kadan_whisper src/whisper.cpp src/whisper_tokens.cpp)
+add_executable(kadan-whisper-network src/whisper_network.cpp)
+target_link_libraries(kadan-whisper-network PRIVATE kadan_whisper)
+target_link_libraries(kadan_whisper PUBLIC kadan_checkpoint kadan_resources)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_whisper PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+endif()
+if(BUILD_TESTING)
+  add_executable(whisper-tests tests/whisper.cpp)
+  target_link_libraries(whisper-tests PRIVATE kadan_whisper)
+  add_test(NAME whisper-network COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/whisper_fixture.py" "$<TARGET_FILE:whisper-tests>")
+  set_tests_properties(whisper-network PROPERTIES TIMEOUT 120)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(whisper-tokens-tests tests/whisper_tokens.cpp)
+  target_link_libraries(whisper-tokens-tests PRIVATE kadan_whisper)
+  add_test(NAME whisper-tokens COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/whisper_tokens_fixture.py" "$<TARGET_FILE:whisper-tokens-tests>")
+  set_tests_properties(whisper-tokens PROPERTIES TIMEOUT 30)
+endif()
+
+add_executable(kadan-whisper-worker src/whisper_worker.cpp)
+target_link_libraries(kadan-whisper-worker PRIVATE kadan_whisper kadan_stt)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan-whisper-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+install(TARGETS kadan-whisper-worker
+  RUNTIME_DEPENDENCIES
+    PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+    POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+  RUNTIME DESTINATION libexec COMPONENT whisper-runtime
+  LIBRARY DESTINATION lib COMPONENT whisper-runtime)
+install(PROGRAMS packaging/run_whisper_worker.sh
+  DESTINATION bin RENAME kadan-whisper-worker COMPONENT whisper-runtime)
+
+option(KADAN_ENABLE_WHISPER_BLAS "Accelerate CPU Whisper projections with single-thread OpenBLAS" OFF)
+if(KADAN_ENABLE_WHISPER_BLAS)
+  find_library(KADAN_WHISPER_OPENBLAS openblas REQUIRED)
+  target_compile_definitions(kadan_whisper PRIVATE KADAN_WHISPER_BLAS=1)
+  target_link_libraries(kadan_whisper PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()

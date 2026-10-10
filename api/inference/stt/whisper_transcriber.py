@@ -19,6 +19,7 @@ from api.inference.resources import ResourceBusy, ResourceExhausted, ResourceCan
 from api.services.model_downloads import model_manager
 from api.inference.errors import InferenceFailure
 from api.services.chat_runtime import chat_runtime
+from api.inference.stt.native_worker import NativeWhisper
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 from api.inference.failure_cleanup import clear_failure_frames
 
@@ -26,6 +27,7 @@ from api.inference.failure_cleanup import clear_failure_frames
 class WhisperTranscriber:
     def __init__(self, factory=None, resources=None, store=None):
         """Construct coordination only; allocate weights on an explicit request."""
+        self._cpp = NativeWhisper(resources) if factory is None and os.getenv("KADAN_NATIVE_WHISPER_WORKER") else None
         self.factory = factory
         self.resources = resources
         self.store = store or model_manager
@@ -34,6 +36,12 @@ class WhisperTranscriber:
         self.name = None
         self.host_reservation = self.device_reservation = None
         self.device = 'cpu'
+
+    def _native_model(self, model):
+        entry = checkpoint(model or self.selected())
+        if entry.name not in get_whisper_checkpoints():
+            raise InferenceFailure('Whisper checkpoint is not enabled in this version.', 422)
+        return entry.name
 
     def selected(self):
         """Restore a canonical selection without loading model weights."""
@@ -103,6 +111,10 @@ class WhisperTranscriber:
             self.lock.release()
 
     def close(self):
+        if self._cpp is not None:
+            self._cpp.close()
+            self.whisper_model = None
+            return
         with self.lock:
             self._clear_locked()
 
@@ -141,6 +153,10 @@ class WhisperTranscriber:
                              requested, allow_cpu=True, retained=retained)
 
     def load(self, model=None, cancel=None):
+        if self._cpp is not None:
+            self._cpp.load(self._native_model(model), cancel)
+            self.whisper_model = self._cpp
+            return
         """Load/promote one selected checkpoint under the existing host lease."""
         cancel = cancel or threading.Event()
         name = model or self.selected()
@@ -170,10 +186,16 @@ class WhisperTranscriber:
                     self.host_reservation = None
 
     def offload_to_ram(self, cancel=None):
+        if self._cpp is not None:
+            return self._cpp.offload_to_ram(cancel)
         resources = self.resources or chat_runtime.ensure_resources()
         resources.offload_workload_devices('speech', cancel)
 
     def transcribe(self, audio, model=None, language=None, cancel=None):
+        if self._cpp is not None:
+            result = self._cpp.transcribe(audio, self._native_model(model), language, cancel)
+            self.whisper_model = self._cpp
+            return result
         """Retain idle CPU weights; leased device state is independently evictable."""
         cancel = cancel or threading.Event()
         name = model or self.selected()

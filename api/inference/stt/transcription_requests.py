@@ -9,7 +9,7 @@ class TranscriptionRequests:
         self.transcriber = transcriber
     @property
     def adapter(self):
-        return self.transcriber.whisper_model
+        return getattr(self.transcriber, "_cpp", None) or self.transcriber.whisper_model
     def select(self, request):
         return request.model or self.transcriber.selected()
     def validate(self, payload, operation):
