@@ -147,8 +147,9 @@ void H3Denoiser::execute(const Input& input,std::span<float> video_out,std::span
     auto linear=[&](const std::string& p,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,bool bias=false,bool adapted=false){project(*shard_,turbo_.get(),p,x,in,out,y,bias,adapted,*resources_,cancel,hook,compute_.get());};
     auto attn=[&](const std::string& p,std::size_t count,bool positional){
         linear(p+".qkv_proj",normalized.first(count*hidden),hidden,inner*3,qkv.first(count*inner*3),false,true);
-        // Original checkpoint (including ComfyUI LoRA B) is grouped [head,QKV,128].
-        for(std::size_t t=0;t<count;++t)for(std::size_t h=0;h<56;++h)for(std::size_t c=0;c<128;++c){auto at=(t*56+h)*128+c;q[at]=qkv[(t*56*3+h*3)*128+c];k[at]=qkv[(t*56*3+h*3+1)*128+c];v[at]=qkv[(t*56*3+h*3+2)*128+c];}
+        // ComfyUI base weights and the ComfyUI Turbo adapter store [QKV,head,128].
+        // The original Hugging Face grouped layout is a different checkpoint contract.
+        for(std::size_t t=0;t<count;++t)for(std::size_t h=0;h<56;++h)for(std::size_t c=0;c<128;++c){auto at=(t*56+h)*128+c;const auto row=t*inner*3+h*128+c;q[at]=qkv[row];k[at]=qkv[row+inner];v[at]=qkv[row+2*inner];}
         norm(*shard_,p+".q_norm.weight",q.first(count*inner),q.first(count*inner),norm_weight.first(128),cancel);norm(*shard_,p+".k_norm.weight",k.first(count*inner),k.first(count*inner),norm_weight.first(128),cancel);
         if(positional){rope(q.first(count*inner),input.positions,frequencies);rope(k.first(count*inner),input.positions,frequencies);}
         if(compute_)compute_->attention(q.first(count*inner),k.first(count*inner),v.first(count*inner),count,56,56,128,false,attended.first(count*inner),cancel,true);

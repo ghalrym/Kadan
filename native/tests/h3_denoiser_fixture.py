@@ -34,7 +34,7 @@ def fixture(root):
         projection=quant if quantized else dense
         norm(p+'.norm1',H);norm(p+'.norm2',H);norm(p+'.attn.q_norm',128);norm(p+'.attn.k_norm',128)
         projection(p+'.attn.qkv_proj',H,INNER*3);projection(p+'.attn.out_proj',INNER,H);projection(p+'.mlp.fc1',H,FF*2);projection(p+'.mlp.fc2',FF,H)
-        lora(p+'.attn.qkv_proj',H,INNER*3,384,[(0,.125)],[(256*384,.25)])
+        lora(p+'.attn.qkv_proj',H,INNER*3,384,[(0,.125)],[(2*INNER*384,.25)])
         lora(p+'.attn.out_proj',INNER,H,128,[(0,.25)],[(0,.5)])
         lora(p+'.mlp.fc1',H,FF*2,128,[(0,.25)],[(0,.5),(FF*128,.25)])
         lora(p+'.mlp.fc2',FF,H,128,[(0,.5)],[(0,.5)])

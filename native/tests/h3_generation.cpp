@@ -14,6 +14,14 @@ void check(bool b){if(!b)throw std::runtime_error("test_failed");}
 template<class F>void fails(F f,const char* expected){try{f();throw std::logic_error("expected_failure");}catch(const std::runtime_error& e){check(std::string(e.what())==expected);}}
 int main(int argc,char** argv){try{
   const auto s=h3::sigmas(8,12); const std::vector<float> expected{1,.9882352948188782f,.9729729890823364f,.9523809552192688f,.9230769276618958f,.8780487775802612f,.800000011920929f,.6315789222717285f,0};check(s==expected);check(h3::sigmas(8,3)==std::vector<float>({1,.9545454382896423f,.8999999761581421f,.8333333134651184f,.75f,.6428571343421936f,.5f,.30000001192092896f,0}));check(s.size()==9&&s.front()==1&&s.back()==0);for(std::size_t i=1;i<s.size();++i)check(s[i]<s[i-1]);check(std::abs(s[4]-12.0f/13)<1e-7f);fails([]{h3::sigmas(0,12);},"h3_generation_schedule");fails([]{h3::sigmas(8,std::numeric_limits<float>::quiet_NaN());},"h3_generation_schedule");
+  // Released packed-sequence contract: text and video share time, audio differs.
+  std::array<float,7> times;times.fill(-7);h3::timesteps(times,2,3,.75f,.25f);
+  check(times==std::array<float,7>{.25f,.25f,.25f,.25f,.25f,.75f,.75f});
+  h3::timesteps(times,2,3,1,1);check(std::all_of(times.begin(),times.end(),[](float v){return v==0;}));
+  const auto unchanged=times;
+  fails([&]{h3::timesteps(times,8,1,.5f,.5f);},"h3_generation_timestep_shape");check(times==unchanged);
+  fails([&]{h3::timesteps(times,2,3,std::numeric_limits<float>::quiet_NaN(),.5f);},"h3_generation_timestep_sigma");check(times==unchanged);
+  fails([&]{h3::timesteps(times,2,3,.5f,1.1f);},"h3_generation_timestep_sigma");check(times==unchanged);
   std::array<float,2> state{2,-3},velocity{4,6};h3::advance(state,velocity,1,.5f);check(state[0]==4&&state[1]==0);h3::advance(state,velocity,.5f,0);check(state[0]==6&&state[1]==3);fails([&]{h3::advance(state,velocity,0,.1f);},"h3_generation_step");
   std::vector<float> in(2*4*6*24),out(in.size());for(std::size_t z=0;z<2;++z)for(std::size_t py=0;py<2;++py)for(std::size_t px=0;px<3;++px)for(std::size_t c=0;c<24;++c)for(std::size_t dy=0;dy<2;++dy)for(std::size_t dx=0;dx<2;++dx)in[((z*2+py)*3+px)*96+c*4+dy*2+dx]=float(z*10000+(py*2+dy)*1000+(px*2+dx)*100+c);
   h3::unpack(in,out,2,4,6);for(std::size_t z=0;z<2;++z)for(std::size_t y=0;y<4;++y)for(std::size_t x=0;x<6;++x)for(std::size_t c=0;c<24;++c)check(out[((z*4+y)*6+x)*24+c]==float(z*10000+y*1000+x*100+c));

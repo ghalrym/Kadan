@@ -33,6 +33,8 @@ namespace h3 {
 // 20-frame subclip; blend the previous five-frame tail into the new head.
 void temporal_join(std::span<float> raw, std::span<float> tail, std::size_t plane, bool previous);
 std::vector<float> sigmas(std::size_t updates,float shift);
+// Text rows inherit the video timestep; audio rows use their own sigma schedule.
+void timesteps(std::span<float> output,std::size_t text_rows,std::size_t video_rows,float video_sigma,float audio_sigma);
 void advance(std::span<float> state,std::span<const float> velocity,float current,float next);
 // Maps normalized packed [T,H/2,W/2,24*2*2] to VAE [T,H,W,24].
 void unpack(std::span<const float>,std::span<float>,std::size_t time,std::size_t height,std::size_t width);

@@ -52,6 +52,12 @@ std::vector<float> sigmas(std::size_t updates,float shift){
     for(std::size_t i=0;i<=updates;++i){const float base=i<=(updates/2)?1.0f-float(i)*step:float(updates-i)*step;out[i]=(shift*base)/(1.0f+(shift-1.0f)*base);}
     return out;
 }
+void timesteps(std::span<float> output,std::size_t text_rows,std::size_t video_rows,float video_sigma,float audio_sigma){
+    check(text_rows>0&&video_rows>0&&text_rows<=output.size()&&video_rows<=output.size()-text_rows,"h3_generation_timestep_shape");
+    check(std::isfinite(video_sigma)&&std::isfinite(audio_sigma)&&video_sigma>=0&&video_sigma<=1&&audio_sigma>=0&&audio_sigma<=1,"h3_generation_timestep_sigma");
+    std::fill(output.begin(),output.begin()+text_rows+video_rows,1-video_sigma);
+    std::fill(output.begin()+text_rows+video_rows,output.end(),1-audio_sigma);
+}
 void advance(std::span<float> state,std::span<const float> velocity,float current,float next){
     check(state.size()==velocity.size()&&std::isfinite(current)&&std::isfinite(next)&&current>0&&current<=1&&next>=0&&next<=current,"h3_generation_step");const float ratio=next/current;const float time=1.0f-current;
     for(std::size_t i=0;i<state.size();++i){const float denoised=state[i]+(1.0f-time)*velocity[i];const float value=ratio*state[i]+(1.0f-ratio)*denoised;check(std::isfinite(value),"h3_generation_nonfinite");state[i]=value;}
@@ -92,7 +98,7 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
     double time=double(nt);for(std::size_t z=0;z<t;++z){for(std::size_t y=0;y<h/2;++y)for(std::size_t x=0;x<w/2;++x){auto i=nt+(z*(h/2)+y)*(w/2)+x;positions[i*3]=float(time);positions[i*3+1]=axis(y,h);positions[i*3+2]=axis(x,w);tags[i]=0;}time+=(z%5==0?1:4)*(5.0/3.0);}
     for(std::size_t channel=0;channel<2;++channel)for(std::size_t z=0;z<at;++z){auto i=nt+nv+channel*at+z;positions[i*3]=float(nt+z);positions[i*3+2]=axis(channel? w/2-1:0,w);tags[i]=2;}
     H3Denoiser denoiser(resources_,compute_);load(denoiser,paths.denoiser,cancel);const std::filesystem::path adapter(paths.turbo);denoiser.load_turbo(adapter.parent_path().c_str(),adapter.filename().string(),cancel);
-    for(std::size_t step=0;step<request.updates;++step){stop(cancel);std::fill(times.begin()+nt,times.begin()+nt+nv,1-video_sigmas[step]);std::fill(times.begin()+nt+nv,times.end(),1-audio_sigmas[step]);denoiser.execute({text,video,audio,positions,times,tags},dv,da,cancel,hook);h3::advance(video,dv,video_sigmas[step],video_sigmas[step+1]);h3::advance(audio,da,audio_sigmas[step],audio_sigmas[step+1]);if(hook)hook("denoise_completed",step+1);}
+    for(std::size_t step=0;step<request.updates;++step){stop(cancel);h3::timesteps(times,nt,nv,video_sigmas[step],audio_sigmas[step]);denoiser.execute({text,video,audio,positions,times,tags},dv,da,cancel,hook);h3::advance(video,dv,video_sigmas[step],video_sigmas[step+1]);h3::advance(audio,da,audio_sigmas[step],audio_sigmas[step+1]);if(hook)hook("denoise_completed",step+1);}
     denoiser.unload();std::vector<float> latent(video.size());h3::unpack(video,latent,t,h,w);
     H3VideoDecoder decoder(resources_,compute_);load(decoder,paths.vae,cancel);std::vector<float> chunk(7*h*w*24),frames(3*28*request.height*request.width),tail(3*5*request.height*request.width);std::vector<unsigned char> pixels(3*request.height*request.width);
     std::ofstream output(workspace.path("video"),std::ios::binary|std::ios::trunc);check(bool(output),"h3_generation_output_open");output<<"YUV4MPEG2 W"<<request.width<<" H"<<request.height<<" F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n";

@@ -48,8 +48,9 @@ def run(checkpoint,adapter,input_path,output):
             weight=base.get_tensor(p+'.weight').float();return (x.double()*torch.rsqrt(x.double().square().mean(dim=-1,keepdim=True)+1e-5)*weight.double()).float()
         freq=base.get_tensor('rope.inv_freq').double();angle=(positions.double().unsqueeze(-1)*freq).flatten(1)
         def attn(p,x,rotate):
-            packed=linear(p+'.qkv_proj',x,adapted=True).reshape(len(x),56,3,128)
-            q,k,v=packed.unbind(2);q=norm(p+'.q_norm',q);k=norm(p+'.k_norm',k)
+            # Serialized ComfyUI weights and Turbo B use contiguous Q/K/V rows.
+            packed=linear(p+'.qkv_proj',x,adapted=True).reshape(len(x),3,56,128)
+            q,k,v=packed.unbind(1);q=norm(p+'.q_norm',q);k=norm(p+'.k_norm',k)
             if rotate:
                 def rope(value):
                     a,b=value[...,:48].double(),value[...,48:96].double();c=angle.cos()[:,None,:];s=angle.sin()[:,None,:]
