@@ -11,7 +11,7 @@ from api.inference.progress import report
 
 MAX_FRAME = 4096
 log = logging.getLogger(__name__)
-STAGE = re.compile(rb'(layer_completed|block_loaded|block_completed|refiner_completed|publish|tokenized|denoise_completed|audio_decoded|text_loading_mib|vae_loading_mib|denoiser_block_loaded|tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
+STAGE = re.compile(rb'(layer_completed|block_loaded|block_completed|refiner_completed|publish|tokenized|denoise_completed|audio_decoded|weight_storage_mib|weight_retention_full_mib|weight_retention_bounded_mib|text_loading_mib|vae_loading_mib|denoiser_block_loaded|tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
 
 
 class LineProtocolError(RuntimeError):

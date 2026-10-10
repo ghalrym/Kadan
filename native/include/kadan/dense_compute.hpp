@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/resources.hpp"
+#include "kadan/weight_identity.hpp"
 #include <atomic>
 #include <memory>
 #include <span>
@@ -22,6 +23,14 @@ public:
  virtual void release_scratch() {}
  // Dedicated worker only: synchronize and destroy its process-local contexts.
  virtual void release_devices() {}
+ virtual Footprint retained_weights() const {return {};}
+ // Header-derived execution bytes, before any weight placement. True means the
+ // conservative full inventory fits; false selects bounded RAM-backed streaming.
+ virtual bool prepare_weights(Bytes) {return false;}
+ // Stable serialized identity opts immutable weights into bounded retention.
+ virtual void dense_weight(const WeightIdentity&,std::span<const float> weights,std::span<const float> bias,
+     std::span<const float> input,std::size_t in,std::size_t out,
+     std::span<float> output,const std::atomic_bool& cancel,bool precise=false){dense(weights,bias,input,in,out,output,cancel,precise);}
  // Return false to retain the model's CPU attention. Q/K/V use [token,head,dim].
  // Only the first causal_queries query rows are causal. window=0 is unbounded;
  // query_offset addresses cached decoding where queries are a suffix of keys.

@@ -17,6 +17,6 @@ int main(int argc,char** argv){const char* operation="startup";static_assert(std
  Admission metadata(*r,128*1024);auto request=read(std::string(argv[2])+"/request.json");
  // Own RGBA floats and all PNG raw/DEFLATE/publication vector capacities before allocation.
  Admission request_memory(*r,8*1024*1024+64*request.height*request.width);std::vector<float> rgba(request.height*request.width*4);model.generate(request,rgba,cancel,hook);kadan::image::publish_png(std::string(argv[2])+"/image.png",rgba,request.height,request.width,cancel);
- }need(r->snapshot().used[0]==baseline,"image_scratch_leak");execution.idle();std::cout<<"done "<<baseline<<'\n'<<std::flush;}
- }operation="cleanup";need(r->snapshot().used[0]==0,"image_cleanup_leak");execution.park();execution.idle();std::cout<<"closed 0\n"<<std::flush;
+ }execution.idle();const auto retained=execution.compute?execution.compute->retained_weights():kadan::Footprint{};need(r->snapshot().used[0]==baseline+(retained.empty()?0:retained[0]),"image_scratch_leak");std::cout<<"done "<<baseline<<'\n'<<std::flush;}
+ }operation="cleanup";execution.park();need(r->snapshot().used[0]==0,"image_cleanup_leak");execution.idle();std::cout<<"closed 0\n"<<std::flush;
 }catch(const std::exception& e){std::cerr<<"image_worker "<<operation<<": "<<e.what()<<'\n'<<std::flush;std::cout<<"error image_"<<operation<<"_failed\n"<<std::flush;return 1;}}

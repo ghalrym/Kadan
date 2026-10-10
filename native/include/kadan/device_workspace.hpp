@@ -23,6 +23,7 @@ public:
     virtual void destroy_handle() = 0;
     virtual void synchronize() = 0;
     virtual void reset() = 0;
+    virtual void release_weights() {}
 };
 
 // One exact-sized high-water allocation, bounded by the device ledger. Growth
@@ -85,6 +86,8 @@ public:
     // only AFTER every selected device acknowledges this operation.
     void reset() {
         release();
+        try { operations_->release_weights(); }
+        catch (...) { quarantined_=true;throw; }
         if(!touched_)return;
         try { operations_->reset();touched_=false; }
         catch (...) { quarantined_=true;throw; }
@@ -157,7 +160,7 @@ private:
         }
         // Destructors cannot acknowledge cleanup failure. Leave uncertain
         // allocations charged; the parent must reap the worker before release.
-        try {workspace_.release();}catch(...){}
+        try {workspace_.reset();}catch(...){}
     }
     DeviceWorkspace workspace_;
     std::mutex mutex_;

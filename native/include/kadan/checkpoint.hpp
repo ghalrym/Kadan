@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kadan/quantization.hpp"
+#include "kadan/weight_identity.hpp"
 
 #include <array>
 #include <atomic>
@@ -81,6 +82,7 @@ public:
     TensorInfo tensor(std::string_view name) const;
     // Header-only enumeration in name order; does not read tensor payloads.
     TensorInfo tensor_at(std::size_t index) const;
+    WeightIdentity tensor_identity(std::string_view name) const;
     std::size_t tensor_index(std::string_view name) const;
     void check_unchanged() const;
     // Cache ownership is explicit; cancellation outlives this shard's reads.

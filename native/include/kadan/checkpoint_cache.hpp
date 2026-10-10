@@ -11,7 +11,7 @@ namespace kadan::checkpoint {
 // shares one admitted RAM envelope. Overflow streams without evicting hot data.
 class ReadCache {
 public:
-    using Key=std::array<std::uint64_t,9>; // file identity plus payload interval
+    using Key=WeightIdentity;
     using Source=std::function<void(std::size_t,std::span<std::uint8_t>)>;
     static constexpr std::size_t chunk_bytes=1024*1024;
     struct Stats {std::size_t allocated=0,entries=0;std::uint64_t hits=0,misses=0,source_bytes=0;};

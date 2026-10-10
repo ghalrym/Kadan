@@ -60,6 +60,15 @@ class ComputeTests(unittest.TestCase):
         with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': 'auto'}):
             self.assertEqual(native_compute('IMAGE', resources).devices, (0, 1))
 
+    def test_image_default_uses_configured_capacity_for_retention(self):
+        with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': '0,1'}, clear=True):
+            resources=ResourceManager(128*1024**3,{0:22*1024**3,1:20*1024**3})
+            self.assertEqual(native_compute('IMAGE',resources).budget,20*1024**3)
+            self.assertEqual(native_compute('TTS',resources).budget,DEFAULT_DEVICE_BYTES)
+            self.assertEqual(native_compute('IMAGE',ResourceManager(128*1024**3,{0:40*1024**3,1:40*1024**3})).budget,24*1024**3)
+            with patch.dict(os.environ, {'KADAN_NATIVE_GPU_BUDGET_BYTES':str(DEFAULT_DEVICE_BYTES)}):
+                self.assertEqual(native_compute('IMAGE',resources).budget,DEFAULT_DEVICE_BYTES)
+
     def test_frozen_environment(self):
         plan=native_compute('IMAGE',self.resources)
         with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': '1', 'KADAN_NATIVE_GPU_BUDGET_BYTES':'1'}):

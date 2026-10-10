@@ -288,16 +288,18 @@ TensorInfo Shard::tensor_at(std::size_t index) const {
     return {t.name,t.dtype,t.shape,t.rank,t.end-t.begin};
 }
 void Shard::check_unchanged() const { impl_->unchanged(); }
+WeightIdentity Shard::tensor_identity(std::string_view name) const {
+    const auto& t=impl_->find(name);const auto& s=impl_->identity;
+    return {std::uint64_t(s.st_dev),std::uint64_t(s.st_ino),std::uint64_t(s.st_size),
+        std::uint64_t(s.st_mtim.tv_sec),std::uint64_t(s.st_mtim.tv_nsec),std::uint64_t(s.st_ctim.tv_sec),
+        std::uint64_t(s.st_ctim.tv_nsec),impl_->data_begin+t.begin,impl_->data_begin+t.end};
+}
 void Shard::cache_reads(std::shared_ptr<ReadCache> cache,const std::atomic_bool* cancel){impl_->cache=std::move(cache);impl_->cancel=cancel;}
 void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const {
     const auto& t = impl_->find(name);
     impl_->unchanged();
     if(impl_->cache){
-        const auto& s=impl_->identity;
-        ReadCache::Key key{std::uint64_t(s.st_dev),std::uint64_t(s.st_ino),std::uint64_t(s.st_size),
-            std::uint64_t(s.st_mtim.tv_sec),std::uint64_t(s.st_mtim.tv_nsec),std::uint64_t(s.st_ctim.tv_sec),
-            std::uint64_t(s.st_ctim.tv_nsec),impl_->data_begin+t.begin,impl_->data_begin+t.end};
-        impl_->cache->read(key,t.end-t.begin,offset,destination,[&](std::size_t at,std::span<std::uint8_t> out){
+        impl_->cache->read(tensor_identity(name),t.end-t.begin,offset,destination,[&](std::size_t at,std::span<std::uint8_t> out){
             impl_->read(t,at,out);impl_->unchanged();
         },impl_->cancel);
     }else impl_->read(t, offset, destination);

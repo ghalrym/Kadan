@@ -4,6 +4,7 @@
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_vae.hpp"
 #include "kadan/image_schedule.hpp"
+#include "kadan/weight_inventory.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
@@ -33,6 +34,15 @@ void Generator::load(const std::string& root,const std::atomic_bool& cancel,cons
  auto v=read(root+"/vae/config.json");need(v.at("decoder_base_dim")==144&&v.at("z_dim")==64&&v.at("dim_mult")==Json::array({1,2,4,8,8})&&v.at("num_res_blocks")==2&&v.at("out_channels")==4&&v.at("is_residual")==true&&v.at("patch_size").is_null()&&v.at("temperal_downsample")==Json::array({false,true,true,true}),"image_vae_config_contract");need(v.at("latents_mean").size()==64&&v.at("latents_std").size()==64,"image_latent_normalization");for(std::size_t i=0;i<64;++i){m->mean[i]=v.at("latents_mean")[i];m->stddev[i]=v.at("latents_std")[i];need(std::isfinite(m->mean[i])&&std::isfinite(m->stddev[i])&&m->stddev[i]>0,"image_latent_normalization");}
  auto s=read(root+"/scheduler/scheduler_config.json");need(s.at("_class_name")=="FlowMatchEulerDiscreteScheduler"&&s.at("base_image_seq_len")==256&&s.at("max_image_seq_len")==8192&&s.at("base_shift")==.5&&s.at("max_shift")==.9&&s.at("shift_terminal")==.02&&s.at("time_shift_type")=="exponential"&&s.at("use_dynamic_shifting")==true&&s.at("num_train_timesteps")==1000,"image_scheduler_contract");for(auto key:{"invert_sigmas","stochastic_sampling","use_beta_sigmas","use_exponential_sigmas","use_karras_sigmas"})need(s.at(key)==false,"image_scheduler_contract");
  auto t=read(root+"/transformer/config.json");need(t.at("num_layers")==32&&t.at("num_attention_heads")==32&&t.at("attention_head_dim")==128&&t.at("in_channels")==64&&t.at("context_in_dim")==4096&&t.at("axes_dims_rope")==Json::array({16,56,56})&&t.at("patch_size")==1&&t.at("mlp_ratio")==3&&t.at("eps")==1e-6&&t.at("causal_condition")==true&&t.at("out_channels")==64,"image_transformer_contract");
+ if(compute_){
+  Lease parser(*resources_,32*1024*1024);auto budget=std::make_shared<checkpoint::MemoryBudget>(32*1024*1024);checkpoint::WeightInventory inventory;
+  for(const auto* relative:{"text_encoder/model-00001-of-00004.safetensors","text_encoder/model-00002-of-00004.safetensors","text_encoder/model-00003-of-00004.safetensors","text_encoder/model-00004-of-00004.safetensors","transformer/diffusion_pytorch_model-00001-of-00002.safetensors","transformer/diffusion_pytorch_model-00002-of-00002.safetensors","vae/diffusion_pytorch_model.safetensors"}){
+   stop(cancel);const std::string path(relative);const auto slash=path.find_last_of('/');
+   checkpoint::Shard shard((root+"/"+path.substr(0,slash)).c_str(),path.substr(slash+1),budget);inventory.add(shard);
+  }
+  const bool full=compute_->prepare_weights(inventory.floating_f32_bytes);
+  if(hook){hook("weight_storage_mib",inventory.stored_bytes/(1024*1024));hook(full?"weight_retention_full_mib":"weight_retention_bounded_mib",inventory.floating_f32_bytes/(1024*1024));}
+ }
  m->tokenizer.load(root+"/processor/tokenizer.json",cancel);if(hook)hook("tokenizer_loaded",0);
  const std::array<std::string,4> text_files{"model-00001-of-00004.safetensors","model-00002-of-00004.safetensors","model-00003-of-00004.safetensors","model-00004-of-00004.safetensors"};auto tr=root+"/text_encoder";m->text.load(tr.c_str(),text_files,{},cancel,[&](std::size_t bytes){if(hook)hook("text_loading_mib",bytes/(1024*1024));});if(hook)hook("text_loaded",0);
  const std::array<std::string,2> denoiser_files{"diffusion_pytorch_model-00001-of-00002.safetensors","diffusion_pytorch_model-00002-of-00002.safetensors"};auto dr=root+"/transformer";m->denoiser.load(dr.c_str(),denoiser_files,{},cancel,hook);if(hook)hook("denoiser_loaded",0);auto vr=root+"/vae";m->vae.load(vr.c_str(),"diffusion_pytorch_model.safetensors",{},cancel,[&](std::size_t bytes){if(hook)hook("vae_loading_mib",bytes/(1024*1024));});if(hook)hook("vae_loaded",0);stop(cancel);model_=std::move(m);

@@ -41,7 +41,7 @@ struct WorkerCompute {
   (void)workload;if(!plan.devices.empty())throw std::invalid_argument("compute_cuda_not_built");
 #endif
  }
- void idle() const {if(compute)compute->release_scratch();const auto used=resources->snapshot().used;for(std::size_t i=1;i<used.size();++i)if(used[i]!=(context_handle?context[i]:0))throw std::runtime_error("compute_device_cleanup_unconfirmed");}
+ void idle() const {if(compute)compute->release_scratch();const auto retained=compute?compute->retained_weights():Footprint{};const auto used=resources->snapshot().used;for(std::size_t i=1;i<used.size();++i)if(used[i]!=(context_handle?context[i]:0)+(retained.empty()?0:retained.at(i)))throw std::runtime_error("compute_device_cleanup_unconfirmed");}
  void park(){idle();if(context_handle){compute->release_devices();resources->released(context_handle);context_handle=0;}}
  void resume(){if(compute&&!context_handle)context_handle=resources->reserve(workload,context);}
 };
