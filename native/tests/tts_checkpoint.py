@@ -35,15 +35,16 @@ def main(binary,checkpoint):
     second.load_state_dict({k.removeprefix('linear_fc2.'):v for k,v in weights.items() if k.startswith('linear_fc2.')})
     generator=torch.Generator().manual_seed(42)
     cases={'zero':torch.zeros(2048),'ramp':(torch.arange(2048)%19-9).float()/16,
-           'seeded':torch.randn(2048,generator=generator)*.25};rows=[]
+           'seeded':torch.randn(2048,generator=generator)*.25,
+           'sequence':torch.randn(3,2048,generator=generator)*.25};rows=[]
     with tempfile.TemporaryDirectory() as directory,torch.no_grad():
         for name,values in cases.items():
             path=Path(directory)/name;data=values.numpy().tobytes();path.write_bytes(data)
-            result=json.loads(subprocess.check_output([str(binary),str(checkpoint.parent),checkpoint.name,str(path)]))
-            actual=torch.tensor(result['projected']);expected=second(torch.nn.functional.silu(first(values)))
+            result=json.loads(subprocess.check_output([str(binary),str(checkpoint.parent),checkpoint.name,str(path),*(['--sequence'] if values.ndim==2 else [])]))
+            actual=torch.tensor(result['projected']).reshape(values.shape);expected=second(torch.nn.functional.silu(first(values)))
             assert actual.shape==expected.shape and torch.isfinite(actual).all()
             error=(actual-expected).abs();assert bool((error<=1e-4+expected.abs()*1e-4).all()),float(error.max())
-            assert result['resident_bytes_at_publication']==2*2048*4
+            assert result['resident_bytes_at_publication']==2*values.numel()*4
             assert result['resident_bytes']==0 and not result['full_tts_generation'] and not result['gpu_execution']
             rows.append(dict(case=name,input_sha256=hashlib.sha256(data).hexdigest(),
                 output_sha256=hashlib.sha256(actual.numpy().tobytes()).hexdigest(),values=actual.numel(),

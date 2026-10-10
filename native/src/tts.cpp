@@ -89,11 +89,28 @@ std::array<float,TextProjection::hidden> TextProjection::execute(std::span<const
     cancelled(cancel);
     check(loaded(),"tts_not_loaded");
     check(input.size()==hidden,"tts_input_shape");
-    for(float v:input) check(std::isfinite(v),"tts_nonfinite_input");
+    Reservation result_admission(*resources_,host(hidden*sizeof(float)));
+    std::array<float,hidden> result;
+    execute_sequence(input,result,cancel,[&](std::size_t) {if(observed) observed();});
+    return result;
+}
+void TextProjection::execute_sequence(std::span<const float> input,std::span<float> output,
+        const std::atomic_bool& cancel,const std::function<void(std::size_t)>& observed) {
+    cancelled(cancel);
+    check(loaded(),"tts_not_loaded");
+    check(!input.empty() && input.size()%hidden==0 && input.size()/hidden<=max_tokens,
+          "tts_input_shape");
+    check(output.size()==input.size(),"tts_output_shape");
+    auto a=reinterpret_cast<std::uintptr_t>(input.data());
+    auto b=reinterpret_cast<std::uintptr_t>(output.data());
+    check(a<b ? b-a>=input.size_bytes() : a-b>=output.size_bytes(),"tts_buffer_overlap");
+    for(std::size_t i=0;i<input.size();++i) {
+        if(i%hidden==0) cancelled(cancel);
+        check(std::isfinite(input[i]),"tts_nonfinite_input");
+    }
     Pin pin(*resources_,resident_);
-    Reservation scratch(*resources_,host(2*hidden*sizeof(float)));
-    if(observed) observed();
-    std::array<float,hidden> intermediate,result;
+    Reservation scratch(*resources_,host(hidden*sizeof(float)));
+    std::array<float,hidden> intermediate;
     const float* first=weights_.get(), *first_bias=first+hidden*hidden,
         *second=first_bias+hidden, *second_bias=second+hidden*hidden;
     auto linear=[&](std::span<const float> values,const float* weights,const float* bias,
@@ -111,9 +128,12 @@ std::array<float,TextProjection::hidden> TextProjection::execute(std::span<const
             check(std::isfinite(value),"tts_nonfinite_output");output[r]=value;
         }
     };
-    linear(input,first,first_bias,intermediate,true);
-    linear(intermediate,second,second_bias,result,false);
+    for(std::size_t row=0;row<input.size()/hidden;++row) {
+        if(observed) observed(row);
+        cancelled(cancel);
+        linear(input.subspan(row*hidden,hidden),first,first_bias,intermediate,true);
+        linear(intermediate,second,second_bias,output.subspan(row*hidden,hidden),false);
+    }
     cancelled(cancel);
-    return result;
 }
 } // namespace kadan::tts
