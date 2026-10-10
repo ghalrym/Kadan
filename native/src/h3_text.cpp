@@ -66,7 +66,6 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     const auto marker=shard.tensor(prefix+".comfy_quant");
     require(marker.dtype==checkpoint::Dtype::u8 && marker.rank==1 && marker.bytes<=256,"h3_text_quant_marker");
     Admission admission(resources,in*out+out*4+in*9+256);
-    auto weights=std::make_unique<std::uint8_t[]>(in*out);
     auto scales=std::make_unique<float[]>(out);
     auto rotated=std::make_unique<double[]>(in);
     auto codes=std::make_unique<std::int8_t[]>(in);
@@ -74,13 +73,17 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     shard.read_tensor(prefix+".comfy_quant",0,{marker_bytes.data(),std::size_t(marker.bytes)});
     const std::string_view marker_text(reinterpret_cast<const char*>(marker_bytes.data()),std::size_t(marker.bytes));
     require(detail::convrot_group(marker_text)==256,"h3_text_quant_marker");
+    static_assert(std::endian::native==std::endian::little);
+    shard.read_tensor(prefix+".weight_scale",0,{reinterpret_cast<std::uint8_t*>(scales.get()),out*4});
+    for(std::size_t r=0;r<out;++r)require(std::isfinite(scales[r]) && scales[r]>=0,"h3_text_scale");
+    if(compute&&compute->convrot_source(shard.tensor_identity(prefix+".weight"),[&](std::size_t first,std::span<std::uint8_t> target){
+        for(std::size_t at=0;at<target.size();){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,target.size()-at);shard.read_tensor(prefix+".weight",first+at,target.subspan(at,count));at+=count;}
+    },{scales.get(),out},{},input,in,out,256,destination,cancel))return;
+    auto weights=std::make_unique<std::uint8_t[]>(in*out);
     for(std::size_t offset=0;offset<in*out;) {
         stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);
         shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;
     }
-    static_assert(std::endian::native==std::endian::little);
-    shard.read_tensor(prefix+".weight_scale",0,{reinterpret_cast<std::uint8_t*>(scales.get()),out*4});
-    for(std::size_t r=0;r<out;++r)require(std::isfinite(scales[r]) && scales[r]>=0,"h3_text_scale");
     if(compute){compute->convrot_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{scales.get(),out},{},input,in,out,256,destination,cancel);return;}
     for(std::size_t token=0;token<input.size()/in;++token) {
         stop(cancel);

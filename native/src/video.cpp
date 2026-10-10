@@ -12,14 +12,6 @@ namespace kadan::video {
 namespace {
 void check(bool ok, const char* error) { if (!ok) throw std::runtime_error(error); }
 void cancelled(const std::atomic_bool& flag) { check(!flag.load(), "video_cancelled"); }
-float half(std::uint16_t bits) {
-    const int exponent = (bits >> 10) & 31;
-    const auto fraction = bits & 1023;
-    check(exponent != 31, "video_nonfinite_weight");
-    float value = exponent ? std::ldexp(float(1024 + fraction), exponent - 25)
-                           : std::ldexp(float(fraction), -24);
-    return bits & 32768 ? -value : value;
-}
 struct Reservation {
     Resources& ledger;
     Handle handle;
@@ -73,7 +65,7 @@ void H3DecoderInput::load(const char* root, const std::string& basename, const s
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
     load_from(shard,cancel);
 }
-void H3DecoderInput::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel) {
+void H3DecoderInput::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel,bool defer_projections) {
     cancelled(cancel);check(!loaded(),"video_already_loaded");
     struct Spec { const char* name; std::array<std::uint64_t,5> shape; std::size_t rank; };
     const std::array<Spec,6> specs{{
@@ -87,21 +79,14 @@ void H3DecoderInput::load_from(checkpoint::Shard& shard, const std::atomic_bool&
         for (std::size_t i=0; i<spec.rank; ++i) check(tensor.shape[i] == spec.shape[i], "video_tensor_layout");
     }
     Reservation allocation(*resources_, host(weight_bytes));
-    auto weights = std::make_unique<float[]>(weight_bytes / sizeof(float));
+    auto weights = std::make_unique_for_overwrite<float[]>(weight_bytes / sizeof(float));
     // Fixed 4-KiB stack transfer staging is explicitly charged.
     Reservation staging(*resources_, host(4096));
-    std::array<std::uint8_t,4096> buffer;
     std::size_t destination = 0;
     for (const auto& spec : specs) {
         auto tensor = shard.tensor(spec.name);
-        for (std::size_t offset=0; offset<tensor.bytes;) {
-            cancelled(cancel);
-            auto count = std::min<std::size_t>(buffer.size(), tensor.bytes-offset);
-            shard.read_tensor(spec.name, offset, {buffer.data(), count});
-            for (std::size_t i=0; i<count; i+=2)
-                weights[destination++] = half(std::uint16_t(buffer[i]) | (std::uint16_t(buffer[i+1]) << 8));
-            offset += count;
-        }
+        if(!defer_projections||tensor.rank==1)shard.read_float_tensor(spec.name,0,{weights.get()+destination,std::size_t(tensor.bytes/2)},cancel);
+        destination+=tensor.bytes/2;
     }
     for (std::size_t i=24; i<48; ++i) check(weights[i] > 0, "video_latent_std");
     shard.check_unchanged();
@@ -189,7 +174,7 @@ void H3DecoderQkv::load(const char* root, const std::string& basename, const std
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
     load_from(shard,cancel);
 }
-void H3DecoderQkv::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block) {
+void H3DecoderQkv::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block,bool defer_projections) {
     cancelled(cancel);
     check(!loaded(), "video_already_loaded");
     check(block<H3VideoDecoder::layers,"video_block_index");
@@ -206,21 +191,14 @@ void H3DecoderQkv::load_from(checkpoint::Shard& shard, const std::atomic_bool& c
         for (std::size_t i=0; i<spec.rank; ++i) check(tensor.shape[i] == spec.shape[i], "video_tensor_layout");
     }
     Reservation allocation(*resources_, host(weight_bytes));
-    auto weights = std::make_unique<float[]>(weight_bytes / sizeof(float));
+    auto weights = std::make_unique_for_overwrite<float[]>(weight_bytes / sizeof(float));
     // Fixed 4-KiB stack transfer staging is explicitly charged.
     Reservation staging(*resources_, host(4096));
-    std::array<std::uint8_t,4096> buffer;
     std::size_t destination = 0;
     for (const auto& spec : specs) {
         auto tensor = shard.tensor(spec.name);
-        for (std::size_t offset=0; offset<tensor.bytes;) {
-            cancelled(cancel);
-            auto count = std::min<std::size_t>(buffer.size(), tensor.bytes-offset);
-            shard.read_tensor(spec.name, offset, {buffer.data(), count});
-            for (std::size_t i=0; i<count; i+=2)
-                weights[destination++] = half(std::uint16_t(buffer[i]) | (std::uint16_t(buffer[i+1]) << 8));
-            offset += count;
-        }
+        if(!defer_projections||tensor.rank!=2)shard.read_float_tensor(spec.name,0,{weights.get()+destination,std::size_t(tensor.bytes/2)},cancel);
+        destination+=tensor.bytes/2;
     }
     shard.check_unchanged();
     cancelled(cancel);
@@ -408,7 +386,7 @@ void H3DecoderAttention::load(const char* root, const std::string& basename, con
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
     load_from(shard,cancel);
 }
-void H3DecoderAttention::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block) {
+void H3DecoderAttention::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block,bool defer_projections) {
     cancelled(cancel);
     check(!loaded(), "video_already_loaded");
     check(block<H3VideoDecoder::layers,"video_block_index");
@@ -424,21 +402,14 @@ void H3DecoderAttention::load_from(checkpoint::Shard& shard, const std::atomic_b
         for (std::size_t i=0; i<spec.rank; ++i) check(tensor.shape[i] == spec.shape[i], "video_tensor_layout");
     }
     Reservation allocation(*resources_, host(weight_bytes));
-    auto weights = std::make_unique<float[]>(weight_bytes / sizeof(float));
+    auto weights = std::make_unique_for_overwrite<float[]>(weight_bytes / sizeof(float));
     // Fixed 4-KiB stack transfer staging is explicitly charged.
     Reservation staging(*resources_, host(4096));
-    std::array<std::uint8_t,4096> buffer;
     std::size_t destination = 0;
     for (const auto& spec : specs) {
         auto tensor = shard.tensor(spec.name);
-        for (std::size_t offset=0; offset<tensor.bytes;) {
-            cancelled(cancel);
-            auto count = std::min<std::size_t>(buffer.size(), tensor.bytes-offset);
-            shard.read_tensor(spec.name, offset, {buffer.data(), count});
-            for (std::size_t i=0; i<count; i+=2)
-                weights[destination++] = half(std::uint16_t(buffer[i]) | (std::uint16_t(buffer[i+1]) << 8));
-            offset += count;
-        }
+        if(!defer_projections||tensor.rank!=2)shard.read_float_tensor(spec.name,0,{weights.get()+destination,std::size_t(tensor.bytes/2)},cancel);
+        destination+=tensor.bytes/2;
     }
     shard.check_unchanged();
     cancelled(cancel);
@@ -544,7 +515,7 @@ void H3DecoderFeedForward::load(const char* root, const std::string& basename, c
     checkpoint::Shard shard(root, basename, budget, {1024*1024, 2048, 4096});
     load_from(shard,cancel);
 }
-void H3DecoderFeedForward::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block) {
+void H3DecoderFeedForward::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block,bool defer_projections) {
     cancelled(cancel);
     check(!loaded(), "video_already_loaded");
     check(block<H3VideoDecoder::layers,"video_block_index");
@@ -565,21 +536,14 @@ void H3DecoderFeedForward::load_from(checkpoint::Shard& shard, const std::atomic
         for (std::size_t i=0; i<spec.rank; ++i) check(tensor.shape[i] == spec.shape[i], "video_tensor_layout");
     }
     Reservation allocation(*resources_, host(weight_bytes));
-    auto weights = std::make_unique<float[]>(weight_bytes / sizeof(float));
+    auto weights = std::make_unique_for_overwrite<float[]>(weight_bytes / sizeof(float));
     // Fixed 4-KiB stack transfer staging is explicitly charged.
     Reservation staging(*resources_, host(4096));
-    std::array<std::uint8_t,4096> buffer;
     std::size_t destination = 0;
     for (const auto& spec : specs) {
         auto tensor = shard.tensor(spec.name);
-        for (std::size_t offset=0; offset<tensor.bytes;) {
-            cancelled(cancel);
-            auto count = std::min<std::size_t>(buffer.size(), tensor.bytes-offset);
-            shard.read_tensor(spec.name, offset, {buffer.data(), count});
-            for (std::size_t i=0; i<count; i+=2)
-                weights[destination++] = half(std::uint16_t(buffer[i]) | (std::uint16_t(buffer[i+1]) << 8));
-            offset += count;
-        }
+        if(!defer_projections||tensor.rank!=2)shard.read_float_tensor(spec.name,0,{weights.get()+destination,std::size_t(tensor.bytes/2)},cancel);
+        destination+=tensor.bytes/2;
     }
     shard.check_unchanged();
     cancelled(cancel);
@@ -689,22 +653,24 @@ void H3DecoderBlock::load(const char* root, const std::string& basename, const s
     checkpoint::Shard shard(root,basename,budget,{1024*1024,2048,4096});
     load_from(shard,cancel,0);
 }
-void H3DecoderBlock::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block) {
+void H3DecoderBlock::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block,H3Compute* compute) {
     cancelled(cancel);check(!executing_,"busy");check(!loaded(),"video_already_loaded");
     const auto prefix="decoder.transformer_blocks."+std::to_string(block)+".";
     const std::array<const char*,4> names{"attn.to_qkv.weight","attn.to_out.weight","ff.w1.weight","ff.w2.weight"};
     std::array<WeightIdentity,4> identities{};
     for(std::size_t i=0;i<names.size();++i)identities[i]=shard.tensor_identity(prefix+names[i]);
     try {
-        qkv_.load_from(shard,cancel,block);rope_.load(cancel);
-        attention_.load_from(shard,cancel,block);ff_.load_from(shard,cancel,block);
+        qkv_.load_from(shard,cancel,block,compute&&compute->supports_weight_sources());rope_.load(cancel);
+        attention_.load_from(shard,cancel,block,compute&&compute->supports_weight_sources());ff_.load_from(shard,cancel,block,compute&&compute->supports_weight_sources());
         shard.check_unchanged();cancelled(cancel);
         weight_identities_=identities;
+        if(compute&&compute->supports_weight_sources()){projection_shard_=&shard;projection_compute_=compute;projection_prefix_=prefix;}
     } catch(...) {unload();throw;}
 }
 void H3DecoderBlock::unload() {
     check(!executing_,"busy");
     ff_.unload();attention_.unload();rope_.unload();qkv_.unload();
+    projection_shard_=nullptr;projection_compute_=nullptr;projection_prefix_.clear();
 }
 void H3DecoderBlock::execute(std::span<const float> input, std::span<const float> coordinates,
     const std::string& output, const std::atomic_bool& cancel, const Hook& hook) {
@@ -722,6 +688,7 @@ void H3DecoderBlock::execute(std::span<const float> input, std::span<const float
 void H3DecoderBlock::compute(std::span<const float> input, std::span<const float> coordinates,
     const std::atomic_bool& cancel, const Hook& hook, const std::function<void(std::span<const float>)>& output, H3Compute* accelerator) {
     cancelled(cancel);check(!executing_,"busy");check(loaded(),"video_not_loaded");
+    check(!projection_shard_||accelerator==projection_compute_,"video_projection_owner");
     check(!input.empty() && input.size()%hidden==0,"video_input_shape");
     const auto tokens=input.size()/hidden;
     check(tokens<=(accelerator?28224+5:max_tokens),"video_input_limit");
@@ -742,23 +709,29 @@ void H3DecoderBlock::compute(std::span<const float> input, std::span<const float
         std::copy(row.begin(),row.end(),destination.begin()+offset);offset+=row.size();
     };};
     if(accelerator) {
+        auto project=[&](std::size_t index,const char* name,std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y){
+            if(projection_shard_){
+                projection_shard_->check_unchanged();
+                check(accelerator->dense_source(weight_identities_[index],[&](std::size_t first,std::span<float> target){projection_shard_->read_float_tensor(projection_prefix_+name,first,target,cancel);},b,x,in,out,y,cancel),"video_projection_source");
+            }else accelerator->dense_weight(weight_identities_[index],w,b,x,in,out,y,cancel);
+        };
         auto normalize=[&](std::span<const float> x,const float* weight,std::span<float> y){
             for(std::size_t t=0;t<tokens;++t){cancelled(cancel);float squares=0;for(std::size_t c=0;c<hidden;++c)squares+=x[t*hidden+c]*x[t*hidden+c];const float inverse=1/std::sqrt(squares/float(hidden)+1e-5f);for(std::size_t c=0;c<hidden;++c)y[t*hidden+c]=(x[t*hidden+c]*inverse)*weight[c];}
         };
         const auto* qnorm=qkv_.weights_.get();const auto* qw=qnorm+hidden;const auto* qb=qw+6144*hidden;
-        normalize(input,qnorm,a);accelerator->dense_weight(weight_identities_[0],{qw,6144*hidden},{qb,6144},a,hidden,6144,q,cancel);
+        normalize(input,qnorm,a);project(0,"attn.to_qkv.weight",{qw,6144*hidden},{qb,6144},a,hidden,6144,q);
         rope_.compute(q,coordinates,cancel,observe("rope"),sink(r),28224+5);
         auto query=q.first(tokens*hidden),key=q.subspan(tokens*hidden,tokens*hidden),value=q.subspan(2*tokens*hidden,tokens*hidden);
         for(std::size_t t=0;t<tokens;++t)for(std::size_t h=0;h<32;++h)for(std::size_t c=0;c<64;++c){const auto at=(t*32+h)*64+c,source=(t*32+h)*192+c;query[at]=r[source];key[at]=r[source+64];value[at]=r[source+128];}
         accelerator->attention(query,key,value,tokens,32,32,64,false,a,cancel);
         const auto* aw=attention_.weights_.get();auto attended=r.first(tokens*hidden);
-        accelerator->dense_weight(weight_identities_[1],{aw,hidden*hidden},{aw+hidden*hidden,hidden},a,hidden,hidden,attended,cancel);
+        project(1,"attn.to_out.weight",{aw,hidden*hidden},{aw+hidden*hidden,hidden},a,hidden,hidden,attended);
         const auto* scale1=ff_.weights_.get();const auto* norm=scale1+hidden;const auto* w1=norm+hidden;const auto* b1=w1+16384*hidden;const auto* w2=b1+16384;const auto* b2=w2+hidden*8192;const auto* scale2=b2+hidden;
         auto sum=q.first(tokens*hidden);for(std::size_t i=0;i<sum.size();++i)sum[i]=input[i]+attended[i]*scale1[i%hidden];normalize(sum,norm,a);
         Reservation mlp_admission(*resources_,host(tokens*16384*sizeof(float)));auto expanded=std::make_unique<float[]>(tokens*16384);std::span<float> mlp(expanded.get(),tokens*16384);
-        accelerator->dense_weight(weight_identities_[2],{w1,16384*hidden},{b1,16384},a,hidden,16384,mlp,cancel);
+        project(2,"ff.w1.weight",{w1,16384*hidden},{b1,16384},a,hidden,16384,mlp);
         for(std::size_t t=0;t<tokens;++t){cancelled(cancel);for(std::size_t c=0;c<8192;++c){const float x=mlp[t*16384+c];const float activation=x>=0?x/(1+std::exp(-x)):x*std::exp(x)/(1+std::exp(x));mlp[t*8192+c]=activation*mlp[t*16384+8192+c];}}
-        accelerator->dense_weight(weight_identities_[3],{w2,hidden*8192},{b2,hidden},mlp.first(tokens*8192),8192,hidden,a,cancel);
+        project(3,"ff.w2.weight",{w2,hidden*8192},{b2,hidden},mlp.first(tokens*8192),8192,hidden,a);
         for(std::size_t i=0;i<a.size();++i){a[i]=sum[i]+a[i]*scale2[i%hidden];check(std::isfinite(a[i]),"video_nonfinite_output");}
         cancelled(cancel);output(a);return;
     }
@@ -793,23 +766,16 @@ void H3VideoDecoder::load(const char* root, const std::string& basename, const s
         for(std::size_t i=0;i<spec.rank;++i)check(t.shape[i]==spec.shape[i],"video_tensor_layout");
     }
     Reservation allocation(*resources_,host(weight_bytes));
-    auto weights=std::make_unique<float[]>(weight_bytes/sizeof(float));
+    auto weights=std::make_unique_for_overwrite<float[]>(weight_bytes/sizeof(float));
     Reservation staging(*resources_,host(4096));
-    std::array<std::uint8_t,4096> buffer;
     std::size_t destination=0;
     for(const auto& spec:specs) {
         const auto t=shard->tensor(spec.name);
-        for(std::size_t offset=0;offset<t.bytes;) {
-            cancelled(cancel);
-            const auto count=std::min<std::size_t>(buffer.size(),t.bytes-offset);
-            shard->read_tensor(spec.name,offset,{buffer.data(),count});
-            for(std::size_t i=0;i<count;i+=2)
-                weights[destination++]=half(std::uint16_t(buffer[i])|(std::uint16_t(buffer[i+1])<<8));
-            offset+=count;
-        }
+        if(!(compute_&&compute_->supports_weight_sources()&&std::string_view(spec.name)=="decoder.proj_out.weight"))shard->read_float_tensor(spec.name,0,{weights.get()+destination,std::size_t(t.bytes/2)},cancel);
+        destination+=t.bytes/2;
     }
     try {
-        input_.load_from(*shard,cancel);
+        input_.load_from(*shard,cancel,compute_&&compute_->supports_weight_sources());
         shard->check_unchanged();cancelled(cancel);
         resources_->loaded(allocation.handle);
         resident_=allocation.handle;allocation.handle=0;
@@ -854,7 +820,11 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         Reservation input_admission(*resources_,host(patches*48*sizeof(float)));auto scratch=std::make_unique<float[]>(patches*48);std::span<float> latent(scratch.get(),patches*24),projected(scratch.get()+patches*24,patches*24);
         const auto* mean=input_.weights_.get();const auto* deviation=mean+24;const auto* conv=deviation+24;const auto* bias=conv+576;const auto* embed=bias+24;const auto* embed_bias=embed+49152;
         for(std::size_t i=0;i<latent.size();++i)latent[i]=normalized[i]*deviation[i%24]+mean[i%24];
-        compute_->dense_weight(shard_->tensor_identity("post_quant_conv.weight"),{conv,576},{bias,24},latent,24,24,projected,cancel);compute_->dense_weight(shard_->tensor_identity("decoder.x_embedder.weight"),{embed,49152},{embed_bias,2048},projected,24,2048,current.first(patches*hidden),cancel);
+        auto project=[&](const char* name,std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y){
+            if(compute_->supports_weight_sources())check(compute_->dense_source(shard_->tensor_identity(name),[&](std::size_t first,std::span<float> target){shard_->read_float_tensor(name,first,target,cancel);},b,x,in,out,y,cancel),"video_projection_source");
+            else compute_->dense_weight(shard_->tensor_identity(name),w,b,x,in,out,y,cancel);
+        };
+        project("post_quant_conv.weight",{conv,576},{bias,24},latent,24,24,projected);project("decoder.x_embedder.weight",{embed,49152},{embed_bias,2048},projected,24,2048,current.first(patches*hidden));
     }else input_.compute(normalized,cancel,[&](std::size_t count){if(hook)hook("input",count);},sink(current.first(patches*hidden)));
     std::copy_n(weights_.get(),4*hidden,current.data()+patches*hidden);
     // Fifth suffix is the inference-only zero class token, not mask_token.
@@ -868,9 +838,9 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
     std::fill(coordinates.begin()+patches*3,coordinates.end(),0.0f);
     for(std::size_t layer=0;layer<layers;++layer) {
         cancelled(cancel);
-        // This is real checkpoint I/O on each block, not disk advertised as RAM.
+        // Norms/biases load from the bounded host cache; projection slices load lazily.
         H3DecoderBlock block(resources_);
-        block.load_from(*shard_,cancel,layer);
+        block.load_from(*shard_,cancel,layer,compute_.get());
         if(hook)hook("block_loaded",layer);
         block.compute(current,coordinates,cancel,[&](const char* stage,std::size_t count){if(hook)hook(stage,count);},sink(next),compute_.get());
         block.unload();std::swap(current,next);
@@ -911,7 +881,9 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         }
     }
     if(compute_){
-        std::span<float> projected(gpu_patches.get(),patches*patch_values);compute_->dense_weight(shard_->tensor_identity("decoder.proj_out.weight"),{projection,patch_values*hidden},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel);
+        std::span<float> projected(gpu_patches.get(),patches*patch_values);
+        if(compute_->supports_weight_sources())check(compute_->dense_source(shard_->tensor_identity("decoder.proj_out.weight"),[&](std::size_t first,std::span<float> target){shard_->read_float_tensor("decoder.proj_out.weight",first,target,cancel);},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel),"video_projection_source");
+        else compute_->dense_weight(shard_->tensor_identity("decoder.proj_out.weight"),{projection,patch_values*hidden},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel);
         for(std::size_t patch=0;patch<patches;++patch){cancelled(cancel);const auto lt=patch/(height*width),lh=(patch/width)%height,lw=patch%width;for(std::size_t r=0;r<patch_values;++r){const auto channel=r/1024,pt=(r/256)%4,ph=(r/16)%16,pw=r%16;frames[((channel*video_t+lt*4+pt)*video_h+lh*16+ph)*video_w+lw*16+pw]=projected[patch*patch_values+r];}}
     }
     cancelled(cancel);shard_->check_unchanged();

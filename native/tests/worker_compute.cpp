@@ -18,9 +18,27 @@ int main(){
  check(attention_visible(0,4,1,0,4));check(!attention_visible(0,5,1,0,4)); // Cached last query.
  check(!attention_visible(4,1,5,3,0));check(attention_visible(4,2,5,3,0));check(!attention_visible(4,5,5,3,0));
 
+ check(projection_columns(3072,96768,4,true,1)<96768);
+ check(projection_columns(3072,96768,1,false,4)%4==0);
+ check(projection_columns(24,24,4,false,1)==24);
+ fails([]{projection_columns(2147483647,4,4,true,1);});
+ unsigned attempts=0,pauses=0;bool cancellation=false;
+ wait_for_device_allocation([&]{return cancellation;},[&]{return ++attempts==3;},[&]{++pauses;});check(attempts==3&&pauses==2);
+ attempts=0;pauses=0;bool interrupted=false;
+ try{wait_for_device_allocation([&]{return cancellation;},[&]{++attempts;return false;},[&]{++pauses;cancellation=true;});}catch(const std::runtime_error&){interrupted=true;}
+ check(interrupted&&attempts==1&&pauses==1);cancellation=false;
+ interrupted=false;try{wait_for_device_allocation([]{return false;},[]{throw std::runtime_error("device_fault");return false;},[&]{++pauses;});}catch(const std::runtime_error&){interrupted=true;}check(interrupted&&pauses==1);
  auto cpu=compute_plan(1024,"","",false);check(cpu.capacity==Footprint{1024}&&cpu.devices.empty());
  const std::string budget=std::to_string(2ULL*1024*1024*1024+compute_context_bytes);
  auto dual=compute_plan(1024,"0,1",budget,true);check(dual.devices==std::vector<int>({0,1})&&dual.capacity==Footprint({1024,std::stoull(budget),std::stoull(budget)}));
+ const auto large=std::to_string(8ULL*1024*1024*1024);
+ auto unequal=compute_plan(1024,"1,0",budget,true,"0:"+budget+",1:"+large);check(unequal.capacity[1]==std::stoull(budget)&&unequal.capacity[2]==std::stoull(large));
+ for(auto mapping:{"0:4294967296","0:4294967296,0:4294967296","0:4294967296,1:4294967296,","2:4294967296,0:4294967296","0:1,1:4294967296"})fails([&]{compute_plan(1024,"0,1",budget,true,mapping);});
+ fails([&]{compute_plan(1024,"0",budget,true,"0:4294967296,1:4294967296");});
+ const std::array<Bytes,2> capacities{1,3},reverse_capacities{3,1},zero{0,0};
+ check(weight_boundary(100,capacities,1)==25&&weight_boundary(100,reverse_capacities,1)==75);
+ check(weight_boundary(100,zero,1)==50&&weight_boundary(100,capacities,2)==100);
+ for(std::size_t n=0;n<100;++n){auto mid=weight_boundary(n,capacities,1);check(mid<=n&&mid*4+(n-mid)*4==n*4);}
  auto reverse=compute_plan(1024,"1,0",budget,true);check(reverse.devices==std::vector<int>({1,0}));
  auto second=compute_plan(1024,"1",budget,true);check(second.capacity[1]==0&&second.capacity[2]==std::stoull(budget));
  for(auto devices:{"0,0","2","-1","0,1,2","cpu","0,"})fails([&]{compute_plan(1024,devices,budget,true);});

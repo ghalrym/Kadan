@@ -5,10 +5,12 @@ void check(bool b){if(!b)throw std::runtime_error("weight_test_failed");}
 template<class F>void fails(F f){try{f();}catch(const std::exception&){return;}throw std::runtime_error("expected_failure");}
 struct Fake final:WeightDeviceOperations {
     Resources& resources;std::map<void*,Bytes> pointers;unsigned copies=0,frees=0;std::string fail;
-    std::atomic_bool* cancellation=nullptr;
+    std::atomic_bool* cancellation=nullptr;Bytes free_bytes=1024;bool oom=false;
+    Bytes available_weight_bytes()override{return free_bytes;}
     explicit Fake(Resources& r):resources(r){}
     void* allocate_weight(Bytes bytes)override{
         check(resources.snapshot().used[1]>=bytes&&resources.snapshot().used[0]>=DeviceWeights::metadata_bytes);
+        if(oom)return nullptr;
         if(fail=="allocate")throw std::runtime_error("allocate");
         // Distinct fake handles; these are never dereferenced or sent to a GPU.
         auto pointer=reinterpret_cast<void*>(std::uintptr_t(pointers.size()+1));pointers.emplace(pointer,bytes);return pointer;
@@ -32,6 +34,14 @@ int main(){
         check(bank.retain(next,bytes,cancel)==nullptr&&bank.allocated()==64);
         check(r.snapshot().residents==1);bank.release();check(gpu.frees==2&&r.snapshot().residents==0);
         bank.bound(16);check(!bank.retain(key,bytes,cancel)&&r.snapshot().residents==0);
+        bank.bound(64);check(bank.retain(key,bytes,cancel)&&bank.reserved()==64);bank.release();
+    }
+    {
+        Resources r({host,1024});Fake gpu(r);DeviceWeights bank(r,0,Workload::video,64,gpu);
+        gpu.free_bytes=16;check(!bank.retain(key,bytes,cancel)&&gpu.pointers.empty()&&r.snapshot().residents==0);
+        gpu.free_bytes=1024;gpu.oom=true;check(!bank.retain(key,bytes,cancel)&&bank.allocated()==0&&!bank.quarantined());
+        gpu.oom=false;check(bank.retain(key,bytes,cancel));gpu.free_bytes=0;
+        check(bank.retain(key,bytes,cancel)&&gpu.copies==1);bank.release();check(r.snapshot().residents==0);
     }
     for(const auto* fail:{"allocate","copy"}){
         Resources r({host,1024});Fake gpu(r);DeviceWeights bank(r,0,Workload::video,64,gpu);gpu.fail=fail;

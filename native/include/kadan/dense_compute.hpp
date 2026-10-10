@@ -2,6 +2,7 @@
 #include "kadan/resources.hpp"
 #include "kadan/weight_identity.hpp"
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -31,6 +32,11 @@ public:
  virtual void dense_weight(const WeightIdentity&,std::span<const float> weights,std::span<const float> bias,
      std::span<const float> input,std::size_t in,std::size_t out,
      std::span<float> output,const std::atomic_bool& cancel,bool precise=false){dense(weights,bias,input,in,out,output,cancel,precise);}
+ // The callback reads only a missing partition; it must preserve exact F32 values.
+ virtual bool supports_weight_sources() const {return false;}
+ using FloatWeightSource=std::function<void(std::size_t,std::span<float>)>;
+ virtual bool dense_source(const WeightIdentity&,const FloatWeightSource&,std::span<const float>,
+     std::span<const float>,std::size_t,std::size_t,std::span<float>,const std::atomic_bool&,bool=false){return false;}
  // Return false to retain the model's CPU attention. Q/K/V use [token,head,dim].
  // Only the first causal_queries query rows are causal. window=0 is unbounded;
  // query_offset addresses cached decoding where queries are a suffix of keys.

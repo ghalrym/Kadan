@@ -6,7 +6,7 @@
 #include <map>
 
 namespace kadan::checkpoint {
-// Exact serialized bytes, reusable across shard reopenings. One worker owns the
+// Exact serialized or decoded F32 bytes, reusable across shard reopenings. One worker owns the
 // cache; a caller must serialize reads/clear. Every payload and map allocation
 // shares one admitted RAM envelope. Overflow streams without evicting hot data.
 class ReadCache {
@@ -28,11 +28,12 @@ public:
     Bytes reserved_bytes() const{return budget_->limit();}
     void clear(){entries_.clear();}
     void read(const Key& key,std::size_t bytes,std::size_t offset,std::span<std::uint8_t> destination,
-              const Source& source,const std::atomic_bool* cancel){
+              const Source& source,const std::atomic_bool* cancel,unsigned representation=0){
         stop(cancel);
         if(offset>bytes||destination.size()>bytes-offset)throw std::invalid_argument("checkpoint_cache_range");
         if(destination.empty())return;
-        auto found=entries_.find(key);
+        const CacheKey cache_key{key,representation};
+        auto found=entries_.find(cache_key);
         if(found!=entries_.end()){
             if(found->second.size()!=bytes)throw std::invalid_argument("checkpoint_cache_identity");
             ++hits_;copy_cached(found->second.data()+offset,destination,cancel);return;
@@ -42,7 +43,7 @@ public:
             // Map and vector use the same strict allocator. A metadata admission
             // failure also falls back to bounded file reads, with no extra cache.
             auto entry=entries_.end();
-            try{entry=entries_.try_emplace(key,budget_.get(),bytes).first;}
+            try{entry=entries_.try_emplace(cache_key,budget_.get(),bytes).first;}
             catch(const std::bad_alloc&){} // destination is separately caller-admitted
             if(entry!=entries_.end()){
                 try{copy_source(0,{entry->second.data(),bytes},source,cancel);}
@@ -53,6 +54,7 @@ public:
         copy_source(offset,destination,source,cancel);
     }
 private:
+    struct CacheKey {Key source;unsigned representation;auto operator<=>(const CacheKey&) const=default;};
     struct Buffer {
         std::pmr::memory_resource* resource;
         std::uint8_t* bytes;
@@ -84,7 +86,7 @@ private:
     }
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<MemoryBudget> budget_;
-    std::pmr::map<Key,Buffer> entries_;
+    std::pmr::map<CacheKey,Buffer> entries_;
     Handle reservation_=0;
     std::uint64_t hits_=0,misses_=0,source_bytes_=0;
 };

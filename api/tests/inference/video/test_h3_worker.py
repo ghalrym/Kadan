@@ -18,7 +18,7 @@ from unittest.mock import patch
 from api.inference.errors import InferenceFailure
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
 from api.inference.video import VideoSpec
-from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response, h3_gpu_budget
+from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response, h3_gpu_budgets
 from api.inference.line_protocol import LineProtocolError
 
 
@@ -39,6 +39,7 @@ class Worker:
         assert env['KADAN_H3_DEVICES'] == '0,1'
         self.cache_budget = int(env['KADAN_H3_WEIGHT_CACHE_BYTES'])
         self.gpu_budget = int(env['KADAN_H3_GPU_BUDGET_BYTES'])
+        self.gpu_budgets = env['KADAN_H3_GPU_BUDGETS']
         self.started = True
     def stop(self):
         if self.fail_stop:
@@ -193,14 +194,33 @@ class H3WorkerTests(unittest.TestCase):
     def test_gpu_budget_uses_configured_capacity_and_honors_explicit_limit(self):
         resources=ResourceManager(200*GIB,{0:22*GIB,1:20*GIB})
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(h3_gpu_budget(resources,[0,1]),20*GIB)
-            self.assertEqual(h3_gpu_budget(resources,[0]),22*GIB)
-            self.assertEqual(h3_gpu_budget(ResourceManager(200*GIB,{0:48*GIB}),[0]),24*GIB)
+            self.assertEqual(h3_gpu_budgets(resources,[0,1]),{0:22*GIB,1:20*GIB})
+            self.assertEqual(h3_gpu_budgets(resources,[0]),{0:22*GIB})
+            self.assertEqual(h3_gpu_budgets(ResourceManager(200*GIB,{0:48*GIB}),[0]),{0:24*GIB})
         with patch.dict(os.environ, {'KADAN_H3_GPU_BUDGET_BYTES':str(3*GIB)}):
-            self.assertEqual(h3_gpu_budget(resources,[0,1]),3*GIB)
+            self.assertEqual(h3_gpu_budgets(resources,[0,1]),{0:3*GIB,1:3*GIB})
         for value in ('0','-1','x',str(2*GIB),str(23*GIB)):
             with self.subTest(value=value),patch.dict(os.environ, {'KADAN_H3_GPU_BUDGET_BYTES':value}),self.assertRaises(InferenceFailure):
-                h3_gpu_budget(resources,[0,1])
+                h3_gpu_budgets(resources,[0,1])
+
+    def test_unequal_device_handoff_keeps_host_and_restores_exact_budgets(self):
+        _, worker, provider = setup(self)
+        resources = ResourceManager(200*GIB, {0:22*GIB, 1:12*GIB})
+        provider.resources = resources
+        with patch.dict(os.environ, {}, clear=True):
+            provider.load(threading.Event())
+            self.assertEqual(worker.gpu_budgets, f'0:{22*GIB},1:{12*GIB}')
+            def devices():
+                return [v['device_bytes'] for v in resources.snapshot()['reservations'].values() if v['device_bytes']]
+            self.assertEqual(devices(), [{0:20*GIB, 1:10*GIB}])
+            provider.offload_to_ram()
+            self.assertEqual(devices(), [])
+            self.assertIsNotNone(provider._host)
+            provider.load(threading.Event())
+            self.assertEqual(devices(), [{0:20*GIB, 1:10*GIB}])
+            self.assertEqual(worker.controls, ['park','resume'])
+            provider.close()
+            self.assertEqual(resources.snapshot()['reservations'], {})
 
     def test_single_gpu_retention_and_metadata_are_bound_to_admission(self):
         response=dict(output='/unused',width=864,height=480,frames=107,audio=True,

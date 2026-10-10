@@ -1,6 +1,7 @@
 #include "kadan/h3_compute.hpp"
 #include "kadan/device_workspace.hpp"
 #include "kadan/device_weights.hpp"
+#include "kadan/device_placement.hpp"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <type_traits>
+#include <chrono>
 namespace kadan::video {
 namespace {
 void require(bool b,const char* message){if(!b)throw std::runtime_error(message);}
@@ -27,17 +29,29 @@ struct Layout {
 // CUDA calls stay on the persistent thread that owns this selected device.
 class CudaDeviceOperations final:public DeviceOperations,public WeightDeviceOperations {
 public:
-    void* data=nullptr;cublasHandle_t blas=nullptr;
+    void* data=nullptr;cublasHandle_t blas=nullptr;const std::atomic_bool* cancellation=nullptr;const std::atomic_bool* failed=nullptr;Bytes scratch_bytes=0;
     DeviceWeights weights;
     CudaDeviceOperations(Resources& resources,int device,Workload workload,Bytes limit):weights(resources,device,workload,limit,*this){}
-    void* allocate_weight(Bytes bytes) override {void* pointer=nullptr;checked(cudaMalloc(&pointer,bytes));return pointer;}
+    Bytes available_weight_bytes() override {std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total));constexpr Bytes scratch=2ULL*1024*1024*1024;const auto remaining=scratch>scratch_bytes?scratch-scratch_bytes:0;return free>remaining?free-remaining:0;}
+    void* allocate_weight(Bytes bytes) override {void* pointer=nullptr;const auto status=cudaMalloc(&pointer,bytes);if(status==cudaErrorMemoryAllocation){cudaGetLastError();return nullptr;}checked(status);return pointer;}
     void copy_weight(void* pointer,std::size_t offset,std::span<const std::byte> source) override {checked(cudaMemcpy(static_cast<char*>(pointer)+offset,source.data(),source.size(),cudaMemcpyHostToDevice));}
     void free_weight(void* pointer) override {checked(cudaFree(pointer));}
     void synchronize_weights() override {checked(cudaStreamSynchronize(cudaStreamLegacy));}
     void release_weights() override {weights.release();}
     void select(int device) override {checked(cudaSetDevice(device));}
-    void allocate(Bytes bytes) override {checked(cudaMalloc(&data,bytes));}
-    void free() override {checked(cudaFree(data));data=nullptr;}
+    void allocate(Bytes bytes) override {
+        // External users can race the queue's probe. Keep ownership while waiting
+        // for scratch; cancellation is checked between bounded allocation attempts.
+        wait_for_device_allocation([&]{return (cancellation&&cancellation->load())||(failed&&failed->load());},[&]{
+            std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total));
+            if(free<bytes)return false;
+            const auto status=cudaMalloc(&data,bytes);
+            if(status==cudaSuccess){scratch_bytes=bytes;return true;}
+            if(status!=cudaErrorMemoryAllocation)checked(status);
+            cudaGetLastError();return false;
+        },[]{std::this_thread::sleep_for(std::chrono::milliseconds(50));});
+    }
+    void free() override {checked(cudaFree(data));data=nullptr;scratch_bytes=0;}
     void create_handle() override {checked(cublasCreate(&blas));}
     void configure_handle() override {checked(cublasSetMathMode(blas,CUBLAS_PEDANTIC_MATH));checked(cublasSetStream(blas,cudaStreamLegacy));}
     void destroy_handle() override {checked(cublasDestroy(blas));blas=nullptr;}
@@ -96,7 +110,7 @@ class Compute final:public H3Compute {
     std::shared_ptr<Resources> resources_;std::vector<int> devices_;Workload workload_;bool column_split_;std::atomic_bool quarantined_=false;
     std::vector<std::unique_ptr<DeviceThread>> threads_;
     mutable std::mutex operation_mutex_;
-    Footprint weight_reservations_;
+    Footprint weight_reservations_;std::vector<Bytes> weight_capacities_;Bytes inventory_bytes_=0;bool replan_=false;
     template<class F>void all_devices(F function){
         std::vector<std::future<void>> tasks;tasks.reserve(threads_.size());std::exception_ptr error;
         for(auto& thread:threads_)try{tasks.push_back(thread->submit(function));}catch(...){if(!error)error=std::current_exception();}
@@ -111,14 +125,17 @@ class Compute final:public H3Compute {
             weight_reservations_[devices_[i]+1]=bytes;if(bytes)weight_reservations_[0]+=DeviceWeights::metadata_bytes;
         }).get();
     }
-    template<class F>void split(std::size_t rows,const std::atomic_bool& cancel,F function){
+    template<class F>void split(std::size_t rows,const std::atomic_bool& cancel,F function,bool weighted=false){
         std::lock_guard lock(operation_mutex_);
         require(!quarantined_.load(),"h3_cuda_cleanup_unconfirmed");
         if(cancel.load()){release_scratch_locked();throw std::runtime_error("h3_cuda_cancelled");}
+        if(replan_)plan_weights_locked();
         std::atomic_bool failed=false;std::vector<std::future<void>> tasks;tasks.reserve(threads_.size());std::exception_ptr error;
-        try{for(std::size_t d=0;d<threads_.size();++d){const auto begin=rows*d/threads_.size(),end=rows*(d+1)/threads_.size();if(begin==end)continue;
+        try{for(std::size_t d=0;d<threads_.size();++d){const auto begin=weighted?weight_boundary(rows,weight_capacities_,d):rows*d/threads_.size(),end=weighted?weight_boundary(rows,weight_capacities_,d+1):rows*(d+1)/threads_.size();if(begin==end)continue;
             tasks.push_back(threads_[d]->submit_work([&,begin,end](DeviceWorkspace& workspace){
-                function(workspace,begin,end,failed);
+                auto& ops=static_cast<CudaDeviceOperations&>(workspace.operations());
+                struct CancelScope {CudaDeviceOperations& ops;~CancelScope(){ops.cancellation=nullptr;ops.failed=nullptr;}} scope{ops};
+                ops.cancellation=&cancel;ops.failed=&failed;function(workspace,begin,end,failed);
             },&failed));
         }}catch(...){failed=true;error=std::current_exception();}
         for(auto& t:tasks)try{t.get();}catch(...){if(!error)error=std::current_exception();}
@@ -132,33 +149,47 @@ class Compute final:public H3Compute {
         require(in&&out&&in<=std::size_t(INT_MAX)&&out<=std::size_t(INT_MAX)&&!x.empty()&&x.size()%in==0&&y.size()==product(x.size()/in,out)&&(bias.empty()||bias.size()==out),"h3_cuda_projection_shape");
         for(float v:x)require(std::isfinite(v),"h3_cuda_nonfinite_input");for(float v:bias)require(std::isfinite(v),"h3_cuda_nonfinite_bias");
     }
-    template<class Weight>void project(std::span<const Weight> weights,std::span<const float> scales,std::span<const float> bias,std::span<const float> x,std::size_t in,std::size_t out,std::size_t group,std::span<float> y,const std::atomic_bool& cancel,bool precise=false,const WeightIdentity* identity=nullptr){
-        require(!cancel.load(),"h3_cuda_cancelled");validate(x,bias,in,out,y);require(!overlap(y.data(),y.size_bytes(),x.data(),x.size_bytes())&&!overlap(y.data(),y.size_bytes(),weights.data(),weights.size_bytes())&&!overlap(y.data(),y.size_bytes(),bias.data(),bias.size_bytes())&&!overlap(y.data(),y.size_bytes(),scales.data(),scales.size_bytes()),"h3_cuda_alias");require(weights.size()==product(in,out),"h3_cuda_weight_shape");constexpr bool quant=sizeof(Weight)==1;
+    template<class Weight>void project(std::span<const Weight> weights,std::span<const float> scales,std::span<const float> bias,std::span<const float> x,std::size_t in,std::size_t out,std::size_t group,std::span<float> y,const std::atomic_bool& cancel,bool precise=false,const WeightIdentity* identity=nullptr,const std::function<void(std::size_t,std::span<Weight>)>* source=nullptr){
+        require(!cancel.load(),"h3_cuda_cancelled");validate(x,bias,in,out,y);require(!overlap(y.data(),y.size_bytes(),x.data(),x.size_bytes())&&!overlap(y.data(),y.size_bytes(),weights.data(),weights.size_bytes())&&!overlap(y.data(),y.size_bytes(),bias.data(),bias.size_bytes())&&!overlap(y.data(),y.size_bytes(),scales.data(),scales.size_bytes()),"h3_cuda_alias");require((source&&identity)||weights.size()==product(in,out),"h3_cuda_weight_shape");constexpr bool quant=sizeof(Weight)==1;
         if constexpr(quant){require((group==64||group==256)&&in%group==0&&in<=std::size_t(INT_MAX/(128*127))&&out%4==0&&scales.size()==out,"h3_cuda_quant_shape");for(float v:scales)require(std::isfinite(v)&&v>=0,"h3_cuda_scale");}
-        else for(float v:weights)require(std::isfinite(v),"h3_cuda_nonfinite_weight");
+
         const auto total_out=out;const bool columns=identity||(column_split_&&!quant&&projection_split_columns(x.size()/in,devices_.size()));
-        const auto all_weights=weights;const auto all_bias=bias;const auto all_scales=scales;
+        const auto all_weights=weights;const auto all_bias=bias;const auto all_scales=scales;std::mutex source_mutex;
         split(columns?(quant?out/4:out):x.size()/in,cancel,[&](DeviceWorkspace& device_workspace,std::size_t begin,std::size_t end,const std::atomic_bool& failed){
             if constexpr(quant){if(columns){begin*=4;end*=4;}}
-            const auto first_column=columns?begin:0;
-            const auto out=columns?end-begin:total_out;
-            const auto weights=columns?all_weights.subspan(begin*in,out*in):all_weights;
-            const auto bias=columns&&!all_bias.empty()?all_bias.subspan(begin,out):all_bias;
-            const auto scales=columns&&!all_scales.empty()?all_scales.subspan(begin,out):all_scales;
+            const auto first_output=columns?begin:0,last_output=columns?end:total_out;
             if(columns){begin=0;end=x.size()/in;}
+            const auto chunk_columns=projection_columns(in,last_output-first_output,sizeof(Weight),precise,quant?4:1);
+            for(auto first_column=first_output;first_column<last_output;first_column+=chunk_columns){
+            const auto out=std::min(chunk_columns,last_output-first_column);
+            auto weights=source?std::span<const Weight>{}:all_weights.subspan(first_column*in,out*in);
+            const auto bias=all_bias.empty()?all_bias:all_bias.subspan(first_column,out);
+            const auto scales=all_scales.empty()?all_scales:all_scales.subspan(first_column,out);
             stop(cancel,failed);const auto tile=std::min<std::size_t>(256,end-begin);
             // Establish device/thread ownership before any retained allocation.
             device_workspace.ensure(256);auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());
-            void* retained=nullptr;
-            if(identity)retained=arena.weights.retain({*identity,first_column*in,weights.size(),sizeof(Weight)},std::as_bytes(weights),cancel);
+            const auto weight_count=product(in,out);
+            const DeviceWeights::Key key{identity?*identity:WeightIdentity{},first_column*in,weight_count,sizeof(Weight)};
+            void* retained=identity?arena.weights.find(key):nullptr;
+            std::unique_ptr<HostAdmission> host_admission;std::unique_ptr<Weight[]> host_weights;
+            if(!retained){
+                if(source){
+                    host_admission=std::make_unique<HostAdmission>(*resources_,weight_count*sizeof(Weight)+4096,workload_);
+                    host_weights=std::make_unique_for_overwrite<Weight[]>(weight_count);
+                    {std::lock_guard source_lock(source_mutex);stop(cancel,failed);(*source)(first_column*in,{host_weights.get(),weight_count});}
+                    weights={host_weights.get(),weight_count};
+                }
+                if constexpr(!quant)for(float value:weights)require(std::isfinite(value),"h3_cuda_nonfinite_weight");
+                if(identity)retained=arena.weights.retain(key,std::as_bytes(weights),cancel);
+            }
             Layout l;
-            const auto w=l.add(retained?0:weights.size_bytes()),b=l.add(out*4),s=l.add(out*4),input=l.add(tile*in*4),rotated=l.add(tile*in*4),codes=l.add(tile*in),row_scales=l.add(tile*4),sums=l.add(tile*out*4),output=l.add(tile*out*4),workspace=l.add(8*1024*1024),wide_weights=l.add(precise?weights.size()*8:0),wide_input=l.add(precise?tile*in*8:0),wide_output=l.add(precise?tile*out*8:0);
+            const auto w=l.add(retained?0:weights.size_bytes()),b=l.add(out*4),s=l.add(out*4),input=l.add(tile*in*4),rotated=l.add(tile*in*4),codes=l.add(tile*in),row_scales=l.add(tile*4),sums=l.add(tile*out*4),output=l.add(tile*out*4),workspace=l.add(8*1024*1024),wide_weights=l.add(precise?weight_count*8:0),wide_input=l.add(precise?tile*in*8:0),wide_output=l.add(precise?tile*out*8:0);
             device_workspace.ensure(l.bytes);checked(cublasSetWorkspace(arena.blas,arena.at<void>(workspace),8*1024*1024));
             auto* weight_pointer=retained?retained:arena.at<void>(w);
             if(!retained)checked(cudaMemcpy(weight_pointer,weights.data(),weights.size_bytes(),cudaMemcpyHostToDevice));
             if(bias.empty())checked(cudaMemset(arena.at<void>(b),0,out*4));else checked(cudaMemcpy(arena.at<void>(b),bias.data(),out*4,cudaMemcpyHostToDevice));
             if constexpr(quant)checked(cudaMemcpy(arena.at<void>(s),scales.data(),out*4,cudaMemcpyHostToDevice));
-            else if(precise){widen<<<unsigned((weights.size()+255)/256),256>>>(static_cast<float*>(weight_pointer),arena.at<double>(wide_weights),weights.size());checked(cudaGetLastError());}
+            else if(precise){widen<<<unsigned((weight_count+255)/256),256>>>(static_cast<float*>(weight_pointer),arena.at<double>(wide_weights),weight_count);checked(cudaGetLastError());}
             for(std::size_t start=begin;start<end;start+=tile){stop(cancel,failed);const auto rows=std::min(tile,end-start);checked(cudaMemcpy(arena.at<void>(input),x.data()+start*in,rows*in*4,cudaMemcpyHostToDevice));
                 if constexpr(quant){
                     rotate_kernel<<<dim3(unsigned(rows),unsigned(in/group)),unsigned(group)>>>(arena.at<float>(input),arena.at<float>(rotated),in,unsigned(group));checked(cudaGetLastError());
@@ -175,14 +206,15 @@ class Compute final:public H3Compute {
                 }
                 checked(cudaGetLastError());checked(cudaStreamSynchronize(cudaStreamLegacy));stop(cancel,failed);checked(cudaMemcpy2D(y.data()+start*total_out+first_column,total_out*4,arena.at<void>(output),out*4,out*4,rows,cudaMemcpyDeviceToHost));
             }
-        });
+            }
+        },identity!=nullptr);
         for(float v:y)require(std::isfinite(v),"h3_cuda_nonfinite_output");
     }
 public:
     Compute(std::shared_ptr<Resources> r,std::vector<int> devices,Workload workload=Workload::video,bool columns=false):resources_(std::move(r)),devices_(std::move(devices)),workload_(workload),column_split_(columns){
         require(bool(resources_)&&!devices_.empty(),"h3_cuda_devices");const auto capacity=resources_->snapshot().capacity;
         for(std::size_t i=0;i<devices_.size();++i){const int d=devices_[i];require(d>=0&&std::size_t(d)+1<capacity.size()&&capacity[d+1]>0,"h3_cuda_unbudgeted_device");require(std::find(devices_.begin(),devices_.begin()+i,d)==devices_.begin()+i,"h3_cuda_duplicate_device");}
-        weight_reservations_.resize(capacity.size());
+        weight_reservations_.resize(capacity.size());weight_capacities_.resize(devices_.size());
         const auto used=resources_->snapshot().used;
         for(int device:devices_){
             const Bytes scratch=2ULL*1024*1024*1024;
@@ -233,20 +265,37 @@ public:
         std::lock_guard lock(operation_mutex_);
         require(!quarantined_.load(),"h3_cuda_cleanup_unconfirmed");
         all_devices([](DeviceWorkspace& workspace){workspace.reset();});
-        std::fill(weight_reservations_.begin(),weight_reservations_.end(),0);
+        std::fill(weight_reservations_.begin(),weight_reservations_.end(),0);replan_=inventory_bytes_!=0;
     }
     Footprint retained_weights() const override {std::lock_guard lock(operation_mutex_);return weight_reservations_;}
     bool prepare_weights(Bytes bytes) override {
         std::lock_guard lock(operation_mutex_);require(!quarantined_.load(),"h3_cuda_cleanup_unconfirmed");
-        // Output-channel partitioning uses both selected devices without a full
-        // duplicate of every matrix. Keep the 2GiB scratch allowance separate.
-        const auto share=bytes/devices_.size()+(bytes%devices_.size()!=0);Bytes total=0;
-        for(auto& thread:threads_)thread->submit([&](DeviceWorkspace& workspace){
-            auto& bank=static_cast<CudaDeviceOperations&>(workspace.operations()).weights;
-            bank.bound(share);total+=bank.capacity();
-        }).get();
-        return total>=bytes;
+        inventory_bytes_=bytes;return plan_weights_locked();
     }
+private:
+    bool plan_weights_locked(){
+        const auto bytes=inventory_bytes_;
+        // Plan from free physical memory on each owned device thread. Freeze the
+        // partition until park/replan so cached identities keep stable slices.
+        Bytes total=0;
+        for(std::size_t i=0;i<threads_.size();++i)threads_[i]->submit([&,i](DeviceWorkspace& workspace){
+            workspace.activate();
+            auto& ops=static_cast<CudaDeviceOperations&>(workspace.operations());
+            weight_capacities_[i]=std::min(ops.weights.maximum_capacity(),ops.available_weight_bytes());
+            total+=weight_capacities_[i];
+        }).get();
+        for(std::size_t i=0;i<threads_.size();++i)threads_[i]->submit([&,i](DeviceWorkspace& workspace){
+            auto& bank=static_cast<CudaDeviceOperations&>(workspace.operations()).weights;
+            // A ceiling per bank leaves room for tensor channel rounding.
+            const auto share=weight_boundary(bytes,weight_capacities_,i+1)-weight_boundary(bytes,weight_capacities_,i);
+            bank.bound(std::min(weight_capacities_[i],share+std::min<Bytes>(16*1024*1024,std::numeric_limits<Bytes>::max()-share)));
+        }).get();
+        replan_=false;return total>=bytes;
+    }
+public:
+    bool supports_weight_sources() const override {return true;}
+    bool dense_source(const WeightIdentity& identity,const FloatWeightSource& source,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,const std::atomic_bool& c,bool precise)override{project<float>({}, {},b,x,in,out,0,y,c,precise,&identity,&source);return true;}
+    bool convrot_source(const WeightIdentity& identity,const ByteWeightSource& source,std::span<const float> s,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::size_t g,std::span<float> y,const std::atomic_bool& c)override{project<std::uint8_t>({},s,b,x,in,out,g,y,c,false,&identity,&source);return true;}
     void dense_weight(const WeightIdentity& identity,std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,const std::atomic_bool& c,bool precise)override{project(w,{},b,x,in,out,0,y,c,precise,&identity);}
     void dense(std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,const std::atomic_bool& c,bool precise)override{project(w,{},b,x,in,out,0,y,c,precise);}
     void convrot(std::span<const std::uint8_t> w,std::span<const float> s,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::size_t g,std::span<float> y,const std::atomic_bool& c)override{project(w,s,b,x,in,out,g,y,c);}

@@ -98,8 +98,8 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources
         if(hook){hook("weight_storage_mib",inventory.stored_bytes/(1024*1024));hook(full?"weight_retention_full_mib":"weight_retention_bounded_mib",execution_bytes/(1024*1024));}
     }
     if(!limit)return {};
-    // Include bounded map overhead when the full raw model fits in the envelope.
-    const auto selected=std::min(limit,checkpoint::weight_bytes_add(inventory.stored_bytes,8*1024*1024));
+    // Raw integer and decoded float weights share one envelope, including metadata.
+    const auto selected=std::min(limit,checkpoint::weight_bytes_add(std::max(inventory.stored_bytes,checkpoint::weight_bytes_add(inventory.floating_f32_bytes,inventory.raw_nonfloating_bytes)),8*1024*1024));
     return std::make_shared<checkpoint::ReadCache>(std::move(resources),selected,Workload::video);
 }
 H3Generation::H3Generation(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute,std::shared_ptr<checkpoint::ReadCache> cache):resources_(std::move(resources)),compute_(std::move(compute)),cache_(std::move(cache)){check(bool(resources_),"h3_generation_resources");}

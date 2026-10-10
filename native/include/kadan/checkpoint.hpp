@@ -89,6 +89,8 @@ public:
     void cache_reads(std::shared_ptr<ReadCache>,const std::atomic_bool* cancel);
     // Caller owns/admitted destination; no hidden payload allocation.
     void read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const;
+    // Exact F16/BF16/F32 decode, retained in the same bounded cache envelope.
+    void read_float_tensor(std::string_view name,std::size_t first,std::span<float> destination,const std::atomic_bool& cancel) const;
     // Explicit ModelOpt contract. All companion tensors must be in this shard.
     // Reads only selected rows plus their block/row scales and scalar multiplier.
     // payload_budget caps final owned tensor bytes, separately from allocator quota.

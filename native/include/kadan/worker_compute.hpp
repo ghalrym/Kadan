@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/dense_compute.hpp"
+#include "kadan/device_placement.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cstdlib>
@@ -8,14 +9,13 @@ namespace kadan {
 inline constexpr Bytes compute_context_bytes=384ULL*1024*1024;
 inline Footprint host_footprint(Resources& r,Bytes bytes){auto f=r.snapshot().capacity;std::fill(f.begin(),f.end(),0);f[0]=bytes;return f;}
 struct ComputePlan {Footprint capacity;std::vector<int> devices;};
-inline ComputePlan compute_plan(Bytes host,std::string_view selection,std::string_view budget,bool available){
+inline ComputePlan compute_plan(Bytes host,std::string_view selection,std::string_view budget,bool available,std::string_view indexed={}){
  if(!host)throw std::invalid_argument("compute_host_budget");
  ComputePlan p{{host},{}};if(selection.empty())return p;
  if(!available)throw std::invalid_argument("compute_cuda_not_built");
  if(selection=="0")p.devices={0};else if(selection=="1")p.devices={1};else if(selection=="0,1")p.devices={0,1};else if(selection=="1,0")p.devices={1,0};else throw std::invalid_argument("compute_devices");
- Bytes bytes=0;auto parsed=std::from_chars(budget.data(),budget.data()+budget.size(),bytes);
- if(budget.empty()||parsed.ec!=std::errc{}||parsed.ptr!=budget.data()+budget.size()||bytes<compute_context_bytes+16*1024*1024||bytes>24ULL*1024*1024*1024)throw std::invalid_argument("compute_device_budget");
- p.capacity.resize(3);for(int device:p.devices)p.capacity[device+1]=bytes;return p;
+ auto budgets=device_budgets(p.devices,budget,indexed,compute_context_bytes+16*1024*1024);
+ p.capacity.resize(3);for(int device:p.devices)p.capacity[device+1]=budgets[device+1];return p;
 }
 inline ComputePlan worker_compute_plan(Bytes host,const char* selection_name){
  const char* s=std::getenv(selection_name);const char* b=std::getenv("KADAN_NATIVE_GPU_BUDGET_BYTES");
@@ -24,7 +24,8 @@ inline ComputePlan worker_compute_plan(Bytes host,const char* selection_name){
 #else
  constexpr bool available=false;
 #endif
- return compute_plan(host,s?s:"",b?b:"",available);
+ const char* indexed=std::getenv("KADAN_NATIVE_GPU_BUDGETS");
+ return compute_plan(host,s?s:"",b?b:"",available,indexed?indexed:"");
 }
 struct WorkerCompute {
  std::shared_ptr<Resources> resources;std::shared_ptr<DenseCompute> compute;Footprint context;Handle context_handle=0;Workload workload;

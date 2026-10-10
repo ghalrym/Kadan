@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdlib>
 #include <bit>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -243,6 +244,31 @@ void inventory_cases(){
     std::filesystem::resize_file(f.root/"model.safetensors",8);
     fails([&]{inventory.add(shard);},"checkpoint_changed");check(inventory.stored_bytes==24);
 }
+void converted_cache_cases(){
+    Fixture f;
+    f.write("{"+tensor("half","F16","[4]",0,8)+","+tensor("brain","BF16","[2]",8,12)+","+tensor("single","F32","[1]",12,16)+"}",
+        {0,0x3c,0,0x80,1,0,0,0xc0,0x80,0x3f,0,0xc0,0,0,0x60,0x40});
+    auto resources=std::make_shared<kadan::Resources>(kadan::Footprint{4096});
+    auto cache=std::make_shared<ReadCache>(resources,4096,kadan::Workload::video);std::atomic_bool cancel=false;
+    {
+        Shard shard(f.root.c_str(),"model.safetensors",budget());shard.cache_reads(cache,&cancel);
+        std::array<std::uint8_t,2> raw{};shard.read_tensor("half",0,raw);
+        std::array<float,4> values{};shard.read_float_tensor("half",0,values,cancel);
+        check(values[0]==1&&std::bit_cast<std::uint32_t>(values[1])==0x80000000&&values[2]==std::ldexp(1.0f,-24)&&values[3]==-2);
+        check(cache->stats().entries==2);const auto read_bytes=cache->stats().source_bytes;
+        shard.read_float_tensor("half",3,{values.data(),1},cancel);check(values[0]==-2&&cache->stats().source_bytes==read_bytes);
+        shard.read_float_tensor("brain",0,{values.data(),2},cancel);check(values[0]==1&&values[1]==-2);
+        shard.read_float_tensor("single",0,{values.data(),1},cancel);check(values[0]==3.5f);
+        cancel=true;fails([&]{shard.read_float_tensor("half",0,values,cancel);},"checkpoint_cache_cancelled");cancel=false;
+        fails([&]{shard.read_float_tensor("half",4,{values.data(),1},cancel);},"checkpoint_float_range");
+    }
+    // Reopening (including after a GPU park) keeps decoded values, no source reads.
+    const auto before=cache->stats().source_bytes;
+    {Shard shard(f.root.c_str(),"model.safetensors",budget());shard.cache_reads(cache,&cancel);float value=0;shard.read_float_tensor("half",0,{&value,1},cancel);check(value==1&&cache->stats().source_bytes==before);}
+    cache.reset();check(resources->snapshot().used[0]==0);
+    cache=std::make_shared<ReadCache>(resources,1,kadan::Workload::video);
+    {Shard shard(f.root.c_str(),"model.safetensors",budget());shard.cache_reads(cache,&cancel);float value=0;shard.read_float_tensor("half",3,{&value,1},cancel);check(value==-2&&cache->stats().entries==0);}
+}
 void cache_cases(){
     Fixture f;nvfp4_fixture(f);auto q=budget();
     auto resources=std::make_shared<kadan::Resources>(kadan::Footprint{4096});
@@ -288,6 +314,6 @@ void cache_cases(){
 }
 } // namespace
 int main() {
-    try { cache_cases(); inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
+    try { converted_cache_cases(); cache_cases(); inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

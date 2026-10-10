@@ -43,6 +43,10 @@ public:
     DeviceOperations& operations() { return *operations_; }
     Bytes retained_bytes() const { return bytes_; }
     bool quarantined() const { return quarantined_; }
+    void activate() {
+        healthy();touched_=true;
+        try {operations_->select(device_);}catch(...){quarantined_=true;throw;}
+    }
     void ensure(Bytes bytes) {
         healthy();
         if(!bytes)throw std::invalid_argument("compute_workspace_empty");
@@ -50,8 +54,7 @@ public:
         try {
             // Even a failed selection may have initialized a context. Keep its
             // ownership until a successful explicit reset or process exit.
-            touched_=true;
-            try {operations_->select(device_);}catch(...){quarantined_=true;throw;}
+            activate();
             release_buffer();
             auto footprint=resources_.snapshot().capacity;
             std::fill(footprint.begin(),footprint.end(),0);footprint[device_+1]=bytes;

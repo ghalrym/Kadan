@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <bit>
+#include <cmath>
 #include <charconv>
 #include <cstring>
 #include <fcntl.h>
@@ -303,6 +305,34 @@ void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std
             impl_->read(t,at,out);impl_->unchanged();
         },impl_->cancel);
     }else impl_->read(t, offset, destination);
+    impl_->unchanged();
+}
+void Shard::read_float_tensor(std::string_view name,std::size_t first,std::span<float> destination,const std::atomic_bool& cancel) const {
+    const auto& t=impl_->find(name);impl_->unchanged();
+    require(t.dtype==Dtype::fp32||t.dtype==Dtype::bf16||t.dtype==Dtype::fp16,"checkpoint_float_dtype");
+    const std::size_t width=t.dtype==Dtype::fp32?4:2,count=(t.end-t.begin)/width;
+    require(first<=count&&destination.size()<=count-first,"checkpoint_float_range");
+    const auto bytes=mul(count,sizeof(float));
+    auto source=[&](std::size_t at,std::span<std::uint8_t> output){
+        std::array<std::uint8_t,4096> raw;
+        for(std::size_t offset=0;offset<output.size();){
+            if(cancel.load())throw std::runtime_error("checkpoint_cache_cancelled");
+            const auto n=std::min(raw.size()/width,(output.size()-offset)/4);
+            impl_->read(t,(at+offset)/4*width,{raw.data(),n*width});impl_->unchanged();
+            for(std::size_t i=0;i<n;++i){
+                std::uint32_t bits=0;for(std::size_t b=0;b<width;++b)bits|=std::uint32_t(raw[i*width+b])<<(8*b);
+                float value;
+                if(t.dtype==Dtype::fp16){const auto exponent=(bits>>10)&31,fraction=bits&1023;require(exponent!=31,"checkpoint_nonfinite_weight");value=exponent?std::ldexp(float(1024+fraction),int(exponent)-25):std::ldexp(float(fraction),-24);if(bits&32768)value=-value;}
+                else value=std::bit_cast<float>(width==2?bits<<16:bits);
+                require(std::isfinite(value),"checkpoint_nonfinite_weight");std::memcpy(output.data()+offset+i*4,&value,4);
+            }
+            offset+=n*4;
+        }
+        if(cancel.load())throw std::runtime_error("checkpoint_cache_cancelled");
+    };
+    std::span<std::uint8_t> output(reinterpret_cast<std::uint8_t*>(destination.data()),destination.size_bytes());
+    if(impl_->cache)impl_->cache->read(tensor_identity(name),bytes,first*4,output,source,&cancel,1);
+    else source(first*4,output);
     impl_->unchanged();
 }
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,

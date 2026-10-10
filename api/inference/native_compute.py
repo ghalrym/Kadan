@@ -12,10 +12,11 @@ class NativeCompute:
     feature: str
     devices: tuple[int, ...] = ()
     budget: int = DEFAULT_DEVICE_BYTES
+    budgets: tuple[tuple[int, int], ...] = ()
 
     @property
     def device_bytes(self):
-        return {device: self.budget for device in self.devices}
+        return dict(self.budgets) if self.budgets else {device: self.budget for device in self.devices}
 
     @property
     def mode(self):
@@ -23,11 +24,12 @@ class NativeCompute:
 
     @property
     def identity(self):
-        return (self.mode, ','.join(map(str, self.devices)), str(self.budget))
+        return (self.mode, ','.join(map(str, self.devices)), str(tuple(self.device_bytes.items())))
 
     def environment(self):
         return {**os.environ, f'KADAN_{self.feature}_DEVICES': ','.join(map(str, self.devices)),
                 'KADAN_NATIVE_GPU_BUDGET_BYTES': str(self.budget),
+                'KADAN_NATIVE_GPU_BUDGETS': ','.join(f'{d}:{b}' for d, b in self.device_bytes.items()),
                 'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
 
 
@@ -49,8 +51,10 @@ def native_compute(feature, resources=None):
         raise InferenceFailure('Native devices must be 0, 1, 0,1, 1,0 auto or cpu.')
     if capacity is not None and any(capacity.get(d, 0) < budget for d in devices):
         raise InferenceFailure('Selected native devices exceed the shared device budgets.')
+    budgets = ()
     if feature == 'IMAGE' and devices and capacity is not None and 'KADAN_NATIVE_GPU_BUDGET_BYTES' not in os.environ:
         # Reserve the usable configured envelope for weights plus bounded scratch.
         # Explicit operator budgets remain authoritative; transient use is queued.
-        budget = min(24 * 1024**3, *(capacity[d] for d in devices))
-    return NativeCompute(feature, devices, budget)
+        budgets = tuple((d, min(24 * 1024**3, capacity[d])) for d in devices)
+        budget = min(b for _, b in budgets)
+    return NativeCompute(feature, devices, budget, budgets)
