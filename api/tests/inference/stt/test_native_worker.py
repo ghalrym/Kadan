@@ -4,10 +4,11 @@ from pathlib import Path
 import threading
 import unittest
 import wave
+from unittest.mock import patch
 
 from api.inference.errors import InferenceFailure
 from api.inference.resources import ResourceManager, ResourceCancelled
-from api.inference.stt.native_worker import NativeWhisper, PROCESS_BUDGET, pcm
+from api.inference.stt.native_worker import NativeWhisper, PROCESS_BUDGET, pcm, resolve
 
 
 def audio(frames=160):
@@ -35,6 +36,21 @@ class Child:
 
 
 class NativeWorkerTests(unittest.TestCase):
+    def test_missing_export_acquires_checkpoint_with_cancellation_before_spawning(self):
+        cancel = threading.Event()
+        with patch.dict('os.environ', {}, clear=True), \
+                patch('api.inference.stt.native_worker.model_manager') as manager, \
+                patch('api.inference.stt.native_worker.ensure_assets') as export, \
+                patch('api.inference.stt.native_worker.subprocess.run') as spawn, \
+                patch.object(Path, 'exists', return_value=False):
+            manager.root = Path('/models')
+            manager.ensure_checkpoint.side_effect = ResourceCancelled('cancelled')
+            with self.assertRaises(ResourceCancelled):
+                resolve('large-v3', cancel=cancel)
+            manager.ensure_checkpoint.assert_called_once_with('whisper-large-v3', cancel)
+            export.assert_not_called()
+            spawn.assert_not_called()
+
     def setUp(self):
         self.resources=ResourceManager(64*1024**3,{})
         self.child=Child();self.resolves=[]

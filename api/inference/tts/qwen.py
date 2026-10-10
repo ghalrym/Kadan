@@ -23,10 +23,10 @@ class QwenSpeechProvider:
         validate_native(request, allow_empty=True)
 
     def prepare_assets(self, request, resources, cancel):
+        entry, checkpoint = model_manager.ensure_checkpoint(request.model_id, cancel)
+        if entry.revision != SPEECH_MODELS[request.model_id].revision:
+            raise SpeechUnavailable('Speech checkpoint revision mismatch.')
         if not os.environ.get('KADAN_NATIVE_TTS_TOKENIZER'):
-            entry, checkpoint = model_manager.get_checkpoint(request.model_id)
-            if entry.revision != SPEECH_MODELS[request.model_id].revision:
-                raise SpeechUnavailable('Speech checkpoint revision mismatch.')
             ensure_assets('tts', checkpoint, model_manager.root / 'native/tts', resources, cancel)
 
     def prepare_placement(self, request, resources, retained=None):

@@ -43,6 +43,7 @@ class WorkerDefaultTests(unittest.TestCase):
         model=QwenSpeechProvider().models()[0]
         request=SpeechInput('Hello',{'mode':'custom','speaker':'Ryan'},'Auto',model.id)
         store=SimpleNamespace(root=Path('/models'),get_checkpoint=Mock(return_value=(SimpleNamespace(revision='0c0e3051f131929182e2c023b9537f8b1c68adfe'),Path('/checkpoint'))))
+        store.ensure_checkpoint=Mock(return_value=store.get_checkpoint.return_value)
         with patch('api.inference.tts.qwen.model_manager',store),patch.object(Path,'is_file',return_value=True),patch('api.inference.tts.qwen.verify_tokenizer') as verify:
             plan=QwenSpeechProvider().prepare(request,self.resources)
         worker=plan.create()
@@ -98,6 +99,7 @@ class WorkerDefaultTests(unittest.TestCase):
         runtime=SpeechRuntime(registry, resources=lambda: self.resources)
         wrapper=SpeechRequests(runtime)
         store=SimpleNamespace(root=Path('/models'),get_checkpoint=Mock(return_value=(SimpleNamespace(revision='0c0e3051f131929182e2c023b9537f8b1c68adfe'),Path('/checkpoint'))))
+        store.ensure_checkpoint=Mock(return_value=store.get_checkpoint.return_value)
         with patch('api.inference.tts.qwen.model_manager',store),patch.object(Path,'is_file',return_value=True),patch(
                 'api.inference.tts.qwen.verify_tokenizer'),patch('api.inference.tts.qwen.ensure_assets'),patch('api.inference.tts.qwen.NativeSpeechSession',return_value=session):
             self.assertIs(asyncio.run(wrapper.load('qwen-tts-1.7b-custom')),session)

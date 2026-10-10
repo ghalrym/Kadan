@@ -52,7 +52,7 @@ def resolve(model, compute=None, resources=None, cancel=None):
     root = Path(os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT') or model_manager.root / 'native/whisper' / entry.name)
     assets = Path(os.environ.get('KADAN_NATIVE_WHISPER_ASSET_ROOT') or root / 'assets')
     if not root.exists() and not os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT'):
-        _, source = model_manager.get_checkpoint('whisper-' + entry.name)
+        _, source = model_manager.ensure_checkpoint('whisper-' + entry.name, cancel or threading.Event())
         ensure_assets('whisper', source / (entry.name + '.pt'), root,
             resources or chat_runtime.ensure_resources(), cancel, entry.sha256)
     if not binary.is_absolute() or not root.is_absolute() or not assets.is_absolute():
