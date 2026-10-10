@@ -28,6 +28,7 @@ HOST_BUDGET = 128 * GIB
 DEVICE_BUDGET = 2 * GIB
 CONTEXT_BUDGET = GIB
 PROCESS_HOST_BUDGET = HOST_BUDGET + 256 * 1024**2
+MAX_WEIGHT_CACHE_BYTES = 32 * GIB
 
 
 def check_cancel(event):
@@ -101,9 +102,9 @@ def resolve_command(model_id, cancel=None):
         raise InferenceFailure('Native H3 worker is unavailable; configure KADAN_NATIVE_H3_WORKER.')
     # This mode only reports compile-time capabilities: no model or CUDA context.
     result = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True)
-    expected = dict(protocol=1, cuda=True, audio=True, host_budget=HOST_BUDGET, device_budget=DEVICE_BUDGET)
+    expected = dict(protocol=2, cuda=True, audio=True, host_budget=HOST_BUDGET, device_budget=DEVICE_BUDGET)
     if decode_response(result.stdout) != expected:
-        raise InferenceFailure('H3 requires the CUDA native worker with protocol 1.')
+        raise InferenceFailure('H3 requires the CUDA native worker with protocol 2.')
     entry, checkpoint = (model_manager.ensure_checkpoint(model_id, cancel) if cancel is not None
                          else model_manager.get_checkpoint(model_id))
     if entry.revision != H3_INT8_REVISION:
@@ -120,12 +121,13 @@ def resolve_command(model_id, cancel=None):
     return [str(binary), *(str(path) for path in paths)]
 
 
-def validate_artifact(response, raw, spec):
-    fields = {'output', 'width', 'height', 'frames', 'audio', 'resident_bytes', 'device_resident_bytes'}
+def validate_artifact(response, raw, spec, cache_budget=0):
+    fields = {'output', 'width', 'height', 'frames', 'audio', 'resident_bytes', 'device_resident_bytes', 'weight_cache_bytes'}
     if not isinstance(response, dict) or set(response) != fields:
         raise LineProtocolError('H3 generation failed: ' + str(response)[:200])
     if (response['output'] != str(raw) or response['audio'] is not True
-            or type(response['resident_bytes']) is not int or response['resident_bytes'] != 0
+            or type(response['weight_cache_bytes']) is not int or not 0 <= response['weight_cache_bytes'] <= cache_budget
+            or type(response['resident_bytes']) is not int or response['resident_bytes'] != response['weight_cache_bytes']
             or response['device_resident_bytes'] != [0, 0]
             or any(type(n) is not int or n != 0 for n in response['device_resident_bytes'])):
         raise LineProtocolError('H3 output ownership or memory accounting mismatch')
@@ -167,6 +169,7 @@ class H3Provider:
         self._worker = self._codec = self._context = self._execution = self._workspace = None
         self._quarantined = False
         self._devices = None
+        self._cache_budget = 0
         self._owner = f'h3-native:{id(self)}'
 
     def validate(self, spec):
@@ -276,8 +279,12 @@ class H3Provider:
                     # host caches returned their pages. Retain the full process host
                     # envelope until reaping, including while its GPU work is idle.
                     if self._context is None:
+                        # Freeze against usable configured capacity, not transient
+                        # pressure. The shared queue waits for this whole envelope.
+                        self._cache_budget = min(MAX_WEIGHT_CACHE_BYTES, max(0,
+                            resources.snapshot()['host_capacity_bytes'] - PROCESS_HOST_BUDGET))
                         self._context = resources.reserve(self._owner + ':context', 'video',
-                            host_bytes=PROCESS_HOST_BUDGET, device_bytes={i: CONTEXT_BUDGET for i in devices},
+                            host_bytes=PROCESS_HOST_BUDGET + self._cache_budget, device_bytes={i: CONTEXT_BUDGET for i in devices},
                             evict=self._evict, cancel_event=cancel)
                     leases.enter_context(self._context.lease(cancel))
                     if spec is not None:
@@ -287,7 +294,8 @@ class H3Provider:
                         leases.enter_context(self._execution.lease(cancel))
                     if self._worker is None:
                         self._worker = self.process_factory()
-                        self._worker.start(command, env=dict(os.environ, KADAN_H3_DEVICES=value))
+                        self._worker.start(command, env=dict(os.environ, KADAN_H3_DEVICES=value,
+                            KADAN_H3_WEIGHT_CACHE_BYTES=str(self._cache_budget)))
                         self._devices = value
                     if spec is None:
                         return
@@ -298,7 +306,7 @@ class H3Provider:
                     response = self._worker.exchange(dict(prompt=spec.prompt, output=str(raw),
                         short_edge=int(spec.resolution[:-1]), aspect=spec.aspect,
                         duration=spec.duration, updates=4, seed=spec.seed), 24*3600, cancel)
-                    frames = validate_artifact(response, raw, spec)
+                    frames = validate_artifact(response, raw, spec, self._cache_budget)
                     self._encode(raw, encoded, frames, cancel)
                     check_cancel(cancel)
                     os.link(encoded, output)  # Same filesystem, exclusive publication.

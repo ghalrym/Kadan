@@ -5,6 +5,7 @@
 #include "kadan/h3_text.hpp"
 #include "kadan/h3_denoiser.hpp"
 #include "kadan/video.hpp"
+#include "kadan/weight_inventory.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -29,7 +30,7 @@ struct Workspace {
 void read_tensor(const std::string& path,const std::string& header,std::span<float> out){
     std::ifstream in(path,std::ios::binary);std::string actual(header.size(),'\0');in.read(actual.data(),actual.size());check(actual==header,"h3_generation_tensor_header");in.read(reinterpret_cast<char*>(out.data()),out.size_bytes());check(bool(in)&&in.peek()==std::char_traits<char>::eof(),"h3_generation_tensor_bytes");for(float v:out)check(std::isfinite(v),"h3_generation_nonfinite");
 }
-template<class Model> void load(Model& model,const std::string& path,const std::atomic_bool& cancel){const std::filesystem::path p(path);model.load(p.parent_path().c_str(),p.filename().string(),cancel);}
+template<class Model> void load(Model& model,const std::string& path,const std::atomic_bool& cancel,const std::shared_ptr<checkpoint::ReadCache>& cache){const std::filesystem::path p(path);model.load(p.parent_path().c_str(),p.filename().string(),cancel,cache);}
 void write_audio(const std::string& path,std::span<const float> samples,const std::atomic_bool& cancel){
     check(samples.size()>0&&samples.size()<=2*640*800,"h3_audio_output_shape");
     std::ofstream out(path,std::ios::binary|std::ios::trunc);check(bool(out),"h3_audio_output_open");
@@ -76,7 +77,25 @@ void unpack(std::span<const float> in,std::span<float> out,std::size_t t,std::si
     for(std::size_t z=0;z<t;++z)for(std::size_t y=0;y<h;++y)for(std::size_t x=0;x<w;++x)for(std::size_t c=0;c<24;++c)out[((z*h+y)*w+x)*24+c]=in[((z*(h/2)+y/2)*(w/2)+x/2)*96+c*4+(y%2)*2+x%2];
 }
 }
-H3Generation::H3Generation(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute):resources_(std::move(resources)),compute_(std::move(compute)){check(bool(resources_),"h3_generation_resources");}
+std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources> resources,
+    const H3GenerationPaths& paths,Bytes limit,const std::atomic_bool& cancel){
+    stop(cancel);if(!limit)return {};
+    checkpoint::WeightInventory inventory;
+    {
+        Admission metadata(resources,32*1024*1024);
+        auto budget=std::make_shared<checkpoint::MemoryBudget>(32*1024*1024);
+        for(const auto* path:{&paths.text,&paths.denoiser,&paths.turbo,&paths.vae,&paths.audio_vae}){
+            stop(cancel);if(path->empty())continue;const std::filesystem::path file(*path);
+            checkpoint::Shard shard(file.parent_path().c_str(),file.filename().string(),budget);
+            inventory.add(shard);
+        }
+    }
+    stop(cancel);
+    // Include bounded map overhead when the full raw model fits in the envelope.
+    const auto selected=std::min(limit,checkpoint::weight_bytes_add(inventory.stored_bytes,8*1024*1024));
+    return std::make_shared<checkpoint::ReadCache>(std::move(resources),selected,Workload::video);
+}
+H3Generation::H3Generation(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute,std::shared_ptr<checkpoint::ReadCache> cache):resources_(std::move(resources)),compute_(std::move(compute)),cache_(std::move(cache)){check(bool(resources_),"h3_generation_resources");}
 void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequest& request,const std::atomic_bool& cancel,const Hook& hook){
     static_assert(std::endian::native==std::endian::little);stop(cancel);Active active(busy_);
     const std::size_t axis_limit=compute_?1344:128;
@@ -98,7 +117,7 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
     std::array<std::uint32_t,H3Tokenizer::max_tokens> ids{};H3Tokenizer tokenizer(resources_);tokenizer.load(paths.tokenizer,cancel);const auto nt=tokenizer.encode(request.prompt,ids,cancel);tokenizer.unload();check(nt+nv+na<=(compute_?107856+1206+H3Tokenizer::max_tokens:H3Denoiser::max_tokens),"h3_generation_token_limit");
     auto actual_caller=resources_->snapshot().capacity;std::fill(actual_caller.begin(),actual_caller.end(),0);actual_caller[0]=caller_bytes+nt*5120*4;resources_->resize_loading(caller.id,std::move(actual_caller));
     if(hook)hook("tokenized",nt);
-    std::vector<float> text(nt*5120);H3TextEncoder text_model(resources_,compute_);load(text_model,paths.text,cancel);text_model.execute({ids.data(),nt},workspace.path("features"),cancel,hook);text_model.unload();
+    std::vector<float> text(nt*5120);H3TextEncoder text_model(resources_,compute_);load(text_model,paths.text,cancel,cache_);text_model.execute({ids.data(),nt},workspace.path("features"),cancel,hook);text_model.unload();
     read_tensor(workspace.path("features"),"KADAN_H3_CONDITIONING_F32_V1\n"+std::to_string(nt)+" 5120\nF32LE\n",text);check(unlink(workspace.path("features").c_str())==0,"h3_generation_temp_cleanup");
     std::vector<float> video(nv*96),audio(na*32),dv(video.size()),da(audio.size());std::mt19937_64 random(request.seed);noise(video,random);noise(audio,random);
     const auto n=nt+nv+na;std::vector<float> positions(n*3),times(n,1);std::vector<std::uint32_t> tags(n,1);
@@ -106,17 +125,17 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
     const double area=std::sqrt(double(h*w));auto axis=[&](std::size_t index,std::size_t dim){const double ratio=double(dim)/area;return float(((1-ratio)/2+double(index)*ratio/double(dim/2))*32);};
     double time=double(nt);for(std::size_t z=0;z<t;++z){for(std::size_t y=0;y<h/2;++y)for(std::size_t x=0;x<w/2;++x){auto i=nt+(z*(h/2)+y)*(w/2)+x;positions[i*3]=float(time);positions[i*3+1]=axis(y,h);positions[i*3+2]=axis(x,w);tags[i]=0;}time+=(z%5==0?1:4)*(5.0/3.0);}
     for(std::size_t channel=0;channel<2;++channel)for(std::size_t z=0;z<at;++z){auto i=nt+nv+channel*at+z;positions[i*3]=float(nt+z);positions[i*3+2]=axis(channel? w/2-1:0,w);tags[i]=2;}
-    H3Denoiser denoiser(resources_,compute_);load(denoiser,paths.denoiser,cancel);const std::filesystem::path adapter(paths.turbo);denoiser.load_turbo(adapter.parent_path().c_str(),adapter.filename().string(),cancel);
+    H3Denoiser denoiser(resources_,compute_);load(denoiser,paths.denoiser,cancel,cache_);const std::filesystem::path adapter(paths.turbo);denoiser.load_turbo(adapter.parent_path().c_str(),adapter.filename().string(),cancel,cache_);
     for(std::size_t step=0;step<request.updates;++step){stop(cancel);h3::timesteps(times,nt,nv,video_sigmas[step],audio_sigmas[step]);denoiser.execute({text,video,audio,positions,times,tags},dv,da,cancel,hook);h3::advance(video,dv,video_sigmas[step],video_sigmas[step+1]);h3::advance(audio,da,audio_sigmas[step],audio_sigmas[step+1]);if(hook)hook("denoise_completed",step+1);}
     denoiser.unload();
     if(!paths.audio_vae.empty()){
         Admission audio_output(resources_,at*800*2*sizeof(float)+8192);
         std::vector<float> waveform(at*800*2);H3AudioDecoder audio_decoder(resources_);
-        const std::filesystem::path asset(paths.audio_vae);audio_decoder.load(asset.parent_path().c_str(),asset.filename().string(),{},cancel);
+        const std::filesystem::path asset(paths.audio_vae);audio_decoder.load(asset.parent_path().c_str(),asset.filename().string(),{},cancel,cache_);
         audio_decoder.decode(audio,at,waveform,cancel,[&](const char* phase,std::size_t index){if(hook)hook((std::string("audio_")+phase).c_str(),index);});audio_decoder.unload();write_audio(workspace.path("audio"),waveform,cancel);if(hook)hook("audio_decoded",at*800);
     }
     std::vector<float> latent(video.size());h3::unpack(video,latent,t,h,w);
-    H3VideoDecoder decoder(resources_,compute_);load(decoder,paths.vae,cancel);std::vector<float> chunk(7*h*w*24),frames(3*28*request.height*request.width),tail(3*5*request.height*request.width);std::vector<unsigned char> pixels(3*request.height*request.width);
+    H3VideoDecoder decoder(resources_,compute_);load(decoder,paths.vae,cancel,cache_);std::vector<float> chunk(7*h*w*24),frames(3*28*request.height*request.width),tail(3*5*request.height*request.width);std::vector<unsigned char> pixels(3*request.height*request.width);
     std::ofstream output(workspace.path("video"),std::ios::binary|std::ios::trunc);check(bool(output),"h3_generation_output_open");output<<"YUV4MPEG2 W"<<request.width<<" H"<<request.height<<" F24:1 Ip A1:1 C444 XCOLORRANGE=FULL\n";
     std::size_t written=0;const auto plane=request.width*request.height;constexpr float means[]={.485f,.456f,.406f},stds[]={.229f,.224f,.225f};
     auto write_frame=[&](std::size_t f){stop(cancel);for(std::size_t p=0;p<plane;++p){float rgb[3];for(std::size_t c=0;c<3;++c)rgb[c]=std::clamp(frames[(c*28+f)*plane+p]*stds[c]+means[c],0.0f,1.0f)*255;auto byte=[](float v){return static_cast<unsigned char>(std::clamp(std::round(v),0.0f,255.0f));};pixels[p]=byte(.299f*rgb[0]+.587f*rgb[1]+.114f*rgb[2]);pixels[plane+p]=byte(128-.168736f*rgb[0]-.331264f*rgb[1]+.5f*rgb[2]);pixels[2*plane+p]=byte(128+.5f*rgb[0]-.418688f*rgb[1]-.081312f*rgb[2]);}output<<"FRAME\n";output.write(reinterpret_cast<const char*>(pixels.data()),pixels.size());check(bool(output),"h3_generation_output_write");++written;};

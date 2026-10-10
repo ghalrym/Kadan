@@ -1,4 +1,5 @@
 #include "kadan/checkpoint.hpp"
+#include "kadan/checkpoint_cache.hpp"
 
 #include <algorithm>
 #include <array>
@@ -221,6 +222,8 @@ quantization::Matrix Projection::view() const & { return {encoding_, rows_, colu
 
 struct Shard::Impl {
     std::shared_ptr<MemoryBudget> budget;
+    std::shared_ptr<ReadCache> cache;
+    const std::atomic_bool* cancel=nullptr;
     Fd file;
     struct stat identity;
     std::uint64_t data_begin = 0;
@@ -285,9 +288,20 @@ TensorInfo Shard::tensor_at(std::size_t index) const {
     return {t.name,t.dtype,t.shape,t.rank,t.end-t.begin};
 }
 void Shard::check_unchanged() const { impl_->unchanged(); }
+void Shard::cache_reads(std::shared_ptr<ReadCache> cache,const std::atomic_bool* cancel){impl_->cache=std::move(cache);impl_->cancel=cancel;}
 void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const {
     const auto& t = impl_->find(name);
-    impl_->unchanged(); impl_->read(t, offset, destination); impl_->unchanged();
+    impl_->unchanged();
+    if(impl_->cache){
+        const auto& s=impl_->identity;
+        ReadCache::Key key{std::uint64_t(s.st_dev),std::uint64_t(s.st_ino),std::uint64_t(s.st_size),
+            std::uint64_t(s.st_mtim.tv_sec),std::uint64_t(s.st_mtim.tv_nsec),std::uint64_t(s.st_ctim.tv_sec),
+            std::uint64_t(s.st_ctim.tv_nsec),impl_->data_begin+t.begin,impl_->data_begin+t.end};
+        impl_->cache->read(key,t.end-t.begin,offset,destination,[&](std::size_t at,std::span<std::uint8_t> out){
+            impl_->read(t,at,out);impl_->unchanged();
+        },impl_->cancel);
+    }else impl_->read(t, offset, destination);
+    impl_->unchanged();
 }
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
                                     std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory, const TensorReader& reader) const {

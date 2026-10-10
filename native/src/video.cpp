@@ -771,11 +771,11 @@ Footprint H3VideoDecoder::host(Bytes bytes) const {
     for(auto& value:result)value=0;
     result[0]=bytes;return result;
 }
-void H3VideoDecoder::load(const char* root, const std::string& basename, const std::atomic_bool& cancel) {
+void H3VideoDecoder::load(const char* root, const std::string& basename, const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache) {
     cancelled(cancel);check(!executing_,"busy");check(!loaded(),"video_already_loaded");
     Reservation metadata(*resources_,host(H3DecoderInput::metadata_bytes));
     auto budget=std::make_shared<checkpoint::MemoryBudget>(H3DecoderInput::metadata_bytes);
-    auto shard=std::make_unique<checkpoint::Shard>(root,basename,budget,checkpoint::Limits{1024*1024,2048,4096});
+    auto shard=std::make_unique<checkpoint::Shard>(root,basename,budget,checkpoint::Limits{1024*1024,2048,4096});shard->cache_reads(std::move(cache),&cancel);
     struct Spec {const char* name;std::array<std::uint64_t,3> shape;std::size_t rank;};
     const std::array<Spec,5> specs{{
         {"decoder.register_tokens",{1,4,hidden},3},

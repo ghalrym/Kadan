@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/resources.hpp"
+#include "kadan/checkpoint_cache.hpp"
 #include "kadan/h3_compute.hpp"
 #include <atomic>
 #include <functional>
@@ -14,18 +15,23 @@ struct H3GenerationRequest {
     std::uint64_t seed=0;
 };
 struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae, audio_vae; };
+// Header-only preparation. The caller has admitted `limit` in addition to the
+// execution envelope; retained raw bytes and metadata cannot exceed it.
+std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources>,
+    const H3GenerationPaths&,Bytes limit,const std::atomic_bool&);
 // Native joint video/audio path with optional CUDA execution. With audio_vae,
 // output is MP4 with stereo32kHz audio, or diagnostic YUV4MPEG2 plus OUTPUT.wav.
 // An empty audio_vae permits silent diagnostic fixtures. F32/F64, not BF16 parity.
 class H3Generation {
 public:
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit H3Generation(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={});
+    explicit H3Generation(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={},std::shared_ptr<checkpoint::ReadCache> cache={});
     void execute(const H3GenerationPaths&,const H3GenerationRequest&,
                  const std::atomic_bool&,const Hook& = {});
 private:
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<H3Compute> compute_;
+    std::shared_ptr<checkpoint::ReadCache> cache_;
     bool busy_=false;
 };
 namespace h3 {

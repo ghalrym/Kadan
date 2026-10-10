@@ -145,10 +145,10 @@ struct Output {
 H3TextEncoder::H3TextEncoder(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute):resources_(std::move(resources)),compute_(std::move(compute)){require(bool(resources_),"h3_text_resources_required");}
 H3TextEncoder::~H3TextEncoder(){unload();}
 Footprint H3TextEncoder::host(Bytes bytes) const{return video::host(*resources_,bytes);}
-void H3TextEncoder::load(const char* root,const std::string& basename,const std::atomic_bool& cancel) {
+void H3TextEncoder::load(const char* root,const std::string& basename,const std::atomic_bool& cancel, std::shared_ptr<checkpoint::ReadCache> cache) {
     stop(cancel);require(!executing_,"busy");require(!loaded(),"h3_text_already_loaded");
     Admission metadata(*resources_,metadata_bytes);
-    auto shard=std::make_unique<checkpoint::Shard>(root,basename,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,4096});
+    auto shard=std::make_unique<checkpoint::Shard>(root,basename,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,4096});shard->cache_reads(std::move(cache),&cancel);
     shape(*shard,"model.embed_tokens.weight",checkpoint::Dtype::bf16,{vocab,hidden});
     for(std::size_t layer=0;layer<layers;++layer) {
         stop(cancel);const auto p="model.layers."+std::to_string(layer)+".";

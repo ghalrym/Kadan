@@ -7,7 +7,7 @@
 #include <span>
 #include <string>
 
-namespace kadan::checkpoint { class Shard; }
+namespace kadan::checkpoint { class Shard; class ReadCache; }
 namespace kadan::video {
 // Real H3 video VAE decoder input stage only. Not a video generation backend.
 // Serialized executor ownership: the queue owner must not call concurrently.
@@ -213,7 +213,7 @@ public:
     ~H3VideoDecoder();
     H3VideoDecoder(const H3VideoDecoder&)=delete;
     H3VideoDecoder& operator=(const H3VideoDecoder&)=delete;
-    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache={});
     void unload();
     bool loaded() const { return weights_!=nullptr; }
     void execute(std::span<const float> normalized, std::size_t time, std::size_t height,

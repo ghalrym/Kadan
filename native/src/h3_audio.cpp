@@ -85,9 +85,9 @@ struct H3AudioDecoder::Impl{
 };
 H3AudioDecoder::H3AudioDecoder(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> c):resources_(std::move(r)),compute_(std::move(c)){need(bool(resources_),"h3_audio_resources");}
 H3AudioDecoder::~H3AudioDecoder(){unload();}
-void H3AudioDecoder::load(const char* root,const std::string& file,H3AudioConfig d,const std::atomic_bool& cancel){
+void H3AudioDecoder::load(const char* root,const std::string& file,H3AudioConfig d,const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache){
  Active active(busy_);stop(cancel);need(!model_,"h3_audio_loaded");need(d.projection>0&&d.projection<=2048&&d.initial>=128&&d.initial<=1024&&(d.initial&(d.initial-1))==0,"h3_audio_config");
- auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,4*1024*1024);checkpoint::Shard shard(root,file,std::make_shared<checkpoint::MemoryBudget>(4*1024*1024),{1024*1024,2048,4096});
+ auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,4*1024*1024);checkpoint::Shard shard(root,file,std::make_shared<checkpoint::MemoryBudget>(4*1024*1024),{1024*1024,2048,4096});shard.cache_reads(std::move(cache),&cancel);
  for(auto& s:m->specs){const auto t=shard.tensor(s.name);need(t.dtype==checkpoint::Dtype::fp32&&t.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),t.shape.begin()),"h3_audio_tensor_layout");}
  const auto& last=m->specs.back();m->weights=make(*resources_,1,last.offset+last.count);Lease transfer(*resources_,4096);std::array<std::uint8_t,4096> bytes;
  for(const auto& s:m->specs)for(std::size_t at=0;at<s.count;){stop(cancel);const auto n=std::min<std::size_t>(1024,s.count-at);shard.read_tensor(s.name,at*4,{bytes.data(),n*4});for(std::size_t i=0;i<n;++i){std::uint32_t bits=0;for(std::size_t b=0;b<4;++b)bits|=std::uint32_t(bytes[i*4+b])<<(b*8);float v=std::bit_cast<float>(bits);need(std::isfinite(v),"h3_audio_nonfinite_weight");m->weights->data[s.offset+at+i]=v;}at+=n;}

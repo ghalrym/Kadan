@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/dense_compute.hpp"
+#include "kadan/checkpoint.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -17,7 +18,7 @@ public:
  ~H3AudioDecoder();
  H3AudioDecoder(const H3AudioDecoder&)=delete;
  H3AudioDecoder& operator=(const H3AudioDecoder&)=delete;
- void load(const char* root,const std::string& shard,H3AudioConfig,const std::atomic_bool&);
+ void load(const char* root,const std::string& shard,H3AudioConfig,const std::atomic_bool&,std::shared_ptr<checkpoint::ReadCache> cache={});
  void unload();
  // Caller admits nonoverlapping input [stereo,time,32] and interleaved output
  // [time*800,stereo]. Discard output on any failure, including cancellation.

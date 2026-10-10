@@ -111,16 +111,16 @@ void attention(std::span<const float> q,std::span<const float> k,std::span<const
 }
 H3Denoiser::H3Denoiser(std::shared_ptr<Resources> r,std::shared_ptr<H3Compute> compute):resources_(std::move(r)),compute_(std::move(compute)){require(bool(resources_),"h3_denoiser_resources");}
 H3Denoiser::~H3Denoiser(){unload();}
-void H3Denoiser::load(const char* root,const std::string& name,const std::atomic_bool& cancel){
+void H3Denoiser::load(const char* root,const std::string& name,const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache){
     stop(cancel);require(!executing_,"busy");require(!loaded(),"h3_denoiser_already_loaded");Admission admitted(*resources_,metadata_bytes);
-    auto shard=std::make_unique<Shard>(root,name,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,4096,8192});
+    auto shard=std::make_unique<Shard>(root,name,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,4096,8192});shard->cache_reads(std::move(cache),&cancel);
     shape(*shard,"condition_proj.weight",{hidden,text_width});shape(*shard,"video_patch_proj.weight",{hidden,video_width});shape(*shard,"audio_patch_proj.weight",{hidden,audio_width});shape(*shard,"rope.inv_freq",{16});
     for(std::size_t layer=0;layer<layers;++layer){stop(cancel);auto p="blocks."+std::to_string(layer)+".";shape(*shard,p+"adaln_proj.linear.weight",{96768,2688});shape(*shard,p+"attn.qkv_proj.weight",{21504,hidden});shape(*shard,p+"mlp.fc1.weight",{28672,hidden});}
     shard->check_unchanged();stop(cancel);shard_=std::move(shard);metadata_=admitted.handle;admitted.handle=0;
 }
-void H3Denoiser::load_turbo(const char* root,const std::string& name,const std::atomic_bool& cancel){
+void H3Denoiser::load_turbo(const char* root,const std::string& name,const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache){
     stop(cancel);require(!executing_,"busy");require(loaded() && !turbo_,"h3_denoiser_turbo_state");Admission admitted(*resources_,metadata_bytes);
-    auto shard=std::make_unique<Shard>(root,name,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,8192});
+    auto shard=std::make_unique<Shard>(root,name,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,8192});shard->cache_reads(std::move(cache),&cancel);
     for(std::size_t layer=0;layer<layers;++layer){stop(cancel);auto p="diffusion_model.blocks."+std::to_string(layer)+".";shape(*shard,p+"attn.qkv_proj.lora_A.weight",{384,hidden});shape(*shard,p+"attn.qkv_proj.lora_B.weight",{21504,384});}
     shard->check_unchanged();stop(cancel);turbo_=std::move(shard);turbo_metadata_=admitted.handle;admitted.handle=0;
 }

@@ -31,8 +31,8 @@ public:
     ~H3Denoiser();
     H3Denoiser(const H3Denoiser&)=delete;
     H3Denoiser& operator=(const H3Denoiser&)=delete;
-    void load(const char* root,const std::string& name,const std::atomic_bool&);
-    void load_turbo(const char* root,const std::string& name,const std::atomic_bool&);
+    void load(const char* root,const std::string& name,const std::atomic_bool&, std::shared_ptr<checkpoint::ReadCache> cache={});
+    void load_turbo(const char* root,const std::string& name,const std::atomic_bool&, std::shared_ptr<checkpoint::ReadCache> cache={});
     void unload();
     bool loaded() const{return bool(shard_);}
     bool turbo_loaded() const{return bool(turbo_);}

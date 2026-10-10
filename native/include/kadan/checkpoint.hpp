@@ -3,6 +3,7 @@
 #include "kadan/quantization.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -68,6 +69,7 @@ private:
 // Linux POSIX reader. The root is trusted; shard_name must be one local basename.
 // Keeps an O_NOFOLLOW regular-file descriptor; never maps or reads all payloads.
 using TensorReader = std::function<void(std::string_view, std::size_t, std::span<std::uint8_t>)>;
+class ReadCache;
 class Shard {
 public:
     Shard(const char* root, std::string_view shard_name,
@@ -81,6 +83,8 @@ public:
     TensorInfo tensor_at(std::size_t index) const;
     std::size_t tensor_index(std::string_view name) const;
     void check_unchanged() const;
+    // Cache ownership is explicit; cancellation outlives this shard's reads.
+    void cache_reads(std::shared_ptr<ReadCache>,const std::atomic_bool* cancel);
     // Caller owns/admitted destination; no hidden payload allocation.
     void read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const;
     // Explicit ModelOpt contract. All companion tensors must be in this shard.

@@ -28,9 +28,11 @@ class Worker:
         self.fail_stop = False
         self.cancel = False
         self.bad_ledger = False
+        self.cache_budget = 0
         self.calls = []
     def start(self, command, *, env=None):
         assert env['KADAN_H3_DEVICES'] == '0,1'
+        self.cache_budget = int(env['KADAN_H3_WEIGHT_CACHE_BYTES'])
         self.started = True
     def stop(self):
         if self.fail_stop:
@@ -49,7 +51,8 @@ class Worker:
         with wave.open(str(raw)+'.wav','wb') as audio:
             audio.setparams((2,2,32000,0,'NONE','NONE'));audio.writeframes(b'\0'*round(107*5/3)*800*4)
         return dict(output=str(raw), width=864, height=480, frames=107,
-                    audio=True, resident_bytes=0, device_resident_bytes=[1, 0] if self.bad_ledger else [0, 0])
+                    audio=True, resident_bytes=self.cache_budget, weight_cache_bytes=self.cache_budget,
+                    device_resident_bytes=[1, 0] if self.bad_ledger else [0, 0])
 
 
 def setup(monkeypatch, **kwargs):
@@ -92,13 +95,44 @@ class H3WorkerTests(unittest.TestCase):
             assert output.read_bytes() == b'codec-result'
             assert provider._execution is None and provider._context is not None
             state = resources.snapshot()["reservations"]
-            assert sum(item["host_bytes"] for item in state.values()) == PROCESS_HOST_BUDGET
+            assert sum(item["host_bytes"] for item in state.values()) == PROCESS_HOST_BUDGET + provider._cache_budget
         assert released == ['text'] and len(worker.calls) == 2
         assert worker.calls[0]['short_edge'] == 480 and worker.calls[0]['duration'] == 4
         assert worker.calls[0]['updates'] == 4 and not worker.stopped
         resources.offload_inactive_devices('llm')
         assert worker.stopped and provider._context is None
         assert not list(self.root.glob('.h3-*'))
+
+    def test_cache_capacity_is_frozen_and_admitted_before_spawn(self):
+        for extra, expected in ((0, 0), (3*GIB, 3*GIB), (64*GIB, 32*GIB)):
+            with self.subTest(extra=extra):
+                _, worker, provider = setup(self)
+                provider.resources = ResourceManager(PROCESS_HOST_BUDGET+extra, {0:8*GIB, 1:8*GIB})
+                provider.load(threading.Event())
+                self.assertEqual(worker.cache_budget, expected)
+                self.assertEqual(provider._cache_budget, expected)
+                self.assertEqual(sum(r['host_bytes'] for r in provider.resources.snapshot()['reservations'].values()), PROCESS_HOST_BUDGET+expected)
+                provider.close()
+
+    def test_cache_report_cannot_hide_unowned_or_execution_memory(self):
+        response = dict(output='/unused', width=864, height=480, frames=107, audio=True,
+            resident_bytes=2*GIB, weight_cache_bytes=2*GIB, device_resident_bytes=[0,0])
+        with self.assertRaisesRegex(LineProtocolError, 'accounting'):
+            validate_artifact(response, Path('/unused'), spec(), GIB)
+        response['weight_cache_bytes'] = GIB
+        with self.assertRaisesRegex(LineProtocolError, 'accounting'):
+            validate_artifact(response, Path('/unused'), spec(), GIB)
+
+    def test_cancelled_cache_admission_never_spawns(self):
+        resources, worker, provider = setup(self)
+        cancel = threading.Event()
+        with patch.object(resources, 'reserve', side_effect=ResourceCancelled('cancelled')) as reserve:
+            with self.assertRaises(ResourceCancelled):
+                provider.load(cancel)
+            self.assertIs(reserve.call_args.kwargs['cancel_event'], cancel)
+            self.assertEqual(reserve.call_args.kwargs['host_bytes'], PROCESS_HOST_BUDGET+32*GIB)
+        self.assertFalse(worker.started)
+        self.assertEqual(resources.snapshot()['reservations'], {})
 
 
     def test_admission_before_spawn(self):

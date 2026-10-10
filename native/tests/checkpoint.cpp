@@ -1,5 +1,6 @@
 #include "kadan/checkpoint.hpp"
 #include "kadan/weight_inventory.hpp"
+#include "kadan/checkpoint_cache.hpp"
 
 #include <algorithm>
 #include <array>
@@ -242,8 +243,51 @@ void inventory_cases(){
     std::filesystem::resize_file(f.root/"model.safetensors",8);
     fails([&]{inventory.add(shard);},"checkpoint_changed");check(inventory.stored_bytes==24);
 }
+void cache_cases(){
+    Fixture f;nvfp4_fixture(f);auto q=budget();
+    auto resources=std::make_shared<kadan::Resources>(kadan::Footprint{4096});
+    auto cache=std::make_shared<ReadCache>(resources,4096,kadan::Workload::video);
+    std::atomic_bool cancel=false;std::array<std::uint8_t,4> out{};
+    {
+        Shard shard(f.root.c_str(),"model.safetensors",q);shard.cache_reads(cache,&cancel);
+        shard.read_tensor("p.weight",0,out);check(out==std::array<std::uint8_t,4>{0x22,0x22,0x22,0x22});
+        check(cache->stats().misses==1&&cache->stats().source_bytes==16&&cache->stats().entries==1);
+    }
+    {
+        Shard shard(f.root.c_str(),"model.safetensors",q);shard.cache_reads(cache,&cancel);
+        shard.read_tensor("p.weight",4,out);check(cache->stats().hits==1&&cache->stats().source_bytes==16);
+        cancel=true;fails([&]{shard.read_tensor("p.weight",0,out);},"checkpoint_cache_cancelled");cancel=false;
+        fails([&]{shard.read_tensor("p.weight",15,out);},"checkpoint_cache_range");
+        std::filesystem::resize_file(f.root/"model.safetensors",8);
+        fails([&]{shard.read_tensor("p.weight",0,out);},"checkpoint_changed");
+    }
+    cache.reset();check(resources->snapshot().used[0]==0);
+    // A tensor larger than the cache streams into the caller's destination.
+    cache=std::make_shared<ReadCache>(resources,1,kadan::Workload::video);
+    std::size_t reads=0;ReadCache::Key key{};
+    cache->read(key,4,0,out,[&](auto,std::span<std::uint8_t> dst){++reads;std::fill(dst.begin(),dst.end(),7);},&cancel);
+    check(reads==1&&cache->stats().allocated==0&&cache->stats().entries==0&&out[0]==7);
+    cache.reset();check(resources->snapshot().used[0]==0);
+    cache=std::make_shared<ReadCache>(resources,4096,kadan::Workload::video);
+    fails([&]{cache->read(key,4,0,out,[&](auto,auto){cancel=true;},&cancel);},"checkpoint_cache_cancelled");
+    check(cache->stats().entries==0&&cache->stats().allocated==0);cancel=false;
+    fails([&]{cache->read(key,4,0,out,[](auto,auto){throw std::runtime_error("source_failure");},&cancel);},"source_failure");
+    check(cache->stats().entries==0&&cache->stats().allocated==0);
+    cache.reset();
+    // Payload fits exactly, but its map entry does not: stream and retain none.
+    cache=std::make_shared<ReadCache>(resources,4,kadan::Workload::video);
+    cache->read(key,4,0,out,[](auto,auto dst){std::fill(dst.begin(),dst.end(),3);},&cancel);
+    check(cache->stats().allocated==0&&out[0]==3);cache.reset();
+    resources=std::make_shared<kadan::Resources>(kadan::Footprint{3*ReadCache::chunk_bytes});
+    cache=std::make_shared<ReadCache>(resources,3*ReadCache::chunk_bytes,kadan::Workload::video);reads=0;
+    fails([&]{cache->read(key,2*ReadCache::chunk_bytes,0,out,[&](auto offset,auto dst){
+        check(dst.size()<=ReadCache::chunk_bytes&&offset==reads*ReadCache::chunk_bytes);++reads;
+        std::fill(dst.begin(),dst.end(),1);if(reads==2)cancel=true;
+    },&cancel);},"checkpoint_cache_cancelled");
+    check(reads==2&&cache->stats().allocated==0&&cache->stats().entries==0);cancel=false;
+}
 } // namespace
 int main() {
-    try { inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
+    try { cache_cases(); inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

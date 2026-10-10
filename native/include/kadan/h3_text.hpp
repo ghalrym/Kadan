@@ -22,7 +22,7 @@ public:
     ~H3TextEncoder();
     H3TextEncoder(const H3TextEncoder&)=delete;
     H3TextEncoder& operator=(const H3TextEncoder&)=delete;
-    void load(const char* root,const std::string& basename,const std::atomic_bool& cancel);
+    void load(const char* root,const std::string& basename,const std::atomic_bool& cancel, std::shared_ptr<checkpoint::ReadCache> cache={});
     void unload();
     bool loaded() const {return bool(shard_);}
     // Caller owns and admits IDs. Output F32 [tokens,5120] after layer 50,
