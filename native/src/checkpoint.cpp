@@ -279,6 +279,11 @@ TensorInfo Shard::tensor(std::string_view name) const {
     const auto& t = impl_->find(name);
     return {t.name, t.dtype, t.shape, t.rank, t.end - t.begin};
 }
+TensorInfo Shard::tensor_at(std::size_t index) const {
+    if(index>=impl_->tensors.size())throw std::out_of_range("tensor_index");
+    const auto& t=impl_->tensors[index];
+    return {t.name,t.dtype,t.shape,t.rank,t.end-t.begin};
+}
 void Shard::check_unchanged() const { impl_->unchanged(); }
 void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const {
     const auto& t = impl_->find(name);

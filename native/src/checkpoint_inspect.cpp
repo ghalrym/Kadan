@@ -1,4 +1,5 @@
 #include "kadan/checkpoint.hpp"
+#include "kadan/weight_inventory.hpp"
 
 #include <charconv>
 #include <iostream>
@@ -15,6 +16,15 @@ int main(int argc, char** argv) {
         auto budget = std::make_shared<kadan::checkpoint::MemoryBudget>(bytes);
         kadan::checkpoint::Shard shard(argv[1], argv[2], budget);
         std::cout << "tensors=" << shard.tensor_count() << " retained_metadata_bytes=" << budget->used() << '\n';
+        kadan::checkpoint::WeightInventory inventory;inventory.add(shard);
+        std::cout << "stored_bytes=" << inventory.stored_bytes
+                  << " floating_f32_bytes=" << inventory.floating_f32_bytes
+                  << " raw_nonfloating_bytes=" << inventory.raw_nonfloating_bytes << '\n';
+        for(std::size_t i=0;i<inventory.precision.size();++i){
+            const auto& group=inventory.precision[i];
+            if(group.tensors)std::cout << "dtype=" << kadan::checkpoint::storage_name(static_cast<kadan::checkpoint::Dtype>(i))
+                << " tensors=" << group.tensors << " stored_bytes=" << group.stored_bytes << '\n';
+        }
         return std::cout ? 0 : 1;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 2;

@@ -1,4 +1,5 @@
 #include "kadan/checkpoint.hpp"
+#include "kadan/weight_inventory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -226,8 +227,23 @@ void filesystem_cases() {
     fails([&] { Shard s(f.root.c_str(), "model.safetensors", q); }, "header_size");
     check(q->used() == 0);
 }
+void inventory_cases(){
+    Fixture f;nvfp4_fixture(f);auto q=budget();Shard shard(f.root.c_str(),"model.safetensors",q);
+    const auto before=q->used();WeightInventory inventory;inventory.add(shard);
+    check(q->used()==before&&inventory.stored_bytes==24&&inventory.floating_f32_bytes==8&&inventory.raw_nonfloating_bytes==18);
+    check(shard.tensor_at(0).name=="p.weight"&&shard.tensor_at(3).name=="unused");
+    fails([&]{shard.tensor_at(4);},"tensor_index");
+    fails([&]{execution_weight_bytes(shard.tensor("p.weight"),WeightRepresentation::f32);},"weight_inventory_float_representation");
+    TensorInfo t{"half",Dtype::fp16,{2,3},2,12};
+    check(execution_weight_bytes(t,WeightRepresentation::f32)==24);
+    t.bytes=13;fails([&]{inventory.add(t);},"weight_inventory_shape");check(inventory.stored_bytes==24);
+    t.bytes=12;t.shape[0]=std::numeric_limits<std::uint64_t>::max();
+    fails([&]{inventory.add(t);},"weight_inventory_overflow");check(inventory.stored_bytes==24);
+    std::filesystem::resize_file(f.root/"model.safetensors",8);
+    fails([&]{inventory.add(shard);},"checkpoint_changed");check(inventory.stored_bytes==24);
+}
 } // namespace
 int main() {
-    try { half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
+    try { inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -77,6 +77,8 @@ public:
     Shard& operator=(const Shard&) = delete;
     std::size_t tensor_count() const;
     TensorInfo tensor(std::string_view name) const;
+    // Header-only enumeration in name order; does not read tensor payloads.
+    TensorInfo tensor_at(std::size_t index) const;
     std::size_t tensor_index(std::string_view name) const;
     void check_unchanged() const;
     // Caller owns/admitted destination; no hidden payload allocation.
