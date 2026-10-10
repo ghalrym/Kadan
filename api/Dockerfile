@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir cmake==3.31.6
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_WHISPER_BLAS=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DKADAN_ENABLE_IMAGE_BLAS=ON \
-    && cmake --build /build --target kadan-decision-worker kadan-h3-worker kadan-whisper-worker kadan-tts-worker kadan-image-worker --parallel 2 \
+    && cmake --build /build --target kadan-model-worker kadan-decision-worker kadan-h3-worker kadan-whisper-worker kadan-tts-worker kadan-image-worker --parallel 2 \
+    && cmake --install /build --prefix /out --component model-runtime \
     && cmake --install /build --prefix /out --component decision-runtime \
     && cmake --install /build --prefix /out --component h3-runtime \
     && cmake --install /build --prefix /out --component whisper-runtime \
@@ -38,12 +39,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends g++ sox \
     && rm -rf /var/lib/apt/lists/*
 COPY api/requirements*.txt /app/
-COPY api/qwen_tts_compat /app/api/qwen_tts_compat
-RUN uv pip install --system --no-cache torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130 \
-    && uv pip install --system --no-cache -r requirements.txt && uv pip check --system
+RUN uv pip install --system --no-cache -r requirements.txt && uv pip check --system
 COPY api/ /app/api
 COPY --from=native-build /out/ /opt/kadan/
-RUN test -x /opt/kadan/bin/kadan-decision-worker \
+RUN test -x /opt/kadan/bin/kadan-model-worker \
+    && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-model-worker > /tmp/model-linkage \
+    && ! grep "not found" /tmp/model-linkage \
+    && test -x /opt/kadan/bin/kadan-decision-worker \
     && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-decision-worker > /tmp/decision-linkage \
     && ! grep "not found" /tmp/decision-linkage \
     && test -x /opt/kadan/bin/kadan-h3-worker \

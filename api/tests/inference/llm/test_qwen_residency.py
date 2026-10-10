@@ -1,5 +1,6 @@
 """Real subprocess protocol-v2 lifecycle; synthetic payloads, no CUDA or weights."""
 import json
+import asyncio
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from api.inference.llm.chat_requests import ChatRequests
+from api.memory_manager import MemoryManager
+from api.memory_manager.queue import Job
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.inference.llm.qwen_subprocess import HEADROOM_BYTES, PYTHON_HOST_BYTES
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
@@ -149,6 +153,24 @@ class ResidentQwenAdapterTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):self.adapter._evict()
         self.assertEqual(self.resources.snapshot()['reservations'],before)
         self.adapter._evict();self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_failed_stop_blocks_different_cpu_workload(self):
+        before=self.resources.snapshot()['reservations']
+        with patch.object(self.adapter.worker,'stop',side_effect=subprocess.TimeoutExpired('child',5)):
+            with self.assertRaises(subprocess.TimeoutExpired):self.adapter.close()
+        self.assertTrue(self.adapter.quarantined)
+        self.assertEqual(self.resources.snapshot()['reservations'],before)
+        class CpuDecision:
+            operations=('generate',)
+            def validate(self,*args):return SimpleNamespace()
+            async def __call__(self,*args,**kwargs):raise AssertionError('must not execute after failed Qwen cleanup')
+        manager=object.__new__(MemoryManager)
+        manager.request_executors={'llm':ChatRequests(SimpleNamespace(adapter=self.adapter)),'decisions':CpuDecision()}
+        manager.queue=SimpleNamespace(streams={})
+        job=Job(id='a'*32,feature='decisions',operation='generate',payload={},model=None)
+        with self.assertRaisesRegex(LineProtocolError,'cleanup is unconfirmed'):
+            asyncio.run(manager._execute(job))
+        self.adapter.close();self.assertEqual(self.resources.snapshot()['reservations'],{})
 
     def test_startup_timeouts_and_bad_readiness_reconcile_all_three_budgets(self):
         self.adapter.load_timeout=.1

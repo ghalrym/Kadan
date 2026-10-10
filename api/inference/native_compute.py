@@ -32,7 +32,7 @@ class NativeCompute:
 
 
 def native_compute(feature, resources=None):
-    selection = os.environ.get(f'KADAN_{feature}_DEVICES', '')
+    selection = os.environ.get(f'KADAN_{feature}_DEVICES') or 'auto'
     raw = os.environ.get('KADAN_NATIVE_GPU_BUDGET_BYTES', str(DEFAULT_DEVICE_BYTES))
     if not raw.isascii() or not raw.isdecimal() or not 400 * 1024**2 <= int(raw) <= 24 * 1024**3:
         raise InferenceFailure('Invalid native worker GPU budget.')
@@ -43,10 +43,10 @@ def native_compute(feature, resources=None):
             raise InferenceFailure('Automatic native placement requires the shared resource manager.')
         available = resources.available_devices(reclaim=True)
         devices = tuple(d for d in (0, 1) if available.get(d, 0) >= budget)
-    elif selection in ('', '0', '1', '0,1', '1,0'):
-        devices = tuple(map(int, selection.split(','))) if selection else ()
+    elif selection in ('cpu', '0', '1', '0,1', '1,0'):
+        devices = tuple(map(int, selection.split(','))) if selection != 'cpu' else ()
     else:
-        raise InferenceFailure('Native devices must be 0, 1, 0,1, 1,0 or auto.')
+        raise InferenceFailure('Native devices must be 0, 1, 0,1, 1,0 auto or cpu.')
     if capacity is not None and any(capacity.get(d, 0) < budget for d in devices):
         raise InferenceFailure('Selected native devices exceed the shared device budgets.')
     return NativeCompute(feature, devices, budget)

@@ -137,7 +137,7 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unavailable_feature_is_queued_without_moving_resident(self):
         self.llm.infer()
-        with self.assertRaisesRegex(InferenceFailure, 'No image provider'):
+        with self.assertRaisesRegex(InferenceFailure, 'native image worker'):
             await self.manager.submit(ImageRequest(prompt='tree'), feature='image')
         self.assertIsNotNone(self.llm.device)
         self.assertEqual(await self.manager.queue.redis.scard(self.manager.queue.key('unfinished')), 0)

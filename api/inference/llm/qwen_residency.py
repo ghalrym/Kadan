@@ -52,6 +52,7 @@ class ResidentQwenAdapter(QwenSubprocessAdapter):
         return self.worker_alive and not self.quarantined and not self.parked and self.reservation is not None
 
     def _configure_context_locked(self, configured):
+        self.check_execution_state()
         if self._closed:
             raise RuntimeError('Native adapter is closed')
         supported, effective = resolve_context(self.config, configured)
@@ -211,7 +212,11 @@ class ResidentQwenAdapter(QwenSubprocessAdapter):
     def _close_locked(self):
         # Reap first. An unconfirmed stop leaves all parent envelopes charged.
         if self.worker is not None:
-            self.worker.stop()
+            try:
+                self.worker.stop()
+            except BaseException:
+                self.quarantined = True
+                raise
             self.worker = None
         self.tokenizer = None
         for name in ('reservation', 'context', 'backing', 'host'):

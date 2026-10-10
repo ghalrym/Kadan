@@ -40,9 +40,7 @@ def validate(request):
 
 
 def prepare():
-    value = os.environ.get('KADAN_NATIVE_IMAGE_WORKER')
-    if not value:
-        raise InferenceFailure('No image provider is configured. Set the native image worker to enable generation.')
+    value = os.environ.get('KADAN_NATIVE_IMAGE_WORKER') or '/opt/kadan/bin/kadan-image-worker'
     binary = Path(value)
     if not binary.is_absolute() or not binary.is_file():
         raise InferenceFailure('Configure an absolute native image worker path.')

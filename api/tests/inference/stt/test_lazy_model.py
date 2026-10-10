@@ -39,8 +39,8 @@ class LazyManagerTests(unittest.TestCase):
                 managers = list(pool.map(lambda _: first_request(), range(8)))
             construct.assert_called_once_with()
         self.assertTrue(all(manager is managers[0] for manager in managers))
-        self.assertIsNone(managers[0].resources)
-        self.assertIsNone(managers[0].factory)
+        self.assertIsNone(managers[0]._cpp.resources)
+        self.assertIsNone(managers[0]._cpp.child)
         managers[0].lock.acquire()
         try:
             self.assertFalse(transcription.get_whisper_transcriber().lock.acquire(blocking=False))

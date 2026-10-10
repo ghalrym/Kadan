@@ -4,6 +4,3 @@ torch==2.14.1
 transformers==5.17.0
 accelerate==1.10.1
 safetensors==0.8.0
-
-# Native official Whisper checkpoints; audio decoding uses PCM arrays, not ffmpeg.
-openai-whisper==20250625

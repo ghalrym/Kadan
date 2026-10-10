@@ -24,7 +24,7 @@ class ImageEndpointsTest(unittest.TestCase):
                            ('edits', {'prompt': 'A tree', 'image': 'local-reference', 'strength': .5})]:
             response = self.client.post('/v1/images/' + path, json=body)
             self.assertEqual(response.status_code, 503)
-            self.assertIn('No image provider', response.json()['detail'])
+            self.assertIn('native image worker' if path == 'generations' else 'No image provider', response.json()['detail'])
             self.assertNotIn('image', response.json())
 
     def test_reject_invalid_inputs_before_provider_dispatch(self):

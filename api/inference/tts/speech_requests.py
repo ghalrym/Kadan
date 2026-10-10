@@ -1,5 +1,4 @@
 """Speech wrapper sharing Kadan's queue and sole resource owner."""
-import os
 
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
@@ -31,7 +30,7 @@ class SpeechRequests:
         selected = next((m for m in options if m.id == model), None) if model else next(iter(options), None)
         if selected is None:
             raise InferenceFailure('Select an enabled speech model.', 422)
-        request = SpeechInput('', {'mode': selected.mode, 'speaker': selected.default_speaker or (selected.speakers[0] if selected.speakers else None)}, language='English' if os.environ.get('KADAN_NATIVE_TTS_WORKER') else 'Auto', model_id=selected.id)
+        request = SpeechInput('', {'mode': selected.mode, 'speaker': selected.default_speaker or (selected.speakers[0] if selected.speakers else None)}, language='Auto', model_id=selected.id)
         await run_cancellable_thread(self.speech_runtime.load, request)
         return self.adapter
     async def offload_to_ram(self):

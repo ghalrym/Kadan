@@ -80,6 +80,11 @@ class QwenSubprocessAdapter:
         self.capacity = self.vocabulary = self.arena = 0
         self._lock = threading.Lock()
         self._closed = False
+        self.quarantined = False
+
+    def check_execution_state(self):
+        if self.quarantined:
+            raise LineProtocolError('Native Qwen cleanup is unconfirmed; close before another workload.')
 
     @property
     def is_resident(self):
@@ -91,6 +96,7 @@ class QwenSubprocessAdapter:
             self._configure_context_locked(configured)
 
     def _configure_context_locked(self, configured):
+        self.check_execution_state()
         if self._closed:
             raise RuntimeError('Qwen adapter is closed')
         supported, effective = resolve_context(self.config, configured)
@@ -137,7 +143,11 @@ class QwenSubprocessAdapter:
 
     def _close_locked(self):
         if self.worker is not None:
-            self.worker.stop()
+            try:
+                self.worker.stop()
+            except BaseException:
+                self.quarantined = True
+                raise
             self.worker = None
         self.tokenizer = None
         for name in ('reservation', 'host'):
@@ -145,6 +155,7 @@ class QwenSubprocessAdapter:
             if handle is not None:
                 handle.release()
                 setattr(self, name, None)
+        self.quarantined = False
 
     def _evict(self):
         if not self._lock.acquire(blocking=False):
@@ -203,6 +214,7 @@ class QwenSubprocessAdapter:
         # Eviction, reload and generation share one ownership gate. There is
         # no unlocked window in which a newly restored worker can be evicted.
         with self._lock:
+            self.check_execution_state()
             if self.worker is None and not self._closed:
                 self.cancel = cancel_event
                 try:

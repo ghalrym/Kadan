@@ -243,7 +243,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         for failure, expected in failures:
             def controlled_import(name, *args, **kwargs):
-                if name == 'api.inference.llm.model_adapter':
+                if name == 'api.inference.llm.qwen_subprocess':
                     raise failure
                 return original_import(name, *args, **kwargs)
             with self.subTest(error=expected), patch('builtins.__import__', side_effect=controlled_import):

@@ -16,7 +16,7 @@ class NativeProviderTests(unittest.TestCase):
     def setUp(self):
         directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup);root=Path(directory.name)
         worker=root/'worker';tokens=root/'tokens';worker.touch();tokens.touch()
-        env=patch.dict(os.environ,{'KADAN_NATIVE_TTS_WORKER':str(worker),'KADAN_NATIVE_TTS_TOKENIZER':str(tokens),'KADAN_QWEN_TTS_DEVICE':'cuda:0'})
+        env=patch.dict(os.environ,{'KADAN_NATIVE_TTS_WORKER':str(worker),'KADAN_NATIVE_TTS_TOKENIZER':str(tokens),'KADAN_TTS_DEVICES':'cpu'})
         env.start();self.addCleanup(env.stop)
         resolver=patch('api.inference.tts.qwen.model_manager.get_checkpoint',return_value=(SimpleNamespace(revision='0c0e3051f131929182e2c023b9537f8b1c68adfe'),root));resolver.start();self.addCleanup(resolver.stop)
         self.request=SpeechInput('Hello.',{'mode':'custom','speaker':'Ryan'},'English','qwen-tts-1.7b-custom');self.provider=QwenSpeechProvider()

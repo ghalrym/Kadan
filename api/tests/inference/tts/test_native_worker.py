@@ -59,9 +59,8 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(len(self.resources.snapshot()['reservations']),1);self.assertTrue(self.session.workspace.exists())
         with self.assertRaises(SpeechUnavailable):self.session.check_execution_state()
     def test_empty_generation_rejected(self):
-        self.runtime.load(SpeechInput('',dict(mode='custom',speaker='Ryan'),'English','qwen-tts-1.7b-custom'),threading.Event())
-        with self.assertRaises(SpeechUnavailable):self.runtime.generate(SpeechInput('',dict(mode='custom',speaker='Ryan'),'English','qwen-tts-1.7b-custom'),threading.Event())
-        self.assertEqual(self.child.requests,0)
+        with self.assertRaises(ValueError):self.runtime.generate(SpeechInput('',dict(mode='custom',speaker='Ryan'),'English','qwen-tts-1.7b-custom'),threading.Event())
+        self.assertEqual(self.child.starts,0)
         self.assertEqual(self.resources.snapshot()['reservations'],{})
     def test_invalid_memory_response(self):
         self.child.report='done 3884 1 2048'
@@ -72,8 +71,8 @@ class NativeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'ready'):self.run_request()
         self.assertEqual(self.child.stops,1);self.assertEqual(self.resources.snapshot()['reservations'],{})
     def test_unsupported_options_do_not_spawn(self):
-        for request in [SpeechInput('Hi',dict(mode='custom',speaker='Vivian'),'English','qwen-tts-1.7b-custom'),SpeechInput('Hi',dict(mode='custom',speaker='Ryan'),'Auto','qwen-tts-1.7b-custom')]:
-            with self.assertRaises(SpeechUnavailable):self.runtime.generate(request,threading.Event())
+        for request in [SpeechInput('Hi',dict(mode='custom',speaker='Vivian'),'English','qwen-tts-1.7b-custom'),SpeechInput('Hi',dict(mode='custom',speaker='Ryan'),'French','qwen-tts-1.7b-custom')]:
+            with self.assertRaises(ValueError):self.runtime.generate(request,threading.Event())
         self.assertEqual(self.child.starts,0)
     def test_memory_pressure_does_not_spawn(self):
         pressure=self.resources.reserve('pressure','tts',host_bytes=32*1024**3)

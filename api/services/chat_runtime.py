@@ -100,28 +100,21 @@ class ChatRuntime:
         factory = self._factory
         uses_subprocess = False
         if factory is None:
-            backend = os.environ.get('KADAN_LLM_BACKEND', 'python')
-            if backend not in ('python', 'native', 'native-resident'):
-                raise InferenceFailure('KADAN_LLM_BACKEND must be python, native or native-resident.')
-            if backend in ('native', 'native-resident'):
-                # Lazy optional backend import preserves startup/default behavior.
-                from api.inference.llm.qwen_subprocess import build_qwen_subprocess
-                factory, uses_subprocess = build_qwen_subprocess, True
-                if backend == 'native-resident':
-                    # Optional protocol adapter; importing it allocates no model.
-                    from api.inference.llm.qwen_residency import build_resident_qwen
-                    factory = build_resident_qwen
-        if factory is None:
-            # Keep the API available when model dependencies are broken so Settings
-            # can report the import failure instead of preventing server startup.
+            backend = os.environ.get('KADAN_LLM_BACKEND') or 'native-resident'
+            if backend not in ('native', 'native-resident'):
+                raise InferenceFailure('KADAN_LLM_BACKEND must select a native worker: native or native-resident.')
+            # Optional adapters stay lazy so missing worker assets surface in Settings.
             try:
-                from api.inference.llm.model_adapter import build_runtime
-            except ImportError as exc:
-                detail = (f'Inference dependency is missing: {exc.name}.'
-                          if isinstance(exc, ModuleNotFoundError) and exc.name
-                          else f'Inference runtime import failed: {exc}')
-                raise InferenceFailure(detail) from exc
-            factory = build_runtime
+                from api.inference.llm.qwen_subprocess import build_qwen_subprocess
+                from api.inference.llm.qwen_residency import build_resident_qwen
+            except ImportError as error:
+                if isinstance(error, ModuleNotFoundError) and error.name:
+                    message = f'Inference dependency is missing: {error.name}.'
+                else:
+                    message = f'Inference runtime import failed: {error}'
+                raise InferenceFailure(message) from error
+            factory = build_resident_qwen if backend == 'native-resident' else build_qwen_subprocess
+            uses_subprocess = True
         self.ensure_resources()
         gpu = os.environ.get('KADAN_GPU', 'auto')
         if gpu != 'auto' and not gpu.isdecimal():
@@ -132,15 +125,6 @@ class ChatRuntime:
             device = 'auto' if gpu == 'auto' else f'cuda:{gpu}'
         elif self._factory is not None:
             device = f'cuda:{gpu if gpu != "auto" else 0}'
-        else:
-            # Prefer whole-checkpoint residency when possible. Packed adapters
-            # distribute expert/projection entries if no one card fits the bank.
-            floor = 2 * 1024**3
-            required = getattr(entry, 'estimated_bytes', 0) + floor
-            try:
-                device = select_device(self.resources, required, 'auto' if gpu == 'auto' else f'cuda:{gpu}')
-            except ResourceExhausted:
-                device = select_device(self.resources, floor, 'auto' if gpu == 'auto' else f'cuda:{gpu}')
         adapter = factory(entry, path, self.resources, device=device, cancel_event=cancel)
         try:
             adapter.configure_context(self.context_settings['configured_context_limit'])

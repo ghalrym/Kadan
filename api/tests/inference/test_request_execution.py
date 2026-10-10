@@ -15,6 +15,8 @@ from api.inference.video.h3 import H3Provider, H3_REVISION, GIB
 from api.inference.image.image_requests import ImageRequests
 from api.inference.stt.transcription_requests import TranscriptionRequests
 from api.inference.stt.whisper_transcriber import WhisperTranscriber
+from api.inference.stt.native_worker import NativeWhisper
+from api.tests.inference.stt.test_native_worker import Child
 from api.inference.stt.catalog import checkpoint
 from api.inference.tts.speech_requests import SpeechRequests
 from api.inference.decisions.decision_requests import DecisionRequests
@@ -59,35 +61,38 @@ class RequestExecutorContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(feature.adapter)
 
     async def test_whisper_load_call_park_reload_and_unload_keep_one_inference_object(self):
-        resources = ResourceManager(8 * GIB, {0: 8 * GIB})
+        resources = ResourceManager(64 * GIB, {0: 8 * GIB})
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'tiny.pt').write_bytes(b'fixture')
-            entry = replace(checkpoint('tiny'), sha256=hashlib.sha256(b'fixture').hexdigest())
-            native = Mock()
-            native.modules.return_value = []
-            native.transcribe.return_value = {'text':'heard','language':'en'}
-            factory = Mock(return_value=native)
-            store = SimpleNamespace(root=root, get_checkpoint=lambda _: (None, root))
-            service = WhisperTranscriber(factory, resources, store)
+            class ParkableChild(Child):
+                def exchange(self, command, *args):
+                    if command in ('park', 'resume'):
+                        return {'park': 'parked', 'resume': 'resumed'}[command]
+                    return super().exchange(command, *args)
+            child = ParkableChild()
+            resolver = Mock(return_value=['/native', '/model', 'weights', 'dimensions', 'assets'])
+            native = NativeWhisper(resources, resolver, lambda: child)
+            service = WhisperTranscriber(worker=native, store=SimpleNamespace(root=Path(directory)))
             feature = TranscriptionRequests(service)
             self.assertIsInstance(feature, RequestExecutor)
-            with patch('api.inference.stt.whisper_transcriber.checkpoint', return_value=entry), patch.dict(
-                    'os.environ', {'KADAN_WHISPER_DEVICE':'cuda:0'}):
+            with patch.dict('os.environ', {'KADAN_WHISPER_DEVICES':'0'}):
                 self.assertIs(await feature.load('tiny'), native)
                 result = await feature(TranscriptionRequest(audio=audio_url(), formatting=False), model='tiny')
-                self.assertEqual(result['text'], 'heard')
-                with service.device_reservation.lease():
+                self.assertEqual(result['text'], ' Hello Andrew!')
+                with native.device_admission.lease():
                     with self.assertRaises(ResourceBusy):
                         await feature.offload_to_ram()
                 await feature.offload_to_ram()
-                self.assertEqual(service.device, 'cpu')
+                self.assertTrue(native.parked)
+                self.assertIsNone(native.device_admission)
                 self.assertIs(feature.adapter, native)
                 await feature.load('tiny')
-                self.assertEqual(service.device, 'cuda:0')
-                factory.assert_called_once()
+                self.assertFalse(native.parked)
+                self.assertIsNotNone(native.device_admission)
+                self.assertEqual(child.starts, 1)
+                resolver.assert_called_once_with('tiny')
                 await feature.unload()
-                self.assertIsNone(feature.adapter)
+                self.assertIs(feature.adapter, native)
+                self.assertIsNone(native.child)
                 self.assertEqual(resources.snapshot()['reservations'], {})
 
     async def test_video_explicit_load_park_generation_and_unload_share_provider(self):

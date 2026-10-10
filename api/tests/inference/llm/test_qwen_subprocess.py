@@ -1,5 +1,6 @@
 """Synthetic subprocess faults; no Torch, CUDA, checkpoint payload or service."""
 from collections import UserDict
+import asyncio
 import json
 from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from api.memory_manager import MemoryManager
+from api.memory_manager.queue import Job
+from api.inference.llm.chat_requests import ChatRequests
 from api.inference.llm.context import ContextLimitError, ContextMemoryError
 from api.inference.llm.qwen_subprocess import QwenSubprocessAdapter, QWEN_HOST_BYTES
 from api.inference.line_protocol import LineProtocolError
@@ -310,6 +314,26 @@ class QwenSubprocessAdapterTests(unittest.TestCase):
                     self.adapter._close_locked()
                     self.assertIsNotNone(children[0].poll())
                     self.assertFalse(self.resources.snapshot()['reservations'])
+
+
+    def test_failed_stop_blocks_different_cpu_workload(self):
+        self.adapter.configure_context(512)
+        before=self.resources.snapshot()['reservations']
+        with patch.object(self.adapter.worker,'stop',side_effect=subprocess.TimeoutExpired('child',5)):
+            with self.assertRaises(subprocess.TimeoutExpired):self.adapter.close()
+        self.assertTrue(self.adapter.quarantined)
+        self.assertEqual(self.resources.snapshot()['reservations'],before)
+        class CpuDecision:
+            operations=('generate',)
+            def validate(self,*args):return SimpleNamespace()
+            async def __call__(self,*args,**kwargs):raise AssertionError('must not execute after failed Qwen cleanup')
+        manager=object.__new__(MemoryManager)
+        manager.request_executors={'llm':ChatRequests(SimpleNamespace(adapter=self.adapter)),'decisions':CpuDecision()}
+        manager.queue=SimpleNamespace(streams={})
+        job=Job(id='a'*32,feature='decisions',operation='generate',payload={},model=None)
+        with self.assertRaisesRegex(LineProtocolError,'cleanup is unconfirmed'):
+            asyncio.run(manager._execute(job))
+        self.adapter.close();self.assertEqual(self.resources.snapshot()['reservations'],{})
 
 
 if __name__=='__main__':unittest.main()

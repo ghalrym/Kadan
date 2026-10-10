@@ -18,13 +18,15 @@ PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
 MODEL = 'qwen-tts-1.7b-custom'
 
 
-def validate(request):
-    if (request.model_id != MODEL or request.language != 'English'
+def validate(request, *, allow_empty=False):
+    if (request.model_id != MODEL or request.language not in ('Auto', 'English')
             or request.voice.get('mode') != 'custom' or request.voice.get('speaker') != 'Ryan'
             or request.voice.get('instruction')):
-        raise SpeechUnavailable('Native TTS currently supports the 1.7B CustomVoice checkpoint, English and Ryan without instruction control.')
-    if len(request.script.encode('utf-8')) > 32000:
-        raise SpeechUnavailable('Native TTS requires 1..32000 UTF-8 bytes of text.')
+        raise ValueError('Native TTS currently supports the 1.7B CustomVoice checkpoint, English and Ryan without instruction control.')
+    if allow_empty and request.script == '':
+        return
+    if not request.script.strip() or not 1 <= len(request.script.encode('utf-8')) <= 32000:
+        raise ValueError('Native TTS requires 1..32000 UTF-8 bytes of text.')
 
 
 def check_cancel(cancel):

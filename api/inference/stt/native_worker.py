@@ -23,6 +23,7 @@ from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceCancelled
 from api.inference.stt.catalog import checkpoint
 from api.services.chat_runtime import chat_runtime
+from api.services.model_downloads import model_manager
 
 HOST_BUDGET = 16 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
@@ -37,9 +38,9 @@ def cancelled(event):
 def resolve(model, compute=None):
     compute = compute or NativeCompute("WHISPER")
     entry = checkpoint(model)
-    binary = Path(os.environ['KADAN_NATIVE_WHISPER_WORKER'])
-    root = Path(os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT', ''))
-    assets = Path(os.environ.get('KADAN_NATIVE_WHISPER_ASSET_ROOT', ''))
+    binary = Path(os.environ.get('KADAN_NATIVE_WHISPER_WORKER') or '/opt/kadan/bin/kadan-whisper-worker')
+    root = Path(os.environ.get('KADAN_NATIVE_WHISPER_MODEL_ROOT') or model_manager.root / 'native/whisper' / entry.name)
+    assets = Path(os.environ.get('KADAN_NATIVE_WHISPER_ASSET_ROOT') or root / 'assets')
     if not binary.is_absolute() or not root.is_absolute() or not assets.is_absolute():
         raise InferenceFailure('Configure absolute native Whisper worker, model and asset paths.')
     capability = subprocess.run([str(binary), '--capabilities'], capture_output=True, timeout=10, check=True, env=compute.environment())

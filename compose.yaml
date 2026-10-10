@@ -50,7 +50,14 @@ services:
       KADAN_REDIS_URL: redis://redis:6379/0
       KADAN_MODEL_DIR: /var/lib/kadan/models
       KADAN_GPU: ${KADAN_GPU:-auto}
-      KADAN_WHISPER_DEVICE: ${KADAN_WHISPER_DEVICE:-auto}
+      KADAN_LLM_BACKEND: native-resident
+      KADAN_NATIVE_WORKER: /opt/kadan/bin/kadan-model-worker
+      KADAN_NATIVE_TTS_WORKER: /opt/kadan/bin/kadan-tts-worker
+      KADAN_NATIVE_WHISPER_WORKER: /opt/kadan/bin/kadan-whisper-worker
+      KADAN_NATIVE_IMAGE_WORKER: /opt/kadan/bin/kadan-image-worker
+      KADAN_TTS_DEVICES: ${KADAN_TTS_DEVICES:-auto}
+      KADAN_WHISPER_DEVICES: ${KADAN_WHISPER_DEVICES:-auto}
+      KADAN_IMAGE_DEVICES: ${KADAN_IMAGE_DEVICES:-auto}
     deploy:
       resources:
         reservations:

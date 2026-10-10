@@ -12,6 +12,10 @@ class ChatRequests:
     @property
     def adapter(self):
         return self.chat_runtime.adapter
+    def check_execution_state(self):
+        check = getattr(self.adapter, 'check_execution_state', None)
+        if check is not None:
+            check()
     def select(self, request):
         return request.model or self.chat_runtime.model_id
     def validate(self, payload, operation):
