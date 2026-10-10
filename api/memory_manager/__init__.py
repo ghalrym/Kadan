@@ -16,6 +16,7 @@ from api.memory_manager.streaming import QueuedStream
 from api.inference.decisions.laya_backend import laya_evaluator
 from api.services.model_downloads import model_manager
 from api.inference.errors import InferenceFailure
+from api.inference.progress import track
 from api.services.chat_runtime import chat_runtime
 from api.inference.stt.whisper_transcriber import get_whisper_transcriber
 from api.services.video_jobs import video_jobs
@@ -100,6 +101,10 @@ class MemoryManager:
         return job
 
     async def _execute(self, job: Job):
+        with track(job.id, job.feature):
+            return await self._execute_request(job)
+
+    async def _execute_request(self, job: Job):
         wrapper = self.request_executors[job.feature]
         if job.operation not in wrapper.operations:
             raise InferenceFailure('Unsupported inference operation.', 422)

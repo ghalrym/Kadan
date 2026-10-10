@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ModeNavigation, SegmentedControl, UploadPlaceholder } from '../components/Controls'
 import { MediaPlaceholder } from '../components/Media'
 import { imageHistory, requestImages, type ImageOptions } from '../api/images'
+import { usePolling } from '../hooks/usePolling'
+import type { MetricsResponse } from '../api/generated/types.gen'
 import type { ImageSet } from '../api/generated/types.gen'
 
 /**
@@ -17,6 +19,8 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
  * errors without manufacturing image previews or claiming uploads.
  */
 function ImageWorkspace({ edit }: { edit: boolean }) {
+  const { data: metrics } = usePolling<MetricsResponse>('/v1/metrics')
+  const progress = metrics?.inference_progress
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
   const [count, setCount] = useState<1 | 2 | 4>(4)
@@ -105,7 +109,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         </div>
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
-        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Queued / working…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        {busy && progress && <p role="status">Server {progress.workload}: {progress.stage.replaceAll('_', ' ')} · {progress.value}</p>}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>

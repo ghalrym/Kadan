@@ -145,6 +145,7 @@ export type {
   ImageResponse,
   ImageSet,
   ImagesResponse,
+  InferenceProgress,
   ListImagesData,
   ListImagesResponse,
   ListImagesResponses,

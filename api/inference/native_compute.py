@@ -41,8 +41,8 @@ def native_compute(feature, resources=None):
     if selection == 'auto':
         if capacity is None:
             raise InferenceFailure('Automatic native placement requires the shared resource manager.')
-        available = resources.available_devices(reclaim=True)
-        devices = tuple(d for d in (0, 1) if available.get(d, 0) >= budget)
+        # Freeze a feasible placement; admission waits for transient pressure.
+        devices = tuple(d for d in (0, 1) if capacity.get(d, 0) >= budget)
     elif selection in ('cpu', '0', '1', '0,1', '1,0'):
         devices = tuple(map(int, selection.split(','))) if selection != 'cpu' else ()
     else:

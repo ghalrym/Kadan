@@ -1,5 +1,6 @@
 import threading
 import unittest
+from unittest.mock import patch
 from api.inference.resources import (
     MemoryCapacity, ResourceBusy, ResourceCancelled, ResourceExhausted, ResourceManager,
 )
@@ -297,3 +298,48 @@ class PhysicalEvictionTests(unittest.TestCase):
         free[0] = 10
         manager.reserve('image', 'image', device_bytes={0: 50})
         self.assertEqual(events, ['device'])
+
+class QueuedAdmissionTests(unittest.TestCase):
+    def test_transient_pressure_waits_and_cancels_without_admission(self):
+        manager = ResourceManager(100, {})
+        owner = manager.reserve('first', 'image', host_bytes=100)
+        cancel = threading.Event()
+        with patch.object(cancel, 'wait', side_effect=lambda _: cancel.set()):
+            with self.assertRaises(ResourceCancelled):
+                manager.reserve('second', 'decision', host_bytes=1, cancel_event=cancel)
+        owner.release()
+        self.assertEqual(manager.snapshot()['reservations'], {})
+
+    def test_wait_releases_admission_transaction_before_retry(self):
+        manager = ResourceManager(100, {})
+        owner = manager.reserve('first', 'image', host_bytes=100)
+        cancel = threading.Event()
+        with patch.object(cancel, 'wait', side_effect=lambda _: owner.release()):
+            next_owner = manager.reserve('second', 'decision', host_bytes=50, cancel_event=cancel)
+        next_owner.release()
+        self.assertEqual(manager.snapshot()['reservations'], {})
+
+    def test_handoff_waits_without_holding_transaction(self):
+        manager = ResourceManager(100, {0: 100})
+        resident = manager.reserve('first', 'image', device_bytes={0: 100}, evict=lambda: None)
+        lease = resident.lease(); lease.__enter__()
+        cancel = threading.Event()
+        with patch.object(cancel, 'wait', side_effect=lambda _: lease.__exit__(None, None, None)):
+            manager.offload_inactive_devices('decision', cancel)
+        self.assertEqual(manager.snapshot()['reservations'], {})
+
+    def test_handoff_cancellation_retains_active_owner(self):
+        manager = ResourceManager(100, {0: 100})
+        resident = manager.reserve('first', 'image', device_bytes={0: 100}, evict=lambda: None)
+        cancel = threading.Event()
+        with resident.lease(), patch.object(cancel, 'wait', side_effect=lambda _: cancel.set()):
+            with self.assertRaises(ResourceCancelled): manager.offload_inactive_devices('decision', cancel)
+        resident.release()
+
+    def test_handoff_cleanup_failure_is_not_treated_as_contention(self):
+        manager = ResourceManager(100, {0: 100})
+        def cleanup(): raise RuntimeError('cleanup unconfirmed')
+        manager.reserve('first', 'image', device_bytes={0: 100}, evict=cleanup)
+        with self.assertRaisesRegex(RuntimeError, 'cleanup unconfirmed'):
+            manager.offload_inactive_devices('decision', threading.Event())
+        self.assertIn('first', manager.snapshot()['reservations'])

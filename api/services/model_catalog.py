@@ -12,6 +12,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Literal
 from api.inference.tts.catalog import SPEECH_MODELS
+from api.inference.decisions.laya_checkpoint import DEFAULT_MODEL, DEFAULT_REVISION
 
 from api.inference.stt.catalog import get_whisper_checkpoints
 
@@ -23,7 +24,7 @@ class CatalogEntry:
     revision: str
     license: str
     estimated_bytes: int
-    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image'] = 'llm'
+    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image', 'decision'] = 'llm'
     display_name: str | None = None
     layout: Literal['root', 'components', 'single_file', 'composite'] = 'root'
     subfolder: str = ''
@@ -184,4 +185,13 @@ CATALOG['qwen-image-2.1'] = CatalogEntry(
     weight_paths=('text_encoder', 'transformer', 'vae'),
     license_url=f'https://huggingface.co/Qwen/Qwen-Image-2.1/blob/{QWEN_IMAGE_REVISION}/LICENSE',
     license_notice='Qwen-Image-2.1 is licensed for research and evaluation only. Commercial use requires a separate license; continuing does not grant commercial rights.',
+)
+
+# The C++ Laya executor consumes these four files directly; no encoder export.
+CATALOG['laya'] = CatalogEntry(
+    'laya', DEFAULT_MODEL, DEFAULT_REVISION, 'unknown', 0,
+    kind='decision', display_name='Laya', layout='components',
+    required_files=('rl_agent_config.json', 'model.safetensors',
+                    'tokenizer/tokenizer.json', 'encoder/config.json'),
+    weight_paths=('',),
 )

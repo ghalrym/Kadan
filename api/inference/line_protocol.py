@@ -7,9 +7,11 @@ import signal
 import subprocess
 import time
 
+from api.inference.progress import report
+
 MAX_FRAME = 4096
 log = logging.getLogger(__name__)
-STAGE = re.compile(rb'(tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
+STAGE = re.compile(rb'(layer_completed|block_loaded|block_completed|refiner_completed|publish|tokenized|denoise_completed|audio_decoded|text_loading_mib|vae_loading_mib|denoiser_block_loaded|tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
 
 
 class LineProtocolError(RuntimeError):
@@ -57,6 +59,7 @@ class LineProtocolProcess:
             self.stage_buffer = bytearray(rest)
             match = STAGE.fullmatch(line)
             if match:
+                report(match[1].decode(), int(match[2]))
                 # Receipt time, not an exact device completion timestamp. Never log
                 # arbitrary worker text as a public stage or include prompt contents.
                 log.info('worker_stage pid=%s observed_unix_ns=%s stage=%s index=%s',

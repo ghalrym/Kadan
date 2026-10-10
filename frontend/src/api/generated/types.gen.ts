@@ -457,6 +457,32 @@ export type ImagesResponse = {
 }
 
 /**
+ * InferenceProgress
+ */
+export type InferenceProgress = {
+  /**
+   * Job Id
+   */
+  job_id: string
+  /**
+   * Observed Unix Ns
+   */
+  observed_unix_ns: number
+  /**
+   * Stage
+   */
+  stage: string
+  /**
+   * Value
+   */
+  value: number
+  /**
+   * Workload
+   */
+  workload: string
+}
+
+/**
  * MessagesResponse
  *
  * Compatibility envelope for client-owned conversations; the server has no history.
@@ -490,6 +516,7 @@ export type MetricsResponse = {
    * Error Rate Percent
    */
   error_rate_percent: number | null
+  inference_progress?: InferenceProgress | null
   /**
    * Memory Unit
    */
@@ -657,7 +684,14 @@ export type ModelStatus = {
   /**
    * Kind
    */
-  kind: 'llm' | 'video' | 'speech' | 'transcription' | 'formatting' | 'image'
+  kind:
+    | 'llm'
+    | 'video'
+    | 'speech'
+    | 'transcription'
+    | 'formatting'
+    | 'image'
+    | 'decision'
   /**
    * License
    */

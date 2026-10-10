@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 import wave
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
 from api.inference.tts.native_worker import NativeSpeechSession, PROCESS_BUDGET, validate
@@ -85,7 +86,9 @@ class NativeTests(unittest.TestCase):
     def test_memory_pressure_does_not_spawn(self):
         pressure=self.resources.reserve('pressure','tts',host_bytes=32*1024**3)
         try:
-            with self.assertRaises(ResourceExhausted):self.run_request()
+            cancel=threading.Event()
+            with patch.object(cancel, 'wait', side_effect=lambda _: cancel.set()):
+                with self.assertRaises(ResourceCancelled):self.runtime.generate(self.request,cancel)
             self.assertEqual(self.child.starts,0)
         finally:pressure.release()
 

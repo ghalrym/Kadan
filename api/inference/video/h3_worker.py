@@ -82,8 +82,7 @@ class H3Process(LineProtocolProcess):
                     if key.data == 'out':
                         raise LineProtocolError('H3 worker exited without a response')
                 elif key.data == 'err':
-                    self.diagnostics.extend(data)
-                    del self.diagnostics[:-8192]
+                    self._capture_diagnostics(data)
                 else:
                     self.buffer.extend(data)
                     if len(self.buffer) > 8192:
@@ -96,7 +95,7 @@ class H3Process(LineProtocolProcess):
                 return decode_response(line)
 
 
-def resolve_command(model_id):
+def resolve_command(model_id, cancel=None):
     binary = Path(os.getenv('KADAN_NATIVE_H3_WORKER', '/opt/kadan/bin/kadan-h3-worker')).expanduser()
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise InferenceFailure('Native H3 worker is unavailable; configure KADAN_NATIVE_H3_WORKER.')
@@ -105,7 +104,8 @@ def resolve_command(model_id):
     expected = dict(protocol=1, cuda=True, audio=True, host_budget=HOST_BUDGET, device_budget=DEVICE_BUDGET)
     if decode_response(result.stdout) != expected:
         raise InferenceFailure('H3 requires the CUDA native worker with protocol 1.')
-    entry, checkpoint = model_manager.get_checkpoint(model_id)
+    entry, checkpoint = (model_manager.ensure_checkpoint(model_id, cancel) if cancel is not None
+                         else model_manager.get_checkpoint(model_id))
     if entry.revision != H3_INT8_REVISION:
         raise InferenceFailure('H3 checkpoint revision does not match the native worker.')
     names = ('FL2VA/tokenizer/tokenizer.json', 'FL2VA/text_encoder/model.safetensors',
@@ -261,7 +261,7 @@ class H3Provider:
         try:
             self.check_execution_state()
             check_cancel(cancel)
-            command = self.resolve(self.model_id)  # Preflight before parking another model.
+            command = self.resolve(self.model_id, cancel) if self.resolve is resolve_command else self.resolve(self.model_id)
             value = os.getenv('KADAN_H3_DEVICES', '0,1')
             if value not in ('0', '1', '0,1', '1,0'):
                 raise InferenceFailure('Invalid KADAN_H3_DEVICES.')

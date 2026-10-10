@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import threading
 import unittest
+from unittest.mock import patch
 from PIL import Image
 from api.inference.errors import InferenceFailure
 from api.inference.image.native_worker import NativeImageRuntime, NativeImageSession, PROCESS_BUDGET, SIZES
@@ -78,7 +79,9 @@ class NativeTests(unittest.TestCase):
     def test_budget_before_spawn(self):
         pressure=self.resources.reserve('pressure','tts',host_bytes=96*1024**3)
         try:
-            with self.assertRaises(ResourceExhausted):self.run_request()
+            cancel=threading.Event()
+            with patch.object(cancel, 'wait', side_effect=lambda _: cancel.set()):
+                with self.assertRaises(ResourceCancelled):self.runtime.run(self.request,cancel)
             self.assertEqual(self.child.starts,0)
         finally:pressure.release()
     def test_invalid_options_before_spawn(self):

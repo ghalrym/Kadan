@@ -14,6 +14,8 @@ import re
 import threading
 from typing import Callable, Literal
 
+from api.inference.progress import report
+
 Workload = Literal['llm', 'image', 'video', 'speech', 'tts', 'decision']
 WORKLOADS = frozenset(('llm', 'image', 'video', 'speech', 'tts', 'decision'))
 
@@ -23,6 +25,14 @@ class ResourceBusy(RuntimeError):
 
 
 class ResourceExhausted(RuntimeError):
+    pass
+
+
+class ResourceUnavailable(ResourceExhausted):
+    """Transient contention; a queued owner waits until admission or cancellation."""
+
+
+class ResourceAccessUnavailable(ResourceUnavailable, ResourceBusy):
     pass
 
 
@@ -288,6 +298,22 @@ class ResourceManager:
                 evict: Callable[[], None] | None = None,
                 cancel_event: threading.Event | None = None,
                 offload_on_handoff: bool = True) -> Reservation:
+        while True:
+            try:
+                return self._reserve_once(owner, workload, host_bytes, device_bytes,
+                                          evict, cancel_event, offload_on_handoff)
+            except ResourceUnavailable:
+                if cancel_event is None:
+                    raise
+                report('waiting_for_resources')
+                cancel_event.wait(.05)
+                self._cancelled(cancel_event)
+
+    def _reserve_once(self, owner: str, workload: Workload, host_bytes: int = 0,
+                device_bytes: dict[int, int] | None = None,
+                evict: Callable[[], None] | None = None,
+                cancel_event: threading.Event | None = None,
+                offload_on_handoff: bool = True) -> Reservation:
         """Return an ownership handle after logical and physical admission. Evict eligible idle
         owners if needed; reject busy owners, cancellation or insufficient capacity. Callers
         allocate only afterward and provide callbacks that free actual tensors.
@@ -309,7 +335,7 @@ class ResourceManager:
                 if owner in self._residents:
                     raise ResourceBusy('Owner already has a reservation; release before resizing')
                 if self._exclusive not in (None, owner):
-                    raise ResourceBusy('Another workload holds exclusive GPU access')
+                    raise ResourceAccessUnavailable('Another workload holds exclusive GPU access')
                 if self._fits(host_bytes, devices) and self._physical_fits(host_bytes, devices):
                     self._cancelled(cancel_event)
                     return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
@@ -345,10 +371,10 @@ class ResourceManager:
                     continue
             with self._lock:
                 if not self._fits(host_bytes, devices):
-                    raise ResourceExhausted('Insufficient unreserved RAM/VRAM; active workloads cannot be evicted')
+                    raise ResourceUnavailable('Insufficient unreserved RAM/VRAM; active workloads cannot be evicted')
                 self._cancelled(cancel_event)
                 if not self._physical_fits(host_bytes, devices):
-                    raise ResourceExhausted('Physical available memory is below the requested reservation')
+                    raise ResourceUnavailable('Physical available memory is below the requested reservation')
                 return self._record(owner, workload, host_bytes, devices, evict, offload_on_handoff)
 
     def _release(self, owner, token):
@@ -400,11 +426,22 @@ class ResourceManager:
                 self._exclusive = None
 
     def offload_inactive_devices(self, workload: Workload, cancel_event=None):
+        while True:
+            try:
+                return self._offload_inactive_devices_once(workload, cancel_event)
+            except ResourceBusy:
+                if cancel_event is None:
+                    raise
+                report('waiting_for_resources')
+                cancel_event.wait(.05)
+                self._cancelled(cancel_event)
+
+    def _offload_inactive_devices_once(self, workload: Workload, cancel_event=None):
         """Offload through existing callbacks; preserve host banks and active leases."""
         with self._transaction(cancel_event):
             with self._lock:
                 if self._exclusive is not None:
-                    raise ResourceBusy('Another workload holds exclusive GPU access')
+                    raise ResourceAccessUnavailable('Another workload holds exclusive GPU access')
                 victims = [key for key, state in self._residents.items()
                            if state.workload != workload and state.offload_on_handoff and any(state.device_bytes.values())]
                 if any(self._residents[key].active or self._residents[key].evict is None for key in victims):
@@ -418,7 +455,7 @@ class ResourceManager:
         with self._transaction(cancel_event):
             with self._lock:
                 if self._exclusive is not None:
-                    raise ResourceBusy('Another workload holds exclusive GPU access')
+                    raise ResourceAccessUnavailable('Another workload holds exclusive GPU access')
                 victims = [key for key, state in self._residents.items()
                            if state.workload == workload and state.offload_on_handoff and any(state.device_bytes.values())]
                 if any(self._residents[key].active or self._residents[key].evict is None for key in victims):

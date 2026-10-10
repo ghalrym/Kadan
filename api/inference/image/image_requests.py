@@ -2,7 +2,7 @@
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.errors import InferenceFailure
 from api.inference.line_protocol import LineProtocolError
-from api.inference.image.native_worker import MODEL, NativeImageRuntime, prepare, validate
+from api.inference.image.native_worker import MODEL, NativeImageRuntime, validate
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceExhausted
 from api.services.chat_runtime import chat_runtime
 
@@ -28,7 +28,6 @@ class ImageRequests:
         if hasattr(request, 'image'):
             raise InferenceFailure('No image provider is configured for editing. Native image generation is available when enabled.')
         validate(request)
-        prepare()
     async def load(self, model=None):
         if model not in (None, MODEL):
             raise InferenceFailure('Unsupported native image model.', 422)

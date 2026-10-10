@@ -814,6 +814,39 @@
         "title": "ImagesResponse",
         "type": "object"
       },
+      "InferenceProgress": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "observed_unix_ns": {
+            "title": "Observed Unix Ns",
+            "type": "integer"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "workload",
+          "stage",
+          "value",
+          "observed_unix_ns"
+        ],
+        "title": "InferenceProgress",
+        "type": "object"
+      },
       "MessagesResponse": {
         "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
@@ -852,6 +885,16 @@
               }
             ],
             "title": "Error Rate Percent"
+          },
+          "inference_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InferenceProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "memory_unit": {
             "const": "GiB",
@@ -1174,7 +1217,8 @@
               "speech",
               "transcription",
               "formatting",
-              "image"
+              "image",
+              "decision"
             ],
             "title": "Kind",
             "type": "string"

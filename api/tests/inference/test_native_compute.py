@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from api.inference.errors import InferenceFailure
 from api.inference.native_compute import NativeCompute, DEFAULT_DEVICE_BYTES, native_compute
-from api.inference.resources import ResourceManager
+from api.inference.resources import MemoryCapacity, ResourceManager
 from api.inference.image.image_requests import ImageRequests
 from api.inference.image.native_worker import NativeImageRuntime, NativeImageSession
 from api.inference.stt.native_worker import NativeWhisper
@@ -53,6 +53,12 @@ class ComputeTests(unittest.TestCase):
         for value in ('0,0','2','1,2','-1','0,'):
             with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': value}), self.assertRaises(InferenceFailure): native_compute('IMAGE', self.resources)
         with self.assertRaises(InferenceFailure): native_compute('IMAGE', ResourceManager(1024,{}))
+
+    def test_auto_placement_waits_for_feasible_devices_despite_temporary_pressure(self):
+        resources = ResourceManager(128*1024**3, {0: DEFAULT_DEVICE_BYTES, 1: DEFAULT_DEVICE_BYTES},
+            probe=lambda: MemoryCapacity(128*1024**3, {0: 0, 1: 0}))
+        with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': 'auto'}):
+            self.assertEqual(native_compute('IMAGE', resources).devices, (0, 1))
 
     def test_frozen_environment(self):
         plan=native_compute('IMAGE',self.resources)

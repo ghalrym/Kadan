@@ -2,7 +2,7 @@
 
 KADAN_NATIVE_DECISION_WORKER selects an executable (default
 /opt/kadan/bin/kadan-decision-worker). KADAN_LAYA_MODEL selects a complete local
-checkpoint or a pinned cached Hub snapshot; worker selection never downloads.
+checkpoint or the pinned catalog model; the queued owner prepares missing files.
 KADAN_NATIVE_DECISION_TIMEOUT_SECONDS defaults to 300. Parent admission defaults
 to the child's 3 GiB model envelope plus 2 MiB transport/parent bookkeeping;
 KADAN_NATIVE_DECISION_RAM_BYTES may increase it. These are conservative shared
@@ -10,6 +10,7 @@ reservations, not OS RSS limits. CPU weights remain resident until pressure or
 cleanup stops and reaps the worker. The global MemoryManager queue owns order.
 """
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -19,14 +20,13 @@ import selectors
 import threading
 import time
 
-from huggingface_hub import snapshot_download
-
 from api.inference.decisions.laya_checkpoint import DEFAULT_MODEL, DEFAULT_REVISION
 from api.inference.decisions.laya_answers import parse_answer
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess, check_cancel
 from api.inference.resources import ResourceBusy, ResourceExhausted
 from api.services.model_downloads import model_manager
+from api.services.model_catalog import CATALOG, CatalogEntry
 from api.inference.errors import InferenceFailure
 from api.services.chat_runtime import chat_runtime
 
@@ -34,7 +34,7 @@ DEFAULT_HOST_BUDGET_BYTES = 3 * 1024**3 + 2 * 1024**2
 MAX_FRAME_BYTES = 65536
 
 
-def resolve_laya_command():
+def resolve_laya_command(cancel=None):
     binary = Path(os.getenv('KADAN_NATIVE_DECISION_WORKER', '/opt/kadan/bin/kadan-decision-worker')).expanduser()
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise InferenceFailure('Decision worker is unavailable; configure KADAN_NATIVE_DECISION_WORKER.')
@@ -44,11 +44,16 @@ def resolve_laya_command():
         revision = os.getenv('KADAN_LAYA_REVISION', DEFAULT_REVISION if model == DEFAULT_MODEL else '')
         if not re.fullmatch('[0-9a-f]{40}', revision):
             raise InferenceFailure('KADAN_LAYA_REVISION must pin a commit SHA.')
-        try:
-            root = Path(snapshot_download(model, revision=revision,
-                cache_dir=model_manager.root / 'hub', local_files_only=True))
-        except Exception as error:
-            raise InferenceFailure('Laya checkpoint is not cached; configure a complete local checkpoint.') from error
+        entry = CATALOG['laya']
+        if (model, revision) != (DEFAULT_MODEL, DEFAULT_REVISION):
+            if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', model):
+                raise InferenceFailure('Invalid Laya checkpoint repository.')
+            identity = hashlib.sha256((model + '@' + revision).encode()).hexdigest()
+            entry = CatalogEntry('laya-' + identity, model, revision, 'unknown', 0,
+                kind='decision', layout='components', required_files=entry.required_files, weight_paths=('',))
+        check_cancel(cancel)
+        _, root = (model_manager.ensure_checkpoint(entry, cancel) if cancel is not None
+                   else model_manager.get_checkpoint(entry))
     for name in ('rl_agent_config.json', 'model.safetensors', 'tokenizer/tokenizer.json', 'encoder/config.json'):
         if not (root / name).is_file():
             raise InferenceFailure(f'Laya checkpoint is incomplete: missing {name}.')
@@ -167,7 +172,10 @@ class LayaSubprocessEvaluator:
 
     async def preflight(self):
         self._settings()
-        await asyncio.to_thread(self.resolve)
+        await run_cancellable_thread(self._prepare)
+
+    def _prepare(self, cancel):
+        return self.resolve(cancel) if self.resolve is resolve_laya_command else self.resolve()
 
     def check_execution_state(self):
         # A failed reap is unresolved execution, not ordinary memory pressure.
@@ -201,7 +209,7 @@ class LayaSubprocessEvaluator:
             if self._quarantined:
                 raise InferenceFailure('Decision cleanup is unconfirmed; restart or close the runtime.')
             budget, timeout = self._settings()
-            argv = self.resolve()
+            argv = self._prepare(cancel)
             self.resources = self.resources or chat_runtime.ensure_resources()
             try:
                 if self.reservation is None:

@@ -174,8 +174,9 @@ class SpeechLifecycleTests(unittest.TestCase):
     def test_non_evictable_gpu_handoff_does_not_load(self):
         other = self.resources.reserve('busy', 'llm', 800, {0: 800})
         try:
-            with self.assertRaises(ResourceBusy):
-                self.runtime.generate(self.request, self.cancel)
+            with patch.object(self.cancel, 'wait', side_effect=lambda _: self.cancel.set()):
+                with self.assertRaises(ResourceCancelled):
+                    self.runtime.generate(self.request, self.cancel)
             self.assertEqual(self.provider.loads, 0)
         finally:
             other.release()

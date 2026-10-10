@@ -42,13 +42,14 @@ def validate(request):
         raise InferenceFailure('Unsupported native image request bounds.', 422)
 
 
-def prepare():
+def prepare(cancel=None):
     value = os.environ.get('KADAN_NATIVE_IMAGE_WORKER') or '/opt/kadan/bin/kadan-image-worker'
     binary = Path(value)
     if not binary.is_absolute() or not binary.is_file():
         raise InferenceFailure('Configure an absolute native image worker path.')
     try:
-        entry, checkpoint = model_manager.get_checkpoint(MODEL)
+        entry, checkpoint = (model_manager.ensure_checkpoint(MODEL, cancel) if cancel is not None
+                             else model_manager.get_checkpoint(MODEL))
     except ValueError as error:
         raise InferenceFailure(str(error)) from error
     if entry.revision != REVISION:
@@ -207,7 +208,7 @@ class NativeImageRuntime:
         try:
             check_cancel(cancel)
             self.check_execution_state()
-            plan = self.prepare_plan()
+            plan = self.prepare_plan(cancel) if self.prepare_plan is prepare else self.prepare_plan()
             resources = self.resources()
             compute = native_compute('IMAGE', resources)
             identity = (plan, compute.identity)

@@ -20,6 +20,8 @@ from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
+from api.inference.resources import ResourceCancelled
+from api.inference.progress import report
 from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
 
 
@@ -157,15 +159,24 @@ class ModelManager:
         self.root = (root or Path(os.environ.get('KADAN_MODEL_DIR', '~/.local/share/kadan/models')).expanduser()).resolve()
         self._lock = threading.RLock()
         self._jobs: dict[str, DownloadJob] = {}
+        self._configured: dict[str, CatalogEntry] = {}
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self._in_use = False
 
-    def _catalog_entry(self, model_id: str) -> CatalogEntry:
+    def _catalog_entry(self, model_id: str | CatalogEntry) -> CatalogEntry:
         """Resolve an approved model ID; raise ValueError for unknown IDs."""
-        if model_id not in CATALOG:
+        if isinstance(model_id, CatalogEntry):
+            entry = model_id
+            with self._lock:
+                existing = CATALOG.get(entry.id) or self._configured.get(entry.id)
+                if existing is not None and existing != entry:
+                    raise ValueError('Conflicting checkpoint identity')
+                self._configured[entry.id] = entry
+            return entry
+        if model_id not in CATALOG and model_id not in self._configured:
             raise ValueError('Unknown catalog model')
-        return CATALOG[model_id]
+        return CATALOG.get(model_id) or self._configured[model_id]
 
     def _language_entry(self, model_id: str) -> CatalogEntry:
         """Require a language model before changing LLM lifecycle or context."""
@@ -174,7 +185,7 @@ class ModelManager:
             raise ValueError('This checkpoint is not a language model')
         return entry
 
-    def get_checkpoint(self, model_id: str) -> tuple[CatalogEntry, Path]:
+    def get_checkpoint(self, model_id: str | CatalogEntry) -> tuple[CatalogEntry, Path]:
         """Resolve a complete immutable checkpoint without changing LLM selection.
 
         Providers own memory admission and runtime cleanup. This store never
@@ -185,6 +196,58 @@ class ModelManager:
             if not self._checkpoint_complete(entry):
                 raise ValueError('Download this model completely in Settings first')
             return entry, self._checkpoint_directory(entry)
+
+    def ensure_checkpoint(self, model_id: str | CatalogEntry, cancel: threading.Event) -> tuple[CatalogEntry, Path]:
+        """Acquire a verified checkpoint for a queued request, waiting for writers.
+
+        A request cancels only the download it started. It joins that writer through
+        staging cleanup and lock release before yielding FIFO ownership. Existing
+        Settings downloads keep their independent owner when a waiter leaves.
+        Socket reads have a 30-second timeout; cancellation waits for that boundary.
+        """
+        entry = self._catalog_entry(model_id)
+        model_id = entry.id
+        while True:
+            if cancel.is_set():
+                raise ResourceCancelled('Checkpoint acquisition cancelled')
+            owned = False
+            with self._lock:
+                if self._checkpoint_complete(entry):
+                    return entry, self._checkpoint_directory(entry)
+                thread = self._thread
+                if thread is None or not thread.is_alive():
+                    try:
+                        # An inference request authorizes preparation of its selected
+                        # catalog model. The interactive Settings notice stays intact.
+                        self.start(model_id, license_acknowledged=True, request_cancel=cancel)
+                    except BusyError:
+                        thread = None  # Another process owns the shared writer lock.
+                    else:
+                        thread = self._thread
+                        owned = True
+                job = self._jobs.get(model_id)
+                if job is not None and not owned and job.status not in ('downloading', 'cancelling'):
+                    job = None
+            if thread is None:
+                report('waiting_for_download_store')
+                cancel.wait(.05)
+                continue
+            while thread.is_alive():
+                report('downloading_bytes' if job is not None else 'waiting_for_download_store',
+                       job.downloaded_bytes if job is not None else 0)
+                if cancel.is_set():
+                    if owned:
+                        with self._lock:
+                            if self._thread is thread:
+                                self._cancel.set()
+                        # Never abandon a writer belonging to this queued request.
+                        thread.join()
+                    raise ResourceCancelled('Checkpoint acquisition cancelled')
+                thread.join(.05)
+            if cancel.is_set():
+                raise ResourceCancelled('Checkpoint acquisition cancelled')
+            if job is not None and job.status in ('failed', 'cancelled'):
+                raise ValueError(job.error or 'Checkpoint download cancelled')
 
     def close(self) -> None:
         """Stop a download at the next read boundary during API shutdown."""
@@ -368,7 +431,7 @@ class ModelManager:
             temporary.write_text(json.dumps({'model_id': model_id}))
             temporary.replace(self.root / 'selection.json')
 
-    def start(self, model_id: str, license_acknowledged: bool = False) -> None:
+    def start(self, model_id: str, license_acknowledged: bool = False, *, request_cancel: threading.Event | None = None) -> None:
         """Start one background download after acquiring the store's OS writer lock.
 
         Rejects unknown IDs, concurrent jobs, and completed checkpoints. Returns
@@ -392,9 +455,12 @@ class ModelManager:
             except OSError:
                 lease.close()
                 raise
+            if self._checkpoint_complete(entry):
+                lease.close()
+                raise BusyError('This pinned checkpoint is already downloaded')
             self._cancel.clear()
             self._jobs[model_id] = DownloadJob()
-            self._thread = threading.Thread(target=self._download, args=(entry, lease), daemon=True)
+            self._thread = threading.Thread(target=self._download, args=(entry, lease, request_cancel), daemon=True)
             try:
                 self._thread.start()
             except Exception:
@@ -415,7 +481,7 @@ class ModelManager:
             job.status = 'cancelling'
             self._cancel.set()
 
-    def _download(self, entry: CatalogEntry, lease: IO[str]) -> None:
+    def _download(self, entry: CatalogEntry, lease: IO[str], request_cancel: threading.Event | None = None) -> None:
         """Download, verify, and atomically publish one pinned checkpoint.
 
         Owns the supplied filesystem lease until cleanup. Writes only staging
@@ -429,7 +495,7 @@ class ModelManager:
                 shutil.rmtree(stage)
             stage.mkdir()
             files = fetch_checkpoint_manifest(entry)
-            if self._cancel.is_set():
+            if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
                 raise Cancelled()
             total = sum(item['size'] for item in files)
             if shutil.disk_usage(self.root).free < total + 1024**3:
@@ -438,7 +504,7 @@ class ModelManager:
                 self._jobs[entry.id].total_bytes = total
             downloaded = 0
             for item in files:
-                if self._cancel.is_set():
+                if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
                     raise Cancelled()
                 digest = hashlib.sha256() if item['algorithm'] == 'sha256' else hashlib.sha1()
                 if item['algorithm'] == 'git-sha1':
@@ -450,7 +516,7 @@ class ModelManager:
                 (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
                 with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
                     while True:
-                        if self._cancel.is_set():
+                        if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
                             raise Cancelled()
                         chunk = source.read(1024 * 1024)
                         if not chunk:
@@ -477,7 +543,7 @@ class ModelManager:
             # Commit completion while holding the same lock as cancel(). A
             # cancellation accepted before publication must never become success.
             with self._lock:
-                if self._cancel.is_set():
+                if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
                     raise Cancelled()
                 completion_marker: CompletionMarker = {'revision': entry.revision, 'files': files}
                 (stage / 'complete.json').write_text(json.dumps(completion_marker))
