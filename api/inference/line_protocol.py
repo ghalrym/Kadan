@@ -1,11 +1,15 @@
 """Owned subprocess groups and bounded line-oriented inference transport."""
+import logging
 import os
+import re
 import selectors
 import signal
 import subprocess
 import time
 
 MAX_FRAME = 4096
+log = logging.getLogger(__name__)
+STAGE = re.compile(rb'(tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
 
 
 class LineProtocolError(RuntimeError):
@@ -29,6 +33,7 @@ class LineProtocolProcess:
         self.process = self.selector = None
         self.buffer = bytearray()
         self.diagnostics = bytearray()
+        self.stage_buffer = bytearray()
         self.closed = False
         self.io_ready = False
 
@@ -43,12 +48,27 @@ class LineProtocolProcess:
             self.selector.register(stream, selectors.EVENT_READ, kind)
         self.io_ready = True
 
+    def _capture_diagnostics(self, data):
+        self.diagnostics.extend(data)
+        del self.diagnostics[:-8192]
+        self.stage_buffer.extend(data)
+        while b'\n' in self.stage_buffer:
+            line, _, rest = self.stage_buffer.partition(b'\n')
+            self.stage_buffer = bytearray(rest)
+            match = STAGE.fullmatch(line)
+            if match:
+                # Receipt time, not an exact device completion timestamp. Never log
+                # arbitrary worker text as a public stage or include prompt contents.
+                log.info('worker_stage pid=%s observed_unix_ns=%s stage=%s index=%s',
+                         self.process.pid, time.time_ns(), match[1].decode(), match[2].decode())
+        if len(self.stage_buffer) > 8192:
+            self.stage_buffer.clear()
+
     def _failure(self, message, error_type=LineProtocolError):
         # Read only already-available stderr, never wait for a failing child.
         if self.process is not None and self.process.stderr is not None:
             try:
-                self.diagnostics.extend(os.read(self.process.stderr.fileno(), 8192))
-                del self.diagnostics[:-8192]
+                self._capture_diagnostics(os.read(self.process.stderr.fileno(), 8192))
             except (BlockingIOError, ValueError):
                 pass
         error = error_type(message)
@@ -65,8 +85,7 @@ class LineProtocolProcess:
             if not data:
                 self.selector.unregister(key.fileobj)
             elif key.data == 'err':
-                self.diagnostics.extend(data)
-                del self.diagnostics[:-8192]
+                self._capture_diagnostics(data)
             else:
                 self.buffer.extend(data)
                 if len(self.buffer) > MAX_FRAME:

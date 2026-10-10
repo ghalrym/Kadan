@@ -1,6 +1,7 @@
 """Terminal worker failures keep local context out of public API error text."""
 import sys
 import unittest
+from types import SimpleNamespace
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 
 
@@ -53,3 +54,16 @@ class ErrorTests(unittest.TestCase):
                     self.assertNotIn('private-path-and-token', str(raised.exception))
                 finally:
                     child.stop()
+
+    def test_stage_receipts_have_pid_and_timestamp_without_private_text(self):
+        child = LineProtocolProcess()
+        child.process = SimpleNamespace(pid=123)
+        with self.assertLogs('api.inference.line_protocol', level='INFO') as captured:
+            child._capture_diagnostics(b'text_la')
+            child._capture_diagnostics(b'yer 30\nprivate-secret\nblock 2\n')
+        self.assertEqual(len(captured.output), 2)
+        self.assertRegex(captured.output[0], r'pid=123 observed_unix_ns=[0-9]+ stage=text_layer index=30')
+        self.assertNotIn('private-secret', '\n'.join(captured.output))
+        child._capture_diagnostics(b'x' * 10000)
+        self.assertLessEqual(len(child.diagnostics), 8192)
+        self.assertLessEqual(len(child.stage_buffer), 8192)
