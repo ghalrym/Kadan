@@ -21,25 +21,13 @@ RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
     && cmake --install /build --prefix /out --component image-runtime \
     && /out/bin/kadan-h3-worker --capabilities | python -c 'import json,sys; assert json.load(sys.stdin)["cuda"] is True'
 
-FROM python:3.12-slim AS h3
-ENV PYTHONDONTWRITEBYTECODE=1 SGLANG_BUILD_RUST_EXTS=none
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates libgomp1 ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-COPY api/requirements-h3.txt /tmp/requirements-h3.txt
-RUN pip install --no-cache-dir uv \
-    && uv pip install --system --no-cache -r /tmp/requirements-h3.txt \
-    && uv pip check --system
-RUN ln -s lib /usr/local/lib/python3.12/site-packages/nvidia/cu13/lib64 \
-    && ln -s libcudart.so.13 /usr/local/lib/python3.12/site-packages/nvidia/cu13/lib/libcudart.so
-RUN python -c 'from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import DiffGenerator; import comfy_kitchen'
-
-FROM h3
+FROM python:3.12-slim-bookworm
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends g++ sox \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY api/requirements*.txt /app/
-RUN uv pip install --system --no-cache -r requirements.txt && uv pip check --system
+RUN pip install --no-cache-dir -r requirements.txt && pip check
 COPY api/ /app/api
 COPY --from=native-build /out/ /opt/kadan/
 RUN test -x /opt/kadan/bin/kadan-model-worker \

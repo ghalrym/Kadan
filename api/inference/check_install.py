@@ -1,22 +1,18 @@
-"""Fail image builds and clean-install checks if a core inference import is broken."""
+"""Check worker orchestration dependencies without executing models."""
+from transformers import AutoTokenizer
+from api.inference.llm.qwen_subprocess import QwenSubprocessAdapter
+from api.inference.llm.qwen_residency import build_resident_qwen
+from api.inference.decisions.laya_subprocess import resolve_laya_command
+from api.inference.image.native_worker import NativeImageRuntime
+from api.inference.video.h3_worker import H3Provider
+from api.inference.tts.check_install import check_speech_install
 
 
 def main():
-    """Import every catalog architecture without weights, GPU allocation or downloads."""
-    import accelerate
-    import safetensors
-    import torch
-    from transformers import AutoTokenizer, GptOssForCausalLM, Qwen3_5MoeForCausalLM
-    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
-    from api.inference.llm.model_adapter import build_runtime
-    from api.inference.llm.qwen import build_qwen
-    from api.inference.llm.glm import build_glm
-
-    assert all((accelerate, safetensors, AutoTokenizer, GptOssForCausalLM,
-                Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
-    from api.inference.tts.check_install import check_speech_install
+    assert all((AutoTokenizer, QwenSubprocessAdapter, build_resident_qwen,
+                resolve_laya_command, NativeImageRuntime, H3Provider))
     check_speech_install()
-    print(f'Core inference imports OK (torch {torch.__version__}, CUDA build {torch.version.cuda}).')
+    print('All six C++ worker adapters import successfully; no model execution.')
 
 
 if __name__ == '__main__':

@@ -1,8 +1,7 @@
-# Core native inference dependencies, included by requirements.txt.
-# The container installs the CUDA wheel first; CPU wheels are for tests only.
+# Tokenization, checkpoint conversion and device accounting for C++ workers.
+# These packages do not execute models in the API.
 torch==2.14.1
 transformers==5.17.0
-accelerate==1.10.1
 safetensors==0.8.0
 
 # Pinned tokenizer/mel assets for native Whisper export only; no Python inference fallback.

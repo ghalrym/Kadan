@@ -1,7 +1,4 @@
 """Behavioral contract for six heterogeneous native feature objects."""
-import asyncio
-from dataclasses import replace
-import hashlib
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -11,22 +8,19 @@ from unittest.mock import Mock, patch
 from api.inference.request_execution import RequestExecutor
 from api.inference.llm.chat_requests import ChatRequests
 from api.inference.video.video_requests import VideoRequests
-from api.inference.video.h3 import H3Provider, H3_REVISION, GIB
+from api.inference.video.h3_worker import H3Provider, GIB
+from api.tests.inference.video.test_h3_worker import Worker
 from api.inference.image.image_requests import ImageRequests
 from api.inference.stt.transcription_requests import TranscriptionRequests
 from api.inference.stt.whisper_transcriber import WhisperTranscriber
 from api.inference.stt.native_worker import NativeWhisper
 from api.tests.inference.stt.test_native_worker import Child
-from api.inference.stt.catalog import checkpoint
-from api.inference.tts.speech_requests import SpeechRequests
-from api.inference.decisions.decision_requests import DecisionRequests
 from api.inference.resources import ResourceManager, ResourceBusy
 from api.inference.errors import InferenceFailure
 from api.services.video_jobs import VideoJobs
 from api.tests.inference.stt.test_whisper_transcriber import audio_url
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
-from api.routes.v1.decisions import DecisionRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
 
 
@@ -96,34 +90,35 @@ class RequestExecutorContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resources.snapshot()['reservations'], {})
 
     async def test_video_explicit_load_park_generation_and_unload_share_provider(self):
-        resources = ResourceManager(400 * GIB, {0:18 * GIB})
-        entry = SimpleNamespace(revision=H3_REVISION, estimated_bytes=69_000_000_000)
-        provider = H3Provider()
-        session = Mock()
-        with tempfile.TemporaryDirectory() as directory, patch(
-                'api.inference.video.h3.check_media_tools'), patch(
-                'api.inference.video.h3.model_manager.get_checkpoint', return_value=(entry, Path('/fixture'))), patch(
-                'api.inference.video.h3.chat_runtime.ensure_resources', return_value=resources), patch(
-                'api.inference.video.h3_pipeline.H3Session', return_value=session) as construct:
+        resources = ResourceManager(200 * GIB, {0: 8 * GIB, 1: 8 * GIB})
+        children = []
+        def child():
+            worker = Worker()
+            children.append(worker)
+            return worker
+        provider = H3Provider(resources=resources, resolve=lambda _: ['worker'], process_factory=child)
+        def encode(raw, target, frames, cancel):
+            target.write_bytes(b'controlled video')
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                'os.environ', {'KADAN_H3_DEVICES': '0,1'}), patch.object(provider, '_encode', encode):
             jobs = VideoJobs(directory, factory=lambda _: provider)
             feature = VideoRequests(jobs)
             self.assertIsInstance(feature, RequestExecutor)
             self.assertIs(await feature.load('h3-fl2va-int8-turbo'), provider)
-            session.load.assert_called_once()
-            session.render.assert_not_called()
+            self.assertTrue(children[0].started)
+            self.assertFalse(children[0].calls)
             await feature.offload_to_ram()
-            session.park.assert_called_once_with(GIB)
-            def render(spec, checkpoint, output, cancellation, devices):
-                Path(output).write_bytes(b'controlled video')
-            with patch.object(provider, '_run', side_effect=render):
-                result = await feature(VideoGenerationRequest(model='h3-fl2va-int8-turbo', prompt='ball',
-                    duration=4, resolution='480p'), model='h3-fl2va-int8-turbo', job_id='a'*32)
+            self.assertTrue(children[0].stopped)
+            self.assertEqual(resources.snapshot()['reservations'], {})
+            result = await feature(VideoGenerationRequest(model='h3-fl2va-int8-turbo', prompt='ball',
+                duration=4, resolution='480p'), model='h3-fl2va-int8-turbo', job_id='a'*32)
             self.assertEqual(result['status'], 'Done')
-            construct.assert_called_once()
+            self.assertEqual(len(children), 2)
+            self.assertEqual(len(children[1].calls), 1)
             self.assertIs(feature.adapter, provider)
             await feature.unload()
             self.assertIsNone(feature.adapter)
-            session.close.assert_called_once()
+            self.assertTrue(children[1].stopped)
             self.assertEqual(resources.snapshot()['reservations'], {})
             self.assertEqual(jobs.get('a'*32).status, 'Done')
 
