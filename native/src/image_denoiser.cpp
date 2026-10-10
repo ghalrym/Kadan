@@ -15,7 +15,9 @@ void need(bool b,const char* e){if(!b)throw std::runtime_error(e);}
 void stop(const std::atomic_bool& c){need(!c.load(),"image_cancelled");}
 Footprint host(Resources& r,Bytes n){auto p=r.snapshot().capacity;std::fill(p.begin(),p.end(),0);p[0]=n;return p;}
 struct Lease{Resources& r;Handle h;Lease(Resources& a,Bytes n):r(a),h(r.reserve(Workload::image,host(r,n))){}~Lease(){r.released(h);}};
-struct Buffer{Lease lease;std::unique_ptr<float[]> data;std::size_t n;Buffer(Resources& r,std::size_t count,bool overwrite=false):lease(r,count*4),data(overwrite?std::make_unique_for_overwrite<float[]>(count):std::make_unique<float[]>(count)),n(count){}std::span<float> span(){return {data.get(),n};}};
+// Every consumed element is first written by checkpoint decoding, input copy,
+// normalization or a complete projection/attention output. Scratch tails are unused.
+struct Buffer{Lease lease;std::unique_ptr<float[]> data;std::size_t n;Buffer(Resources& r,std::size_t count):lease(r,count*4),data(std::make_unique_for_overwrite<float[]>(count)),n(count){}std::span<float> span(){return {data.get(),n};}};
 struct Busy{bool& b;Busy(bool& flag):b(flag){need(!b,"busy");b=true;}~Busy(){b=false;}};
 struct Pin{Resources& r;Handle h;Pin(Resources& a,Handle id):r(a),h(id){r.pin(h);}~Pin(){r.unpin(h);}};
 void finite(std::span<const float> x){for(float v:x)need(std::isfinite(v),"image_nonfinite");}
@@ -48,7 +50,7 @@ Denoiser::~Denoiser(){unload();}
 void Denoiser::load(const char* root,std::span<const std::string> files,DenoiserConfig d,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(!model_,"image_load_state");need(d.layers>0&&d.layers<=32&&d.context>0&&d.context<=4096&&d.channels>0&&d.channels<=64&&d.block.state>0&&d.block.state<=4096&&files.size()>0&&files.size()<=4,"image_denoiser_config");need(std::set<std::string>(files.begin(),files.end()).size()==files.size(),"image_duplicate_shard");auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,files.size()*16*1024*1024);std::vector<std::unique_ptr<checkpoint::Shard>> shards;
  for(const auto& file:files)shards.push_back(std::make_unique<checkpoint::Shard>(root,file,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{2*1024*1024,4096,4096}));
  for(auto& s:m->specs){s.shard=locate(shards,s.name);s.identity=shards[s.shard]->tensor_identity(s.name);auto t=shards[s.shard]->tensor(s.name);need((t.dtype==checkpoint::Dtype::bf16||t.dtype==checkpoint::Dtype::fp32)&&t.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),t.shape.begin()),"image_tensor_layout");}
- const auto& last=m->specs.back();m->weights=std::make_unique<Buffer>(*resources_,last.offset+last.count,true);Lease staging(*resources_,checkpoint::float_read_buffer_bytes);auto bytes=std::make_unique_for_overwrite<std::uint8_t[]>(checkpoint::float_read_buffer_bytes);
+ const auto& last=m->specs.back();m->weights=std::make_unique<Buffer>(*resources_,last.offset+last.count);Lease staging(*resources_,checkpoint::float_read_buffer_bytes);auto bytes=std::make_unique_for_overwrite<std::uint8_t[]>(checkpoint::float_read_buffer_bytes);
  for(const auto& s:m->specs){auto& shard=*shards[s.shard];auto name=s.name;checkpoint::read_floats(shard.tensor(name).dtype,{m->weights->data.get()+s.offset,s.count},{bytes.get(),checkpoint::float_read_buffer_bytes},cancel,[&](std::size_t offset,std::span<std::uint8_t> out){shard.read_tensor(name,offset,out);},[](std::size_t){});}
  for(std::size_t i=0;i<d.layers;++i){stop(cancel);auto block=std::make_unique<TransformerBlock>(resources_,compute_);block->load(root,files,i,d.block,cancel);m->blocks.push_back(std::move(block));if(hook)hook("denoiser_block_loaded",i+1);}
  for(const auto& shard:shards){shard->check_unchanged();}
