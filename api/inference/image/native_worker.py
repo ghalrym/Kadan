@@ -177,6 +177,9 @@ class NativeImageRuntime:
         finally:
             self.gate.release()
 
+    def offload_to_ram(self, cancel=None):
+        self.resources().offload_workload_devices('image', cancel)
+
     def _evict(self):
         if not self.gate.acquire(blocking=False):
             raise ResourceBusy('Image worker is active')

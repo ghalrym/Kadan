@@ -91,6 +91,8 @@ class InferenceQueue:
         self._ready = False
         self.error = 'Inference queue has not started.'
         self.streams = {}
+        self._shutdown_cleanup = None
+        self._closing = None
 
     def key(self, suffix):
         return self.prefix + suffix
@@ -114,7 +116,7 @@ class InferenceQueue:
             raise
 
     async def start(self):
-        if self._consumer is not None:
+        if self._consumer is not None or self._lock_file is not None:
             raise RuntimeError('Inference consumer already started')
         try:
             identity = self._lock()
@@ -271,9 +273,27 @@ class InferenceQueue:
             log.exception(self.error)
             # Keep the kernel lock until close() even when Redis is down.
 
-    async def close(self):
+    async def close(self, *, cleanup=None):
+        # The first owner stays authoritative across concurrent closes and failures.
+        if cleanup is not None and self._shutdown_cleanup is None:
+            self._shutdown_cleanup = cleanup
+        if self._closing is None or self._closing.done():
+            self._closing = asyncio.create_task(self._close())
+        # Caller cancellation cannot release ownership ahead of native cleanup.
+        await await_cleanup(self._closing)
+
+    async def _cleanup_and_unlock(self):
+        if self._shutdown_cleanup is not None:
+            await self._shutdown_cleanup()
+            self._shutdown_cleanup = None
+        self._unlock()
+
+    async def _close(self):
         if self._lock_file is None:
-            await self.redis.aclose()
+            try:
+                await self.redis.aclose()
+            finally:
+                await self._cleanup_and_unlock()
             return
         self._ready = False
         self._wake.set()
@@ -292,4 +312,4 @@ class InferenceQueue:
                 try:
                     await self.redis.aclose()
                 finally:
-                    self._unlock()
+                    await self._cleanup_and_unlock()

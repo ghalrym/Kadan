@@ -8,10 +8,12 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
+from types import SimpleNamespace
 
 from redis.asyncio import Redis
 
 from api.inference.cancellation import run_cancellable_thread
+from api.memory_manager import MemoryManager
 from api.memory_manager.queue import InferenceQueue
 from api.inference.errors import InferenceFailure
 
@@ -253,3 +255,61 @@ asyncio.run(main())
             await self.queue.wait(first)
         self.assertEqual(await self.queue.wait(second), {'number': 2})
         self.assertTrue(self.queue._ready)
+
+    async def test_manager_cleanup_retains_lock_through_caller_cancellation(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def unload():
+            entered.set()
+            await release.wait()
+        manager = object.__new__(MemoryManager)
+        manager.queue = self.queue
+        manager.request_executors = {'native': SimpleNamespace(unload=unload)}
+        closing = asyncio.create_task(manager.close())
+        await asyncio.wait_for(entered.wait(), 2)
+        closing.cancel()
+        other = self.make_queue()
+        try:
+            with self.assertRaises(InferenceFailure):
+                await other.start()
+            self.assertFalse(closing.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await closing
+            await other.start()
+        finally:
+            release.set()
+            await other.close()
+
+    async def test_failed_executor_cleanup_keeps_lock_and_retry_cannot_bypass(self):
+        failed = True
+        attempts = []
+        async def unload():
+            attempts.append('failed' if failed else 'clean')
+            if failed:
+                raise RuntimeError('native reap unconfirmed')
+        async def other_unload():
+            attempts.append('other')
+        manager = object.__new__(MemoryManager)
+        manager.queue = self.queue
+        manager.request_executors = {'other': SimpleNamespace(unload=other_unload),
+                                     'native': SimpleNamespace(unload=unload)}
+        with self.assertRaisesRegex(RuntimeError, 'reap unconfirmed'):
+            await manager.close()
+        self.assertEqual(attempts, ['failed', 'other'])
+        with self.assertRaises(RuntimeError):
+            await self.queue.start()
+        other = self.make_queue()
+        try:
+            with self.assertRaises(InferenceFailure):
+                await other.start()
+            with self.assertRaisesRegex(RuntimeError, 'reap unconfirmed'):
+                await self.queue.close(cleanup=other_unload)
+            with self.assertRaises(InferenceFailure):
+                await other.start()
+            failed = False
+            await self.queue.close()
+            await other.start()
+        finally:
+            failed = False
+            await self.queue.close()
+            await other.close()

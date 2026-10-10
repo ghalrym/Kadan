@@ -34,7 +34,7 @@ class ImageRequests:
         await run_cancellable_thread(self.runtime.run, None)
         return self.adapter
     async def offload_to_ram(self):
-        return None  # Already CPU resident; host pressure calls the real eviction callback.
+        await run_cancellable_thread(self.runtime.offload_to_ram)
     async def unload(self):
         await run_cancellable_thread(lambda cancel: self.runtime.unload())
     async def __call__(self, request, *, model=None, operation='generate', job_id=None):

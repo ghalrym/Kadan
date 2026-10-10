@@ -79,13 +79,12 @@ class MemoryManager:
             return False
 
     async def close(self):
-        try:
-            await self.queue.close()
-        finally:
-            # ExitStack keeps attempting cleanup if any native close fails.
-            async with AsyncExitStack() as cleanup:
+        async def cleanup():
+            # Attempt every executor; any failure retains the consumer lock.
+            async with AsyncExitStack() as stack:
                 for feature in self.request_executors.values():
-                    cleanup.push_async_callback(feature.unload)
+                    stack.push_async_callback(feature.unload)
+        await self.queue.close(cleanup=cleanup)
 
     async def video_job(self, job_id):
         job = self.videos.get(job_id)

@@ -1,4 +1,5 @@
 import os
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from api.inference.errors import InferenceFailure
 from api.inference.native_compute import NativeCompute, DEFAULT_DEVICE_BYTES, native_compute
 from api.inference.resources import ResourceManager
+from api.inference.image.image_requests import ImageRequests
 from api.inference.image.native_worker import NativeImageRuntime, NativeImageSession
 from api.inference.stt.native_worker import NativeWhisper
 from api.inference.tts.native_worker import NativeSpeechSession, PROCESS_BUDGET as SPEECH_BUDGET
@@ -72,6 +74,25 @@ class ComputeTests(unittest.TestCase):
         self.assertEqual(ic.environment['KADAN_IMAGE_DEVICES'],'0,1');self.assertEqual(wc.environment['KADAN_WHISPER_DEVICES'],'0,1')
         image.run(request,threading.Event());self.assertEqual(wc.controls,['park']);self.assertEqual(ic.controls,['park','resume']);self.assertEqual(ic.starts,1)
         image.unload();whisper.close();self.assertEqual(self.resources.snapshot()['reservations'],{})
+
+    def test_explicit_image_offload_acknowledges_before_releasing_devices(self):
+        image, child, _, _ = self.owners()
+        request=SimpleNamespace(prompt='ball',aspect='1:1',count=1,seed=0)
+        image.run(request,threading.Event())
+        wrapper=ImageRequests(image)
+        child.bad_park=True
+        with self.assertRaises(Exception):
+            asyncio.run(wrapper.offload_to_ram())
+        self.assertTrue(any(v['device_bytes'] for v in self.resources.snapshot()['reservations'].values()))
+        child.bad_park=False
+        asyncio.run(wrapper.offload_to_ram())
+        reservations=self.resources.snapshot()['reservations']
+        self.assertFalse(any(v['device_bytes'] for v in reservations.values()))
+        self.assertTrue(any(v['host_bytes'] for v in reservations.values()))
+        self.assertEqual(child.stops,0)
+        image.run(request,threading.Event())
+        self.assertEqual(child.starts,1)
+        self.assertEqual(child.controls[-1],'resume')
 
     def test_failed_park_keeps_gpu_reservation(self):
         image,ic,whisper,wc=self.owners();image.run(SimpleNamespace(prompt='ball',aspect='1:1',count=1,seed=0),threading.Event());ic.bad_park=True
