@@ -19,7 +19,7 @@ from unittest.mock import patch
 from api.inference.errors import InferenceFailure
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
 from api.inference.video import VideoSpec
-from api.inference.video.h3_worker import H3Provider, GIB, validate_artifact, decode_response
+from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response
 from api.inference.line_protocol import LineProtocolError
 
 
@@ -90,6 +90,8 @@ class H3WorkerTests(unittest.TestCase):
             provider.generate(spec(), output, threading.Event())
             assert output.read_bytes() == b'codec-result'
             assert provider._execution is None and provider._context is not None
+            state = resources.snapshot()["reservations"]
+            assert sum(item["host_bytes"] for item in state.values()) == PROCESS_HOST_BUDGET
         assert released == ['text'] and len(worker.calls) == 2
         assert worker.calls[0]['short_edge'] == 480 and worker.calls[0]['duration'] == 4
         assert worker.calls[0]['updates'] == 4 and not worker.stopped

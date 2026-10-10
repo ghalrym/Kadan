@@ -26,6 +26,7 @@ GIB = 1024**3
 HOST_BUDGET = 128 * GIB
 DEVICE_BUDGET = 2 * GIB
 CONTEXT_BUDGET = GIB
+PROCESS_HOST_BUDGET = HOST_BUDGET + 256 * 1024**2
 
 
 def check_cancel(event):
@@ -258,14 +259,17 @@ class H3Provider:
             resources.offload_inactive_devices('video', cancel)
             try:
                 with ExitStack() as leases:
+                    # A zero tensor ledger does not prove allocator arenas or CUDA
+                    # host caches returned their pages. Retain the full process host
+                    # envelope until reaping, including while its GPU work is idle.
                     if self._context is None:
                         self._context = resources.reserve(self._owner + ':context', 'video',
-                            host_bytes=256*1024**2, device_bytes={i: CONTEXT_BUDGET for i in devices},
+                            host_bytes=PROCESS_HOST_BUDGET, device_bytes={i: CONTEXT_BUDGET for i in devices},
                             evict=self._evict, cancel_event=cancel)
                     leases.enter_context(self._context.lease(cancel))
                     if spec is not None:
                         self._execution = resources.reserve(self._owner + ':execution', 'video',
-                            host_bytes=HOST_BUDGET, device_bytes={i: DEVICE_BUDGET for i in devices},
+                            device_bytes={i: DEVICE_BUDGET for i in devices},
                             cancel_event=cancel)
                         leases.enter_context(self._execution.lease(cancel))
                     if self._worker is None:
