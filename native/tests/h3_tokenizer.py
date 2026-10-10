@@ -16,7 +16,9 @@ with tempfile.TemporaryDirectory() as directory:
         original['model']['vocab']['!']=value;path.write_text(json.dumps(original))
         result=run();assert result.returncode==1 and 'h3_tokenizer_vocab_id' in result.stderr,result.stderr
     original['model']['vocab']['!']=33;path.write_text(json.dumps(original))
-    result=run('🎬'*8000);assert result.returncode==0 and len(json.loads(result.stdout))==32000,result.stderr
+    prompt='🎬'*8000;result=run(prompt);assert result.returncode==0,result.stderr
+    ids=json.loads(result.stdout);inverse={value:key for key,value in original['model']['vocab'].items()};byte_for={key:value for key,value in original['model']['vocab'].items() if value<256}
+    assert len(ids)>512 and b''.join(bytes(byte_for[c] for c in inverse[token]) for token in ids)==prompt.encode('utf-8')
     result=run('!'*32001);assert result.returncode==1 and 'h3_tokenizer_input_limit' in result.stderr,result.stderr
     original['added_tokens']=[dict(id=2**32+151643,content='<X>',single_word=False,lstrip=False,rstrip=False,normalized=False,special=True)]
     path.write_text(json.dumps(original));result=run();assert result.returncode==1 and 'h3_tokenizer_added_id' in result.stderr,result.stderr

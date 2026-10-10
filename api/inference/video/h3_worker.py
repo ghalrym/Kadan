@@ -220,6 +220,7 @@ class H3Provider:
         self._use(spec, Path(output_path), cancellation)
 
     def _encode(self, raw, target, frames, cancel):
+        check_cancel(cancel)
         self._codec = LineProtocolProcess()
         self._codec.start([shutil.which('ffmpeg'), '-nostdin', '-v', 'error', '-n',
             '-threads', '1', '-i', str(raw), '-an', '-c:v', 'libx264', '-threads', '1',

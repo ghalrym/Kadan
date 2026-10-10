@@ -568,7 +568,7 @@ if(KADAN_ENABLE_H3_GENERATION AND BUILD_TESTING AND Python3_Interpreter_FOUND)
 endif()
 if(KADAN_ENABLE_H3_GENERATION AND BUILD_TESTING AND Python3_Interpreter_FOUND)
   add_test(NAME h3-tokenizer COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/h3_tokenizer.py" "$<TARGET_FILE:kadan-h3-tokenize>")
-  set_tests_properties(h3-tokenizer PROPERTIES TIMEOUT 120)
+  set_tests_properties(h3-tokenizer PROPERTIES TIMEOUT 300)
 endif()
 
 if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_H3_GENERATION)

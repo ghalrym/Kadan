@@ -166,6 +166,13 @@ class H3WorkerTests(unittest.TestCase):
         self.assertFalse(parked)
         self.assertFalse(worker.started)
 
+    def test_precancelled_codec_never_spawns(self):
+        _, _, provider = setup(self)
+        event = threading.Event(); event.set()
+        with self.assertRaises(ResourceCancelled):
+            H3Provider._encode(provider, self.root/'missing.y4m', self.root/'out.mp4', 107, event)
+        self.assertIsNone(provider._codec)
+
     def test_codec_cancellation_reaps_before_releasing(self):
         import sys
         _, worker, provider = setup(self)
