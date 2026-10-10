@@ -7,6 +7,8 @@ ENV PATH=/usr/local/cuda-12.6/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib
 RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
+# Bookworm CMake predates CUDA 12 C++20 feature detection.
+RUN pip install --no-cache-dir cmake==3.31.6
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON \

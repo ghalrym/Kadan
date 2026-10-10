@@ -15,7 +15,9 @@ with tempfile.TemporaryDirectory() as directory:
     for value in (2**32+33,33.0,-1):
         original['model']['vocab']['!']=value;path.write_text(json.dumps(original))
         result=run();assert result.returncode==1 and 'h3_tokenizer_vocab_id' in result.stderr,result.stderr
-    original['model']['vocab']['!']=33
+    original['model']['vocab']['!']=33;path.write_text(json.dumps(original))
+    result=run('🎬'*8000);assert result.returncode==0 and len(json.loads(result.stdout))==32000,result.stderr
+    result=run('!'*32001);assert result.returncode==1 and 'h3_tokenizer_input_limit' in result.stderr,result.stderr
     original['added_tokens']=[dict(id=2**32+151643,content='<X>',single_word=False,lstrip=False,rstrip=False,normalized=False,special=True)]
     path.write_text(json.dumps(original));result=run();assert result.returncode==1 and 'h3_tokenizer_added_id' in result.stderr,result.stderr
     original['added_tokens'][0]['id']=151643;path.write_text(json.dumps(original));result=run('<X>!');assert result.returncode==0 and json.loads(result.stdout)==[151643,33],result.stderr
