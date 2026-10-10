@@ -41,7 +41,7 @@ int main(int argc,char** argv){
   kadan::Bytes cache_limit=0;
   if(const char* value=std::getenv("KADAN_H3_WEIGHT_CACHE_BYTES")){const std::string_view text(value);auto parsed=std::from_chars(text.data(),text.data()+text.size(),cache_limit);check(parsed.ec==std::errc{}&&parsed.ptr==text.data()+text.size()&&cache_limit<=32ULL*1024*1024*1024,"h3_cache_budget");}
   auto execution=kadan::video::h3_execution(1536ULL*1024*1024,cache_limit);auto resources=execution.resources;Io io(resources);Queue queue(resources);const kadan::video::H3GenerationPaths paths{argv[1],argv[2],argv[3],argv[4],argv[5],argc==7?argv[6]:""};
-  auto cache=kadan::video::h3_weight_cache(resources,paths,cache_limit,cancelled);
+  auto cache=kadan::video::h3_weight_cache(resources,paths,cache_limit,cancelled,execution.compute,[](const char* stage,std::size_t value){std::cerr<<stage<<' '<<value<<'\n';});
   kadan::video::H3Generation model(resources,execution.compute,cache);
   {
    bool parked=false;
@@ -68,7 +68,10 @@ int main(int argc,char** argv){
     while(queue.pending()){auto action=queue.poll();if(action.kind==Queue::Kind::load){queue.loaded(id,true);}else if(action.kind==Queue::Kind::execute){try{model.execute(paths,request,cancelled,[](const char* stage,std::size_t value){std::cerr<<stage<<' '<<value<<'\n';});}catch(...){failure=std::current_exception();}if(execution.compute)try{execution.compute->release_scratch();}catch(...){failure=std::current_exception();}if(cancelled.load())queue.cancel(id);queue.completed(id,false);}else if(action.kind==Queue::Kind::cleanup){queue.cleaned(action.reservation,true);}else throw std::runtime_error("h3_queue_stalled");}
     if(failure)std::rethrow_exception(failure);
     const auto used=resources->snapshot().used;std::vector<kadan::Bytes> devices(used.begin()+1,used.end());
-    return Json{{"weight_cache_bytes",cache?cache->reserved_bytes():0},{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",!paths.audio_vae.empty()},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();
+    const auto retained=execution.compute?execution.compute->retained_weights():kadan::Footprint{};
+    for(std::size_t i=1;i<used.size();++i)check(used[i]==(retained.empty()?0:retained[i]),"h3_device_scratch_leak");
+    check(used[0]-1024*1024==(cache?cache->reserved_bytes():0)+(retained.empty()?0:retained[0]),"h3_host_scratch_leak");
+    return Json{{"device_weight_metadata_bytes",retained.empty()?0:retained[0]},{"weight_cache_bytes",cache?cache->reserved_bytes():0},{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",!paths.audio_vae.empty()},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();
    };
    std::string frame;char c;while(read_byte(c)){if(c!='\n'){check(frame.size()<65536,"h3_request_size");frame+=c;}else if(!frame.empty()){std::string reply;try{reply=run(frame);}catch(const std::exception& e){reply=Json{{"error",e.what()}}.dump();}publish(reply);frame.clear();}}
    check(frame.empty()||cancelled.load(),"h3_incomplete_frame");queue.stop();auto action=queue.poll();if(action.kind==Queue::Kind::cleanup)queue.cleaned(action.reservation,true);

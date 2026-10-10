@@ -20,6 +20,9 @@ public:
     virtual void convrot(std::span<const std::uint8_t> weights,std::span<const float> scales,
         std::span<const float> bias,std::span<const float> input,std::size_t in,std::size_t out,
         std::size_t group,std::span<float> output,const std::atomic_bool& cancel)=0;
+    virtual void convrot_weight(const WeightIdentity&,std::span<const std::uint8_t> weights,std::span<const float> scales,
+        std::span<const float> bias,std::span<const float> input,std::size_t in,std::size_t out,
+        std::size_t group,std::span<float> output,const std::atomic_bool& cancel){convrot(weights,scales,bias,input,in,out,group,output,cancel);}
 };
 // Optional CUDA implementation, built only with KADAN_ENABLE_CUDA. The caller
 // owns CUDA context residency in its process/queue budget. Only explicit

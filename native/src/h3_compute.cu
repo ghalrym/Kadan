@@ -250,6 +250,7 @@ public:
     void dense_weight(const WeightIdentity& identity,std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,const std::atomic_bool& c,bool precise)override{project(w,{},b,x,in,out,0,y,c,precise,&identity);}
     void dense(std::span<const float> w,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y,const std::atomic_bool& c,bool precise)override{project(w,{},b,x,in,out,0,y,c,precise);}
     void convrot(std::span<const std::uint8_t> w,std::span<const float> s,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::size_t g,std::span<float> y,const std::atomic_bool& c)override{project(w,s,b,x,in,out,g,y,c);}
+    void convrot_weight(const WeightIdentity& identity,std::span<const std::uint8_t> w,std::span<const float> s,std::span<const float> b,std::span<const float> x,std::size_t in,std::size_t out,std::size_t g,std::span<float> y,const std::atomic_bool& c)override{project(w,s,b,x,in,out,g,y,c,false,&identity);}
 };
 }
 std::shared_ptr<H3Compute> h3_cuda_compute(std::shared_ptr<Resources> r,std::vector<int> d){return std::make_shared<Compute>(std::move(r),std::move(d));}

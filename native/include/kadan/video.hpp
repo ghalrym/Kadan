@@ -196,6 +196,7 @@ private:
     H3QkRope rope_;
     H3DecoderAttention attention_;
     H3DecoderFeedForward ff_;
+    std::array<WeightIdentity,4> weight_identities_{};
     bool executing_=false;
 };
 // Complete released H3 VAE decode graph, CPU F32 over the F16 checkpoint.

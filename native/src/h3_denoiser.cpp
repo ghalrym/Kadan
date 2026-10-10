@@ -64,7 +64,7 @@ void project_base(Shard& shard,const std::string& prefix,std::span<const float> 
         require(in%group==0,"h3_denoiser_rotation_shape");auto weights=std::make_unique<std::uint8_t[]>(in*out);auto scales=std::make_unique<float[]>(out);auto rotated=std::make_unique<double[]>(in);auto codes=std::make_unique<std::int8_t[]>(in);
         for(std::size_t offset=0;offset<in*out;){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;}
         read_dense(shard,prefix+".weight_scale",{scales.get(),out},cancel);for(std::size_t r=0;r<out;++r)require(scales[r]>=0,"h3_denoiser_scale");
-        if(compute){compute->convrot({weights.get(),in*out},{scales.get(),out},{bias_values.get(),out},input,in,out,group,output,cancel);return;}
+        if(compute){compute->convrot_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{scales.get(),out},{bias_values.get(),out},input,in,out,group,output,cancel);return;}
         for(std::size_t t=0;t<rows;++t){
             stop(cancel);for(std::size_t c=0;c<in;++c)rotated[c]=input[t*in+c];rotate({rotated.get(),in},group);float maximum=1e-10f;
             for(std::size_t c=0;c<in;++c){rotated[c]=float(rotated[c]);require(std::isfinite(rotated[c]),"h3_denoiser_nonfinite");maximum=std::max(maximum,std::abs(float(rotated[c])));}
@@ -72,7 +72,7 @@ void project_base(Shard& shard,const std::string& prefix,std::span<const float> 
             for(std::size_t r=0;r<out;++r){if(r%32==0)stop(cancel);std::int32_t sum=0;for(std::size_t c=0;c<in;++c)sum+=std::int32_t(std::bit_cast<std::int8_t>(weights[r*in+c]))*codes[c];output[t*out+r]=(float(sum)*scale)*scales[r]+bias_values[r];if((r+1)%256==0 && hook)hook("projection",r+1);}
         }
     }else{
-        if(compute){Admission dense_admission(resources,in*out*sizeof(float));auto weights=std::make_unique<float[]>(in*out);read_dense(shard,prefix+".weight",{weights.get(),in*out},cancel);compute->dense({weights.get(),in*out},{bias_values.get(),out},input,in,out,output,cancel,true);return;}
+        if(compute){Admission dense_admission(resources,in*out*sizeof(float));auto weights=std::make_unique<float[]>(in*out);read_dense(shard,prefix+".weight",{weights.get(),in*out},cancel);compute->dense_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{bias_values.get(),out},input,in,out,output,cancel,true);return;}
         auto block=std::make_unique<float[]>(in*64);
         for(std::size_t r=0;r<out;r+=64){stop(cancel);const auto count=std::min<std::size_t>(64,out-r);read_dense(shard,prefix+".weight",{block.get(),count*in},cancel,r*in);
             for(std::size_t t=0;t<rows;++t)for(std::size_t j=0;j<count;++j){double sum=0;for(std::size_t c=0;c<in;++c)sum+=double(input[t*in+c])*block[j*in+c];output[t*out+r+j]=float(sum)+bias_values[r+j];}

@@ -691,10 +691,15 @@ void H3DecoderBlock::load(const char* root, const std::string& basename, const s
 }
 void H3DecoderBlock::load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block) {
     cancelled(cancel);check(!executing_,"busy");check(!loaded(),"video_already_loaded");
+    const auto prefix="decoder.transformer_blocks."+std::to_string(block)+".";
+    const std::array<const char*,4> names{"attn.to_qkv.weight","attn.to_out.weight","ff.w1.weight","ff.w2.weight"};
+    std::array<WeightIdentity,4> identities{};
+    for(std::size_t i=0;i<names.size();++i)identities[i]=shard.tensor_identity(prefix+names[i]);
     try {
         qkv_.load_from(shard,cancel,block);rope_.load(cancel);
         attention_.load_from(shard,cancel,block);ff_.load_from(shard,cancel,block);
         shard.check_unchanged();cancelled(cancel);
+        weight_identities_=identities;
     } catch(...) {unload();throw;}
 }
 void H3DecoderBlock::unload() {
@@ -741,19 +746,19 @@ void H3DecoderBlock::compute(std::span<const float> input, std::span<const float
             for(std::size_t t=0;t<tokens;++t){cancelled(cancel);float squares=0;for(std::size_t c=0;c<hidden;++c)squares+=x[t*hidden+c]*x[t*hidden+c];const float inverse=1/std::sqrt(squares/float(hidden)+1e-5f);for(std::size_t c=0;c<hidden;++c)y[t*hidden+c]=(x[t*hidden+c]*inverse)*weight[c];}
         };
         const auto* qnorm=qkv_.weights_.get();const auto* qw=qnorm+hidden;const auto* qb=qw+6144*hidden;
-        normalize(input,qnorm,a);accelerator->dense({qw,6144*hidden},{qb,6144},a,hidden,6144,q,cancel);
+        normalize(input,qnorm,a);accelerator->dense_weight(weight_identities_[0],{qw,6144*hidden},{qb,6144},a,hidden,6144,q,cancel);
         rope_.compute(q,coordinates,cancel,observe("rope"),sink(r),28224+5);
         auto query=q.first(tokens*hidden),key=q.subspan(tokens*hidden,tokens*hidden),value=q.subspan(2*tokens*hidden,tokens*hidden);
         for(std::size_t t=0;t<tokens;++t)for(std::size_t h=0;h<32;++h)for(std::size_t c=0;c<64;++c){const auto at=(t*32+h)*64+c,source=(t*32+h)*192+c;query[at]=r[source];key[at]=r[source+64];value[at]=r[source+128];}
         accelerator->attention(query,key,value,tokens,32,32,64,false,a,cancel);
         const auto* aw=attention_.weights_.get();auto attended=r.first(tokens*hidden);
-        accelerator->dense({aw,hidden*hidden},{aw+hidden*hidden,hidden},a,hidden,hidden,attended,cancel);
+        accelerator->dense_weight(weight_identities_[1],{aw,hidden*hidden},{aw+hidden*hidden,hidden},a,hidden,hidden,attended,cancel);
         const auto* scale1=ff_.weights_.get();const auto* norm=scale1+hidden;const auto* w1=norm+hidden;const auto* b1=w1+16384*hidden;const auto* w2=b1+16384;const auto* b2=w2+hidden*8192;const auto* scale2=b2+hidden;
         auto sum=q.first(tokens*hidden);for(std::size_t i=0;i<sum.size();++i)sum[i]=input[i]+attended[i]*scale1[i%hidden];normalize(sum,norm,a);
         Reservation mlp_admission(*resources_,host(tokens*16384*sizeof(float)));auto expanded=std::make_unique<float[]>(tokens*16384);std::span<float> mlp(expanded.get(),tokens*16384);
-        accelerator->dense({w1,16384*hidden},{b1,16384},a,hidden,16384,mlp,cancel);
+        accelerator->dense_weight(weight_identities_[2],{w1,16384*hidden},{b1,16384},a,hidden,16384,mlp,cancel);
         for(std::size_t t=0;t<tokens;++t){cancelled(cancel);for(std::size_t c=0;c<8192;++c){const float x=mlp[t*16384+c];const float activation=x>=0?x/(1+std::exp(-x)):x*std::exp(x)/(1+std::exp(x));mlp[t*8192+c]=activation*mlp[t*16384+8192+c];}}
-        accelerator->dense({w2,hidden*8192},{b2,hidden},mlp.first(tokens*8192),8192,hidden,a,cancel);
+        accelerator->dense_weight(weight_identities_[3],{w2,hidden*8192},{b2,hidden},mlp.first(tokens*8192),8192,hidden,a,cancel);
         for(std::size_t i=0;i<a.size();++i){a[i]=sum[i]+a[i]*scale2[i%hidden];check(std::isfinite(a[i]),"video_nonfinite_output");}
         cancelled(cancel);output(a);return;
     }
@@ -849,7 +854,7 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         Reservation input_admission(*resources_,host(patches*48*sizeof(float)));auto scratch=std::make_unique<float[]>(patches*48);std::span<float> latent(scratch.get(),patches*24),projected(scratch.get()+patches*24,patches*24);
         const auto* mean=input_.weights_.get();const auto* deviation=mean+24;const auto* conv=deviation+24;const auto* bias=conv+576;const auto* embed=bias+24;const auto* embed_bias=embed+49152;
         for(std::size_t i=0;i<latent.size();++i)latent[i]=normalized[i]*deviation[i%24]+mean[i%24];
-        compute_->dense({conv,576},{bias,24},latent,24,24,projected,cancel);compute_->dense({embed,49152},{embed_bias,2048},projected,24,2048,current.first(patches*hidden),cancel);
+        compute_->dense_weight(shard_->tensor_identity("post_quant_conv.weight"),{conv,576},{bias,24},latent,24,24,projected,cancel);compute_->dense_weight(shard_->tensor_identity("decoder.x_embedder.weight"),{embed,49152},{embed_bias,2048},projected,24,2048,current.first(patches*hidden),cancel);
     }else input_.compute(normalized,cancel,[&](std::size_t count){if(hook)hook("input",count);},sink(current.first(patches*hidden)));
     std::copy_n(weights_.get(),4*hidden,current.data()+patches*hidden);
     // Fifth suffix is the inference-only zero class token, not mask_token.
@@ -906,7 +911,7 @@ void H3VideoDecoder::execute(std::span<const float> normalized, std::size_t time
         }
     }
     if(compute_){
-        std::span<float> projected(gpu_patches.get(),patches*patch_values);compute_->dense({projection,patch_values*hidden},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel);
+        std::span<float> projected(gpu_patches.get(),patches*patch_values);compute_->dense_weight(shard_->tensor_identity("decoder.proj_out.weight"),{projection,patch_values*hidden},{projection_bias,patch_values},next.first(patches*hidden),hidden,patch_values,projected,cancel);
         for(std::size_t patch=0;patch<patches;++patch){cancelled(cancel);const auto lt=patch/(height*width),lh=(patch/width)%height,lw=patch%width;for(std::size_t r=0;r<patch_values;++r){const auto channel=r/1024,pt=(r/256)%4,ph=(r/16)%16,pw=r%16;frames[((channel*video_t+lt*4+pt)*video_h+lh*16+ph)*video_w+lw*16+pw]=projected[patch*patch_values+r];}}
     }
     cancelled(cancel);shard_->check_unchanged();

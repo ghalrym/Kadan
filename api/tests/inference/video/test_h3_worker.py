@@ -18,7 +18,7 @@ from unittest.mock import patch
 from api.inference.errors import InferenceFailure
 from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
 from api.inference.video import VideoSpec
-from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response
+from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response, h3_gpu_budget
 from api.inference.line_protocol import LineProtocolError
 
 
@@ -29,6 +29,7 @@ class Worker:
         self.cancel = False
         self.bad_ledger = False
         self.cache_budget = 0
+        self.gpu_budget = 3*GIB
         self.controls = []
         self.bad_park = False
         self.bad_resume = False
@@ -37,6 +38,7 @@ class Worker:
     def start(self, command, *, env=None):
         assert env['KADAN_H3_DEVICES'] == '0,1'
         self.cache_budget = int(env['KADAN_H3_WEIGHT_CACHE_BYTES'])
+        self.gpu_budget = int(env['KADAN_H3_GPU_BUDGET_BYTES'])
         self.started = True
     def stop(self):
         if self.fail_stop:
@@ -62,9 +64,12 @@ class Worker:
             stream.truncate(len(header) + 107*(6 + 864*480*3))
         with wave.open(str(raw)+'.wav','wb') as audio:
             audio.setparams((2,2,32000,0,'NONE','NONE'));audio.writeframes(b'\0'*round(107*5/3)*800*4)
+        weights = self.gpu_budget - 3*GIB
+        metadata = 8*1024**2 if weights else 0
         return dict(output=str(raw), width=864, height=480, frames=107,
-                    audio=True, resident_bytes=self.cache_budget, weight_cache_bytes=self.cache_budget,
-                    device_resident_bytes=[1, 0] if self.bad_ledger else [0, 0])
+                    audio=True, resident_bytes=self.cache_budget+metadata, weight_cache_bytes=self.cache_budget,
+                    device_weight_metadata_bytes=metadata,
+                    device_resident_bytes=[weights+1, 0] if self.bad_ledger else [weights, weights])
 
 
 def setup(monkeypatch, **kwargs):
@@ -134,7 +139,7 @@ class H3WorkerTests(unittest.TestCase):
 
     def test_cache_report_cannot_hide_unowned_or_execution_memory(self):
         response = dict(output='/unused', width=864, height=480, frames=107, audio=True,
-            resident_bytes=2*GIB, weight_cache_bytes=2*GIB, device_resident_bytes=[0,0])
+            resident_bytes=2*GIB, weight_cache_bytes=2*GIB, device_resident_bytes=[0,0], device_weight_metadata_bytes=0)
         with self.assertRaisesRegex(LineProtocolError, 'accounting'):
             validate_artifact(response, Path('/unused'), spec(), GIB)
         response['weight_cache_bytes'] = GIB
@@ -184,6 +189,40 @@ class H3WorkerTests(unittest.TestCase):
                     action()
                 self.assertTrue(worker.stopped)
                 self.assertEqual(resources.snapshot()['reservations'], {})
+
+    def test_gpu_budget_uses_configured_capacity_and_honors_explicit_limit(self):
+        resources=ResourceManager(200*GIB,{0:22*GIB,1:20*GIB})
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(h3_gpu_budget(resources,[0,1]),20*GIB)
+            self.assertEqual(h3_gpu_budget(resources,[0]),22*GIB)
+            self.assertEqual(h3_gpu_budget(ResourceManager(200*GIB,{0:48*GIB}),[0]),24*GIB)
+        with patch.dict(os.environ, {'KADAN_H3_GPU_BUDGET_BYTES':str(3*GIB)}):
+            self.assertEqual(h3_gpu_budget(resources,[0,1]),3*GIB)
+        for value in ('0','-1','x',str(2*GIB),str(23*GIB)):
+            with self.subTest(value=value),patch.dict(os.environ, {'KADAN_H3_GPU_BUDGET_BYTES':value}),self.assertRaises(InferenceFailure):
+                h3_gpu_budget(resources,[0,1])
+
+    def test_single_gpu_retention_and_metadata_are_bound_to_admission(self):
+        response=dict(output='/unused',width=864,height=480,frames=107,audio=True,
+            weight_cache_bytes=0,resident_bytes=4*1024**2,device_weight_metadata_bytes=4*1024**2,
+            device_resident_bytes=[GIB,0])
+        with self.assertRaisesRegex(LineProtocolError,'device memory'):
+            validate_artifact(response,Path('/unused'),spec(),device_budgets={1:GIB})
+        response['device_resident_bytes']=[0,GIB]
+        response['device_weight_metadata_bytes']=0
+        with self.assertRaisesRegex(LineProtocolError,'accounting'):
+            validate_artifact(response,Path('/unused'),spec(),device_budgets={1:GIB})
+
+    def test_cancelled_resume_admission_reaps_retained_host_cache(self):
+        resources,worker,provider=setup(self)
+        provider.load(threading.Event())
+        provider.offload_to_ram()
+        self.assertIsNotNone(provider._host)
+        with patch.object(resources,'reserve',side_effect=ResourceCancelled('waiting cancelled')):
+            with self.assertRaises(ResourceCancelled):
+                provider.load(threading.Event())
+        self.assertTrue(worker.stopped)
+        self.assertEqual(resources.snapshot()['reservations'],{})
 
 
     def test_admission_before_spawn(self):

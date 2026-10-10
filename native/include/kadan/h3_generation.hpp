@@ -18,7 +18,8 @@ struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae, au
 // Header-only preparation. The caller has admitted `limit` in addition to the
 // execution envelope; retained raw bytes and metadata cannot exceed it.
 std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources>,
-    const H3GenerationPaths&,Bytes limit,const std::atomic_bool&);
+    const H3GenerationPaths&,Bytes limit,const std::atomic_bool&,std::shared_ptr<H3Compute> compute={},
+    const std::function<void(const char*,std::size_t)>& hook={});
 // Native joint video/audio path with optional CUDA execution. With audio_vae,
 // output is MP4 with stereo32kHz audio, or diagnostic YUV4MPEG2 plus OUTPUT.wav.
 // An empty audio_vae permits silent diagnostic fixtures. F32/F64, not BF16 parity.

@@ -81,7 +81,7 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     static_assert(std::endian::native==std::endian::little);
     shard.read_tensor(prefix+".weight_scale",0,{reinterpret_cast<std::uint8_t*>(scales.get()),out*4});
     for(std::size_t r=0;r<out;++r)require(std::isfinite(scales[r]) && scales[r]>=0,"h3_text_scale");
-    if(compute){compute->convrot({weights.get(),in*out},{scales.get(),out},{},input,in,out,256,destination,cancel);return;}
+    if(compute){compute->convrot_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{scales.get(),out},{},input,in,out,256,destination,cancel);return;}
     for(std::size_t token=0;token<input.size()/in;++token) {
         stop(cancel);
         for(std::size_t c=0;c<in;++c){const auto value=input[token*in+c];require(std::isfinite(value),"h3_text_nonfinite_input");rotated[c]=value;}

@@ -29,6 +29,21 @@ DEVICE_BUDGET = 2 * GIB
 CONTEXT_BUDGET = GIB
 PROCESS_HOST_BUDGET = HOST_BUDGET + 256 * 1024**2
 MAX_WEIGHT_CACHE_BYTES = 32 * GIB
+DEVICE_WEIGHT_METADATA_BYTES = 4 * 1024**2
+
+
+def h3_gpu_budget(resources, devices):
+    capacity = resources.snapshot()['device_capacity_bytes']
+    raw = os.environ.get('KADAN_H3_GPU_BUDGET_BYTES')
+    if raw is None:
+        budget = min(24 * GIB, *(capacity.get(device, 0) for device in devices))
+    elif raw.isascii() and raw.isdecimal():
+        budget = int(raw)
+    else:
+        raise InferenceFailure('Invalid H3 GPU budget.')
+    if not CONTEXT_BUDGET + DEVICE_BUDGET <= budget <= 24 * GIB or any(capacity.get(d, 0) < budget for d in devices):
+        raise InferenceFailure('H3 GPU budget exceeds usable capacity or cannot hold execution scratch.')
+    return budget
 
 
 def check_cancel(event):
@@ -121,15 +136,20 @@ def resolve_command(model_id, cancel=None):
     return [str(binary), *(str(path) for path in paths)]
 
 
-def validate_artifact(response, raw, spec, cache_budget=0):
-    fields = {'output', 'width', 'height', 'frames', 'audio', 'resident_bytes', 'device_resident_bytes', 'weight_cache_bytes'}
+def validate_artifact(response, raw, spec, cache_budget=0, device_budgets=None):
+    fields = {'output', 'width', 'height', 'frames', 'audio', 'resident_bytes', 'device_resident_bytes', 'weight_cache_bytes', 'device_weight_metadata_bytes'}
     if not isinstance(response, dict) or set(response) != fields:
         raise LineProtocolError('H3 generation failed: ' + str(response)[:200])
+    device_budgets = device_budgets or {}
+    retained = response['device_resident_bytes']
+    if (not isinstance(retained, list) or len(retained) != 2 or any(type(n) is not int
+            or not 0 <= n <= device_budgets.get(i, 0) for i, n in enumerate(retained))):
+        raise LineProtocolError('H3 device memory accounting mismatch')
+    metadata = DEVICE_WEIGHT_METADATA_BYTES * sum(n > 0 for n in retained)
     if (response['output'] != str(raw) or response['audio'] is not True
             or type(response['weight_cache_bytes']) is not int or not 0 <= response['weight_cache_bytes'] <= cache_budget
-            or type(response['resident_bytes']) is not int or response['resident_bytes'] != response['weight_cache_bytes']
-            or response['device_resident_bytes'] != [0, 0]
-            or any(type(n) is not int or n != 0 for n in response['device_resident_bytes'])):
+            or type(response['device_weight_metadata_bytes']) is not int or response['device_weight_metadata_bytes'] != metadata
+            or type(response['resident_bytes']) is not int or response['resident_bytes'] != response['weight_cache_bytes'] + metadata):
         raise LineProtocolError('H3 output ownership or memory accounting mismatch')
     width, height, frames = (response[key] for key in ('width', 'height', 'frames'))
     # Native resolves profiles; verify the reported shape against the API contract.
@@ -169,6 +189,7 @@ class H3Provider:
         self._worker = self._codec = self._host = self._context = self._execution = self._workspace = None
         self._quarantined = False
         self._devices = None
+        self._gpu_budget = None
         self._cache_budget = 0
         self._parked = False
         self._owner = f'h3-native:{id(self)}'
@@ -211,6 +232,7 @@ class H3Provider:
             self._workspace = None
         self._quarantined = False
         self._devices = None
+        self._gpu_budget = None
         self._parked = False
 
     def close(self):
@@ -296,9 +318,10 @@ class H3Provider:
             if value not in ('0', '1', '0,1', '1,0'):
                 raise InferenceFailure('Invalid KADAN_H3_DEVICES.')
             devices = [int(device) for device in value.split(',')]
-            if self._devices is not None and self._devices != value:
-                self._close_locked()
             resources = self.resources or chat_runtime.ensure_resources()
+            gpu_budget = h3_gpu_budget(resources, devices)
+            if self._devices is not None and (self._devices != value or self._gpu_budget != gpu_budget):
+                self._close_locked()
             resources.offload_inactive_devices('video', cancel)
             try:
                 with ExitStack() as leases:
@@ -316,7 +339,7 @@ class H3Provider:
                     leases.enter_context(self._host.lease(cancel))
                     if self._context is None:
                         self._context = resources.reserve(self._owner + ':context', 'video',
-                            device_bytes={i: CONTEXT_BUDGET for i in devices},
+                            device_bytes={i: gpu_budget - DEVICE_BUDGET for i in devices},
                             evict=self._park, cancel_event=cancel)
                     leases.enter_context(self._context.lease(cancel))
                     if spec is not None:
@@ -327,8 +350,9 @@ class H3Provider:
                     if self._worker is None:
                         self._worker = self.process_factory()
                         self._worker.start(command, env=dict(os.environ, KADAN_H3_DEVICES=value,
-                            KADAN_H3_WEIGHT_CACHE_BYTES=str(self._cache_budget)))
+                            KADAN_H3_WEIGHT_CACHE_BYTES=str(self._cache_budget), KADAN_H3_GPU_BUDGET_BYTES=str(gpu_budget)))
                         self._devices = value
+                        self._gpu_budget = gpu_budget
                     if self._parked:
                         self._control('resume', 'resumed', cancel)
                         self._parked = False
@@ -341,7 +365,8 @@ class H3Provider:
                     response = self._worker.exchange(dict(prompt=spec.prompt, output=str(raw),
                         short_edge=int(spec.resolution[:-1]), aspect=spec.aspect,
                         duration=spec.duration, updates=4, seed=spec.seed), 24*3600, cancel)
-                    frames = validate_artifact(response, raw, spec, self._cache_budget)
+                    frames = validate_artifact(response, raw, spec, self._cache_budget,
+                        {i: gpu_budget - CONTEXT_BUDGET - DEVICE_BUDGET for i in devices})
                     self._encode(raw, encoded, frames, cancel)
                     check_cancel(cancel)
                     os.link(encoded, output)  # Same filesystem, exclusive publication.
