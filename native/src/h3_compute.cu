@@ -278,6 +278,14 @@ public:
         std::fill(weight_reservations_.begin(),weight_reservations_.end(),0);replan_=inventory_bytes_!=0;
     }
     Footprint retained_weights() const override {std::lock_guard lock(operation_mutex_);return weight_reservations_;}
+    std::vector<DeviceWeightPlacement> weight_placement() const override {
+        std::lock_guard lock(operation_mutex_);std::vector<DeviceWeightPlacement> result;result.reserve(threads_.size());
+        for(std::size_t i=0;i<threads_.size();++i)threads_[i]->submit([&,i](DeviceWorkspace& workspace){
+            const auto& bank=static_cast<CudaDeviceOperations&>(workspace.operations()).weights;
+            result.push_back({devices_[i],bank.capacity(),bank.allocated()});
+        }).get();
+        return result;
+    }
     bool prepare_weights(Bytes bytes) override {
         std::lock_guard lock(operation_mutex_);require(!quarantined_.load(),"h3_cuda_cleanup_unconfirmed");
         inventory_bytes_=bytes;return plan_weights_locked();

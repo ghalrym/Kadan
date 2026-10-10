@@ -11,7 +11,8 @@ from api.inference.progress import report
 
 MAX_FRAME = 4096
 log = logging.getLogger(__name__)
-STAGE = re.compile(rb'(layer_completed|block_loaded|block_completed|refiner_completed|publish|tokenized|denoise_completed|audio_decoded|weight_storage_mib|weight_retention_full_mib|weight_retention_bounded_mib|text_loading_mib|vae_loading_mib|denoiser_block_loaded|tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
+STAGE = re.compile(rb'(layer_completed|block_loaded|block_completed|refiner_completed|publish|tokenized|denoise_completed|audio_decoded|denoiser_block_loaded|tokenizer_loaded|text_loaded|denoiser_loaded|vae_loaded|worker_ready|generate_started|text_layer|conditioning|block|step_completed|vae_up_block) ([0-9]{1,6})')
+WEIGHT_BYTES_STAGE = re.compile(rb'(checkpoint_tensor_bytes|expanded_f32_inventory_bytes|nonfloating_inventory_bytes|gpu_[01]_weight_(?:planned|allocated)_bytes|text_checkpoint_read_bytes|vae_checkpoint_read_bytes) ([0-9]{1,12})')
 
 
 class LineProtocolError(RuntimeError):
@@ -57,7 +58,7 @@ class LineProtocolProcess:
         while b'\n' in self.stage_buffer:
             line, _, rest = self.stage_buffer.partition(b'\n')
             self.stage_buffer = bytearray(rest)
-            match = STAGE.fullmatch(line)
+            match = STAGE.fullmatch(line) or WEIGHT_BYTES_STAGE.fullmatch(line)
             if match:
                 report(match[1].decode(), int(match[2]))
                 # Receipt time, not an exact device completion timestamp. Never log

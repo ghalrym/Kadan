@@ -2,6 +2,7 @@
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 
 
@@ -67,3 +68,27 @@ class ErrorTests(unittest.TestCase):
         child._capture_diagnostics(b'x' * 10000)
         self.assertLessEqual(len(child.diagnostics), 8192)
         self.assertLessEqual(len(child.stage_buffer), 8192)
+
+    def test_exact_weight_bytes_are_allowlisted_and_not_truncated(self):
+        child = LineProtocolProcess()
+        child.process = SimpleNamespace(pid=600)
+        records = [
+            ('checkpoint_tensor_bytes', 33115078673),
+            ('expanded_f32_inventory_bytes', 64879591457),
+            ('nonfloating_inventory_bytes', 0),
+            ('gpu_1_weight_planned_bytes', 9000000000),
+            ('gpu_1_weight_allocated_bytes', 1024),
+            ('gpu_0_weight_planned_bytes', 5000000000),
+            ('gpu_0_weight_allocated_bytes', 0),
+            ('text_checkpoint_read_bytes', 15136194560),
+            ('vae_checkpoint_read_bytes', 12345),
+        ]
+        with patch('api.inference.line_protocol.report') as report, self.assertLogs('api.inference.line_protocol', level='INFO') as logs:
+            for stage, value in records:
+                line = f'{stage} {value}\n'.encode()
+                child._capture_diagnostics(line[:7])
+                child._capture_diagnostics(line[7:])
+            child._capture_diagnostics(b'weight_retention_bounded_mib 61874\ngpu_2_weight_planned_bytes 123\ngpu_0_weight_allocated_bytes -1\ngpu_0_weight_allocated_bytes 1234567890123\nprivate-secret 123\n')
+        self.assertEqual([call.args for call in report.call_args_list], records)
+        self.assertEqual(len(logs.output), len(records))
+        self.assertIn('stage=expanded_f32_inventory_bytes index=64879591457', logs.output[1])

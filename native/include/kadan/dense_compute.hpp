@@ -15,6 +15,8 @@ inline bool attention_visible(std::size_t query,std::size_t key,std::size_t caus
 }
 inline bool projection_split_columns(std::size_t rows,std::size_t devices){return rows<devices;}
 
+struct DeviceWeightPlacement {int device;Bytes planned_bytes,allocated_bytes;};
+
 // Synchronous projection boundary. Caller owns admitted host spans until return;
 // implementations admit staging/device memory and synchronize before returning.
 class DenseCompute {
@@ -25,6 +27,8 @@ public:
  // Dedicated worker only: synchronize and destroy its process-local contexts.
  virtual void release_devices() {}
  virtual Footprint retained_weights() const {return {};}
+ // Weight-bank limits and live allocation bytes, excluding context and scratch.
+ virtual std::vector<DeviceWeightPlacement> weight_placement() const {return {};}
  // Header-derived execution bytes, before any weight placement. True means the
  // conservative full inventory fits; false selects bounded RAM-backed streaming.
  virtual bool prepare_weights(Bytes) {return false;}

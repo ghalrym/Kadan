@@ -4,7 +4,7 @@
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_vae.hpp"
 #include "kadan/image_schedule.hpp"
-#include "kadan/weight_inventory.hpp"
+#include "kadan/weight_progress.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
@@ -40,20 +40,21 @@ void Generator::load(const std::string& root,const std::atomic_bool& cancel,cons
    stop(cancel);const std::string path(relative);const auto slash=path.find_last_of('/');
    checkpoint::Shard shard((root+"/"+path.substr(0,slash)).c_str(),path.substr(slash+1),budget);inventory.add(shard);
   }
-  const bool full=compute_->prepare_weights(inventory.floating_f32_bytes);
-  if(hook){hook("weight_storage_mib",inventory.stored_bytes/(1024*1024));hook(full?"weight_retention_full_mib":"weight_retention_bounded_mib",inventory.floating_f32_bytes/(1024*1024));}
+  compute_->prepare_weights(inventory.floating_f32_bytes);
+  report_weight_inventory(inventory,hook);report_weight_placement(*compute_,hook);
  }
  m->tokenizer.load(root+"/processor/tokenizer.json",cancel);if(hook)hook("tokenizer_loaded",0);
- const std::array<std::string,4> text_files{"model-00001-of-00004.safetensors","model-00002-of-00004.safetensors","model-00003-of-00004.safetensors","model-00004-of-00004.safetensors"};auto tr=root+"/text_encoder";m->text.load(tr.c_str(),text_files,{},cancel,[&](std::size_t bytes){if(hook)hook("text_loading_mib",bytes/(1024*1024));});if(hook)hook("text_loaded",0);
- const std::array<std::string,2> denoiser_files{"diffusion_pytorch_model-00001-of-00002.safetensors","diffusion_pytorch_model-00002-of-00002.safetensors"};auto dr=root+"/transformer";m->denoiser.load(dr.c_str(),denoiser_files,{},cancel,hook);if(hook)hook("denoiser_loaded",0);auto vr=root+"/vae";m->vae.load(vr.c_str(),"diffusion_pytorch_model.safetensors",{},cancel,[&](std::size_t bytes){if(hook)hook("vae_loading_mib",bytes/(1024*1024));});if(hook)hook("vae_loaded",0);stop(cancel);model_=std::move(m);
+ const std::array<std::string,4> text_files{"model-00001-of-00004.safetensors","model-00002-of-00004.safetensors","model-00003-of-00004.safetensors","model-00004-of-00004.safetensors"};auto tr=root+"/text_encoder";m->text.load(tr.c_str(),text_files,{},cancel,[&](std::size_t bytes){if(hook)hook("text_checkpoint_read_bytes",bytes);});if(hook)hook("text_loaded",0);
+ const std::array<std::string,2> denoiser_files{"diffusion_pytorch_model-00001-of-00002.safetensors","diffusion_pytorch_model-00002-of-00002.safetensors"};auto dr=root+"/transformer";m->denoiser.load(dr.c_str(),denoiser_files,{},cancel,hook);if(hook)hook("denoiser_loaded",0);auto vr=root+"/vae";m->vae.load(vr.c_str(),"diffusion_pytorch_model.safetensors",{},cancel,[&](std::size_t bytes){if(hook)hook("vae_checkpoint_read_bytes",bytes);});if(hook)hook("vae_loaded",0);stop(cancel);model_=std::move(m);
 }
 void Generator::unload(){need(!busy_,"busy");model_.reset();}
 void Generator::validate(const ImageRequest& request){need(!request.prompt.empty()&&request.prompt.size()<=8000&&request.width>=32&&request.height>=32&&request.width<=3072&&request.height<=3072&&request.width*request.height<=4608*1024&&request.width%32==0&&request.height%32==0&&request.steps>=2&&request.steps<=100,"image_request_bounds");}
 void Generator::generate(const ImageRequest& request,std::span<float> output,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(bool(model_),"image_generator_not_loaded");validate(request);need(output.size()==request.width*request.height*4,"image_output_shape");auto& m=*model_;auto h=request.height/16,w=request.width/16,points=h*w;
- Lease admitted(*resources_,64*1024*1024);std::array<std::uint32_t,2048> tokens;auto raw=std::string(prefix)+"<|im_start|>user\n"+request.prompt+"<|im_end|>\n<|im_start|>assistant\n";auto count=m.tokenizer.encode(raw,tokens,cancel);std::array<std::uint32_t,64> system;auto drop=m.tokenizer.encode(prefix,system,cancel);need(drop==14&&count>drop,"image_prompt_prefix");std::vector<float> features(count*4096);m.text.execute(std::span(tokens).first(count),features,cancel,[&](std::size_t i){if(hook)hook("text_layer",i);});auto condition=std::span(features).subspan(drop*4096);const auto text_count=count-drop;
+ Lease admitted(*resources_,64*1024*1024);std::array<std::uint32_t,2048> tokens;auto raw=std::string(prefix)+"<|im_start|>user\n"+request.prompt+"<|im_end|>\n<|im_start|>assistant\n";auto count=m.tokenizer.encode(raw,tokens,cancel);std::array<std::uint32_t,64> system;auto drop=m.tokenizer.encode(prefix,system,cancel);need(drop==14&&count>drop,"image_prompt_prefix");std::vector<float> features(count*4096);m.text.execute(std::span(tokens).first(count),features,cancel,[&](std::size_t i){if(hook)hook("text_layer",i);});if(compute_)report_weight_placement(*compute_,hook);auto condition=std::span(features).subspan(drop*4096);const auto text_count=count-drop;
  std::vector<float> latent(points*64),velocity(points*64),decoded(64*points);std::mt19937_64 rng(request.seed);auto uniform=[&](){return (double(rng()>>11)+.5)/9007199254740992.;};for(std::size_t i=0;i<latent.size();i+=2){double radius=std::sqrt(-2*std::log(uniform())),angle=6.2831853071795864769*uniform();latent[i]=float(radius*std::cos(angle));if(i+1<latent.size())latent[i+1]=float(radius*std::sin(angle));}auto times=schedule(points,request.steps);
  for(std::size_t i=0;i<request.steps;++i){stop(cancel);m.denoiser.execute(latent,condition,text_count,h,w,times.sigma[i],velocity,cancel,[&](const char* phase,std::size_t j){if(hook)hook(phase,j);});const float dt=times.sigma[i+1]-times.sigma[i];for(std::size_t j=0;j<latent.size();++j){latent[j]+=dt*velocity[j];need(std::isfinite(latent[j]),"image_nonfinite_latent");}if(hook)hook("step_completed",i+1);}
+ if(compute_)report_weight_placement(*compute_,hook);
  for(std::size_t p=0;p<points;++p)for(std::size_t c=0;c<64;++c)decoded[c*points+p]=latent[p*64+c]*m.stddev[c]+m.mean[c];
- m.vae.decode(decoded,h,w,output,cancel,[&](std::size_t i){if(hook)hook("vae_up_block",i);});stop(cancel);
+ m.vae.decode(decoded,h,w,output,cancel,[&](std::size_t i){if(hook)hook("vae_up_block",i);});stop(cancel);if(compute_)report_weight_placement(*compute_,hook);
 }
 }

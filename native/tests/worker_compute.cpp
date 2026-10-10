@@ -1,10 +1,13 @@
 #include "kadan/worker_compute.hpp"
+#include "kadan/weight_progress.hpp"
 #include <iostream>
 #include <limits>
 using namespace kadan;
 void check(bool b){if(!b)throw std::runtime_error("compute_plan_test");}
 template<class F>void fails(F f){try{f();}catch(const std::invalid_argument&){return;}throw std::runtime_error("expected_rejection");}
 struct FakeContext final:DenseCompute {
+ std::vector<DeviceWeightPlacement> placement;mutable unsigned snapshots=0;
+ std::vector<DeviceWeightPlacement> weight_placement()const override{++snapshots;return placement;}
  bool fail=false,scratch_fail=false;std::size_t releases=0,scratch_releases=0;
  std::shared_ptr<Resources> resources;Handle scratch=0;
  void release_scratch()override{++scratch_releases;if(scratch_fail)throw std::runtime_error("scratch_cleanup_unconfirmed");if(scratch){resources->released(scratch);scratch=0;}}
@@ -12,6 +15,18 @@ struct FakeContext final:DenseCompute {
  void release_devices()override{++releases;if(fail)throw std::runtime_error("cleanup_unconfirmed");}
 };
 int main(){
+ // Existing progress wire format: exact byte counts, physical device identity,
+ // and distinct inventory/planned/allocated values; never executes a model.
+ checkpoint::WeightInventory inventory;inventory.stored_bytes=31581ULL*1024*1024+17;inventory.floating_f32_bytes=61874ULL*1024*1024+33;
+ std::vector<std::pair<std::string,Bytes>> events;
+ std::function<void(const char*,std::size_t)> hook=[&](const char* name,std::size_t bytes){events.emplace_back(name,bytes);};
+ FakeContext placement;placement.placement={{1,9000000000ULL,1024},{0,5000000000ULL,0}};
+ report_weight_inventory(inventory,hook);report_weight_placement(placement,hook);
+ check(events==std::vector<std::pair<std::string,Bytes>>({{"checkpoint_tensor_bytes",inventory.stored_bytes},{"expanded_f32_inventory_bytes",inventory.floating_f32_bytes},{"nonfloating_inventory_bytes",0},{"gpu_1_weight_planned_bytes",9000000000ULL},{"gpu_1_weight_allocated_bytes",1024},{"gpu_0_weight_planned_bytes",5000000000ULL},{"gpu_0_weight_allocated_bytes",0}}));
+ events.clear();placement.placement[0].allocated_bytes=2048;report_weight_placement(placement,hook);check(events[1].second==2048&&events[0].second==9000000000ULL);
+ const auto snapshots=placement.snapshots;std::function<void(const char*,std::size_t)> absent;report_weight_placement(placement,absent);check(placement.snapshots==snapshots);
+ events.clear();placement.placement.clear();report_weight_placement(placement,hook);check(events.empty());
+
  check(projection_split_columns(1,2));check(!projection_split_columns(2,2));check(!projection_split_columns(1,1));
  check(attention_visible(0,0,2,0,0));check(!attention_visible(0,1,2,0,0));
  check(attention_visible(2,3,2,0,0)); // Image rows see all keys after causal text.

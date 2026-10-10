@@ -5,7 +5,7 @@
 #include "kadan/h3_text.hpp"
 #include "kadan/h3_denoiser.hpp"
 #include "kadan/video.hpp"
-#include "kadan/weight_inventory.hpp"
+#include "kadan/weight_progress.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -94,8 +94,8 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources
     stop(cancel);
     if(compute){
         const auto execution_bytes=checkpoint::weight_bytes_add(inventory.floating_f32_bytes,inventory.raw_nonfloating_bytes);
-        const auto full=compute->prepare_weights(execution_bytes);
-        if(hook){hook("weight_storage_mib",inventory.stored_bytes/(1024*1024));hook(full?"weight_retention_full_mib":"weight_retention_bounded_mib",execution_bytes/(1024*1024));}
+        compute->prepare_weights(execution_bytes);
+        report_weight_inventory(inventory,hook);report_weight_placement(*compute,hook);
     }
     if(!limit)return {};
     // Raw integer and decoded float weights share one envelope, including metadata.
@@ -157,6 +157,7 @@ void H3Generation::execute(const H3GenerationPaths& paths,const H3GenerationRequ
     decoder.unload();check(written==request.frames,"h3_generation_frame_count");output.close();check(bool(output),"h3_generation_output_close");stop(cancel);
     std::string final=workspace.path("video");if(mp4){Admission codec(resources_,256ULL*1024*1024);h3::encode_mp4(final,workspace.path("encoded"),cancel,request.frames,paths.audio_vae.empty()?std::string{}:workspace.path("audio"));final=workspace.path("encoded");}
     int fd=open(final.c_str(),O_RDONLY|O_CLOEXEC);check(fd>=0,"h3_generation_output_sync");const int sync=fsync(fd);close(fd);check(sync==0,"h3_generation_output_sync");stop(cancel);
+    if(compute_)report_weight_placement(*compute_,hook);
     const auto sidecar=request.output+".wav";bool audio_published=false;
     if(!mp4&&!paths.audio_vae.empty()){check(link(workspace.path("audio").c_str(),sidecar.c_str())==0,"h3_audio_output_publish");audio_published=true;}
     if(link(final.c_str(),request.output.c_str())!=0){if(audio_published)unlink(sidecar.c_str());throw std::runtime_error("h3_generation_output_publish");}
