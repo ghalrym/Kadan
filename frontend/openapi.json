@@ -744,9 +744,28 @@
             "title": "Id",
             "type": "string"
           },
+          "images_base64": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Images Base64",
+            "type": "array"
+          },
           "meta": {
             "title": "Meta",
             "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "const": "image/png",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
           },
           "mode": {
             "enum": [
@@ -2477,6 +2496,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 1.8446744073709552e+19,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2485,6 +2505,13 @@
               }
             ],
             "title": "Seed"
+          },
+          "steps": {
+            "default": 50,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Steps",
+            "type": "integer"
           }
         },
         "required": [
@@ -2496,7 +2523,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Native image and speech workers can be enabled explicitly; image editing remains unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2960,7 +2987,7 @@
     },
     "/v1/images": {
       "get": {
-        "description": "Return empty image history while no image provider or stored results exist.",
+        "description": "Return empty history; generated image bytes are returned directly and not persisted.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -3027,7 +3054,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
+        "description": "Generate PNG images through the optional native CPU worker and shared FIFO.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {

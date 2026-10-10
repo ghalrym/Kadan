@@ -365,7 +365,7 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 /**
  * List Images
  *
- * Return empty image history while no image provider or stored results exist.
+ * Return empty history; generated image bytes are returned directly and not persisted.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -399,7 +399,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Generate PNG images through the optional native CPU worker and shared FIFO.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

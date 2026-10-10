@@ -421,9 +421,17 @@ export type ImageSet = {
    */
   id: string
   /**
+   * Images Base64
+   */
+  images_base64?: Array<string>
+  /**
    * Meta
    */
   meta: string
+  /**
+   * Mime Type
+   */
+  mime_type?: 'image/png' | null
   /**
    * Mode
    */
@@ -1406,6 +1414,10 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Seed
    */
   seed?: number | null
+  /**
+   * Steps
+   */
+  steps?: number
 }
 
 export type HealthData = {
