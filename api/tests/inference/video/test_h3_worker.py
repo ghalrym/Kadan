@@ -1,6 +1,6 @@
 """Admission, FIFO handoff and child ownership without model or GPU execution."""
-import sys
 from dataclasses import replace
+from types import SimpleNamespace
 from api.services.video_jobs import VideoJobs
 from api.inference.video.video_requests import VideoRequests
 from api.inference.video.h3_worker import H3Process
@@ -14,7 +14,7 @@ import wave
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from api.inference.errors import InferenceFailure
 from api.inference.resources import MemoryCapacity, ResourceManager, ResourceCancelled, ResourceExhausted
@@ -368,17 +368,51 @@ class H3WorkerTests(unittest.TestCase):
         self.assertIsNone(provider._codec)
 
 
-    def test_real_json_transport_handles_unicode_and_stderr(self):
+    def test_json_transport_handles_unicode_and_stderr_with_fake_pipes(self):
         child = H3Process()
-        code = 'import sys,json; r=json.loads(sys.stdin.readline()); sys.stderr.write("x"*20000); print(json.dumps({"length":len(r["prompt"])}),flush=True)'
-        try:
-            child.start([sys.executable, '-c', code], env=dict(os.environ))
-            result = child.exchange({'prompt':'🎬' * 8000}, 5, threading.Event())
-            self.assertEqual(result, {'length':8000})
-            self.assertLessEqual(len(child.diagnostics), 8192)
-        finally:
-            child.stop()
-        self.assertTrue(child.closed)
+        child.process = Mock(pid=123)
+        child.process.poll.return_value = None
+        child.process.stdin.fileno.return_value = 10
+        child.process.stdout.fileno.return_value = 11
+        child.process.stderr.fileno.return_value = 12
+        child.selector = Mock()
+        sent = bytearray()
+        writing = True
+
+        def events(timeout):
+            if writing:
+                return [(SimpleNamespace(fileobj=child.process.stdin, data='in'), 2)]
+            return [(SimpleNamespace(fileobj=child.process.stderr, data='err'), 1),
+                    (SimpleNamespace(fileobj=child.process.stdout, data='out'), 1)]
+
+        def unregister(stream):
+            nonlocal writing
+            if stream is child.process.stdin:
+                writing = False
+
+        def write(descriptor, data):
+            self.assertEqual(descriptor, 10)
+            sent.extend(data)
+            return len(data)
+
+        def read(descriptor, limit):
+            if descriptor == 12:
+                return b'x' * 4096
+            request = json.loads(sent)
+            return json.dumps({'length': len(request['prompt'])}).encode() + b'\n'
+
+        child.selector.select.side_effect = events
+        child.selector.unregister.side_effect = unregister
+        with (
+            patch('api.inference.video.h3_worker.os.set_blocking'),
+            patch('api.inference.video.h3_worker.os.write', side_effect=write),
+            patch('api.inference.video.h3_worker.os.read', side_effect=read),
+        ):
+            result = child.exchange({'prompt': '🎬' * 8000}, 5, threading.Event())
+        self.assertEqual(result, {'length': 8000})
+        self.assertEqual(json.loads(sent), {'prompt': '🎬' * 8000})
+        self.assertEqual(child.diagnostics, b'x' * 4096)
+        child.selector.unregister.assert_called_once_with(child.process.stdin)
 
     def test_truncated_raw_video_is_rejected(self):
         _, worker, _ = setup(self)
