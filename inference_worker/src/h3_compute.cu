@@ -1135,7 +1135,6 @@ public:
                                     int(dim)
                                 )
                             );
-                            checked(cudaStreamSynchronize(cudaStreamLegacy));
                         }
                         divide_attention<<<unsigned((rows * dim + 255) / 256), 256>>>(
                             arena.at<Real>(dy),
@@ -1144,6 +1143,8 @@ public:
                             unsigned(dim)
                         );
                         checked(cudaGetLastError());
+                        // The legacy stream orders all key tiles; this blocking copy
+                        // waits for the complete query tile before host consumption.
                         checked(cudaMemcpy(
                             hy,
                             arena.at<void>(dy),
