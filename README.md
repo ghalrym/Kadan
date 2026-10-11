@@ -200,12 +200,25 @@ python bin/kadan.py check format --write
 CI runs `python bin/kadan.py check format` on every push and pull request and fails
 if any Python file needs formatting.
 
+The same requirements pin clang-format and clang-tidy for C++ and CUDA sources.
+`.clang-format` owns style and `.clang-tidy` lists the bug-focused checks that gate CI:
+
+```sh
+python bin/kadan.py check cpp-format --write
+python bin/kadan.py check cpp-lint
+```
+
+`cpp-lint` configures every CPU component, so it needs the nlohmann_json, ICU,
+OpenBLAS and PCRE2 development headers. CUDA-only sources are formatted but not linted.
+
 Automated tests use pure logic, synthetic checkpoint metadata or fake boundaries.
 They do not start the application, execute inference or benchmark GPUs.
 The workflows list the unit targets and API tests.
 
 ```sh
 python bin/kadan.py check format
+python bin/kadan.py check cpp-format
+python bin/kadan.py check cpp-lint
 python bin/kadan.py check api
 python bin/kadan.py check native
 python bin/kadan.py check frontend-lint

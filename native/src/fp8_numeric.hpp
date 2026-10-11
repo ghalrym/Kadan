@@ -8,7 +8,7 @@ namespace kadan::cuda::detail {
 #ifdef __CUDACC__
 __host__ __device__
 #endif
-inline float finite_e4m3fn(std::uint8_t byte) {
+    inline float finite_e4m3fn(std::uint8_t byte) {
     const unsigned exponent = (byte >> 3) & 15;
     const unsigned fraction = byte & 7;
     const unsigned bits = ((exponent + 120U) << 23) | (fraction << 20);
@@ -20,4 +20,4 @@ inline float finite_e4m3fn(std::uint8_t byte) {
     const float magnitude = exponent == 0 ? float(fraction) * 0.001953125F : normal;
     return byte & 128 ? -magnitude : magnitude;
 }
-}
+}  // namespace kadan::cuda::detail

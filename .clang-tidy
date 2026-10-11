@@ -1,0 +1,47 @@
+---
+# Bug-focused checks that gate CI. Style is owned by .clang-format.
+# Disabled checks are high-volume or flag deliberate patterns, such as destructors
+# that swallow cleanup failures; enable them only after reviewing every finding.
+# readability-container-size-empty is omitted: nlohmann::json::empty() is false for strings.
+# Redundant member initializers keep GCC's -Wmissing-field-initializers quiet.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-empty-catch,
+  -bugprone-exception-escape,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-narrowing-conversions,
+  -bugprone-throwing-static-initialization,
+  -bugprone-unchecked-optional-access,
+  clang-analyzer-*,
+  misc-definitions-in-headers,
+  misc-misplaced-const,
+  misc-new-delete-overloads,
+  misc-non-copyable-objects,
+  misc-redundant-expression,
+  misc-throw-by-value-catch-by-reference,
+  misc-unconventional-assign-operator,
+  misc-uniqueptr-reset-release,
+  misc-unused-*,
+  modernize-make-shared,
+  modernize-make-unique,
+  modernize-redundant-void-arg,
+  modernize-use-emplace,
+  modernize-use-nullptr,
+  modernize-use-override,
+  performance-*,
+  -performance-enum-size,
+  -performance-inefficient-string-concatenation,
+  -performance-unnecessary-value-param,
+  readability-delete-null-pointer,
+  readability-duplicate-include,
+  readability-misleading-indentation,
+  readability-redundant-*,
+  -readability-redundant-member-init,
+  readability-simplify-boolean-expr
+WarningsAsErrors: '*'
+HeaderFilterRegex: '/(native|bin)/'
+CheckOptions:
+  readability-simplify-boolean-expr.SimplifyDeMorgan: false
+---

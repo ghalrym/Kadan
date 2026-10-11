@@ -1,7 +1,8 @@
 #pragma once
-#include "kadan/sequence_state.hpp"
-#include "kadan/resources.hpp"
 #include <memory>
+
+#include "kadan/resources.hpp"
+#include "kadan/sequence_state.hpp"
 
 namespace kadan::cuda {
 struct LayerStateView {
@@ -15,15 +16,21 @@ struct LayerStateView {
     void* value_current = nullptr;
     void* convolution = nullptr;
     void* recurrent = nullptr;
-    std::size_t history_tokens = 0, kv_token_bytes = 0, conv_bytes = 0, recurrent_bytes = 0;
+    std::size_t history_tokens = 0, kv_token_bytes = 0, conv_bytes = 0,
+                recurrent_bytes = 0;
 };
+
 // Single-device batch-one state arena. Same creating-thread/current-SM86-device
 // contract as projections. No device changes, model execution, private streams
 // or multi-GPU commit protocol. Caller retains the shared resource authority.
 class SequenceState {
 public:
-    SequenceState(const checkpoint::TextArchitecture& architecture,std::size_t token_capacity,
-                  int device,std::shared_ptr<Resources> resources);
+    SequenceState(
+        const checkpoint::TextArchitecture& architecture,
+        std::size_t token_capacity,
+        int device,
+        std::shared_ptr<Resources> resources
+    );
     ~SequenceState();
     SequenceState(const SequenceState&) = delete;
     SequenceState& operator=(const SequenceState&) = delete;
@@ -32,18 +39,18 @@ public:
     // Host-only health query; false after invalidation, runtime poison or close.
     bool valid() const;
     StateStep begin();
-    LayerStateView layer(StateStep step,std::size_t index);
+    LayerStateView layer(StateStep step, std::size_t index);
     // Trusted producer acknowledgement, not proof of buffer initialization.
     // Enqueue writes on the legacy stream before marking; commit synchronizes.
-    void written(StateStep step,std::size_t index);
-    void commit(StateStep step); // Synchronize before publishing logical progress.
-    void abort(StateStep step); // Synchronize and invalidate; reset required.
-    void reset(); // Zero all allocated bytes; only then permit a fresh sequence.
+    void written(StateStep step, std::size_t index);
+    void commit(StateStep step);  // Synchronize before publishing logical progress.
+    void abort(StateStep step);   // Synchronize and invalidate; reset required.
+    void reset();  // Zero all allocated bytes; only then permit a fresh sequence.
     // Idle valid-state diagnostic copy to caller-admitted RAM; no allocation.
-    void read_bytes(std::size_t offset,std::span<std::uint8_t> destination);
-    void close(); // Uncertain cleanup retains admission; no automatic retries.
+    void read_bytes(std::size_t offset, std::span<std::uint8_t> destination);
+    void close();  // Uncertain cleanup retains admission; no automatic retries.
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-} // namespace kadan::cuda
+}  // namespace kadan::cuda

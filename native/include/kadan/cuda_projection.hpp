@@ -1,9 +1,10 @@
 #pragma once
-#include "kadan/cuda_plan.hpp"
-#include "kadan/cuda_error.hpp"
-#include "kadan/resources.hpp"
 #include <memory>
 #include <span>
+
+#include "kadan/cuda_error.hpp"
+#include "kadan/cuda_plan.hpp"
+#include "kadan/resources.hpp"
 
 namespace kadan::cuda {
 // Explicit GPU-executing API; construction uploads weights. Never instantiate
@@ -12,8 +13,11 @@ namespace kadan::cuda {
 // This first path uses the legacy default stream and blocks at each boundary.
 class Nvfp4Projection {
 public:
-    Nvfp4Projection(const quantization::Matrix& host, int device,
-                    std::shared_ptr<Resources> admitted_resources);
+    Nvfp4Projection(
+        const quantization::Matrix& host,
+        int device,
+        std::shared_ptr<Resources> admitted_resources
+    );
     ~Nvfp4Projection();
     Nvfp4Projection(const Nvfp4Projection&) = delete;
     Nvfp4Projection& operator=(const Nvfp4Projection&) = delete;
@@ -27,17 +31,22 @@ public:
     // Explicit close reports cleanup failures. Failed/uncertain cleanup retains
     // the resource reservation; no automatic retry or device reset is attempted.
     void close();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
 // Same ownership/runtime contract as Nvfp4Projection. FP8 scalar/per-row scales
 // and all decoded-weight range checks are validated once at admission. Host
 // spans must remain immutable through construction, then may be released.
 class Fp8Projection {
 public:
-    Fp8Projection(const quantization::Matrix& host, int device,
-                    std::shared_ptr<Resources> admitted_resources);
+    Fp8Projection(
+        const quantization::Matrix& host,
+        int device,
+        std::shared_ptr<Resources> admitted_resources
+    );
     ~Fp8Projection();
     Fp8Projection(const Fp8Projection&) = delete;
     Fp8Projection& operator=(const Fp8Projection&) = delete;
@@ -57,10 +66,11 @@ public:
     // return boundary: retain borrowed buffers until close succeeds/context ends.
     // Other errors return only after quiescence or before work was enqueued.
     // No allocation/provenance inference.
-    void matvec_device(std::span<const float> input,std::span<float> output);
+    void matvec_device(std::span<const float> input, std::span<float> output);
     void close();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-} // namespace kadan::cuda
+}  // namespace kadan::cuda

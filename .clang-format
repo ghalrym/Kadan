@@ -1,0 +1,37 @@
+---
+# Mirrors Ruff's formatter: 88 columns, 4-space indents, isort-style include groups,
+# and Black-style wrapping (all arguments on one indented line, else one per line,
+# with the closing bracket on its own line).
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 88
+AccessModifierOffset: -4
+PointerAlignment: Left
+ReferenceAlignment: Left
+AlignAfterOpenBracket: BlockIndent
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BreakBeforeBinaryOperators: NonAssignment
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: Inline
+AllowShortEnumsOnASingleLine: false
+SeparateDefinitionBlocks: Always
+MaxEmptyLinesToKeep: 2
+SpacesBeforeTrailingComments: 2
+InsertNewlineAtEOF: true
+FixNamespaceComments: true
+# Standard library, then third-party, then project headers, like isort.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<(nlohmann|unicode)/|^<(cblas|pcre2|cublas_v2|cuda_runtime|cuda_runtime_api|math_constants)\.h>$'
+    Priority: 2
+  - Regex: '^<'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 3
+SortIncludes: CaseSensitive
+---
