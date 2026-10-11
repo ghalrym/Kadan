@@ -349,7 +349,7 @@ class H3Provider:
         try:
             self.check_execution_state()
             check_cancel(cancel)
-            command = self.resolve(self.model_id, cancel) if self.resolve is resolve_command else self.resolve(self.model_id)
+            command = self.resolve(self.model_id, cancel)
             resources = self.resources or chat_runtime.ensure_resources()
             value = os.getenv('KADAN_H3_DEVICES', 'auto')
             if value == 'auto':

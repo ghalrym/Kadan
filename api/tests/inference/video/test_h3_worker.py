@@ -78,7 +78,7 @@ def setup(monkeypatch, **kwargs):
     monkeypatch.setenv('KADAN_H3_DEVICES', '0,1')
     resources = ResourceManager(200*GIB, {0: 8*GIB, 1: 8*GIB})
     worker = Worker()
-    provider = H3Provider(resources=resources, resolve=lambda _: ['fake-worker'],
+    provider = H3Provider(resources=resources, resolve=lambda model, cancel: ['fake-worker'],
                           process_factory=lambda: worker, **kwargs)
     def encode(raw, target, frames, cancel):
         assert provider._execution is not None and provider._context is not None
@@ -109,7 +109,7 @@ class H3WorkerTests(unittest.TestCase):
         worker = Worker()
         environments = []
         worker.start = lambda command, env=None: environments.append(env)
-        provider = H3Provider(resources=resources, resolve=lambda _: ['fake-worker'], process_factory=lambda: worker)
+        provider = H3Provider(resources=resources, resolve=lambda model, cancel: ['fake-worker'], process_factory=lambda: worker)
         with patch.dict(os.environ, {}, clear=True):
             provider.load(threading.Event())
         self.assertEqual(environments[0]['KADAN_H3_DEVICES'], '1')
@@ -351,7 +351,7 @@ class H3WorkerTests(unittest.TestCase):
         resources, worker, provider = setup(self)
         parked = []
         resources.reserve('text', 'llm', device_bytes={1:GIB}, evict=lambda: parked.append(True))
-        def unavailable(_):
+        def unavailable(model, cancel):
             raise InferenceFailure('CUDA worker unavailable')
         provider.resolve = unavailable
         with self.assertRaises(InferenceFailure):

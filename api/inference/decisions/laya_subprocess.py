@@ -175,7 +175,7 @@ class LayaSubprocessEvaluator:
         await run_cancellable_thread(self._prepare)
 
     def _prepare(self, cancel):
-        return self.resolve(cancel) if self.resolve is resolve_laya_command else self.resolve()
+        return self.resolve(cancel)
 
     def check_execution_state(self):
         # A failed reap is unresolved execution, not ordinary memory pressure.
