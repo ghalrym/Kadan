@@ -536,15 +536,15 @@ WeightIdentity Shard::tensor_identity(std::string_view name) const {
     const auto& t = impl_->find(name);
     const auto& s = impl_->identity;
     return {
-        std::uint64_t(s.st_dev),
-        std::uint64_t(s.st_ino),
-        std::uint64_t(s.st_size),
-        std::uint64_t(s.st_mtim.tv_sec),
-        std::uint64_t(s.st_mtim.tv_nsec),
-        std::uint64_t(s.st_ctim.tv_sec),
-        std::uint64_t(s.st_ctim.tv_nsec),
-        impl_->data_begin + t.begin,
-        impl_->data_begin + t.end
+        .device = std::uint64_t(s.st_dev),
+        .inode = std::uint64_t(s.st_ino),
+        .file_size = std::uint64_t(s.st_size),
+        .modified_seconds = std::uint64_t(s.st_mtim.tv_sec),
+        .modified_nanoseconds = std::uint64_t(s.st_mtim.tv_nsec),
+        .changed_seconds = std::uint64_t(s.st_ctim.tv_sec),
+        .changed_nanoseconds = std::uint64_t(s.st_ctim.tv_nsec),
+        .payload_begin = impl_->data_begin + t.begin,
+        .payload_end = impl_->data_begin + t.end
     };
 }
 

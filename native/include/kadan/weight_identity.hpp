@@ -1,9 +1,20 @@
 #pragma once
-#include <array>
+#include <compare>
 #include <cstdint>
 
 namespace kadan {
-// Device/inode/size/timestamps and the tensor's absolute payload interval.
 // Identity survives reopening a verified immutable shard; never a host pointer.
-using WeightIdentity = std::array<std::uint64_t, 9>;
+struct WeightIdentity {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t file_size = 0;
+    std::uint64_t modified_seconds = 0;
+    std::uint64_t modified_nanoseconds = 0;
+    std::uint64_t changed_seconds = 0;
+    std::uint64_t changed_nanoseconds = 0;
+    std::uint64_t payload_begin = 0;
+    std::uint64_t payload_end = 0;
+
+    auto operator<=>(const WeightIdentity&) const = default;
+};
 }  // namespace kadan
