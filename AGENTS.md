@@ -1,5 +1,10 @@
 # Project structure
 
+## Documentation
+
+- Markdown files are allowed only when named `README.md`, `AGENT.md`, `AGENTS.md`, or `SKILL.md`.
+- Do not create other Markdown documentation, plans, reports, or notes in this project.
+
 ## API
 
 - Keep imports at module scope. Use function-local imports only when strictly necessary, and explain why.
