@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
-RequestType = Literal['LLM', 'Image', 'Video', 'TTS', 'STT', 'Decision']
+RequestType = Literal["LLM", "Image", "Video", "TTS", "STT", "Decision"]
 RequestStatus = Annotated[int, Field(ge=100, le=599)]
 
 
@@ -14,6 +14,7 @@ class RequestRecord(BaseModel):
     timings measure admission/prefill to the first generated token, prefill-only
     work, and decode after that token. Stream TTFT measures HTTP arrival to the
     first content event passed to ASGI (not browser receipt). Missing data is null."""
+
     id: str
     time: str
     type: RequestType
@@ -28,7 +29,9 @@ class RequestRecord(BaseModel):
     response_bytes: int
 
     video_job_id: str | None = None
-    video_status: Literal['Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'] | None = None
+    video_status: (
+        Literal["Queued", "Rendering", "Done", "Failed", "Cancelled"] | None
+    ) = None
 
     generation_ttft_ms: float | None = None
     stream_ttft_ms: float | None = None

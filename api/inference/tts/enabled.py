@@ -1,2 +1,3 @@
 """Reviewed native Qwen checkpoint integrations."""
-ENABLED_SPEECH_MODELS: frozenset[str] = frozenset(('qwen-tts-1.7b-custom',))
+
+ENABLED_SPEECH_MODELS: frozenset[str] = frozenset(("qwen-tts-1.7b-custom",))

@@ -5,21 +5,23 @@ from api.pydantic_models.requests import RequestRecord, RequestType, RequestStat
 from api.services.telemetry import telemetry
 from api.services.video_jobs import video_jobs
 
-router = APIRouter(prefix='/v1/requests', tags=['Requests'])
+router = APIRouter(prefix="/v1/requests", tags=["Requests"])
 
 
 class RequestFilters(BaseModel):
     """Validate optional type/status filters and a bounded search/page request."""
-    model_config = ConfigDict(extra='forbid')
+
+    model_config = ConfigDict(extra="forbid")
     type: RequestType | None = None
     status: RequestStatus | None = None
-    search: str = Field(default='', max_length=128)
+    search: str = Field(default="", max_length=128)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=100)
 
 
 class RequestsResponse(BaseModel):
     """A page of retained observations with its filtered total and process epoch."""
+
     requests: list[RequestRecord]
     total: int
     retention_limit: int
@@ -28,6 +30,7 @@ class RequestsResponse(BaseModel):
 
 class RequestResponse(BaseModel):
     """Wrap a single retained HTTP observation for the detail endpoint."""
+
     request: RequestRecord
 
 
@@ -38,26 +41,44 @@ def with_video_status(record: RequestRecord) -> RequestRecord:
         status = video_jobs.get(record.video_job_id).status
     except KeyError:
         status = None
-    return record.model_copy(update={'video_status': status})
+    return record.model_copy(update={"video_status": status})
 
 
-@router.get('',  operation_id='listRequests')
+@router.get("", operation_id="listRequests")
 def list_requests(filters: Annotated[RequestFilters, Query()]) -> RequestsResponse:
     """Filter a newest-first snapshot and return the requested page.
 
     Search matches IDs, endpoints, catalog IDs and safe summaries. Totals cover
     retained matches only; concurrent completions or eviction can move records
     between successive page requests. No database history is consulted."""
-    matches = [record for record in telemetry.records()
-               if (filters.type is None or record.type == filters.type)
-               and (filters.status is None or record.status == filters.status)
-               and filters.search.casefold() in ' '.join((record.id, record.endpoint, record.model or '',
-                                                          record.prompt, record.output)).casefold()]
-    return RequestsResponse(requests=[with_video_status(record) for record in matches[filters.offset:filters.offset + filters.limit]],
-                            total=len(matches), retention_limit=telemetry.capacity, started_at=telemetry.started_at)
+    matches = [
+        record
+        for record in telemetry.records()
+        if (filters.type is None or record.type == filters.type)
+        and (filters.status is None or record.status == filters.status)
+        and filters.search.casefold()
+        in " ".join(
+            (
+                record.id,
+                record.endpoint,
+                record.model or "",
+                record.prompt,
+                record.output,
+            )
+        ).casefold()
+    ]
+    return RequestsResponse(
+        requests=[
+            with_video_status(record)
+            for record in matches[filters.offset : filters.offset + filters.limit]
+        ],
+        total=len(matches),
+        retention_limit=telemetry.capacity,
+        started_at=telemetry.started_at,
+    )
 
 
-@router.get('/{request_id}', operation_id='getRequest')
+@router.get("/{request_id}", operation_id="getRequest")
 def get_request(request_id: str) -> RequestResponse:
     """Return a retained observation by ID, or 404 after eviction or restart.
 
@@ -66,4 +87,7 @@ def get_request(request_id: str) -> RequestResponse:
     for record in telemetry.records():
         if record.id == request_id:
             return RequestResponse(request=with_video_status(record))
-    raise HTTPException(status_code=404, detail='Request not found; records expire and reset on API restart')
+    raise HTTPException(
+        status_code=404,
+        detail="Request not found; records expire and reset on API restart",
+    )

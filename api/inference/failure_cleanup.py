@@ -1,4 +1,5 @@
 """Release allocations retained by completed failure frames."""
+
 import traceback
 
 
@@ -12,4 +13,4 @@ def clear_failure_frames(error):
         seen.add(id(current))
         traceback.clear_frames(current.__traceback__)
         pending.extend((current.__cause__, current.__context__))
-        pending.extend(getattr(current, 'exceptions', ()))
+        pending.extend(getattr(current, "exceptions", ()))

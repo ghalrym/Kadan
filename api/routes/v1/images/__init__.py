@@ -4,6 +4,7 @@ from api.pydantic_models.media import ImageSet
 
 router = APIRouter(prefix="/v1/images", tags=["Images"])
 
+
 class ImagesResponse(BaseModel):
     images: list[ImageSet]
 

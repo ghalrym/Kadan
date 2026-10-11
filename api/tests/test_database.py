@@ -7,7 +7,9 @@ from api.database import DatabaseSettings, get_session
 class DatabaseTests(unittest.TestCase):
     def test_url_preserves_special_characters_in_credentials(self):
         settings = DatabaseSettings(
-            _env_file=None, user="user@name", password="p@ss:/%word",
+            _env_file=None,
+            user="user@name",
+            password="p@ss:/%word",
         )
         self.assertEqual(settings.url.username, "user@name")
         self.assertEqual(settings.url.password, "p@ss:/%word")
@@ -15,7 +17,9 @@ class DatabaseTests(unittest.TestCase):
 
     @patch("api.database.get_engine")
     @patch("api.database.Session")
-    def test_session_closes_without_implicitly_committing(self, session_class, get_engine):
+    def test_session_closes_without_implicitly_committing(
+        self, session_class, get_engine
+    ):
         session = MagicMock()
         session_class.return_value.__enter__.return_value = session
         dependency = get_session()

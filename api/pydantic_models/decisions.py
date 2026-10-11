@@ -31,7 +31,9 @@ class NoulQuestion(BaseModel):
     false_when: str = Field(default="", alias="falseWhen")
 
 
-DecisionQuestion = Annotated[ChoiceQuestion | ScoreQuestion | NoulQuestion, Field(discriminator="type")]
+DecisionQuestion = Annotated[
+    ChoiceQuestion | ScoreQuestion | NoulQuestion, Field(discriminator="type")
+]
 
 
 class ChoiceAnswer(BaseModel):
@@ -45,7 +47,11 @@ class ChoiceAnswer(BaseModel):
 class ScoreAnswer(BaseModel):
     key: str
     type: Literal["Score"]
-    value: float = Field(ge=0, allow_inf_nan=False, description="Expected zero-based ordinal rubric index; may be fractional.")
+    value: float = Field(
+        ge=0,
+        allow_inf_nan=False,
+        description="Expected zero-based ordinal rubric index; may be fractional.",
+    )
     confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     probabilities: dict[str, float] | None = None
 
@@ -53,9 +59,16 @@ class ScoreAnswer(BaseModel):
 class NoulAnswer(BaseModel):
     key: str
     type: Literal["Noul"]
-    value: float = Field(ge=0, le=1, allow_inf_nan=False, description="Probability that the criterion is true.")
+    value: float = Field(
+        ge=0,
+        le=1,
+        allow_inf_nan=False,
+        description="Probability that the criterion is true.",
+    )
     confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     probabilities: dict[str, float] | None = None
 
 
-DecisionAnswer = Annotated[ChoiceAnswer | ScoreAnswer | NoulAnswer, Field(discriminator="type")]
+DecisionAnswer = Annotated[
+    ChoiceAnswer | ScoreAnswer | NoulAnswer, Field(discriminator="type")
+]
