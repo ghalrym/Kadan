@@ -135,11 +135,13 @@ void mel_filters(
             header_size < bytes.size() - start, "Invalid mel filter header"
         );
         const auto header = bytes.substr(start, header_size);
+        std::string shape = "(";
+        shape += std::to_string(bins);
+        shape += ", 201)";
         preparation_check(
             header.find("'<f4'") != std::string::npos
                 && header.find("'fortran_order': False") != std::string::npos
-                && header.find("(" + std::to_string(bins) + ", 201)")
-                       != std::string::npos
+                && header.find(shape) != std::string::npos
                 && bytes.size() - start - header_size == bins * 201 * 4,
             "Invalid mel filter shape or dtype"
         );
