@@ -3,6 +3,8 @@
 !api/**
 !native/
 !native/**
+!bin/
+!bin/**
 api/tests/
 **/__pycache__/
 **/*.pyc

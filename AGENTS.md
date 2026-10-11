@@ -26,9 +26,16 @@
 From the repository root, generate the API schema, then the frontend client:
 
 ```sh
-.venv/bin/python -m api.export_openapi > frontend/openapi.json
-npm --prefix frontend run generate:api
+.venv/bin/python bin/kadan.py generate api
 ```
+
+# Developer tooling
+
+- `bin/kadan.py` is the Typer entry point for repeatable developer commands.
+- Keep command implementations in focused modules under `bin/`; native tool sources belong in `bin/cpp/`.
+- Add tooling commands here instead of standalone scripts or diagnostic executables in application source directories. Skills remain separate.
+- Keep application runtime logic in its owning package; tooling should call that implementation rather than copy it.
+- All inference belongs to the live native worker. CLI inference commands must submit through the API to its existing queue; never launch a separate model executor or call inference libraries locally.
 
 # Agentic Communication
 
