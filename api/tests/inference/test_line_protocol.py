@@ -1,28 +1,33 @@
 """Terminal worker failures keep local context out of public API error text."""
-import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 
 
 class ErrorTests(unittest.TestCase):
-    def failure(self, frame):
+    def child(self):
         child = LineProtocolProcess()
-        code = ('import os; os.write(2, b"text_layer 30\\nprivate-path-and-token\\n"); '
-                f'os.write(1, {frame!r})')
-        try:
-            child.start([sys.executable, '-c', code])
-            with self.assertRaises(LineProtocolError) as raised:
-                child.read(5)
-            error = raised.exception
-        finally:
-            child.stop()
+        child.process = Mock(pid=123, returncode=0)
+        child.process.poll.return_value = 0
+        child.selector = Mock()
+        child.selector.get_map.return_value = {}
+        self.enterContext(patch('api.inference.line_protocol.os.read', side_effect=BlockingIOError))
+        child._capture_diagnostics(b'text_layer 30\nprivate-path-and-token\n')
+        return child
+
+    def failure(self, frame):
+        child = self.child()
+        child.buffer.extend(frame)
+        with self.assertRaises(LineProtocolError) as raised:
+            child.read(5)
+        child.stop()
         self.assertTrue(child.closed)
-        self.assertIn(b'text_layer 30', error.diagnostics)
-        self.assertIn(b'private-path-and-token', error.diagnostics)
-        self.assertNotIn('private-path-and-token', str(error))
-        return error
+        child.process.wait.assert_called_once_with(timeout=2)
+        self.assertIn(b'text_layer 30', raised.exception.diagnostics)
+        self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
+        self.assertNotIn('private-path-and-token', str(raised.exception))
+        return raised.exception
 
     def test_bare_error_is_failure_not_invalid_ready(self):
         self.assertEqual(str(self.failure(b'error\n')), 'Inference subprocess failed')
@@ -35,26 +40,36 @@ class ErrorTests(unittest.TestCase):
     def test_untrusted_error_payload_is_not_public(self):
         self.assertEqual(str(self.failure(b'error private-path-and-token\n')), 'Inference subprocess failed')
 
-    def test_abrupt_failures_retain_private_stderr(self):
-        cases = [
-            ('pass', False, LineProtocolError, 'complete reply'),
-            ('import time; time.sleep(3)', False, TimeoutError, 'deadline'),
-            ('os.write(1, b"\\xff\\n")', False, LineProtocolError, 'Non-ASCII'),
-            ('os.write(1, b"x" * 5000)', False, LineProtocolError, 'frame too large'),
-            ('raise SystemExit(1)', True, LineProtocolError, 'exit was not successful'),
-        ]
-        for ending, finish, kind, message in cases:
-            with self.subTest(ending=ending):
-                child = LineProtocolProcess()
-                try:
-                    child.start([sys.executable, '-c',
-                        'import os; os.write(2, b"text_layer 30\\nprivate-path-and-token\\n"); ' + ending])
-                    with self.assertRaisesRegex(kind, message) as raised:
-                        (child.finish if finish else child.read)(1)
-                    self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
-                    self.assertNotIn('private-path-and-token', str(raised.exception))
-                finally:
-                    child.stop()
+    def test_exited_worker_without_reply_retains_private_stderr(self):
+        child = self.child()
+        with self.assertRaisesRegex(LineProtocolError, 'complete reply') as raised:
+            child.read(1)
+        self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
+        self.assertNotIn('private-path-and-token', str(raised.exception))
+
+    def test_deadline_uses_clock_without_sleeping(self):
+        child = self.child()
+        with patch('api.inference.line_protocol.time.monotonic', return_value=2):
+            with self.assertRaisesRegex(TimeoutError, 'deadline') as raised:
+                child._pump(1, None)
+        self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
+
+    def test_non_ascii_reply_is_rejected(self):
+        self.assertIn('Non-ASCII', str(self.failure(b'\xff\n')))
+
+    def test_oversized_reply_is_rejected(self):
+        child = self.child()
+        child.selector.select.return_value = [(SimpleNamespace(fileobj=child.process.stdout, data='out'), 1)]
+        with patch('api.inference.line_protocol.os.read', return_value=b'x' * 5000), patch('api.inference.line_protocol.time.monotonic', return_value=0):
+            with self.assertRaisesRegex(LineProtocolError, 'frame too large'):
+                child._pump(1, None)
+
+    def test_unsuccessful_exit_retains_private_stderr(self):
+        child = self.child()
+        child.process.returncode = 1
+        with self.assertRaisesRegex(LineProtocolError, 'exit was not successful') as raised:
+            child.finish(1)
+        self.assertIn(b'private-path-and-token', raised.exception.diagnostics)
 
     def test_stage_receipts_have_pid_and_timestamp_without_private_text(self):
         child = LineProtocolProcess()
