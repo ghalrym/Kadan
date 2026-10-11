@@ -44,11 +44,39 @@ struct TransformerBlock::Impl{
 
 
  void norm_mod(std::span<const float> x,std::span<const float> modulation,std::span<float> y,std::size_t rows,std::size_t text,std::size_t stage,const std::atomic_bool& cancel){for(std::size_t t=0;t<rows;++t){stop(cancel);double mean=0,variance=0;for(std::size_t c=0;c<d.state;++c)mean+=x[t*d.state+c];mean/=d.state;for(std::size_t c=0;c<d.state;++c){double v=x[t*d.state+c]-mean;variance+=v*v;}float scale=float(1/std::sqrt(variance/d.state+1e-6));auto offset=(t<text?4*d.state:0)+stage*2*d.state;for(std::size_t c=0;c<d.state;++c)y[t*d.state+c]=float(x[t*d.state+c]-mean)*scale*(1+modulation[offset+c]);}finite(y);}
- void rotate(std::span<float> x,const std::string& name,std::size_t rows,std::size_t text,std::size_t height,std::size_t width,const std::atomic_bool& cancel){auto norm=weight(name+".weight",cancel);for(std::size_t t=0;t<rows;++t){stop(cancel);std::array<long,3> positions{long(t),long(t),long(t)};if(t>=text)positions={long(text),long((t-text)/width)-long(height-height/2),long((t-text)%width)-long(width-width/2)};
-  for(std::size_t h=0;h<d.heads;++h){auto row=x.subspan(t*d.state+h*d.head_dim,d.head_dim);double variance=0;for(float v:row)variance+=double(v)*v;float scale=float(1/std::sqrt(variance/d.head_dim+1e-6));for(std::size_t c=0;c<d.head_dim;++c)row[c]*=scale*norm[c];std::size_t offset=0;
-   for(std::size_t axis=0;axis<3;++axis){for(std::size_t c=0;c<d.axes[axis];c+=2){float angle=float(positions[axis])*std::pow(10000.f,-float(c)/float(d.axes[axis])),co=std::cos(angle),si=std::sin(angle),a=row[offset+c],b=row[offset+c+1];row[offset+c]=a*co-b*si;row[offset+c+1]=b*co+a*si;}offset+=d.axes[axis];}
+ void rotate(std::span<float> x,const std::string& name,std::size_t rows,std::size_t text,std::size_t height,std::size_t width,const std::atomic_bool& cancel){
+  auto norm=weight(name+".weight",cancel);
+  for(std::size_t t=0;t<rows;++t){
+   stop(cancel);
+   std::array<long,3> positions{long(t),long(t),long(t)};
+   if(t>=text)positions={long(text),long((t-text)/width)-long(height-height/2),long((t-text)%width)-long(width-width/2)};
+   // Every head at this position uses the same rotary coefficients.
+   std::array<float,64> cosine{},sine{};
+   std::size_t offset=0;
+   for(std::size_t axis=0;axis<3;++axis){
+    for(std::size_t c=0;c<d.axes[axis];c+=2){
+     float angle=float(positions[axis])*std::pow(10000.f,-float(c)/float(d.axes[axis]));
+     cosine[(offset+c)/2]=std::cos(angle);
+     sine[(offset+c)/2]=std::sin(angle);
+    }
+    offset+=d.axes[axis];
+   }
+   for(std::size_t h=0;h<d.heads;++h){
+    auto row=x.subspan(t*d.state+h*d.head_dim,d.head_dim);
+    double variance=0;
+    for(float v:row)variance+=double(v)*v;
+    float scale=float(1/std::sqrt(variance/d.head_dim+1e-6));
+    for(std::size_t c=0;c<d.head_dim;++c)row[c]*=scale*norm[c];
+    for(std::size_t c=0;c<d.head_dim;c+=2){
+     float co=cosine[c/2],si=sine[c/2],a=row[c],b=row[c+1];
+     row[c]=a*co-b*si;
+     row[c+1]=b*co+a*si;
+    }
+   }
   }
- }finite(x);}
+  finite(x);
+ }
+
 };
 TransformerBlock::TransformerBlock(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 TransformerBlock::~TransformerBlock(){unload();}
@@ -63,15 +91,20 @@ void TransformerBlock::load(const char* root,std::span<const std::string> files,
 }
 void TransformerBlock::unload(){need(!busy_,"busy");if(model_){resources_->begin_eviction(model_->weights->lease.h);model_.reset();}}
 void TransformerBlock::execute(std::span<const float> input,std::span<const float> modulation,std::size_t text,std::size_t height,std::size_t width,std::span<float> output,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(bool(model_),"image_not_loaded");auto& m=*model_;auto d=m.d;need(text>0&&text<=2048&&height>0&&height<=256&&width>0&&width<=256&&text+height*width<=32768,"image_token_layout");const auto rows=text+height*width;need(input.size()==rows*d.state&&output.size()==input.size()&&modulation.size()==8*d.state,"image_shape");finite(input);finite(modulation);Pin pin(*resources_,m.weights->lease.h);
- Buffer x(*resources_,input.size()),n(*resources_,input.size()),q(*resources_,input.size()),k(*resources_,input.size()),v(*resources_,input.size()),mix(*resources_,input.size()),delta(*resources_,input.size()),scores(*resources_,rows),gate(*resources_,rows*d.intermediate),up(*resources_,rows*d.intermediate);std::copy(input.begin(),input.end(),x.data.get());
+ Buffer gates(*resources_,4*d.state),x(*resources_,input.size()),n(*resources_,input.size()),q(*resources_,input.size()),k(*resources_,input.size()),v(*resources_,input.size()),mix(*resources_,input.size()),delta(*resources_,input.size()),scores(*resources_,rows),gate(*resources_,rows*d.intermediate),up(*resources_,rows*d.intermediate);std::copy(input.begin(),input.end(),x.data.get());
+ // Gates depend on text/image and channel, not on the token position.
+ for(std::size_t group=0;group<2;++group)
+  for(std::size_t stage=0;stage<2;++stage)
+   for(std::size_t c=0;c<d.state;++c)
+    gates.data[(group*2+stage)*d.state+c]=std::tanh(modulation[(group*4+stage*2+1)*d.state+c]);
  m.norm_mod(x.span(),modulation,n.span(),rows,text,0,cancel);for(auto item:{std::pair{"attn.to_q",q.span()},std::pair{"attn.to_k",k.span()},std::pair{"attn.to_v",v.span()}})m.linear(item.first,n.span(),item.second,rows,d.state,d.state,cancel);m.rotate(q.span(),"attn.norm_q",rows,text,height,width,cancel);m.rotate(k.span(),"attn.norm_k",rows,text,height,width,cancel);
  if(hook)hook("qkv");
  stop(cancel);
  if(!(m.compute&&m.compute->attend(q.span(),k.span(),v.span(),rows,rows,d.heads,d.heads,d.head_dim,text,0,0,mix.span(),cancel)))
  for(std::size_t t=0;t<rows;++t){const auto allowed=t<text?t+1:rows;for(std::size_t h=0;h<d.heads;++h){stop(cancel);float maximum=-INFINITY;for(std::size_t s=0;s<allowed;++s){float value=0;for(std::size_t c=0;c<d.head_dim;++c)value+=q.data[t*d.state+h*d.head_dim+c]*k.data[s*d.state+h*d.head_dim+c];scores.data[s]=value/std::sqrt(float(d.head_dim));maximum=std::max(maximum,scores.data[s]);}double sum=0;for(std::size_t s=0;s<allowed;++s){scores.data[s]=std::exp(scores.data[s]-maximum);sum+=scores.data[s];}need(sum>0&&std::isfinite(sum),"image_nonfinite");for(std::size_t c=0;c<d.head_dim;++c){float value=0;for(std::size_t s=0;s<allowed;++s)value+=float(scores.data[s]/sum)*v.data[s*d.state+h*d.head_dim+c];mix.data[t*d.state+h*d.head_dim+c]=value;}}}
- m.linear("attn.to_out.0",mix.span(),delta.span(),rows,d.state,d.state,cancel);for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<d.state;++c)x.data[t*d.state+c]+=std::tanh(modulation[(t<text?4*d.state:0)+d.state+c])*delta.data[t*d.state+c];if(hook)hook("attention");
+ m.linear("attn.to_out.0",mix.span(),delta.span(),rows,d.state,d.state,cancel);for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<d.state;++c)x.data[t*d.state+c]+=gates.data[(t<text?2*d.state:0)+c]*delta.data[t*d.state+c];if(hook)hook("attention");
  m.norm_mod(x.span(),modulation,n.span(),rows,text,1,cancel);m.linear("img_mlp.gate_layer",n.span(),gate.span(),rows,d.state,d.intermediate,cancel);m.linear("img_mlp.proj",n.span(),up.span(),rows,d.state,d.intermediate,cancel);for(std::size_t i=0;i<gate.n;++i)gate.data[i]=silu(gate.data[i])*up.data[i];m.linear("img_mlp.out",gate.span(),delta.span(),rows,d.intermediate,d.state,cancel);
- for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<d.state;++c)x.data[t*d.state+c]+=std::tanh(modulation[(t<text?4*d.state:0)+3*d.state+c])*delta.data[t*d.state+c];
+ for(std::size_t t=0;t<rows;++t)for(std::size_t c=0;c<d.state;++c)x.data[t*d.state+c]+=gates.data[(t<text?2*d.state:0)+d.state+c]*delta.data[t*d.state+c];
  finite(x.span());if(hook)hook("feed_forward");stop(cancel);std::copy(x.span().begin(),x.span().end(),output.begin());
 }
 }
