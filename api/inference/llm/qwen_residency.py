@@ -15,7 +15,6 @@ from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceBusy, ResourceExhausted, probe_memory
 
 RESIDENT_HOST_BYTES = QWEN_HOST_BYTES + 256 * MIB
-CACHE_RAM_BYTES = 256 * MIB
 # Bound registered source references, not total on-disk checkpoint storage.
 CACHE_COLD_BYTES = 64 * 1024**3
 

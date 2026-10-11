@@ -1,44 +1,5 @@
-"""Pure placement policy shared by native adapters; reservations remain authoritative."""
-from dataclasses import dataclass
-
+"""Whole-model device selection; reservations remain authoritative."""
 from api.inference.resources import ResourceExhausted
-
-
-@dataclass(frozen=True)
-class PackedPlacement:
-    assignments: dict
-    capacities: dict[int, int]
-    fully_resident: bool
-
-
-def place_packed(sizes, available, primary, headroom):
-    """Prefer one GPU, then distribute indivisible packed entries; spill excess through LRU.
-
-    Each device keeps its own scratch/activation headroom. This never treats two
-    cards as one address space or splits an individual tensor across devices.
-    """
-    if any(type(size) is not int or size <= 0 for size in sizes.values()):
-        raise ValueError('Packed entry sizes must be positive integer bytes')
-    caps = {i: max(0, n - headroom.get(i, 0)) for i, n in available.items()}
-    total = sum(sizes.values())
-    whole = [i for i, n in caps.items() if n >= total]
-    if whole:
-        selected = primary if primary in whole else max(whole, key=lambda i: (caps[i], -i))
-        return PackedPlacement(dict.fromkeys(sizes, selected), {selected: caps[selected]}, True)
-    remaining, assigned, full = dict(caps), {}, True
-    for key, size in sorted(sizes.items(), key=lambda item: -item[1]):
-        choices = [i for i, free in remaining.items() if free >= size]
-        if choices:
-            selected = max(choices, key=lambda i: (remaining[i], i == primary, -i))
-            remaining[selected] -= size
-        else:
-            choices = [i for i, capacity in caps.items() if capacity >= size]
-            if not choices:
-                raise ResourceExhausted('No GPU can hold one packed entry plus execution headroom')
-            selected = max(choices, key=lambda i: (caps[i], i == primary, -i))
-            full = False
-        assigned[key] = selected
-    return PackedPlacement(assigned, {i: caps[i] for i in set(assigned.values())}, full)
 
 
 def select_device(resources, required_bytes, requested='auto', *, allow_cpu=False, retained=None):

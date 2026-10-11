@@ -1,24 +1,9 @@
 import unittest
-from api.inference.placement import place_packed, select_device
+from api.inference.placement import select_device
 from api.inference.resources import MemoryCapacity, ResourceExhausted, ResourceManager
 
 
 class PlacementTests(unittest.TestCase):
-    def test_one_gpu_preferred_when_complete_execution_fits(self):
-        plan = place_packed({'a':40,'b':30},{0:100,1:100},0,{0:20,1:20})
-        self.assertEqual(set(plan.assignments.values()),{0})
-        self.assertTrue(plan.fully_resident)
-
-    def test_split_only_when_required_and_headroom_is_not_weight_budget(self):
-        plan = place_packed({'a':60,'b':50},{0:100,1:100},0,{0:30,1:30})
-        self.assertEqual(set(plan.assignments.values()),{0,1})
-        self.assertTrue(plan.fully_resident)
-        spill = place_packed({'a':60,'b':60,'c':60},{0:100,1:100},0,{0:30,1:30})
-        self.assertFalse(spill.fully_resident)
-        self.assertEqual(spill.capacities,{0:70,1:70})
-        with self.assertRaises(ResourceExhausted):
-            place_packed({'a':80},{0:100,1:100},0,{0:30,1:30})
-
     def test_idle_residency_is_kept_until_admission_needs_space(self):
         resources = ResourceManager(1000,{0:100,1:100})
         evicted=[]
