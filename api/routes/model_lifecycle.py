@@ -1,9 +1,11 @@
 """Kadan model loading controls, separate from versioned inference endpoints."""
 from typing import Literal
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from api.inference.errors import InferenceFailure
-from api.services.chat_runtime import chat_runtime
+from api.services.model_downloads import model_manager
+from api.services.inference import inference
+from api.services.inference_http import infer
 
 router = APIRouter(prefix='/model-lifecycle', tags=['Model lifecycle'])
 
@@ -29,20 +31,19 @@ class ModelLoadRequest(BaseModel):
 @router.get('', operation_id='getModelLifecycleStatus')
 def get_model_lifecycle() -> ModelLifecycleStatus:
     """Return current model state, context limits and shared-memory accounting without loading a model."""
-    return ModelLifecycleStatus(**chat_runtime.status())
+    return ModelLifecycleStatus(**inference.status())
 
 
 @router.post('/load', status_code=202, operation_id='loadSelectedModel')
-async def load_selected_model(body: ModelLoadRequest | None = None) -> ModelLifecycleStatus:
-    """Accept a saved-selection load, or atomically configure and load the supplied target.
-    Validate before switching; 202/loading is acceptance, not completed construction.
-    Poll status for readiness or errors. Identical explicit requests reuse the current load.
-    """
+async def load_selected_model(request: Request, body: ModelLoadRequest | None = None) -> ModelLifecycleStatus:
+    """Prepare and load through the same FIFO as inference, retaining cancellation ownership."""
     try:
-        options = {} if body is None else {'model_id': body.model_id}
-        if body is not None and 'context_limit' in body.model_fields_set:
-            options['context_limit'] = body.context_limit
-        return ModelLifecycleStatus(**await chat_runtime.load(**options))
+        if body is None:
+            selected = model_manager._read_selected_model_id()
+            if selected is None:
+                raise InferenceFailure('Select a language model before loading.', 422)
+            body = ModelLoadRequest(model_id=selected)
+        return ModelLifecycleStatus(**await infer(request, inference.submit(body, feature='llm', operation='load')))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
@@ -50,4 +51,7 @@ async def load_selected_model(body: ModelLoadRequest | None = None) -> ModelLife
 @router.post('/unload', operation_id='unloadSelectedModel')
 async def unload_selected_model() -> ModelLifecycleStatus:
     """Request cooperative cancellation and wait for model cleanup before returning unloaded state."""
-    return ModelLifecycleStatus(**await chat_runtime.unload())
+    try:
+        return ModelLifecycleStatus(**await inference.unload())
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc

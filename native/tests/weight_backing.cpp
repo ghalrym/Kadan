@@ -217,7 +217,45 @@ void read_through_and_slot_pressure() {
     check(out==std::array<std::uint8_t,4>{3,4,5,6});
     fails([&]{cache.read_through("tensor",kadan::Workload::llm,fixture.shard(),"a",0,out);});
 }
+void aggregate_full_cache_and_streaming() {
+    Fixture fixture; auto source=fixture.shard();
+    auto ledger=std::make_shared<Resources>(Footprint{12000,8});
+    {
+        WeightBacking store(ledger,12000,12000,3,1500,true);
+        std::array<std::uint8_t,1> out{};
+        for(unsigned i=0;i<1500;++i) store.read_through(std::to_string(i),kadan::Workload::llm,source,"a",0,out);
+        auto filled=store.stats();
+        check(filled.entries==1500 && filled.ram==12000 && filled.source_bytes==12000 && filled.misses==1500);
+        check(ledger->snapshot().residents==1 && ledger->snapshot().used[0]==12000);
+        check(store.room_for_reservations(3));
+        // Repeated GPU reload reads only application buffers, independent of OS cache.
+        for(unsigned i=0;i<1500;++i) store.read_through(std::to_string(i),kadan::Workload::llm,source,"a",3,out);
+        auto warm=store.stats();check(warm.source_bytes==filled.source_bytes && warm.hits==1500 && warm.hit_bytes==1500 && warm.evictions==0);
+        check(out[0]==3);
+    }
+    check(ledger->snapshot().residents==0);
+    {
+        WeightBacking partial(ledger,8,24,3,3,true);
+        std::array<std::uint8_t,1> out{};
+        for(unsigned i=0;i<20;++i) {
+            partial.read_through("a",kadan::Workload::llm,source,"a",i%8,out);
+            partial.read_through("b",kadan::Workload::llm,source,"b",i%8,out);
+        }
+        auto stats=partial.stats();
+        check(stats.ram==8 && stats.source_bytes==28 && stats.evictions==0 && stats.hits==19 && stats.misses==21);
+    }
+    check(ledger->snapshot().residents==0);
+    {
+        WeightBacking failed(ledger,8,24,3,3,true);
+        failed.add("a",kadan::Workload::llm,source,"a");
+        fail_array_allocation=true;fails([&]{failed.retain("a");});
+        check(failed.stats().ram==0 && ledger->snapshot().used[0]==8);
+        std::atomic_bool cancel{true};fails([&]{failed.retain("a",&cancel);});
+        check(failed.stats().ram==0 && failed.stats().source_bytes==0);
+    }
+    check(ledger->snapshot().residents==0);
+}
 int main() {
-    retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit(); cleanup_is_irreversible(); read_through_and_slot_pressure();
+    aggregate_full_cache_and_streaming(); retention_and_cold(); failures_and_cleanup(); bounds_and_pressure(); abandonment_and_read_failure(); admission_allocation_and_commit(); cleanup_is_irreversible(); read_through_and_slot_pressure();
     std::cout << "weight backing tests passed\n";
 }

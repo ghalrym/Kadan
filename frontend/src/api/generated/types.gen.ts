@@ -141,30 +141,6 @@ export type ChoiceQuestion = {
 }
 
 /**
- * ClonedVoice
- */
-export type ClonedVoice = {
-  /**
-   * Mode
-   */
-  mode: 'clone'
-  /**
-   * Sample
-   *
-   * Base64-encoded audio bytes; URLs and server paths are not accepted.
-   */
-  sample: string
-  /**
-   * Speaker Only
-   */
-  speaker_only?: boolean
-  /**
-   * Transcript
-   */
-  transcript?: string | null
-}
-
-/**
  * CompletionChoice
  */
 export type CompletionChoice = {
@@ -328,20 +304,6 @@ export type DecisionResponse = {
 }
 
 /**
- * DescribedVoice
- */
-export type DescribedVoice = {
-  /**
-   * Description
-   */
-  description: string
-  /**
-   * Mode
-   */
-  mode: 'describe'
-}
-
-/**
  * DownloadRequest
  */
 export type DownloadRequest = {
@@ -421,9 +383,17 @@ export type ImageSet = {
    */
   id: string
   /**
+   * Images Base64
+   */
+  images_base64?: Array<string>
+  /**
    * Meta
    */
   meta: string
+  /**
+   * Mime Type
+   */
+  mime_type?: 'image/png' | null
   /**
    * Mode
    */
@@ -446,6 +416,32 @@ export type ImagesResponse = {
    * Images
    */
   images: Array<ImageSet>
+}
+
+/**
+ * InferenceProgress
+ */
+export type InferenceProgress = {
+  /**
+   * Job Id
+   */
+  job_id: string
+  /**
+   * Observed Unix Ns
+   */
+  observed_unix_ns: number
+  /**
+   * Stage
+   */
+  stage: string
+  /**
+   * Value
+   */
+  value: number
+  /**
+   * Workload
+   */
+  workload: string
 }
 
 /**
@@ -482,6 +478,7 @@ export type MetricsResponse = {
    * Error Rate Percent
    */
   error_rate_percent: number | null
+  inference_progress?: InferenceProgress | null
   /**
    * Memory Unit
    */
@@ -649,7 +646,14 @@ export type ModelStatus = {
   /**
    * Kind
    */
-  kind: 'llm' | 'video' | 'speech' | 'transcription' | 'formatting' | 'image'
+  kind:
+    | 'llm'
+    | 'video'
+    | 'speech'
+    | 'transcription'
+    | 'formatting'
+    | 'image'
+    | 'decision'
   /**
    * License
    */
@@ -1081,24 +1085,12 @@ export type SpeechRequest = {
   /**
    * Model Id
    */
-  model_id?: string | null
+  model_id?: 'qwen-tts-1.7b-custom'
   /**
    * Script
    */
   script: string
-  /**
-   * Voice
-   */
-  voice:
-    | ({
-        mode: 'describe'
-      } & DescribedVoice)
-    | ({
-        mode: 'clone'
-      } & ClonedVoice)
-    | ({
-        mode: 'custom'
-      } & CustomVoice)
+  voice: CustomVoice
 }
 
 /**
@@ -1225,15 +1217,15 @@ export type VideoGenerationRequest = {
   /**
    * Fps
    */
-  fps?: number
+  fps?: 24
   /**
    * Model
    */
-  model?: 'ltx-2.5-distilled' | 'h3-fl2va-int8-turbo'
+  model?: 'h3-fl2va-int8-turbo'
   /**
    * Negative Prompt
    */
-  negative_prompt?: string
+  negative_prompt?: ''
   /**
    * Prompt
    */
@@ -1241,7 +1233,7 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    */
-  resolution?: '480p' | '720p' | '768p' | '1080p'
+  resolution?: '480p' | '768p'
   /**
    * Seed
    */
@@ -1406,6 +1398,10 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Seed
    */
   seed?: number | null
+  /**
+   * Steps
+   */
+  steps?: number
 }
 
 export type HealthData = {

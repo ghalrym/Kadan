@@ -1,12 +1,13 @@
 #pragma once
 #include "kadan/resources.hpp"
+#include "kadan/h3_compute.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <span>
 #include <string>
 
-namespace kadan::checkpoint { class Shard; }
+namespace kadan::checkpoint { class Shard; class ReadCache; }
 namespace kadan::video {
 // Real H3 video VAE decoder input stage only. Not a video generation backend.
 // Serialized executor ownership: the queue owner must not call concurrently.
@@ -32,7 +33,7 @@ public:
                  const std::function<void(std::size_t)>& on_token = {});
 private:
     friend class H3VideoDecoder;
-    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel,bool defer_projections=false);
     void compute(std::span<const float> normalized, const std::atomic_bool& cancel,
                  const std::function<void(std::size_t)>& on_token,
                  const std::function<void(std::span<const float>)>& sink);
@@ -66,7 +67,7 @@ private:
     friend class H3DecoderBlock;
     void compute(std::span<const float> input, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
                  const std::function<void(std::span<const float>)>& sink);
-    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0,bool defer_projections=false);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
@@ -97,7 +98,7 @@ public:
 private:
     friend class H3DecoderBlock;
     void compute(std::span<const float> qkv, std::span<const float> coordinates, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_heads,
-                 const std::function<void(std::span<const float>)>& sink);
+                 const std::function<void(std::span<const float>)>& sink, std::size_t token_limit=max_tokens);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> frequencies_;
@@ -128,7 +129,7 @@ private:
     friend class H3DecoderBlock;
     void compute(std::span<const float> qkv, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
                  const std::function<void(std::span<const float>)>& sink);
-    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0,bool defer_projections=false);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
@@ -158,7 +159,7 @@ private:
     friend class H3DecoderBlock;
     void compute(std::span<const float> residual, std::span<const float> attention, const std::atomic_bool& cancel, const std::function<void(std::size_t)>& on_rows,
                  const std::function<void(std::span<const float>)>& sink);
-    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block=0,bool defer_projections=false);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     std::unique_ptr<float[]> weights_;
@@ -185,16 +186,18 @@ public:
                  const std::string& output, const std::atomic_bool& cancel, const Hook& hook={});
 private:
     friend class H3VideoDecoder;
-    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block);
+    void load_from(checkpoint::Shard& shard, const std::atomic_bool& cancel, std::size_t block,H3Compute* compute=nullptr);
     void compute(std::span<const float> input, std::span<const float> coordinates,
                  const std::atomic_bool& cancel, const Hook& hook,
-                 const std::function<void(std::span<const float>)>& sink);
+                 const std::function<void(std::span<const float>)>& sink, H3Compute* accelerator=nullptr);
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
     H3DecoderQkv qkv_;
     H3QkRope rope_;
     H3DecoderAttention attention_;
     H3DecoderFeedForward ff_;
+    std::array<WeightIdentity,4> weight_identities_{};
+    checkpoint::Shard* projection_shard_=nullptr;H3Compute* projection_compute_=nullptr;std::string projection_prefix_;
     bool executing_=false;
 };
 // Complete released H3 VAE decode graph, CPU F32 over the F16 checkpoint.
@@ -208,11 +211,11 @@ public:
     static constexpr std::size_t max_tokens=H3DecoderInput::max_tokens;
     static constexpr Bytes weight_bytes=(4*hidden+2*hidden+patch_values*hidden+patch_values)*sizeof(float);
     using Hook=std::function<void(const char*,std::size_t)>;
-    explicit H3VideoDecoder(std::shared_ptr<Resources> resources);
+    explicit H3VideoDecoder(std::shared_ptr<Resources> resources, std::shared_ptr<H3Compute> compute={});
     ~H3VideoDecoder();
     H3VideoDecoder(const H3VideoDecoder&)=delete;
     H3VideoDecoder& operator=(const H3VideoDecoder&)=delete;
-    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel);
+    void load(const char* root, const std::string& basename, const std::atomic_bool& cancel,std::shared_ptr<checkpoint::ReadCache> cache={});
     void unload();
     bool loaded() const { return weights_!=nullptr; }
     void execute(std::span<const float> normalized, std::size_t time, std::size_t height,
@@ -221,6 +224,7 @@ public:
 private:
     Footprint host(Bytes bytes) const;
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<H3Compute> compute_;
     H3DecoderInput input_;
     std::unique_ptr<checkpoint::Shard> shard_;
     std::unique_ptr<float[]> weights_;

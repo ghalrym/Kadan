@@ -1,0 +1,89 @@
+#include "kadan/tts_audio.hpp"
+#include "kadan/checkpoint.hpp"
+#include "kadan/float_weights.hpp"
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <map>
+#include <vector>
+namespace kadan::tts {
+namespace {
+void need(bool b,const char* e){if(!b)throw std::runtime_error(e);}
+void stop(const std::atomic_bool& c){need(!c.load(),"tts_audio_cancelled");}
+Footprint host(Resources& r,Bytes n){auto f=r.snapshot().capacity;std::fill(f.begin(),f.end(),0);f[0]=n;return f;}
+struct Lease{Resources& r;Handle h;Lease(Resources& r_,Bytes n):r(r_),h(r.reserve(Workload::tts,host(r,n))){}~Lease(){if(h)r.released(h);}};
+struct Matrix{Lease lease;std::size_t rows,cols;std::unique_ptr<float[]> data;Matrix(Resources& r,std::size_t t,std::size_t c):lease(r,t*c*4),rows(t),cols(c),data(std::make_unique<float[]>(t*c)){}std::span<float> span(){return {data.get(),rows*cols};}};
+using M=std::unique_ptr<Matrix>;
+M matrix(Resources& r,std::size_t t,std::size_t c){return std::make_unique<Matrix>(r,t,c);}
+struct Active{bool& busy;Active(bool& b):busy(b){need(!b,"busy");b=true;}~Active(){busy=false;}};
+struct Pin{Resources& r;Handle h;Pin(Resources& a,Handle b):r(a),h(b){r.pin(h);}~Pin(){r.unpin(h);}};
+void finite(Matrix& x){for(float v:x.span())need(std::isfinite(v),"tts_audio_nonfinite");}
+struct Spec{std::string name;std::vector<std::uint64_t> shape;std::size_t count=1,offset=0;};
+std::vector<Spec> layout(AudioConfig d){
+    std::vector<Spec> s;
+    auto add=[&](std::string p,std::initializer_list<std::uint64_t> shape){s.push_back({"decoder."+p,shape});};
+    auto linear=[&](std::string p,std::size_t in,std::size_t out,bool bias){add(p+".weight",{out,in});if(bias)add(p+".bias",{out});};
+    auto conv=[&](std::string p,std::size_t in,std::size_t out,std::size_t k,bool transpose=false,bool depth=false){add(p+".conv.weight",{transpose?in:out,depth?1:transpose?out:in,k});add(p+".conv.bias",{out});};
+    auto snake=[&](std::string p,std::size_t n){add(p+".alpha",{n});add(p+".beta",{n});};
+    for(bool rest:{false,true}){const std::string p=rest?"quantizer.rvq_rest":"quantizer.rvq_first";add(p+".output_proj.weight",{d.code_dim,d.code_dim/2,1});for(std::size_t i=0;i<(rest?d.codebooks-1:1);++i){auto n=p+".vq.layers."+std::to_string(i)+"._codebook";add(n+".cluster_usage",{d.entries});add(n+".embedding_sum",{d.entries,d.code_dim/2});}}
+    conv("pre_conv",d.code_dim,d.latent,3);linear("pre_transformer.input_proj",d.latent,d.state,true);linear("pre_transformer.output_proj",d.state,d.latent,true);add("pre_transformer.norm.weight",{d.state});
+    for(std::size_t i=0;i<d.layers;++i){const auto p="pre_transformer.layers."+std::to_string(i);for(auto n:{"input_layernorm.weight","post_attention_layernorm.weight","self_attn_layer_scale.scale","mlp_layer_scale.scale"})add(p+"."+n,{d.state});for(auto n:{"q_proj","k_proj","v_proj"})linear(p+".self_attn."+n,d.state,d.heads*d.head_dim,false);linear(p+".self_attn.o_proj",d.heads*d.head_dim,d.state,false);linear(p+".mlp.gate_proj",d.state,d.intermediate,false);linear(p+".mlp.up_proj",d.state,d.intermediate,false);linear(p+".mlp.down_proj",d.intermediate,d.state,false);}
+    for(int i=0;i<2;++i){const auto p="upsample."+std::to_string(i);conv(p+".0",d.latent,d.latent,2,true);conv(p+".1.dwconv",d.latent,d.latent,7,false,true);add(p+".1.norm.weight",{d.latent});add(p+".1.norm.bias",{d.latent});add(p+".1.gamma",{d.latent});linear(p+".1.pwconv1",d.latent,4*d.latent,true);linear(p+".1.pwconv2",4*d.latent,d.latent,true);}
+    conv("decoder.0",d.latent,d.decoder,7);constexpr std::array<std::size_t,4> rates{8,5,4,3};
+    for(std::size_t i=0;i<rates.size();++i){const auto in=d.decoder>>i,out=in/2;const auto p="decoder."+std::to_string(i+1)+".block";snake(p+".0",in);conv(p+".1",in,out,2*rates[i],true);for(int j=2;j<5;++j){auto q=p+"."+std::to_string(j);snake(q+".act1",out);snake(q+".act2",out);conv(q+".conv1",out,out,7);conv(q+".conv2",out,out,1);}}
+    snake("decoder.5",d.decoder/16);conv("decoder.6",d.decoder/16,1,7);
+    std::size_t at=0;for(auto& x:s){for(auto n:x.shape)x.count*=n;x.offset=at;at+=x.count;}return s;
+}
+void config(AudioConfig d){need(d.codebooks>=2&&d.codebooks<=16&&d.entries>0&&d.entries<=2048&&d.code_dim>=2&&d.code_dim<=512&&d.code_dim%2==0&&d.latent>0&&d.latent<=1024,"tts_audio_config");need(d.state>0&&d.state<=512&&d.heads>0&&d.heads<=16&&d.head_dim>0&&d.head_dim<=64&&d.head_dim%2==0&&d.layers>0&&d.layers<=8&&d.intermediate>0&&d.intermediate<=1024&&d.decoder>=16&&d.decoder<=1536&&d.decoder%16==0&&d.window>0&&d.window<=72,"tts_audio_config");}
+}
+struct AudioDecoder::Impl{
+ Resources& resources;std::shared_ptr<DenseCompute> compute;
+ std::unique_ptr<Lease> parser;std::unique_ptr<checkpoint::Shard> shard;
+    Lease metadata;AudioConfig d;std::vector<Spec> specs;std::map<std::string,std::size_t,std::less<>> index;M weights;
+    Impl(Resources& r,AudioConfig a,std::shared_ptr<DenseCompute> c):resources(r),compute(std::move(c)),metadata(r,8*1024*1024),d(a),specs(layout(a)){for(std::size_t i=0;i<specs.size();++i)index.emplace(specs[i].name,i);}
+    checkpoint::FloatSlice w(const std::string& p,const std::atomic_bool& cancel)const{auto& s=specs.at(index.at("decoder."+p));return checkpoint::float_slice(resources,Workload::tts,*shard,"decoder."+p,0,s.count,cancel);}
+    M linear(Resources& r,const std::string& p,Matrix& x,std::size_t out,bool bias,const std::atomic_bool& cancel){auto y=matrix(r,x.rows,out);auto b=checkpoint::FloatSlice(r,Workload::tts,bias?out:0);if(bias)shard->read_float_tensor("decoder."+p+".bias",0,b.span(),cancel);checkpoint::project_source(r,Workload::tts,compute.get(),*shard,"decoder."+p+".weight",b,x.span(),x.cols,out,y->span(),cancel);finite(*y);return y;}
+    M conv(Resources& r,const std::string& p,Matrix& x,std::size_t out,std::size_t kernel,std::size_t dilation,const std::atomic_bool& cancel,bool depth=false){auto y=matrix(r,x.rows,out);auto b=w(p+".conv.bias",cancel);
+      if(!depth){constexpr std::size_t tile=64;auto packed=matrix(r,tile,x.cols*kernel);
+        for(std::size_t at=0;at<x.rows;at+=tile){stop(cancel);const auto count=std::min(tile,x.rows-at);
+          for(std::size_t t=0;t<count;++t)for(std::size_t c=0;c<x.cols;++c)for(std::size_t k=0;k<kernel;++k){const auto source=std::ptrdiff_t(at+t)-std::ptrdiff_t((kernel-1-k)*dilation);packed->data[(t*x.cols+c)*kernel+k]=source>=0?x.data[std::size_t(source)*x.cols+c]:0;}
+          checkpoint::project_source(r,Workload::tts,compute.get(),*shard,"decoder."+p+".conv.weight",b,packed->span().first(count*x.cols*kernel),x.cols*kernel,out,y->span().subspan(at*out,count*out),cancel);
+        }finite(*y);return y;
+      }
+      auto a=w(p+".conv.weight",cancel);for(std::size_t t=0;t<x.rows;++t){stop(cancel);for(std::size_t o=0;o<out;++o){float value=b[o];for(std::size_t c=0;c<(depth?1:x.cols);++c)for(std::size_t k=0;k<kernel;++k){const auto source=std::ptrdiff_t(t)-std::ptrdiff_t((kernel-1-k)*dilation);if(source>=0)value+=x.data[std::size_t(source)*x.cols+(depth?o:c)]*a[(o*(depth?1:x.cols)+c)*kernel+k];}y->data[t*out+o]=value;}}finite(*y);return y;}
+    M upsample(Resources& r,const std::string& p,Matrix& x,std::size_t out,std::size_t kernel,std::size_t stride,const std::atomic_bool& cancel){
+      auto y=matrix(r,x.rows*stride,out);auto b=w(p+".conv.bias",cancel);for(std::size_t t=0;t<y->rows;++t)std::copy(b.begin(),b.end(),y->data.get()+t*out);
+      const auto name="decoder."+p+".conv.weight";auto source=[&](std::size_t first,std::span<float> target){need(first%x.cols==0&&target.size()%x.cols==0,"tts_transpose_source_shape");auto first_row=first/x.cols,rows=target.size()/x.cols;auto slice=checkpoint::FloatSlice(r,Workload::tts,rows);for(std::size_t c=0;c<x.cols;++c){stop(cancel);shard->read_float_tensor(name,c*out*kernel+first_row,slice.span(),cancel);for(std::size_t row=0;row<rows;++row)target[row*x.cols+c]=slice[row];}};
+      constexpr std::size_t tile=64;auto projected=matrix(r,tile,out*kernel);
+      for(std::size_t at=0;at<x.rows;at+=tile){stop(cancel);auto count=std::min(tile,x.rows-at);auto input=x.span().subspan(at*x.cols,count*x.cols),output=projected->span().first(count*out*kernel);
+       shard->check_unchanged();
+       if(!(compute&&compute->dense_source(shard->tensor_identity(name),source,{},input,x.cols,out*kernel,output,cancel))){for(std::size_t row=0;row<out*kernel;row+=32){auto nr=std::min<std::size_t>(32,out*kernel-row);auto weights=checkpoint::FloatSlice(r,Workload::tts,nr*x.cols);source(row*x.cols,weights.span());for(std::size_t t=0;t<count;++t)for(std::size_t o=0;o<nr;++o){float v=0;for(std::size_t c=0;c<x.cols;++c)v+=input[t*x.cols+c]*weights[o*x.cols+c];output[t*out*kernel+row+o]=v;}}}
+       shard->check_unchanged();
+       for(std::size_t t=0;t<count;++t)for(std::size_t o=0;o<out;++o)for(std::size_t k=0;k<kernel&&(at+t)*stride+k<y->rows;++k)y->data[((at+t)*stride+k)*out+o]+=projected->data[(t*out+o)*kernel+k];
+      }finite(*y);return y;
+    }
+    M norm(Resources& r,const std::string& p,Matrix& x,bool rms,const std::atomic_bool& cancel){auto y=matrix(r,x.rows,x.cols);auto a=w(p+".weight",cancel),b=rms?checkpoint::FloatSlice(r,Workload::tts,0):w(p+".bias",cancel);for(std::size_t t=0;t<x.rows;++t){stop(cancel);double mean=0,square=0;if(!rms){for(std::size_t c=0;c<x.cols;++c)mean+=x.data[t*x.cols+c];mean/=x.cols;}for(std::size_t c=0;c<x.cols;++c){double v=x.data[t*x.cols+c]-mean;square+=v*v;}const float scale=float(1/std::sqrt(square/x.cols+(rms?1e-5:1e-6)));for(std::size_t c=0;c<x.cols;++c)y->data[t*x.cols+c]=(x.data[t*x.cols+c]-float(mean))*scale*a[c]+(rms?0:b[c]);}finite(*y);return y;}
+    void snake(const std::string& p,Matrix& x,const std::atomic_bool& cancel){auto a=w(p+".alpha",cancel),b=w(p+".beta",cancel);for(std::size_t t=0;t<x.rows;++t){stop(cancel);for(std::size_t c=0;c<x.cols;++c){float& v=x.data[t*x.cols+c];float s=std::sin(v*std::exp(a[c]));v+=s*s/(std::exp(b[c])+1e-9f);}}finite(x);}
+    M attention(Resources& r,const std::string& p,Matrix& x,const std::atomic_bool& cancel){const auto width=d.heads*d.head_dim;auto q=linear(r,p+".q_proj",x,width,false,cancel),k=linear(r,p+".k_proj",x,width,false,cancel),v=linear(r,p+".v_proj",x,width,false,cancel),mix=matrix(r,x.rows,width),scores=matrix(r,1,x.rows);
+        for(std::size_t t=0;t<x.rows;++t)for(std::size_t h=0;h<d.heads;++h)for(std::size_t c=0;c<d.head_dim/2;++c){const float angle=float(t)*std::pow(10000.f,-2.f*float(c)/float(d.head_dim)),co=std::cos(angle),si=std::sin(angle);for(auto* value:{q.get(),k.get()}){auto offset=t*width+h*d.head_dim+c;float a=value->data[offset],b=value->data[offset+d.head_dim/2];value->data[offset]=a*co-b*si;value->data[offset+d.head_dim/2]=b*co+a*si;}}
+        if(!(compute&&compute->attend(q->span(),k->span(),v->span(),x.rows,x.rows,d.heads,d.heads,d.head_dim,x.rows,std::min(d.window,x.rows),0,mix->span(),cancel)))
+        for(std::size_t t=0;t<x.rows;++t)for(std::size_t h=0;h<d.heads;++h){stop(cancel);const auto first=t+1>d.window?t+1-d.window:0;float maximum=-INFINITY;for(std::size_t j=first;j<=t;++j){float score=0;for(std::size_t c=0;c<d.head_dim;++c)score+=q->data[t*width+h*d.head_dim+c]*k->data[j*width+h*d.head_dim+c];score/=std::sqrt(float(d.head_dim));scores->data[j]=score;maximum=std::max(maximum,score);}double sum=0;for(std::size_t j=first;j<=t;++j){scores->data[j]=std::exp(scores->data[j]-maximum);sum+=scores->data[j];}need(std::isfinite(sum)&&sum>0,"tts_audio_nonfinite");for(std::size_t c=0;c<d.head_dim;++c){float value=0;for(std::size_t j=first;j<=t;++j)value+=float(scores->data[j]/sum)*v->data[j*width+h*d.head_dim+c];mix->data[t*width+h*d.head_dim+c]=value;}}
+        return linear(r,p+".o_proj",*mix,d.state,false,cancel);
+    }
+    void block(Resources& r,const std::string& p,Matrix& x,const std::atomic_bool& cancel){auto n=norm(r,p+".input_layernorm",x,true,cancel),a=attention(r,p+".self_attn",*n,cancel);auto scale=w(p+".self_attn_layer_scale.scale",cancel);for(std::size_t i=0;i<x.rows*x.cols;++i)x.data[i]+=a->data[i]*scale[i%x.cols];n=norm(r,p+".post_attention_layernorm",x,true,cancel);auto gate=linear(r,p+".mlp.gate_proj",*n,d.intermediate,false,cancel),up=linear(r,p+".mlp.up_proj",*n,d.intermediate,false,cancel);for(std::size_t i=0;i<gate->rows*gate->cols;++i){double v=gate->data[i];gate->data[i]=float(v>=0?v/(1+std::exp(-v)):v*std::exp(v)/(1+std::exp(v)))*up->data[i];}auto down=linear(r,p+".mlp.down_proj",*gate,d.state,false,cancel);auto scale2=w(p+".mlp_layer_scale.scale",cancel);for(std::size_t i=0;i<x.rows*x.cols;++i)x.data[i]+=down->data[i]*scale2[i%x.cols];finite(x);}
+};
+AudioDecoder::AudioDecoder(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"tts_resources_required");}
+AudioDecoder::~AudioDecoder(){unload();}
+void AudioDecoder::load(const char* root,const std::string& shard_name,AudioConfig d,const std::atomic_bool& cancel){Active active(busy_);stop(cancel);need(!model_,"tts_audio_loaded");config(d);auto m=std::make_unique<Impl>(*resources_,d,compute_);m->parser=std::make_unique<Lease>(*resources_,8*1024*1024);m->shard=std::make_unique<checkpoint::Shard>(root,shard_name,std::make_shared<checkpoint::MemoryBudget>(8*1024*1024),checkpoint::Limits{1024*1024,4096,4096});auto& shard=*m->shard;for(auto& s:m->specs){auto info=shard.tensor(s.name);need(info.dtype==checkpoint::Dtype::fp32&&info.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),info.shape.begin()),"tts_audio_tensor_layout");}m->weights=matrix(*resources_,1,1);shard.check_unchanged();stop(cancel);resources_->loaded(m->weights->lease.h);model_=std::move(m);}
+void AudioDecoder::unload(){need(!busy_,"busy");if(model_){resources_->begin_eviction(model_->weights->lease.h);model_.reset();}}
+void AudioDecoder::decode(std::span<const std::uint32_t> codes,std::span<float> waveform,const std::atomic_bool& cancel,const Hook& hook){Active active(busy_);stop(cancel);need(bool(model_),"tts_audio_not_loaded");auto& m=*model_;auto d=m.d;need(!codes.empty()&&codes.size()%d.codebooks==0,"tts_audio_code_shape");const auto frames=codes.size()/d.codebooks;need(frames<=max_frames&&waveform.size()==frames*samples_per_frame,"tts_audio_output_shape");for(auto id:codes)need(id<d.entries,"tts_audio_code_range");Pin pin(*resources_,m.weights->lease.h);
+    auto quantized=matrix(*resources_,frames,d.code_dim);
+    for(bool rest:{false,true}){auto aggregate=matrix(*resources_,frames,d.code_dim/2);const std::string p=rest?"quantizer.rvq_rest":"quantizer.rvq_first";for(std::size_t group=0;group<(rest?d.codebooks-1:1);++group){stop(cancel);const auto name=p+".vq.layers."+std::to_string(group)+"._codebook";auto usage=m.w(name+".cluster_usage",cancel);for(std::size_t t=0;t<frames;++t){auto id=codes[t*d.codebooks+(rest?group+1:0)];auto embedding=checkpoint::float_slice(*resources_,Workload::tts,*m.shard,"decoder."+name+".embedding_sum",id*(d.code_dim/2),d.code_dim/2,cancel);for(std::size_t c=0;c<d.code_dim/2;++c)aggregate->data[t*(d.code_dim/2)+c]+=embedding[c]/std::max(usage[id],1e-5f);}}auto weight=m.w(p+".output_proj.weight",cancel);for(std::size_t t=0;t<frames;++t)for(std::size_t o=0;o<d.code_dim;++o){float v=0;for(std::size_t c=0;c<d.code_dim/2;++c)v+=aggregate->data[t*(d.code_dim/2)+c]*weight[o*(d.code_dim/2)+c];quantized->data[t*d.code_dim+o]+=v;}}
+    finite(*quantized);if(hook)hook("quantizer",0);auto latent=m.conv(*resources_,"pre_conv",*quantized,d.latent,3,1,cancel);quantized.reset();auto hidden=m.linear(*resources_,"pre_transformer.input_proj",*latent,d.state,true,cancel);latent.reset();for(std::size_t i=0;i<d.layers;++i){if(hook)hook("transformer",i);m.block(*resources_,"pre_transformer.layers."+std::to_string(i),*hidden,cancel);}auto normalized=m.norm(*resources_,"pre_transformer.norm",*hidden,true,cancel);hidden.reset();latent=m.linear(*resources_,"pre_transformer.output_proj",*normalized,d.latent,true,cancel);normalized.reset();
+    for(int i=0;i<2;++i){const auto p="upsample."+std::to_string(i);auto x=m.upsample(*resources_,p+".0",*latent,d.latent,2,2,cancel);latent.reset();auto depth=m.conv(*resources_,p+".1.dwconv",*x,d.latent,7,1,cancel,true);auto n=m.norm(*resources_,p+".1.norm",*depth,false,cancel);depth.reset();auto expanded=m.linear(*resources_,p+".1.pwconv1",*n,4*d.latent,true,cancel);n.reset();for(float& v:expanded->span())v=.5f*v*(1+std::erf(v/float(std::sqrt(2.))));auto delta=m.linear(*resources_,p+".1.pwconv2",*expanded,d.latent,true,cancel);auto gamma=m.w(p+".1.gamma",cancel);for(std::size_t j=0;j<x->rows*x->cols;++j)x->data[j]+=delta->data[j]*gamma[j%x->cols];finite(*x);latent=std::move(x);if(hook)hook("upsample",i);}
+    auto audio=m.conv(*resources_,"decoder.0",*latent,d.decoder,7,1,cancel);latent.reset();constexpr std::array<std::size_t,4> rates{8,5,4,3};constexpr std::array<std::size_t,3> dilations{1,3,9};
+    for(std::size_t i=0;i<4;++i){const auto p="decoder."+std::to_string(i+1)+".block";m.snake(p+".0",*audio,cancel);audio=m.upsample(*resources_,p+".1",*audio,audio->cols/2,2*rates[i],rates[i],cancel);for(std::size_t j=0;j<3;++j){auto q=p+"."+std::to_string(j+2);auto delta=matrix(*resources_,audio->rows,audio->cols);std::copy(audio->span().begin(),audio->span().end(),delta->data.get());m.snake(q+".act1",*delta,cancel);delta=m.conv(*resources_,q+".conv1",*delta,delta->cols,7,dilations[j],cancel);m.snake(q+".act2",*delta,cancel);delta=m.conv(*resources_,q+".conv2",*delta,delta->cols,1,1,cancel);for(std::size_t k=0;k<audio->rows*audio->cols;++k)audio->data[k]+=delta->data[k];finite(*audio);}if(hook)hook("waveform",i);}
+    m.snake("decoder.5",*audio,cancel);audio=m.conv(*resources_,"decoder.6",*audio,1,7,1,cancel);stop(cancel);for(std::size_t i=0;i<waveform.size();++i)waveform[i]=std::clamp(audio->data[i],-1.f,1.f);
+}
+}

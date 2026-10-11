@@ -35,6 +35,25 @@ public:
         if (capacity_.empty()) throw std::invalid_argument("host_budget_required");
         if (capacity_.size() > max_devices + 1) throw std::invalid_argument("too_many_devices");
     }
+    // The single inference owner refreshes physical capacity only after all
+    // previous engine allocations have been acknowledged as released.
+    void reset_capacity(Footprint capacity) {
+        std::lock_guard lock(mutex_);
+        if (capacity.size()!=capacity_.size() || !residents_.empty())
+            throw std::runtime_error("capacity_requires_empty_ledger");
+        capacity_.swap(capacity);
+    }
+    void refresh_available(const Footprint& available) {
+        std::lock_guard lock(mutex_);
+        if (available.size() != used_.size()) throw std::invalid_argument("budget_shape");
+        for (std::size_t index = 0; index < available.size(); ++index) {
+            if (available[index] > std::numeric_limits<Bytes>::max() - used_[index])
+                throw std::overflow_error("budget_overflow");
+            // Reservations may exceed physical allocations. Never turn that
+            // conservative excess into new capacity while an engine is resident.
+            capacity_[index] = std::min(capacity_[index], used_[index] + available[index]);
+        }
+    }
     Handle reserve(Workload workload, Footprint bytes) {
         std::lock_guard lock(mutex_);
         if (bytes.size() != capacity_.size()) throw std::invalid_argument("budget_shape");

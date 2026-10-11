@@ -1,0 +1,81 @@
+#include "h3_cli.hpp"
+#include "kadan/h3_profile.hpp"
+#include "kadan/h3_tokenizer.hpp"
+#include "kadan/h3_generation.hpp"
+#include "kadan/generation_queue.hpp"
+#include <nlohmann/json.hpp>
+#include <array>
+#include <cerrno>
+#include <charconv>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
+#include <iostream>
+#include <poll.h>
+#include <unistd.h>
+#include <unordered_set>
+namespace {
+using Json=nlohmann::json;
+using Queue=kadan::serving::GenerationQueue;
+std::atomic_bool cancelled=false;
+void request_stop(int){cancelled.store(true);}
+struct Io {std::shared_ptr<kadan::Resources> resources; kadan::Handle id; explicit Io(std::shared_ptr<kadan::Resources> r):resources(std::move(r)),id(resources->reserve(kadan::Workload::video,kadan::video::h3_host(*resources,1024*1024))){} ~Io(){resources->released(id);std::cerr<<"resident_bytes="<<resources->snapshot().used[0]<<'\n';}};
+void check(bool b,const char* why){if(!b)throw std::runtime_error(why);}
+std::size_t number(const Json& object,const char* key,std::size_t fallback){if(!object.contains(key))return fallback;const auto& v=object.at(key);check(v.is_number_unsigned(),"h3_request_integer");return v.get<std::size_t>();}
+std::string string(const Json& object,const char* key,std::size_t limit){check(object.contains(key)&&object.at(key).is_string(),"h3_request_string");auto out=object.at(key).get<std::string>();check(!out.empty()&&out.size()<=limit&&out.find('\0')==std::string::npos,"h3_request_string");return out;}
+bool read_byte(char& c){while(!cancelled.load()){pollfd p{STDIN_FILENO,POLLIN,0};int ready=poll(&p,1,100);if(ready<0&&errno==EINTR)continue;check(ready>=0,"h3_stdin_poll");if(!ready)continue;auto n=read(STDIN_FILENO,&c,1);if(n==1)return true;if(n==0)return false;if(errno==EINTR)continue;throw std::runtime_error("h3_stdin_read");}return false;}
+void publish(const std::string& result){const auto line=result+'\n';std::size_t at=0;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);while(at<line.size()){if(cancelled.load())return;check(std::chrono::steady_clock::now()<deadline,"h3_stdout_timeout");pollfd p{STDOUT_FILENO,POLLOUT,0};auto ready=poll(&p,1,100);if(ready<0&&errno==EINTR)continue;check(ready>=0&&!(p.revents&(POLLERR|POLLHUP|POLLNVAL)),"h3_stdout_poll");if(!ready)continue;auto n=write(STDOUT_FILENO,line.data()+at,line.size()-at);if(n>0)at+=std::size_t(n);else check(n<0&&(errno==EINTR||errno==EAGAIN),"h3_stdout_write");}}
+}
+int main(int argc,char** argv){
+ static_assert(std::atomic_bool::is_always_lock_free);std::cerr.tie(nullptr);
+ try{
+  if(argc==2&&std::string_view(argv[1])=="--capabilities"){
+#ifdef KADAN_H3_CUDA
+   constexpr bool cuda=true;
+#else
+   constexpr bool cuda=false;
+#endif
+   std::cout<<Json{{"protocol",2},{"cuda",cuda},{"audio",true},{"host_budget",128ULL*1024*1024*1024},{"device_budget",2ULL*1024*1024*1024}}.dump()<<'\n';return 0;
+  }
+  check(argc==6||argc==7,"usage: kadan-h3-worker TOKENIZER TEXT DENOISER TURBO VAE [AUDIO_VAE] (JSON lines on stdin)");std::signal(SIGINT,request_stop);std::signal(SIGTERM,request_stop);std::signal(SIGPIPE,SIG_IGN);const auto flags=fcntl(STDOUT_FILENO,F_GETFL);check(flags>=0&&fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK)==0,"h3_stdout_nonblocking");
+  kadan::Bytes cache_limit=0;
+  if(const char* value=std::getenv("KADAN_H3_WEIGHT_CACHE_BYTES")){const std::string_view text(value);auto parsed=std::from_chars(text.data(),text.data()+text.size(),cache_limit);check(parsed.ec==std::errc{}&&parsed.ptr==text.data()+text.size()&&cache_limit<=32ULL*1024*1024*1024,"h3_cache_budget");}
+  auto execution=kadan::video::h3_execution(1536ULL*1024*1024,cache_limit);auto resources=execution.resources;Io io(resources);Queue queue(resources);const kadan::video::H3GenerationPaths paths{argv[1],argv[2],argv[3],argv[4],argv[5],argc==7?argv[6]:""};
+  auto cache=kadan::video::h3_weight_cache(resources,paths,cache_limit,cancelled,execution.compute,[](const char* stage,std::size_t value){std::cerr<<stage<<' '<<value<<'\n';});
+  kadan::video::H3Generation model(resources,execution.compute,cache);
+  {
+   bool parked=false;
+   auto run=[&](const std::string& frame){
+    std::array<std::unordered_set<std::string>,17> keys;std::size_t events=0;const auto object=Json::parse(frame,[&](int depth,Json::parse_event_t event,Json& v){check(depth>=0&&depth<16&&++events<20000,"h3_request_json_limit");if(event==Json::parse_event_t::object_start)keys[depth+1].clear();if(event==Json::parse_event_t::key)check(keys[depth].insert(v.get<std::string>()).second,"h3_request_duplicate_key");return true;});check(object.is_object()&&object.size()<=7,"h3_request_object");
+    if(object.contains("control")){
+        check(object.size()==1,"h3_control_fields");const auto command=string(object,"control",8);
+        check(command=="park"||command=="resume","h3_control_command");
+        if(command=="park"){if(execution.compute)execution.compute->release_devices();parked=true;}else parked=false;
+        const auto used=resources->snapshot().used;for(std::size_t i=1;i<used.size();++i)check(used[i]==0,"h3_control_cleanup_unconfirmed");
+        return Json{{"state",command=="park"?"parked":"resumed"},{"resident_bytes",used[0]-1024*1024},
+            {"device_resident_bytes",std::vector<kadan::Bytes>(used.begin()+1,used.end())}}.dump();
+    }
+    check(!parked,"h3_worker_parked");for(auto it=object.begin();it!=object.end();++it)check(it.key()=="prompt"||it.key()=="output"||it.key()=="width"||it.key()=="height"||it.key()=="frames"||it.key()=="updates"||it.key()=="seed"||it.key()=="short_edge"||it.key()=="aspect"||it.key()=="duration","h3_request_field");
+    kadan::video::H3GenerationRequest request;request.prompt=string(object,"prompt",kadan::video::H3Tokenizer::max_input_bytes);request.output=string(object,"output",4096);request.width=number(object,"width",64);request.height=number(object,"height",64);request.frames=number(object,"frames",22);request.updates=number(object,"updates",8);request.seed=number(object,"seed",0);
+    if(object.contains("short_edge")||object.contains("aspect")||object.contains("duration")){
+        check(!object.contains("width")&&!object.contains("height")&&!object.contains("frames"),"h3_request_profile_conflict");
+        const auto profile=kadan::video::h3_api_profile(number(object,"short_edge",0),string(object,"aspect",5),number(object,"duration",0));
+        request.width=profile.width;request.height=profile.height;request.frames=profile.frames;request.updates=number(object,"updates",4);
+    }
+    // The cache and each stage charge the same ledger before allocation.
+    // The FIFO ticket holds model identity without duplicating reservations.
+    const auto id=queue.submit({"h3/streamed",kadan::Workload::video,kadan::video::h3_host(*resources,0)});std::exception_ptr failure;
+    while(queue.pending()){auto action=queue.poll();if(action.kind==Queue::Kind::load){queue.loaded(id,true);}else if(action.kind==Queue::Kind::execute){try{model.execute(paths,request,cancelled,[](const char* stage,std::size_t value){std::cerr<<stage<<' '<<value<<'\n';});}catch(...){failure=std::current_exception();}if(execution.compute)try{execution.compute->release_scratch();}catch(...){failure=std::current_exception();}if(cancelled.load())queue.cancel(id);queue.completed(id,false);}else if(action.kind==Queue::Kind::cleanup){queue.cleaned(action.reservation,true);}else throw std::runtime_error("h3_queue_stalled");}
+    if(failure)std::rethrow_exception(failure);
+    const auto used=resources->snapshot().used;std::vector<kadan::Bytes> devices(used.begin()+1,used.end());
+    const auto retained=execution.compute?execution.compute->retained_weights():kadan::Footprint{};
+    for(std::size_t i=1;i<used.size();++i)check(used[i]==(retained.empty()?0:retained[i]),"h3_device_scratch_leak");
+    check(used[0]-1024*1024==(cache?cache->reserved_bytes():0)+(retained.empty()?0:retained[0]),"h3_host_scratch_leak");
+    return Json{{"device_weight_metadata_bytes",retained.empty()?0:retained[0]},{"weight_cache_bytes",cache?cache->reserved_bytes():0},{"device_resident_bytes",devices},{"output",request.output},{"frames",request.frames},{"width",request.width},{"height",request.height},{"audio",!paths.audio_vae.empty()},{"resident_bytes",resources->snapshot().used[0]-1024*1024}}.dump();
+   };
+   std::string frame;char c;while(read_byte(c)){if(c!='\n'){check(frame.size()<65536,"h3_request_size");frame+=c;}else if(!frame.empty()){std::string reply;try{reply=run(frame);}catch(const std::exception& e){reply=Json{{"error",e.what()}}.dump();}publish(reply);frame.clear();}}
+   check(frame.empty()||cancelled.load(),"h3_incomplete_frame");queue.stop();auto action=queue.poll();if(action.kind==Queue::Kind::cleanup)queue.cleaned(action.reservation,true);
+  }
+  return 0;
+ }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+}

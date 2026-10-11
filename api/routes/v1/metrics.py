@@ -1,8 +1,8 @@
-import sys
 from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
 from api.services.telemetry import telemetry
+from api.services.inference import inference
 
 router = APIRouter(prefix='/v1/metrics', tags=['Monitoring'])
 
@@ -14,12 +14,21 @@ class ResourceMeter(BaseModel):
     total: float
 
 
+class InferenceProgress(BaseModel):
+    job_id: str
+    workload: str
+    stage: str
+    value: int
+    observed_unix_ns: int
+
+
 class MetricsResponse(BaseModel):
     """Process-local request statistics plus best-effort host/device memory samples.
 
     Null latency/error statistics mean no retained samples in the window. A
     truncated window covers retained records only; Online does not imply a
     loaded model or successful GPU inference."""
+    inference_progress: InferenceProgress | None = None
     status: Literal['Online'] = 'Online'
     resources: list[ResourceMeter]
     resource_errors: list[str]
@@ -37,12 +46,7 @@ class MetricsResponse(BaseModel):
 
 
 def memory_meters():
-    """Return observed memory meters and independent measurement-error messages.
-
-    Host usage is MemTotal minus MemAvailable, not process RSS or a cgroup
-    admission budget. CUDA driver readings run only when torch is already
-    imported; polling never imports inference dependencies or runs inference.
-    Unavailable probes leave explicit errors instead of fabricated readings."""
+    """Report host observations and the native worker's reservation ledger."""
     resources, errors = [], []
     try:
         with open('/proc/meminfo') as stream:
@@ -52,21 +56,13 @@ def memory_meters():
         resources.append(ResourceMeter(label='Host RAM', used=max(0, total - available) / 1024**3, total=total / 1024**3))
     except (OSError, KeyError, ValueError):
         errors.append('Host RAM measurement unavailable')
-    # Do not import optional heavyweight inference dependencies for dashboard polls.
-    torch = sys.modules.get('torch')
-    if torch is None:
-        errors.append('GPU measurement unavailable until inference dependencies are loaded')
+    memory = inference.worker.memory
+    if memory is None:
+        errors.append('Native memory observations are not available yet')
     else:
-        try:
-            if not torch.cuda.is_available():
-                errors.append('CUDA GPU measurement unavailable')
-            else:
-                for device in range(torch.cuda.device_count()):
-                    free, total = torch.cuda.mem_get_info(device)
-                    resources.append(ResourceMeter(label=f'GPU {device} · VRAM',
-                                                   used=max(0, total - free) / 1024**3, total=total / 1024**3))
-        except Exception:
-            errors.append('GPU measurement failed')
+        for device, (capacity, used) in enumerate(zip(memory.capacity[1:], memory.used[1:])):
+            resources.append(ResourceMeter(label=f'GPU {device} · native reservations',
+                used=used / 1024**3, total=capacity / 1024**3))
     return resources, errors
 
 
@@ -77,4 +73,4 @@ def get_metrics() -> MetricsResponse:
     This monitoring read is excluded from generation telemetry, so polling
     does not increase request counts or feed back into latency statistics."""
     resources, errors = memory_meters()
-    return MetricsResponse(resources=resources, resource_errors=errors, **telemetry.metrics())
+    return MetricsResponse(inference_progress=inference.progress, resources=resources, resource_errors=errors, **telemetry.metrics())

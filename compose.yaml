@@ -1,15 +1,4 @@
 services:
-  redis:
-    image: redis:7
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "768mb", "--maxmemory-policy", "noeviction"]
-    volumes:
-      - inference_queue:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   postgres:
     image: postgres:18
     environment: &postgres_environment
@@ -27,7 +16,8 @@ services:
 
   migrate:
     build:
-      context: ./api
+      context: .
+      dockerfile: api/Dockerfile
     environment: &database_environment
       <<: *postgres_environment
       POSTGRES_HOST: postgres
@@ -41,14 +31,13 @@ services:
   api:
     stop_grace_period: 5m
     build:
-      context: ./api
+      context: .
+      dockerfile: api/Dockerfile
     init: true
     environment:
       <<: *database_environment
-      KADAN_REDIS_URL: redis://redis:6379/0
       KADAN_MODEL_DIR: /var/lib/kadan/models
-      KADAN_GPU: ${KADAN_GPU:-auto}
-      KADAN_WHISPER_DEVICE: ${KADAN_WHISPER_DEVICE:-auto}
+      KADAN_INFERENCE_WORKER: /opt/kadan/bin/kadan-inference-worker
     deploy:
       resources:
         reservations:
@@ -63,8 +52,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -92,7 +79,6 @@ services:
       - npm ci && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
 
 volumes:
-  inference_queue:
   model_data:
   postgres_data:
   frontend_node_modules:

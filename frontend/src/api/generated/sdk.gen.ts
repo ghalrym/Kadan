@@ -140,9 +140,7 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 /**
  * Load Selected Model
  *
- * Accept a saved-selection load, or atomically configure and load the supplied target.
- * Validate before switching; 202/loading is acceptance, not completed construction.
- * Poll status for readiness or errors. Identical explicit requests reuse the current load.
+ * Prepare and load through the same FIFO as inference, retaining cancellation ownership.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,
@@ -365,7 +363,7 @@ export const evaluateDecisions = <ThrowOnError extends boolean = false>(
 /**
  * List Images
  *
- * Return empty image history while no image provider or stored results exist.
+ * Return empty history; generated image bytes are returned directly and not persisted.
  */
 export const listImages = <ThrowOnError extends boolean = false>(
   options?: Options<ListImagesData, ThrowOnError>,
@@ -399,7 +397,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Submit image generation to the single native inference worker.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

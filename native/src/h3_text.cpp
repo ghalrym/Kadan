@@ -58,15 +58,14 @@ std::int8_t quantize(float value) {
 }
 void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const float> input,
     std::size_t in,std::size_t out,std::span<float> destination,Resources& resources,
-    const std::atomic_bool& cancel,const H3TextEncoder::Hook& hook) {
+    const std::atomic_bool& cancel,const H3TextEncoder::Hook& hook,H3Compute* compute) {
     stop(cancel);require(input.size()%in==0 && destination.size()==input.size()/in*out,"h3_text_projection_shape");
     require(in<=25600 && out<=25600 && in%256==0,"h3_text_projection_limit");
     shape(shard,prefix+".weight",checkpoint::Dtype::i8,{out,in});
     shape(shard,prefix+".weight_scale",checkpoint::Dtype::fp32,{out,1});
     const auto marker=shard.tensor(prefix+".comfy_quant");
     require(marker.dtype==checkpoint::Dtype::u8 && marker.rank==1 && marker.bytes<=256,"h3_text_quant_marker");
-    Admission admission(resources,in*out+out*4+in*9+256);
-    auto weights=std::make_unique<std::uint8_t[]>(in*out);
+    Admission admission(resources,out*4+in*9+256);
     auto scales=std::make_unique<float[]>(out);
     auto rotated=std::make_unique<double[]>(in);
     auto codes=std::make_unique<std::int8_t[]>(in);
@@ -74,13 +73,18 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     shard.read_tensor(prefix+".comfy_quant",0,{marker_bytes.data(),std::size_t(marker.bytes)});
     const std::string_view marker_text(reinterpret_cast<const char*>(marker_bytes.data()),std::size_t(marker.bytes));
     require(detail::convrot_group(marker_text)==256,"h3_text_quant_marker");
+    static_assert(std::endian::native==std::endian::little);
+    shard.read_tensor(prefix+".weight_scale",0,{reinterpret_cast<std::uint8_t*>(scales.get()),out*4});
+    for(std::size_t r=0;r<out;++r)require(std::isfinite(scales[r]) && scales[r]>=0,"h3_text_scale");
+    if(compute&&compute->convrot_source(shard.tensor_identity(prefix+".weight"),[&](std::size_t first,std::span<std::uint8_t> target){
+        for(std::size_t at=0;at<target.size();){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,target.size()-at);shard.read_tensor(prefix+".weight",first+at,target.subspan(at,count));at+=count;}
+    },{scales.get(),out},{},input,in,out,256,destination,cancel))return;
+    Admission payload(resources,in*out);auto weights=std::make_unique<std::uint8_t[]>(in*out);
     for(std::size_t offset=0;offset<in*out;) {
         stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);
         shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;
     }
-    static_assert(std::endian::native==std::endian::little);
-    shard.read_tensor(prefix+".weight_scale",0,{reinterpret_cast<std::uint8_t*>(scales.get()),out*4});
-    for(std::size_t r=0;r<out;++r)require(std::isfinite(scales[r]) && scales[r]>=0,"h3_text_scale");
+    if(compute){compute->convrot_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{scales.get(),out},{},input,in,out,256,destination,cancel);return;}
     for(std::size_t token=0;token<input.size()/in;++token) {
         stop(cancel);
         for(std::size_t c=0;c<in;++c){const auto value=input[token*in+c];require(std::isfinite(value),"h3_text_nonfinite_input");rotated[c]=value;}
@@ -141,13 +145,13 @@ struct Output {
     void publish(const std::string& name){require(fsync(fd)==0,"h3_text_output_sync");require(link(temp.c_str(),name.c_str())==0,"h3_text_output_publish");}
 };
 }
-H3TextEncoder::H3TextEncoder(std::shared_ptr<Resources> resources):resources_(std::move(resources)){require(bool(resources_),"h3_text_resources_required");}
+H3TextEncoder::H3TextEncoder(std::shared_ptr<Resources> resources,std::shared_ptr<H3Compute> compute):resources_(std::move(resources)),compute_(std::move(compute)){require(bool(resources_),"h3_text_resources_required");}
 H3TextEncoder::~H3TextEncoder(){unload();}
 Footprint H3TextEncoder::host(Bytes bytes) const{return video::host(*resources_,bytes);}
-void H3TextEncoder::load(const char* root,const std::string& basename,const std::atomic_bool& cancel) {
+void H3TextEncoder::load(const char* root,const std::string& basename,const std::atomic_bool& cancel, std::shared_ptr<checkpoint::ReadCache> cache) {
     stop(cancel);require(!executing_,"busy");require(!loaded(),"h3_text_already_loaded");
     Admission metadata(*resources_,metadata_bytes);
-    auto shard=std::make_unique<checkpoint::Shard>(root,basename,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,4096});
+    auto shard=std::make_unique<checkpoint::Shard>(root,basename,std::make_shared<checkpoint::MemoryBudget>(metadata_bytes),checkpoint::Limits{1024*1024,2048,4096});shard->cache_reads(std::move(cache),&cancel);
     shape(*shard,"model.embed_tokens.weight",checkpoint::Dtype::bf16,{vocab,hidden});
     for(std::size_t layer=0;layer<layers;++layer) {
         stop(cancel);const auto p="model.layers."+std::to_string(layer)+".";
@@ -182,12 +186,13 @@ void H3TextEncoder::execute(std::span<const std::uint32_t> ids,const std::string
         dense(*shard_,p+"self_attn.q_norm.weight",qn,*resources_,cancel);
         dense(*shard_,p+"self_attn.k_norm.weight",kn,*resources_,cancel);
         rms(current,norm,normalized);
-        auto project=[&](const char* name,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y){linear(*shard_,p+name,x,in,out,y,*resources_,cancel,hook);};
+        auto project=[&](const char* name,std::span<const float> x,std::size_t in,std::size_t out,std::span<float> y){linear(*shard_,p+name,x,in,out,y,*resources_,cancel,hook,compute_.get());};
         project("self_attn.q_proj",normalized,hidden,8192,q);
         project("self_attn.k_proj",normalized,hidden,1024,k);
         project("self_attn.v_proj",normalized,hidden,1024,v);
         rms(q,qn,q);rms(k,kn,k);rope(q,64,tokens);rope(k,8,tokens);
-        attention(q,k,v,attended,tokens,cancel);
+        if(compute_)compute_->attention(q,k,v,tokens,64,8,128,true,attended,cancel,true);
+        else attention(q,k,v,attended,tokens,cancel);
         project("self_attn.o_proj",attended,8192,hidden,projected);
         for(std::size_t i=0;i<current.size();++i)current[i]+=projected[i];
         rms(current,post,normalized);

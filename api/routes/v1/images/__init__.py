@@ -10,5 +10,5 @@ class ImagesResponse(BaseModel):
 
 @router.get("", operation_id="listImages")
 def list_images() -> ImagesResponse:
-    """Return empty image history while no image provider or stored results exist."""
+    """Return empty history; generated image bytes are returned directly and not persisted."""
     return ImagesResponse(images=[])

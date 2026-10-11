@@ -29,7 +29,7 @@ void resident_session(ResidentEngine& engine,std::shared_ptr<Resources> resource
     GenerationQueue queue(resources);
     auto zero=resources->snapshot().capacity;std::fill(zero.begin(),zero.end(),0);
     const auto info=engine.info();
-    require(info.vocabulary>0&&info.vocabulary<=262144&&info.capacity>0&&info.capacity<=max_capacity,"invalid_info");
+    require(info.vocabulary>0&&info.vocabulary<=262144&&info.capacity>0&&info.capacity<=max_resident_capacity,"invalid_info");
     output<<"ready 2 "<<identity<<' '<<info.vocabulary<<' '<<info.capacity<<'\n';flush(output);
     Handle active=0;std::size_t committed=0;bool ended=false;std::string line;
     auto cleanup=[&]{auto action=queue.poll();if(action.kind==GenerationQueue::Kind::cleanup){engine.park();queue.cleaned(action.reservation,true);}};
@@ -62,6 +62,10 @@ void resident_session(ResidentEngine& engine,std::shared_ptr<Resources> resource
         }else if(op=="park"){
             require(id==0&&!active&&!queue.pending()&&!(fields>>extra),"invalid_park");queue.evict_idle();cleanup();engine.park();
             output<<"parked "<<identity<<" 0\n";
+        }else if(op=="cache"){
+            require(id==0&&!active&&!(fields>>extra),"invalid_cache");
+            auto s=engine.cache_stats();
+            output<<"cache "<<identity<<" 0 "<<s.capacity<<' '<<s.ram<<' '<<s.cold<<' '<<s.hits<<' '<<s.misses<<' '<<s.hit_bytes<<' '<<s.source_bytes<<' '<<s.evictions<<' '<<s.entries<<'\n';
         }else if(op=="close"){
             require(id==0&&!(fields>>extra),"invalid_close");break;
         }else throw std::runtime_error("unknown_command");

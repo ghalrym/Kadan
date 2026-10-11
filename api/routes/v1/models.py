@@ -12,7 +12,7 @@ class ModelStatus(BaseModel):
     revision: str
     license: str
     estimated_bytes: int
-    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image']
+    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image', 'decision']
     display_name: str | None
     license_url: str | None
     license_notice: str | None

@@ -3,9 +3,12 @@
 #include <iosfwd>
 #include <string_view>
 #include "kadan/resources.hpp"
+#include "kadan/weight_backing.hpp"
 #include <memory>
 namespace kadan::serving {
 constexpr std::size_t max_capacity=262144, max_frame=64;
+// Resident GLM has a larger declared context; legacy/Qwen planning stays bounded.
+constexpr std::size_t max_resident_capacity=1048576;
 constexpr std::size_t metadata_bytes=256*1024*1024, staging_bytes=1024*1024, control_bytes=1024*1024;
 std::size_t number(std::string_view);
 struct Info {std::size_t vocabulary,capacity,arena_bytes,host_bytes;};
@@ -27,6 +30,7 @@ public:
     virtual void begin_request()=0;
     virtual void end_request()=0;
     virtual void park()=0;
+    virtual WeightBacking::Stats cache_stats()const { return {}; }
 };
 // Unique worker incarnation; every v2 command/reply also carries its FIFO ID.
 std::string session_identity();

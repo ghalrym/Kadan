@@ -1,8 +1,11 @@
 #include "kadan/checkpoint.hpp"
+#include "kadan/checkpoint_cache.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <bit>
+#include <cmath>
 #include <charconv>
 #include <cstring>
 #include <fcntl.h>
@@ -221,6 +224,8 @@ quantization::Matrix Projection::view() const & { return {encoding_, rows_, colu
 
 struct Shard::Impl {
     std::shared_ptr<MemoryBudget> budget;
+    std::shared_ptr<ReadCache> cache;
+    const std::atomic_bool* cancel=nullptr;
     Fd file;
     struct stat identity;
     std::uint64_t data_begin = 0;
@@ -279,27 +284,80 @@ TensorInfo Shard::tensor(std::string_view name) const {
     const auto& t = impl_->find(name);
     return {t.name, t.dtype, t.shape, t.rank, t.end - t.begin};
 }
+TensorInfo Shard::tensor_at(std::size_t index) const {
+    if(index>=impl_->tensors.size())throw std::out_of_range("tensor_index");
+    const auto& t=impl_->tensors[index];
+    return {t.name,t.dtype,t.shape,t.rank,t.end-t.begin};
+}
 void Shard::check_unchanged() const { impl_->unchanged(); }
+WeightIdentity Shard::tensor_identity(std::string_view name) const {
+    const auto& t=impl_->find(name);const auto& s=impl_->identity;
+    return {std::uint64_t(s.st_dev),std::uint64_t(s.st_ino),std::uint64_t(s.st_size),
+        std::uint64_t(s.st_mtim.tv_sec),std::uint64_t(s.st_mtim.tv_nsec),std::uint64_t(s.st_ctim.tv_sec),
+        std::uint64_t(s.st_ctim.tv_nsec),impl_->data_begin+t.begin,impl_->data_begin+t.end};
+}
+void Shard::cache_reads(std::shared_ptr<ReadCache> cache,const std::atomic_bool* cancel){impl_->cache=std::move(cache);impl_->cancel=cancel;}
 void Shard::read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const {
     const auto& t = impl_->find(name);
-    impl_->unchanged(); impl_->read(t, offset, destination); impl_->unchanged();
+    impl_->unchanged();
+    if(impl_->cache){
+        impl_->cache->read(tensor_identity(name),t.end-t.begin,offset,destination,[&](std::size_t at,std::span<std::uint8_t> out){
+            impl_->read(t,at,out);impl_->unchanged();
+        },impl_->cancel);
+    }else impl_->read(t, offset, destination);
+    impl_->unchanged();
+}
+void Shard::read_float_tensor(std::string_view name,std::size_t first,std::span<float> destination,const std::atomic_bool& cancel) const {
+    const auto& t=impl_->find(name);impl_->unchanged();
+    require(t.dtype==Dtype::fp32||t.dtype==Dtype::bf16||t.dtype==Dtype::fp16,"checkpoint_float_dtype");
+    const std::size_t width=t.dtype==Dtype::fp32?4:2,count=(t.end-t.begin)/width;
+    require(first<=count&&destination.size()<=count-first,"checkpoint_float_range");
+    const auto bytes=mul(count,sizeof(float));
+    auto source=[&](std::size_t at,std::span<std::uint8_t> output){
+        std::array<std::uint8_t,4096> raw;
+        for(std::size_t offset=0;offset<output.size();){
+            if(cancel.load())throw std::runtime_error("checkpoint_cache_cancelled");
+            const auto n=std::min(raw.size()/width,(output.size()-offset)/4);
+            impl_->read(t,(at+offset)/4*width,{raw.data(),n*width});impl_->unchanged();
+            for(std::size_t i=0;i<n;++i){
+                std::uint32_t bits=0;for(std::size_t b=0;b<width;++b)bits|=std::uint32_t(raw[i*width+b])<<(8*b);
+                float value;
+                if(t.dtype==Dtype::fp16){const auto exponent=(bits>>10)&31,fraction=bits&1023;require(exponent!=31,"checkpoint_nonfinite_weight");value=exponent?std::ldexp(float(1024+fraction),int(exponent)-25):std::ldexp(float(fraction),-24);if(bits&32768)value=-value;}
+                else value=std::bit_cast<float>(width==2?bits<<16:bits);
+                require(std::isfinite(value),"checkpoint_nonfinite_weight");std::memcpy(output.data()+offset+i*4,&value,4);
+            }
+            offset+=n*4;
+        }
+        if(cancel.load())throw std::runtime_error("checkpoint_cache_cancelled");
+    };
+    std::span<std::uint8_t> output(reinterpret_cast<std::uint8_t*>(destination.data()),destination.size_bytes());
+    if(impl_->cache)impl_->cache->read(tensor_identity(name),bytes,first*4,output,source,&cancel,1);
+    else source(first*4,output);
+    impl_->unchanged();
 }
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
                                     std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory, const TensorReader& reader) const {
+    return load_quantized_rows(prefix,first,count,payload_budget,std::move(payload_memory),reader,false);
+}
+Projection Shard::load_compressed_nvfp4_rows(std::string_view prefix,std::size_t first,std::size_t count,std::size_t payload_budget,std::shared_ptr<MemoryBudget> payload_memory,const TensorReader& reader) const {
+    return load_quantized_rows(prefix,first,count,payload_budget,std::move(payload_memory),reader,true);
+}
+Projection Shard::load_quantized_rows(std::string_view prefix,std::size_t first,std::size_t count,std::size_t payload_budget,std::shared_ptr<MemoryBudget> payload_memory,const TensorReader& reader,bool compressed) const {
     require(!prefix.empty() && prefix.size() <= 480 && count != 0, "projection_range_or_name");
     auto name = [&](std::string_view suffix) { std::pmr::string n(prefix, impl_->budget.get()); n += suffix; return n; };
-    const auto& weight = impl_->find(name(".weight"));
+    const auto& weight = impl_->find(name(compressed ? ".weight_packed" : ".weight"));
     const auto& scale = impl_->find(name(".weight_scale"));
     require(weight.rank == 2 && first <= weight.shape[0] && count <= weight.shape[0] - first && weight.shape[1] != 0, "projection_shape");
     require(weight.dtype == Dtype::u8 || weight.dtype == Dtype::fp8, "projection_dtype");
     const bool fp4 = weight.dtype == Dtype::u8;
+    require(!compressed || fp4,"compressed_nvfp4_dtype");
     const auto columns = fp4 ? mul(weight.shape[1], 2) : weight.shape[1];
     const Tensor* global = nullptr;
     std::uint64_t scale_rows = 0, multiplier_count = 0;
     if (fp4) {
         require(columns % 16 == 0 && scale.dtype == Dtype::fp8 && scale.rank == 2 &&
                 scale.shape[0] == weight.shape[0] && scale.shape[1] == columns / 16, "nvfp4_scale_layout");
-        global = &impl_->find(name(".weight_scale_2"));
+        global = &impl_->find(name(compressed ? ".weight_global_scale" : ".weight_scale_2"));
         require(global->dtype == Dtype::fp32 && (global->rank == 0 || (global->rank == 1 && global->shape[0] == 1)), "nvfp4_global_layout");
         scale_rows = mul(count, columns / 16); multiplier_count = 1;
     } else {
@@ -326,7 +384,9 @@ Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
     for (std::size_t i = 0; i < multiplier_count; ++i) {
         std::array<std::uint8_t, 4> raw{};
         read(multiplier, scalar ? 0 : mul(add(first, i), 4), raw);
-        result.multipliers_[i] = quantization::fp32_le(raw);
+        const auto value=quantization::fp32_le(raw);
+        if(compressed)require(std::isfinite(value)&&value>0&&std::isfinite(1.f/value),"compressed_nvfp4_global_scale");
+        result.multipliers_[i] = compressed ? 1.f/value : value;
     }
     impl_->unchanged();
     // Zero-row decode runs #99's format/value validation without dense allocation.

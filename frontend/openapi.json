@@ -211,44 +211,6 @@
         "title": "ChoiceQuestion",
         "type": "object"
       },
-      "ClonedVoice": {
-        "additionalProperties": false,
-        "properties": {
-          "mode": {
-            "const": "clone",
-            "title": "Mode",
-            "type": "string"
-          },
-          "sample": {
-            "description": "Base64-encoded audio bytes; URLs and server paths are not accepted.",
-            "minLength": 1,
-            "title": "Sample",
-            "type": "string"
-          },
-          "speaker_only": {
-            "default": false,
-            "title": "Speaker Only",
-            "type": "boolean"
-          },
-          "transcript": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Transcript"
-          }
-        },
-        "required": [
-          "mode",
-          "sample"
-        ],
-        "title": "ClonedVoice",
-        "type": "object"
-      },
       "CompletionChoice": {
         "properties": {
           "finish_reason": {
@@ -444,6 +406,7 @@
         "properties": {
           "instruction": {
             "default": "",
+            "maxLength": 8000,
             "title": "Instruction",
             "type": "string"
           },
@@ -607,27 +570,6 @@
         "title": "DecisionResponse",
         "type": "object"
       },
-      "DescribedVoice": {
-        "additionalProperties": false,
-        "properties": {
-          "description": {
-            "minLength": 1,
-            "title": "Description",
-            "type": "string"
-          },
-          "mode": {
-            "const": "describe",
-            "title": "Mode",
-            "type": "string"
-          }
-        },
-        "required": [
-          "mode",
-          "description"
-        ],
-        "title": "DescribedVoice",
-        "type": "object"
-      },
       "DownloadRequest": {
         "additionalProperties": false,
         "properties": {
@@ -744,9 +686,28 @@
             "title": "Id",
             "type": "string"
           },
+          "images_base64": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Images Base64",
+            "type": "array"
+          },
           "meta": {
             "title": "Meta",
             "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "const": "image/png",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
           },
           "mode": {
             "enum": [
@@ -795,6 +756,39 @@
         "title": "ImagesResponse",
         "type": "object"
       },
+      "InferenceProgress": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "observed_unix_ns": {
+            "title": "Observed Unix Ns",
+            "type": "integer"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          },
+          "workload": {
+            "title": "Workload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "workload",
+          "stage",
+          "value",
+          "observed_unix_ns"
+        ],
+        "title": "InferenceProgress",
+        "type": "object"
+      },
       "MessagesResponse": {
         "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
@@ -833,6 +827,16 @@
               }
             ],
             "title": "Error Rate Percent"
+          },
+          "inference_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InferenceProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "memory_unit": {
             "const": "GiB",
@@ -1155,7 +1159,8 @@
               "speech",
               "transcription",
               "formatting",
-              "image"
+              "image",
+              "decision"
             ],
             "title": "Kind",
             "type": "string"
@@ -1906,15 +1911,10 @@
             "type": "string"
           },
           "model_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
+            "const": "qwen-tts-1.7b-custom",
+            "default": "qwen-tts-1.7b-custom",
+            "title": "Model Id",
+            "type": "string"
           },
           "script": {
             "minLength": 1,
@@ -1922,26 +1922,7 @@
             "type": "string"
           },
           "voice": {
-            "discriminator": {
-              "mapping": {
-                "clone": "#/components/schemas/ClonedVoice",
-                "custom": "#/components/schemas/CustomVoice",
-                "describe": "#/components/schemas/DescribedVoice"
-              },
-              "propertyName": "mode"
-            },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/DescribedVoice"
-              },
-              {
-                "$ref": "#/components/schemas/ClonedVoice"
-              },
-              {
-                "$ref": "#/components/schemas/CustomVoice"
-              }
-            ],
-            "title": "Voice"
+            "$ref": "#/components/schemas/CustomVoice"
           }
         },
         "required": [
@@ -2138,30 +2119,26 @@
           },
           "duration": {
             "default": 8,
-            "exclusiveMinimum": 0.0,
-            "maximum": 120.0,
+            "maximum": 15.0,
+            "minimum": 4.0,
             "title": "Duration",
             "type": "integer"
           },
           "fps": {
+            "const": 24,
             "default": 24,
-            "exclusiveMinimum": 0.0,
-            "maximum": 120.0,
             "title": "Fps",
             "type": "integer"
           },
           "model": {
-            "default": "ltx-2.5-distilled",
-            "enum": [
-              "ltx-2.5-distilled",
-              "h3-fl2va-int8-turbo"
-            ],
+            "const": "h3-fl2va-int8-turbo",
+            "default": "h3-fl2va-int8-turbo",
             "title": "Model",
             "type": "string"
           },
           "negative_prompt": {
+            "const": "",
             "default": "",
-            "maxLength": 8000,
             "title": "Negative Prompt",
             "type": "string"
           },
@@ -2173,12 +2150,10 @@
             "type": "string"
           },
           "resolution": {
-            "default": "720p",
+            "default": "768p",
             "enum": [
               "480p",
-              "720p",
-              "768p",
-              "1080p"
+              "768p"
             ],
             "title": "Resolution",
             "type": "string"
@@ -2477,6 +2452,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 1.8446744073709552e+19,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2485,6 +2461,13 @@
               }
             ],
             "title": "Seed"
+          },
+          "steps": {
+            "default": 50,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Steps",
+            "type": "integer"
           }
         },
         "required": [
@@ -2496,7 +2479,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Image and speech providers are unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. One native C++ worker owns the bounded FIFO, model engines, resource admission and lifecycle. The API submits requests and presents native results. Chat history is client-owned.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -2547,7 +2530,7 @@
     },
     "/model-lifecycle/load": {
       "post": {
-        "description": "Accept a saved-selection load, or atomically configure and load the supplied target.\nValidate before switching; 202/loading is acceptance, not completed construction.\nPoll status for readiness or errors. Identical explicit requests reuse the current load.",
+        "description": "Prepare and load through the same FIFO as inference, retaining cancellation ownership.",
         "operationId": "loadSelectedModel",
         "requestBody": {
           "content": {
@@ -2960,7 +2943,7 @@
     },
     "/v1/images": {
       "get": {
-        "description": "Return empty image history while no image provider or stored results exist.",
+        "description": "Return empty history; generated image bytes are returned directly and not persisted.",
         "operationId": "listImages",
         "responses": {
           "200": {
@@ -3027,7 +3010,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
+        "description": "Submit image generation to the single native inference worker.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {

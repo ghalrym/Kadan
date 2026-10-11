@@ -1,8 +1,10 @@
 #pragma once
 
 #include "kadan/quantization.hpp"
+#include "kadan/weight_identity.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -68,6 +70,7 @@ private:
 // Linux POSIX reader. The root is trusted; shard_name must be one local basename.
 // Keeps an O_NOFOLLOW regular-file descriptor; never maps or reads all payloads.
 using TensorReader = std::function<void(std::string_view, std::size_t, std::span<std::uint8_t>)>;
+class ReadCache;
 class Shard {
 public:
     Shard(const char* root, std::string_view shard_name,
@@ -77,10 +80,17 @@ public:
     Shard& operator=(const Shard&) = delete;
     std::size_t tensor_count() const;
     TensorInfo tensor(std::string_view name) const;
+    // Header-only enumeration in name order; does not read tensor payloads.
+    TensorInfo tensor_at(std::size_t index) const;
+    WeightIdentity tensor_identity(std::string_view name) const;
     std::size_t tensor_index(std::string_view name) const;
     void check_unchanged() const;
+    // Cache ownership is explicit; cancellation outlives this shard's reads.
+    void cache_reads(std::shared_ptr<ReadCache>,const std::atomic_bool* cancel);
     // Caller owns/admitted destination; no hidden payload allocation.
     void read_tensor(std::string_view name, std::size_t offset, std::span<std::uint8_t> destination) const;
+    // Exact F16/BF16/F32 decode, retained in the same bounded cache envelope.
+    void read_float_tensor(std::string_view name,std::size_t first,std::span<float> destination,const std::atomic_bool& cancel) const;
     // Explicit ModelOpt contract. All companion tensors must be in this shard.
     // Reads only selected rows plus their block/row scales and scalar multiplier.
     // payload_budget caps final owned tensor bytes, separately from allocator quota.
@@ -88,7 +98,14 @@ public:
     Projection load_modelopt_rows(std::string_view prefix, std::size_t first,
                                   std::size_t count, std::size_t payload_budget,
                                   std::shared_ptr<MemoryBudget> payload_memory = {}, const TensorReader& reader = {}) const;
+    // compressed-tensors nvfp4-pack-quantized, group16, weight-only.
+    // weight_global_scale stores the reciprocal of the decoded multiplier.
+    Projection load_compressed_nvfp4_rows(std::string_view prefix, std::size_t first,
+                                  std::size_t count, std::size_t payload_budget,
+                                  std::shared_ptr<MemoryBudget> payload_memory = {}, const TensorReader& reader = {}) const;
 private:
+    Projection load_quantized_rows(std::string_view, std::size_t, std::size_t,
+                                  std::size_t, std::shared_ptr<MemoryBudget>, const TensorReader&, bool) const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
