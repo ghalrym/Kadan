@@ -1,5 +1,5 @@
 from typing import Literal
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from api.pydantic_models.media import GeneratedSpeech
 from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
