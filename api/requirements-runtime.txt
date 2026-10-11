@@ -1,4 +1,4 @@
-# Tokenization, checkpoint conversion and device accounting for C++ workers.
+# Checkpoint conversion and tokenizer/mel asset export for native inference.
 # These packages do not execute models in the API.
 torch==2.14.1
 transformers==5.17.0

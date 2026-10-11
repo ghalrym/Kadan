@@ -141,30 +141,6 @@ export type ChoiceQuestion = {
 }
 
 /**
- * ClonedVoice
- */
-export type ClonedVoice = {
-  /**
-   * Mode
-   */
-  mode: 'clone'
-  /**
-   * Sample
-   *
-   * Base64-encoded audio bytes; URLs and server paths are not accepted.
-   */
-  sample: string
-  /**
-   * Speaker Only
-   */
-  speaker_only?: boolean
-  /**
-   * Transcript
-   */
-  transcript?: string | null
-}
-
-/**
  * CompletionChoice
  */
 export type CompletionChoice = {
@@ -325,20 +301,6 @@ export type DecisionResponse = {
    * Answers
    */
   answers: Array<ChoiceAnswer | ScoreAnswer | NoulAnswer>
-}
-
-/**
- * DescribedVoice
- */
-export type DescribedVoice = {
-  /**
-   * Description
-   */
-  description: string
-  /**
-   * Mode
-   */
-  mode: 'describe'
 }
 
 /**
@@ -1123,24 +1085,12 @@ export type SpeechRequest = {
   /**
    * Model Id
    */
-  model_id?: string | null
+  model_id?: 'qwen-tts-1.7b-custom'
   /**
    * Script
    */
   script: string
-  /**
-   * Voice
-   */
-  voice:
-    | ({
-        mode: 'describe'
-      } & DescribedVoice)
-    | ({
-        mode: 'clone'
-      } & ClonedVoice)
-    | ({
-        mode: 'custom'
-      } & CustomVoice)
+  voice: CustomVoice
 }
 
 /**
@@ -1267,7 +1217,7 @@ export type VideoGenerationRequest = {
   /**
    * Fps
    */
-  fps?: number
+  fps?: 24
   /**
    * Model
    */
@@ -1275,7 +1225,7 @@ export type VideoGenerationRequest = {
   /**
    * Negative Prompt
    */
-  negative_prompt?: string
+  negative_prompt?: ''
   /**
    * Prompt
    */
@@ -1283,7 +1233,7 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    */
-  resolution?: '480p' | '720p' | '768p' | '1080p'
+  resolution?: '480p' | '768p'
   /**
    * Seed
    */

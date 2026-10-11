@@ -430,11 +430,11 @@ if(KADAN_ENABLE_IMAGE_GENERATION)
 find_package(nlohmann_json 3.10 REQUIRED)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
 find_library(KADAN_IMAGE_PCRE2 pcre2-8 REQUIRED)
-add_library(kadan_image_tokenizer src/image_tokenizer.cpp)
-target_link_libraries(kadan_image_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_IMAGE_PCRE2})
-target_compile_options(kadan_image_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_library(kadan_text_tokenizer src/text_tokenizer.cpp)
+target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_IMAGE_PCRE2})
+target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_executable(kadan-image-tokenize src/image_tokenize.cpp)
-target_link_libraries(kadan-image-tokenize PRIVATE kadan_image_tokenizer)
+target_link_libraries(kadan-image-tokenize PRIVATE kadan_text_tokenizer)
 endif()
 
 add_executable(kadan-image-schedule src/image_schedule.cpp)
@@ -448,7 +448,7 @@ endif()
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
 add_library(kadan_image_generation src/image_generation.cpp src/image_png.cpp)
-target_link_libraries(kadan_image_generation PUBLIC kadan_image_tokenizer kadan_image_text kadan_image_denoiser kadan_image_vae PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(kadan_image_generation PUBLIC kadan_text_tokenizer kadan_image_text kadan_image_denoiser kadan_image_vae PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 add_executable(kadan-image-worker src/image_worker.cpp)
 target_link_libraries(kadan-image-worker PRIVATE kadan_image_generation nlohmann_json::nlohmann_json)
@@ -546,4 +546,46 @@ if(BUILD_TESTING)
   add_executable(resident-protocol-tests tests/resident_protocol.cpp)
   target_link_libraries(resident-protocol-tests PRIVATE kadan_model_worker_protocol)
   add_test(NAME resident-protocol COMMAND resident-protocol-tests)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(inference-owner-tests tests/inference_owner.cpp)
+  target_link_libraries(inference-owner-tests PRIVATE kadan_resources)
+  add_test(NAME inference-owner COMMAND inference-owner-tests)
+  if(TARGET kadan_h3_generation)
+    add_executable(h3-inventory-tests tests/h3_inventory.cpp)
+    target_link_libraries(h3-inventory-tests PRIVATE kadan_h3_generation)
+    add_test(NAME h3-inventory COMMAND h3-inventory-tests)
+  endif()
+endif()
+
+if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION AND KADAN_ENABLE_TTS_WORKER AND KADAN_ENABLE_IMAGE_GENERATION)
+  add_executable(kadan-inference-worker src/inference_worker.cpp src/inference_chat.cpp
+    src/inference_decision.cpp src/inference_image.cpp src/inference_video.cpp
+    src/inference_whisper.cpp src/inference_speech.cpp)
+  target_compile_definitions(kadan-inference-worker PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-inference-worker PRIVATE kadan_gpu kadan_glm
+    kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
+    kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
+    kadan_tts_tokenizer kadan_text_tokenizer nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+  install(TARGETS kadan-inference-worker
+    RUNTIME_DEPENDENCIES
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+    RUNTIME DESTINATION libexec COMPONENT inference-runtime
+    LIBRARY DESTINATION lib COMPONENT inference-runtime)
+  install(PROGRAMS packaging/run_inference_worker.sh DESTINATION bin
+    RENAME kadan-inference-worker COMPONENT inference-runtime)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(native-text-tests tests/native_text.cpp)
+  target_link_libraries(native-text-tests PRIVATE kadan_resources kadan_h3_profile)
+  add_test(NAME native-text COMMAND native-text-tests)
+endif()
+
+if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
+  add_executable(text-tokenizer-tests tests/text_tokenizer.cpp)
+  target_link_libraries(text-tokenizer-tests PRIVATE kadan_text_tokenizer nlohmann_json::nlohmann_json ICU::uc)
+  add_test(NAME text-tokenizer COMMAND text-tokenizer-tests)
 endif()

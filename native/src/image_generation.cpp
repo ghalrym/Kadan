@@ -1,5 +1,5 @@
 #include "kadan/image_generation.hpp"
-#include "kadan/image_tokenizer.hpp"
+#include "kadan/text_tokenizer.hpp"
 #include "kadan/image_text.hpp"
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_vae.hpp"
@@ -24,8 +24,8 @@ constexpr const char* prefix="<|im_start|>system\nComprehend and analyze the pro
 }
 struct Generator::Impl {
  std::shared_ptr<DenseCompute> compute;
- Lease metadata;PromptTokenizer tokenizer;TextEncoder text;Denoiser denoiser;VaeDecoder vae;std::array<float,64> mean,stddev;
- Impl(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> c):compute(c),metadata(*r,32*1024*1024),tokenizer(r),text(r,c),denoiser(r,c),vae(r,c){}
+ Lease metadata;text::Tokenizer tokenizer;TextEncoder text;Denoiser denoiser;VaeDecoder vae;std::array<float,64> mean,stddev;
+ Impl(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> c):compute(c),metadata(*r,32*1024*1024),tokenizer(r,kadan::Workload::image),text(r,c),denoiser(r,c),vae(r,c){}
 };
 Generator::Generator(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 Generator::~Generator(){unload();}

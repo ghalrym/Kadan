@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
-from api.inference.resources import ResourceCancelled
+from api.inference.errors import ResourceCancelled
 from api.inference.progress import report
 from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
 

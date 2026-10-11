@@ -29,18 +29,30 @@ inline ComputePlan worker_compute_plan(Bytes host,const char* selection_name){
 }
 struct WorkerCompute {
  std::shared_ptr<Resources> resources;std::shared_ptr<DenseCompute> compute;Footprint context;Handle context_handle=0;Workload workload;
- WorkerCompute(const ComputePlan& plan,Workload kind):resources(std::make_shared<Resources>(plan.capacity)),context(plan.capacity.size()),workload(kind){
+ WorkerCompute(const ComputePlan& plan,Workload kind,std::shared_ptr<Resources> owner={}):resources(owner?std::move(owner):std::make_shared<Resources>(plan.capacity)),context(plan.capacity.size()),workload(kind){
 #ifdef KADAN_WORKER_CUDA
   if(!plan.devices.empty()){
    for(int d:plan.devices)context[d+1]=compute_context_bytes;
    // Keep the matching parent reservation until acknowledged park destroys
    // these contexts, or the child has been reaped during cancellation.
    context_handle=resources->reserve(workload,context);
-   compute=cuda_dense_compute(resources,plan.devices,workload);
+   try {
+    compute=cuda_dense_compute(resources,plan.devices,workload);
+   } catch (...) {
+    resources->released(context_handle);
+    context_handle=0;
+    throw;
+   }
   }
 #else
   (void)workload;if(!plan.devices.empty())throw std::invalid_argument("compute_cuda_not_built");
 #endif
+ }
+ ~WorkerCompute() noexcept {
+  try { park(); } catch (...) {
+   // Preserve the reservation when physical cleanup cannot be confirmed.
+   // The shared owner detects this nonempty ledger and stops admission.
+  }
  }
  void idle() const {if(compute)compute->release_scratch();const auto retained=compute?compute->retained_weights():Footprint{};const auto used=resources->snapshot().used;for(std::size_t i=1;i<used.size();++i)if(used[i]!=(context_handle?context[i]:0)+(retained.empty()?0:retained.at(i)))throw std::runtime_error("compute_device_cleanup_unconfirmed");}
  void park(){idle();if(context_handle){compute->release_devices();resources->released(context_handle);context_handle=0;}}

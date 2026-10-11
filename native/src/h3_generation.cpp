@@ -87,7 +87,8 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(std::shared_ptr<Resources
         auto budget=std::make_shared<checkpoint::MemoryBudget>(32*1024*1024);
         for(const auto* path:{&paths.text,&paths.denoiser,&paths.turbo,&paths.vae,&paths.audio_vae}){
             stop(cancel);if(path->empty())continue;const std::filesystem::path file(*path);
-            checkpoint::Shard shard(file.parent_path().c_str(),file.filename().string(),budget);
+            checkpoint::Limits limits;limits.metadata_value_bytes=8192;
+            checkpoint::Shard shard(file.parent_path().c_str(),file.filename().string(),budget,limits);
             inventory.add(shard);
         }
     }

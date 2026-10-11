@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 from api.pydantic_models.decisions import ChoiceQuestion, DecisionAnswer, DecisionQuestion, ScoreQuestion
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
+from api.services.inference import inference
+from api.services.inference_http import infer
 
 router = APIRouter(prefix='/v1/decisions', tags=['Decisions'])
 
@@ -70,6 +70,6 @@ def get_decisions() -> DecisionPlaygroundResponse:
 async def evaluate_decisions(body: DecisionRequest, request: Request) -> DecisionResponse:
     """Queue typed CPU decisions, preserving validation and disconnect cleanup."""
     try:
-        return DecisionResponse(answers=await infer(request, memory_manager.submit(body, feature='decisions')))
+        return DecisionResponse(answers=await infer(request, inference.submit(body, feature='decisions')))
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(502, 'Laya returned an invalid typed decision response.') from exc

@@ -397,7 +397,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Generate PNG images through the optional native CPU worker and shared FIFO.
+ * Submit image generation to the single native inference worker.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

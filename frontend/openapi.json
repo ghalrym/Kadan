@@ -211,44 +211,6 @@
         "title": "ChoiceQuestion",
         "type": "object"
       },
-      "ClonedVoice": {
-        "additionalProperties": false,
-        "properties": {
-          "mode": {
-            "const": "clone",
-            "title": "Mode",
-            "type": "string"
-          },
-          "sample": {
-            "description": "Base64-encoded audio bytes; URLs and server paths are not accepted.",
-            "minLength": 1,
-            "title": "Sample",
-            "type": "string"
-          },
-          "speaker_only": {
-            "default": false,
-            "title": "Speaker Only",
-            "type": "boolean"
-          },
-          "transcript": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Transcript"
-          }
-        },
-        "required": [
-          "mode",
-          "sample"
-        ],
-        "title": "ClonedVoice",
-        "type": "object"
-      },
       "CompletionChoice": {
         "properties": {
           "finish_reason": {
@@ -444,6 +406,7 @@
         "properties": {
           "instruction": {
             "default": "",
+            "maxLength": 8000,
             "title": "Instruction",
             "type": "string"
           },
@@ -605,27 +568,6 @@
           "answers"
         ],
         "title": "DecisionResponse",
-        "type": "object"
-      },
-      "DescribedVoice": {
-        "additionalProperties": false,
-        "properties": {
-          "description": {
-            "minLength": 1,
-            "title": "Description",
-            "type": "string"
-          },
-          "mode": {
-            "const": "describe",
-            "title": "Mode",
-            "type": "string"
-          }
-        },
-        "required": [
-          "mode",
-          "description"
-        ],
-        "title": "DescribedVoice",
         "type": "object"
       },
       "DownloadRequest": {
@@ -1969,15 +1911,10 @@
             "type": "string"
           },
           "model_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
+            "const": "qwen-tts-1.7b-custom",
+            "default": "qwen-tts-1.7b-custom",
+            "title": "Model Id",
+            "type": "string"
           },
           "script": {
             "minLength": 1,
@@ -1985,26 +1922,7 @@
             "type": "string"
           },
           "voice": {
-            "discriminator": {
-              "mapping": {
-                "clone": "#/components/schemas/ClonedVoice",
-                "custom": "#/components/schemas/CustomVoice",
-                "describe": "#/components/schemas/DescribedVoice"
-              },
-              "propertyName": "mode"
-            },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/DescribedVoice"
-              },
-              {
-                "$ref": "#/components/schemas/ClonedVoice"
-              },
-              {
-                "$ref": "#/components/schemas/CustomVoice"
-              }
-            ],
-            "title": "Voice"
+            "$ref": "#/components/schemas/CustomVoice"
           }
         },
         "required": [
@@ -2201,15 +2119,14 @@
           },
           "duration": {
             "default": 8,
-            "exclusiveMinimum": 0.0,
-            "maximum": 120.0,
+            "maximum": 15.0,
+            "minimum": 4.0,
             "title": "Duration",
             "type": "integer"
           },
           "fps": {
+            "const": 24,
             "default": 24,
-            "exclusiveMinimum": 0.0,
-            "maximum": 120.0,
             "title": "Fps",
             "type": "integer"
           },
@@ -2220,8 +2137,8 @@
             "type": "string"
           },
           "negative_prompt": {
+            "const": "",
             "default": "",
-            "maxLength": 8000,
             "title": "Negative Prompt",
             "type": "string"
           },
@@ -2236,9 +2153,7 @@
             "default": "768p",
             "enum": [
               "480p",
-              "720p",
-              "768p",
-              "1080p"
+              "768p"
             ],
             "title": "Resolution",
             "type": "string"
@@ -2564,7 +2479,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. Inference uses a bounded Redis queue consumed inside the API process. Chat uses Kadan's selected native adapter; Decisions use a resident CPU Laya specialist. H3 video and Whisper transcription use shared memory admission. Native image and speech workers can be enabled explicitly; image editing remains unavailable. Monitoring reports bounded process-local HTTP telemetry and observed memory. Chat history is client-owned. This is not an OpenAI-compatible API.",
+    "description": "Local model downloads and selection are persisted. One native C++ worker owns the bounded FIFO, model engines, resource admission and lifecycle. The API submits requests and presents native results. Chat history is client-owned.",
     "title": "Kadan API",
     "version": "0.0.1"
   },
@@ -3095,7 +3010,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Generate PNG images through the optional native CPU worker and shared FIFO.",
+        "description": "Submit image generation to the single native inference worker.",
         "operationId": "generateImages",
         "requestBody": {
           "content": {

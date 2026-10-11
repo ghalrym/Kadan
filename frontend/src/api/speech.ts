@@ -2,32 +2,6 @@ import { generateSpeech, listSpeech } from './generated/sdk.gen'
 import type { GeneratedSpeech, SpeechRequest } from './generated/types.gen'
 
 /**
- * Trim editor values into the discriminated describe/clone API payload.
- * Throw for blank script/voice input; clone samples contain uploaded base64 bytes.
- */
-export function speechRequest(
-  script: string,
-  mode: 'describe' | 'clone',
-  voice: string,
-): SpeechRequest {
-  script = script.trim()
-  voice = voice.trim()
-  if (!script)
-    throw new Error('Enter a script.')
-  if (!voice)
-    throw new Error(
-      mode === 'clone'
-        ? 'Enter a sample reference.'
-        : 'Describe the voice.',
-    )
-  return {
-    script,
-    voice:
-      mode === 'clone' ? { mode, sample: voice, speaker_only: false } : { mode, description: voice },
-  }
-}
-
-/**
  * Translate an HTTP status or missing response into a user-facing speech error.
  */
 function speechError(status?: number): Error {

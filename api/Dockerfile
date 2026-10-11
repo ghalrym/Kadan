@@ -12,14 +12,8 @@ RUN pip install --no-cache-dir cmake==3.31.6
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_WHISPER_BLAS=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DKADAN_ENABLE_IMAGE_BLAS=ON \
-    && cmake --build /build --target kadan-model-worker kadan-glm-worker kadan-decision-worker kadan-h3-worker kadan-whisper-worker kadan-tts-worker kadan-image-worker --parallel 2 \
-    && cmake --install /build --prefix /out --component model-runtime \
-    && cmake --install /build --prefix /out --component decision-runtime \
-    && cmake --install /build --prefix /out --component h3-runtime \
-    && cmake --install /build --prefix /out --component whisper-runtime \
-    && cmake --install /build --prefix /out --component tts-runtime \
-    && cmake --install /build --prefix /out --component image-runtime \
-    && /out/bin/kadan-h3-worker --capabilities | python -c 'import json,sys; assert json.load(sys.stdin)["cuda"] is True'
+    && cmake --build /build --target kadan-inference-worker --parallel 2 \
+    && cmake --install /build --prefix /out --component inference-runtime
 
 FROM python:3.12-slim-bookworm
 WORKDIR /app
@@ -30,15 +24,9 @@ COPY api/requirements*.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt && pip check
 COPY api/ /app/api
 COPY --from=native-build /out/ /opt/kadan/
-RUN test -x /opt/kadan/bin/kadan-model-worker \
-    && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-model-worker > /tmp/model-linkage \
-    && ! grep "not found" /tmp/model-linkage \
-    && test -x /opt/kadan/bin/kadan-decision-worker \
-    && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-decision-worker > /tmp/decision-linkage \
-    && ! grep "not found" /tmp/decision-linkage \
-    && test -x /opt/kadan/bin/kadan-h3-worker \
-    && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-h3-worker > /tmp/h3-linkage \
-    && ! grep "not found" /tmp/h3-linkage
+RUN test -x /opt/kadan/bin/kadan-inference-worker \
+    && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-inference-worker > /tmp/native-linkage \
+    && ! grep "not found" /tmp/native-linkage
 RUN ffmpeg -version && ffprobe -version && python -m api.inference.check_install
 EXPOSE 8000
 CMD ["python", "-m", "api"]

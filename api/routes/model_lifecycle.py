@@ -3,10 +3,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from api.inference.errors import InferenceFailure
-from api.services.chat_runtime import chat_runtime
 from api.services.model_downloads import model_manager
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
+from api.services.inference import inference
+from api.services.inference_http import infer
 
 router = APIRouter(prefix='/model-lifecycle', tags=['Model lifecycle'])
 
@@ -32,7 +31,7 @@ class ModelLoadRequest(BaseModel):
 @router.get('', operation_id='getModelLifecycleStatus')
 def get_model_lifecycle() -> ModelLifecycleStatus:
     """Return current model state, context limits and shared-memory accounting without loading a model."""
-    return ModelLifecycleStatus(**chat_runtime.status())
+    return ModelLifecycleStatus(**inference.status())
 
 
 @router.post('/load', status_code=202, operation_id='loadSelectedModel')
@@ -44,9 +43,7 @@ async def load_selected_model(request: Request, body: ModelLoadRequest | None = 
             if selected is None:
                 raise InferenceFailure('Select a language model before loading.', 422)
             body = ModelLoadRequest(model_id=selected)
-        job_id = await memory_manager.queue.submit('llm', 'load',
-            body.model_dump(mode='json', exclude_unset=True), body.model_id)
-        return ModelLifecycleStatus(**await infer(request, memory_manager.queue.wait(job_id)))
+        return ModelLifecycleStatus(**await infer(request, inference.submit(body, feature='llm', operation='load')))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
@@ -55,7 +52,6 @@ async def load_selected_model(request: Request, body: ModelLoadRequest | None = 
 async def unload_selected_model() -> ModelLifecycleStatus:
     """Request cooperative cancellation and wait for model cleanup before returning unloaded state."""
     try:
-        await memory_manager.queue.cancel_feature("llm")
-        return ModelLifecycleStatus(**await chat_runtime.unload())
+        return ModelLifecycleStatus(**await inference.unload())
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc

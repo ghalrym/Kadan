@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
+from api.services.inference import inference
+from api.services.inference_http import infer
 from api.inference.errors import InferenceFailure
 
 router = APIRouter(prefix='/v1/chat/completions', tags=['Chat'])
@@ -133,16 +133,16 @@ async def create_completion(body: CompletionRequest, request: Request):
     if body.conversation_id:
         measurement['conversation_key'] = hashlib.sha256(body.conversation_id.encode()).hexdigest()[:16]
     identity = {'id': 'chatcmpl-' + uuid4().hex, 'created': int(time.time()),
-                'model': body.model or memory_manager.runtime.model_id or 'unknown'}
+                'model': body.model or inference.model_id or 'unknown'}
     if body.stream:
         try:
-            stream, model = await infer(request, memory_manager.open_chat_stream(body))
+            stream, model = await infer(request, inference.open_chat_stream(body))
         except HTTPException:
             raise
         identity['model'] = model or identity['model']
         return OwnedStreamResponse(chunks(stream, identity, measurement,
             request.scope.get('kadan_request_started', time.monotonic())), stream)
-    result = await infer(request, memory_manager.submit(body, feature='llm', operation='completion'))
+    result = await infer(request, inference.submit(body, feature='llm', operation='completion'))
     identity['model'] = result['model']
     observe_generation(measurement, result)
     text = result['text']

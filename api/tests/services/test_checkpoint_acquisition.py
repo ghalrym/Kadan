@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from api.inference.cancellation import run_cancellable_thread
-from api.inference.resources import ResourceCancelled
+from api.inference.errors import ResourceCancelled
 from api.services.model_downloads import ModelManager
 from api.tests.services.test_model_downloads import fixture
 
