@@ -34,7 +34,7 @@ system memory.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
 - Images: Qwen Image generation. Editing is unavailable.
 - Video: H3 FL2VA INT8 + Turbo, 480p/768p, 16:9/9:16/1:1,
-  24 fps and integer durations from 4–15 seconds. Distilled H3 does not support
+  24 fps and integer durations from 1–15 seconds. Distilled H3 does not support
   negative prompts.
 - Speech: Qwen3-TTS 1.7B CustomVoice, named speakers, supported languages and
   instructions. Describe and clone modes have no enabled native integration.
@@ -76,6 +76,37 @@ options in `api/Dockerfile`, install the `inference-runtime` component, and set
 Install `api/requirements.txt` in a virtual environment and set `KADAN_MODEL_DIR`
 to writable checkpoint storage before starting one Uvicorn worker.
 `API_PROXY_TARGET` selects the frontend's API destination.
+
+### Development
+
+Use the development override for Python hot reload. The frontend already uses
+Vite with a source bind mount. Explicit file selection avoids loading an unrelated
+local `compose.override.yaml`.
+
+```sh
+docker compose -f compose.yaml -f compose.development.yaml build api
+docker compose -f compose.yaml -f compose.development.yaml up -d --no-build api frontend
+```
+
+Python and frontend edits reload automatically. Edit Python only when inference
+is idle or cancellation is acceptable: reloading also replaces its owned native
+worker. C++ changes need an image rebuild and replacement of only the API:
+
+```sh
+docker compose -f compose.yaml -f compose.development.yaml build api
+docker compose -f compose.yaml -f compose.development.yaml up -d --no-deps --no-build --force-recreate --wait api
+```
+
+The API and migration service share the built image. The API keeps the worker
+installed in that image; no separately deployed native binary is needed. Existing
+model and database volumes remain attached. On a recovered server, include its
+reviewed storage override in every command and preserve its mount dependencies
+before switching service supervision. These commands alone do not migrate an
+existing systemd-managed installation.
+
+Browser checks exercise generation manually. Use one second for video checks and
+cancel a check if it has not completed after three minutes. These are testing
+limits, not application timeouts or duration restrictions.
 
 ## Checkpoint storage
 

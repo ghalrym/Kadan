@@ -1,0 +1,11 @@
+services:
+  migrate:
+    image: kadan-dev:local
+
+  api:
+    image: kadan-dev:local
+    command: [python, -m, uvicorn, api.server:app, --host, 0.0.0.0, --port, "8000", --reload, --reload-dir, /app/api]
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - ./api:/app/api:ro
