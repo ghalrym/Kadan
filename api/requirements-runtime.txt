@@ -1,8 +1,0 @@
-# Checkpoint conversion and tokenizer/mel asset export for native inference.
-# These packages do not execute models in the API.
-torch==2.14.1
-transformers==5.17.0
-safetensors==0.8.0
-
-# Pinned tokenizer/mel assets for native Whisper export only; no Python inference fallback.
-openai-whisper==20250625

@@ -106,6 +106,153 @@
         "title": "ChatMessage",
         "type": "object"
       },
+      "CheckpointStatus": {
+        "properties": {
+          "architecture_context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Context Limit"
+          },
+          "context_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Limit"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "downloaded_bytes": {
+            "title": "Downloaded Bytes",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "estimated_bytes": {
+            "title": "Estimated Bytes",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inference_available": {
+            "title": "Inference Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "llm",
+              "video",
+              "speech",
+              "transcription",
+              "formatting",
+              "image",
+              "decision"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "title": "License",
+            "type": "string"
+          },
+          "license_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Notice"
+          },
+          "license_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Url"
+          },
+          "repo_id": {
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_downloaded",
+              "downloading",
+              "cancelling",
+              "cancelled",
+              "failed",
+              "complete"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "downloaded_bytes",
+          "total_bytes",
+          "error",
+          "id",
+          "repo_id",
+          "revision",
+          "license",
+          "estimated_bytes",
+          "kind",
+          "display_name",
+          "license_url",
+          "license_notice",
+          "inference_available",
+          "context_limit",
+          "architecture_context_limit"
+        ],
+        "title": "CheckpointStatus",
+        "type": "object"
+      },
       "ChoiceAnswer": {
         "properties": {
           "confidence": {
@@ -1107,18 +1254,22 @@
             "title": "Context Limit"
           },
           "model_id": {
-            "enum": [
-              "small",
-              "medium",
-              "large"
+            "anyOf": [
+              {
+                "enum": [
+                  "small",
+                  "medium",
+                  "large"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Model Id",
-            "type": "string"
+            "title": "Model Id"
           }
         },
-        "required": [
-          "model_id"
-        ],
         "title": "ModelLoadRequest",
         "type": "object"
       },
@@ -1168,159 +1319,11 @@
         "title": "ModelSetting",
         "type": "object"
       },
-      "ModelStatus": {
-        "properties": {
-          "architecture_context_limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Architecture Context Limit"
-          },
-          "context_limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.",
-            "title": "Context Limit"
-          },
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "downloaded_bytes": {
-            "title": "Downloaded Bytes",
-            "type": "integer"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "estimated_bytes": {
-            "title": "Estimated Bytes",
-            "type": "integer"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "inference_available": {
-            "title": "Inference Available",
-            "type": "boolean"
-          },
-          "kind": {
-            "enum": [
-              "llm",
-              "video",
-              "speech",
-              "transcription",
-              "formatting",
-              "image",
-              "decision"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "license": {
-            "title": "License",
-            "type": "string"
-          },
-          "license_notice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "License Notice"
-          },
-          "license_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "License Url"
-          },
-          "repo_id": {
-            "title": "Repo Id",
-            "type": "string"
-          },
-          "revision": {
-            "title": "Revision",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "not_downloaded",
-              "downloading",
-              "cancelling",
-              "cancelled",
-              "failed",
-              "complete"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "total_bytes": {
-            "title": "Total Bytes",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "repo_id",
-          "revision",
-          "license",
-          "estimated_bytes",
-          "kind",
-          "display_name",
-          "license_url",
-          "license_notice",
-          "inference_available",
-          "status",
-          "downloaded_bytes",
-          "total_bytes",
-          "error",
-          "context_limit",
-          "architecture_context_limit"
-        ],
-        "title": "ModelStatus",
-        "type": "object"
-      },
       "ModelsResponse": {
         "properties": {
           "models": {
             "items": {
-              "$ref": "#/components/schemas/ModelStatus"
+              "$ref": "#/components/schemas/CheckpointStatus"
             },
             "title": "Models",
             "type": "array"
@@ -3186,7 +3189,7 @@
     },
     "/v1/models": {
       "get": {
-        "description": "Return current catalog, download progress, saved selection, and context limits.\n\nCompleteness is checked from local files; this does not start downloads or\nload models. Context/configuration errors propagate; an unreadable or\ninvalid saved selection is represented as no selection.",
+        "description": "Return the worker's latest model snapshot and observed download progress.",
         "operationId": "list_models_v1_models_get",
         "responses": {
           "200": {
@@ -3208,7 +3211,6 @@
     },
     "/v1/models/selection": {
       "put": {
-        "description": "Save a completed model as the selection for a subsequent runtime load.\n\nReturns refreshed status, or 409 for a runtime lease, 400 for an incomplete\ncheckpoint, and 503 for unavailable storage. Selection alone loads no tensors.",
         "operationId": "select_model_v1_models_selection_put",
         "requestBody": {
           "content": {
@@ -3250,7 +3252,6 @@
     },
     "/v1/models/{model_id}/context": {
       "put": {
-        "description": "Persist the model's context limit and return refreshed catalog status.\n\nNull uses the architecture maximum on load. Returns 409 while a runtime lease\nis held, 400 for invalid limits/model IDs, or 503 for unavailable storage.",
         "operationId": "configure_context_v1_models__model_id__context_put",
         "parameters": [
           {
@@ -3303,7 +3304,6 @@
     },
     "/v1/models/{model_id}/download": {
       "delete": {
-        "description": "Request cancellation and return status with HTTP 202 before cleanup finishes.\n\nUnknown models return 400, inactive jobs return 409, and storage errors return\n503. Completed checkpoints are never deleted by this endpoint.",
         "operationId": "cancel_download_v1_models__model_id__download_delete",
         "parameters": [
           {
@@ -3344,7 +3344,7 @@
         ]
       },
       "post": {
-        "description": "Start a catalog checkpoint download and return status with HTTP 202.\n\nAcceptance is not completion; poll the catalog for progress or failure.\nUnknown models return 400; active/completed conflicts return 409 and storage\nfailures return 503. Only pinned catalog checkpoints may be downloaded.",
+        "description": "Queue a worker download; poll model status for progress and completion.",
         "operationId": "download_model_v1_models__model_id__download_post",
         "parameters": [
           {

@@ -1,8 +1,8 @@
 **
 !api/
 !api/**
-!native/
-!native/**
+!inference_worker/
+!inference_worker/**
 !bin/
 !bin/**
 api/tests/

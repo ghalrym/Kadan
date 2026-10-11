@@ -1,41 +1,17 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
-from api.services.model_downloads import (
-    BusyError,
-    DownloadStatus,
-    ModelsStatus,
-    model_manager,
-)
+from api.pydantic_models.model_store import CheckpointStatus
+from api.pydantic_models.inference_task import ModelContextTask
+
+from api.services.inference import inference
+from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/models", tags=["models"])
 
 
-class ModelStatus(BaseModel):
-    id: str
-    repo_id: str
-    revision: str
-    license: str
-    estimated_bytes: int
-    kind: Literal[
-        "llm", "video", "speech", "transcription", "formatting", "image", "decision"
-    ]
-    display_name: str | None
-    license_url: str | None
-    license_notice: str | None
-    inference_available: bool
-    status: DownloadStatus
-    downloaded_bytes: int
-    total_bytes: int
-    error: str | None
-    context_limit: int | None = Field(
-        description="Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode."
-    )
-    architecture_context_limit: int | None
-
-
 class ModelsResponse(BaseModel):
-    models: list[ModelStatus]
+    models: list[CheckpointStatus]
     selected_model_id: str | None
 
 
@@ -59,93 +35,55 @@ class ContextRequest(BaseModel):
 
 
 @router.put("/{model_id}/context", response_model=ModelsResponse)
-def configure_context(model_id: str, body: ContextRequest) -> ModelsStatus:
-    """Persist the model's context limit and return refreshed catalog status.
-
-    Null uses the architecture maximum on load. Returns 409 while a runtime lease
-    is held, 400 for invalid limits/model IDs, or 503 for unavailable storage."""
+async def configure_context(model_id: str, body: ContextRequest) -> ModelsResponse:
     try:
-        model_manager.set_context(model_id, body.context_limit)
-        return model_manager.status()
-    except BusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(
-            503,
-            "Model storage is unavailable; check directory permissions and disk space",
-        ) from exc
+        await inference.submit(
+            ModelContextTask(model_id=model_id, context_limit=body.context_limit),
+            feature="model_context",
+            operation="configure",
+        )
+        return list_models()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.get("", response_model=ModelsResponse)
-def list_models() -> ModelsStatus:
-    """Return current catalog, download progress, saved selection, and context limits.
-
-    Completeness is checked from local files; this does not start downloads or
-    load models. Context/configuration errors propagate; an unreadable or
-    invalid saved selection is represented as no selection."""
-    return model_manager.status()
+def list_models() -> ModelsResponse:
+    """Return the worker's latest model snapshot and observed download progress."""
+    try:
+        snapshot = inference.models_status()
+        return ModelsResponse(
+            models=snapshot.models, selected_model_id=snapshot.selected_model_id
+        )
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.put("/selection", response_model=ModelsResponse)
-def select_model(body: SelectionRequest) -> ModelsStatus:
-    """Save a completed model as the selection for a subsequent runtime load.
-
-    Returns refreshed status, or 409 for a runtime lease, 400 for an incomplete
-    checkpoint, and 503 for unavailable storage. Selection alone loads no tensors."""
+async def select_model(body: SelectionRequest) -> ModelsResponse:
     try:
-        model_manager.select(body.model_id)
-        return model_manager.status()
-    except BusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(
-            503,
-            "Model storage is unavailable; check directory permissions and disk space",
-        ) from exc
+        await inference.submit(body, feature="model_selection", operation="configure")
+        return list_models()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.post("/{model_id}/download", response_model=ModelsResponse, status_code=202)
-def download_model(model_id: str, body: DownloadRequest | None = None) -> ModelsStatus:
-    """Start a catalog checkpoint download and return status with HTTP 202.
-
-    Acceptance is not completion; poll the catalog for progress or failure.
-    Unknown models return 400; active/completed conflicts return 409 and storage
-    failures return 503. Only pinned catalog checkpoints may be downloaded."""
+async def download_model(
+    model_id: str, body: DownloadRequest | None = None
+) -> ModelsResponse:
+    """Queue a worker download; poll model status for progress and completion."""
     try:
-        model_manager.start(
-            model_id, license_acknowledged=bool(body and body.license_acknowledged)
-        )
-        return model_manager.status()
-    except BusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(
-            503,
-            "Model storage is unavailable; check directory permissions and disk space",
-        ) from exc
+        await inference.download(model_id, bool(body and body.license_acknowledged))
+        return list_models()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.delete("/{model_id}/download", response_model=ModelsResponse, status_code=202)
-def cancel_download(model_id: str) -> ModelsStatus:
-    """Request cancellation and return status with HTTP 202 before cleanup finishes.
-
-    Unknown models return 400, inactive jobs return 409, and storage errors return
-    503. Completed checkpoints are never deleted by this endpoint."""
+async def cancel_download(model_id: str) -> ModelsResponse:
     try:
-        model_manager.cancel(model_id)
-        return model_manager.status()
-    except BusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(
-            503,
-            "Model storage is unavailable; check directory permissions and disk space",
-        ) from exc
+        await inference.cancel_download(model_id)
+        return list_models()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc

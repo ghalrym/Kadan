@@ -1,12 +1,38 @@
 from typing import Literal
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from api.pydantic_models.media import GeneratedSpeech
-from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
+from api.services.inference_errors import InferenceFailure
 from api.services.inference import inference
 from api.services.inference_http import infer
 
 router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
+
+
+SPEAKERS = (
+    "Vivian",
+    "Serena",
+    "Uncle_Fu",
+    "Dylan",
+    "Eric",
+    "Ryan",
+    "Aiden",
+    "Ono_Anna",
+    "Sohee",
+)
+LANGUAGES = (
+    "Auto",
+    "Chinese",
+    "English",
+    "Japanese",
+    "Korean",
+    "German",
+    "French",
+    "Russian",
+    "Portuguese",
+    "Spanish",
+    "Italian",
+)
 
 
 class CustomVoice(BaseModel):
@@ -63,16 +89,21 @@ class SpeechModelOption(BaseModel):
 @router.get("/models", operation_id="listSpeechModels")
 def list_speech_models() -> list[SpeechModelOption]:
     """Expose only enabled native checkpoint integrations."""
-    model = SPEECH_MODELS["qwen-tts-1.7b-custom"]
+    try:
+        models = inference.models_status().models
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     return [
         SpeechModelOption(
             id=model.id,
-            name=model.name,
+            name=model.display_name or model.id,
             mode="custom",
             speakers=list(SPEAKERS),
             supports_instruction=True,
             default_speaker="Ryan",
         )
+        for model in models
+        if model.kind == "speech" and model.inference_available
     ]
 
 

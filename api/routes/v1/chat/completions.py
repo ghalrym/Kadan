@@ -11,7 +11,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
 from api.services.inference import inference
 from api.services.inference_http import infer
-from api.inference.errors import InferenceFailure
+from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 

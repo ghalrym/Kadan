@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import threading
-import shutil
 
 from api.pydantic_models.media import VideoJob
 
@@ -40,30 +39,6 @@ class VideoJobs:
     def update(self, job_id, **values):
         with self._lock:
             self._jobs[job_id] = self._jobs[job_id].model_copy(update=values)
-
-    def publish(self, job_id, source, workspace):
-        if (
-            source.parent != workspace
-            or source.is_symlink()
-            or not source.is_file()
-            or source.stat().st_size == 0
-        ):
-            raise ValueError("Native video output is invalid")
-        self.root.mkdir(parents=True, exist_ok=True)
-        staging = self.root / f".{job_id}.partial.mp4"
-        try:
-            shutil.copyfile(source, staging)
-            staging.replace(self.root / f"{job_id}.mp4")
-        finally:
-            staging.unlink(missing_ok=True)
-        self.update(
-            job_id,
-            status="Done",
-            progress=100,
-            progress_text="Complete",
-            output_url=f"/v1/videos/{job_id}/content",
-        )
-        return self.get(job_id)
 
     def list(self):
         with self._lock:

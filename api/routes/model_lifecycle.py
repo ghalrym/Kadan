@@ -3,8 +3,7 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from api.inference.errors import InferenceFailure
-from api.services.model_downloads import model_manager
+from api.services.inference_errors import InferenceFailure
 from api.services.inference import inference
 from api.services.inference_http import infer
 
@@ -24,7 +23,7 @@ class ModelLifecycleStatus(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model_id: Literal["small", "medium", "large"]
+    model_id: Literal["small", "medium", "large"] | None = None
     context_limit: StrictInt | None = Field(
         default=None,
         ge=1,
@@ -46,10 +45,7 @@ async def load_selected_model(
     """Prepare and load through the same FIFO as inference, retaining cancellation ownership."""
     try:
         if body is None:
-            selected = model_manager._read_selected_model_id()
-            if selected is None:
-                raise InferenceFailure("Select a language model before loading.", 422)
-            body = ModelLoadRequest(model_id=selected)
+            body = ModelLoadRequest()
         return ModelLifecycleStatus(
             **await infer(
                 request, inference.submit(body, feature="llm", operation="load")

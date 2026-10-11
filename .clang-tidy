@@ -41,7 +41,7 @@ Checks: >
   -readability-redundant-member-init,
   readability-simplify-boolean-expr
 WarningsAsErrors: '*'
-HeaderFilterRegex: '/(native|bin)/'
+HeaderFilterRegex: '/(inference_worker|bin)/'
 CheckOptions:
   readability-simplify-boolean-expr.SimplifyDeMorgan: false
 ---

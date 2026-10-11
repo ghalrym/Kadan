@@ -1,38 +1,28 @@
-"""API submission and presentation for the single native inference process."""
+"""Queue submission, response streaming, and observed worker status."""
 
 from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import logging
-from pathlib import Path
-import shutil
-import tempfile
 import time
-from typing import TYPE_CHECKING
+from pydantic import BaseModel
 
-from api.inference.cancellation import await_cleanup, run_cancellable_thread
-from api.inference.errors import InferenceFailure
+from api.services.inference_cancellation import await_cleanup
+from api.services.inference_errors import InferenceFailure
 from api.pydantic_models.inference import (
     Feature,
     Operation,
-    EmptyPayload,
-    ImagePayload,
     ImageProgress,
 )
-from api.services.inference_requests import prepare_request, present_result
-from api.services.model_downloads import model_manager
-from api.services.native_worker import JobState, NativeRequest, NativeWorker
+from api.services.inference_worker import InferenceTask, InferenceWorker
 from api.services.video_jobs import video_jobs
-from api.services.whisper_selection import whisper_selection
-
-if TYPE_CHECKING:
-    from api.services.inference_requests import InferenceBody
-    from api.routes.v1.chat.completions import CompletionRequest
+from api.pydantic_models.model_store import DownloadObservation, ModelStoreStatus
+from api.pydantic_models.inference_task import DownloadTask
 
 log = logging.getLogger(__name__)
 
 
-class NativeStream:
+class InferenceStream:
     def __init__(self, service, job, completion):
         self.service, self.job, self.completion = service, job, completion
 
@@ -60,13 +50,14 @@ class NativeStream:
 
 class InferenceService:
     def __init__(self):
-        self.worker = NativeWorker(model_manager.root / "inference", self._observe)
+        self.worker = InferenceWorker(on_event=self._observe)
         self.tasks: dict[str, asyncio.Task] = {}
         self.model_id = None
         self.state = "unloaded"
         self.error = None
         self.context = {}
         self.progress = None
+        self.downloads: dict[str, DownloadObservation] = {}
 
     async def start(self):
         await self.worker.start()
@@ -91,8 +82,83 @@ class InferenceService:
             supported_context_limit=self.context.get("supported"),
         )
 
+    def models_status(self) -> ModelStoreStatus:
+        if self.worker.models is None:
+            raise InferenceFailure("Worker model status is unavailable.", 503)
+        snapshot = self.worker.models.model_copy(deep=True)
+        for model in snapshot.models:
+            observation = self.downloads.get(model.id)
+            if observation is not None and model.status != "complete":
+                for field in DownloadObservation.model_fields:
+                    setattr(model, field, getattr(observation, field))
+        return snapshot
+
+    async def download(self, model_id: str, license_acknowledged: bool):
+        for job in self.worker.jobs.values():
+            if (
+                job.request.feature == "models"
+                and job.request.input.model_id == model_id
+                and not job.result.done()
+            ):
+                raise InferenceFailure(
+                    "A download is already queued for this model.", 409
+                )
+        self.downloads[model_id] = DownloadObservation()
+        try:
+            _, completion = await self._submit(
+                DownloadTask(
+                    model_id=model_id, license_acknowledged=license_acknowledged
+                ),
+                "models",
+                "download",
+            )
+        except BaseException:
+            self.downloads[model_id] = DownloadObservation(
+                status="failed", error="Download was not queued"
+            )
+            raise
+        completion.add_done_callback(self._background_finished)
+        return self.models_status()
+
+    async def cancel_download(self, model_id: str):
+        for job in self.worker.jobs.values():
+            if (
+                job.request.feature == "models"
+                and job.request.input.model_id == model_id
+                and not job.result.done()
+            ):
+                self.downloads[model_id].status = "cancelling"
+                await self.worker.cancel(job.request.id)
+                return self.models_status()
+        raise InferenceFailure("No active download for this model.", 409)
+
     def _observe(self, job, event):
+        if job.request.feature == "models":
+            observation = self.downloads.setdefault(
+                job.request.input.model_id, DownloadObservation()
+            )
+            if event.phase == "download":
+                observation.downloaded_bytes, observation.total_bytes = (
+                    event.value,
+                    event.total,
+                )
+            elif event.state in ("succeeded", "failed", "cancelled", "rejected"):
+                observation.status = (
+                    "complete"
+                    if event.state == "succeeded"
+                    else "failed"
+                    if event.state == "rejected"
+                    else event.state
+                )
+                observation.error = event.error or None
+            return
+        if job.request.operation == "configure":
+            return
         feature = job.request.feature
+        if event.context is not None:
+            self.context = event.context
+        if feature == "llm" and event.model is not None:
+            self.model_id = event.model
         if job.image_progress is not None and event.state == "progress":
             if event.phase == "image_started":
                 job.image_progress.image_index = event.value
@@ -122,7 +188,7 @@ class InferenceService:
         if event.state == "loading":
             if feature == "llm":
                 self.model_id, self.state, self.error = (
-                    job.request.model,
+                    event.model or self.model_id,
                     "loading",
                     None,
                 )
@@ -153,39 +219,20 @@ class InferenceService:
                     error=event.error or None,
                 )
 
-    def select(self, body: InferenceBody, feature: Feature):
-        if feature == "llm":
-            model = (
-                getattr(body, "model_id", None)
-                or getattr(body, "model", None)
-                or model_manager._read_selected_model_id()
-            )
-            if model is None:
-                raise InferenceFailure(
-                    "Select a language model before submitting a request.", 422
-                )
-            return model
-        if feature == "image":
-            return "qwen-image-2.1"
-        if feature == "decisions":
-            return "laya"
-        if feature == "video":
-            return body.model
-        if feature == "tts":
-            return body.model_id
-        if feature == "stt":
-            return body.model or whisper_selection.selected()
-        raise InferenceFailure("Unsupported inference feature.", 422)
-
     async def _submit(
         self,
-        body: InferenceBody,
+        body: BaseModel,
         feature: Feature,
         operation: Operation,
         streaming: bool = False,
     ):
-        model = self.select(body, feature)
-        request = NativeRequest(feature=feature, operation=operation, model=model)
+        request = InferenceTask(
+            operation=operation,
+            input={
+                "feature": feature,
+                **body.model_dump(mode="json", exclude_unset=True),
+            },
+        )
         if feature == "video":
             video_jobs.prepare(request.id, body)
         try:
@@ -196,14 +243,20 @@ class InferenceService:
                     request.id, status="Failed", progress_text="Not accepted"
                 )
             raise
-        task = asyncio.create_task(self._complete(job, body))
+        if feature == "image":
+            job.image_progress = ImageProgress(
+                image_index=1,
+                image_count=request.input.count,
+                steps_total=request.input.steps,
+            )
+        task = asyncio.create_task(self._complete(job))
         self.tasks[request.id] = task
         task.add_done_callback(lambda completed: self.tasks.pop(request.id, None))
         return job, task
 
     async def submit(
         self,
-        body: InferenceBody,
+        body: BaseModel,
         *,
         feature: Feature,
         operation: Operation = "generate",
@@ -211,111 +264,36 @@ class InferenceService:
         job, task = await self._submit(body, feature, operation)
         if feature == "video":
             # Completion is reflected by the video metadata endpoint.
-            task.add_done_callback(self._video_finished)
+            task.add_done_callback(self._background_finished)
             return video_jobs.get(job.request.id)
         return await task
 
     @staticmethod
-    def _video_finished(task):
+    def _background_finished(task):
         if not task.cancelled() and task.exception() is not None:
-            log.warning("Video request failed: %s", task.exception())
+            log.warning("Background request failed: %s", task.exception())
 
-    async def open_chat_stream(self, body: CompletionRequest):
+    async def open_chat_stream(self, body: BaseModel):
         job, completion = await self._submit(body, "llm", "completion", streaming=True)
-        return NativeStream(self, job, completion), job.request.model
-
-    async def _complete(self, job, body: InferenceBody):
-        request = job.request
-        workspace = None
         try:
-            preparation = asyncio.create_task(job.preparing.wait())
-            try:
-                done, _ = await asyncio.wait(
-                    (preparation, job.result), return_when=asyncio.FIRST_COMPLETED
-                )
-                if job.result in done:
-                    return await job.result
-            finally:
-                preparation.cancel()
-            workspace = Path(
-                tempfile.mkdtemp(prefix=request.id + "-", dir=self.worker.root)
-            )
-            try:
-                prepared = await run_cancellable_thread(
-                    prepare_request,
-                    request.feature,
-                    request.operation,
-                    request.model,
-                    body,
-                    workspace,
-                )
-            except Exception as error:
-                await self.worker.prepared(job, EmptyPayload(), str(error))
-                await asyncio.shield(job.result)
-                raise
-            if request.feature == "llm" and request.operation != "unload":
-                configured = (
-                    body.context_limit
-                    if request.operation == "load"
-                    and "context_limit" in body.model_fields_set
-                    else model_manager.configured_context(request.model)
-                )
-                self.context = dict(
-                    configured=configured,
-                    effective=prepared.context_limit,
-                    supported=prepared.supported_context,
-                )
-            if isinstance(prepared.payload, ImagePayload):
-                image = prepared.payload.request
-                job.image_progress = ImageProgress(
-                    image_index=1, image_count=image.count, steps_total=image.steps
-                )
-            await self.worker.prepared(job, prepared.payload)
+            # Use the worker's selected model in every SSE chunk.
+            await job.identified.wait()
+            if job.model is None:
+                await completion
+                raise InferenceFailure("Worker did not identify the chat model.", 502)
+            return InferenceStream(self, job, completion), job.model
+        except BaseException:
+            await await_cleanup(asyncio.create_task(self.cancel(job.request.id)))
+            raise
+
+    async def _complete(self, job):
+        try:
             result = await asyncio.shield(job.result)
-            if request.operation == "load":
-                model_manager.select(request.model)
-                if "context_limit" in body.model_fields_set:
-                    model_manager.set_context(request.model, body.context_limit)
+            if job.request.feature == "video":
+                video_jobs.update(job.request.id, **result)
+            if job.request.operation in ("load", "unload"):
                 return self.status()
-            if request.operation == "unload":
-                return self.status()
-            if request.feature == "video":
-                published = await await_cleanup(
-                    asyncio.create_task(
-                        asyncio.to_thread(
-                            video_jobs.publish,
-                            request.id,
-                            Path(result["output"]),
-                            workspace,
-                        )
-                    )
-                )
-                return published.model_dump(mode="json")
-            return await await_cleanup(
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        present_result,
-                        request.feature,
-                        request.model,
-                        body,
-                        prepared,
-                        result,
-                        workspace,
-                        request.id,
-                    )
-                )
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            if request.feature == "video":
-                video_jobs.update(
-                    request.id,
-                    status="Failed",
-                    progress_text="Failed",
-                    error=str(error),
-                )
-            raise
+            return result
         finally:
             try:
                 if not job.result.done():
@@ -323,9 +301,7 @@ class InferenceService:
                         asyncio.create_task(self.worker.cancel_and_join(job))
                     )
             finally:
-                self.worker.jobs.pop(request.id, None)
-                if workspace is not None:
-                    shutil.rmtree(workspace)
+                self.worker.jobs.pop(job.request.id, None)
 
     async def cancel(self, job_id):
         if job_id not in self.worker.jobs:
@@ -348,22 +324,10 @@ class InferenceService:
         for job in tuple(self.worker.jobs.values()):
             if job.request.feature == "llm":
                 await self.cancel(job.request.id)
-        request = NativeRequest(
-            feature="llm", operation="unload", model=self.model_id or "none"
+        job = await self.worker.submit(
+            InferenceTask(operation="unload", input={"feature": "llm"})
         )
-        job = await self.worker.submit(request)
-        try:
-            await self.worker.prepared(job, EmptyPayload())
-            await asyncio.shield(job.result)
-            return self.status()
-        finally:
-            try:
-                if not job.result.done():
-                    await await_cleanup(
-                        asyncio.create_task(self.worker.cancel_and_join(job))
-                    )
-            finally:
-                self.worker.jobs.pop(request.id, None)
+        return await self._complete(job)
 
 
 inference = InferenceService()

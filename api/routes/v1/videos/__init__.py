@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from api.services.video_jobs import video_jobs
 from api.services.inference import inference
-from api.inference.errors import InferenceFailure
+from api.services.inference_errors import InferenceFailure
 from api.pydantic_models.media import VideoJob
 
 router = APIRouter(prefix="/v1/videos", tags=["Videos"])

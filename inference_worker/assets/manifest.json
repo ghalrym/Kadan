@@ -1,0 +1,7 @@
+{
+  "gpt2.tiktoken": "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
+  "multilingual.tiktoken": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126",
+  "mel_filters.npz": "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c",
+  "WHISPER_LICENSE": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+  "whisper_languages.json": "f7664ad0cdaa0a61854697fc52d74c0a5957a2c25dfc609ac92dc3dc524016ce"
+}

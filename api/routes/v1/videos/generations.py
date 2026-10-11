@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 from api.pydantic_models.media import VideoJob
 from api.services.inference import inference
-from api.inference.errors import InferenceFailure
+from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
