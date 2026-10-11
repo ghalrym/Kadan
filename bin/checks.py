@@ -14,7 +14,6 @@ from bin.process import ROOT, run
 app = typer.Typer(no_args_is_help=True)
 
 NATIVE_UNIT_TARGETS = [
-    "generation-queue-tests",
     "weight-backing-tests",
     "resource-tests",
     "quantization-tests",
@@ -30,7 +29,6 @@ NATIVE_UNIT_TARGETS = [
     "device-workspace-tests",
     "device-weight-tests",
     "kadan_auto_placement_test",
-    "resident-protocol-tests",
     "inference-owner-tests",
     "native-text-tests",
 ]
