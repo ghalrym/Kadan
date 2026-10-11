@@ -19,7 +19,7 @@ class PhysicalMemoryTests(unittest.TestCase):
                          [6144 * 1024, 20000 * 1024**2, 21000 * 1024**2])
         second, _ = self.sample(Mock(stdout='0, 800, 24576\n1, 900, 24576\n'))
         self.assertEqual(second[1].used_bytes, 800 * 1024**2)
-        self.assertEqual(second[1].label, 'GPU 0 · VRAM')
+        self.assertEqual(second[1].label, 'GPU 0 memory used')
 
     def test_unavailable_or_invalid_gpu_probe_preserves_host_reading(self):
         for failure in (FileNotFoundError(), subprocess.TimeoutExpired('nvidia-smi', 1)):

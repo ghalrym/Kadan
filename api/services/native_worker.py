@@ -1,6 +1,7 @@
 """Transport to the one native inference owner; no Python inference scheduler."""
 import asyncio
 from collections import deque
+from datetime import datetime, timezone
 from contextlib import suppress
 from enum import StrEnum
 import json
@@ -102,6 +103,7 @@ class NativeWorker:
         self.jobs: dict[str, NativeJob] = {}
         self.diagnostics = deque(maxlen=64)
         self.memory: NativeMemory | None = None
+        self.memory_observed_at: str | None = None
         self.last_exit: NativeExit | None = None
         self.write_lock = asyncio.Lock()
         self.closing = False
@@ -189,6 +191,7 @@ class NativeWorker:
                     continue
                 if event.memory is not None:
                     self.memory = event.memory
+                    self.memory_observed_at = datetime.now(timezone.utc).isoformat()
                 job = self.jobs.get(event.id)
                 if job is None:
                     raise RuntimeError('Native response has no outstanding request')

@@ -831,6 +831,24 @@
         "title": "InferenceProgress",
         "type": "object"
       },
+      "MemoryReservation": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reserved_gib": {
+            "title": "Reserved Gib",
+            "type": "number"
+          }
+        },
+        "required": [
+          "label",
+          "reserved_gib"
+        ],
+        "title": "MemoryReservation",
+        "type": "object"
+      },
       "MessagesResponse": {
         "description": "Compatibility envelope for client-owned conversations; the server has no history.",
         "properties": {
@@ -901,6 +919,24 @@
             "title": "Requests Per Minute",
             "type": "integer"
           },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryReservation"
+            },
+            "title": "Reservations",
+            "type": "array"
+          },
+          "reservations_observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservations Observed At"
+          },
           "resource_errors": {
             "items": {
               "type": "string"
@@ -946,6 +982,7 @@
         "required": [
           "resources",
           "resource_errors",
+          "reservations",
           "started_at",
           "retention_limit",
           "retained_requests",
@@ -1607,6 +1644,35 @@
             ],
             "title": "Type",
             "type": "string"
+          },
+          "video_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Job Id"
+          },
+          "video_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "Queued",
+                  "Rendering",
+                  "Done",
+                  "Failed",
+                  "Cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Status"
           }
         },
         "required": [

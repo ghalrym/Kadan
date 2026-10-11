@@ -16,6 +16,11 @@ class ResourceMeter(BaseModel):
     total: float
 
 
+class MemoryReservation(BaseModel):
+    label: str
+    reserved_gib: float
+
+
 class InferenceProgress(BaseModel):
     job_id: str
     workload: str
@@ -35,6 +40,8 @@ class MetricsResponse(BaseModel):
     status: Literal['Online'] = 'Online'
     resources: list[ResourceMeter]
     resource_errors: list[str]
+    reservations: list[MemoryReservation]
+    reservations_observed_at: str | None = None
     memory_unit: Literal['GiB'] = 'GiB'
     started_at: str
     retention_limit: int
@@ -62,4 +69,11 @@ def get_metrics() -> MetricsResponse:
     This monitoring read is excluded from generation telemetry, so polling
     does not increase request counts or feed back into latency statistics."""
     resources, errors = memory_meters()
-    return MetricsResponse(inference_progress=inference.progress, resources=resources, resource_errors=errors, **telemetry.metrics())
+    memory = inference.worker.memory
+    reservations = [] if memory is None else [
+        MemoryReservation(label='System RAM' if index == 0 else f'GPU {index - 1}',
+                          reserved_gib=used / 1024**3)
+        for index, used in enumerate(memory.used)]
+    return MetricsResponse(reservations=reservations,
+                           reservations_observed_at=inference.worker.memory_observed_at,
+                           inference_progress=inference.progress, resources=resources, resource_errors=errors, **telemetry.metrics())

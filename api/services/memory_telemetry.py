@@ -18,7 +18,7 @@ def physical_memory() -> tuple[list[MemoryReading], list[str]]:
                       for line in stream if (parts := line.split())
                       and parts[0] in ('MemTotal:', 'MemAvailable:')}
         total, available = values['MemTotal'], values['MemAvailable']
-        readings.append(MemoryReading(label='Host RAM',
+        readings.append(MemoryReading(label='System RAM used',
             used_bytes=max(0, total - available), total_bytes=total))
     except (OSError, KeyError, ValueError):
         errors.append('Host RAM measurement unavailable')
@@ -32,7 +32,7 @@ def physical_memory() -> tuple[list[MemoryReading], list[str]]:
             device, used, total = (int(value.strip()) for value in line.split(','))
             if device < 0 or used > total:
                 raise ValueError('Invalid physical GPU memory reading')
-            devices.append(MemoryReading(label=f'GPU {device} · VRAM',
+            devices.append(MemoryReading(label=f'GPU {device} memory used',
                 used_bytes=used * 1024**2, total_bytes=total * 1024**2))
         if not devices:
             raise ValueError('No GPU memory readings')

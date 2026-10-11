@@ -5,6 +5,7 @@ import type {
   RequestsResponse,
   RequestRecord,
 } from '../api/generated/types.gen'
+import { requestStatus } from '../api/requestStatus'
 import { usePolling } from '../hooks/usePolling'
 
 const types: RequestRecord['type'][] = [
@@ -15,10 +16,6 @@ const types: RequestRecord['type'][] = [
   'STT',
   'Decision',
 ]
-/** Choose display severity from the observed HTTP outcome, not model quality. */
-const statusClass = (status: number) =>
-  status >= 500 ? 'error' : status >= 400 ? 'warning' : 'success'
-
 /** Show rolling retained-sample metrics and explicitly flag truncated windows. */
 function RequestStats() {
   const { data, error } = usePolling<MetricsResponse>('/v1/metrics')
@@ -45,7 +42,7 @@ function RequestStats() {
           : data.error_rate_percent.toFixed(1),
       unit: '%',
     },
-    { label: 'Active requests', value: data?.active_requests ?? '—' },
+    { label: 'Active HTTP requests', value: data?.active_requests ?? '—' },
   ]
   return (
     <>
@@ -151,8 +148,8 @@ export default function RequestsPage() {
               <th scope="col">Model</th>
               <th scope="col">TTFT</th>
               <th scope="col">Tok/s</th>
-              <th scope="col">Status</th>
-              <th scope="col">Latency</th>
+              <th scope="col">Outcome</th>
+              <th scope="col">HTTP latency</th>
             </tr>
           </thead>
           <tbody>
@@ -193,7 +190,7 @@ export default function RequestsPage() {
                     {request.model ?? '—'}
                   </Link>
                 </td>
-                <td className="mono faint" title={request.stream_ttft_ms != null ? 'HTTP arrival to first streamed content (includes queue and text buffering)' : 'Native generation start to first generated token (excludes HTTP queue)'}>
+                <td className="mono faint" title={request.stream_ttft_ms != null ? 'HTTP arrival to first streamed content (includes queue and text buffering)' : 'Generation start to first generated token (excludes HTTP queue)'}>
                   {(request.stream_ttft_ms ?? request.generation_ttft_ms) != null
                     ? `${((request.stream_ttft_ms ?? request.generation_ttft_ms)! / 1000).toFixed(3)} s`
                     : '—'}
@@ -201,8 +198,9 @@ export default function RequestsPage() {
                 <td className="mono faint" title="Decode tokens per second after the first generated token; excludes prefill and cleanup">
                   {request.decode_tokens_per_second != null ? request.decode_tokens_per_second.toFixed(2) : '—'}
                 </td>
-                <td className={`mono ${statusClass(request.status)}`}>
-                  {request.status}
+                <td className={`mono ${requestStatus(request).className}`}>
+                  {requestStatus(request).label}
+                  {request.type === 'Video' && request.status === 202 && <div className="faint">HTTP 202 · accepted</div>}
                 </td>
                 <td className="mono">{request.latency}</td>
               </tr>

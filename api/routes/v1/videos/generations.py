@@ -1,5 +1,5 @@
 from typing import Literal
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import VideoJob
 from api.services.inference import inference
@@ -25,10 +25,12 @@ class VideoGenerationResponse(BaseModel):
 
 @router.post("", status_code=202, operation_id="generateVideo",
              responses={503: {"description": "Video provider unavailable"}})
-async def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
+async def generate_video(body: VideoGenerationRequest, request: Request) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
-        return VideoGenerationResponse(job=await inference.submit(body, feature='video'))
+        job = await inference.submit(body, feature='video')
+        request.scope.setdefault('kadan_measurement', {})['video_job_id'] = job.id
+        return VideoGenerationResponse(job=job)
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except ValueError as exc:

@@ -468,6 +468,20 @@ export type InferenceProgress = {
 }
 
 /**
+ * MemoryReservation
+ */
+export type MemoryReservation = {
+  /**
+   * Label
+   */
+  label: string
+  /**
+   * Reserved Gib
+   */
+  reserved_gib: number
+}
+
+/**
  * MessagesResponse
  *
  * Compatibility envelope for client-owned conversations; the server has no history.
@@ -514,6 +528,14 @@ export type MetricsResponse = {
    * Requests Per Minute
    */
   requests_per_minute: number
+  /**
+   * Reservations
+   */
+  reservations: Array<MemoryReservation>
+  /**
+   * Reservations Observed At
+   */
+  reservations_observed_at?: string | null
   /**
    * Resource Errors
    */
@@ -896,6 +918,14 @@ export type RequestRecord = {
    * Type
    */
   type: 'LLM' | 'Image' | 'Video' | 'TTS' | 'STT' | 'Decision'
+  /**
+   * Video Job Id
+   */
+  video_job_id?: string | null
+  /**
+   * Video Status
+   */
+  video_status?: 'Queued' | 'Rendering' | 'Done' | 'Failed' | 'Cancelled' | null
 }
 
 /**

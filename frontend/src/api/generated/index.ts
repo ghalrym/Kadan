@@ -173,6 +173,7 @@ export type {
   LoadSelectedModelErrors,
   LoadSelectedModelResponse,
   LoadSelectedModelResponses,
+  MemoryReservation,
   MessagesResponse,
   MetricsResponse,
   ModelLifecycleStatus,

@@ -14,7 +14,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:unit": "node --experimental-vm-modules tests/images.test.mjs"
+    "test:unit": "node --experimental-vm-modules tests/images.test.mjs && node tests/requestStatus.test.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

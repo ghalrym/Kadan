@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.requests import RequestRecord, RequestType, RequestStatus
 from api.services.telemetry import telemetry
+from api.services.video_jobs import video_jobs
 
 router = APIRouter(prefix='/v1/requests', tags=['Requests'])
 
@@ -30,7 +31,17 @@ class RequestResponse(BaseModel):
     request: RequestRecord
 
 
-@router.get('', operation_id='listRequests')
+def with_video_status(record: RequestRecord) -> RequestRecord:
+    if record.video_job_id is None:
+        return record
+    try:
+        status = video_jobs.get(record.video_job_id).status
+    except KeyError:
+        status = None
+    return record.model_copy(update={'video_status': status})
+
+
+@router.get('',  operation_id='listRequests')
 def list_requests(filters: Annotated[RequestFilters, Query()]) -> RequestsResponse:
     """Filter a newest-first snapshot and return the requested page.
 
@@ -42,7 +53,7 @@ def list_requests(filters: Annotated[RequestFilters, Query()]) -> RequestsRespon
                and (filters.status is None or record.status == filters.status)
                and filters.search.casefold() in ' '.join((record.id, record.endpoint, record.model or '',
                                                           record.prompt, record.output)).casefold()]
-    return RequestsResponse(requests=matches[filters.offset:filters.offset + filters.limit],
+    return RequestsResponse(requests=[with_video_status(record) for record in matches[filters.offset:filters.offset + filters.limit]],
                             total=len(matches), retention_limit=telemetry.capacity, started_at=telemetry.started_at)
 
 
@@ -54,5 +65,5 @@ def get_request(request_id: str) -> RequestResponse:
     serializing the response."""
     for record in telemetry.records():
         if record.id == request_id:
-            return RequestResponse(request=record)
+            return RequestResponse(request=with_video_status(record))
     raise HTTPException(status_code=404, detail='Request not found; records expire and reset on API restart')

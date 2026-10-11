@@ -8,7 +8,7 @@ import { usePolling } from '../hooks/usePolling'
  * Values include other processes and do not establish model or GPU readiness.
  */
 function ResourceMeters() {
-  const { data, error, refresh } = usePolling<MetricsResponse>(
+  const { data, error, refresh, updated } = usePolling<MetricsResponse>(
     '/v1/metrics',
     5000,
   )
@@ -32,6 +32,8 @@ function ResourceMeters() {
           </button>
         </div>
       )}
+      {data && <p className="faint">Actual memory use · all processes<br />
+        Last received {updated}</p>}
       {data?.resources.map((meter) => (
         <div className="resource-meter" key={meter.label}>
           <div className="resource-label">
@@ -41,7 +43,7 @@ function ResourceMeters() {
           </div>
           <meter
             className={
-              meter.label === 'Host RAM' ? 'meter meter--blue' : 'meter'
+              meter.label === 'System RAM used' ? 'meter meter--blue' : 'meter'
             }
             min={0}
             max={meter.total}
@@ -50,6 +52,17 @@ function ResourceMeters() {
           />
         </div>
       ))}
+      {data && <div>
+        <p className="eyebrow">Memory reserved for inference</p>
+        <p className="faint">Last reported allocation for models and admitted work.
+          Queued requests may be waiting without a reservation. This is not measured usage.</p>
+        {data.reservations_observed_at ? <>
+          <p className="faint">Last reported {new Date(data.reservations_observed_at).toLocaleString()}</p>
+          {data.reservations.map(reservation => <div className="resource-label" key={reservation.label}>
+            <span>{reservation.label}</span><span>{reservation.reserved_gib.toFixed(1)} GiB reserved</span>
+          </div>)}
+        </> : <p className="faint">Reservation information unavailable</p>}
+      </div>}
       {data?.resource_errors.map((message) => (
         <p className="faint" key={message}>
           {message}
