@@ -140,6 +140,7 @@ export type {
   HealthResponse2,
   HealthResponses,
   HttpValidationError,
+  ImageProgress,
   ImageResponse,
   ImageSet,
   ImagesResponse,

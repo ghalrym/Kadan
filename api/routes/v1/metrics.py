@@ -3,6 +3,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from api.services.telemetry import telemetry
 from api.services.inference import inference
+from api.services.memory_telemetry import physical_memory
+from api.pydantic_models.inference import ImageProgress
 
 router = APIRouter(prefix='/v1/metrics', tags=['Monitoring'])
 
@@ -20,6 +22,7 @@ class InferenceProgress(BaseModel):
     stage: str
     value: int
     observed_unix_ns: int
+    image: ImageProgress | None = None
 
 
 class MetricsResponse(BaseModel):
@@ -46,24 +49,10 @@ class MetricsResponse(BaseModel):
 
 
 def memory_meters():
-    """Report host observations and the native worker's reservation ledger."""
-    resources, errors = [], []
-    try:
-        with open('/proc/meminfo') as stream:
-            values = {parts[0].rstrip(':'): int(parts[1]) * 1024
-                      for line in stream if (parts := line.split()) and parts[0] in ('MemTotal:', 'MemAvailable:')}
-        total, available = values['MemTotal'], values['MemAvailable']
-        resources.append(ResourceMeter(label='Host RAM', used=max(0, total - available) / 1024**3, total=total / 1024**3))
-    except (OSError, KeyError, ValueError):
-        errors.append('Host RAM measurement unavailable')
-    memory = inference.worker.memory
-    if memory is None:
-        errors.append('Native memory observations are not available yet')
-    else:
-        for device, (capacity, used) in enumerate(zip(memory.capacity[1:], memory.used[1:])):
-            resources.append(ResourceMeter(label=f'GPU {device} · native reservations',
-                used=used / 1024**3, total=capacity / 1024**3))
-    return resources, errors
+    """Sample physical usage; native reservation snapshots are admission state."""
+    readings, errors = physical_memory()
+    return [ResourceMeter(label=reading.label, used=reading.used_bytes / 1024**3,
+                          total=reading.total_bytes / 1024**3) for reading in readings], errors
 
 
 @router.get('', operation_id='getMetrics')

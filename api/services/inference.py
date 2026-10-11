@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from api.inference.cancellation import await_cleanup, run_cancellable_thread
 from api.inference.errors import InferenceFailure
-from api.pydantic_models.inference import Feature, Operation, EmptyPayload
+from api.pydantic_models.inference import Feature, Operation, EmptyPayload, ImagePayload, ImageProgress
 from api.services.inference_requests import prepare_request, present_result
 from api.services.model_downloads import model_manager
 from api.services.native_worker import JobState, NativeRequest, NativeWorker
@@ -76,9 +76,16 @@ class InferenceService:
 
     def _observe(self, job, event):
         feature = job.request.feature
+        if job.image_progress is not None and event.state == 'progress':
+            if event.phase == 'image_started':
+                job.image_progress.image_index = event.value
+                job.image_progress.steps_completed = 0
+            elif event.phase == 'step_completed':
+                job.image_progress.steps_completed = event.value
         if event.state in ('preparing', 'loading', 'running', 'waiting_for_resources', 'progress'):
             self.progress = dict(job_id=job.request.id, workload=feature,
-                stage=event.phase or event.state, value=event.value, observed_unix_ns=time.time_ns())
+                stage=event.phase or event.state, value=event.value, observed_unix_ns=time.time_ns(),
+                image=job.image_progress.model_dump() if job.image_progress is not None else None)
         elif event.state in ('succeeded', 'failed', 'cancelled'):
             if self.progress and self.progress['job_id'] == job.request.id:
                 self.progress = None
@@ -172,6 +179,10 @@ class InferenceService:
                               else model_manager.configured_context(request.model))
                 self.context = dict(configured=configured, effective=prepared.context_limit,
                                     supported=prepared.supported_context)
+            if isinstance(prepared.payload, ImagePayload):
+                image = prepared.payload.request
+                job.image_progress = ImageProgress(image_index=1, image_count=image.count,
+                                                    steps_total=image.steps)
             await self.worker.prepared(job, prepared.payload)
             result = await asyncio.shield(job.result)
             if request.operation == 'load':

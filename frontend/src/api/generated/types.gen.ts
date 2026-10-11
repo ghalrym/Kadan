@@ -364,6 +364,28 @@ export type HealthResponse = {
 }
 
 /**
+ * ImageProgress
+ */
+export type ImageProgress = {
+  /**
+   * Image Count
+   */
+  image_count: number
+  /**
+   * Image Index
+   */
+  image_index: number
+  /**
+   * Steps Completed
+   */
+  steps_completed?: number
+  /**
+   * Steps Total
+   */
+  steps_total: number
+}
+
+/**
  * ImageResponse
  */
 export type ImageResponse = {
@@ -422,6 +444,7 @@ export type ImagesResponse = {
  * InferenceProgress
  */
 export type InferenceProgress = {
+  image?: ImageProgress | null
   /**
    * Job Id
    */

@@ -52,6 +52,7 @@ public:
     Json paths = Json::array();
     for (std::size_t i = 0; i < count_; ++i) {
       check_cancel(cancel);
+      progress_("image_started", i + 1);
       std::vector<float> rgba(request_.height * request_.width * 4);
       auto current = request_;
       current.seed += i;

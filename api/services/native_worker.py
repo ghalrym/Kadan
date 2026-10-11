@@ -14,7 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from api.inference.errors import InferenceFailure
-from api.pydantic_models.inference import Feature, Operation, NativePayload, EmptyPayload
+from api.pydantic_models.inference import Feature, Operation, NativePayload, EmptyPayload, ImageProgress
 from api.inference.cancellation import await_cleanup
 
 log = logging.getLogger(__name__)
@@ -62,6 +62,22 @@ class NativeEvent(BaseModel):
     pid: int | None = None
 
 
+class NativeExit(BaseModel):
+    pid: int
+    returncode: int
+    signal: int | None = None
+    stderr: str
+    protocol_error: str | None = None
+
+    def describe(self) -> str:
+        cause = (f'signal {self.signal} ({signal.strsignal(self.signal)})'
+                 if self.signal else f'code {self.returncode}')
+        detail = self.stderr
+        if self.protocol_error:
+            detail = f'{self.protocol_error}: {detail}'
+        return f'Native worker {self.pid} exited with {cause}: {detail}'
+
+
 class NativeJob:
     """An outstanding response and bounded streaming channel, never an executor."""
     def __init__(self, request: NativeRequest, streaming: bool):
@@ -72,6 +88,7 @@ class NativeJob:
         self.accepted = asyncio.get_running_loop().create_future()
         self.result = asyncio.get_running_loop().create_future()
         self.stream_error = None
+        self.image_progress: ImageProgress | None = None
         self.events = asyncio.Queue(maxsize=64) if streaming else None
 
 
@@ -85,6 +102,7 @@ class NativeWorker:
         self.jobs: dict[str, NativeJob] = {}
         self.diagnostics = deque(maxlen=64)
         self.memory: NativeMemory | None = None
+        self.last_exit: NativeExit | None = None
         self.write_lock = asyncio.Lock()
         self.closing = False
 
@@ -160,6 +178,7 @@ class NativeWorker:
             self.diagnostics.append(data.decode('utf-8', errors='replace'))
 
     async def _read(self):
+        protocol_error = None
         try:
             while line := await self.process.stdout.readline():
                 event = NativeEvent.model_validate_json(line)
@@ -201,7 +220,7 @@ class NativeWorker:
                     job.result.set_exception(InferenceFailure(event.error or 'Inference cancelled.',
                         499 if job.state == JobState.CANCELLED else 502))
         except Exception as error:
-            self.diagnostics.append(str(error))
+            protocol_error = str(error)[:2000]
             if self.process.returncode is None:
                 self.process.terminate()
         finally:
@@ -212,8 +231,11 @@ class NativeWorker:
                 returncode = await self.process.wait()
             if self.stderr_reader is not None:
                 await self.stderr_reader
-            detail = ''.join(self.diagnostics)[-8192:]
-            failure = InferenceFailure(f'Native worker exited with status {returncode}: {detail}')
+            self.last_exit = NativeExit(
+                pid=self.process.pid, returncode=returncode,
+                signal=-returncode if returncode < 0 else None,
+                stderr=''.join(self.diagnostics)[-8192:], protocol_error=protocol_error)
+            failure = InferenceFailure(self.last_exit.describe())
             if not self.ready.done():
                 self.ready.set_exception(failure)
             for job in self.jobs.values():

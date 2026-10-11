@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -51,3 +52,51 @@ class NativeTransportTests(unittest.IsolatedAsyncioTestCase):
              patch.object(worker, 'prepared', new=AsyncMock()) as prepare:
             await worker.cancel_and_join(job)
         prepare.assert_not_awaited()
+
+
+class WorkerExitTests(unittest.IsolatedAsyncioTestCase):
+    async def exited_worker(self, returncode, *, ready=True, protocol=b''):
+        worker = NativeWorker(Path('/unused'))
+        worker.ready = asyncio.get_running_loop().create_future()
+        if ready:
+            worker.ready.set_result(123)
+        job = NativeJob(NativeRequest(feature='image', operation='generate', model='image'), False)
+        worker.jobs[job.request.id] = job
+        stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
+        stdout.feed_data(protocol)
+        stdout.feed_eof()
+        worker.process = SimpleNamespace(stdout=stdout, stderr=stderr, pid=123,
+            returncode=returncode, wait=AsyncMock(return_value=returncode))
+        worker.stderr_reader = asyncio.create_task(worker._stderr())
+        reader = asyncio.create_task(worker._read())
+        await asyncio.sleep(0)
+        self.assertFalse(reader.done())
+        stderr.feed_data(b'x' * 10000 + b'last native diagnostic')
+        stderr.feed_eof()
+        with self.assertLogs('api.services.native_worker', level='ERROR') as logs:
+            await reader
+        for future in (job.accepted, job.result):
+            with self.assertRaisesRegex(Exception, 'last native diagnostic'):
+                await future
+        if not ready:
+            with self.assertRaisesRegex(Exception, 'last native diagnostic'):
+                await worker.ready
+        self.assertIn('last native diagnostic', logs.output[0])
+        self.assertEqual(len(worker.last_exit.stderr), 8192)
+        return worker
+
+    async def test_stdout_eof_drains_late_stderr_and_retains_exit_code(self):
+        worker = await self.exited_worker(7)
+        self.assertEqual(worker.last_exit.returncode, 7)
+        self.assertIsNone(worker.last_exit.signal)
+        self.assertIn('code 7', worker.last_exit.describe())
+
+    async def test_startup_signal_exit_is_retained_with_stderr(self):
+        worker = await self.exited_worker(-11, ready=False)
+        self.assertEqual(worker.last_exit.signal, 11)
+        self.assertIn('signal 11', worker.last_exit.describe())
+
+    async def test_protocol_error_does_not_replace_native_stderr(self):
+        worker = await self.exited_worker(1, protocol=b'not json\n')
+        self.assertTrue(worker.last_exit.protocol_error)
+        self.assertTrue(worker.last_exit.stderr.endswith('last native diagnostic'))

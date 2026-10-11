@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from api.routes.model_lifecycle import ModelLoadRequest
 from api.services.inference_requests import PreparedRequest
-from api.pydantic_models.inference import EmptyPayload
+from api.pydantic_models.inference import EmptyPayload, ImageProgress
 from api.services.inference import InferenceService
-from api.services.native_worker import NativeJob, NativeRequest
+from api.services.native_worker import NativeJob, NativeRequest, NativeEvent
 
 
 class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -124,3 +124,24 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await service.close()
         close.assert_awaited_once()
         self.assertFalse(service.worker.jobs)
+
+
+class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_steps_survive_block_events_and_reset_for_next_image(self):
+        service = InferenceService()
+        job = NativeJob(NativeRequest(feature='image', operation='generate', model='image'), False)
+        job.image_progress = ImageProgress(image_index=1, image_count=4, steps_total=20)
+        def report(phase, value):
+            service._observe(job, NativeEvent(id=job.request.id, state='progress', phase=phase, value=value))
+        report('image_started', 1)
+        report('step_completed', 3)
+        report('block', 0)
+        self.assertEqual(service.progress['image']['steps_completed'], 3)
+        self.assertEqual(service.progress['image']['steps_total'], 20)
+        report('image_started', 2)
+        report('block', 15)
+        self.assertEqual(service.progress['image']['image_index'], 2)
+        self.assertEqual(service.progress['image']['image_count'], 4)
+        self.assertEqual(service.progress['image']['steps_completed'], 0)
+        service._observe(job, NativeEvent(id=job.request.id, state='succeeded'))
+        self.assertIsNone(service.progress)

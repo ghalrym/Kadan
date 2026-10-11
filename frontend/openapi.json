@@ -658,6 +658,38 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "ImageProgress": {
+        "properties": {
+          "image_count": {
+            "minimum": 1.0,
+            "title": "Image Count",
+            "type": "integer"
+          },
+          "image_index": {
+            "minimum": 1.0,
+            "title": "Image Index",
+            "type": "integer"
+          },
+          "steps_completed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Steps Completed",
+            "type": "integer"
+          },
+          "steps_total": {
+            "minimum": 1.0,
+            "title": "Steps Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image_index",
+          "image_count",
+          "steps_total"
+        ],
+        "title": "ImageProgress",
+        "type": "object"
+      },
       "ImageResponse": {
         "properties": {
           "image": {
@@ -758,6 +790,16 @@
       },
       "InferenceProgress": {
         "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "job_id": {
             "title": "Job Id",
             "type": "string"

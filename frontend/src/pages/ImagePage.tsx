@@ -110,7 +110,10 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
         <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Queued / working…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
-        {busy && progress && <p role="status">Server {progress.workload}: {progress.stage.replaceAll('_', ' ')} · {progress.value}</p>}
+        {busy && progress && <p role="status">
+          Server {progress.workload}: {progress.image && <>image {progress.image.image_index}/{progress.image.image_count} · {progress.image.steps_completed}/{progress.image.steps_total} denoising steps complete · </>}
+          {progress.stage.replaceAll('_', ' ')} {progress.stage === 'block' ? progress.value + 1 : progress.value}
+        </p>}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>

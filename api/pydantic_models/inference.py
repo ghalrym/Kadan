@@ -1,7 +1,7 @@
 """The API-to-native request data contract."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.pydantic_models.chat import ChatMessage
 from api.pydantic_models.decisions import DecisionQuestion
@@ -27,6 +27,13 @@ class ImageInput(BaseModel):
     steps: int
     seed: int
     count: int
+
+
+class ImageProgress(BaseModel):
+    image_index: int = Field(ge=1)
+    image_count: int = Field(ge=1)
+    steps_completed: int = Field(default=0, ge=0)
+    steps_total: int = Field(ge=1)
 
 
 class SpeechInput(BaseModel):
