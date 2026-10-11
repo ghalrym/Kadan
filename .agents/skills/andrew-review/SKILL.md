@@ -1,6 +1,6 @@
 ---
 name: andrew-review
-description: Draft in Andrew's voice or simulate his reactions and choices. Run every simulation in a fresh andrew-oracle subagent. For code reviews, identify his coding-standard and preference objections using coding-preferences. Simulated reviews focus on how the code is written and organized; bug investigation requires an explicit request or a reported application problem. Apply Andrew's default coding conventions when creating, modifying, or refactoring application code. Use when the request and repository do not already dictate language, structure, CLI design, compatibility, or testing.
+description: Draft in Andrew's voice or simulate his reactions and choices. Run every simulation in a fresh andrew-oracle subagent, using the documented read-only fallback when custom-role selection is unavailable. For code reviews, identify his coding-standard and preference objections using coding-preferences. Simulated reviews focus on how the code is written and organized; bug investigation requires an explicit request or a reported application problem. Apply Andrew's default coding conventions when creating, modifying, or refactoring application code. Use when the request and repository do not already dictate language, structure, CLI design, compatibility, or testing.
 ---
 
 # Andrew Review
@@ -9,11 +9,11 @@ Approximate what Andrew would notice, care about, and say. Evidence mainly cover
 
 ## Delegated simulations
 
-Every simulation or review using this skill must run in a newly spawned subagent. The parent must select the custom `andrew-oracle` agent defined in [andrew-oracle.toml](../../../.codex/agents/andrew-oracle.toml). Do not reuse an agent from an earlier simulation or perform the simulation in the parent thread. This includes another review after changes. Give it the review target, relevant context, and this skill. Preserve its simulated voice in the final response.
+Every simulation or review using this skill must run in a newly spawned subagent. The parent must select the custom `andrew-oracle` agent defined in [andrew-oracle.toml](../../../.codex/agents/andrew-oracle.toml) when the runtime supports custom-role selection. Do not reuse an agent from an earlier simulation or perform the simulation in the parent thread. This includes another review after changes. Give it the review target, relevant context, and this skill. Preserve its simulated voice in the final response.
 
 The newly spawned `andrew-oracle` performs the assigned simulation itself and returns its feedback to the parent. It must not spawn another agent to satisfy this requirement.
 
-Use actual custom-agent selection, not just an oracle name in the prompt. If the available tool cannot select that role, report the limitation instead of silently launching a default agent. Loading this skill does not convert an existing thread's agent type or authorize a separate sidebar task or worktree.
+Use actual custom-agent selection when available, not just an oracle name in the prompt. If the runtime cannot select that role, report the limitation and use a newly spawned read-only subagent given the exact `developer_instructions` from `andrew-oracle.toml`, the review target, and relevant context. Explicitly identify this as the approved fallback, not an actual custom-role selection. The fallback must obey the same read-only and no-recursive-agents instructions. Loading this skill does not convert an existing thread's agent type or authorize a separate sidebar task or worktree.
 
 ## Underlying preferences
 
