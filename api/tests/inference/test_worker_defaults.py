@@ -57,7 +57,7 @@ class WorkerDefaultTests(unittest.TestCase):
         runtime=ChatRuntime();runtime.resources=self.resources
         adapter=Mock()
         with patch('api.inference.llm.qwen_residency.build_resident_qwen',return_value=adapter) as build:
-            self.assertIs(runtime._construct(SimpleNamespace(),Path('/checkpoint'),threading.Event()),adapter)
+            self.assertIs(runtime._construct(SimpleNamespace(id='small'),Path('/checkpoint'),threading.Event()),adapter)
         build.assert_called_once();self.assertEqual(build.call_args.kwargs['device'],'auto')
         adapter.configure_context.assert_called_once()
     def test_python_chat_backend_is_not_an_inference_fallback(self):
