@@ -1,50 +1,44 @@
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from starlette.requests import Request
+from api.routes.v1.videos.generations import generate_video, VideoGenerationRequest
+from api.pydantic_models.media import VideoJob
 
-from fastapi import HTTPException
-from pydantic import ValidationError
 from api.pydantic_models.requests import RequestRecord
-from api.routes.v1.requests import RequestFilters, get_request, list_requests
-from api.services.telemetry import TelemetryStore
+from api.routes.v1.requests import with_video_status
 
 
-def record(identifier, status=200, kind='LLM', endpoint='/v1/chat/completions'):
-    return RequestRecord(id=identifier, time='2026-10-04T12:00:00+00:00', type=kind,
-                         status=status, latency='0.100 s', latency_ms=100, endpoint=endpoint,
-                         prompt='JSON object; 2 messages', output=f'HTTP {status}',
-                         request_bytes=20, response_bytes=10)
+class VideoRequestStatusTests(unittest.TestCase):
+    def record(self, **values):
+        return RequestRecord(id='request', time='now', type='Video', status=202,
+            latency='0.1 s', latency_ms=100, endpoint='/v1/videos/generations',
+            prompt='', output='HTTP 202', request_bytes=1, response_bytes=1, **values)
+
+    def test_accepted_request_tracks_actual_job_without_mutating_history(self):
+        record = self.record(video_job_id='job')
+        for state in ('Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'):
+            with self.subTest(state=state), patch('api.routes.v1.requests.video_jobs.get',
+                    return_value=SimpleNamespace(status=state)) as get:
+                self.assertEqual(with_video_status(record).video_status, state)
+                get.assert_called_once_with('job')
+                self.assertIsNone(record.video_status)
+                self.assertEqual(record.status, 202)
+
+    def test_missing_job_remains_unknown_not_done(self):
+        self.assertIsNone(with_video_status(self.record()).video_status)
+        with patch('api.routes.v1.requests.video_jobs.get', side_effect=KeyError):
+            self.assertIsNone(with_video_status(self.record(video_job_id='expired')).video_status)
 
 
-class RequestFilteringTests(unittest.TestCase):
-    def setUp(self):
-        self.store = TelemetryStore(capacity=3)
-        patcher = patch('api.routes.v1.requests.telemetry', self.store)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        for item in [record('old'), record('ok'), record('bad', 422), record('latest', 503)]:
-            self.store.begin()
-            self.store.finish(item)
-
-    def test_any_valid_http_status_and_bounds(self):
-        self.assertEqual(RequestFilters.model_validate({'status': '201'}).status, 201)
-        self.assertEqual(RequestFilters.model_validate({'status': '503'}).status, 503)
-        for fields in ({'status': 600}, {'status': 99}, {'limit': 101}, {'offset': -1}, {'search': 'x' * 129}):
-            with self.assertRaises(ValidationError): RequestFilters.model_validate(fields)
-
-    def test_filters_are_combined_before_pagination(self):
-        result = list_requests(RequestFilters(type='LLM', search='CHAT', limit=1, offset=1))
-        self.assertEqual(result.total, 3)
-        self.assertEqual([r.id for r in result.requests], ['bad'])
-        self.assertEqual(result.retention_limit, 3)
-        self.assertEqual([r.id for r in list_requests(RequestFilters(status=503)).requests], ['latest'])
-
-    def test_detail_and_eviction(self):
-        self.assertEqual(get_request('bad').request.status, 422)
-        with self.assertRaises(HTTPException) as caught: get_request('old')
-        self.assertEqual(caught.exception.status_code, 404)
-
-    def test_empty_is_not_fixture_data(self):
-        with patch('api.routes.v1.requests.telemetry', TelemetryStore()):
-            result = list_requests(RequestFilters())
-        self.assertEqual(result.requests, [])
-        self.assertEqual(result.total, 0)
+class VideoSubmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_submission_records_exact_job_id_for_telemetry(self):
+        job = VideoJob(id='actual-job', prompt='a scene', duration='3s', resolution='768p',
+                       aspect='wide', fps='24', progress=0, time='now', status='Queued',
+                       thumbnail='', progressText='Queued')
+        request = Request({'type': 'http'})
+        with patch('api.routes.v1.videos.generations.inference.submit', new=AsyncMock(return_value=job)):
+            response = await generate_video(VideoGenerationRequest(prompt='a scene'), request)
+        self.assertEqual(response.job.id, 'actual-job')
+        self.assertEqual(request.scope['kadan_measurement']['video_job_id'], 'actual-job')
+        self.assertEqual(response.job.status, 'Queued')

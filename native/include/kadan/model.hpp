@@ -51,5 +51,8 @@ void load(const Layout&,std::shared_ptr<checkpoint::MemoryBudget> staging,Sink&,
           const std::atomic_bool* cancelled=nullptr);
 // Same FP32 decode then BF16 round-to-nearest-even as the existing weight-only
 // Python reference. Used for admission and CPU fixture/reference checks.
+// Load only bindings in a complete validated layer/global offset range.
+void load_range(const Layout&,std::shared_ptr<checkpoint::MemoryBudget>,Sink&,
+                std::size_t first,std::size_t last,const std::atomic_bool* cancelled=nullptr);
 float bf16_weight(const quantization::Matrix&,std::size_t row,std::size_t column);
 } // namespace kadan::model

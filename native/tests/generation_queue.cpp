@@ -35,6 +35,19 @@ void fifo() {
     q.cleaned(q.poll().reservation, true);
     expect(q.snapshot().residents == 0 && q.poll().kind == Kind::idle);
 }
+void video_fifo() {
+    Queue q({100,100});
+    auto a=q.submit(text);
+    auto b=q.submit({"h3/revision",kadan::Workload::video,{50,0}});
+    auto c=q.submit(image);
+    q.poll();q.loaded(a,true);q.completed(a,true);
+    q.cleaned(q.poll().reservation,true);
+    auto v=q.poll();expect(v.request==b&&v.kind==Kind::load);q.loaded(b,true);
+    q.cancel(b);q.completed(b,false);
+    q.cleaned(v.reservation,false);expect(q.poll().request==b&&q.pending()==2);
+    q.cleaned(v.reservation,true);expect(q.poll().request==c);q.loaded(c,true);q.completed(c,false);q.cleaned(q.poll().reservation,true);
+    expect(q.snapshot().residents==0);
+}
 void cancellation() {
     for (bool during_load : {false, true}) {
         Queue q({100, 100});
@@ -81,6 +94,6 @@ void bounds_and_shutdown() {
     expect(changed.poll().kind == Kind::cleanup); // Configuration/accounting changes cannot reuse.
 }
 int main() {
-    fifo(); cancellation(); bounds_and_shutdown();
+    fifo(); video_fifo(); cancellation(); bounds_and_shutdown();
     std::cout << "generation queue tests passed\n";
 }

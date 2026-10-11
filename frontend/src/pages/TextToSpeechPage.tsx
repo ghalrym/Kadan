@@ -1,40 +1,22 @@
+import type { SpeechRequest } from '../api/generated/types.gen'
 import { useEffect, useRef, useState } from 'react'
-import { ModeNavigation } from '../components/Controls'
 import { AudioCard } from '../components/Media'
 import { speechScript, voiceDescription } from '../data/playground'
-import { fetchSpeechHistory, requestSpeech, speechRequest } from '../api/speech'
+import { fetchSpeechHistory, requestSpeech } from '../api/speech'
 import { listSpeechModels } from '../api/generated/sdk.gen'
 import type {
   GeneratedSpeech,
   SpeechModelOption,
 } from '../api/generated/types.gen'
 
-/**
- * Choose describe/clone mode and reset workspace state when the mode changes.
- */
-export default function TextToSpeechPage({
-  clone = false,
-}: {
-  clone?: boolean
-}) {
-  return <SpeechWorkspace key={clone ? 'clone' : 'describe'} clone={clone} />
-}
-
-/**
- * Own editable speech fields, cancellable history and one active submission.
- * Preserve the editor layout while accepting local samples and complete WAV results.
- */
-function SpeechWorkspace({ clone }: { clone: boolean }) {
+/** Own custom-voice settings, cancellable history and one active submission. */
+export default function TextToSpeechPage() {
   const [script, setScript] = useState(speechScript)
   const [description, setDescription] = useState(voiceDescription)
-  const [sample, setSample] = useState('')
-  const [transcript, setTranscript] = useState('')
-  const [speakerOnly, setSpeakerOnly] = useState(false)
   const [speaker, setSpeaker] = useState('')
   const [model, setModel] = useState('')
   const [models, setModels] = useState<SpeechModelOption[]>([])
   const selectedModel = models.find((item) => item.id === model)
-  const custom = selectedModel?.mode === 'custom'
   const chosenSpeaker = selectedModel?.speakers?.includes(speaker)
     ? speaker : selectedModel?.default_speaker ?? selectedModel?.speakers?.[0] ?? ''
   const [audio, setAudio] = useState<GeneratedSpeech[]>([])
@@ -53,9 +35,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
         if (controller.signal.aborted) return
         if (!result.response?.ok || !result.data)
           throw new Error('Could not load speech models.')
-        const choices = result.data.filter((item) =>
-          clone ? item.mode === 'clone' : item.mode !== 'clone',
-        )
+        const choices = result.data
         setModels(choices)
         setModel(choices[0]?.id ?? '')
       })
@@ -63,7 +43,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
         if (!controller.signal.aborted) setError(String(failure))
       })
     return () => controller.abort()
-  }, [clone])
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -103,7 +83,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
   }
 
   /**
-   * Validate the selected voice mode and submit once history loading has finished.
+   * Validate the selected voice and submit once history loading has finished.
    * Keep user input for retry, expose API errors, and append only validated audio
    * from the still-active controller; cancellation cannot create a local audio result.
    */
@@ -111,27 +91,14 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
     if (active.current || loadingHistory) return
     setError(null)
     setNotice('')
-    let body
+    let body: SpeechRequest
     try {
-      body = custom
-        ? {
-            script: script.trim(),
-            model_id: model,
-            voice: {
-              mode: 'custom' as const,
-              speaker: chosenSpeaker,
-              instruction: selectedModel?.supports_instruction ? description : '',
-            },
-          }
-        : speechRequest(
-            script,
-            clone ? 'clone' : 'describe',
-            clone ? sample : description,
-          )
-      body.model_id = model
-      if (body.voice.mode === 'clone') {
-        body.voice.transcript = transcript
-        body.voice.speaker_only = speakerOnly
+      if (model !== 'qwen-tts-1.7b-custom')
+        throw new Error('Select the supported CustomVoice model.')
+      body = {
+        script: script.trim(), model_id: model, language: 'Auto',
+        voice: { mode: 'custom', speaker: chosenSpeaker,
+          instruction: selectedModel?.supports_instruction ? description : '' },
       }
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Check your input.')
@@ -162,16 +129,6 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
   return (
     <div className="workspace workspace--speech">
       <aside className="workspace-controls" aria-label="Speech settings">
-        <div className="field">
-          <span className="eyebrow">Voice</span>
-          <ModeNavigation
-            label="Voice mode"
-            options={[
-              { label: 'Describe a voice', to: '/tts' },
-              { label: 'Clone a voice', to: '/tts/clone' },
-            ]}
-          />
-        </div>
         <form
           className="stack"
           onSubmit={(event) => {
@@ -200,7 +157,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               ))}
             </select>
           </div>
-          {custom && (
+          {selectedModel && (
             <div className="field">
               <label htmlFor="speech-speaker" className="eyebrow">
                 Speaker
@@ -218,51 +175,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               </select>
             </div>
           )}
-          {clone ? (
-            <div className="field">
-              <label htmlFor="speech-sample" className="eyebrow">
-                Upload a voice sample
-              </label>
-              <input
-                id="speech-sample"
-                type="file"
-                accept="audio/*"
-                disabled={pending}
-                onChange={async (event) => {
-                  const file = event.target.files?.[0]
-                  setSample('')
-                  if (!file) return
-                  try {
-                    const bytes = new Uint8Array(await file.arrayBuffer())
-                    let value = ''
-                    for (const byte of bytes) value += String.fromCharCode(byte)
-                    setSample(btoa(value))
-                  } catch {
-                    setError('Could not read the voice sample.')
-                  }
-                }}
-              />
-              <label htmlFor="speech-reference" className="eyebrow">
-                Reference transcript
-              </label>
-              <textarea
-                id="speech-reference"
-                className="input"
-                value={transcript}
-                disabled={pending || speakerOnly}
-                onChange={(event) => setTranscript(event.target.value)}
-              />
-              <label>
-                <input
-                  type="checkbox"
-                  checked={speakerOnly}
-                  disabled={pending}
-                  onChange={(event) => setSpeakerOnly(event.target.checked)}
-                />{' '}
-                Speaker only
-              </label>
-            </div>
-          ) : !custom || selectedModel?.supports_instruction ? (
+          {selectedModel?.supports_instruction ? (
             <div className="field">
               <textarea
                 id="speech-description"
@@ -315,10 +228,7 @@ function SpeechWorkspace({ clone }: { clone: boolean }) {
               disabled={
                 loadingHistory ||
                 !model ||
-                !script.trim() ||
-                (clone
-                  ? !sample || (!speakerOnly && !transcript.trim())
-                  : !custom && !description.trim())
+                !script.trim() || !chosenSpeaker
               }
             >
               {error ? 'Retry speech request' : 'Generate speech'}

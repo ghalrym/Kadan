@@ -2,10 +2,8 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { ActionButton } from './Controls'
 import type { RequestResponse } from '../api/generated/types.gen'
+import { requestStatus } from '../api/requestStatus'
 import { usePolling } from '../hooks/usePolling'
-
-const statusClass = (status: number) =>
-  status >= 500 ? 'error' : status >= 400 ? 'warning' : 'success'
 
 /** Retain the original drawer structure around actual observed summaries. */
 export default function RequestDetails() {
@@ -41,9 +39,9 @@ export default function RequestDetails() {
                   {request.type}
                 </span>
                 <span
-                  className={`badge status-badge ${statusClass(request.status)}`}
+                  className={`badge status-badge ${requestStatus(request).className}`}
                 >
-                  {request.status}
+                  {requestStatus(request).label}
                 </span>
                 <Link to="/requests" className="button push-right">
                   Close
@@ -59,7 +57,7 @@ export default function RequestDetails() {
                   Model <strong>{request.model ?? '—'}</strong>
                 </span>
                 <span>
-                  Latency <strong>{request.latency}</strong>
+                  HTTP latency <strong>{request.latency}</strong>
                 </span>
               </div>
               <section className="stack compact">
@@ -68,7 +66,7 @@ export default function RequestDetails() {
               </section>
               {request.status < 400 ? (
                 <section className="stack compact">
-                  <h3 className="eyebrow">Response summary</h3>
+                  <h3 className="eyebrow">HTTP response summary</h3>
                   <div className="detail-text">{request.output}</div>
                 </section>
               ) : (

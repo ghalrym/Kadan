@@ -27,7 +27,6 @@ export default function App() {
           <Route path="image/edit" element={<ImagePage edit />} />
           <Route path="video" element={<VideoPage />} />
           <Route path="tts" element={<TextToSpeechPage />} />
-          <Route path="tts/clone" element={<TextToSpeechPage clone />} />
           <Route path="stt" element={<SpeechToTextPage />} />
           <Route path="api" element={<ApiAccessPage />} />
           <Route path="settings" element={<SettingsPage />} />

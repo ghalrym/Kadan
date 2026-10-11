@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel } from '../components/Controls'
 import { recordingToWav, requestTranscription } from '../api/transcription'
 
-/** Record locally and submit only after the user presses Submit. */
+/** Choose or record audio locally and submit only after pressing Submit. */
 export default function SpeechToTextPage() {
   const [recording, setRecording] = useState(false)
   const [pending, setPending] = useState(false)
@@ -60,6 +60,15 @@ export default function SpeechToTextPage() {
   return <div className="scroll-page"><div className="recording-layout"><Panel className="recording-panel">
     <button type="button" className="record-button" disabled={pending} aria-label={recording ? 'Stop recording' : 'Start recording'} aria-pressed={recording} onClick={() => void toggleRecording()}><span /></button>
     <span className="recording-timer">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}.0</span>
+    <label>Audio file
+      <input type="file" accept="audio/*" disabled={recording || pending} onChange={event => {
+        const file = event.target.files?.[0]
+        if (!file) return
+        setClip(file); setText(null); setError(''); setSeconds(0)
+        event.target.value = ''
+      }} />
+    </label>
+    {clip instanceof File && <p>{clip.name}</p>}
     <div className="row">
       <button type="button" className="button" disabled={recording || pending || !clip} onClick={() => { setClip(null); setText(null); setSeconds(0); setError('') }}>Discard</button>
       <button type="button" className="button button--muted" disabled={recording || pending || !clip} onClick={() => void submit()}>{pending ? 'Working…' : 'Submit'}</button>

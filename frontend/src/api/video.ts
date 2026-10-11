@@ -86,15 +86,13 @@ export async function submitVideo(
     !body.prompt.trim() ||
     body.prompt.length > 8000 ||
     (body.negative_prompt?.length ?? 0) > 8000 ||
-    !Number.isInteger(body.duration) ||
-    body.duration! < 1 ||
-    body.duration! > 120 ||
-    !Number.isInteger(body.fps) ||
-    body.fps! < 1 ||
-    body.fps! > 120
+    !Number.isInteger(body.seconds) ||
+    body.seconds! < 1 ||
+    body.seconds! > 15 ||
+    body.fps !== 24
   )
     throw new Error(
-      'Enter a prompt and whole-number duration and frame rate between 1 and 120.',
+      'Enter a prompt and a whole-number duration from 1 to 15 seconds at 24 fps.',
     )
   const result = await generateVideo({
     body: { ...body, prompt: body.prompt.trim() },

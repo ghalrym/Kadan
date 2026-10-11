@@ -1,21 +1,23 @@
 from typing import Literal
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 from api.pydantic_models.media import VideoJob
-from api.memory_manager import memory_manager
+from api.services.inference import inference
 from api.inference.errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
 class VideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: Literal["ltx-2.5-distilled", "h3-fl2va-int8-turbo"] = "ltx-2.5-distilled"
+    model: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
     seed: int = Field(default=42, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
-    negative_prompt: str = Field(default="", max_length=8000)
-    duration: int = Field(default=8, gt=0, le=120)
-    fps: int = Field(default=24, gt=0, le=120)
-    resolution: Literal["480p", "720p", "768p", "1080p"] = "720p"
+    negative_prompt: Literal[""] = ""
+    duration: int = Field(default=8, ge=1, le=15,
+        validation_alias=AliasChoices('seconds', 'duration'),
+        description='Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.')
+    fps: Literal[24] = 24
+    resolution: Literal["480p", "768p"] = "768p"
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"
 
 
@@ -25,10 +27,12 @@ class VideoGenerationResponse(BaseModel):
 
 @router.post("", status_code=202, operation_id="generateVideo",
              responses={503: {"description": "Video provider unavailable"}})
-async def generate_video(body: VideoGenerationRequest) -> VideoGenerationResponse:
+async def generate_video(body: VideoGenerationRequest, request: Request) -> VideoGenerationResponse:
     """Queue a validated native generation and return its actual job identifier."""
     try:
-        return VideoGenerationResponse(job=await memory_manager.submit(body, feature='video'))
+        job = await inference.submit(body, feature='video')
+        request.scope.setdefault('kadan_measurement', {})['video_job_id'] = job.id
+        return VideoGenerationResponse(job=job)
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except ValueError as exc:

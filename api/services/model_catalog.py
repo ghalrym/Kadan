@@ -12,6 +12,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Literal
 from api.inference.tts.catalog import SPEECH_MODELS
+from api.inference.decisions.laya_checkpoint import DEFAULT_MODEL, DEFAULT_REVISION
 
 from api.inference.stt.catalog import get_whisper_checkpoints
 
@@ -23,7 +24,7 @@ class CatalogEntry:
     revision: str
     license: str
     estimated_bytes: int
-    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image'] = 'llm'
+    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image', 'decision'] = 'llm'
     display_name: str | None = None
     layout: Literal['root', 'components', 'single_file', 'composite'] = 'root'
     subfolder: str = ''
@@ -43,9 +44,9 @@ CATALOG: dict[str, CatalogEntry] = {
         CatalogEntry('small', 'nvidia/Qwen3.6-35B-A3B-NVFP4',
                      '1355db6a052410cfd62085d94b58866fd0f2c3c5', 'apache-2.0', 23_500_000_000),
         CatalogEntry('medium', 'openai/gpt-oss-120b',
-                     'b5c939de8f754692c1647ca79fbf85e8c1e70f8a', 'apache-2.0', 65_000_000_000),
-        CatalogEntry('large', 'RedHatAI/GLM-5.3-Flash-NVFP4',
-                     '18d55bfd5a2194887738da73753975c9d3842f46', 'mit', 198_000_000_000),
+                     'b5c939de8f754692c1647ca79fbf85e8c1e70f8a', 'apache-2.0', 65_000_000_000, inference_available=False),
+        CatalogEntry('large', 'mbehr90/GLM-5.3-Flash-nvfp4',
+                     '70acfebe23b1d2d82ea1c64734355d23504d02bb', 'mit', 198_000_000_000),
     )
 }
 
@@ -133,7 +134,7 @@ def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
             r'(?:model|diffusion_pytorch_model)(?:-\d+-of-\d+)?\.safetensors(?:\.index\.json)?', name
         ) is not None
     return name in ASSETS or re.fullmatch(
-        r'(?:model(?:-\d+-of-\d+|_mtp)?)\.safetensors', name
+        r'(?:model(?:-\d+(?:-of-\d+)?|_mtp)?)\.safetensors', name
     ) is not None
 
 
@@ -168,4 +169,29 @@ CATALOG[_speech.id] = CatalogEntry(
         'speech_tokenizer/config.json', 'speech_tokenizer/configuration.json',
         'speech_tokenizer/preprocessor_config.json', 'speech_tokenizer/model.safetensors'),
     weight_paths=('', 'speech_tokenizer'),
+)
+
+# Complete original image checkpoint consumed by the native executor.
+QWEN_IMAGE_REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
+CATALOG['qwen-image-2.1'] = CatalogEntry(
+    'qwen-image-2.1', 'Qwen/Qwen-Image-2.1', QWEN_IMAGE_REVISION,
+    'qwen-research', 33_100_000_000, kind='image', display_name='Qwen-Image-2.1',
+    layout='components', component_paths=('processor', 'scheduler', 'text_encoder', 'transformer', 'vae'),
+    required_files=('model_index.json', 'LICENSE', 'processor/preprocessor_config.json',
+        'processor/tokenizer.json', 'processor/tokenizer_config.json', 'processor/chat_template.jinja',
+        'scheduler/scheduler_config.json', 'text_encoder/config.json',
+        'text_encoder/model.safetensors.index.json', 'transformer/config.json',
+        'transformer/diffusion_pytorch_model.safetensors.index.json', 'vae/config.json'),
+    weight_paths=('text_encoder', 'transformer', 'vae'),
+    license_url=f'https://huggingface.co/Qwen/Qwen-Image-2.1/blob/{QWEN_IMAGE_REVISION}/LICENSE',
+    license_notice='Qwen-Image-2.1 is licensed for research and evaluation only. Commercial use requires a separate license; continuing does not grant commercial rights.',
+)
+
+# The C++ Laya executor consumes these four files directly; no encoder export.
+CATALOG['laya'] = CatalogEntry(
+    'laya', DEFAULT_MODEL, DEFAULT_REVISION, 'unknown', 0,
+    kind='decision', display_name='Laya', layout='components',
+    required_files=('rl_agent_config.json', 'model.safetensors',
+                    'tokenizer/tokenizer.json', 'encoder/config.json'),
+    weight_paths=('',),
 )

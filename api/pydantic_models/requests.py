@@ -27,6 +27,9 @@ class RequestRecord(BaseModel):
     request_bytes: int
     response_bytes: int
 
+    video_job_id: str | None = None
+    video_status: Literal['Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'] | None = None
+
     generation_ttft_ms: float | None = None
     stream_ttft_ms: float | None = None
     prefill_ms: float | None = None

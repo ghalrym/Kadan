@@ -1,47 +1,34 @@
-from dataclasses import asdict
-from typing import Annotated, Literal
+from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from api.pydantic_models.media import GeneratedSpeech
-from api.services.speech import validate_request, speech_models
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
+from api.inference.tts.catalog import SPEECH_MODELS, SPEAKERS, LANGUAGES
+from api.services.inference import inference
+from api.services.inference_http import infer
 
 router = APIRouter(prefix="/v1/audio/speech", tags=["Audio"])
-
-class DescribedVoice(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    mode: Literal["describe"]
-    description: str = Field(min_length=1)
-
-
-class ClonedVoice(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    mode: Literal["clone"]
-    sample: str = Field(min_length=1, description="Base64-encoded audio bytes; URLs and server paths are not accepted.")
-    transcript: str | None = None
-    speaker_only: bool = False
-
 
 class CustomVoice(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     mode: Literal["custom"]
     speaker: str
-    instruction: str = ''
+    instruction: str = Field(default='', max_length=8000)
 
 
 
 class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     script: str = Field(min_length=1)
-    model_id: str | None = None
+    model_id: Literal['qwen-tts-1.7b-custom'] = 'qwen-tts-1.7b-custom'
     language: str = 'Auto'
-    voice: Annotated[DescribedVoice | ClonedVoice | CustomVoice, Field(discriminator="mode")]
+    voice: CustomVoice
 
     @model_validator(mode='after')
     def validate_model(self):
-        """Adapter validation runs before allocation; the route has no model rules."""
-        self.model_id = validate_request(self.model_dump())
+        if self.language not in LANGUAGES or self.voice.speaker not in SPEAKERS:
+            raise ValueError('Select a supported CustomVoice speaker and language.')
+        if not 1 <= len(self.script.encode('utf-8')) <= 32000 or len(self.voice.instruction.encode('utf-8')) > 8000:
+            raise ValueError('Speech text or instruction exceeds its native byte limit.')
         return self
 
 
@@ -71,7 +58,9 @@ class SpeechModelOption(BaseModel):
 @router.get('/models', operation_id='listSpeechModels')
 def list_speech_models() -> list[SpeechModelOption]:
     """Expose only enabled native checkpoint integrations."""
-    return [SpeechModelOption(**asdict(item)) for item in speech_models()]
+    model = SPEECH_MODELS['qwen-tts-1.7b-custom']
+    return [SpeechModelOption(id=model.id, name=model.name, mode='custom', speakers=list(SPEAKERS),
+        supports_instruction=True, default_speaker='Ryan')]
 
 
 @router.get("", operation_id="listSpeech")
@@ -83,5 +72,5 @@ def list_speech() -> SpeechHistoryResponse:
 @router.post("", operation_id="generateSpeech", responses={503: {"model": SpeechUnavailable, "description": "Speech provider unavailable"}})
 async def generate_speech(body: SpeechRequest, request: Request) -> SpeechResponse:
     """Queue native speech; cancellation waits for owned cleanup."""
-    result = await infer(request, memory_manager.submit(body, feature='tts'))
+    result = await infer(request, inference.submit(body, feature='tts'))
     return SpeechResponse(audio=result)

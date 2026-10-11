@@ -70,10 +70,14 @@ float bf16_weight(const quantization::Matrix& m,std::size_t r,std::size_t j){
     return linear::bf16_round(local*m.multipliers[0]);
 }
 void load(const Layout& layout,std::shared_ptr<checkpoint::MemoryBudget> staging,Sink& sink,const std::atomic_bool* cancelled){
+    load_range(layout,std::move(staging),sink,0,layout.device_bytes(),cancelled);
+}
+void load_range(const Layout& layout,std::shared_ptr<checkpoint::MemoryBudget> staging,Sink& sink,std::size_t first_offset,std::size_t last_offset,const std::atomic_bool* cancelled){
+    require(first_offset<last_offset&&last_offset<=layout.device_bytes(),"model_load_range");
     static_assert(std::endian::native==std::endian::little);
     require(staging&&staging->limit()>=std::max<std::size_t>(8,layout.minimum_staging_bytes()),"model_staging_budget");const auto& manifest=layout.manifest();const auto items=manifest.items();const auto limit=staging->limit();
     for(const auto& b:layout.bindings()){
-        cancel(cancelled);const auto& item=items[b.item];
+        cancel(cancelled);if(b.weights<first_offset||b.weights>=last_offset)continue;const auto& item=items[b.item];
         if(item.kind==checkpoint::ItemKind::dense){
             std::pmr::vector<std::uint8_t> buffer(staging.get());buffer.resize(std::min<std::size_t>(item.payload_bytes,limit&~std::size_t(1)));
             for(std::size_t at=0;at<item.payload_bytes;at+=buffer.size()){cancel(cancelled);auto n=std::min<std::size_t>(buffer.size(),item.payload_bytes-at);auto chunk=std::span(buffer).first(n);manifest.read_dense(b.item,at,chunk);
@@ -95,7 +99,7 @@ void load(const Layout& layout,std::shared_ptr<checkpoint::MemoryBudget> staging
         }
     }
     std::array<float,128> frequency{};const auto&a=manifest.architecture();
-    for(const auto& l:layout.layers())if(l.config.attention==decoder::Attention::full){
+    for(const auto& l:layout.layers())if(l.offset>=first_offset&&l.offset<last_offset&&l.config.attention==decoder::Attention::full){
         for(std::size_t j=0;j<a.rotary_dim/2;++j){frequency[j]=1/std::pow(float(a.rope_theta),float(2*j)/float(a.rotary_dim));require(std::isfinite(frequency[j])&&frequency[j]>0&&frequency[j]<=1,"model_rope_frequency");}
         sink.write(l.offset+l.plan.frequencies,bytes(std::span<const float>(frequency).first(a.rotary_dim/2)));}
     cancel(cancelled);manifest.check_unchanged();

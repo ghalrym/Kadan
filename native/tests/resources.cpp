@@ -113,9 +113,29 @@ void control_plane_limit() {
     fails([] { Resources too_wide(Footprint(Resources::max_devices + 2, 0)); }, "too_many_devices");
 }
 
+void capacity_recovers_within_last_clean_measurement() {
+    using namespace kadan;
+    Resources resources({100, 80});
+    const auto resident = resources.reserve(Workload::llm, {40, 20});
+    resources.refresh_available({5, 10});
+    check(resources.snapshot().capacity == Footprint({45, 30}));
+    fails([&] { resources.reserve(Workload::llm, {6, 0}); }, "exhausted");
+    resources.refresh_available({90, 90});
+    check(resources.snapshot().capacity == Footprint({100, 80}));
+    const auto scratch = resources.reserve(Workload::llm, {60, 60});
+    check(resources.snapshot().used == Footprint({100, 80}));
+    resources.released(scratch);
+    resources.released(resident);
+    resources.reset_capacity({70, 50});
+    resources.refresh_available({10, 5});
+    resources.refresh_available({100, 100});
+    check(resources.snapshot().capacity == Footprint({70, 50}));
+}
+
 int main() {
     using namespace kadan;
     try {
+        capacity_recovers_within_last_clean_measurement();
         control_plane_limit();
         for (int i = 0; i < 32; ++i) {
             pin_eviction_race();

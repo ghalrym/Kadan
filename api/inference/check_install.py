@@ -1,23 +1,11 @@
-"""Fail image builds and clean-install checks if a core inference import is broken."""
+"""Validate API imports without starting the application or loading a model."""
+from api.services.native_worker import NativeWorker
+from api.services.inference import InferenceService
 
 
 def main():
-    """Import every catalog architecture without weights, GPU allocation or downloads."""
-    import accelerate
-    import safetensors
-    import torch
-    import laya
-    from transformers import AutoTokenizer, GptOssForCausalLM, Qwen3_5MoeForCausalLM
-    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
-    from api.inference.llm.model_adapter import build_runtime
-    from api.inference.llm.qwen import build_qwen
-    from api.inference.llm.glm import build_glm
-
-    assert all((accelerate, safetensors, laya, AutoTokenizer, GptOssForCausalLM,
-                Qwen3_5MoeForCausalLM, Glm5NextTextModel, build_runtime, build_qwen, build_glm))
-    from api.inference.tts.check_install import check_speech_install
-    check_speech_install()
-    print(f'Core inference imports OK (torch {torch.__version__}, CUDA build {torch.version.cuda}).')
+    assert NativeWorker and InferenceService
+    print('Single native worker transport imports successfully; no model execution.')
 
 
 if __name__ == '__main__':

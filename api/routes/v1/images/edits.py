@@ -1,7 +1,5 @@
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
 from typing import Literal
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.media import ImageSet
 
@@ -24,4 +22,4 @@ class ImageResponse(BaseModel):
 @router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="editImages")
 async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
     """Queue validated inference; unavailable providers still return HTTP 503."""
-    return await infer(request, memory_manager.submit(body, feature='image', operation='edit'))
+    raise HTTPException(503, 'Native image editing is unavailable.')

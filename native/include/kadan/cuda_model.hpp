@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/model.hpp"
+#include "kadan/weight_backing.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/stack.hpp"
 #include "kadan/cuda_error.hpp"
@@ -27,6 +28,7 @@ public:
     void begin_request(const std::atomic_bool* cancelled=nullptr);
     void end_request(); void park();
     std::size_t retained_bytes()const;
+    serving::WeightBacking::Stats cache_stats()const;
     void reset();void close();bool valid()const;bool finished()const;std::size_t tokens()const;
     std::size_t vocabulary()const;std::size_t device_bytes()const;
     // Diagnostic copy of the last committed logits. Failure invalidates reuse;

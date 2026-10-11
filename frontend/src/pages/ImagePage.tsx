@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ModeNavigation, SegmentedControl, UploadPlaceholder } from '../components/Controls'
 import { MediaPlaceholder } from '../components/Media'
 import { imageHistory, requestImages, type ImageOptions } from '../api/images'
+import { usePolling } from '../hooks/usePolling'
+import type { MetricsResponse } from '../api/generated/types.gen'
 import type { ImageSet } from '../api/generated/types.gen'
 
 /**
@@ -17,6 +19,8 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
  * errors without manufacturing image previews or claiming uploads.
  */
 function ImageWorkspace({ edit }: { edit: boolean }) {
+  const { data: metrics } = usePolling<MetricsResponse>('/v1/metrics')
+  const progress = metrics?.inference_progress
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
   const [count, setCount] = useState<1 | 2 | 4>(4)
@@ -27,6 +31,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [error, setError] = useState('')
   const [historyError, setHistoryError] = useState('')
   const [history, setHistory] = useState<ImageSet[]>([])
+  const [generated, setGenerated] = useState<ImageSet[]>([])
+  const images = [...generated, ...history]
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
@@ -65,7 +71,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     setBusy(true)
     setError('')
     try {
-      await requestImages(
+      const image = await requestImages(
         {
           prompt: prompt.trim(),
           aspect,
@@ -75,6 +81,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         controller.signal,
         edit ? { image: source.trim(), strength: strength / 100 } : undefined,
       )
+      if (active.current === controller && !controller.signal.aborted)
+        setGenerated(items => [image, ...items])
     } catch (error) {
       if (active.current === controller)
         setError(
@@ -105,15 +113,21 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         </div>
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
-        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Sending…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Queued / working…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        {busy && progress && <p role="status">
+          Server {progress.workload}: {progress.image && <>image {progress.image.image_index}/{progress.image.image_count} · {progress.image.steps_completed}/{progress.image.steps_total} denoising steps complete · </>}
+          {progress.stage.replaceAll('_', ' ')} {progress.stage === 'block' ? progress.value + 1 : progress.value}
+        </p>}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>
       <div className="workspace-results image-gallery" aria-label="Image gallery" aria-busy={loading}>
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
-        {!loading && !historyError && history.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
-        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map(seed => <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
+        {!loading && !historyError && images.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
+        {images.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.images_base64?.length && item.mime_type === 'image/png'
+          ? item.images_base64.map((data, index) => <img key={index} className="generated-image" src={`data:image/png;base64,${data}`} alt={`${item.prompt} — image ${index + 1}`} />)
+          : item.seeds.map((seed, index) => <MediaPlaceholder key={`${seed}-${index}`} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
       </div>
     </div>
   )

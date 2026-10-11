@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from api.memory_manager import memory_manager
-from api.memory_manager.http import infer
-from api.inference.stt.whisper_transcriber import get_whisper_transcriber
+from api.services.inference import inference
+from api.services.inference_http import infer
+from api.services.whisper_selection import whisper_selection
 from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
@@ -19,7 +19,7 @@ class TranscriptionRequest(BaseModel):
     @field_validator("audio")
     @classmethod
     def validate_audio(cls, value: str) -> str:
-        """Reject blank input; decoding occurs under the native memory lease."""
+        """Reject blank input before bounded WAV transport decoding."""
         if not value.strip():
             raise ValueError("Audio must not be blank")
         return value.strip()
@@ -61,13 +61,13 @@ class WhisperSelection(BaseModel):
 @router.get('/models', operation_id='getWhisperModels')
 def get_models() -> WhisperModels:
     """List all unique official checkpoints and the persisted selection."""
-    return WhisperModels(models=list(get_whisper_checkpoints()), selected=get_whisper_transcriber().selected())
+    return WhisperModels(models=list(get_whisper_checkpoints()), selected=whisper_selection.selected())
 
 
 @router.put('/models', operation_id='selectWhisperModel')
 def select_model(body: WhisperSelection) -> WhisperModels:
     try:
-        get_whisper_transcriber().select(body.model)
+        whisper_selection.select(body.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:
@@ -80,4 +80,4 @@ async def transcribe_audio(body: TranscriptionRequest, request: Request) -> Tran
     """Queue native Whisper and preserve its raw transcript and formatting status."""
     if not body.audio.startswith('data:audio/wav;base64,'):
         raise HTTPException(422, 'Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.')
-    return TranscriptionResponse(**await infer(request, memory_manager.submit(body, feature='stt')))
+    return TranscriptionResponse(**await infer(request, inference.submit(body, feature='stt')))

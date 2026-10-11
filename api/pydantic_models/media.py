@@ -9,6 +9,8 @@ class ImageSet(BaseModel):
     aspect: Literal["square", "landscape", "portrait", "wide"]
     seeds: list[int]
     meta: str
+    images_base64: list[str] = Field(default_factory=list)
+    mime_type: Literal["image/png"] | None = None
 
 
 class VideoJob(BaseModel):

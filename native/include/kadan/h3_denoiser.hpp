@@ -1,6 +1,8 @@
 #pragma once
 #include "kadan/checkpoint.hpp"
 #include "kadan/resources.hpp"
+#include "kadan/h3_compute.hpp"
+#include "kadan/h3_tokenizer.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -25,12 +27,12 @@ public:
         std::span<const float> timesteps;
         std::span<const std::uint32_t> tags;
     };
-    explicit H3Denoiser(std::shared_ptr<Resources>);
+    explicit H3Denoiser(std::shared_ptr<Resources>, std::shared_ptr<H3Compute> compute={});
     ~H3Denoiser();
     H3Denoiser(const H3Denoiser&)=delete;
     H3Denoiser& operator=(const H3Denoiser&)=delete;
-    void load(const char* root,const std::string& name,const std::atomic_bool&);
-    void load_turbo(const char* root,const std::string& name,const std::atomic_bool&);
+    void load(const char* root,const std::string& name,const std::atomic_bool&, std::shared_ptr<checkpoint::ReadCache> cache={});
+    void load_turbo(const char* root,const std::string& name,const std::atomic_bool&, std::shared_ptr<checkpoint::ReadCache> cache={});
     void unload();
     bool loaded() const{return bool(shard_);}
     bool turbo_loaded() const{return bool(turbo_);}
@@ -40,6 +42,7 @@ public:
                  const std::atomic_bool&,const Hook& hook={});
 private:
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<H3Compute> compute_;
     std::unique_ptr<checkpoint::Shard> shard_,turbo_;
     Handle metadata_=0,turbo_metadata_=0;
     bool executing_=false;

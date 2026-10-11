@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from api.services.video_jobs import video_jobs
-from api.memory_manager import memory_manager
+from api.services.inference import inference
 from api.inference.errors import InferenceFailure
 from api.pydantic_models.media import VideoJob
 
@@ -22,7 +22,7 @@ class VideoResponse(BaseModel):
 async def list_videos() -> VideosResponse:
     """Return jobs submitted to this API process."""
     try:
-        return VideosResponse(jobs=[await memory_manager.video_job(job.id) for job in video_jobs.list()])
+        return VideosResponse(jobs=[video_jobs.get(job.id) for job in video_jobs.list()])
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
@@ -31,7 +31,7 @@ async def list_videos() -> VideosResponse:
 async def get_video(video_id: str) -> VideoResponse:
     """Return the real worker state, including errors and cancellation."""
     try:
-        return VideoResponse(job=await memory_manager.video_job(video_id))
+        return VideoResponse(job=video_jobs.get(video_id))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:
@@ -41,8 +41,8 @@ async def get_video(video_id: str) -> VideoResponse:
 @router.delete("/{video_id}", operation_id="cancelVideo")
 async def cancel_video(video_id: str) -> VideoResponse:
     try:
-        await memory_manager.queue.cancel(video_id)
-        return VideoResponse(job=video_jobs.cancel(video_id))
+        await inference.cancel(video_id)
+        return VideoResponse(job=video_jobs.get(video_id))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:

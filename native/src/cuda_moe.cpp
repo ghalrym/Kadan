@@ -58,7 +58,13 @@ struct Moe::Impl {
             pin();check(cudaMemsetAsync(b.status,0,4,cudaStreamLegacy));check(detail::moe_route(c,b,x.data()));status();
             // Bounded control metadata only; activations remain on device.
             std::array<unsigned,8> selected{};check(cudaMemcpy(selected.data(),b.selected,c.top_k*sizeof(unsigned),cudaMemcpyDeviceToHost));
-            std::sort(selected.begin(),selected.begin()+c.top_k);
+            // At most eight routes: bounded insertion sort also avoids GCC12's
+            // false array-bounds diagnostic in libstdc++'s 16-item sort threshold.
+            for(std::size_t i=1;i<selected.size()&&i<c.top_k;++i){
+                const auto value=selected[i];auto j=i;
+                while(j>0&&selected[j-1]>value){selected[j]=selected[j-1];--j;}
+                selected[j]=value;
+            }
             for(std::size_t rank=0;rank<c.top_k;++rank){require(selected[rank]<c.experts&&(rank==0||selected[rank]!=selected[rank-1]),"moe_invalid_device_route");
                 expert(selected[rank],c.intermediate,x.data());check(detail::moe_accumulate(c,b,selected[rank]));status();}
             expert(c.experts,c.shared_intermediate,x.data());check(detail::moe_finish(c,b,y.data()));status();unpin();ready=true;
