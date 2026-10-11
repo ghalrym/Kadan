@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from api.inference.cancellation import run_cancellable_thread
 from api.inference.resources import ResourceCancelled
-from api.services.model_downloads import ModelManager
+from api.services.model_downloads import BusyError, ModelManager
 from api.tests.services.test_model_downloads import fixture
 
 
@@ -90,7 +90,6 @@ class CheckpointAcquisitionTests(unittest.TestCase):
 
     def test_publication_between_initial_check_and_writer_lock(self):
         with patch.object(self.store, '_checkpoint_complete', side_effect=[False, True]), patch.object(self.store, '_download') as download:
-            from api.services.model_downloads import BusyError
             with self.assertRaises(BusyError): self.store.start('small')
             download.assert_not_called()
         with (self.store.root / '.download.lock').open('a') as lock:

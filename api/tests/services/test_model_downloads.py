@@ -1,3 +1,4 @@
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -189,7 +190,6 @@ class CheckpointManifestTests(unittest.TestCase):
         self.assertIn(CATALOG['small'].revision, fetch.call_args.args[0])
 
     def test_malformed_metadata_sizes_digests_and_duplicates_rejected(self):
-        from copy import deepcopy
         baseline = self.upstream_metadata()
         invalid_documents = [None, [], {'sha': baseline['sha'], 'siblings': [None]}]
         for key, value in [('size', True), ('size', -1), ('blobId', 'not-a-digest')]:

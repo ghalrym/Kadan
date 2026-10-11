@@ -1,6 +1,5 @@
 import unittest
 from api.services.model_catalog import CATALOG, allowed_asset, validate_assets
-from api.services.model_catalog import CATALOG, allowed_asset, validate_assets
 from api.routes.v1.audio.speech import SpeechRequest, list_speech_models
 from api.inference.tts.catalog import SPEECH_MODELS
 from api.inference.tts.enabled import ENABLED_SPEECH_MODELS
