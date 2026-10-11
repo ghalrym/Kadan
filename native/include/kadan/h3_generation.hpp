@@ -13,6 +13,8 @@ struct H3GenerationRequest {
     std::string prompt, output;
     std::size_t width=64, height=64, frames=22, updates=8;
     std::uint64_t seed=0;
+    // Zero keeps the full aligned diagnostic output; API requests trim padding.
+    std::size_t output_frames=0;
 };
 struct H3GenerationPaths { std::string tokenizer, text, denoiser, turbo, vae, audio_vae; };
 // Header-only preparation. The caller has admitted `limit` in addition to the

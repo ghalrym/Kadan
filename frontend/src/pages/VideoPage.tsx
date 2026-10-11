@@ -104,7 +104,7 @@ export default function VideoPage() {
           model: 'h3-fl2va-int8-turbo',
           prompt,
           negative_prompt: '',
-          duration: Number(duration),
+          seconds: Number(duration),
           fps: 24,
           resolution,
           aspect,
@@ -164,7 +164,7 @@ export default function VideoPage() {
         </label>
         <label className="field">
           <span className="eyebrow">Duration</span>
-          <div className="input-unit"><input className="input mono" type="number" min={4} max={15} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={15} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
         </label>
         <label className="field">
           <span className="eyebrow">Frame rate</span>

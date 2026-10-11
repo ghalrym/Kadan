@@ -33,7 +33,7 @@ class VideoRequestStatusTests(unittest.TestCase):
 
 class VideoSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_submission_records_exact_job_id_for_telemetry(self):
-        job = VideoJob(id='actual-job', prompt='a scene', duration='8s', resolution='768p',
+        job = VideoJob(id='actual-job', prompt='a scene', duration='3s', resolution='768p',
                        aspect='wide', fps='24', progress=0, time='now', status='Queued',
                        thumbnail='', progressText='Queued')
         request = Request({'type': 'http'})

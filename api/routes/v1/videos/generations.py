@@ -1,6 +1,6 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 from api.pydantic_models.media import VideoJob
 from api.services.inference import inference
 from api.inference.errors import InferenceFailure
@@ -13,7 +13,9 @@ class VideoGenerationRequest(BaseModel):
     seed: int = Field(default=42, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     negative_prompt: Literal[""] = ""
-    duration: int = Field(default=8, ge=4, le=15)
+    duration: int = Field(default=8, ge=1, le=15,
+        validation_alias=AliasChoices('seconds', 'duration'),
+        description='Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.')
     fps: Literal[24] = 24
     resolution: Literal["480p", "768p"] = "768p"
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"

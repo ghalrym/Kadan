@@ -85,3 +85,18 @@ class ImageResultTests(unittest.TestCase):
                 present_result('image', 'qwen-image', body, prepared,
                                {'images': ['/unused/image-0.png']}, Path('/unused'), 'job')
         read.assert_not_called()
+
+
+class ShortVideoRequestTests(unittest.TestCase):
+    def test_local_short_durations_and_openai_seconds_field(self):
+        for seconds in (1, 2, 3):
+            for field in ('seconds', 'duration'):
+                request = VideoGenerationRequest(prompt='a scene', **{field: str(seconds)})
+                self.assertEqual(request.duration, seconds)
+                self.assertEqual(request.model_dump()['duration'], seconds)
+
+    def test_rejects_invalid_duration_and_ambiguous_aliases(self):
+        for values in ({'seconds': 0}, {'seconds': 16}, {'seconds': 1.5},
+                       {'seconds': 2, 'duration': 3}):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                VideoGenerationRequest(prompt='a scene', **values)

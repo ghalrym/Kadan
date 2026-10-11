@@ -1264,10 +1264,6 @@ export type VideoGenerationRequest = {
    */
   aspect?: '16:9' | '9:16' | '1:1'
   /**
-   * Duration
-   */
-  duration?: number
-  /**
    * Fps
    */
   fps?: 24
@@ -1287,6 +1283,12 @@ export type VideoGenerationRequest = {
    * Resolution
    */
   resolution?: '480p' | '768p'
+  /**
+   * Seconds
+   *
+   * Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.
+   */
+  seconds?: number
   /**
    * Seed
    */

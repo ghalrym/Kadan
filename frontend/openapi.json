@@ -2225,13 +2225,6 @@
             "title": "Aspect",
             "type": "string"
           },
-          "duration": {
-            "default": 8,
-            "maximum": 15.0,
-            "minimum": 4.0,
-            "title": "Duration",
-            "type": "integer"
-          },
           "fps": {
             "const": 24,
             "default": 24,
@@ -2265,6 +2258,14 @@
             ],
             "title": "Resolution",
             "type": "string"
+          },
+          "seconds": {
+            "default": 8,
+            "description": "Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.",
+            "maximum": 15.0,
+            "minimum": 1.0,
+            "title": "Seconds",
+            "type": "integer"
           },
           "seed": {
             "default": 42,

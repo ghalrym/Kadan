@@ -59,6 +59,7 @@ public:
                 profile.width,           profile.height,
                 profile.frames,          body.value("updates", 4u),
                 body.value("seed", 0ULL)};
+    request_.output_frames = profile.output_frames;
     require(!request_.prompt.empty() && request_.prompt.size() <= 32000,
             "video_prompt_bounds");
     if (available[0] <
@@ -73,7 +74,7 @@ public:
     model_->execute(paths_, request_, cancel, progress_);
     compute_->release_scratch();
     return Json{{"output", request_.output},
-                {"frames", request_.frames},
+                {"frames", request_.output_frames},
                 {"width", request_.width},
                 {"height", request_.height},
                 {"audio", true}}
