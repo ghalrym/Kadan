@@ -29,7 +29,7 @@ void resident_session(ResidentEngine& engine,std::shared_ptr<Resources> resource
     GenerationQueue queue(resources);
     auto zero=resources->snapshot().capacity;std::fill(zero.begin(),zero.end(),0);
     const auto info=engine.info();
-    require(info.vocabulary>0&&info.vocabulary<=262144&&info.capacity>0&&info.capacity<=max_capacity,"invalid_info");
+    require(info.vocabulary>0&&info.vocabulary<=262144&&info.capacity>0&&info.capacity<=max_resident_capacity,"invalid_info");
     output<<"ready 2 "<<identity<<' '<<info.vocabulary<<' '<<info.capacity<<'\n';flush(output);
     Handle active=0;std::size_t committed=0;bool ended=false;std::string line;
     auto cleanup=[&]{auto action=queue.poll();if(action.kind==GenerationQueue::Kind::cleanup){engine.park();queue.cleaned(action.reservation,true);}};

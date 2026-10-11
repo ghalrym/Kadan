@@ -84,6 +84,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_library(kadan_model_worker_protocol src/model_worker_protocol.cpp src/resident_session.cpp)
 target_link_libraries(kadan_model_worker_protocol PUBLIC kadan_resources)
+add_library(kadan_glm src/glm.cpp)
+target_link_libraries(kadan_glm PUBLIC kadan_manifest kadan_model_worker_protocol)
+add_executable(kadan-glm-worker src/glm_worker.cpp)
+target_link_libraries(kadan-glm-worker PRIVATE kadan_glm)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(kadan_glm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(kadan-glm-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 add_executable(kadan-model-worker src/model_worker.cpp)
 target_link_libraries(kadan-model-worker PRIVATE kadan_model kadan_model_worker_protocol)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -115,7 +123,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_cuda_plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 if(KADAN_ENABLE_CUDA)
-  add_library(kadan_gpu src/cuda_projection.cpp src/cuda_state.cpp src/nvfp4_kernel.cu src/fp8_kernel.cu src/layer_math_kernel.cu src/linear_kernel.cu src/cuda_linear_attention.cpp src/full_kernel.cu src/cuda_full_attention.cpp src/moe_kernel.cu src/cuda_moe.cpp src/decoder_kernel.cu src/cuda_decoder.cpp src/stack_kernel.cu src/cuda_stack.cpp src/cuda_model.cpp)
+  add_library(kadan_gpu src/cuda_projection.cpp src/cuda_state.cpp src/nvfp4_kernel.cu src/fp8_kernel.cu src/layer_math_kernel.cu src/linear_kernel.cu src/cuda_linear_attention.cpp src/full_kernel.cu src/cuda_full_attention.cpp src/moe_kernel.cu src/cuda_moe.cpp src/decoder_kernel.cu src/cuda_decoder.cpp src/stack_kernel.cu src/cuda_stack.cpp src/cuda_model.cpp src/auto_model.cpp)
   target_link_libraries(kadan_gpu PUBLIC kadan_cuda_plan kadan_resources kadan_cuda kadan_sequence_state kadan_layer_math kadan_linear kadan_full kadan_moe kadan_decoder kadan_stack kadan_model)
   set_target_properties(kadan_gpu PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES 86)
   target_compile_options(kadan_gpu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=legacy;--ftz=false>)
@@ -286,6 +294,9 @@ endif()
 
 if(KADAN_ENABLE_CUDA)
   add_library(kadan_h3_cuda src/h3_compute.cu)
+  target_compile_definitions(kadan_glm PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan_glm PUBLIC kadan_h3_cuda)
+
   target_link_libraries(kadan_h3_cuda PUBLIC kadan_resources kadan_checkpoint CUDA::cudart CUDA::cublas)
   set_target_properties(kadan_h3_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES 86)
   target_compile_options(kadan_h3_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=legacy;--ftz=false;--fmad=false>)
@@ -463,13 +474,14 @@ endif()
 
 
 # Install the resident text executor beside the other owned native workers.
-install(TARGETS kadan-model-worker
+install(TARGETS kadan-model-worker kadan-glm-worker
   RUNTIME_DEPENDENCIES
     PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
     POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
   RUNTIME DESTINATION libexec COMPONENT model-runtime
   LIBRARY DESTINATION lib COMPONENT model-runtime)
 install(PROGRAMS packaging/run_model_worker.sh DESTINATION bin RENAME kadan-model-worker COMPONENT model-runtime)
+install(PROGRAMS packaging/run_glm_worker.sh DESTINATION bin RENAME kadan-glm-worker COMPONENT model-runtime)
 
 if(BUILD_TESTING)
   # Unit tests only. Model/worker integration is reviewed manually through the API.
@@ -521,4 +533,17 @@ if(BUILD_TESTING)
   add_executable(worker-compute-tests tests/worker_compute.cpp)
   target_link_libraries(worker-compute-tests PRIVATE kadan_resources)
   add_test(NAME worker-compute COMMAND worker-compute-tests)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(kadan_auto_placement_test tests/auto_placement.cpp)
+  target_include_directories(kadan_auto_placement_test PRIVATE include)
+  target_compile_features(kadan_auto_placement_test PRIVATE cxx_std_20)
+  add_test(NAME auto_placement_unit COMMAND kadan_auto_placement_test)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(resident-protocol-tests tests/resident_protocol.cpp)
+  target_link_libraries(resident-protocol-tests PRIVATE kadan_model_worker_protocol)
+  add_test(NAME resident-protocol COMMAND resident-protocol-tests)
 endif()

@@ -68,6 +68,18 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNone(self.adapter.configured_context_limit)
                     await self.manager.unload()
 
+    async def test_unload_joins_cancelled_loader_and_allows_next_load(self):
+        self.manager.state = 'loading'
+        self.manager.task = asyncio.create_task(asyncio.sleep(0))
+        self.manager.task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.manager.task
+        result = await self.manager.unload()
+        self.assertEqual(result['state'], 'unloaded')
+        self.assertIsNone(self.manager.task)
+        await self.ready()
+        await self.manager.unload()
+
     async def test_unknown_backend_fails_before_allocations(self):
         self.manager._factory = None
         with patch.dict('os.environ', {'KADAN_LLM_BACKEND': 'typo'}):
@@ -262,14 +274,14 @@ class ResourceBudgetTests(unittest.TestCase):
         environment = {} if override is None else {'KADAN_GPU_BUDGET_BYTES': override}
         manager = ChatRuntime()
         with patch.dict('os.environ', environment, clear=True), \
-                patch('api.services.chat_runtime.probe_memory', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
+                patch('api.services.chat_runtime.probe_capacity', return_value=MemoryCapacity(2000, {0: 1000, 1: 1500})):
             return manager.ensure_resources().capacity
 
-    def test_default_budgets_unchanged(self):
-        self.assertEqual(self.budgets(), MemoryCapacity(1600, {0: 800, 1: 1200}))
+    def test_default_capacity_has_no_fixed_percentage_cutoff(self):
+        self.assertEqual(self.budgets(), MemoryCapacity(2000, {0: 1000, 1: 1500}))
 
     def test_explicit_budget_changes_only_named_gpu(self):
-        self.assertEqual(self.budgets('{"0":950}'), MemoryCapacity(1600, {0: 950, 1: 1200}))
+        self.assertEqual(self.budgets('{"0":950}'), MemoryCapacity(2000, {0: 950, 1: 1500}))
 
     def test_invalid_or_overcommitted_budgets_fail_closed(self):
         for value in ('', '{}', '[]', '{"0":1001}', '{"2":1}', '{"0":true}',

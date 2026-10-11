@@ -12,8 +12,7 @@ from api.inference.llm.qwen_subprocess import (
     QwenSubprocessAdapter, numbers,
 )
 from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
-from api.inference.placement import select_device
-from api.inference.resources import ResourceBusy, ResourceExhausted
+from api.inference.resources import ResourceBusy, ResourceExhausted, probe_memory
 
 RESIDENT_HOST_BYTES = QWEN_HOST_BYTES + 256 * MIB
 CACHE_RAM_BYTES = 256 * MIB
@@ -36,6 +35,9 @@ class ResidentQwenAdapter(QwenSubprocessAdapter):
         self.request_id = self.last_id = 0
         self.parked = False
         self.quarantined = False
+        self.device_budgets = {}
+        self.execution_bytes = {}
+        self.streaming_weights = False
 
     def completion_timeout(self, generation_timeout):
         """Bound a completion including a possible pressure-evicted child rebuild.
@@ -71,38 +73,81 @@ class ResidentQwenAdapter(QwenSubprocessAdapter):
                 evict=self._evict, cancel_event=self.cancel)
             with self.host.lease(self.cancel):
                 self.worker = LineProtocolProcess()
-                self.worker.start([str(self.binary), '--plan-resident', str(self.root), str(effective), str(METADATA_BYTES)])
-                host, arena, vocab, capacity, staging, packed, tensors = numbers(
-                    self.worker.read(self.load_timeout, self.cancel), ['plan', '3'], 7)
-                self.worker.finish()
-                self.worker.stop()
-                self.worker = None
+                # Physical capacity is stable; reservations below wait for fresh
+                # availability. Prefer currently reclaimable envelopes for staging.
+                limits = dict(self.resources.capacity.device_bytes)
+                if self.device != 'auto':
+                    if not self.device.startswith('cuda:') or not self.device[5:].isdecimal():
+                        raise ValueError('Qwen requires auto or cuda:N')
+                    index = int(self.device[5:])
+                    limits = {index: limits.get(index, 0)}
+                if not limits or max(limits.values()) <= HEADROOM_BYTES:
+                    raise ResourceExhausted('No CUDA device can hold Qwen runtime headroom.')
+                limits = {d: b for d, b in limits.items() if b > HEADROOM_BYTES}
+                available = self.resources.available_devices(reclaim=True)
+                preferred = {d: min(b, available.get(d, 0)) for d, b in limits.items()
+                             if available.get(d, 0) > HEADROOM_BYTES}
+                candidates = [preferred, limits] if preferred and preferred != limits else [limits]
+                for attempt, budgets in enumerate(candidates):
+                    self.device_budgets = budgets
+                    budget_arg = ','.join(f'{d}:{b}' for d, b in sorted(budgets.items()))
+                    self.worker = LineProtocolProcess()
+                    self.worker.start([str(self.binary), '--plan-auto', str(self.root), str(effective), str(METADATA_BYTES), budget_arg])
+                    try:
+                        values = self.worker.read(self.load_timeout, self.cancel).split()
+                        if values[:2] != ['plan', '4']:
+                            raise LineProtocolError('Automatic Qwen planning failed')
+                        self.worker.finish()
+                    except LineProtocolError:
+                        self.worker.stop()
+                        self.worker = None
+                        if attempt + 1 == len(candidates):
+                            raise
+                        # Current occupancy is not a permanent capability failure:
+                        # a physical-capacity plan waits in cancellable admission.
+                        continue
+                    self.worker.stop()
+                    self.worker = None
+                    break
+                if len(values) < 13 or values[:2] != ['plan', '4']:
+                    raise LineProtocolError('Invalid automatic Qwen plan')
+                count = len(values) - 2
+                fields = numbers(' '.join(values), ['plan', '4'], count)
+                host, arena, vocab, capacity, staging, packed, tensors, streaming, device_count = fields[:9]
+                if streaming not in (0, 1) or not 1 <= device_count <= 64 or len(fields) != 9 + 2 * device_count:
+                    raise LineProtocolError('Invalid automatic Qwen device plan')
+                execution = {}
+                for d, size in zip(fields[9::2], fields[10::2]):
+                    if d in execution or not HEADROOM_BYTES < size <= self.device_budgets.get(d, 0):
+                        raise LineProtocolError('Automatic Qwen plan exceeds a device envelope')
+                    execution[d] = size - HEADROOM_BYTES
+                self.execution_bytes, self.streaming_weights = execution, bool(streaming)
                 if host != RESIDENT_HOST_BYTES or capacity != effective or not 0 < vocab <= 262144 or arena <= 0 or not 0 < staging <= MIB:
                     raise LineProtocolError('Native resident plan violates adapter bounds')
                 if not 0 < packed <= CACHE_COLD_BYTES or not 0 < tensors <= 131072:
                     raise LineProtocolError('Packed text model exceeds cache metadata/source bounds')
                 self.packed_weight_bytes = packed
                 self.packed_tensor_count = tensors
-                remaining = max(0, self.resources.capacity.host_bytes - RESIDENT_HOST_BYTES - PYTHON_HOST_BYTES)
+                remaining = max(0, min(self.resources.capacity.host_bytes, probe_memory().host_bytes) - RESIDENT_HOST_BYTES - PYTHON_HOST_BYTES)
                 preferred = packed if self.requested_cache_bytes is None else min(packed, self.requested_cache_bytes)
-                self.cache_capacity = preferred if preferred <= remaining else min(CACHE_RAM_BYTES, remaining)
+                self.cache_capacity = min(preferred, remaining)
                 self.backing = self.resources.reserve(self.owner + ':backing', 'llm',
                     host_bytes=self.cache_capacity, evict=self._evict, cancel_event=self.cancel)
                 with self.backing.lease(self.cancel):
                     self.vocabulary, self.arena = vocab, arena
-                    self.device = select_device(self.resources, arena + HEADROOM_BYTES, self.device)
-                    index = int(self.device[5:])
                     self.context = self.resources.reserve(self.owner + ':context', 'llm',
-                        device_bytes={index: HEADROOM_BYTES}, evict=self._evict,
+                        device_bytes={d: HEADROOM_BYTES for d in self.execution_bytes}, evict=self._evict,
                         offload_on_handoff=False, cancel_event=self.cancel)
                     with self.context.lease(self.cancel):
                         self._reserve_arena(self.cancel)
                         with self.reservation.lease(self.cancel):
                             self.tokenizer = self.tokenizer_factory(self.root)
                             self.worker = LineProtocolProcess()
-                            self.worker.start([str(self.binary), '--serve-resident', str(self.root), str(index),
-                                str(effective), str(host + self.cache_capacity), str(arena + HEADROOM_BYTES),
-                                str(HEADROOM_BYTES), str(self.cache_capacity), str(CACHE_COLD_BYTES)])
+                            self.worker.start([str(self.binary), '--serve-auto', str(self.root), budget_arg,
+                                str(effective), str(host + self.cache_capacity),
+                                str(self.cache_capacity), str(CACHE_COLD_BYTES),
+                                ",".join(f"{d}:{size + HEADROOM_BYTES}" for d, size in sorted(self.execution_bytes.items())),
+                                f"{arena}:{packed}:{tensors}:{vocab}"])
                             ready = self.worker.read(self.load_timeout, self.cancel).split()
                             if len(ready) != 5 or ready[:2] != ['ready', '2'] or not re.fullmatch('[0-9a-f]{32}', ready[2]):
                                 raise LineProtocolError('Invalid native resident session')
@@ -119,7 +164,7 @@ class ResidentQwenAdapter(QwenSubprocessAdapter):
 
     def _reserve_arena(self, cancel):
         self.reservation = self.resources.reserve(self.owner + ':device', 'llm',
-            device_bytes={int(self.device[5:]): self.arena}, evict=self.offload_to_ram, cancel_event=cancel)
+            device_bytes=self.execution_bytes, evict=self.offload_to_ram, cancel_event=cancel)
 
     @contextmanager
     def _leases(self, cancel):

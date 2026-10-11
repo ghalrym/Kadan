@@ -9,7 +9,7 @@ import threading
 from api.inference.errors import InferenceFailure
 from api.inference.cancellation import await_cleanup
 from api.inference.placement import select_device
-from api.inference.resources import ResourceManager, ResourceExhausted, probe_memory
+from api.inference.resources import ResourceManager, ResourceExhausted, probe_memory, probe_capacity
 from api.inference.llm.context import ContextLimitError, ContextMemoryError, resolve_context
 from api.services.model_downloads import BusyError, model_manager
 
@@ -62,8 +62,8 @@ class ChatRuntime:
         """Initialize shared budgets once, including when CPU decisions load before chat."""
         with self._resources_lock:
             if self.resources is None:
-                available = probe_memory()
-                budgets = {index: int(size * .8) for index, size in available.device_bytes.items()}
+                available = probe_capacity()
+                budgets = dict(available.device_bytes)
                 override = os.environ.get('KADAN_GPU_BUDGET_BYTES')
                 if override is not None:
                     try:
@@ -79,7 +79,7 @@ class ChatRuntime:
                     except (ValueError, TypeError) as exc:
                         raise InferenceFailure('KADAN_GPU_BUDGET_BYTES must be a nonempty JSON object of GPU indices '
                                              'to positive byte budgets within currently free device memory.') from exc
-                self.resources = ResourceManager(int(available.host_bytes * .8),
+                self.resources = ResourceManager(available.host_bytes,
                     budgets, probe=probe_memory)
             return self.resources
 
@@ -107,13 +107,14 @@ class ChatRuntime:
             try:
                 from api.inference.llm.qwen_subprocess import build_qwen_subprocess
                 from api.inference.llm.qwen_residency import build_resident_qwen
+                from api.inference.llm.glm_residency import build_resident_glm
             except ImportError as error:
                 if isinstance(error, ModuleNotFoundError) and error.name:
                     message = f'Inference dependency is missing: {error.name}.'
                 else:
                     message = f'Inference runtime import failed: {error}'
                 raise InferenceFailure(message) from error
-            factory = build_resident_qwen if backend == 'native-resident' else build_qwen_subprocess
+            factory = build_resident_glm if entry.id == 'large' else (build_resident_qwen if backend == 'native-resident' else build_qwen_subprocess)
             uses_subprocess = True
         self.ensure_resources()
         gpu = os.environ.get('KADAN_GPU', 'auto')
@@ -287,7 +288,8 @@ class ChatRuntime:
         self.state = 'unloading'
         self._cancel.set()
         if self.task is not None:
-            with suppress(Exception):
+            # The load task may already be cancelled after confirmed worker cleanup.
+            with suppress(Exception, asyncio.CancelledError):
                 await asyncio.shield(self.task)
             self.task = None
         if self._worker is not None:

@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir cmake==3.31.6
 COPY native/ /src/native/
 RUN cmake -S /src/native -B /build -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_WHISPER_BLAS=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DKADAN_ENABLE_IMAGE_BLAS=ON \
-    && cmake --build /build --target kadan-model-worker kadan-decision-worker kadan-h3-worker kadan-whisper-worker kadan-tts-worker kadan-image-worker --parallel 2 \
+    && cmake --build /build --target kadan-model-worker kadan-glm-worker kadan-decision-worker kadan-h3-worker kadan-whisper-worker kadan-tts-worker kadan-image-worker --parallel 2 \
     && cmake --install /build --prefix /out --component model-runtime \
     && cmake --install /build --prefix /out --component decision-runtime \
     && cmake --install /build --prefix /out --component h3-runtime \

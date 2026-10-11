@@ -198,6 +198,23 @@ class InferenceQueue:
             raise InferenceFailure('Redis inference cancellation is unavailable.') from exc
         self._wake.set()
 
+    async def cancel_feature(self, feature):
+        """Cancel pending preparation as well as active execution before unload."""
+        async def cancel_and_join():
+            selected = []
+            for job_id in await self.redis.smembers(self.key('unfinished')):
+                encoded = await self.redis.hget(self.key('job:' + job_id), 'job')
+                if encoded is not None and Job.model_validate_json(encoded).feature == feature:
+                    selected.append(job_id)
+                    await self.cancel(job_id)
+            for job_id in selected:
+                with suppress(InferenceFailure):
+                    await self.wait(job_id)
+        try:
+            await await_cleanup(asyncio.create_task(cancel_and_join()))
+        except RedisError as exc:
+            raise InferenceFailure('Redis inference cancellation is unavailable.') from exc
+
     async def wait(self, job_id):
         try:
             while True:

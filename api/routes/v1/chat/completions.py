@@ -143,6 +143,7 @@ async def create_completion(body: CompletionRequest, request: Request):
         return OwnedStreamResponse(chunks(stream, identity, measurement,
             request.scope.get('kadan_request_started', time.monotonic())), stream)
     result = await infer(request, memory_manager.submit(body, feature='llm', operation='completion'))
+    identity['model'] = result['model']
     observe_generation(measurement, result)
     text = result['text']
     return CompletionResponse(**identity, message=ChatMessage(role='assistant', text=text),

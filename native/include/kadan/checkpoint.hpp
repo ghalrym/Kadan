@@ -98,7 +98,14 @@ public:
     Projection load_modelopt_rows(std::string_view prefix, std::size_t first,
                                   std::size_t count, std::size_t payload_budget,
                                   std::shared_ptr<MemoryBudget> payload_memory = {}, const TensorReader& reader = {}) const;
+    // compressed-tensors nvfp4-pack-quantized, group16, weight-only.
+    // weight_global_scale stores the reciprocal of the decoded multiplier.
+    Projection load_compressed_nvfp4_rows(std::string_view prefix, std::size_t first,
+                                  std::size_t count, std::size_t payload_budget,
+                                  std::shared_ptr<MemoryBudget> payload_memory = {}, const TensorReader& reader = {}) const;
 private:
+    Projection load_quantized_rows(std::string_view, std::size_t, std::size_t,
+                                  std::size_t, std::shared_ptr<MemoryBudget>, const TensorReader&, bool) const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

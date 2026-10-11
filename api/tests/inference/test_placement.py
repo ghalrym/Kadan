@@ -36,8 +36,8 @@ class PlacementTests(unittest.TestCase):
     def test_physical_availability_and_active_leases_bound_reclaim(self):
         resources=ResourceManager(1000,{0:100,1:100},probe=lambda:MemoryCapacity(1000,{0:10,1:60}))
         self.assertEqual(select_device(resources,50),'cuda:1')
-        with self.assertRaises(ResourceExhausted):select_device(resources,70)
-        self.assertEqual(select_device(resources,70,allow_cpu=True),'cpu')
+        self.assertEqual(select_device(resources,70),'cuda:0')
+        self.assertEqual(select_device(resources,70,allow_cpu=True),'cuda:0')
         with self.assertRaises(ResourceExhausted):select_device(resources,101,'cuda:1')
         with self.assertRaises(ValueError):select_device(resources,1,'cuda:0,1')
         r=ResourceManager(1000,{0:100});held=r.reserve('held','llm',device_bytes={0:80},evict=lambda:None)

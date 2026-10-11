@@ -44,9 +44,9 @@ CATALOG: dict[str, CatalogEntry] = {
         CatalogEntry('small', 'nvidia/Qwen3.6-35B-A3B-NVFP4',
                      '1355db6a052410cfd62085d94b58866fd0f2c3c5', 'apache-2.0', 23_500_000_000),
         CatalogEntry('medium', 'openai/gpt-oss-120b',
-                     'b5c939de8f754692c1647ca79fbf85e8c1e70f8a', 'apache-2.0', 65_000_000_000),
-        CatalogEntry('large', 'RedHatAI/GLM-5.3-Flash-NVFP4',
-                     '18d55bfd5a2194887738da73753975c9d3842f46', 'mit', 198_000_000_000),
+                     'b5c939de8f754692c1647ca79fbf85e8c1e70f8a', 'apache-2.0', 65_000_000_000, inference_available=False),
+        CatalogEntry('large', 'mbehr90/GLM-5.3-Flash-nvfp4',
+                     '70acfebe23b1d2d82ea1c64734355d23504d02bb', 'mit', 198_000_000_000),
     )
 }
 
@@ -134,7 +134,7 @@ def allowed_asset(name: str, entry: CatalogEntry | None = None) -> bool:
             r'(?:model|diffusion_pytorch_model)(?:-\d+-of-\d+)?\.safetensors(?:\.index\.json)?', name
         ) is not None
     return name in ASSETS or re.fullmatch(
-        r'(?:model(?:-\d+-of-\d+|_mtp)?)\.safetensors', name
+        r'(?:model(?:-\d+(?:-of-\d+)?|_mtp)?)\.safetensors', name
     ) is not None
 
 

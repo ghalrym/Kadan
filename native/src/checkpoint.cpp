@@ -337,20 +337,27 @@ void Shard::read_float_tensor(std::string_view name,std::size_t first,std::span<
 }
 Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
                                     std::size_t count, std::size_t payload_budget, std::shared_ptr<MemoryBudget> payload_memory, const TensorReader& reader) const {
+    return load_quantized_rows(prefix,first,count,payload_budget,std::move(payload_memory),reader,false);
+}
+Projection Shard::load_compressed_nvfp4_rows(std::string_view prefix,std::size_t first,std::size_t count,std::size_t payload_budget,std::shared_ptr<MemoryBudget> payload_memory,const TensorReader& reader) const {
+    return load_quantized_rows(prefix,first,count,payload_budget,std::move(payload_memory),reader,true);
+}
+Projection Shard::load_quantized_rows(std::string_view prefix,std::size_t first,std::size_t count,std::size_t payload_budget,std::shared_ptr<MemoryBudget> payload_memory,const TensorReader& reader,bool compressed) const {
     require(!prefix.empty() && prefix.size() <= 480 && count != 0, "projection_range_or_name");
     auto name = [&](std::string_view suffix) { std::pmr::string n(prefix, impl_->budget.get()); n += suffix; return n; };
-    const auto& weight = impl_->find(name(".weight"));
+    const auto& weight = impl_->find(name(compressed ? ".weight_packed" : ".weight"));
     const auto& scale = impl_->find(name(".weight_scale"));
     require(weight.rank == 2 && first <= weight.shape[0] && count <= weight.shape[0] - first && weight.shape[1] != 0, "projection_shape");
     require(weight.dtype == Dtype::u8 || weight.dtype == Dtype::fp8, "projection_dtype");
     const bool fp4 = weight.dtype == Dtype::u8;
+    require(!compressed || fp4,"compressed_nvfp4_dtype");
     const auto columns = fp4 ? mul(weight.shape[1], 2) : weight.shape[1];
     const Tensor* global = nullptr;
     std::uint64_t scale_rows = 0, multiplier_count = 0;
     if (fp4) {
         require(columns % 16 == 0 && scale.dtype == Dtype::fp8 && scale.rank == 2 &&
                 scale.shape[0] == weight.shape[0] && scale.shape[1] == columns / 16, "nvfp4_scale_layout");
-        global = &impl_->find(name(".weight_scale_2"));
+        global = &impl_->find(name(compressed ? ".weight_global_scale" : ".weight_scale_2"));
         require(global->dtype == Dtype::fp32 && (global->rank == 0 || (global->rank == 1 && global->shape[0] == 1)), "nvfp4_global_layout");
         scale_rows = mul(count, columns / 16); multiplier_count = 1;
     } else {
@@ -377,7 +384,9 @@ Projection Shard::load_modelopt_rows(std::string_view prefix, std::size_t first,
     for (std::size_t i = 0; i < multiplier_count; ++i) {
         std::array<std::uint8_t, 4> raw{};
         read(multiplier, scalar ? 0 : mul(add(first, i), 4), raw);
-        result.multipliers_[i] = quantization::fp32_le(raw);
+        const auto value=quantization::fp32_le(raw);
+        if(compressed)require(std::isfinite(value)&&value>0&&std::isfinite(1.f/value),"compressed_nvfp4_global_scale");
+        result.multipliers_[i] = compressed ? 1.f/value : value;
     }
     impl_->unchanged();
     // Zero-row decode runs #99's format/value validation without dense allocation.

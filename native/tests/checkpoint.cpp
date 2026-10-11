@@ -64,6 +64,26 @@ void nvfp4_fixture(Fixture& f) {
     payload.push_back(0); payload.push_back(0);
     f.write(header, payload);
 }
+void compressed_nvfp4_rows() {
+    Fixture f;
+    auto header="{"+tensor("p.weight_global_scale","F32","[1]",0,4)+","+
+      tensor("p.weight_scale","F8_E4M3","[2,1]",4,6)+","+
+      tensor("p.weight_packed","U8","[2,8]",6,22)+"}";
+    std::vector<std::uint8_t> bytes{0,0,0,64,0x38,0x40}; // inverse global=0.5
+    bytes.insert(bytes.end(),16,0x22);
+    f.write(header,bytes);auto q=budget();
+    {Shard shard(f.root.c_str(),"model.safetensors",q);
+     auto row=shard.load_compressed_nvfp4_rows("p",1,1,13);
+     check(kadan::quantization::decode_rows(row.view(),0,1,64)==std::vector<float>(16,1));
+     fails([&]{shard.load_compressed_nvfp4_rows("p",0,1,12);},"payload_budget");}
+    check(q->used()==0);
+    for(auto raw: {std::uint32_t(0),std::uint32_t(0xbf800000),std::uint32_t(0x7f800000)}) {
+      for(unsigned i=0;i<4;++i)bytes[i]=std::uint8_t(raw>>(i*8));f.write(header,bytes);
+      {Shard shard(f.root.c_str(),"model.safetensors",q);
+       fails([&]{shard.load_compressed_nvfp4_rows("p",0,1,13);},"compressed_nvfp4_global_scale");}
+      check(q->used()==0);
+    }
+}
 void loading_and_lifetime() {
     Fixture f; nvfp4_fixture(f); auto quota = budget();
     {
@@ -314,6 +334,6 @@ void cache_cases(){
 }
 } // namespace
 int main() {
-    try { converted_cache_cases(); cache_cases(); inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
+    try { compressed_nvfp4_rows(); converted_cache_cases(); cache_cases(); inventory_cases(); half_metadata_limits(); loading_and_lifetime(); fp8_rows(); rejection_cases(); binding_and_budget_failures(); filesystem_cases(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

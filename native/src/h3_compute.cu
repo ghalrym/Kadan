@@ -160,7 +160,13 @@ class Compute final:public H3Compute {
             if(columns){begin=0;end=x.size()/in;}
             auto& arena=static_cast<CudaDeviceOperations&>(device_workspace.operations());
             const auto plan=projection_plan(in,last_output-first_output,sizeof(Weight),precise,quant?4:1,arena.scratch_limit);
-            const auto chunk_columns=plan.columns;
+            // At most 16MiB of source staging per active device, independent of
+            // free VRAM. Readers may keep their own separately admitted cache.
+            constexpr std::size_t source_bytes=16*1024*1024;
+            const auto alignment=quant?4u:1u;
+            const auto host_columns=(source_bytes/(in*sizeof(Weight)))/alignment*alignment;
+            require(!source||host_columns>0,"h3_source_staging_floor");
+            const auto chunk_columns=source?std::min(plan.columns,host_columns):plan.columns;
             for(auto first_column=first_output;first_column<last_output;first_column+=chunk_columns){
             const auto out=std::min(chunk_columns,last_output-first_column);
             auto weights=source?std::span<const Weight>{}:all_weights.subspan(first_column*in,out*in);

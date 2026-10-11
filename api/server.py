@@ -17,13 +17,12 @@ from api.memory_manager import memory_manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Restore the selected model on startup and release inference before downloads on shutdown."""
+    """Start the FIFO; selected models prepare on requests, never on API reload."""
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(asyncio.to_thread, model_manager.close)
         cleanup.push_async_callback(asyncio.to_thread, video_jobs.close)
         cleanup.push_async_callback(memory_manager.close)
-        if await memory_manager.start():
-            await chat_runtime.start()
+        await memory_manager.start()
         yield
 
 app = FastAPI(

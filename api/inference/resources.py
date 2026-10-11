@@ -51,7 +51,7 @@ def _read_text(path: str | Path) -> str:
     return Path(path).read_text()
 
 
-def _cgroup_remaining() -> int | None:
+def _cgroup_remaining(*, capacity=False) -> int | None:
     """Minimum visible ancestor hard-limit headroom for this Linux process.
 
     Resolve membership through mountinfo rather than assuming /sys/fs/cgroup.
@@ -106,7 +106,7 @@ def _cgroup_remaining() -> int | None:
                     if limit is not None and limit >= 0 and (kind == 'cgroup2' or limit < 2**60):
                         try:
                             usage = int(_read_text(current / usage_file).strip())
-                            remaining.append(max(0, limit - max(0, usage)))
+                            remaining.append(limit if capacity else max(0, limit - max(0, usage)))
                         except (OSError, ValueError):
                             remaining.append(0)
                     if current == mount:
@@ -147,6 +147,31 @@ def probe_memory() -> MemoryCapacity:
             free, _ = torch.cuda.mem_get_info(device)
             devices[device] = int(free)
     return MemoryCapacity(host, devices)
+
+
+def probe_capacity() -> MemoryCapacity:
+    """Physical GPU ceilings, separate from fresh-free admission snapshots.
+
+    Native plans include their context/scratch headroom. Occupancy from another
+    process must not permanently shrink the app's capacity at startup.
+    """
+    available = probe_memory()
+    host = available.host_bytes
+    for line in _read_text('/proc/meminfo').splitlines():
+        if line.startswith('MemTotal:'):
+            host = max(0, int(line.split()[1]) * 1024)
+            break
+    ceiling = _cgroup_remaining(capacity=True)
+    if ceiling is not None:
+        host = min(host, ceiling)
+    if not available.device_bytes:
+        return MemoryCapacity(host, {})
+    # CUDA is optional; probe_memory already established the dependency exists.
+    import torch
+    return MemoryCapacity(host, {
+        d: int(torch.cuda.get_device_properties(d).total_memory)
+        for d in available.device_bytes
+    })
 
 
 @dataclass
@@ -463,6 +488,12 @@ class ResourceManager:
             for victim in victims:
                 self._cancelled(cancel_event)
                 self._evict(victim)
+
+    def available_host(self):
+        """Current unreserved host headroom for optional caches, without eviction."""
+        with self._lock:
+            physical = self._probe().host_bytes if self._probe else self.capacity.host_bytes
+            return max(0, min(self.capacity.host_bytes - self._used_host, physical))
 
     def available_devices(self, *, reclaim=False):
         """Snapshot execution headroom without evicting or pooling device capacities.

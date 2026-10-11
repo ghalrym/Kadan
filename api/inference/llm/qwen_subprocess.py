@@ -57,19 +57,26 @@ def text_streamer(tokenizer, emit):
 
 
 class QwenSubprocessAdapter:
+    output_prefix = ''
+    chat_template_options = {'enable_thinking': False, 'preserve_thinking': True}
+    checkpoint_id = 'small'
+    model_type = 'qwen3_5_moe'
+    config_byte_limit = 65536
+    binary_environment = 'KADAN_NATIVE_WORKER'
+    default_binary = '/opt/kadan/bin/kadan-model-worker'
     def __init__(self, entry, path, resources, device='auto', cancel_event=None,
                  *, tokenizer_factory=load_tokenizer, streamer_factory=text_streamer,
                  worker_path=None, load_timeout=1800, step_timeout=300):
-        if entry.id != 'small':
-            raise ValueError('The Qwen subprocess currently supports only the small Qwen checkpoint')
+        if entry.id != self.checkpoint_id:
+            raise ValueError('The native adapter does not support this checkpoint ID')
         self.root = Path(path).resolve()
         config_path = self.root / 'config.json'
-        if config_path.stat().st_size > 65536:
+        if config_path.stat().st_size > self.config_byte_limit:
             raise ValueError('Qwen checkpoint config is too large')
         self.config = json.loads(config_path.read_text())
-        if self.config.get('model_type') != 'qwen3_5_moe':
-            raise ValueError('Qwen subprocess requires qwen3_5_moe metadata')
-        self.binary = Path(worker_path or os.environ.get('KADAN_NATIVE_WORKER', '/opt/kadan/bin/kadan-model-worker'))
+        if self.config.get('model_type') != self.model_type:
+            raise ValueError(f'Native adapter requires {self.model_type} metadata')
+        self.binary = Path(worker_path or os.environ.get(self.binary_environment, self.default_binary))
         if not self.binary.is_absolute() or not self.binary.is_file() or not os.access(self.binary, os.X_OK):
             raise ValueError('KADAN_NATIVE_WORKER must name an installed absolute executable path')
         self.resources, self.device, self.cancel = resources, device, cancel_event
@@ -233,7 +240,7 @@ class QwenSubprocessAdapter:
             chat = [{'role': m['role'], 'content': m.get('text', m.get('content', ''))} for m in messages]
             with self._leases(cancel_event):
                 tokens = self.tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True,
-                    enable_thinking=False, preserve_thinking=True)
+                    **self.chat_template_options)
                 if isinstance(tokens, Mapping):
                     tokens = tokens['input_ids']
                 if not isinstance(tokens, list) or not tokens or any(type(t) is not int or not 0 <= t < self.vocabulary for t in tokens):
@@ -258,12 +265,14 @@ class QwenSubprocessAdapter:
                         first = now if first is None else first
                         last = now
                         if streamer is not None:
+                            if index == 0 and self.output_prefix:
+                                on_event({"content": self.output_prefix})
                             streamer.put(selected)
                         if index + 1 < max_new_tokens:
                             selected, eos = self._step(selected, True, len(tokens)+index+1, cancel_event)
                     check_cancel(cancel_event)
                     self._end_request(cancel_event)
-                    result = self.tokenizer.decode(generated, skip_special_tokens=True)
+                    result = (self.output_prefix if generated else "") + self.tokenizer.decode(generated, skip_special_tokens=True)
                     if streamer is not None:
                         streamer.end()
                     if on_event:
