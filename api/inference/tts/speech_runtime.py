@@ -8,30 +8,16 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 import io
 import threading
-import traceback
 from typing import Callable, Protocol
 import uuid
 import wave
 
+from api.inference.failure_cleanup import clear_failure_frames
 from api.inference.resources import ResourceBusy, ResourceCancelled, ResourceManager
 
 
 class SpeechUnavailable(RuntimeError):
     pass
-
-
-def clear_failure_frames(error: BaseException) -> None:
-    """Release failed allocations without removing traceback or exception details."""
-    pending, seen = [error], set()
-    while pending:
-        current = pending.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        traceback.clear_frames(current.__traceback__)
-        pending.extend((current.__cause__, current.__context__))
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
 
 
 @dataclass(frozen=True)
