@@ -150,14 +150,6 @@ endif()
 
 option(KADAN_ENABLE_H3_GENERATION "Build native H3 prompt and video generation pipeline" OFF)
 if(KADAN_ENABLE_H3_GENERATION)
-  find_package(nlohmann_json 3.10 REQUIRED)
-  find_package(ICU REQUIRED COMPONENTS uc i18n)
-  find_library(KADAN_H3_PCRE2 pcre2-8 REQUIRED)
-  add_library(kadan_h3_tokenizer src/h3_tokenizer.cpp)
-  target_link_libraries(kadan_h3_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_H3_PCRE2})
-  target_compile_options(kadan_h3_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-if(KADAN_ENABLE_H3_GENERATION)
   add_library(kadan_h3_audio src/h3_audio.cpp)
   target_link_libraries(kadan_h3_audio PUBLIC kadan_checkpoint kadan_resources)
   target_compile_options(kadan_h3_audio PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
@@ -167,7 +159,7 @@ if(KADAN_ENABLE_H3_GENERATION)
     target_link_libraries(kadan_h3_audio PRIVATE ${KADAN_H3_AUDIO_BLAS_LIBRARY})
   endif()
   add_library(kadan_h3_generation src/h3_generation.cpp src/h3_codec.cpp)
-  target_link_libraries(kadan_h3_generation PUBLIC kadan_h3_tokenizer kadan_h3_text kadan_h3_denoiser kadan_video kadan_h3_audio)
+  target_link_libraries(kadan_h3_generation PUBLIC kadan_text_tokenizer kadan_h3_text kadan_h3_denoiser kadan_video kadan_h3_audio)
   target_compile_options(kadan_h3_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
@@ -212,14 +204,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
-if(KADAN_ENABLE_TTS_WORKER)
-  find_package(nlohmann_json 3.10 REQUIRED)
-  find_package(ICU REQUIRED COMPONENTS uc i18n)
-  find_library(KADAN_TTS_PCRE2 pcre2-8 REQUIRED)
-  add_library(kadan_tts_tokenizer src/tts_tokenizer.cpp)
-  target_link_libraries(kadan_tts_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TTS_PCRE2})
-  target_compile_options(kadan_tts_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
 
 add_library(kadan_image src/image.cpp)
 target_link_libraries(kadan_image PUBLIC kadan_checkpoint kadan_resources)
@@ -250,12 +234,12 @@ if(KADAN_ENABLE_IMAGE_BLAS)
 endif()
 
 option(KADAN_ENABLE_IMAGE_GENERATION "Build complete native CPU image worker" OFF)
-if(KADAN_ENABLE_IMAGE_GENERATION)
+if(KADAN_ENABLE_IMAGE_GENERATION OR KADAN_ENABLE_H3_GENERATION OR KADAN_ENABLE_TTS_WORKER)
 find_package(nlohmann_json 3.10 REQUIRED)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
-find_library(KADAN_IMAGE_PCRE2 pcre2-8 REQUIRED)
+find_library(KADAN_TEXT_PCRE2 pcre2-8 REQUIRED)
 add_library(kadan_text_tokenizer src/text_tokenizer.cpp)
-target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_IMAGE_PCRE2})
+target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TEXT_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
@@ -347,7 +331,7 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
   target_link_libraries(kadan-inference-worker PRIVATE kadan_gpu kadan_glm
     kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
     kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
-    kadan_tts_tokenizer kadan_text_tokenizer nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+    kadan_text_tokenizer nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
   install(TARGETS kadan-inference-worker
     RUNTIME_DEPENDENCIES
       PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"

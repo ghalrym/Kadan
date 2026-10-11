@@ -7,8 +7,8 @@
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/h3_compute.hpp"
-#include "kadan/h3_tokenizer.hpp"
 #include "kadan/resources.hpp"
+#include "kadan/text_tokenizer.hpp"
 
 namespace kadan::video {
 // Complete 50-layer text-only H3 conditioning graph over caller-tokenized IDs.
@@ -18,7 +18,7 @@ namespace kadan::video {
 class H3TextEncoder {
 public:
     static constexpr std::size_t hidden = 5120, layers = 50, vocab = 151936,
-                                 max_tokens = H3Tokenizer::max_tokens;
+                                 max_tokens = text::Tokenizer::max_tokens;
     static constexpr Bytes metadata_bytes = 4 * 1024 * 1024;
     using Hook = std::function<void(const char*, std::size_t)>;
     explicit H3TextEncoder(

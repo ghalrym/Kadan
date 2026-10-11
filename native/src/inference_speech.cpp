@@ -4,10 +4,10 @@
 #include <unistd.h>
 
 #include "kadan/inference_engines.hpp"
+#include "kadan/text_tokenizer.hpp"
 #include "kadan/tts_audio.hpp"
 #include "kadan/tts_controls.hpp"
 #include "kadan/tts_generator.hpp"
-#include "kadan/tts_tokenizer.hpp"
 
 namespace kadan::serving {
 namespace {
@@ -84,7 +84,9 @@ public:
             resources_, Workload::tts, 256 * 1024 * 1024
         );
         controls_ = std::make_unique<tts::VoiceControls>(root + "/config.json");
-        tokenizer_ = std::make_unique<tts::TextTokenizer>(resources_);
+        tokenizer_ = std::make_unique<text::Tokenizer>(
+            resources_, Workload::tts, text::Tokenizer::Format::tts
+        );
         tokenizer_->load(input.at("tokenizer").get<std::string>(), cancel);
         generator_ =
             std::make_unique<tts::CodeGenerator>(resources_, compute_->compute);
@@ -180,7 +182,7 @@ private:
     std::unique_ptr<WorkerCompute> compute_;
     std::unique_ptr<HostAllocation> workspace_, request_memory_;
     std::unique_ptr<tts::VoiceControls> controls_;
-    std::unique_ptr<tts::TextTokenizer> tokenizer_;
+    std::unique_ptr<text::Tokenizer> tokenizer_;
     std::unique_ptr<tts::CodeGenerator> generator_;
     std::unique_ptr<tts::AudioDecoder> decoder_;
     tts::VoicePrompt voice_;
