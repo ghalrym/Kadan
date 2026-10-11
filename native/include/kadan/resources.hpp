@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -23,6 +24,9 @@ struct Resident {
     std::uint64_t pins = 0;
 };
 struct Snapshot { Footprint capacity; Footprint used; std::size_t residents; };
+struct ResourceExhausted : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 // Accounting only. One worker owns this ledger; callers acknowledge physical
 // cleanup before releasing bytes. No callbacks run under its mutex.
@@ -31,7 +35,8 @@ public:
     // Bound control-plane storage even when every reservation requests zero bytes.
     static constexpr std::size_t max_residents = 1024;
     static constexpr std::size_t max_devices = 64;
-    explicit Resources(Footprint capacity) : capacity_(std::move(capacity)), used_(capacity_.size()) {
+    explicit Resources(Footprint capacity)
+        : capacity_limit_(capacity), capacity_(std::move(capacity)), used_(capacity_.size()) {
         if (capacity_.empty()) throw std::invalid_argument("host_budget_required");
         if (capacity_.size() > max_devices + 1) throw std::invalid_argument("too_many_devices");
     }
@@ -41,6 +46,7 @@ public:
         std::lock_guard lock(mutex_);
         if (capacity.size()!=capacity_.size() || !residents_.empty())
             throw std::runtime_error("capacity_requires_empty_ledger");
+        capacity_limit_ = capacity;
         capacity_.swap(capacity);
     }
     void refresh_available(const Footprint& available) {
@@ -49,9 +55,9 @@ public:
         for (std::size_t index = 0; index < available.size(); ++index) {
             if (available[index] > std::numeric_limits<Bytes>::max() - used_[index])
                 throw std::overflow_error("budget_overflow");
-            // Reservations may exceed physical allocations. Never turn that
-            // conservative excess into new capacity while an engine is resident.
-            capacity_[index] = std::min(capacity_[index], used_[index] + available[index]);
+            // Recover after pressure clears, bounded by the last empty-ledger
+            // measurement so conservative reservations cannot inflate capacity.
+            capacity_[index] = std::min(capacity_limit_[index], used_[index] + available[index]);
         }
     }
     Handle reserve(Workload workload, Footprint bytes) {
@@ -59,7 +65,7 @@ public:
         if (bytes.size() != capacity_.size()) throw std::invalid_argument("budget_shape");
         if (residents_.size() >= max_residents) throw std::runtime_error("resident_limit");
         for (std::size_t i = 0; i < bytes.size(); ++i)
-            if (bytes[i] > capacity_[i] - used_[i]) throw std::runtime_error("exhausted");
+            if (bytes[i] > capacity_[i] - used_[i]) throw ResourceExhausted("exhausted");
         if (next_ == std::numeric_limits<Handle>::max()) throw std::runtime_error("handles_exhausted");
         const auto handle = next_;
         // Allocate the record before changing accounting (strong exception safety).
@@ -75,7 +81,8 @@ public:
         require(r.state==State::loading && r.pins==0,"not_loading");
         require(bytes.size()==capacity_.size(),"budget_shape");
         for(std::size_t i=0;i<bytes.size();++i)
-            require(bytes[i]<=capacity_[i]-(used_[i]-r.bytes[i]),"exhausted");
+            if (bytes[i] > capacity_[i] - (used_[i] - r.bytes[i]))
+                throw ResourceExhausted("exhausted");
         for(std::size_t i=0;i<bytes.size();++i) used_[i]=used_[i]-r.bytes[i]+bytes[i];
         r.bytes.swap(bytes);
     }
@@ -136,7 +143,7 @@ private:
         if (it == residents_.end()) throw std::runtime_error("stale_handle");
         return it->second;
     }
-    Footprint capacity_, used_;
+    Footprint capacity_limit_, capacity_, used_;
     std::map<Handle, Resident> residents_;
     Handle next_ = 1;
     mutable std::mutex mutex_;

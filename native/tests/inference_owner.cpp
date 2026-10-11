@@ -55,7 +55,7 @@ struct FakeEngine : InferenceEngine {
   }
 };
 InferenceRequest request(std::string id, Workload workload = Workload::image) {
-  return {id, id, Operation::generate, "{}", workload};
+  return {id, id, Operation::generate, "{}", workload, true, {}};
 }
 void fifo_shares_ledger() {
   FakeState state;
@@ -324,7 +324,91 @@ void resident_gpu_pressure_replans_before_execution() {
   owner.shutdown();
 }
 
+struct ScratchEngine : FakeEngine {
+  bool during_execution;
+  ScratchEngine(FakeState &state, std::shared_ptr<Resources> ledger,
+                bool during_execution = false)
+      : FakeEngine(state, std::move(ledger)), during_execution(during_execution) {}
+  void reserve_scratch() {
+    const auto scratch = ledger->reserve(Workload::llm, {20, 0, 0});
+    ledger->released(scratch);
+  }
+  void prepare(const InferenceRequest &request, const Footprint &,
+               const std::atomic_bool &) override {
+    if (request.operation != Operation::load && !during_execution)
+      reserve_scratch();
+  }
+  std::string execute(const InferenceRequest &request,
+                      const std::atomic_bool &cancel) override {
+    auto result = FakeEngine::execute(request, cancel);
+    if (during_execution)
+      reserve_scratch();
+    return result;
+  }
+};
+
+void resident_load_recovers_scratch_capacity() {
+  FakeState state;
+  unsigned probes = 0;
+  std::vector<JobState> events;
+  InferenceOwner owner(
+      {100, 100, 100},
+      [&](auto, auto ledger) {
+        return std::make_unique<ScratchEngine>(state, ledger);
+      },
+      [&] { return Footprint{++probes == 2 ? 5u : 100u, 80, 70}; },
+      [&](auto, auto event, auto) { events.push_back(event); });
+  auto load = request("load", Workload::llm);
+  load.model = "same";
+  load.operation = Operation::load;
+  owner.submit(load);
+  assert(owner.advance());
+  assert(events.back() == JobState::succeeded);
+  assert(owner.snapshot().capacity[0] == 15);
+  auto completion = load;
+  completion.id = "completion";
+  completion.operation = Operation::completion;
+  owner.submit(completion);
+  assert(owner.advance());
+  assert(events.back() == JobState::succeeded);
+  assert(state.loads.size() == 1);
+  owner.shutdown();
+}
+
+void reservation_exhaustion_retries_only_before_execution() {
+  for (bool during_execution : {false, true}) {
+    FakeState state;
+    std::vector<JobState> events;
+    Footprint free{15, 80, 70};
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) {
+          return std::make_unique<ScratchEngine>(state, ledger, during_execution);
+        },
+        [&] { return free; },
+        [&](auto, auto event, auto) { events.push_back(event); });
+    owner.submit(request("head"));
+    owner.submit(request("tail"));
+    assert(owner.advance() == during_execution);
+    assert(owner.pending() == (during_execution ? 1u : 2u));
+    assert(events.back() == (during_execution ? JobState::failed
+                                              : JobState::waiting_for_resources));
+    assert(state.close_calls == 1 && owner.snapshot().residents == 0);
+    free[0] = 100;
+    assert(owner.advance());
+    assert(events.back() == JobState::succeeded);
+    assert(std::count(state.events.begin(), state.events.end(), "execute:head") == 1);
+    if (!during_execution) {
+      assert(owner.cancel("tail"));
+      assert(owner.advance());
+    }
+    owner.shutdown();
+  }
+}
+
 int main() {
+  resident_load_recovers_scratch_capacity();
+  reservation_exhaustion_retries_only_before_execution();
   resident_gpu_pressure_replans_before_execution();
   refreshed_reservations_never_create_physical_capacity();
   preparation_keeps_fifo_head_until_acknowledged();

@@ -28,8 +28,8 @@ struct InferenceRequest {
   std::string configuration;
 };
 // A retry is legal only before inference begins and after physical cleanup.
-struct AdmissionWait : std::runtime_error {
-  using std::runtime_error::runtime_error;
+struct AdmissionWait : ResourceExhausted {
+  using ResourceExhausted::ResourceExhausted;
 };
 struct CleanupFailure : std::runtime_error {
   using std::runtime_error::runtime_error;
@@ -206,7 +206,7 @@ public:
       throw;
     } catch (const PublicationFailure &) {
       throw;
-    } catch (const AdmissionWait &) {
+    } catch (const ResourceExhausted &) {
       cleanup();
       if (execution_started) {
         finish(job, JobState::failed, "admission_after_execution");
