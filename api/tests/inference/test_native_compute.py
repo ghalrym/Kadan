@@ -89,8 +89,8 @@ class ComputeTests(unittest.TestCase):
 
     def owners(self):
         image_child=ImageProcess();image_session=NativeImageSession('/model','/worker',lambda:image_child)
-        image=NativeImageRuntime(lambda:self.resources,lambda:(Path('/model'),Path('/worker')),lambda *args:image_session)
-        whisper_child=WhisperProcess();whisper=NativeWhisper(self.resources,lambda model:['/worker','/model','weights','dims','assets'],lambda:whisper_child)
+        image=NativeImageRuntime(lambda:self.resources,lambda cancel:(Path('/model'),Path('/worker')),lambda *args:image_session)
+        whisper_child=WhisperProcess();whisper=NativeWhisper(self.resources,lambda model, compute, resources, cancel:['/worker','/model','weights','dims','assets'],lambda:whisper_child)
         self.addCleanup(image.unload);self.addCleanup(whisper.close)
         return image,image_child,whisper,whisper_child
 

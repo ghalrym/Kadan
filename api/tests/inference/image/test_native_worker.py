@@ -31,7 +31,7 @@ class Child:
 class NativeTests(unittest.TestCase):
     def setUp(self):
         self.resources=ResourceManager(96*1024**3,{0:1024});self.child=Child();self.session=NativeImageSession('/model','/worker',lambda:self.child)
-        self.runtime=NativeImageRuntime(lambda:self.resources,lambda:(Path('/model'),Path('/worker')),lambda *args:self.session)
+        self.runtime=NativeImageRuntime(lambda:self.resources,lambda cancel:(Path('/model'),Path('/worker')),lambda *args:self.session)
         self.request=SimpleNamespace(prompt='red ball',aspect='1:1',count=1,seed=0);self.addCleanup(self.cleanup)
     def cleanup(self):self.child.fail_stop=False;self.runtime.unload()
     def run_request(self):return self.runtime.run(self.request,threading.Event())

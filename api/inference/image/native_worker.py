@@ -208,7 +208,7 @@ class NativeImageRuntime:
         try:
             check_cancel(cancel)
             self.check_execution_state()
-            plan = self.prepare_plan(cancel) if self.prepare_plan is prepare else self.prepare_plan()
+            plan = self.prepare_plan(cancel)
             resources = self.resources()
             compute = native_compute('IMAGE', resources)
             identity = (plan, compute.identity)

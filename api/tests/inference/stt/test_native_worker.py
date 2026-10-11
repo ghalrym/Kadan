@@ -54,7 +54,7 @@ class NativeWorkerTests(unittest.TestCase):
     def setUp(self):
         self.resources=ResourceManager(64*1024**3,{})
         self.child=Child();self.resolves=[]
-        def resolve(model):self.resolves.append(model);return ['/native','/model','weights','dims','assets']
+        def resolve(model, compute, resources, cancel):self.resolves.append(model);return ['/native','/model','weights','dims','assets']
         self.owner=NativeWhisper(self.resources,resolve,lambda:self.child)
         self.addCleanup(self.cleanup)
     def cleanup(self):

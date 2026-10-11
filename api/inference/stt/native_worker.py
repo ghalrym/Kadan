@@ -207,7 +207,7 @@ class NativeWhisper:
                         raise LineProtocolError('Whisper resume was not acknowledged')
                     self.parked = False
             return
-        command = resolve(model, compute, resources, cancel) if self.resolver is resolve else self.resolver(model)
+        command = self.resolver(model, compute, resources, cancel)
         self._close()
         self.compute = compute
         self.admission = resources.reserve(self.owner, 'speech', host_bytes=PROCESS_BUDGET, evict=self.evict, cancel_event=cancel)
