@@ -2,13 +2,17 @@
 #include "kadan/h3_memory.hpp"
 #include "kadan/h3_profile.hpp"
 #include "kadan/inference_engines.hpp"
+#include "kadan/video_progress.hpp"
 
 namespace kadan::serving {
 namespace {
 class VideoEngine final : public InferenceEngine {
 public:
   VideoEngine(std::shared_ptr<Resources> resources, Progress progress)
-      : resources_(std::move(resources)), progress_(std::move(progress)) {}
+      : resources_(std::move(resources)), progress_updates_(std::move(progress)),
+        progress_([this](const char *phase, std::size_t value) {
+          progress_updates_.update(phase, value);
+        }) {}
 
   void load(const InferenceRequest &request, const Footprint &available,
             const std::atomic_bool &cancel) override {
@@ -71,6 +75,7 @@ public:
                       const std::atomic_bool &cancel) override {
     if (request.operation == Operation::load)
       return "{}";
+    progress_updates_.reset();
     model_->execute(paths_, request_, cancel, progress_);
     compute_->release_scratch();
     return Json{{"output", request_.output},
@@ -95,6 +100,7 @@ public:
 
 private:
   std::shared_ptr<Resources> resources_;
+  video::VideoProgress progress_updates_;
   Progress progress_;
   Handle context_ = 0;
   std::shared_ptr<video::H3Compute> compute_;
