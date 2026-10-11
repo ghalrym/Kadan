@@ -228,7 +228,7 @@ void export_whisper_assets(
                 || std::find(musical.begin(), musical.end(), symbol) != musical.end())
                 suppressed.insert(tokens.front());
         }
-    for (auto id = eos; id < vocabulary; ++id)
+    for (auto id = eos + 1; id < vocabulary; ++id)
         suppressed.insert(id);
     std::vector<std::uint32_t> prompt = {sot};
     if (multi) {

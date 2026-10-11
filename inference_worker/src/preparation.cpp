@@ -70,7 +70,7 @@ void prepare_input(
 ) {
     const auto& entry = store.entry(input.model);
     preparation_check(
-        entry.value("license_notice", Json()).is_null() || input.license_acknowledged,
+        !entry.license_notice || input.license_acknowledged,
         "Read the model license notice and explicitly continue before downloading",
         422
     );

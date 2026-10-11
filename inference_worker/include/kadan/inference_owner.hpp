@@ -11,6 +11,7 @@
 
 namespace kadan::serving {
 enum class JobState {
+    queued,
     preparing,
     loading,
     running,
@@ -84,6 +85,14 @@ public:
             if (job->request.id == request.id)
                 throw std::runtime_error("duplicate_request");
         queue_.push_back(std::make_shared<Job>(std::move(request)));
+        // Keep acceptance and admission under the same lock: advance() must not
+        // publish preparation or completion before the queued acknowledgement.
+        try {
+            publish_(queue_.back()->request.id, JobState::queued, "");
+        } catch (...) {
+            queue_.pop_back();
+            throw PublicationFailure("acceptance_publication_failed");
+        }
     }
 
     bool cancel(const std::string& id) {

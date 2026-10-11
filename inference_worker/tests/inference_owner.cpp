@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <thread>
 #include <tuple>
 using namespace kadan;
 using namespace kadan::serving;
@@ -517,7 +518,78 @@ void download_uses_fifo_without_loading_engine() {
     owner.shutdown();
 }
 
+void acceptance_precedes_fast_completion() {
+    for (const bool fail_preparation : {false, true}) {
+        std::vector<JobState> events;
+        std::atomic_bool finished{false};
+        InferenceOwner owner(
+            {100},
+            {},
+            [] { return Footprint{100}; },
+            [&](auto, JobState event, auto) {
+                events.push_back(event);
+                if (event == JobState::succeeded || event == JobState::failed)
+                    finished.store(true);
+            },
+            32,
+            [&](auto&, auto&) {
+                if (fail_preparation)
+                    throw std::runtime_error("preparation failed");
+            }
+        );
+        std::thread executor([&] {
+            while (!finished.load()) {
+                owner.advance();
+                std::this_thread::yield();
+            }
+        });
+        auto job = request("configuration");
+        job.operation = Operation::configure;
+        job.prepared = false;
+        owner.submit(job);
+        executor.join();
+        assert(
+            events
+            == std::vector<JobState>(
+                {JobState::queued,
+                 JobState::preparing,
+                 fail_preparation ? JobState::failed : JobState::succeeded}
+            )
+        );
+        owner.shutdown();
+    }
+}
+
+void failed_acceptance_never_runs() {
+    bool prepared = false;
+    InferenceOwner owner(
+        {100},
+        {},
+        [] { return Footprint{100}; },
+        [](auto, JobState event, auto) {
+            assert(event == JobState::queued);
+            throw std::runtime_error("transport failed");
+        },
+        32,
+        [&](auto&, auto&) { prepared = true; }
+    );
+    auto job = request("configuration");
+    job.operation = Operation::configure;
+    job.prepared = false;
+    bool rejected = false;
+    try {
+        owner.submit(job);
+    } catch (const PublicationFailure&) {
+        rejected = true;
+    }
+    assert(rejected && owner.pending() == 0);
+    assert(!owner.advance() && !prepared);
+    owner.shutdown();
+}
+
 int main() {
+    acceptance_precedes_fast_completion();
+    failed_acceptance_never_runs();
     cancellation_during_worker_preparation_never_executes();
     worker_prepares_only_the_fifo_head();
     resident_load_recovers_scratch_capacity();

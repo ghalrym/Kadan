@@ -24,9 +24,7 @@ void prepare_input(
     if (!fs::exists(root)) {
         const auto& entry = store.entry("whisper-" + request.model);
         const auto source = store.acquire("whisper-" + request.model, cancel);
-        export_whisper(
-            source / (request.model + ".pt"), entry.at("revision"), root, cancel
-        );
+        export_whisper(source / (request.model + ".pt"), entry.revision, root, cancel);
     }
     if (!fs::exists(input.assets)) {
         std::ifstream dimensions(root / "dimensions.txt");

@@ -111,7 +111,7 @@ void pinned_catalog_units() {
     rejects([&] { store.whisper_model("unknown"); });
     const auto& speech = store.entry("qwen-tts-1.7b-custom");
     Json files = Json::array();
-    for (const auto& name : speech.at("required_files")) {
+    for (const auto& name : speech.required_files) {
         assert(store.allowed(name, speech));
         files.push_back(
             {{"name", name},
@@ -120,14 +120,14 @@ void pinned_catalog_units() {
              {"algorithm", "sha256"}}
         );
     }
-    store.validate_files(speech, files);
+    store.validate_files(speech, parse_manifest(files));
     for (const auto* missing :
          {"model.safetensors", "speech_tokenizer/model.safetensors"}) {
         Json incomplete = Json::array();
         for (const auto& file : files)
             if (file.at("name") != missing)
                 incomplete.push_back(file);
-        rejects([&] { store.validate_files(speech, incomplete); });
+        rejects([&] { store.validate_files(speech, parse_manifest(incomplete)); });
     }
     for (const auto* model :
          {"small", "qwen-tts-1.7b-custom", "h3-fl2va", "h3-fl2va-int8-turbo"})
@@ -135,8 +135,37 @@ void pinned_catalog_units() {
              {"../config.json", "/config.json", "model.py", "speech_tokenizer/run.py"})
             assert(!store.allowed(path, store.entry(model)));
     const auto& video = store.entry("h3-fl2va-int8-turbo");
-    store.validate_files(video, video.at("manifest"));
+    store.validate_files(video, video.manifest);
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
+}
+
+void manifest_model_units() {
+    const Json source = {
+        {"name", "config.json"},
+        {"size", std::uint64_t(2)},
+        {"digest", std::string(64, 'a')},
+        {"algorithm", "sha256"},
+        {"url", "https://unit.invalid/config.json"}
+    };
+    const auto file = ManifestFile::parse(source);
+    assert(Json(file) == source);
+    for (const auto& replacement : {Json(-1), Json(1.5), Json("2")}) {
+        auto invalid = source;
+        invalid["size"] = replacement;
+        rejects([&] { ManifestFile::parse(invalid); });
+    }
+    auto invalid = source;
+    invalid["digest"] = "invalid";
+    rejects([&] { ManifestFile::parse(invalid); });
+    invalid = source;
+    invalid["name"] = "../config.json";
+    rejects([&] { ManifestFile::parse(invalid); });
+    auto model = entry("test", Json::array({source}));
+    model["layout"] = "unknown";
+    rejects([&] { CatalogEntry::parse(model); });
+    model["layout"] = "composite";
+    model["id"] = "../test";
+    rejects([&] { CatalogEntry::parse(model); });
 }
 
 void typed_request_units() {
@@ -317,7 +346,7 @@ void single_file_acquisition_units() {
     corrupt = false;
     const auto checkpoint = store.acquire("whisper-test", running);
     assert(
-        store.complete(model)
+        store.complete(CatalogEntry::parse(model))
         && read_bytes(checkpoint / "test.pt", 32) == "metadata-only"
     );
 }
@@ -375,7 +404,7 @@ void upstream_manifest_units() {
     assert(bodies == 0);
     upstream["siblings"] = siblings;
     const auto checkpoint = store.acquire("test", running);
-    assert(bodies == 4 && store.complete(model));
+    assert(bodies == 4 && store.complete(CatalogEntry::parse(model)));
     fs::remove_all(checkpoint);
     // A correctly hashed index still cannot reference missing or escaping shards.
     contents["model.safetensors.index.json"] =
@@ -613,6 +642,28 @@ void tokenizer_asset_units() {
         const auto metadata = read_document(destination / "assets.json");
         assert(metadata.at("vocabulary") == vocabulary);
         assert(metadata.at("prompt").size() == (vocabulary == 51864 ? 2 : 4));
+        // Read the exported metadata, without constructing or running a model.
+        std::ifstream tokens(destination / "english.tokens", std::ios::binary);
+        tokens.seekg(16);  // magic, vocabulary, EOS
+        const auto read_number = [&] {
+            std::array<unsigned char, 4> bytes{};
+            tokens.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+            assert(tokens.good());
+            return std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8)
+                   | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
+        };
+        auto count = read_number();
+        tokens.seekg(count * 4, std::ios::cur);  // prompt
+        count = read_number();
+        for (std::uint32_t i = 0; i < count; ++i)
+            assert(read_number() != metadata.at("eos").get<std::uint32_t>());
+        count = read_number();
+        bool first_step_suppresses_eos = false;
+        for (std::uint32_t i = 0; i < count; ++i)
+            first_step_suppresses_eos |=
+                read_number() == metadata.at("eos").get<std::uint32_t>();
+        assert(first_step_suppresses_eos);
+
         assert(fs::file_size(destination / "mel-80.f32") == 80 * 201 * 4);
         assert(fs::file_size(destination / "mel-128.f32") == 128 * 201 * 4);
         assert(
@@ -643,6 +694,7 @@ void tokenizer_asset_units() {
 }  // namespace
 
 int main() {
+    manifest_model_units();
     pinned_catalog_units();
     typed_request_units();
     codec_units();

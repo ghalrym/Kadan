@@ -33,6 +33,32 @@ std::string base64_decode(std::string_view encoded);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
 
+struct ManifestFile {
+    std::string name;
+    std::uint64_t size;
+    std::string digest, algorithm, url;
+
+    static ManifestFile parse(const Json& value);
+    void validate() const;
+    bool operator==(const ManifestFile&) const = default;
+};
+
+void to_json(Json& value, const ManifestFile& file);
+std::vector<ManifestFile> parse_manifest(const Json& value);
+
+struct CatalogEntry {
+    std::string id, repo_id, revision, kind, layout;
+    std::string license;
+    std::uint64_t estimated_bytes = 0;
+    std::optional<std::string> display_name, license_url, license_notice;
+    bool inference_available = false;
+    std::string asset_url, asset_name;
+    std::vector<std::string> required_files, component_paths, weight_paths;
+    std::vector<ManifestFile> manifest;
+
+    static CatalogEntry parse(const Json& value);
+};
+
 class ModelStore {
 public:
     using Fetch = std::function<std::int64_t(
@@ -46,7 +72,7 @@ public:
     ModelStore(
         fs::path root, fs::path data, Fetch fetch = {}, DownloadProgress progress = {}
     );
-    const Json& entry(const std::string& model) const;
+    const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
     std::string selected() const;
     std::string whisper_selected() const;
@@ -66,14 +92,18 @@ public:
         return data_;
     }
 
-    bool complete(const Json& entry) const;
-    bool allowed(const std::string& name, const Json& entry) const;
-    void validate_files(const Json& entry, const Json& files) const;
+    bool complete(const CatalogEntry& entry) const;
+    bool allowed(const std::string& name, const CatalogEntry& entry) const;
+    void validate_files(
+        const CatalogEntry& entry, const std::vector<ManifestFile>& files
+    ) const;
 
 private:
-    Json manifest(const Json& entry, const std::atomic_bool& cancel) const;
+    std::vector<ManifestFile>
+    manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
-    Json catalog_;
+    std::vector<CatalogEntry> catalog_;
+    std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
 };

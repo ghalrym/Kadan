@@ -170,15 +170,15 @@ bool hex_digest(const std::string& value, std::size_t size) {
 void download(
     const std::string& url,
     const fs::path& path,
-    const Json& item,
+    const ManifestFile& item,
     const std::atomic_bool& cancel,
     const ModelStore::Fetch& source,
     const std::function<void(std::size_t)>& progress
 ) {
-    const auto size = item.at("size").get<std::uint64_t>();
-    const bool sha256 = item.at("algorithm") == "sha256";
+    const auto size = item.size;
+    const bool sha256 = item.algorithm == "sha256";
     preparation_check(
-        sha256 || item.at("algorithm") == "git-sha1", "Unknown digest algorithm"
+        sha256 || item.algorithm == "git-sha1", "Unknown digest algorithm"
     );
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(
         EVP_MD_CTX_new(), EVP_MD_CTX_free
@@ -223,7 +223,7 @@ void download(
         actual += hex[bytes[i] & 15];
     }
     preparation_check(
-        actual == item.at("digest").get<std::string>(),
+        actual == item.digest,
         "Checkpoint integrity verification failed: " + path.filename().string()
     );
 }
@@ -235,34 +235,126 @@ void atomic_document(const fs::path& destination, const Json& value) {
 }
 }  // namespace
 
+void ManifestFile::validate() const {
+    preparation_check(safe_name(name), "Invalid checkpoint filename");
+    preparation_check(
+        (algorithm == "sha256" || algorithm == "git-sha1")
+            && hex_digest(digest, algorithm == "sha256" ? 64 : 40),
+        "Invalid checkpoint digest"
+    );
+}
+
+ManifestFile ManifestFile::parse(const Json& value) {
+    preparation_check(
+        value.at("size").is_number_unsigned(), "Invalid checkpoint file size"
+    );
+    ManifestFile file{
+        value.at("name").get<std::string>(),
+        value.at("size").get<std::uint64_t>(),
+        value.at("digest").get<std::string>(),
+        value.at("algorithm").get<std::string>(),
+        value.value("url", std::string())
+    };
+    file.validate();
+    return file;
+}
+
+void to_json(Json& value, const ManifestFile& file) {
+    value = {
+        {"name", file.name},
+        {"size", file.size},
+        {"digest", file.digest},
+        {"algorithm", file.algorithm}
+    };
+    if (!file.url.empty())
+        value["url"] = file.url;
+}
+
+std::vector<ManifestFile> parse_manifest(const Json& value) {
+    preparation_check(
+        value.is_array() && value.size() <= 10000, "Invalid checkpoint manifest"
+    );
+    std::vector<ManifestFile> files;
+    for (const auto& item : value)
+        files.push_back(ManifestFile::parse(item));
+    return files;
+}
+
+CatalogEntry CatalogEntry::parse(const Json& value) {
+    CatalogEntry entry;
+    entry.id = value.at("id");
+    entry.repo_id = value.at("repo_id");
+    entry.revision = value.at("revision");
+    entry.kind = value.at("kind");
+    entry.layout = value.at("layout");
+    preparation_check(
+        entry.layout == "root" || entry.layout == "components"
+            || entry.layout == "composite" || entry.layout == "single_file",
+        "Invalid checkpoint layout"
+    );
+    preparation_check(
+        safe_name(entry.id) && !fs::path(entry.id).has_parent_path()
+            && safe_name(entry.revision) && !fs::path(entry.revision).has_parent_path(),
+        "Invalid checkpoint identity"
+    );
+    entry.license = value.value("license", std::string());
+    entry.estimated_bytes = value.value("estimated_bytes", std::uint64_t(0));
+    const auto optional_text = [&](const char* name) -> std::optional<std::string> {
+        const auto found = value.find(name);
+        if (found == value.end() || found->is_null())
+            return std::nullopt;
+        return found->get<std::string>();
+    };
+    entry.display_name = optional_text("display_name");
+    entry.license_url = optional_text("license_url");
+    entry.license_notice = optional_text("license_notice");
+    entry.asset_url = optional_text("asset_url").value_or("");
+    entry.asset_name = optional_text("asset_name").value_or("");
+    entry.inference_available = value.at("inference_available");
+    entry.required_files = value.at("required_files").get<std::vector<std::string>>();
+    entry.component_paths = value.value("component_paths", std::vector<std::string>());
+    entry.weight_paths = value.value("weight_paths", std::vector<std::string>());
+    entry.manifest = parse_manifest(value.at("manifest"));
+    return entry;
+}
+
 ModelStore::ModelStore(
     fs::path root, fs::path data, Fetch fetch, DownloadProgress progress
 )
-    : root_(std::move(root)), data_(std::move(data)),
-      catalog_(read_document(data_ / "catalog.json")), fetch_(std::move(fetch)),
+    : root_(std::move(root)), data_(std::move(data)), fetch_(std::move(fetch)),
       progress_(std::move(progress)) {
+    const auto document = read_document(data_ / "catalog.json");
+    assets_ = document.at("assets").get<std::vector<std::string>>();
+    std::set<std::string> identities;
+    for (const auto& value : document.at("models")) {
+        auto model = CatalogEntry::parse(value);
+        preparation_check(
+            identities.insert(model.id).second, "Duplicate catalog model"
+        );
+        catalog_.push_back(std::move(model));
+    }
 }
 
-const Json& ModelStore::entry(const std::string& model) const {
-    for (const auto& candidate : catalog_.at("models"))
-        if (candidate.at("id").get<std::string>() == model)
+const CatalogEntry& ModelStore::entry(const std::string& model) const {
+    for (const auto& candidate : catalog_)
+        if (candidate.id == model)
             return candidate;
     throw RequestError("Unknown catalog model: " + model, 422);
 }
 
-bool ModelStore::allowed(const std::string& name, const Json& model) const {
+bool ModelStore::allowed(const std::string& name, const CatalogEntry& model) const {
     if (!safe_name(name))
         return false;
-    const auto layout = model.at("layout").get<std::string>();
-    const auto& required = model.at("required_files");
-    const auto contains = [](const Json& values, const std::string& value) {
-        return std::find(values.begin(), values.end(), Json(value)) != values.end();
+    const auto layout = model.layout;
+    const auto& required = model.required_files;
+    const auto contains = [](const std::vector<std::string>& values,
+                             const std::string& value) {
+        return std::find(values.begin(), values.end(), value) != values.end();
     };
     if (layout == "composite")
         return contains(required, name);
     if (layout == "single_file")
-        return model.at("asset_name").get<std::string>() == name
-               && fs::path(name).parent_path().empty();
+        return model.asset_name == name && fs::path(name).parent_path().empty();
     auto basename = name;
     if (layout == "components") {
         if (contains(required, name) || name == "LICENSE" || name == "LICENSE.txt"
@@ -271,12 +363,12 @@ bool ModelStore::allowed(const std::string& name, const Json& model) const {
         auto parent = fs::path(name).parent_path().generic_string();
         if (parent.empty())
             parent = ".";
-        if (!contains(model.at("component_paths"), parent))
+        if (!contains(model.component_paths, parent))
             return false;
         basename = fs::path(name).filename().string();
     } else if (fs::path(name).has_parent_path())
         return false;
-    if (contains(catalog_.at("assets"), basename))
+    if (contains(assets_, basename))
         return true;
     static const std::regex root_weights(
         R"((?:model(?:-\d+(?:-of-\d+)?|_mtp)?)\.safetensors)"
@@ -289,38 +381,30 @@ bool ModelStore::allowed(const std::string& name, const Json& model) const {
     );
 }
 
-void ModelStore::validate_files(const Json& model, const Json& files) const {
+void ModelStore::validate_files(
+    const CatalogEntry& model, const std::vector<ManifestFile>& files
+) const {
     preparation_check(
-        files.is_array() && !files.empty() && files.size() <= 10000,
-        "Invalid checkpoint manifest"
+        !files.empty() && files.size() <= 10000, "Invalid checkpoint manifest"
     );
     std::set<std::string> names;
     for (const auto& file : files) {
-        const auto name = file.at("name").get<std::string>();
+        const auto name = file.name;
         preparation_check(
             allowed(name, model) && names.insert(name).second,
             "Invalid or duplicate checkpoint filename"
         );
-        preparation_check(
-            file.at("size").is_number_unsigned(), "Invalid checkpoint file size"
-        );
-        const auto algorithm = file.at("algorithm").get<std::string>();
-        preparation_check(
-            (algorithm == "sha256" || algorithm == "git-sha1")
-                && hex_digest(file.at("digest"), algorithm == "sha256" ? 64 : 40),
-            "Invalid checkpoint digest"
-        );
+        file.validate();
     }
-    const auto layout = model.at("layout").get<std::string>();
-    auto required = model.at("required_files");
+    const auto layout = model.layout;
+    auto required = model.required_files;
     if (layout == "root")
         required = {
             "config.json", "tokenizer_config.json", "model.safetensors.index.json"
         };
     for (const auto& name : required)
         preparation_check(
-            names.contains(name.get<std::string>()),
-            "Checkpoint is missing required assets"
+            names.contains(name), "Checkpoint is missing required assets"
         );
     if (layout == "composite" || layout == "single_file") {
         preparation_check(
@@ -329,40 +413,37 @@ void ModelStore::validate_files(const Json& model, const Json& files) const {
         );
         return;
     }
-    const Json paths =
-        layout == "components" ? model.at("weight_paths") : Json::array({""});
+    const auto paths =
+        layout == "components" ? model.weight_paths : std::vector<std::string>{""};
     for (const auto& prefix : paths) {
         const auto found =
             std::any_of(names.begin(), names.end(), [&](const std::string& name) {
-                return fs::path(name).parent_path().generic_string()
-                           == prefix.get<std::string>()
+                return fs::path(name).parent_path().generic_string() == prefix
                        && name.ends_with(".safetensors");
             });
         preparation_check(found, "Checkpoint has no weights in required component");
     }
 }
 
-bool ModelStore::complete(const Json& model) const {
-    const auto directory = root_
-                           / (model.at("id").get<std::string>() + "-"
-                              + model.at("revision").get<std::string>());
+bool ModelStore::complete(const CatalogEntry& model) const {
+    const auto directory = root_ / (model.id + "-" + model.revision);
     if (!fs::exists(directory / "complete.json"))
         return false;
     try {
         const auto marker = read_document(directory / "complete.json");
-        if (marker.at("revision") != model.at("revision"))
+        if (marker.at("revision") != model.revision)
             return false;
-        validate_files(model, marker.at("files"));
-        if (model.at("layout") == "composite"
-            && marker.at("files") != model.at("manifest"))
+        const auto files = parse_manifest(marker.at("files"));
+        validate_files(model, files);
+        if (model.layout == "composite" && files != model.manifest)
             return false;
-        for (const auto& file : marker.at("files")) {
-            const auto path = directory / file.at("name").get<std::string>();
+        for (const auto& file : files) {
+            const auto path = directory / file.name;
             for (auto parent = path; parent != root_ && !parent.empty();
                  parent = parent.parent_path())
                 if (fs::is_symlink(parent))
                     return false;
-            if (!fs::is_regular_file(path) || fs::file_size(path) != file.at("size"))
+            if (!fs::is_regular_file(path) || fs::file_size(path) != file.size)
                 return false;
         }
         return true;
@@ -371,26 +452,23 @@ bool ModelStore::complete(const Json& model) const {
     }
 }
 
-Json ModelStore::manifest(const Json& model, const std::atomic_bool& cancel) const {
-    if (model.at("layout") == "composite") {
-        validate_files(model, model.at("manifest"));
-        return model.at("manifest");
+std::vector<ManifestFile>
+ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) const {
+    if (model.layout == "composite") {
+        validate_files(model, model.manifest);
+        return model.manifest;
     }
     Transfer metadata;
-    if (model.at("layout") == "single_file") {
-        const auto size = fetch(fetch_, model.at("asset_url"), metadata, cancel, true);
+    if (model.layout == "single_file") {
+        const auto size = fetch(fetch_, model.asset_url, metadata, cancel, true);
         preparation_check(size > 0, "Checkpoint size unavailable");
-        Json files = Json::array(
-            {{{"name", model.at("asset_name")},
-              {"size", std::uint64_t(size)},
-              {"digest", model.at("revision")},
-              {"algorithm", "sha256"}}}
-        );
+        std::vector<ManifestFile> files = {
+            {model.asset_name, std::uint64_t(size), model.revision, "sha256", ""}
+        };
         validate_files(model, files);
         return files;
     }
-    const auto repo = model.at("repo_id").get<std::string>(),
-               revision = model.at("revision").get<std::string>();
+    const auto repo = model.repo_id, revision = model.revision;
     fetch(
         fetch_,
         "https://huggingface.co/api/models/" + repo + "/revision/" + revision
@@ -403,17 +481,19 @@ Json ModelStore::manifest(const Json& model, const std::atomic_bool& cancel) con
         source.at("sha").get<std::string>() == revision,
         "Upstream checkpoint revision changed"
     );
-    Json files = Json::array();
+    std::vector<ManifestFile> files;
     for (const auto& item : source.at("siblings")) {
         const auto name = item.at("rfilename").get<std::string>();
         if (!allowed(name, model))
             continue;
         const bool large = item.contains("lfs") && !item.at("lfs").is_null();
         files.push_back(
-            {{"name", name},
-             {"size", large ? item.at("lfs").at("size") : item.at("size")},
-             {"digest", large ? item.at("lfs").at("sha256") : item.at("blobId")},
-             {"algorithm", large ? "sha256" : "git-sha1"}}
+            ManifestFile::parse(
+                {{"name", name},
+                 {"size", large ? item.at("lfs").at("size") : item.at("size")},
+                 {"digest", large ? item.at("lfs").at("sha256") : item.at("blobId")},
+                 {"algorithm", large ? "sha256" : "git-sha1"}}
+            )
         );
     }
     validate_files(model, files);
@@ -422,7 +502,7 @@ Json ModelStore::manifest(const Json& model, const std::atomic_bool& cancel) con
 
 fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& cancel) {
     const auto& catalog = entry(model);
-    const auto revision = catalog.at("revision").get<std::string>();
+    const auto revision = catalog.revision;
     const auto destination = root_ / (model + "-" + revision);
     preparation_cancel(cancel);
     if (complete(catalog))
@@ -443,7 +523,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
         const auto files = manifest(catalog, cancel);
         std::uint64_t total = 1024ULL * 1024 * 1024;
         for (const auto& file : files) {
-            const auto size = file.at("size").get<std::uint64_t>();
+            const auto size = file.size;
             preparation_check(size <= UINT64_MAX - total, "Checkpoint size overflow");
             total += size;
         }
@@ -466,18 +546,16 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
         };
         for (const auto& file : files) {
             preparation_cancel(cancel);
-            const auto name = file.at("name").get<std::string>();
-            const auto url = catalog.at("layout") == "composite"
-                                 ? file.at("url").get<std::string>()
-                             : catalog.at("layout") == "single_file"
-                                 ? catalog.at("asset_url").get<std::string>()
-                                 : "https://huggingface.co/"
-                                       + catalog.at("repo_id").get<std::string>()
+            const auto name = file.name;
+            const auto url = catalog.layout == "composite" ? file.url
+                             : catalog.layout == "single_file"
+                                 ? catalog.asset_url
+                                 : "https://huggingface.co/" + catalog.repo_id
                                        + "/resolve/" + revision + "/" + name;
             download(url, stage / name, file, cancel, fetch_, progress);
         }
         for (const auto& file : files) {
-            const auto name = file.at("name").get<std::string>();
+            const auto name = file.name;
             if (!name.ends_with(".safetensors.index.json"))
                 continue;
             const auto index = read_document(stage / name);
@@ -510,9 +588,7 @@ std::string ModelStore::selected() const {
     try {
         const auto model =
             read_document(root_ / "selection.json").at("model_id").get<std::string>();
-        preparation_check(
-            entry(model).at("kind") == "llm", "Invalid selected model", 422
-        );
+        preparation_check(entry(model).kind == "llm", "Invalid selected model", 422);
         return model;
     } catch (const std::exception&) {
         throw RequestError("Select a language model before submitting a request.", 422);
@@ -524,7 +600,7 @@ std::string ModelStore::whisper_model(const std::string& name) const {
                               : name == "turbo" ? "large-v3-turbo"
                                                 : name;
     preparation_check(
-        entry("whisper-" + model).at("kind") == "transcription",
+        entry("whisper-" + model).kind == "transcription",
         "Unknown Whisper checkpoint",
         422
     );
@@ -540,9 +616,9 @@ std::string ModelStore::whisper_selected() const {
     }
     // Match the catalogue order used by the Settings selector.
     std::set<std::string> names;
-    for (const auto& model : catalog_.at("models"))
-        if (model.at("kind") == "transcription")
-            names.insert(model.at("id").get<std::string>().substr(8));
+    for (const auto& model : catalog_)
+        if (model.kind == "transcription")
+            names.insert(model.id.substr(8));
     preparation_check(!names.empty(), "No Whisper checkpoint registered", 422);
     return *names.begin();
 }
@@ -555,7 +631,7 @@ Json ModelStore::context(const std::string& model) const {
 
 void ModelStore::select(const std::string& model) {
     preparation_check(
-        entry(model).at("kind") == "llm" && complete(entry(model)),
+        entry(model).kind == "llm" && complete(entry(model)),
         "Cannot select incomplete language model",
         422
     );
@@ -564,7 +640,7 @@ void ModelStore::select(const std::string& model) {
 
 void ModelStore::set_context(const std::string& model, const Json& value) {
     preparation_check(
-        entry(model).at("kind") == "llm", "This checkpoint is not a language model", 422
+        entry(model).kind == "llm", "This checkpoint is not a language model", 422
     );
     preparation_check(
         value.is_null()
@@ -594,11 +670,10 @@ void ModelStore::select_whisper(const std::string& name) {
 
 Json ModelStore::architecture_context(const std::string& model) const {
     const auto& item = entry(model);
-    if (item.at("kind") != "llm" || !complete(item))
+    if (item.kind != "llm" || !complete(item))
         return nullptr;
-    const auto config = read_document(
-        root_ / (model + "-" + item.at("revision").get<std::string>()) / "config.json"
-    );
+    const auto config =
+        read_document(root_ / (model + "-" + item.revision) / "config.json");
     const auto text = config.value("text_config", config);
     const auto maximum = text.value("max_position_embeddings", Json());
     return maximum.is_number_integer() && maximum > 0 ? maximum : Json(nullptr);
@@ -606,21 +681,23 @@ Json ModelStore::architecture_context(const std::string& model) const {
 
 Json ModelStore::status() const {
     Json models = Json::array();
-    for (const auto& item : catalog_.at("models")) {
-        const auto id = item.at("id").get<std::string>();
-        Json model;
-        for (const auto* field :
-             {"id",
-              "repo_id",
-              "revision",
-              "license",
-              "estimated_bytes",
-              "kind",
-              "display_name",
-              "license_url",
-              "license_notice",
-              "inference_available"})
-            model[field] = item.value(field, Json());
+    for (const auto& item : catalog_) {
+        const auto id = item.id;
+        const auto text = [](const std::optional<std::string>& value) -> Json {
+            return value ? Json(*value) : Json(nullptr);
+        };
+        Json model = {
+            {"id", item.id},
+            {"repo_id", item.repo_id},
+            {"revision", item.revision},
+            {"license", item.license},
+            {"estimated_bytes", item.estimated_bytes},
+            {"kind", item.kind},
+            {"display_name", text(item.display_name)},
+            {"license_url", text(item.license_url)},
+            {"license_notice", text(item.license_notice)},
+            {"inference_available", item.inference_available}
+        };
         model["status"] = complete(item) ? "complete" : "not_downloaded";
         model["downloaded_bytes"] = 0;
         model["total_bytes"] = 0;
@@ -628,8 +705,7 @@ Json ModelStore::status() const {
         model["context_limit"] = nullptr;
         model["architecture_context_limit"] = nullptr;
         try {
-            model["context_limit"] =
-                item.at("kind") == "llm" ? context(id) : Json(nullptr);
+            model["context_limit"] = item.kind == "llm" ? context(id) : Json(nullptr);
             model["architecture_context_limit"] = architecture_context(id);
         } catch (const std::exception& error) {
             model["status"] = "failed";

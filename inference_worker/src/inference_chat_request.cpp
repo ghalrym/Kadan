@@ -9,7 +9,7 @@ void prepare_input(
 ) {
     request.model = input.model ? *input.model : store.selected();
     preparation_check(
-        store.entry(request.model).at("inference_available").get<bool>(),
+        store.entry(request.model).inference_available,
         "This checkpoint has no supported inference engine.",
         422
     );

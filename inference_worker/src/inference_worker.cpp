@@ -138,6 +138,8 @@ private:
 
 const char* state_name(JobState state) {
     switch (state) {
+    case JobState::queued:
+        return "queued";
     case JobState::preparing:
         return "preparing";
     case JobState::loading:
@@ -192,7 +194,6 @@ void read_requests(InferenceOwner& owner, Output& output) {
                 const auto command = request.at("command").get<std::string>();
                 if (command == "submit") {
                     owner.submit(parse_request(request));
-                    output.send({{"id", id}, {"state", "queued"}});
                 } else if (command == "cancel") {
                     owner.cancel(id);
                 } else if (command == "stop") {
@@ -267,6 +268,10 @@ int serve(const char* lock_path) {
     };
     InferenceOwner* owner_pointer = nullptr;
     auto publish = [&](const std::string& id, JobState state, const Json& result) {
+        if (state == JobState::queued) {
+            output.send({{"id", id}, {"state", "queued"}});
+            return;
+        }
         active = id;
         Json message{{"id", id}, {"state", state_name(state)}};
         if (state == JobState::succeeded) {
