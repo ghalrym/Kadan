@@ -50,7 +50,7 @@ void project_base(Shard& shard,const std::string& prefix,std::span<const float> 
     const bool quantized=info.dtype==Dtype::i8;require(quantized || info.dtype==Dtype::bf16 || info.dtype==Dtype::fp32,"h3_denoiser_projection_dtype");
     const auto rows=input.size()/in;
     // Fixed read scratch and hook/control envelope included; tensor memory uses exact counts.
-    const Bytes bytes=quantized?in*out+out*8+in*9+4096:in*64*4+out*4+4096;
+    const Bytes bytes=quantized?out*8+in*9+4096:in*64*4+out*4+4096;
     Admission admitted(resources,bytes);
     auto bias_values=std::make_unique<float[]>(out);if(bias){shape(shard,prefix+".bias",{out});read_dense(shard,prefix+".bias",{bias_values.get(),out},cancel);}
     if(quantized){
@@ -61,7 +61,7 @@ void project_base(Shard& shard,const std::string& prefix,std::span<const float> 
                 for(std::size_t at=0;at<target.size();){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,target.size()-at);shard.read_tensor(prefix+".weight",first+at,target.subspan(at,count));at+=count;}
             },{scales.get(),out},{bias_values.get(),out},input,in,out,group,output,cancel))return;
         }
-        require(in%group==0,"h3_denoiser_rotation_shape");auto weights=std::make_unique<std::uint8_t[]>(in*out);auto scales=std::make_unique<float[]>(out);auto rotated=std::make_unique<double[]>(in);auto codes=std::make_unique<std::int8_t[]>(in);
+        require(in%group==0,"h3_denoiser_rotation_shape");Admission payload(resources,in*out);auto weights=std::make_unique<std::uint8_t[]>(in*out);auto scales=std::make_unique<float[]>(out);auto rotated=std::make_unique<double[]>(in);auto codes=std::make_unique<std::int8_t[]>(in);
         for(std::size_t offset=0;offset<in*out;){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;}
         read_dense(shard,prefix+".weight_scale",{scales.get(),out},cancel);for(std::size_t r=0;r<out;++r)require(scales[r]>=0,"h3_denoiser_scale");
         if(compute){compute->convrot_weight(shard.tensor_identity(prefix+".weight"),{weights.get(),in*out},{scales.get(),out},{bias_values.get(),out},input,in,out,group,output,cancel);return;}

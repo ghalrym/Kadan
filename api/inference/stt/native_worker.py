@@ -27,7 +27,7 @@ from api.inference.stt.catalog import checkpoint
 from api.services.chat_runtime import chat_runtime
 from api.services.model_downloads import model_manager
 
-HOST_BUDGET = 16 * 1024**3
+HOST_BUDGET = 1 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
 MAX_PCM = 480000
 DIMENSIONS = ('n_mels', 'n_audio_ctx', 'n_audio_state', 'n_audio_head', 'n_audio_layer',

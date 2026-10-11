@@ -9,7 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 namespace {
-constexpr kadan::Bytes budget=16ULL*1024*1024*1024;
+constexpr kadan::Bytes budget=1ULL*1024*1024*1024;
 void check(bool ok,const char* error){if(!ok)throw std::runtime_error(error);}
 struct Admission{kadan::Resources& r;kadan::Handle h;Admission(kadan::Resources& r_,kadan::Bytes n):r(r_),h(r.reserve(kadan::Workload::speech,kadan::host_footprint(r,n))){}~Admission(){r.released(h);}};
 void read(const std::string& path,std::span<float> out){std::ifstream file(path,std::ios::binary|std::ios::ate);check(bool(file)&&file.tellg()==std::streamoff(out.size_bytes()),"whisper_input_file");file.seekg(0);file.read(reinterpret_cast<char*>(out.data()),out.size_bytes());check(bool(file),"whisper_input_read");}
@@ -47,9 +47,9 @@ int main(int argc,char** argv){
                     check(produced&&generated[produced-1]==tokens.eos(),"whisper_token_limit");
                     auto text=tokens.decode(std::span(generated).first(produced));text_bytes=text.size();publish(output,text);
                 }
-                check(r->snapshot().used[0]==baseline,"whisper_scratch_leak");execution.idle();std::cout<<"done "<<text_bytes<<' '<<produced<<' '<<baseline<<'\n'<<std::flush;
+                execution.idle();const auto retained=execution.compute?execution.compute->retained_weights():kadan::Footprint{};check(r->snapshot().used[0]==baseline+(retained.empty()?0:retained[0]),"whisper_scratch_leak");std::cout<<"done "<<text_bytes<<' '<<produced<<' '<<baseline<<'\n'<<std::flush;
             }
         }
-        check(r->snapshot().used[0]==0,"whisper_cleanup_leak");execution.park();execution.idle();std::cout<<"closed 0\n"<<std::flush;
+        execution.park();check(r->snapshot().used[0]==0,"whisper_cleanup_leak");execution.idle();std::cout<<"closed 0\n"<<std::flush;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';std::cout<<"error\n"<<std::flush;return 1;}
 }

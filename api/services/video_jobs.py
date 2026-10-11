@@ -23,12 +23,6 @@ class VideoJobs:
     @staticmethod
     def _provider(model_id):
         """Resolve native providers without importing their worker dependencies into the API."""
-        if model_id == 'ltx-2.5-distilled':
-            try:
-                module = importlib.import_module('api.inference.video.ltx')
-            except ImportError as exc:
-                raise RuntimeError('The LTX native provider is not installed.') from exc
-            return module.LTXProvider()
         if model_id == 'h3-fl2va-int8-turbo':
             try:
                 module = importlib.import_module('api.inference.video.h3_worker')

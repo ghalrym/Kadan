@@ -1,5 +1,6 @@
 #include "kadan/image_vae.hpp"
 #include "kadan/checkpoint.hpp"
+#include "kadan/float_weights.hpp"
 #include "kadan/checkpoint_floats.hpp"
 #include <algorithm>
 #include <array>
@@ -33,28 +34,20 @@ std::vector<Spec> layout(VaeConfig d){std::vector<Spec> out;auto add=[&](std::st
 }
 struct VaeDecoder::Impl{
  std::shared_ptr<DenseCompute> compute;
+ std::unique_ptr<Lease> parser;std::unique_ptr<checkpoint::Shard> shard;
  Resources& r;Lease metadata;VaeConfig d;std::vector<Spec> specs;std::map<std::string,std::size_t,std::less<>> names;std::unique_ptr<Buffer> weights;
  Impl(Resources& a,VaeConfig config,std::shared_ptr<DenseCompute> c):compute(std::move(c)),r(a),metadata(a,8*1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
- std::span<const float> weight(const std::string& n){const auto& s=specs.at(names.at(n));return {weights->data.get()+s.offset,s.count};}
+ checkpoint::FloatSlice weight(const std::string& n,const std::atomic_bool& cancel){const auto& s=specs.at(names.at(n));return checkpoint::float_slice(r,Workload::image,*shard,n,0,s.count,cancel);}
  T make(std::size_t c,std::size_t h,std::size_t w){return std::make_unique<Tensor>(r,c,h,w);}
- T conv(const std::string& p,Tensor& x,const std::atomic_bool& cancel){const auto& spec=specs.at(names.at(p+".weight"));auto out=std::size_t(spec.shape[0]),kernel=std::size_t(spec.shape[2]),k=x.c*kernel*kernel,points=x.h*x.w;need(spec.shape[1]==x.c,"image_vae_conv_shape");auto weights_=weight(p+".weight"),bias=weight(p+".bias");auto y=make(out,x.h,x.w);constexpr std::size_t tile=64;Buffer columns(r,k*tile),result(r,out*tile);
-  if(compute){
+ T conv(const std::string& p,Tensor& x,const std::atomic_bool& cancel){const auto& spec=specs.at(names.at(p+".weight"));auto out=std::size_t(spec.shape[0]),kernel=std::size_t(spec.shape[2]),k=x.c*kernel*kernel,points=x.h*x.w;need(spec.shape[1]==x.c,"image_vae_conv_shape");auto bias=weight(p+".bias",cancel);auto y=make(out,x.h,x.w);constexpr std::size_t tile=64;Buffer columns(r,k*tile),result(r,out*tile);
    for(std::size_t at=0;at<points;at+=tile){stop(cancel);const auto count=std::min(tile,points-at);
     for(std::size_t t=0;t<count;++t)for(std::size_t ic=0;ic<x.c;++ic)for(std::size_t ky=0;ky<kernel;++ky)for(std::size_t kx=0;kx<kernel;++kx){const auto py=std::ptrdiff_t((at+t)/x.w+ky)-std::ptrdiff_t(kernel/2),px=std::ptrdiff_t((at+t)%x.w+kx)-std::ptrdiff_t(kernel/2);columns.data[t*k+(ic*kernel+ky)*kernel+kx]=(py>=0&&px>=0&&py<std::ptrdiff_t(x.h)&&px<std::ptrdiff_t(x.w))?x.values.data[ic*points+std::size_t(py)*x.w+std::size_t(px)]:0;}
-    compute->dense_weight(spec.identity,weights_,bias,columns.span().first(count*k),k,out,result.span().first(count*out),cancel);
+    checkpoint::project_source(r,Workload::image,compute.get(),*shard,p+".weight",bias,columns.span().first(count*k),k,out,result.span().first(count*out),cancel);
     for(std::size_t t=0;t<count;++t)for(std::size_t oc=0;oc<out;++oc)y->values.data[oc*points+at+t]=result.data[t*out+oc];
    }finite(y->span());return y;
-  }
-  for(std::size_t at=0;at<points;at+=tile){stop(cancel);auto count=std::min(tile,points-at);for(std::size_t ic=0;ic<x.c;++ic)for(std::size_t ky=0;ky<kernel;++ky)for(std::size_t kx=0;kx<kernel;++kx)for(std::size_t t=0;t<count;++t){auto py=std::ptrdiff_t((at+t)/x.w+ky)-std::ptrdiff_t(kernel/2),px=std::ptrdiff_t((at+t)%x.w+kx)-std::ptrdiff_t(kernel/2);columns.data[((ic*kernel+ky)*kernel+kx)*count+t]=(py>=0&&px>=0&&py<std::ptrdiff_t(x.h)&&px<std::ptrdiff_t(x.w))?x.values.data[ic*points+std::size_t(py)*x.w+std::size_t(px)]:0;}
-#ifdef KADAN_IMAGE_BLAS
-   cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,int(out),int(count),int(k),1,weights_.data(),int(k),columns.data.get(),int(count),0,result.data.get(),int(count));
-#else
-   for(std::size_t oc=0;oc<out;++oc){stop(cancel);for(std::size_t t=0;t<count;++t){float v=0;for(std::size_t j=0;j<k;++j)v+=weights_[oc*k+j]*columns.data[j*count+t];result.data[oc*count+t]=v;}}
-#endif
-   for(std::size_t oc=0;oc<out;++oc)for(std::size_t t=0;t<count;++t)y->values.data[oc*points+at+t]=result.data[oc*count+t]+bias[oc];
-  }finite(y->span());return y;
+
  }
- T norm(const std::string& p,Tensor& x,bool activate,const std::atomic_bool& cancel){auto g=weight(p+".gamma");need(g.size()==x.c,"image_vae_norm_shape");auto y=make(x.c,x.h,x.w);auto points=x.h*x.w;for(std::size_t t=0;t<points;++t){if(t%64==0)stop(cancel);double sum=0;for(std::size_t c=0;c<x.c;++c)sum+=double(x.values.data[c*points+t])*x.values.data[c*points+t];float scale=float(std::sqrt(double(x.c))/std::max(std::sqrt(sum),1e-12));for(std::size_t c=0;c<x.c;++c){float v=x.values.data[c*points+t]*scale*g[c];y->values.data[c*points+t]=activate?silu(v):v;}}return y;}
+ T norm(const std::string& p,Tensor& x,bool activate,const std::atomic_bool& cancel){auto g=weight(p+".gamma",cancel);need(g.size()==x.c,"image_vae_norm_shape");auto y=make(x.c,x.h,x.w);auto points=x.h*x.w;for(std::size_t t=0;t<points;++t){if(t%64==0)stop(cancel);double sum=0;for(std::size_t c=0;c<x.c;++c)sum+=double(x.values.data[c*points+t])*x.values.data[c*points+t];float scale=float(std::sqrt(double(x.c))/std::max(std::sqrt(sum),1e-12));for(std::size_t c=0;c<x.c;++c){float v=x.values.data[c*points+t]*scale*g[c];y->values.data[c*points+t]=activate?silu(v):v;}}return y;}
  void add(Tensor& x,Tensor& y,const std::atomic_bool& cancel){need(x.c==y.c&&x.h==y.h&&x.w==y.w,"image_vae_add_shape");for(std::size_t i=0;i<x.values.n;++i){if(i%4096==0)stop(cancel);x.values.data[i]+=y.values.data[i];}finite(x.span());}
  T residual(const std::string& p,Tensor& x,const std::atomic_bool& cancel){auto n=norm(p+".norm1",x,true,cancel),a=conv(p+".conv1",*n,cancel);n.reset();n=norm(p+".norm2",*a,true,cancel);a.reset();auto y=conv(p+".conv2",*n,cancel);n.reset();if(x.c==y->c)add(*y,x,cancel);else{auto shortcut=conv(p+".conv_shortcut",x,cancel);add(*y,*shortcut,cancel);}return y;}
  T attention(Tensor& x,const std::atomic_bool& cancel){std::string p="decoder.mid_block.attentions.0";auto n=norm(p+".norm",x,false,cancel),qkv=conv(p+".to_qkv",*n,cancel);n.reset();auto mix=make(x.c,x.h,x.w);auto points=x.h*x.w;Buffer scores(r,points);bool accelerated=false;
@@ -70,9 +63,8 @@ struct VaeDecoder::Impl{
 };
 VaeDecoder::VaeDecoder(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){need(bool(resources_),"image_resources");}
 VaeDecoder::~VaeDecoder(){unload();}
-void VaeDecoder::load(const char* root,const std::string& file,VaeConfig d,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(!model_,"image_vae_load_state");need(d.base>0&&d.base<=144&&d.latent>0&&d.latent<=64&&d.channels>0&&d.channels<=4&&d.residuals<=2,"image_vae_config");auto m=std::make_unique<Impl>(*resources_,d,compute_);Lease parser(*resources_,16*1024*1024);checkpoint::Shard shard(root,file,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{2*1024*1024,4096,4096});
- for(auto& spec:m->specs){spec.identity=shard.tensor_identity(spec.name);auto t=shard.tensor(spec.name);need((t.dtype==checkpoint::Dtype::bf16||t.dtype==checkpoint::Dtype::fp32)&&t.rank==spec.shape.size()&&std::equal(spec.shape.begin(),spec.shape.end(),t.shape.begin()),"image_vae_tensor_layout");}const auto& last=m->specs.back();m->weights=std::make_unique<Buffer>(*resources_,last.offset+last.count);Lease staging(*resources_,checkpoint::float_read_buffer_bytes);auto bytes=std::make_unique_for_overwrite<std::uint8_t[]>(checkpoint::float_read_buffer_bytes);
- std::size_t loaded=0; for(const auto& spec:m->specs){auto name=spec.name;std::size_t reported=0;checkpoint::read_floats(shard.tensor(name).dtype,{m->weights->data.get()+spec.offset,spec.count},{bytes.get(),checkpoint::float_read_buffer_bytes},cancel,[&](std::size_t offset,std::span<std::uint8_t> out){shard.read_tensor(name,offset,out);},[&](std::size_t n){if(hook && n>=reported+64*1024*1024){hook(loaded+n);reported=n;}});loaded+=shard.tensor(name).bytes;if(hook)hook(loaded);}shard.check_unchanged();stop(cancel);resources_->loaded(m->weights->lease.h);model_=std::move(m);
+void VaeDecoder::load(const char* root,const std::string& file,VaeConfig d,const std::atomic_bool& cancel,const Hook& hook){Busy active(busy_);stop(cancel);need(!model_,"image_vae_load_state");need(d.base>0&&d.base<=144&&d.latent>0&&d.latent<=64&&d.channels>0&&d.channels<=4&&d.residuals<=2,"image_vae_config");auto m=std::make_unique<Impl>(*resources_,d,compute_);m->parser=std::make_unique<Lease>(*resources_,16*1024*1024);m->shard=std::make_unique<checkpoint::Shard>(root,file,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{2*1024*1024,4096,4096});auto& shard=*m->shard;
+ for(auto& spec:m->specs){spec.identity=shard.tensor_identity(spec.name);auto t=shard.tensor(spec.name);need((t.dtype==checkpoint::Dtype::bf16||t.dtype==checkpoint::Dtype::fp32)&&t.rank==spec.shape.size()&&std::equal(spec.shape.begin(),spec.shape.end(),t.shape.begin()),"image_vae_tensor_layout");}m->weights=std::make_unique<Buffer>(*resources_,1);if(hook)hook(0);shard.check_unchanged();stop(cancel);resources_->loaded(m->weights->lease.h);model_=std::move(m);
 #ifdef KADAN_IMAGE_BLAS
  openblas_set_num_threads(1);
 #endif

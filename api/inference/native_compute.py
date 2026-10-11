@@ -52,9 +52,12 @@ def native_compute(feature, resources=None):
     if capacity is not None and any(capacity.get(d, 0) < budget for d in devices):
         raise InferenceFailure('Selected native devices exceed the shared device budgets.')
     budgets = ()
-    if feature == 'IMAGE' and devices and capacity is not None and 'KADAN_NATIVE_GPU_BUDGET_BYTES' not in os.environ:
+    if devices and capacity is not None and 'KADAN_NATIVE_GPU_BUDGET_BYTES' not in os.environ:
         # Reserve the usable configured envelope for weights plus bounded scratch.
         # Explicit operator budgets remain authoritative; transient use is queued.
-        budgets = tuple((d, min(24 * 1024**3, capacity[d])) for d in devices)
+        available = resources.available_devices(reclaim=True)
+        budgets = tuple((d, min(24 * 1024**3, capacity[d],
+                              max(DEFAULT_DEVICE_BYTES, available.get(d, 0) - 64 * 1024**2)))
+                        for d in devices)
         budget = min(b for _, b in budgets)
     return NativeCompute(feature, devices, budget, budgets)

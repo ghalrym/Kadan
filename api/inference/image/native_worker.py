@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 MODEL = 'qwen-image-2.1'
 REVISION = 'd26bb61231c349cf6b7896fa83353113880e1ba3'
-HOST_BUDGET = 80 * 1024**3
+HOST_BUDGET = 16 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
 SIZES = {'1:1': (2048, 2048), '4:3': (2400, 1792), '3:4': (1792, 2400), '16:9': (2752, 1536)}
 

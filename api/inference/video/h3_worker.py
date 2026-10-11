@@ -32,11 +32,45 @@ MAX_WEIGHT_CACHE_BYTES = 32 * GIB
 DEVICE_WEIGHT_METADATA_BYTES = 4 * 1024**2
 
 
+
+def h3_host_budget(spec):
+    """Admit bounded activations, streamed weights and packing, not all weights.
+
+    Use the tokenizer limit before tokenization, so this plan reads no tensors.
+    Turbo's largest projection adds 116224 bytes/token to the denoiser's
+    379904 bytes/token. Decoder phases run sequentially and reuse the envelope.
+    """
+    if spec is None:
+        return HOST_BUDGET
+    sizes = {'480p': {'16:9': (864, 480), '9:16': (480, 864), '1:1': (480, 480)},
+             '768p': {'16:9': (1344, 768), '9:16': (768, 1344), '1:1': (768, 768)}}
+    width, height = sizes[spec.resolution][spec.aspect]
+    frames = ((spec.duration * 24 - 5 + 16) // 17) * 17 + 5
+    t, h, w = (frames - 5) // 17 * 5 + 2, height // 16, width // 16
+    nv, na = t * h * w // 4, 2 * ((frames * 5 + 1) // 3)
+    # Byte-level BPE emits no more tokens than normalized UTF-8 bytes.
+    # NFC canonical decomposition expands UTF-8 by less than fourfold;
+    # added tokens consume at least one byte and insert no extra tokens.
+    # Match the native 128000-token bound without imposing a 512-token limit.
+    nt = min(128000, 4 * len(spec.prompt.encode('utf-8')))
+    caller = (32 * 1024**2 + (3 * nv * 96 + 2 * na * 32 + 7 * h * w * 24) * 4
+              + width * height * 399 + (nt + nv + na) * 20 + nt * 5120 * 4)
+    patches, tokens = 7 * h * w, 7 * h * w + 5
+    vae = 4 * (tokens * (4099 + 14336 + 16384) + patches * 3072)
+    execution = max(496128 * (nt + nv + na), vae, 512 * 1024**2)
+    # Includes parsers, single-head attention packing, CUDA source tiles,
+    # weight-bank metadata and allocator slack; optional host cache is separate.
+    return ((execution + caller + 4 * GIB + GIB - 1) // GIB) * GIB
+
+
 def h3_gpu_budgets(resources, devices):
     capacity = resources.snapshot()['device_capacity_bytes']
     raw = os.environ.get('KADAN_H3_GPU_BUDGET_BYTES')
     if raw is None:
-        budgets = {d: min(24 * GIB, capacity.get(d, 0)) for d in devices}
+        available = resources.available_devices(reclaim=True)
+        budgets = {d: min(24 * GIB, capacity.get(d, 0),
+                          max(CONTEXT_BUDGET + DEVICE_BUDGET, available.get(d, 0) - 64 * 1024**2))
+                   for d in devices}
     elif raw.isascii() and raw.isdecimal():
         budgets = {d: int(raw) for d in devices}
     else:
@@ -191,6 +225,7 @@ class H3Provider:
         self._devices = None
         self._gpu_budget = None
         self._cache_budget = 0
+        self._host_budget = None
         self._parked = False
         self._owner = f'h3-native:{id(self)}'
 
@@ -233,6 +268,7 @@ class H3Provider:
         self._quarantined = False
         self._devices = None
         self._gpu_budget = None
+        self._host_budget = None
         self._parked = False
 
     def close(self):
@@ -314,12 +350,22 @@ class H3Provider:
             self.check_execution_state()
             check_cancel(cancel)
             command = self.resolve(self.model_id, cancel) if self.resolve is resolve_command else self.resolve(self.model_id)
-            value = os.getenv('KADAN_H3_DEVICES', '0,1')
-            if value not in ('0', '1', '0,1', '1,0'):
-                raise InferenceFailure('Invalid KADAN_H3_DEVICES.')
-            devices = [int(device) for device in value.split(',')]
             resources = self.resources or chat_runtime.ensure_resources()
+            value = os.getenv('KADAN_H3_DEVICES', 'auto')
+            if value == 'auto':
+                capacity = resources.snapshot()['device_capacity_bytes']
+                devices = [d for d in (0, 1) if capacity.get(d, 0) >= CONTEXT_BUDGET + DEVICE_BUDGET]
+                if not devices:
+                    raise InferenceFailure('No supported CUDA device can hold H3 execution scratch and context.')
+                value = ','.join(map(str, devices))
+            elif value in ('0', '1', '0,1', '1,0'):
+                devices = [int(device) for device in value.split(',')]
+            else:
+                raise InferenceFailure('Invalid KADAN_H3_DEVICES.')
             gpu_budget = h3_gpu_budgets(resources, devices)
+            host_budget = h3_host_budget(spec)
+            if self._host_budget is not None and self._host_budget != host_budget:
+                self._close_locked()
             if self._devices is not None and (self._devices != value or self._gpu_budget != gpu_budget):
                 self._close_locked()
             resources.offload_inactive_devices('video', cancel)
@@ -329,12 +375,12 @@ class H3Provider:
                     # host caches returned their pages. Retain the full process host
                     # envelope until reaping, including while its GPU work is idle.
                     if self._host is None:
-                        # Freeze against usable configured capacity, not transient
-                        # pressure. The shared queue waits for this whole envelope.
+                        # Optional cache uses fresh headroom and leaves allocator/OS slack.
+                        # A required execution envelope can wait; the cache may be zero.
                         self._cache_budget = min(MAX_WEIGHT_CACHE_BYTES, max(0,
-                            resources.snapshot()['host_capacity_bytes'] - PROCESS_HOST_BUDGET))
+                            resources.available_host() - host_budget - 512 * 1024**2))
                         self._host = resources.reserve(self._owner + ':host', 'video',
-                            host_bytes=PROCESS_HOST_BUDGET + self._cache_budget,
+                            host_bytes=host_budget + 256 * 1024**2 + self._cache_budget,
                             evict=self._evict, cancel_event=cancel)
                     leases.enter_context(self._host.lease(cancel))
                     if self._context is None:
@@ -350,8 +396,10 @@ class H3Provider:
                     if self._worker is None:
                         self._worker = self.process_factory()
                         self._worker.start(command, env=dict(os.environ, KADAN_H3_DEVICES=value,
+                            KADAN_H3_HOST_BUDGET_BYTES=str(host_budget),
                             KADAN_H3_WEIGHT_CACHE_BYTES=str(self._cache_budget), KADAN_H3_GPU_BUDGET_BYTES=str(min(gpu_budget.values())),
                             KADAN_H3_GPU_BUDGETS=','.join(f'{d}:{b}' for d, b in gpu_budget.items())))
+                        self._host_budget = host_budget
                         self._devices = value
                         self._gpu_budget = gpu_budget
                     if self._parked:

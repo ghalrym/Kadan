@@ -14,7 +14,7 @@ from api.inference.line_protocol import LineProtocolError, LineProtocolProcess
 from api.inference.resources import ResourceCancelled
 from api.inference.tts.speech_runtime import SpeechResult, SpeechUnavailable
 
-HOST_BUDGET = 24 * 1024**3
+HOST_BUDGET = 2 * 1024**3
 PROCESS_BUDGET = HOST_BUDGET + 256 * 1024**2
 MODEL = 'qwen-tts-1.7b-custom'
 

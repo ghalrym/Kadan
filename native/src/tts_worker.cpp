@@ -14,7 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 namespace {
-constexpr kadan::Bytes budget=24ULL*1024*1024*1024;
+constexpr kadan::Bytes budget=2ULL*1024*1024*1024;
 std::atomic_bool cancelled{false};
 void signal_cancel(int){cancelled.store(true);}
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
@@ -60,9 +60,9 @@ int main(int argc,char** argv){
                     decoder.decode(std::span(codes).first(frames*16),audio,cancelled,[](const char* phase,std::size_t i){std::cerr<<"audio_"<<phase<<' '<<i<<'\n';});
                     publish(std::string(argv[3])+"/audio.wav",audio);
                 }
-                check(r->snapshot().used[0]==baseline,"tts_scratch_leak");execution.idle();std::cout<<"done "<<44+frames*1920*2<<' '<<frames<<' '<<baseline<<'\n'<<std::flush;
+                execution.idle();const auto retained=execution.compute?execution.compute->retained_weights():kadan::Footprint{};check(r->snapshot().used[0]==baseline+(retained.empty()?0:retained[0]),"tts_scratch_leak");std::cout<<"done "<<44+frames*1920*2<<' '<<frames<<' '<<baseline<<'\n'<<std::flush;
             }
         }
-        check(r->snapshot().used[0]==0,"tts_cleanup_leak");execution.park();execution.idle();std::cout<<"closed 0\n"<<std::flush;
+        execution.park();check(r->snapshot().used[0]==0,"tts_cleanup_leak");execution.idle();std::cout<<"closed 0\n"<<std::flush;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';std::cout<<"error\n"<<std::flush;return 1;}
 }

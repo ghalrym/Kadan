@@ -65,7 +65,7 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     shape(shard,prefix+".weight_scale",checkpoint::Dtype::fp32,{out,1});
     const auto marker=shard.tensor(prefix+".comfy_quant");
     require(marker.dtype==checkpoint::Dtype::u8 && marker.rank==1 && marker.bytes<=256,"h3_text_quant_marker");
-    Admission admission(resources,in*out+out*4+in*9+256);
+    Admission admission(resources,out*4+in*9+256);
     auto scales=std::make_unique<float[]>(out);
     auto rotated=std::make_unique<double[]>(in);
     auto codes=std::make_unique<std::int8_t[]>(in);
@@ -79,7 +79,7 @@ void linear(checkpoint::Shard& shard,const std::string& prefix,std::span<const f
     if(compute&&compute->convrot_source(shard.tensor_identity(prefix+".weight"),[&](std::size_t first,std::span<std::uint8_t> target){
         for(std::size_t at=0;at<target.size();){stop(cancel);const auto count=std::min<std::size_t>(1024*1024,target.size()-at);shard.read_tensor(prefix+".weight",first+at,target.subspan(at,count));at+=count;}
     },{scales.get(),out},{},input,in,out,256,destination,cancel))return;
-    auto weights=std::make_unique<std::uint8_t[]>(in*out);
+    Admission payload(resources,in*out);auto weights=std::make_unique<std::uint8_t[]>(in*out);
     for(std::size_t offset=0;offset<in*out;) {
         stop(cancel);const auto count=std::min<std::size_t>(1024*1024,in*out-offset);
         shard.read_tensor(prefix+".weight",offset,{weights.get()+offset,count});offset+=count;

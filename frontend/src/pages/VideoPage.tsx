@@ -169,7 +169,6 @@ export default function VideoPage() {
             if (value === 'h3-fl2va-int8-turbo') setNegative('')
           }}>
             <option value="h3-fl2va-int8-turbo">MiniMax H3 FL2VA INT8 + Turbo</option>
-            <option value="ltx-2.5-distilled">LTX-2.5 Distilled</option>
           </select>
         </label>
         <label className="field">

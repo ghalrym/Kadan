@@ -9,13 +9,13 @@ router = APIRouter(prefix="/v1/videos/generations", tags=["Videos"])
 
 class VideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: Literal["ltx-2.5-distilled", "h3-fl2va-int8-turbo"] = "ltx-2.5-distilled"
+    model: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
     seed: int = Field(default=42, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     negative_prompt: str = Field(default="", max_length=8000)
     duration: int = Field(default=8, gt=0, le=120)
     fps: int = Field(default=24, gt=0, le=120)
-    resolution: Literal["480p", "720p", "768p", "1080p"] = "720p"
+    resolution: Literal["480p", "720p", "768p", "1080p"] = "768p"
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"
 
 

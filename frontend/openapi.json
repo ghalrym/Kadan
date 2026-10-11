@@ -2214,11 +2214,8 @@
             "type": "integer"
           },
           "model": {
-            "default": "ltx-2.5-distilled",
-            "enum": [
-              "ltx-2.5-distilled",
-              "h3-fl2va-int8-turbo"
-            ],
+            "const": "h3-fl2va-int8-turbo",
+            "default": "h3-fl2va-int8-turbo",
             "title": "Model",
             "type": "string"
           },
@@ -2236,7 +2233,7 @@
             "type": "string"
           },
           "resolution": {
-            "default": "720p",
+            "default": "768p",
             "enum": [
               "480p",
               "720p",
@@ -2618,7 +2615,7 @@
     },
     "/model-lifecycle/load": {
       "post": {
-        "description": "Accept a saved-selection load, or atomically configure and load the supplied target.\nValidate before switching; 202/loading is acceptance, not completed construction.\nPoll status for readiness or errors. Identical explicit requests reuse the current load.",
+        "description": "Prepare and load through the same FIFO as inference, retaining cancellation ownership.",
         "operationId": "loadSelectedModel",
         "requestBody": {
           "content": {

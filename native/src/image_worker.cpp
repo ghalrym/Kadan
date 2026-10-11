@@ -6,7 +6,7 @@
 #include <iostream>
 #include <vector>
 namespace {
-constexpr kadan::Bytes budget=80ULL*1024*1024*1024;std::atomic_bool cancel{false};void signal_cancel(int){cancel.store(true);}void need(bool b,const char* e){if(!b)throw std::runtime_error(e);}
+constexpr kadan::Bytes budget=16ULL*1024*1024*1024;std::atomic_bool cancel{false};void signal_cancel(int){cancel.store(true);}void need(bool b,const char* e){if(!b)throw std::runtime_error(e);}
 struct Admission{kadan::Resources& r;kadan::Handle h;Admission(kadan::Resources& a,kadan::Bytes n):r(a),h(r.reserve(kadan::Workload::image,kadan::host_footprint(r,n))){}~Admission(){r.released(h);}};
 kadan::image::ImageRequest read(const std::string& path){std::ifstream f(path,std::ios::binary|std::ios::ate);need(bool(f)&&f.tellg()>0&&f.tellg()<=64000,"image_request_file");std::string text(std::size_t(f.tellg()),'\0');f.seekg(0);f.read(text.data(),text.size());need(bool(f),"image_request_read");auto j=nlohmann::json::parse(text);need(j.is_object()&&j.size()==5&&j.at("width").is_number_unsigned()&&j.at("height").is_number_unsigned()&&j.at("steps").is_number_unsigned()&&j.at("seed").is_number_unsigned(),"image_request_fields");kadan::image::ImageRequest q{j.at("prompt"),j.at("width"),j.at("height"),j.at("steps"),j.at("seed")};kadan::image::Generator::validate(q);return q;}
 }

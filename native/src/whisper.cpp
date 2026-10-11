@@ -1,5 +1,6 @@
 #include "kadan/whisper.hpp"
 #include "kadan/checkpoint.hpp"
+#include "kadan/float_weights.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -30,7 +31,7 @@ struct Pin {Resources& r;Handle h;Pin(Resources& r_,Handle h_):r(r_),h(h_){r.pin
 void finite(std::span<const float> x){for(float v:x)require(std::isfinite(v),"whisper_nonfinite");}
 bool overlap(std::span<const float> a,std::span<float> b){auto x=reinterpret_cast<std::uintptr_t>(a.data()),y=reinterpret_cast<std::uintptr_t>(b.data());return x<y ? y-x<a.size_bytes() : x-y<b.size_bytes();}
 float gelu(float x){return .5f*x*(1.f+std::erf(x*float(1/std::sqrt(2.))));}
-float half(std::uint16_t b){const auto sign=b>>15,exponent=(b>>10)&31,mantissa=b&1023;require(exponent!=31,"whisper_nonfinite_weight");float v=exponent ? std::ldexp(float(1024+mantissa),int(exponent)-25):std::ldexp(float(mantissa),-24);return sign ? -v:v;}
+[[maybe_unused]] float half(std::uint16_t b){const auto sign=b>>15,exponent=(b>>10)&31,mantissa=b&1023;require(exponent!=31,"whisper_nonfinite_weight");float v=exponent ? std::ldexp(float(1024+mantissa),int(exponent)-25):std::ldexp(float(mantissa),-24);return sign ? -v:v;}
 struct Spec {std::string name;std::vector<std::uint64_t> shape;std::size_t count=1,offset=0;};
 std::vector<Spec> specs(WhisperDimensions d){
     std::vector<Spec> s;
@@ -62,31 +63,20 @@ void validate(WhisperDimensions d){
 }
 }
 struct Whisper::Impl {
- std::shared_ptr<DenseCompute> compute;
+ Resources& resources;std::shared_ptr<DenseCompute> compute;
+ std::unique_ptr<Lease> parser;std::unique_ptr<checkpoint::Shard> shard;
     Lease metadata;WhisperDimensions d;std::vector<Spec> layout;std::map<std::string,std::size_t,std::less<>> index;
     std::unique_ptr<Buffer> weights;
-    Impl(Resources& r,WhisperDimensions dims,std::shared_ptr<DenseCompute> c):compute(std::move(c)),metadata(r,8*1024*1024),d(dims),layout(specs(dims)){
+    Impl(Resources& r,WhisperDimensions dims,std::shared_ptr<DenseCompute> c):resources(r),compute(std::move(c)),metadata(r,8*1024*1024),d(dims),layout(specs(dims)){
         for(std::size_t i=0;i<layout.size();++i)index.emplace(layout[i].name,i);
     }
-    std::span<const float> w(const std::string& name)const{const auto& s=layout.at(index.at(name));return {weights->data.get()+s.offset,s.count};}
+    checkpoint::FloatSlice w(const std::string& name,const std::atomic_bool& cancel)const{const auto& s=layout.at(index.at(name));return checkpoint::float_slice(resources,Workload::speech,*shard,name,0,s.count,cancel);}
     void linear(const std::string& p,std::span<const float> x,std::span<float> y,std::size_t in,std::size_t out,const std::atomic_bool& cancel,bool bias=true){
-        const auto matrix=w(p+".weight");const auto b=bias?w(p+".bias"):std::span<const float>{};
-        if(compute){compute->dense(matrix,b,x,in,out,y,cancel);finite(y);return;}
-#ifdef KADAN_WHISPER_BLAS
-        for(std::size_t row=0;row<x.size()/in;row+=16){
-            stop(cancel);const auto count=std::min<std::size_t>(16,x.size()/in-row);
-            cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,int(count),int(out),int(in),1,x.data()+row*in,int(in),matrix.data(),int(in),0,y.data()+row*out,int(out));
-            if(bias)for(std::size_t i=0;i<count;++i)for(std::size_t o=0;o<out;++o)y[(row+i)*out+o]+=b[o];
-        }
-#else
-        for(std::size_t row=0;row<x.size()/in;++row)for(std::size_t o=0;o<out;++o){if(o%32==0)stop(cancel);float v=bias?b[o]:0;
-            for(std::size_t c=0;c<in;++c)v+=x[row*in+c]*matrix[o*in+c];
-            y[row*out+o]=v;}
-#endif
-        finite(y);
+        auto b=checkpoint::FloatSlice(resources,Workload::speech,bias?out:0);if(bias)shard->read_float_tensor(p+".bias",0,b.span(),cancel);
+        checkpoint::project_source(resources,Workload::speech,compute.get(),*shard,p+".weight",b,x,in,out,y,cancel);finite(y);
     }
     void norm(const std::string& p,std::span<const float> x,std::span<float> y,std::size_t n,const std::atomic_bool& cancel){
-        const auto a=w(p+".weight"),b=w(p+".bias");
+        const auto a=w(p+".weight",cancel),b=w(p+".bias",cancel);
         for(std::size_t row=0;row<x.size()/n;++row){stop(cancel);double sum=0;for(std::size_t c=0;c<n;++c)sum+=x[row*n+c];double mean=sum/n,var=0;
             for(std::size_t c=0;c<n;++c){double v=x[row*n+c]-mean;var+=v*v;}
             const float scale=float(1/std::sqrt(var/n+1e-5));for(std::size_t c=0;c<n;++c)y[row*n+c]=(x[row*n+c]-float(mean))*scale*a[c]+b[c];}
@@ -118,12 +108,11 @@ struct Whisper::Impl {
     void logits(Resources& r,std::span<const std::uint32_t> tokens,std::span<const float> audio,std::span<float> output,const std::atomic_bool& cancel,const Hook& hook){
         require(!tokens.empty()&&tokens.size()<=d.text_context&&output.size()==d.vocabulary&&audio.size()==d.audio_context*d.audio_state,"whisper_input_shape");
         finite(audio);for(auto id:tokens)require(id<d.vocabulary,"whisper_token_range");
-        Buffer x(r,tokens.size()*d.text_state),normalized(r,x.size);const auto embedding=w("decoder.token_embedding.weight"),position=w("decoder.positional_embedding");
-        for(std::size_t row=0;row<tokens.size();++row)for(std::size_t c=0;c<d.text_state;++c)x.data[row*d.text_state+c]=embedding[tokens[row]*d.text_state+c]+position[row*d.text_state+c];
+        Buffer x(r,tokens.size()*d.text_state),normalized(r,x.size);const auto position=w("decoder.positional_embedding",cancel);
+        for(std::size_t row=0;row<tokens.size();++row){auto dst=x.span().subspan(row*d.text_state,d.text_state);shard->read_float_tensor("decoder.token_embedding.weight",tokens[row]*d.text_state,dst,cancel);for(std::size_t c=0;c<d.text_state;++c)dst[c]+=position[row*d.text_state+c];}
         for(std::size_t i=0;i<d.text_layers;++i){stop(cancel);if(hook)hook("decoder",i);block(r,"decoder.blocks."+std::to_string(i),x.span(),audio,d.text_state,d.text_heads,cancel);}
         norm("decoder.ln",x.span(),normalized.span(),d.text_state,cancel);
-        if(compute){compute->dense(embedding,{},normalized.span().last(d.text_state),d.text_state,d.vocabulary,output,cancel);finite(output);return;}
-        for(std::size_t id=0;id<d.vocabulary;++id){if(id%32==0)stop(cancel);float value=0;for(std::size_t c=0;c<d.text_state;++c)value+=normalized.data[(tokens.size()-1)*d.text_state+c]*embedding[id*d.text_state+c];output[id]=value;}finite(output);stop(cancel);
+        checkpoint::project_source(r,Workload::speech,compute.get(),*shard,"decoder.token_embedding.weight",{},normalized.span().last(d.text_state),d.text_state,d.vocabulary,output,cancel);finite(output);stop(cancel);
     }
 };
 Whisper::Whisper(std::shared_ptr<Resources> r,std::shared_ptr<DenseCompute> compute):resources_(std::move(r)),compute_(std::move(compute)){require(bool(resources_),"whisper_resources_required");}
@@ -134,19 +123,11 @@ void Whisper::load(const char* root,const std::string& name,WhisperDimensions di
 #ifdef KADAN_WHISPER_BLAS
     require(openblas_get_num_threads()==1,"whisper_blas_thread_limit");
 #endif
-    auto m=std::make_unique<Impl>(*resources_,dims,compute_);Lease parser(*resources_,16*1024*1024);
-    checkpoint::Shard shard(root,name,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),{4*1024*1024,4096,4096});
+    auto m=std::make_unique<Impl>(*resources_,dims,compute_);m->parser=std::make_unique<Lease>(*resources_,16*1024*1024);
+    m->shard=std::make_unique<checkpoint::Shard>(root,name,std::make_shared<checkpoint::MemoryBudget>(16*1024*1024),checkpoint::Limits{4*1024*1024,4096,4096});auto& shard=*m->shard;
     require(shard.tensor_count()==m->layout.size(),"whisper_tensor_count");
     for(const auto& s:m->layout){const auto t=shard.tensor(s.name);require((t.dtype==checkpoint::Dtype::fp32||t.dtype==checkpoint::Dtype::fp16||t.dtype==checkpoint::Dtype::bf16)&&t.rank==s.shape.size()&&std::equal(s.shape.begin(),s.shape.end(),t.shape.begin()),"whisper_tensor_layout");}
-    const auto& last=m->layout.back();m->weights=std::make_unique<Buffer>(*resources_,last.offset+last.count);
-    Lease staging(*resources_,4096);std::array<std::uint8_t,4096> bytes;
-    for(const auto& s:m->layout){const auto dtype=shard.tensor(s.name).dtype;const std::size_t width=dtype==checkpoint::Dtype::fp32?4:2;
-        for(std::size_t at=0;at<s.count;){stop(cancel);auto n=std::min(bytes.size()/width,s.count-at);shard.read_tensor(s.name,at*width,{bytes.data(),n*width});
-            for(std::size_t i=0;i<n;++i){std::uint32_t bits=0;for(std::size_t j=0;j<width;++j)bits|=std::uint32_t(bytes[i*width+j])<<(8*j);
-                float value=dtype==checkpoint::Dtype::fp32?std::bit_cast<float>(bits):dtype==checkpoint::Dtype::bf16?std::bit_cast<float>(bits<<16):half(std::uint16_t(bits));
-                require(std::isfinite(value),"whisper_nonfinite_weight");m->weights->data[s.offset+at+i]=value;}
-            at+=n;}
-    }
+    m->weights=std::make_unique<Buffer>(*resources_,1);
     shard.check_unchanged();stop(cancel);resources_->loaded(m->weights->lease.h);model_=std::move(m);
 }
 void Whisper::unload(){require(!busy_,"busy");if(!model_)return;resources_->begin_eviction(model_->weights->lease.h);model_.reset();}
@@ -155,7 +136,7 @@ void Whisper::encode(std::span<const float> mel,std::span<float> encoded,const s
     require(mel.size()==d.mels*frames&&encoded.size()==d.audio_context*d.audio_state,"whisper_input_shape");require(!overlap(mel,encoded),"whisper_buffer_overlap");finite(mel);Pin pin(*resources_,m.weights->lease.h);
     Buffer first(*resources_,frames*d.audio_state),second(*resources_,encoded.size());
     auto convolution=[&](const char* p,std::span<const float> x,std::span<float> y,std::size_t in,std::size_t time,std::size_t stride,bool band_major){
-        const auto w=m.w(std::string(p)+".weight"),b=m.w(std::string(p)+".bias");const auto out_time=(time+stride-1)/stride;
+        const auto w=m.w(std::string(p)+".weight",cancel),b=m.w(std::string(p)+".bias",cancel);const auto out_time=(time+stride-1)/stride;
         if(m.compute){
             constexpr std::size_t tile=64;Buffer packed(*resources_,tile*in*3);
             for(std::size_t at=0;at<out_time;at+=tile){stop(cancel);const auto count=std::min(tile,out_time-at);
@@ -170,7 +151,7 @@ void Whisper::encode(std::span<const float> mel,std::span<float> encoded,const s
     convolution("encoder.conv1",mel,first.span(),d.mels,frames,1,true);
     if(hook)hook("convolution",1);
     convolution("encoder.conv2",first.span(),second.span(),d.audio_state,frames,2,false);
-    auto position=m.w("encoder.positional_embedding");for(std::size_t i=0;i<second.size;++i)second.data[i]+=position[i];
+    auto position=m.w("encoder.positional_embedding",cancel);for(std::size_t i=0;i<second.size;++i)second.data[i]+=position[i];
     for(std::size_t i=0;i<d.audio_layers;++i){stop(cancel);if(hook)hook("encoder",i);m.block(*resources_,"encoder.blocks."+std::to_string(i),second.span(),{},d.audio_state,d.audio_heads,cancel);}
     m.norm("encoder.ln_post",second.span(),encoded,d.audio_state,cancel);stop(cancel);
 }

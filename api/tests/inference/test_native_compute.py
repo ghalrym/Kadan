@@ -60,16 +60,26 @@ class ComputeTests(unittest.TestCase):
         with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': 'auto'}):
             self.assertEqual(native_compute('IMAGE', resources).devices, (0, 1))
 
-    def test_image_default_uses_configured_capacity_for_retention(self):
+    def test_media_default_uses_available_headroom_for_retention(self):
         with patch.dict(os.environ, {'KADAN_IMAGE_DEVICES': '0,1'}, clear=True):
             resources=ResourceManager(128*1024**3,{0:22*1024**3,1:20*1024**3})
             plan=native_compute('IMAGE',resources)
-            self.assertEqual(plan.device_bytes,{0:22*1024**3,1:20*1024**3})
-            self.assertEqual(plan.environment()['KADAN_NATIVE_GPU_BUDGETS'],f'0:{22*1024**3},1:{20*1024**3}')
-            self.assertEqual(native_compute('TTS',resources).budget,DEFAULT_DEVICE_BYTES)
+            self.assertEqual(plan.device_bytes,{0:22*1024**3-64*1024**2,1:20*1024**3-64*1024**2})
+            self.assertEqual(plan.environment()['KADAN_NATIVE_GPU_BUDGETS'],f'0:{22*1024**3-64*1024**2},1:{20*1024**3-64*1024**2}')
+            self.assertEqual(native_compute('TTS',resources).device_bytes,plan.device_bytes)
+            self.assertEqual(native_compute('WHISPER',resources).device_bytes,plan.device_bytes)
             self.assertEqual(native_compute('IMAGE',ResourceManager(128*1024**3,{0:40*1024**3,1:40*1024**3})).budget,24*1024**3)
             with patch.dict(os.environ, {'KADAN_NATIVE_GPU_BUDGET_BYTES':str(DEFAULT_DEVICE_BYTES)}):
                 self.assertEqual(native_compute('IMAGE',resources).budget,DEFAULT_DEVICE_BYTES)
+
+    def test_automatic_headroom_accounts_for_external_use_and_reclaim(self):
+        gib = 1024**3
+        resources = ResourceManager(128*gib, {0:24*gib, 1:24*gib},
+            probe=lambda: MemoryCapacity(128*gib, {0:7*gib, 1:13*gib}))
+        with patch.dict(os.environ, {}, clear=True):
+            for feature in ('IMAGE', 'WHISPER', 'TTS'):
+                self.assertEqual(native_compute(feature, resources).device_bytes,
+                                 {0:7*gib-64*1024**2, 1:13*gib-64*1024**2})
 
     def test_frozen_environment(self):
         plan=native_compute('IMAGE',self.resources)

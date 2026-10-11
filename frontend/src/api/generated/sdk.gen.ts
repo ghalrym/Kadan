@@ -140,9 +140,7 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
 /**
  * Load Selected Model
  *
- * Accept a saved-selection load, or atomically configure and load the supplied target.
- * Validate before switching; 202/loading is acceptance, not completed construction.
- * Poll status for readiness or errors. Identical explicit requests reuse the current load.
+ * Prepare and load through the same FIFO as inference, retaining cancellation ownership.
  */
 export const loadSelectedModel = <ThrowOnError extends boolean = false>(
   options?: Options<LoadSelectedModelData, ThrowOnError>,

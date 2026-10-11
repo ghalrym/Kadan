@@ -24,7 +24,9 @@ inline H3Execution h3_execution(Bytes cpu_host_bytes,Bytes cache_bytes=0){
     const char* scalar=std::getenv("KADAN_H3_GPU_BUDGET_BYTES");
     const char* indexed=std::getenv("KADAN_H3_GPU_BUDGETS");
     const auto budgets=device_budgets(devices,scalar?scalar:"3221225472",indexed?indexed:"",3ULL*1024*1024*1024);
-    Footprint capacity{128ULL*1024*1024*1024+cache_bytes,0,0};for(int device:devices)capacity[device+1]=budgets[device+1]-1024ULL*1024*1024;
+    Bytes host_bytes=128ULL*1024*1024*1024;
+    if(const char* value=std::getenv("KADAN_H3_HOST_BUDGET_BYTES")){const std::string_view text(value);auto parsed=std::from_chars(text.data(),text.data()+text.size(),host_bytes);if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()||host_bytes<1024ULL*1024*1024||host_bytes>128ULL*1024*1024*1024)throw std::invalid_argument("h3_host_budget");}
+    Footprint capacity{host_bytes+cache_bytes,0,0};for(int device:devices)capacity[device+1]=budgets[device+1]-1024ULL*1024*1024;
     auto resources=std::make_shared<Resources>(std::move(capacity));
     return {resources,h3_cuda_compute(resources,std::move(devices))};
 #else

@@ -1,5 +1,6 @@
 """Admission, FIFO handoff and child ownership without model or GPU execution."""
 import sys
+from dataclasses import replace
 from api.services.video_jobs import VideoJobs
 from api.inference.video.video_requests import VideoRequests
 from api.inference.video.h3_worker import H3Process
@@ -16,9 +17,9 @@ import unittest
 from unittest.mock import patch
 
 from api.inference.errors import InferenceFailure
-from api.inference.resources import ResourceManager, ResourceCancelled, ResourceExhausted
+from api.inference.resources import MemoryCapacity, ResourceManager, ResourceCancelled, ResourceExhausted
 from api.inference.video import VideoSpec
-from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response, h3_gpu_budgets
+from api.inference.video.h3_worker import H3Provider, GIB, PROCESS_HOST_BUDGET, validate_artifact, decode_response, h3_gpu_budgets, h3_host_budget
 from api.inference.line_protocol import LineProtocolError
 
 
@@ -103,6 +104,19 @@ class H3WorkerTests(unittest.TestCase):
         context = patch.object(obj, name, value)
         context.start(); self.addCleanup(context.stop)
 
+    def test_default_device_discovery_accepts_one_gpu_without_configuration(self):
+        resources = ResourceManager(200*GIB, {1: 8*GIB})
+        worker = Worker()
+        environments = []
+        worker.start = lambda command, env=None: environments.append(env)
+        provider = H3Provider(resources=resources, resolve=lambda _: ['fake-worker'], process_factory=lambda: worker)
+        with patch.dict(os.environ, {}, clear=True):
+            provider.load(threading.Event())
+        self.assertEqual(environments[0]['KADAN_H3_DEVICES'], '1')
+        self.assertEqual(provider._gpu_budget, {1: 8*GIB-64*1024**2})
+        provider.close()
+        self.assertEqual(resources.snapshot()['reservations'], {})
+
     def test_native_request_retention_and_handoff(self):
         resources, worker, provider = setup(self)
         released = []
@@ -113,7 +127,7 @@ class H3WorkerTests(unittest.TestCase):
             assert output.read_bytes() == b'codec-result'
             assert provider._execution is None and provider._context is not None
             state = resources.snapshot()["reservations"]
-            assert sum(item["host_bytes"] for item in state.values()) == PROCESS_HOST_BUDGET + provider._cache_budget
+            assert sum(item["host_bytes"] for item in state.values()) == h3_host_budget(spec()) + 256*1024**2 + provider._cache_budget
         assert released == ['text'] and len(worker.calls) == 2
         assert worker.calls[0]['short_edge'] == 480 and worker.calls[0]['duration'] == 4
         assert worker.calls[0]['updates'] == 4 and not worker.stopped
@@ -128,7 +142,7 @@ class H3WorkerTests(unittest.TestCase):
         assert not list(self.root.glob('.h3-*'))
 
     def test_cache_capacity_is_frozen_and_admitted_before_spawn(self):
-        for extra, expected in ((0, 0), (3*GIB, 3*GIB), (64*GIB, 32*GIB)):
+        for extra, expected in ((0, 0), (3*GIB, 3*GIB-256*1024**2), (64*GIB, 32*GIB)):
             with self.subTest(extra=extra):
                 _, worker, provider = setup(self)
                 provider.resources = ResourceManager(PROCESS_HOST_BUDGET+extra, {0:8*GIB, 1:8*GIB})
@@ -137,6 +151,17 @@ class H3WorkerTests(unittest.TestCase):
                 self.assertEqual(provider._cache_budget, expected)
                 self.assertEqual(sum(r['host_bytes'] for r in provider.resources.snapshot()['reservations'].values()), PROCESS_HOST_BUDGET+expected)
                 provider.close()
+
+    def test_optional_cache_uses_available_memory_not_total_ram(self):
+        _, worker, provider = setup(self)
+        provider.resources = ResourceManager(32*GIB, {0:8*GIB, 1:8*GIB},
+            probe=lambda: MemoryCapacity(24*GIB, {0:8*GIB, 1:8*GIB}))
+        with patch('api.inference.video.h3_worker.h3_host_budget', return_value=16*GIB):
+            provider.load(threading.Event())
+        total = sum(r['host_bytes'] for r in provider.resources.snapshot()['reservations'].values())
+        self.assertLess(total, 24*GIB)
+        self.assertLess(provider._cache_budget, 8*GIB)
+        provider.close()
 
     def test_cache_report_cannot_hide_unowned_or_execution_memory(self):
         response = dict(output='/unused', width=864, height=480, frames=107, audio=True,
@@ -191,11 +216,25 @@ class H3WorkerTests(unittest.TestCase):
                 self.assertTrue(worker.stopped)
                 self.assertEqual(resources.snapshot()['reservations'], {})
 
+    def test_host_plan_scales_with_profile_without_reading_weights(self):
+        small = spec()
+        large = replace(spec(), resolution='768p', duration=15)
+        self.assertLess(h3_host_budget(small), h3_host_budget(large))
+        self.assertLessEqual(h3_host_budget(large), 56*GIB)
+        self.assertEqual(h3_host_budget(large) % GIB, 0)
+
+    def test_long_prompt_is_admitted_without_512_token_or_56_gib_clamp(self):
+        short = replace(spec(), resolution='768p', duration=15)
+        long = replace(short, prompt='\U0001f600'*8000)
+        self.assertGreater(h3_host_budget(long), 56*GIB)
+        self.assertGreater(h3_host_budget(long), h3_host_budget(short))
+        self.assertLessEqual(h3_host_budget(long), 128*GIB)
+
     def test_gpu_budget_uses_configured_capacity_and_honors_explicit_limit(self):
         resources=ResourceManager(200*GIB,{0:22*GIB,1:20*GIB})
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(h3_gpu_budgets(resources,[0,1]),{0:22*GIB,1:20*GIB})
-            self.assertEqual(h3_gpu_budgets(resources,[0]),{0:22*GIB})
+            self.assertEqual(h3_gpu_budgets(resources,[0,1]),{0:22*GIB-64*1024**2,1:20*GIB-64*1024**2})
+            self.assertEqual(h3_gpu_budgets(resources,[0]),{0:22*GIB-64*1024**2})
             self.assertEqual(h3_gpu_budgets(ResourceManager(200*GIB,{0:48*GIB}),[0]),{0:24*GIB})
         with patch.dict(os.environ, {'KADAN_H3_GPU_BUDGET_BYTES':str(3*GIB)}):
             self.assertEqual(h3_gpu_budgets(resources,[0,1]),{0:3*GIB,1:3*GIB})
@@ -209,15 +248,15 @@ class H3WorkerTests(unittest.TestCase):
         provider.resources = resources
         with patch.dict(os.environ, {}, clear=True):
             provider.load(threading.Event())
-            self.assertEqual(worker.gpu_budgets, f'0:{22*GIB},1:{12*GIB}')
+            self.assertEqual(worker.gpu_budgets, f'0:{22*GIB-64*1024**2},1:{12*GIB-64*1024**2}')
             def devices():
                 return [v['device_bytes'] for v in resources.snapshot()['reservations'].values() if v['device_bytes']]
-            self.assertEqual(devices(), [{0:20*GIB, 1:10*GIB}])
+            self.assertEqual(devices(), [{0:20*GIB-64*1024**2, 1:10*GIB-64*1024**2}])
             provider.offload_to_ram()
             self.assertEqual(devices(), [])
             self.assertIsNotNone(provider._host)
             provider.load(threading.Event())
-            self.assertEqual(devices(), [{0:20*GIB, 1:10*GIB}])
+            self.assertEqual(devices(), [{0:20*GIB-64*1024**2, 1:10*GIB-64*1024**2}])
             self.assertEqual(worker.controls, ['park','resume'])
             provider.close()
             self.assertEqual(resources.snapshot()['reservations'], {})
