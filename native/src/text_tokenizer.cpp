@@ -59,6 +59,8 @@ struct Active {
 };
 
 using Json = nlohmann::json;
+const std::string qwen_regex =
+    R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
 
 Json read_json(const std::string& path, const std::atomic_bool& cancel) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -93,6 +95,7 @@ Json read_json(const std::string& path, const std::atomic_bool& cancel) {
 struct Tokenizer::Impl {
     std::array<std::string, 256> bytes;
     std::vector<std::string> decoded;
+    bool fixed_vocabulary;
     bool normalize = false;
     bool ignore_merges = false;
     std::unordered_map<std::string, std::uint32_t> vocab;
@@ -102,9 +105,10 @@ struct Tokenizer::Impl {
         nullptr, pcre2_code_free
     };
 
-    Impl(const std::string& path, const std::atomic_bool& cancel) {
+    Impl(const std::string& path, const std::atomic_bool& cancel, Format format)
+        : fixed_vocabulary(format != Format::byte_level) {
         const auto j = read_json(path, cancel);
-        configure_text(j);
+        configure_text(j, format);
         const auto& model = j.at("model");
         validate_model(model);
         ignore_merges = model.value("ignore_merges", false);
@@ -112,12 +116,14 @@ struct Tokenizer::Impl {
         build_byte_alphabet();
         load_merges(model, cancel);
         load_added_tokens(j, ids);
-        build_decoder();
+        if (!fixed_vocabulary)
+            build_decoder();
         compile_pattern(j.at("pre_tokenizer").at("pretokenizers")[0]);
     }
 
-    void configure_text(const Json& j) {
+    void configure_text(const Json& j, Format format) {
         normalize = !j.at("normalizer").is_null();
+        check(!fixed_vocabulary || normalize, "text_tokenizer_normalizer");
         if (normalize)
             check(j.at("normalizer").at("type") == "NFC", "text_tokenizer_normalizer");
         const auto& pre = j.at("pre_tokenizer");
@@ -137,11 +143,36 @@ struct Tokenizer::Impl {
                 && !byte.at("use_regex").get<bool>(),
             "text_tokenizer_byte_contract"
         );
+        if (fixed_vocabulary)
+            check(
+                split.at("pattern").at("Regex") == qwen_regex,
+                "text_tokenizer_regex_contract"
+            );
         const auto& post = j.at("post_processor");
-        check(post.at("type") == "ByteLevel", "text_tokenizer_post");
+        if (format == Format::tts) {
+            check(
+                post.at("type") == "TemplateProcessing"
+                    && post.at("special_tokens").empty()
+                    && post.at("single").size() == 1
+                    && post.at("single")[0].at("Sequence").at("id") == "A"
+                    && post.at("single")[0].at("Sequence").at("type_id") == 0,
+                "text_tokenizer_post"
+            );
+        } else {
+            check(post.at("type") == "ByteLevel", "text_tokenizer_post");
+            if (format == Format::h3)
+                check(!post.at("add_prefix_space").get<bool>(), "text_tokenizer_post");
+        }
     }
 
-    static void validate_model(const Json& m) {
+    void validate_model(const Json& m) const {
+        if (fixed_vocabulary)
+            check(
+                m.at("continuing_subword_prefix") == ""
+                    && m.at("end_of_word_suffix") == ""
+                    && !m.value("ignore_merges", false),
+                "text_tokenizer_model"
+            );
         check(
             m.at("type") == "BPE" && m.at("dropout").is_null()
                 && m.at("unk_token").is_null() && !m.at("byte_fallback").get<bool>()
@@ -159,12 +190,19 @@ struct Tokenizer::Impl {
                 && m.at("merges").size() <= 300000,
             "text_tokenizer_vocab_size"
         );
-        std::vector<bool> ids(262144);
-        decoded.resize(262144);
+        if (fixed_vocabulary)
+            check(
+                m.at("vocab").size() == 151643 && m.at("merges").size() == 151387,
+                "text_tokenizer_vocab_size"
+            );
+        std::vector<bool> ids(fixed_vocabulary ? 151936 : 262144);
+        if (!fixed_vocabulary)
+            decoded.resize(262144);
         for (auto it = m.at("vocab").begin(); it != m.at("vocab").end(); ++it) {
             stop(cancel);
             check(
-                it.value().is_number_unsigned() && it.value() < 262144,
+                it.value().is_number_unsigned()
+                    && it.value() < (fixed_vocabulary ? 151643 : 262144),
                 "text_tokenizer_vocab_id"
             );
             const auto id = it.value().get<std::uint32_t>();
@@ -223,7 +261,10 @@ struct Tokenizer::Impl {
     }
 
     void load_added_tokens(const Json& j, std::vector<bool>& ids) {
-        check(j.at("added_tokens").size() <= 2048, "text_tokenizer_added_limit");
+        check(
+            j.at("added_tokens").size() <= (fixed_vocabulary ? 256 : 2048),
+            "text_tokenizer_added_limit"
+        );
         for (const auto& item : j.at("added_tokens")) {
             check(
                 !item.at("single_word").get<bool>() && !item.at("lstrip").get<bool>()
@@ -233,13 +274,15 @@ struct Tokenizer::Impl {
             );
             auto text = item.at("content").get<std::string>();
             check(
-                item.at("id").is_number_unsigned() && item.at("id") < 262144,
+                item.at("id").is_number_unsigned() && item.at("id") < ids.size(),
                 "text_tokenizer_added_id"
             );
             auto id = item.at("id").get<std::uint32_t>();
             check(
                 !text.empty() && text.size() <= 256 && id < 262144
-                    && (!ids[id] || (vocab.contains(text) && vocab.at(text) == id)),
+                    && (!ids[id]
+                        || (!fixed_vocabulary && vocab.contains(text)
+                            && vocab.at(text) == id)),
                 "text_tokenizer_added"
             );
             ids[id] = true;
@@ -405,7 +448,10 @@ struct Tokenizer::Impl {
         pcre2_set_depth_limit(context.get(), 1000);
         std::size_t written = 0;
         auto emit = [&](std::uint32_t id) {
-            check(written < output.size(), "text_tokenizer_token_limit");
+            check(
+                written < output.size() && (!fixed_vocabulary || written < max_tokens),
+                "text_tokenizer_token_limit"
+            );
             output[written++] = id;
         };
         auto ordinary = [&](std::string_view raw) {
@@ -418,7 +464,10 @@ struct Tokenizer::Impl {
             check(U_SUCCESS(status), "text_tokenizer_nfc");
             std::string text;
             unicode.toUTF8String(text);
-            check(text.size() <= 4 * input.size(), "text_tokenizer_normalized_size");
+            check(
+                text.size() <= (fixed_vocabulary ? max_tokens : 4 * input.size()),
+                "text_tokenizer_normalized_size"
+            );
             std::size_t at = 0;
             while (at < text.size()) {
                 stop(cancel);
@@ -466,8 +515,8 @@ struct Tokenizer::Impl {
     }
 };
 
-Tokenizer::Tokenizer(std::shared_ptr<Resources> r, Workload workload)
-    : resources_(std::move(r)), workload_(workload) {
+Tokenizer::Tokenizer(std::shared_ptr<Resources> r, Workload workload, Format format)
+    : resources_(std::move(r)), workload_(workload), format_(format) {
     check(bool(resources_), "text_tokenizer_resources");
 }
 
@@ -479,10 +528,13 @@ void Tokenizer::load(const std::string& path, const std::atomic_bool& cancel) {
     stop(cancel);
     check(!executing_, "busy");
     check(!impl_, "text_tokenizer_already_loaded");
-    Admission admitted(*resources_, workload_, 768ULL * 1024 * 1024);
-    auto next = std::make_unique<Impl>(path, cancel);
+    const bool fixed = format_ != Format::byte_level;
+    Admission admitted(*resources_, workload_, (fixed ? 512ULL : 768ULL) * 1024 * 1024);
+    auto next = std::make_unique<Impl>(path, cancel, format_);
     stop(cancel);
-    resources_->resize_loading(admitted.id, host(*resources_, 384ULL * 1024 * 1024));
+    resources_->resize_loading(
+        admitted.id, host(*resources_, (fixed ? 192ULL : 384ULL) * 1024 * 1024)
+    );
     impl_ = std::move(next);
     reservation_ = admitted.id;
     admitted.id = 0;
@@ -505,6 +557,8 @@ std::size_t Tokenizer::encode(
 ) {
     stop(cancel);
     check(bool(impl_), "text_tokenizer_not_loaded");
+    if (format_ != Format::byte_level)
+        input_limit = std::min(input_limit, max_input_bytes);
     check(!text.empty() && text.size() <= input_limit, "text_tokenizer_input_limit");
     Active active(executing_);
     check(

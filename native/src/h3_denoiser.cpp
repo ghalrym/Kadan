@@ -578,8 +578,10 @@ void H3Denoiser::execute(
                nv = input.video.size() / video_width,
                na = input.audio.size() / audio_width, n = nt + nv + na;
     require(
-        nt <= (compute_ ? H3Tokenizer::max_tokens : 512)
-            && n <= (compute_ ? 107856 + 1206 + H3Tokenizer::max_tokens : max_tokens)
+        nt <= (compute_ ? text::Tokenizer::max_tokens : 512)
+            && n
+                   <= (compute_ ? 107856 + 1206 + text::Tokenizer::max_tokens
+                                : max_tokens)
             && n > nt && input.positions.size() == n * 3 && input.timesteps.size() == n
             && input.tags.size() == n && video_out.size() == input.video.size()
             && audio_out.size() == input.audio.size(),

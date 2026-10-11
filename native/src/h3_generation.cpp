@@ -14,7 +14,7 @@
 #include "kadan/h3_audio.hpp"
 #include "kadan/h3_denoiser.hpp"
 #include "kadan/h3_text.hpp"
-#include "kadan/h3_tokenizer.hpp"
+#include "kadan/text_tokenizer.hpp"
 #include "kadan/video.hpp"
 #include "kadan/weight_progress.hpp"
 
@@ -379,7 +379,7 @@ void H3Generation::execute(
     const auto na = 2 * at;
     check(
         nv + na + 1
-            <= (compute_ ? 107856 + 1206 + H3Tokenizer::max_tokens
+            <= (compute_ ? 107856 + 1206 + text::Tokenizer::max_tokens
                          : H3Denoiser::max_tokens),
         "h3_generation_token_limit"
     );
@@ -391,14 +391,14 @@ void H3Generation::execute(
         + request.width * request.height * (3 * 33 * 4 + 3) + (512 + nv + na) * 20;
     Admission caller(resources_, caller_bytes);
     Workspace workspace(request.output);
-    std::array<std::uint32_t, H3Tokenizer::max_tokens> ids{};
-    H3Tokenizer tokenizer(resources_);
+    std::array<std::uint32_t, text::Tokenizer::max_tokens> ids{};
+    text::Tokenizer tokenizer(resources_, Workload::video, text::Tokenizer::Format::h3);
     tokenizer.load(paths.tokenizer, cancel);
     const auto nt = tokenizer.encode(request.prompt, ids, cancel);
     tokenizer.unload();
     check(
         nt + nv + na
-            <= (compute_ ? 107856 + 1206 + H3Tokenizer::max_tokens
+            <= (compute_ ? 107856 + 1206 + text::Tokenizer::max_tokens
                          : H3Denoiser::max_tokens),
         "h3_generation_token_limit"
     );

@@ -7,8 +7,8 @@
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/h3_compute.hpp"
-#include "kadan/h3_tokenizer.hpp"
 #include "kadan/resources.hpp"
+#include "kadan/text_tokenizer.hpp"
 
 namespace kadan::video {
 // Complete released FL2VA denoiser. CPU F32 activation contract with F64
