@@ -8,22 +8,13 @@ import { usePolling } from '../hooks/usePolling'
  * Values include other processes and do not establish model or GPU readiness.
  */
 function ResourceMeters() {
-  const { data, error, refresh, updated } = usePolling<MetricsResponse>(
+  const { data, error, refresh } = usePolling<MetricsResponse>(
     '/v1/metrics',
     5000,
   )
   return (
     <div className="resource-meters" aria-label="Observed server memory">
-      <div className="server-status">
-        <span
-          className={`status-dot ${data ? 'success' : error ? 'error' : 'muted'}`}
-        />
-        {data
-          ? 'API online'
-          : error
-            ? 'Metrics unavailable'
-            : 'Loading metrics…'}
-      </div>
+      {!data && !error && <p className="faint">Loading memory usage…</p>}
       {error && (
         <div role="alert">
           {error}{' '}
@@ -32,8 +23,6 @@ function ResourceMeters() {
           </button>
         </div>
       )}
-      {data && <p className="faint">Actual memory use · all processes<br />
-        Last received {updated}</p>}
       {data?.resources.map((meter) => (
         <div className="resource-meter" key={meter.label}>
           <div className="resource-label">
@@ -52,17 +41,6 @@ function ResourceMeters() {
           />
         </div>
       ))}
-      {data && <div>
-        <p className="eyebrow">Memory reserved for inference</p>
-        <p className="faint">Last reported allocation for models and admitted work.
-          Queued requests may be waiting without a reservation. This is not measured usage.</p>
-        {data.reservations_observed_at ? <>
-          <p className="faint">Last reported {new Date(data.reservations_observed_at).toLocaleString()}</p>
-          {data.reservations.map(reservation => <div className="resource-label" key={reservation.label}>
-            <span>{reservation.label}</span><span>{reservation.reserved_gib.toFixed(1)} GiB reserved</span>
-          </div>)}
-        </> : <p className="faint">Reservation information unavailable</p>}
-      </div>}
       {data?.resource_errors.map((message) => (
         <p className="faint" key={message}>
           {message}
