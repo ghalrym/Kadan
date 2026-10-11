@@ -26,7 +26,7 @@ function ResourceMeters() {
       {data?.resources.map((meter) => (
         <div className="resource-meter" key={meter.label}>
           <div className="resource-label">
-            <span>{meter.label}</span>
+            <span>{meter.label.replace('memory used', 'VRAM').replace('RAM used', 'RAM')}</span>
             <span>{meter.used.toFixed(1)}</span>
             <span className="faint">/ {meter.total.toFixed(1)} GiB</span>
           </div>
