@@ -3,8 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.services.inference import inference
 from api.services.inference_http import infer
-from api.services.whisper_selection import whisper_selection
-from api.inference.stt.catalog import get_whisper_checkpoints, checkpoint
+from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
@@ -25,11 +24,6 @@ class TranscriptionRequest(BaseModel):
         if not value.strip():
             raise ValueError("Audio must not be blank")
         return value.strip()
-
-    @field_validator("model")
-    @classmethod
-    def validate_model(cls, value):
-        return checkpoint(value).name if value is not None else None
 
 
 class TranscriptionResponse(BaseModel):
@@ -54,28 +48,30 @@ class WhisperSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str
 
-    @field_validator("model")
-    @classmethod
-    def canonical_model(cls, value):
-        return checkpoint(value).name
-
 
 @router.get("/models", operation_id="getWhisperModels")
 def get_models() -> WhisperModels:
     """List all unique official checkpoints and the persisted selection."""
+    try:
+        snapshot = inference.models_status()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     return WhisperModels(
-        models=list(get_whisper_checkpoints()), selected=whisper_selection.selected()
+        models=sorted(
+            model.id.removeprefix("whisper-")
+            for model in snapshot.models
+            if model.kind == "transcription"
+        ),
+        selected=snapshot.selected_whisper,
     )
 
 
 @router.put("/models", operation_id="selectWhisperModel")
-def select_model(body: WhisperSelection) -> WhisperModels:
+async def select_model(body: WhisperSelection) -> WhisperModels:
     try:
-        whisper_selection.select(body.model)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(503, "Cannot persist Whisper selection.") from exc
+        await inference.submit(body, feature="whisper_selection", operation="configure")
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     return get_models()
 
 

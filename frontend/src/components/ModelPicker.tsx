@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ModelStatus } from '../api/generated'
+import type { CheckpointStatus } from '../api/generated'
 
 /** Match the native select chevron so the custom picker sits flush with other model rows. */
 function Chevron() {
@@ -12,8 +12,8 @@ function Chevron() {
  * arrows/Home/End move between enabled controls, Tab and outside clicks dismiss.
  */
 export function ModelPicker({ models, current, selectedId, pending, downloading, choose, download, pickerId = 'LLM', label = 'Language model' }: {
-  pickerId?: string; label?: string; models: ModelStatus[]; current?: ModelStatus; selectedId: string | null; pending: boolean; downloading: boolean;
-  choose: (model: ModelStatus) => void; download: (model: ModelStatus) => void;
+  pickerId?: string; label?: string; models: CheckpointStatus[]; current?: CheckpointStatus; selectedId: string | null; pending: boolean; downloading: boolean;
+  choose: (model: CheckpointStatus) => void; download: (model: CheckpointStatus) => void;
 }) {
   const [open, setOpen] = useState(false)
   const wrapper = useRef<HTMLDivElement>(null)

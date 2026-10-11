@@ -77,6 +77,89 @@ export type ChatMessage = {
 }
 
 /**
+ * CheckpointStatus
+ */
+export type CheckpointStatus = {
+  /**
+   * Architecture Context Limit
+   */
+  architecture_context_limit: number | null
+  /**
+   * Context Limit
+   */
+  context_limit: number | null
+  /**
+   * Display Name
+   */
+  display_name: string | null
+  /**
+   * Downloaded Bytes
+   */
+  downloaded_bytes: number
+  /**
+   * Error
+   */
+  error: string | null
+  /**
+   * Estimated Bytes
+   */
+  estimated_bytes: number
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Inference Available
+   */
+  inference_available: boolean
+  /**
+   * Kind
+   */
+  kind:
+    | 'llm'
+    | 'video'
+    | 'speech'
+    | 'transcription'
+    | 'formatting'
+    | 'image'
+    | 'decision'
+  /**
+   * License
+   */
+  license: string
+  /**
+   * License Notice
+   */
+  license_notice: string | null
+  /**
+   * License Url
+   */
+  license_url: string | null
+  /**
+   * Repo Id
+   */
+  repo_id: string
+  /**
+   * Revision
+   */
+  revision: string
+  /**
+   * Status
+   */
+  status:
+    | 'not_downloaded'
+    | 'downloading'
+    | 'cancelling'
+    | 'cancelled'
+    | 'failed'
+    | 'complete'
+  /**
+   * Total Bytes
+   */
+  total_bytes: number
+}
+
+/**
  * ChoiceAnswer
  */
 export type ChoiceAnswer = {
@@ -623,7 +706,7 @@ export type ModelLoadRequest = {
   /**
    * Model Id
    */
-  model_id: 'small' | 'medium' | 'large'
+  model_id?: 'small' | 'medium' | 'large' | null
 }
 
 /**
@@ -651,98 +734,13 @@ export type ModelSetting = {
 }
 
 /**
- * ModelStatus
- */
-export type ModelStatus = {
-  /**
-   * Architecture Context Limit
-   */
-  architecture_context_limit: number | null
-  /**
-   * Context Limit
-   *
-   * Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.
-   */
-  context_limit: number | null
-  /**
-   * Display Name
-   */
-  display_name: string | null
-  /**
-   * Downloaded Bytes
-   */
-  downloaded_bytes: number
-  /**
-   * Error
-   */
-  error: string | null
-  /**
-   * Estimated Bytes
-   */
-  estimated_bytes: number
-  /**
-   * Id
-   */
-  id: string
-  /**
-   * Inference Available
-   */
-  inference_available: boolean
-  /**
-   * Kind
-   */
-  kind:
-    | 'llm'
-    | 'video'
-    | 'speech'
-    | 'transcription'
-    | 'formatting'
-    | 'image'
-    | 'decision'
-  /**
-   * License
-   */
-  license: string
-  /**
-   * License Notice
-   */
-  license_notice: string | null
-  /**
-   * License Url
-   */
-  license_url: string | null
-  /**
-   * Repo Id
-   */
-  repo_id: string
-  /**
-   * Revision
-   */
-  revision: string
-  /**
-   * Status
-   */
-  status:
-    | 'not_downloaded'
-    | 'downloading'
-    | 'cancelling'
-    | 'cancelled'
-    | 'failed'
-    | 'complete'
-  /**
-   * Total Bytes
-   */
-  total_bytes: number
-}
-
-/**
  * ModelsResponse
  */
 export type ModelsResponse = {
   /**
    * Models
    */
-  models: Array<ModelStatus>
+  models: Array<CheckpointStatus>
   /**
    * Selected Model Id
    */

@@ -1,0 +1,137 @@
+import asyncio
+import unittest
+from unittest.mock import patch
+
+from api.pydantic_models.inference_task import InferenceTask, ModelContextTask
+from api.pydantic_models.model_store import ModelStoreStatus
+from api.services.inference import InferenceService
+from api.services.inference_errors import InferenceFailure
+from api.services.inference_worker import InferenceJob, WorkerEvent
+
+
+def snapshot():
+    return ModelStoreStatus.model_validate(
+        {
+            "models": [
+                {
+                    "id": "small",
+                    "repo_id": "test/model",
+                    "revision": "pinned",
+                    "license": "MIT",
+                    "estimated_bytes": 20,
+                    "kind": "llm",
+                    "display_name": "Small",
+                    "license_url": None,
+                    "license_notice": None,
+                    "inference_available": True,
+                    "status": "not_downloaded",
+                    "downloaded_bytes": 0,
+                    "total_bytes": 0,
+                    "error": None,
+                    "context_limit": 65536,
+                    "architecture_context_limit": None,
+                }
+            ],
+            "selected_model_id": None,
+        }
+    )
+
+
+class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.service = InferenceService()
+        self.service.worker.models = snapshot()
+
+        async def submit(request, **kwargs):
+            job = InferenceJob(request, False)
+            self.service.worker.jobs[request.id] = job
+            return job
+
+        async def cancel(job_id):
+            job = self.service.worker.jobs[job_id]
+            self.service._observe(job, WorkerEvent(state="cancelled"))
+            job.result.set_result({})
+
+        self.submit = patch.object(self.service.worker, "submit", side_effect=submit)
+        self.cancel = patch.object(self.service.worker, "cancel", side_effect=cancel)
+        self.submit.start()
+        self.cancel.start()
+        self.addCleanup(self.submit.stop)
+        self.addCleanup(self.cancel.stop)
+
+    async def test_download_uses_existing_queue_and_snapshot(self):
+        await self.service.download("small", True)
+        job = next(iter(self.service.worker.jobs.values()))
+        self.assertEqual(job.request.operation, "download")
+        self.assertTrue(job.request.input.license_acknowledged)
+        self.service._observe(
+            job, WorkerEvent(state="progress", phase="download", value=10, total=20)
+        )
+        status = self.service.models_status().models[0]
+        self.assertEqual(
+            (status.status, status.downloaded_bytes, status.total_bytes),
+            ("downloading", 10, 20),
+        )
+        self.assertEqual(self.service.worker.models.models[0].status, "not_downloaded")
+        self.service.worker.models.models[0].status = "complete"
+        self.service._observe(job, WorkerEvent(state="succeeded"))
+        job.result.set_result({})
+        await asyncio.gather(*self.service.tasks.values())
+        self.assertEqual(self.service.models_status().models[0].status, "complete")
+        self.assertFalse(self.service.worker.jobs)
+
+    async def test_duplicate_and_cancel_use_outstanding_job(self):
+        await self.service.download("small", False)
+        with self.assertRaises(InferenceFailure):
+            await self.service.download("small", False)
+        await self.service.cancel_download("small")
+        await asyncio.gather(*self.service.tasks.values())
+        self.assertEqual(self.service.models_status().models[0].status, "cancelled")
+        with self.assertRaises(InferenceFailure):
+            await self.service.cancel_download("small")
+
+    async def test_configuration_is_typed_and_waits_for_worker(self):
+        task = asyncio.create_task(
+            self.service.submit(
+                ModelContextTask(model_id="small", context_limit=None),
+                feature="model_context",
+                operation="configure",
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        job = next(iter(self.service.worker.jobs.values()))
+        self.assertIsNone(job.request.model_dump()["input"]["context_limit"])
+        self.service.worker.models.models[0].context_limit = None
+        job.result.set_result({})
+        await task
+        self.assertIsNone(self.service.models_status().models[0].context_limit)
+
+    async def test_missing_worker_status_is_unavailable(self):
+        self.service.worker.models = None
+        with self.assertRaises(InferenceFailure):
+            self.service.models_status()
+
+    async def test_worker_failure_is_presented_without_local_file_validation(self):
+        await self.service.download("small", False)
+        job = next(iter(self.service.worker.jobs.values()))
+        self.service._observe(
+            job, WorkerEvent(state="failed", error="Integrity failure")
+        )
+        job.result.set_result({})
+        await asyncio.gather(*self.service.tasks.values())
+        state = self.service.models_status().models[0]
+        self.assertEqual((state.status, state.error), ("failed", "Integrity failure"))
+
+
+class SettingsTaskTests(unittest.TestCase):
+    def test_all_settings_tasks_round_trip(self):
+        for body in (
+            {"feature": "model_selection", "model_id": "small"},
+            {"feature": "model_context", "model_id": "small", "context_limit": None},
+            {"feature": "whisper_selection", "model": "tiny.en"},
+        ):
+            task = InferenceTask(operation="configure", input=body)
+            self.assertEqual(
+                InferenceTask.model_validate_json(task.model_dump_json()), task
+            )

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ModelStatus } from '../api/generated'
+import type { CheckpointStatus } from '../api/generated'
 import { ModelPicker } from './ModelPicker'
 
 /** Persist the native Whisper choice without loading or downloading weights. */
-export function WhisperSelector({ models, pending: downloadPending, downloading, download, cancel }: { models: ModelStatus[]; pending: boolean; downloading: boolean; download: (model: ModelStatus) => void; cancel: (model: ModelStatus) => void }) {
+export function WhisperSelector({ models, pending: downloadPending, downloading, download, cancel }: { models: CheckpointStatus[]; pending: boolean; downloading: boolean; download: (model: CheckpointStatus) => void; cancel: (model: CheckpointStatus) => void }) {
   const [catalog, setCatalog] = useState<{ models: string[]; selected: string | null } | null>(null)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)

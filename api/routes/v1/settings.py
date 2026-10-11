@@ -1,11 +1,12 @@
-"""Compatibility settings view backed by the real model selection store."""
+"""Settings view of the worker-owned model store."""
 
 from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.settings import ModelSetting
-from api.services.model_catalog import CATALOG
-from api.services.model_downloads import BusyError, model_manager
+from api.services.inference import inference
+from api.services.inference_errors import InferenceFailure
+from api.pydantic_models.inference_task import ModelSelectionTask
 
 router = APIRouter(prefix="/v1/settings", tags=["Settings"])
 
@@ -33,24 +34,17 @@ def get_settings() -> SettingsResponse:
 
     Raise HTTP 503 if the stored selection is outside the catalog; this read does
     not load a model or configure another modality."""
-    status = model_manager.status()
-    llm_options = [
-        model_id for model_id, entry in CATALOG.items() if entry.kind == "llm"
-    ]
-    if (
-        status["selected_model_id"] is not None
-        and status["selected_model_id"] not in llm_options
-    ):
-        raise HTTPException(
-            503,
-            "Stored model selection is invalid. Select a catalog model in Settings.",
-        )
+    try:
+        status = inference.models_status()
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    llm_options = [model.id for model in status.models if model.kind == "llm"]
     return SettingsResponse(
         models=[
             ModelSetting(
                 label="Language model",
                 type="LLM",
-                selected=status["selected_model_id"],
+                selected=status.selected_model_id,
                 options=llm_options,
             )
         ]
@@ -62,11 +56,10 @@ def get_settings() -> SettingsResponse:
     description="Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.",
     operation_id="updateSettings",
 )
-def update_settings(body: SettingsRequest) -> SettingsResponse:
+async def update_settings(body: SettingsRequest) -> SettingsResponse:
     """Persist a completed LLM selection and return the refreshed settings.
 
-    An active model lease yields 409, invalid selection yields 400, and storage
-    failures or unsupported transcription settings yield 503. An empty models
+    The worker validates and persists selection at the queue head. An empty models
     mapping leaves selection unchanged. Selection alone does not load inference."""
     if body.whisper_formatting is not None:
         raise HTTPException(
@@ -75,11 +68,11 @@ def update_settings(body: SettingsRequest) -> SettingsResponse:
         )
     try:
         if "LLM" in body.models:
-            model_manager.select(body.models["LLM"])
+            await inference.submit(
+                ModelSelectionTask(model_id=body.models["LLM"]),
+                feature="model_selection",
+                operation="configure",
+            )
         return get_settings()
-    except BusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(503, "Model settings storage is unavailable.") from exc
+    except InferenceFailure as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc

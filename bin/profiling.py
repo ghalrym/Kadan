@@ -23,7 +23,7 @@ def build(build_dir: Path = DEFAULT_BUILD) -> None:
         [
             "cmake",
             "-S",
-            ROOT / "native",
+            ROOT / "inference_worker",
             "-B",
             build_dir,
             "-DCMAKE_BUILD_TYPE=Release",

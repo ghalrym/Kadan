@@ -1,35 +1,39 @@
-"""Manual exports share the API's checkpoint serialization implementations."""
+"""Offline asset conversion through the worker's C++ implementations."""
 
-import json
 from pathlib import Path
 
 import typer
+
+from bin.native import DEFAULT_BUILD, execute
 
 app = typer.Typer(no_args_is_help=True)
 
 
 @app.command()
 def whisper(checkpoint: Path, expected_sha256: str, destination: Path) -> None:
-    """Convert a trusted local Whisper checkpoint with its expected SHA-256."""
-    # Torch is an optional export dependency; other commands must not initialize it.
-    from api.inference.whisper_export import export
-
-    typer.echo(json.dumps(export(checkpoint, expected_sha256, destination), indent=2))
+    """Convert a verified local Whisper checkpoint without executing a model."""
+    execute(
+        DEFAULT_BUILD,
+        "kadan-prepare-assets",
+        ["whisper", checkpoint, expected_sha256, destination],
+    )
 
 
 @app.command("whisper-assets")
 def whisper_assets(vocabulary: int, destination: Path) -> None:
-    """Export the pinned Whisper tokenizer and mel assets."""
-    # Whisper and NumPy are needed only for this export.
-    from api.inference.whisper_assets import export
-
-    typer.echo(json.dumps(export(vocabulary, destination), indent=2))
+    """Prepare the pinned Whisper tokenizer and mel assets in C++."""
+    execute(
+        DEFAULT_BUILD,
+        "kadan-prepare-assets",
+        ["whisper-assets", vocabulary, destination],
+    )
 
 
 @app.command("tts-tokenizer")
 def tts_tokenizer(checkpoint: Path, destination: Path) -> None:
-    """Export a local TTS tokenizer without downloading or running a model."""
-    # Load the API's exporter only when explicitly preparing its assets.
-    from api.inference.tts_assets import export
-
-    export(checkpoint, destination)
+    """Prepare a local speech tokenizer without downloading or running a model."""
+    execute(
+        DEFAULT_BUILD,
+        "kadan-prepare-assets",
+        ["tts-tokenizer", checkpoint, destination],
+    )

@@ -8,7 +8,7 @@ import typer
 from bin.process import ROOT, run
 
 app = typer.Typer(no_args_is_help=True)
-DEFAULT_BUILD = ROOT / "build/native-tools"
+DEFAULT_BUILD = ROOT / "build/inference-worker-tools"
 
 
 @app.callback()
@@ -37,7 +37,7 @@ def build(
         [
             "cmake",
             "-S",
-            ROOT / "native",
+            ROOT / "inference_worker",
             "-B",
             ctx.obj,
             "-DCMAKE_BUILD_TYPE=Release",

@@ -12,13 +12,14 @@ engines releases the previous engine before measuring available memory and
 admitting the next request. Temporary resource pressure retains the queue head;
 cancellation waits for owned work and cleanup before advancing it.
 
-The Python API validates requests, acquires pinned checkpoints, prepares transport
-files and presents results. It does not execute numerical models, schedule
-inference, keep a memory ledger or launch modality-specific inference children.
-First-use Whisper/checkpoint and TTS-tokenizer serialization can use CPU export
-dependencies. Video encoding uses FFmpeg as a codec, not an inference engine.
+The Python API validates requests, serializes a typed Pydantic inference task,
+and submits it to the worker. It manages waiting responses, SSE streams, job
+status and cancellation. The worker acquires checkpoints, prepares inputs and
+model assets, executes the task, packages results and removes its workspace.
+Preparation starts only when a task reaches the FIFO head. Checkpoint conversion, downloads, media serialization and execution all run
+in the C++ worker. It never invokes Python. Video encoding uses FFmpeg as a codec.
 
-The API starts the native process without loading a model or running inference.
+The API starts the inference worker without loading a model or running inference.
 Settings can save a model and context and explicitly load or unload it. Chat can
 also load the selected model on its first request. Checkpoint selection persists;
 chat conversations stay in the browser. Native prefix reuse is currently unavailable.
@@ -66,7 +67,7 @@ or automatic model load occurs.
 docker compose down
 ```
 
-Run one API process. The native process takes an exclusive lock in the model
+Run one API process. The inference worker takes an exclusive lock in the model
 store. Development hot reload shuts down and joins its owned process before the
 replacement starts; reloading cancels in-flight work.
 
@@ -141,8 +142,9 @@ the stream finishes. The running server's `/docs` describes all request fields.
 Python implementations and C++ inspection sources live under
 `bin/`. Native runtime builds exclude developer executables unless
 `KADAN_BUILD_TOOLS=ON`. Skills remain in their existing directories. Schema
-generation and asset export also require the API dependencies; other command
-groups and CLI help need only `bin/requirements.txt` plus their external tools.
+generation requires the API dependencies. Asset export uses the C++
+`kadan-prepare-assets` tool built by `native build`; CLI help needs only
+`bin/requirements.txt`.
 
 Use the development override for Python hot reload. The frontend already uses
 Vite with a source bind mount. Explicit file selection avoids loading an unrelated

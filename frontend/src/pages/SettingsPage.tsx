@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
-import type { ModelsResponse, ModelStatus, ModelLifecycleStatus } from '../api/generated'
+import type { ModelsResponse, CheckpointStatus, ModelLifecycleStatus } from '../api/generated'
 import './SettingsPage.css'
 import { WhisperSelector } from '../components/WhisperSelector'
 import { ModelPicker } from '../components/ModelPicker'
@@ -11,7 +11,7 @@ import { ModelPicker } from '../components/ModelPicker'
  * Combines caller cancellation with the timeout; throws backend detail when
  * available, or an HTTP error for non-JSON proxy failures. Returns typed status.
  */
-async function requestModelStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean }, signal?: AbortSignal): Promise<ModelsResponse> {
+async function requestCheckpointStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -55,7 +55,7 @@ const contextPresets = [
  * Known architecture bounds disable oversized choices; an unknown bound is not
  * guessed. The parent owns the draft so model and context are submitted together.
  */
-function ContextControl({ model, pending, value, change }: { model: ModelStatus; pending: boolean; value: number | null; change: (limit: number | null) => void }) {
+function ContextControl({ model, pending, value, change }: { model: CheckpointStatus; pending: boolean; value: number | null; change: (limit: number | null) => void }) {
   const customLimits = [...new Set([model.context_limit, value])].filter((limit): limit is number => limit !== null && !contextPresets.some(([, preset]) => preset === limit))
   return <div className="field model-context">
     <label htmlFor={`context-${model.id}`}>Max context length (tokens)</label>
@@ -84,7 +84,7 @@ function ModelIcon({ type }: { type: string }) {
  * Polling and mutations have separate error state; request generations prevent
  * older polls from overwriting mutations. Unmount aborts outstanding requests.
  */
-function LicenseNotice({ model, close, proceed }: { model: ModelStatus; close: () => void; proceed: () => void }) {
+function LicenseNotice({ model, close, proceed }: { model: CheckpointStatus; close: () => void; proceed: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => { dialog.current?.showModal() }, [])
   return <dialog className="model-license-dialog" ref={dialog} aria-labelledby="model-license-title" onCancel={event => { event.preventDefault(); close() }}>
@@ -98,13 +98,13 @@ export default function SettingsPage() {
   const mutationVersion = useRef(0)
   const actionController = useRef<AbortController | null>(null)
   useEffect(() => () => { actionController.current?.abort() }, [])
-  const [modelStatus, setModelStatus] = useState<ModelsResponse | null>(null)
+  const [modelStatus, setCheckpointStatus] = useState<ModelsResponse | null>(null)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [pending, setPending] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const [speechId, setSpeechId] = useState<string | null>(null)
-  const [licenseModel, setLicenseModel] = useState<ModelStatus | null>(null)
+  const [licenseModel, setLicenseModel] = useState<CheckpointStatus | null>(null)
   const licenseAction = useRef(false)
   const [videoId, setVideoId] = useState<string | null>(null)
   const [chosenId, setChosenId] = useState<string | null>(null)
@@ -121,8 +121,8 @@ export default function SettingsPage() {
     async function poll() {
       const version = mutationVersion.current
       try {
-        const [next, runtime] = await Promise.all([requestModelStatus('', 'GET', undefined, controller.signal), requestLifecycle(controller.signal)])
-        if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) { setModelStatus(next); setLifecycle(runtime); setError('') }
+        const [next, runtime] = await Promise.all([requestCheckpointStatus('', 'GET', undefined, controller.signal), requestLifecycle(controller.signal)])
+        if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) { setCheckpointStatus(next); setLifecycle(runtime); setError('') }
       } catch (failure) {
         if (!controller.signal.aborted && !actionController.current && version === mutationVersion.current) {
           setLifecycle(previous => previous?.state === 'loading' ? previous : null)
@@ -149,8 +149,8 @@ export default function SettingsPage() {
     setPending(true)
     setActionError('')
     try {
-      const next = await requestModelStatus(path, method, body, controller.signal)
-      if (!controller.signal.aborted) { setModelStatus(next); setError(''); return true }
+      const next = await requestCheckpointStatus(path, method, body, controller.signal)
+      if (!controller.signal.aborted) { setCheckpointStatus(next); setError(''); return true }
       return false
     } catch (failure) {
       if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'Request failed')
@@ -162,13 +162,13 @@ export default function SettingsPage() {
     }
   }
   /** Require a fresh explicit acknowledgement for each licensed download or retry. */
-  function downloadModel(model: ModelStatus) {
+  function downloadModel(model: CheckpointStatus) {
     if (actionController.current) return
     if (model.license_notice) { licenseAction.current = false; setLicenseModel(model) }
     else void submitModelChange(`/${model.id}/download`, 'POST')
   }
   /** Save selection/context and request actual loading as one guarded server action. */
-  async function loadModel(model: ModelStatus, limit: number | null) {
+  async function loadModel(model: CheckpointStatus, limit: number | null) {
     if (actionController.current) return
     const controller = new AbortController()
     actionController.current = controller
@@ -179,9 +179,9 @@ export default function SettingsPage() {
     try {
       const accepted = await requestLifecycle(controller.signal, { model_id: model.id, context_limit: limit })
       if (!controller.signal.aborted) setLifecycle(accepted)
-      const [catalog, runtime] = await Promise.all([requestModelStatus('', 'GET', undefined, controller.signal), requestLifecycle(controller.signal)])
+      const [catalog, runtime] = await Promise.all([requestCheckpointStatus('', 'GET', undefined, controller.signal), requestLifecycle(controller.signal)])
       if (!controller.signal.aborted) {
-        setModelStatus(catalog)
+        setCheckpointStatus(catalog)
         setLifecycle(runtime)
         if (catalog.selected_model_id === model.id) { setChosenId(null); setContextDraft(null) }
         setError('')

@@ -5,9 +5,9 @@ from contextlib import suppress
 
 from fastapi import HTTPException
 
-from api.inference.errors import InferenceFailure
+from api.services.inference_errors import InferenceFailure
 
-from api.inference.cancellation import await_cleanup
+from api.services.inference_cancellation import await_cleanup
 
 
 async def infer(request, call):

@@ -30,6 +30,7 @@ NATIVE_UNIT_TARGETS = [
     "device-weight-tests",
     "kadan_auto_placement_test",
     "inference-owner-tests",
+    "preparation-tests",
     "native-text-tests",
 ]
 
@@ -55,14 +56,16 @@ def llvm_tool(name: str) -> str:
 
 def cpp_sources() -> list[Path]:
     listed = subprocess.run(
-        ["git", "ls-files", "-z", "--", "native", "bin/cpp"],
+        ["git", "ls-files", "-z", "--", "inference_worker", "bin/cpp"],
         cwd=ROOT,
         capture_output=True,
         check=True,
         text=True,
     ).stdout
     return [
-        ROOT / name for name in listed.split("\0") if Path(name).suffix in CPP_SUFFIXES
+        ROOT / name
+        for name in listed.split("\0")
+        if Path(name).suffix in CPP_SUFFIXES and (ROOT / name).is_file()
     ]
 
 
@@ -80,14 +83,16 @@ def format_cpp(write: bool = False) -> None:
 
 
 @app.command("cpp-lint")
-def lint_cpp(build_dir: Path = ROOT / "build/native-lint", fix: bool = False) -> None:
+def lint_cpp(
+    build_dir: Path = ROOT / "build/inference-worker-lint", fix: bool = False
+) -> None:
     """Run clang-tidy over every CPU translation unit, or apply its fixes with --fix."""
     build_dir = build_dir.resolve()
     run(
         [
             "cmake",
             "-S",
-            ROOT / "native",
+            ROOT / "inference_worker",
             "-B",
             build_dir,
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
@@ -153,7 +158,7 @@ def frontend_unit() -> None:
 
 @app.command()
 def native(
-    build_dir: Path = ROOT / "build/native-unit", sanitize: bool = False
+    build_dir: Path = ROOT / "build/inference-worker-unit", sanitize: bool = False
 ) -> None:
     """Build and run only CPU unit targets; never run inference."""
     build_dir = build_dir.resolve()
@@ -162,7 +167,7 @@ def native(
         [
             "cmake",
             "-S",
-            ROOT / "native",
+            ROOT / "inference_worker",
             "-B",
             build_dir,
             "-DCMAKE_BUILD_TYPE=Debug",
@@ -196,10 +201,8 @@ def native(
 def install() -> None:
     """Validate API imports without starting the application or loading a model."""
     # Application dependencies belong only to this explicit image-build check.
-    from api.services.native_worker import NativeWorker
+    from api.services.inference_worker import InferenceWorker
     from api.services.inference import InferenceService
 
-    assert NativeWorker and InferenceService
-    typer.echo(
-        "Single native worker transport imports successfully; no model execution."
-    )
+    assert InferenceWorker and InferenceService
+    typer.echo("Inference worker transport imports successfully; no model execution.")
