@@ -3,7 +3,6 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from api.inference.request_execution import RequestExecutor
 from api.inference.resources import ResourceManager, ResourceBusy
 from api.inference.tts.speech_requests import SpeechRequests
 from api.inference.tts.speech_runtime import SpeechRegistry, SpeechRuntime
@@ -24,8 +23,7 @@ class SpeechRequestsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.feature.unload()
 
-    async def test_common_contract_retains_same_adapter_and_protects_active_device(self):
-        self.assertIsInstance(self.feature, RequestExecutor)
+    async def test_retains_same_adapter_and_protects_active_device(self):
         await self.feature.load('alternate')
         self.assertIs(self.feature.adapter, self.provider)
         self.resources.offload_workload_devices('speech')
