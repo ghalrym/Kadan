@@ -6,6 +6,9 @@
 #include <vector>
 #include <cstdint>
 #include <csignal>
+#include <cstdlib>
+#include <string>
+#include <unistd.h>
 using Clock=std::chrono::steady_clock;
 static double ms(Clock::time_point a){return std::chrono::duration<double,std::milli>(Clock::now()-a).count();}
 template<class T>T sym(const char*n){return reinterpret_cast<T>(dlsym(RTLD_NEXT,n));}
@@ -28,4 +31,4 @@ extern "C" cudaError_t __cudaLaunchKernel(const void*f,dim3 grid,dim3 block,void
 }
 extern "C" cudaError_t cudaStreamSynchronize(cudaStream_t s){auto t=Clock::now();auto e=sym<decltype(&cudaStreamSynchronize)>("cudaStreamSynchronize")(s);sync_ms+=ms(t);sync_n++;if(e==cudaSuccess)collect();if(sync_n%5000==0)report();return e;}
 extern "C" cudaError_t cudaMemcpy(void*d,const void*s,size_t n,cudaMemcpyKind kind){auto t=Clock::now();auto e=sym<decltype(&cudaMemcpy)>("cudaMemcpy")(d,s,n,kind);copy_ms[kind]+=ms(t);copy_n[kind]++;return e;}
-__attribute__((destructor)) static void report(){char path[128];snprintf(path,sizeof(path),"/tmp/kadan-profile-phase-%d.tsv",phase);FILE*f=fopen(path,"w");if(!f)return;fprintf(f,"kernel_offset\tcalls\tgpu_ms\tlaunch_host_ms\n");for(auto&[k,s]:stats)fprintf(f,"%lx\t%lu\t%.6f\t%.6f\n",k,s.n,s.gpu,s.host);fprintf(f,"sync\t%lu\t%.6f\n",sync_n,sync_ms);for(int i=0;i<5;i++)fprintf(f,"copy%d\t%lu\t%.6f\n",i,copy_n[i],copy_ms[i]);fclose(f);}
+__attribute__((destructor)) static void report(){const char*directory=std::getenv("KADAN_PROFILE_DIR");const auto path=std::string(directory?directory:".")+"/kadan-profile-"+std::to_string(getpid())+"-phase-"+std::to_string(phase)+".tsv";FILE*f=fopen(path.c_str(),"w");if(!f)return;fprintf(f,"kernel_offset\tcalls\tgpu_ms\tlaunch_host_ms\n");for(auto&[k,s]:stats)fprintf(f,"%lx\t%lu\t%.6f\t%.6f\n",k,s.n,s.gpu,s.host);fprintf(f,"sync\t%lu\t%.6f\n",sync_n,sync_ms);for(int i=0;i<5;i++)fprintf(f,"copy%d\t%lu\t%.6f\n",i,copy_n[i],copy_ms[i]);fclose(f);}

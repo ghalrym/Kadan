@@ -15,9 +15,10 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7
-      - name: Configure CPU unit targets
-        run: cmake -S native -B /tmp/kadan-native -DCMAKE_BUILD_TYPE=Debug -DKADAN_ENABLE_CUDA=OFF -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
-      - name: Build only unit targets
-        run: cmake --build /tmp/kadan-native --target generation-queue-tests weight-backing-tests resource-tests quantization-tests checkpoint-tests checkpoint-floats-tests image-weight-loading-tests cuda-plan-tests fp8-plan-tests placement-tests sequence-state-tests h3-profile-tests worker-compute-tests device-workspace-tests device-weight-tests kadan_auto_placement_test resident-protocol-tests inference-owner-tests native-text-tests --parallel 2
-      - name: Run unit tests
-        run: ctest --test-dir /tmp/kadan-native --output-on-failure
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install tooling dependencies
+        run: python3 -m pip install -r bin/requirements.txt
+      - name: Run native unit checks
+        run: python3 bin/kadan.py check native --build-dir /tmp/kadan-native --sanitize

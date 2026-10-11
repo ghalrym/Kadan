@@ -21,12 +21,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY api/requirements*.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt && pip check
+COPY bin/requirements.txt /app/bin/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r bin/requirements.txt && pip check
 COPY api/ /app/api
+COPY bin/*.py /app/bin/
 COPY --from=native-build /out/ /opt/kadan/
 RUN test -x /opt/kadan/bin/kadan-inference-worker \
     && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-inference-worker > /tmp/native-linkage \
     && ! grep "not found" /tmp/native-linkage
-RUN ffmpeg -version && ffprobe -version && python -m api.inference.check_install
+RUN ffmpeg -version && ffprobe -version && python bin/kadan.py check install
 EXPOSE 8000
 CMD ["python", "-m", "api"]

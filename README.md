@@ -79,6 +79,71 @@ to writable checkpoint storage before starting one Uvicorn worker.
 
 ### Development
 
+Install the tooling dependencies and use the central command from the repository root:
+
+```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python bin/kadan.py --help
+```
+
+`bin/kadan.py` is the entry point for repeatable developer operations. Each command
+group and command supports `--help` with its arguments and options.
+
+| Command | Purpose |
+| --- | --- |
+| `generate api` | Export OpenAPI and regenerate the frontend client. |
+| `generate schema` / `generate client` | Run either generation step separately. |
+| `assets whisper` / `assets whisper-assets` / `assets tts-tokenizer` | Export local model assets using the API's serializers. |
+| `native build` | Compile CPU-only checkpoint inspectors and metadata planners. |
+| `native --help` | List checkpoint/model inspection and memory-planning commands. |
+| `infer chat` / `infer image` / `infer video` | Submit a JSON request file through the live API to its worker queue. |
+| `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
+| `infer video-status` / `infer video-cancel` / `infer video-download` | Inspect, cancel, or download a server-owned video job. |
+| `profile build` / `profile phase` | Build the profiler and mark phases on an already instrumented live worker. |
+| `profile symbols` / `profile summarize` | Extract executable symbols and summarize captured phase measurements. |
+| `check --help` | List formatting, frontend builds, and unit-test commands. |
+| `pr preflight` / `pr publish` | Run the restricted owner-dispatched GitHub publisher with workflow inputs. |
+
+Native inspection tool builds require CMake and a C++20 compiler. They only read
+checkpoint metadata and plan memory; they do not load or execute models. Use
+`native --build-dir PATH` before the subcommand to select another build directory.
+The optional profiler additionally requires the CUDA toolkit. It can analyze an
+already instrumented live worker; the CLI never launches an inference process.
+
+All generation runs in the API-owned native worker. CLI commands send the same
+JSON request bodies as the frontend to the existing API endpoints. The API applies
+validation, checkpoint preparation, queueing, memory admission, and cancellation.
+The CLI has no local inference fallback. Select a server with
+`infer --url http://127.0.0.1:8000` or `KADAN_API_URL`; `--timeout` defaults to 3600
+seconds and includes time waiting in the queue. Submissions are never retried
+automatically because a lost response may already have been queued.
+
+For example, save this request as `build/video-request.json`:
+
+```json
+{"prompt": "Rain falling on a quiet lake", "duration": 1, "resolution": "480p", "aspect": "16:9", "seed": 42}
+```
+
+```sh
+python bin/kadan.py infer video build/video-request.json
+python bin/kadan.py infer video-status JOB_ID
+python bin/kadan.py infer video-download JOB_ID build/video.mp4
+```
+
+Video submission returns the server's job ID immediately; `Queued` means accepted,
+not completed. Download after its status is `Done`; `video-cancel JOB_ID` asks the
+worker to cancel it. Other inference commands wait for the API response. Use
+`--output PATH` to save the response instead of printing it. Image and speech
+responses contain base64 media; transcription expects a WAV data URL in its JSON
+request. Chat streaming responses, if requested, are saved/printed as SSE after
+the stream finishes. The running server's `/docs` describes all request fields.
+
+Python implementations and C++ inspection sources live under
+`bin/`. Native runtime builds exclude developer executables unless
+`KADAN_BUILD_TOOLS=ON`. Skills remain in their existing directories. Schema
+generation and asset export also require the API dependencies; other command
+groups and CLI help need only `bin/requirements.txt` plus their external tools.
+
 Use the development override for Python hot reload. The frontend already uses
 Vite with a source bind mount. Explicit file selection avoids loading an unrelated
 local `compose.override.yaml`.
@@ -129,10 +194,10 @@ repository root:
 
 ```sh
 python -m pip install -r requirements-dev.txt
-python -m ruff format .
+python bin/kadan.py check format --write
 ```
 
-CI runs `python -m ruff format --check .` on every push and pull request and fails
+CI runs `python bin/kadan.py check format` on every push and pull request and fails
 if any Python file needs formatting.
 
 Automated tests use pure logic, synthetic checkpoint metadata or fake boundaries.
@@ -140,10 +205,12 @@ They do not start the application, execute inference or benchmark GPUs.
 The workflows list the unit targets and API tests.
 
 ```sh
-python -m ruff format --check .
-python -m unittest discover -s api/tests -v
-npm --prefix frontend run lint
-npm --prefix frontend run build
+python bin/kadan.py check format
+python bin/kadan.py check api
+python bin/kadan.py check native
+python bin/kadan.py check frontend-lint
+python bin/kadan.py check frontend-unit
+python bin/kadan.py check frontend-build
 ```
 
 Manual end-to-end testing uses the playground. Check generation, cancellation and

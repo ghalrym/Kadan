@@ -87,22 +87,13 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_model_worker_protocol PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-add_executable(kadan-model-plan src/model_plan.cpp)
-target_link_libraries(kadan-model-plan PRIVATE kadan_model)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan-model-plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-add_executable(kadan-model-inspect src/model_inspect.cpp)
-target_link_libraries(kadan-model-inspect PRIVATE kadan_manifest)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_manifest PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  target_compile_options(kadan-model-inspect PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-add_executable(kadan-checkpoint-inspect src/checkpoint_inspect.cpp)
-target_link_libraries(kadan-checkpoint-inspect PRIVATE kadan_checkpoint)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  target_compile_options(kadan-checkpoint-inspect PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 add_library(kadan_cuda_plan src/cuda_plan.cpp)
 target_include_directories(kadan_cuda_plan PUBLIC include)
@@ -119,15 +110,6 @@ if(KADAN_ENABLE_CUDA)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(kadan_gpu PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Werror>)
   endif()
-
-
-  # Explicit tiny GPU run only; never registered with automatic CPU CTest.
-
-
-  # Explicit GPU-only regression; never executed automatically by CTest.
-
-
-  # Deliberately not added to CTest: execution requires explicit GPU authorization.
 endif()
 include(CTest)
 
@@ -137,59 +119,14 @@ target_link_libraries(kadan_video PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_video PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
-add_executable(kadan-video-component src/video_component.cpp)
-target_link_libraries(kadan-video-component PRIVATE kadan_video)
-
-# Terminal Laya scorer/action MLP; no encoder, tokenizer or decision backend.
-add_library(kadan_decision src/decision.cpp)
-target_link_libraries(kadan_decision PUBLIC kadan_checkpoint kadan_resources)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_decision PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
-add_executable(kadan-decision-component src/decision_component.cpp)
-target_link_libraries(kadan-decision-component PRIVATE kadan_decision)
-
-# Qwen3-TTS text projection only; no text-to-audio backend.
-add_library(kadan_tts src/tts.cpp)
-target_link_libraries(kadan_tts PUBLIC kadan_checkpoint kadan_resources)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_tts PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
-add_executable(kadan-tts-component src/tts_component.cpp)
-target_link_libraries(kadan-tts-component PRIVATE kadan_tts)
 
 # Bounded Whisper-compatible log-mel frontend; no transcription backend.
 add_library(kadan_stt src/stt.cpp)
 target_link_libraries(kadan_stt PUBLIC kadan_resources)
-add_executable(kadan-stt-component src/stt_component.cpp)
-target_link_libraries(kadan-stt-component PRIVATE kadan_stt)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_stt PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-  target_compile_options(kadan-stt-component PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-
-# H3 block 0 pre-attention projection only; no video generation backend.
-add_executable(kadan-video-qkv-component src/video_qkv_component.cpp)
-target_link_libraries(kadan-video-qkv-component PRIVATE kadan_video)
-
-# H3 Q/K normalization and 3D rotary boundary, without attention or generation.
-add_executable(kadan-video-rope-component src/video_rope_component.cpp)
-target_link_libraries(kadan-video-rope-component PRIVATE kadan_video)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan-video-rope-component PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-
-# Bounded H3 block 0 attention/output projection, CPU diagnostic only.
-add_executable(kadan-video-attention-component src/video_attention_component.cpp)
-target_link_libraries(kadan-video-attention-component PRIVATE kadan_video)
-
-# Block 0 residual/norm2/gated feed-forward CPU tail; not full generation.
-add_executable(kadan-video-ff-component src/video_ff_component.cpp)
-target_link_libraries(kadan-video-ff-component PRIVATE kadan_video)
-
-# Composed block0 diagnostic over one or two supplied hidden tokens, CPU only.
-add_executable(kadan-video-block-component src/video_block_component.cpp)
-target_link_libraries(kadan-video-block-component PRIVATE kadan_video)
 
 # Optional complete CPU decision runtime; no Python runtime dependency.
 option(KADAN_ENABLE_DECISIONS "Build complete CPU Laya request executor" OFF)
@@ -203,10 +140,6 @@ if(KADAN_ENABLE_DECISIONS)
   target_compile_options(kadan_decision_executor PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
-# Complete CPU H3 VAE decode; text-to-video generation remains unsupported.
-add_executable(kadan-video-decode src/video_decode.cpp)
-target_link_libraries(kadan-video-decode PRIVATE kadan_video)
-
 # Complete H3 text conditioning model, CPU only.
 add_library(kadan_h3_text src/h3_text.cpp)
 target_link_libraries(kadan_h3_text PUBLIC kadan_checkpoint kadan_resources)
@@ -214,18 +147,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_h3_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-add_executable(kadan-h3-text-encode src/h3_text_encode.cpp)
-target_link_libraries(kadan-h3-text-encode PRIVATE kadan_h3_text)
-
-
 add_library(kadan_h3_denoiser src/h3_denoiser.cpp)
 target_link_libraries(kadan_h3_denoiser PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_h3_denoiser PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
-add_executable(kadan-h3-denoise src/h3_denoise.cpp)
-target_link_libraries(kadan-h3-denoise PRIVATE kadan_h3_denoiser)
-
 
 option(KADAN_ENABLE_H3_GENERATION "Build native H3 prompt and video generation pipeline" OFF)
 if(KADAN_ENABLE_H3_GENERATION)
@@ -235,8 +161,6 @@ if(KADAN_ENABLE_H3_GENERATION)
   add_library(kadan_h3_tokenizer src/h3_tokenizer.cpp)
   target_link_libraries(kadan_h3_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_H3_PCRE2})
   target_compile_options(kadan_h3_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_executable(kadan-h3-tokenize src/h3_tokenize.cpp)
-  target_link_libraries(kadan-h3-tokenize PRIVATE kadan_h3_tokenizer)
 endif()
 if(KADAN_ENABLE_H3_GENERATION)
   add_library(kadan_h3_audio src/h3_audio.cpp)
@@ -250,8 +174,6 @@ if(KADAN_ENABLE_H3_GENERATION)
   add_library(kadan_h3_generation src/h3_generation.cpp src/h3_codec.cpp)
   target_link_libraries(kadan_h3_generation PUBLIC kadan_h3_tokenizer kadan_h3_text kadan_h3_denoiser kadan_video kadan_h3_audio)
   target_compile_options(kadan_h3_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-  add_executable(kadan-h3-generate src/h3_generate.cpp)
-  target_link_libraries(kadan-h3-generate PRIVATE kadan_h3_generation)
 endif()
 
 if(KADAN_ENABLE_CUDA)
@@ -266,25 +188,14 @@ endif()
 add_library(kadan_h3_profile src/h3_profile.cpp)
 target_include_directories(kadan_h3_profile PUBLIC include)
 target_compile_features(kadan_h3_profile PUBLIC cxx_std_20)
-if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_H3_GENERATION)
-  foreach(target kadan-h3-denoise kadan-h3-text-encode kadan-video-decode kadan-h3-generate)
-    target_compile_definitions(${target} PRIVATE KADAN_H3_CUDA=1)
-    target_link_libraries(${target} PRIVATE kadan_h3_cuda)
-  endforeach()
-endif()
-if(KADAN_ENABLE_H3_GENERATION)
-  target_link_libraries(kadan-h3-generate PRIVATE kadan_h3_profile)
-endif()
 
 # Full CPU Whisper network; no model download or implicit GPU test.
 add_library(kadan_whisper src/whisper.cpp src/whisper_tokens.cpp)
-add_executable(kadan-whisper-network src/whisper_network.cpp)
-target_link_libraries(kadan-whisper-network PRIVATE kadan_whisper)
+
 target_link_libraries(kadan_whisper PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_whisper PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
-
 
 option(KADAN_ENABLE_WHISPER_BLAS "Accelerate CPU Whisper projections with single-thread OpenBLAS" OFF)
 if(KADAN_ENABLE_WHISPER_BLAS)
@@ -299,16 +210,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_tts_audio PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-add_executable(kadan-tts-audio-decode src/tts_audio_decode.cpp)
-target_link_libraries(kadan-tts-audio-decode PRIVATE kadan_tts_audio)
-
 add_library(kadan_tts_generator src/tts_generator.cpp)
 target_link_libraries(kadan_tts_generator PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_tts_generator PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
-
-
 
 option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
 if(KADAN_ENABLE_TTS_WORKER)
@@ -318,8 +224,6 @@ if(KADAN_ENABLE_TTS_WORKER)
   add_library(kadan_tts_tokenizer src/tts_tokenizer.cpp)
   target_link_libraries(kadan_tts_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TTS_PCRE2})
   target_compile_options(kadan_tts_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_executable(kadan-tts-tokenize src/tts_tokenize.cpp)
-  target_link_libraries(kadan-tts-tokenize PRIVATE kadan_tts_tokenizer)
 endif()
 
 add_library(kadan_image src/image.cpp)
@@ -328,26 +232,17 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_image PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-add_executable(kadan-image-block src/image_block.cpp)
-target_link_libraries(kadan-image-block PRIVATE kadan_image)
-
 add_library(kadan_image_denoiser src/image_denoiser.cpp)
 target_link_libraries(kadan_image_denoiser PUBLIC kadan_image)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_image_denoiser PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-add_executable(kadan-image-denoise src/image_denoise.cpp)
-target_link_libraries(kadan-image-denoise PRIVATE kadan_image_denoiser)
-
 add_library(kadan_image_text src/image_text.cpp)
 target_link_libraries(kadan_image_text PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_image_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
-
-add_executable(kadan-image-text src/image_text_encode.cpp)
-target_link_libraries(kadan-image-text PRIVATE kadan_image_text)
 
 add_library(kadan_image_vae src/image_vae.cpp)
 target_link_libraries(kadan_image_vae PUBLIC kadan_checkpoint kadan_resources)
@@ -358,8 +253,6 @@ if(KADAN_ENABLE_IMAGE_BLAS)
   target_compile_definitions(kadan_image_vae PRIVATE KADAN_IMAGE_BLAS=1)
   target_link_libraries(kadan_image_vae PRIVATE ${KADAN_IMAGE_OPENBLAS})
 endif()
-add_executable(kadan-image-decode src/image_decode.cpp)
-target_link_libraries(kadan-image-decode PRIVATE kadan_image_vae)
 
 option(KADAN_ENABLE_IMAGE_GENERATION "Build complete native CPU image worker" OFF)
 if(KADAN_ENABLE_IMAGE_GENERATION)
@@ -369,12 +262,8 @@ find_library(KADAN_IMAGE_PCRE2 pcre2-8 REQUIRED)
 add_library(kadan_text_tokenizer src/text_tokenizer.cpp)
 target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_IMAGE_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-add_executable(kadan-image-tokenize src/image_tokenize.cpp)
-target_link_libraries(kadan-image-tokenize PRIVATE kadan_text_tokenizer)
 endif()
 
-add_executable(kadan-image-schedule src/image_schedule.cpp)
-target_link_libraries(kadan-image-schedule PRIVATE kadan_resources)
 if(KADAN_ENABLE_IMAGE_BLAS)
   foreach(image_target kadan_image kadan_image_denoiser kadan_image_text)
     target_compile_definitions(${image_target} PRIVATE KADAN_IMAGE_BLAS=1)
@@ -493,4 +382,9 @@ if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
   add_executable(text-tokenizer-tests tests/text_tokenizer.cpp)
   target_link_libraries(text-tokenizer-tests PRIVATE kadan_text_tokenizer nlohmann_json::nlohmann_json ICU::uc)
   add_test(NAME text-tokenizer COMMAND text-tokenizer-tests)
+endif()
+
+option(KADAN_BUILD_TOOLS "Build developer tools exposed by bin/kadan.py" OFF)
+if(KADAN_BUILD_TOOLS)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../bin" "${CMAKE_CURRENT_BINARY_DIR}/tools")
 endif()

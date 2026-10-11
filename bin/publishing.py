@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Restricted draft-PR publisher. Inputs are JSON data, never executable code.
 
 Environment GET does not document can_admins_bypass: administrators must disable
@@ -14,6 +13,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+import typer
+
+app = typer.Typer(no_args_is_help=True)
 
 REPOSITORY = "ghalrym/Kadan"
 REPOSITORY_ID = 1403845248
@@ -442,25 +445,24 @@ def publish(api, values, environ):
         ) from None
 
 
-def main(argv=None, environ=None):
+def run_workflow(mode: str, environ=None):
     """Run preflight or publication from the workflow event file and return a process exit code.
 
     Preflight uses unauthenticated public reads; publication requires the minted token.
     Print only safe status, a validated PR URL, or a sanitized failure; never the key/token.
     """
     environ = os.environ if environ is None else environ
-    argv = sys.argv[1:] if argv is None else argv
     try:
         require(
-            argv in (["preflight"], ["publish"]),
-            "Usage: publish_pr.py preflight|publish",
+            mode in ("preflight", "publish"),
+            "Expected a preflight or publish workflow operation",
         )
         path = environ.get("GITHUB_EVENT_PATH")
         require(bool(path), "Missing workflow event path")
         raw = Path(path).read_bytes()
         require(len(raw) <= 1024 * 1024, "Workflow event exceeds size limit")
         values = inputs(json.loads(raw), environ)
-        if argv == ["preflight"]:
+        if mode == "preflight":
             preflight(
                 API()
             )  # Public metadata only; no credential or settings mutation.
@@ -480,5 +482,13 @@ def main(argv=None, environ=None):
     return 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@app.command("preflight")
+def preflight_command() -> None:
+    """Validate the owner-dispatched publishing workflow without credentials."""
+    raise typer.Exit(run_workflow("preflight"))
+
+
+@app.command("publish")
+def publish_command() -> None:
+    """Publish the workflow's draft PR with its scoped installation token."""
+    raise typer.Exit(run_workflow("publish"))
