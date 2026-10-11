@@ -1,5 +1,6 @@
 #pragma once
 #include <stdexcept>
+
 namespace kadan::cuda {
 // An operation could not establish that queued work stopped touching borrowed
 // buffers. Keep every borrowed input/output allocation pinned and alive until
@@ -9,4 +10,4 @@ class DeviceBufferQuarantine : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
-} // namespace kadan::cuda
+}  // namespace kadan::cuda

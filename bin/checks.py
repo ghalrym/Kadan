@@ -1,6 +1,10 @@
 """Repeatable formatting, build, and unit-test commands."""
 
+from concurrent.futures import ThreadPoolExecutor
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import typer
@@ -31,11 +35,98 @@ NATIVE_UNIT_TARGETS = [
     "native-text-tests",
 ]
 
+CPP_SUFFIXES = {".cpp", ".hpp", ".h", ".cu", ".cuh"}
+
+# Every CPU component, so clang-tidy sees each non-CUDA translation unit.
+CPP_LINT_OPTIONS = [
+    "-DKADAN_ENABLE_CUDA=OFF",
+    "-DKADAN_BUILD_TOOLS=ON",
+    "-DKADAN_ENABLE_DECISIONS=ON",
+    "-DKADAN_ENABLE_H3_GENERATION=ON",
+    "-DKADAN_ENABLE_TTS_WORKER=ON",
+    "-DKADAN_ENABLE_IMAGE_GENERATION=ON",
+    "-DBUILD_TESTING=ON",
+]
+
+
+def llvm_tool(name: str) -> str:
+    """Prefer the pinned wheel installed beside this interpreter over the system tool."""
+    pinned = Path(sys.executable).parent / name
+    return str(pinned) if pinned.exists() else name
+
+
+def cpp_sources() -> list[Path]:
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", "native", "bin/cpp"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return [
+        ROOT / name for name in listed.split("\0") if Path(name).suffix in CPP_SUFFIXES
+    ]
+
 
 @app.command("format")
 def format_python(write: bool = False) -> None:
     """Check Python formatting, or apply it with --write."""
     run([sys.executable, "-m", "ruff", "format", *([] if write else ["--check"]), "."])
+
+
+@app.command("cpp-format")
+def format_cpp(write: bool = False) -> None:
+    """Check C++ and CUDA formatting, or apply it with --write."""
+    mode = ["-i"] if write else ["--dry-run", "--Werror"]
+    run([llvm_tool("clang-format"), *mode, *cpp_sources()])
+
+
+@app.command("cpp-lint")
+def lint_cpp(build_dir: Path = ROOT / "build/native-lint", fix: bool = False) -> None:
+    """Run clang-tidy over every CPU translation unit, or apply its fixes with --fix."""
+    build_dir = build_dir.resolve()
+    run(
+        [
+            "cmake",
+            "-S",
+            ROOT / "native",
+            "-B",
+            build_dir,
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            *CPP_LINT_OPTIONS,
+        ]
+    )
+    sources = set(cpp_sources())
+    commands = json.loads((build_dir / "compile_commands.json").read_text())
+    units = sorted({Path(c["file"]) for c in commands} & sources)
+    tidy = [
+        llvm_tool("clang-tidy"),
+        "-p",
+        str(build_dir),
+        "--quiet",
+        # CMake omits -std when the compiler already defaults to C++20, which clang does not.
+        "--extra-arg=-std=gnu++20",
+        *(["--fix"] if fix else []),
+    ]
+
+    def check_unit(unit: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*tidy, str(unit)], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+
+    # Fixes to a shared header must not race between translation units.
+    workers = 1 if fix else os.cpu_count() or 1
+    with ThreadPoolExecutor(workers) as pool:
+        results = list(pool.map(check_unit, units))
+    failed = [result for result in results if result.returncode]
+    for result in results:
+        if result.stdout.strip():
+            typer.echo(result.stdout, nl=False)
+        if result.returncode and result.stderr.strip():
+            typer.echo(result.stderr, err=True, nl=False)
+    typer.echo(f"clang-tidy checked {len(units)} translation units.")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()

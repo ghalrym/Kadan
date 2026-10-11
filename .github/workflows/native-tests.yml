@@ -22,3 +22,35 @@ jobs:
         run: python3 -m pip install -r bin/requirements.txt
       - name: Run native unit checks
         run: python3 bin/kadan.py check native --build-dir /tmp/kadan-native --sanitize
+  cpp-format:
+    name: C++ format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned LLVM tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check C++ formatting
+        run: python bin/kadan.py check cpp-format
+  cpp-lint:
+    name: C++ lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native component headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev libicu-dev libopenblas-dev libpcre2-dev
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned LLVM tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run clang-tidy
+        run: python bin/kadan.py check cpp-lint --build-dir /tmp/kadan-lint

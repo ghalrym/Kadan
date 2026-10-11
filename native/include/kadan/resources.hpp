@@ -15,15 +15,33 @@ using Bytes = std::uint64_t;
 using Handle = std::uint64_t;
 // Index zero is host RAM; subsequent entries are independent device budgets.
 using Footprint = std::vector<Bytes>;
-enum class Workload { llm, image, video, speech, tts, decision };
-enum class State { loading, resident, evicting };
+enum class Workload {
+    llm,
+    image,
+    video,
+    speech,
+    tts,
+    decision
+};
+enum class State {
+    loading,
+    resident,
+    evicting
+};
+
 struct Resident {
     Workload workload;
     Footprint bytes;
     State state = State::loading;
     std::uint64_t pins = 0;
 };
-struct Snapshot { Footprint capacity; Footprint used; std::size_t residents; };
+
+struct Snapshot {
+    Footprint capacity;
+    Footprint used;
+    std::size_t residents;
+};
+
 struct ResourceExhausted : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -35,63 +53,82 @@ public:
     // Bound control-plane storage even when every reservation requests zero bytes.
     static constexpr std::size_t max_residents = 1024;
     static constexpr std::size_t max_devices = 64;
+
     explicit Resources(Footprint capacity)
-        : capacity_limit_(capacity), capacity_(std::move(capacity)), used_(capacity_.size()) {
-        if (capacity_.empty()) throw std::invalid_argument("host_budget_required");
-        if (capacity_.size() > max_devices + 1) throw std::invalid_argument("too_many_devices");
+        : capacity_limit_(capacity), capacity_(std::move(capacity)),
+          used_(capacity_.size()) {
+        if (capacity_.empty())
+            throw std::invalid_argument("host_budget_required");
+        if (capacity_.size() > max_devices + 1)
+            throw std::invalid_argument("too_many_devices");
     }
+
     // The single inference owner refreshes physical capacity only after all
     // previous engine allocations have been acknowledged as released.
     void reset_capacity(Footprint capacity) {
         std::lock_guard lock(mutex_);
-        if (capacity.size()!=capacity_.size() || !residents_.empty())
+        if (capacity.size() != capacity_.size() || !residents_.empty())
             throw std::runtime_error("capacity_requires_empty_ledger");
         capacity_limit_ = capacity;
         capacity_.swap(capacity);
     }
+
     void refresh_available(const Footprint& available) {
         std::lock_guard lock(mutex_);
-        if (available.size() != used_.size()) throw std::invalid_argument("budget_shape");
+        if (available.size() != used_.size())
+            throw std::invalid_argument("budget_shape");
         for (std::size_t index = 0; index < available.size(); ++index) {
             if (available[index] > std::numeric_limits<Bytes>::max() - used_[index])
                 throw std::overflow_error("budget_overflow");
             // Recover after pressure clears, bounded by the last empty-ledger
             // measurement so conservative reservations cannot inflate capacity.
-            capacity_[index] = std::min(capacity_limit_[index], used_[index] + available[index]);
+            capacity_[index] =
+                std::min(capacity_limit_[index], used_[index] + available[index]);
         }
     }
+
     Handle reserve(Workload workload, Footprint bytes) {
         std::lock_guard lock(mutex_);
-        if (bytes.size() != capacity_.size()) throw std::invalid_argument("budget_shape");
-        if (residents_.size() >= max_residents) throw std::runtime_error("resident_limit");
+        if (bytes.size() != capacity_.size())
+            throw std::invalid_argument("budget_shape");
+        if (residents_.size() >= max_residents)
+            throw std::runtime_error("resident_limit");
         for (std::size_t i = 0; i < bytes.size(); ++i)
-            if (bytes[i] > capacity_[i] - used_[i]) throw ResourceExhausted("exhausted");
-        if (next_ == std::numeric_limits<Handle>::max()) throw std::runtime_error("handles_exhausted");
+            if (bytes[i] > capacity_[i] - used_[i])
+                throw ResourceExhausted("exhausted");
+        if (next_ == std::numeric_limits<Handle>::max())
+            throw std::runtime_error("handles_exhausted");
         const auto handle = next_;
         // Allocate the record before changing accounting (strong exception safety).
         residents_.emplace(handle, Resident{workload, std::move(bytes)});
-        for (std::size_t i = 0; i < used_.size(); ++i) used_[i] += residents_.at(handle).bytes[i];
+        for (std::size_t i = 0; i < used_.size(); ++i)
+            used_[i] += residents_.at(handle).bytes[i];
         ++next_;
         return handle;
     }
+
     // Extend/shrink one still-loading reservation atomically after metadata planning.
     // Failed admission preserves both the reservation and aggregate accounting.
     void resize_loading(Handle handle, Footprint bytes) {
-        std::lock_guard lock(mutex_);auto& r=get(handle);
-        require(r.state==State::loading && r.pins==0,"not_loading");
-        require(bytes.size()==capacity_.size(),"budget_shape");
-        for(std::size_t i=0;i<bytes.size();++i)
+        std::lock_guard lock(mutex_);
+        auto& r = get(handle);
+        require(r.state == State::loading && r.pins == 0, "not_loading");
+        require(bytes.size() == capacity_.size(), "budget_shape");
+        for (std::size_t i = 0; i < bytes.size(); ++i)
             if (bytes[i] > capacity_[i] - (used_[i] - r.bytes[i]))
                 throw ResourceExhausted("exhausted");
-        for(std::size_t i=0;i<bytes.size();++i) used_[i]=used_[i]-r.bytes[i]+bytes[i];
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+            used_[i] = used_[i] - r.bytes[i] + bytes[i];
         r.bytes.swap(bytes);
     }
+
     void loaded(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);
         require(r.state == State::loading, "not_loading");
         r.state = State::resident;
     }
+
     void pin(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);
@@ -99,53 +136,68 @@ public:
         require(r.pins != std::numeric_limits<std::uint64_t>::max(), "pins_exhausted");
         ++r.pins;
     }
+
     void unpin(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);
         require(r.pins != 0, "not_pinned");
         --r.pins;
     }
+
     void begin_eviction(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);
         require(r.state == State::resident && r.pins == 0, "busy");
         r.state = State::evicting;
     }
+
     void eviction_failed(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);
         require(r.state == State::evicting, "not_evicting");
         r.state = State::resident;
     }
+
     // For a failed/aborted load or successful eviction, only after allocations
     // and asynchronous device work have been cleaned up by the executor.
     void released(Handle handle) {
         std::lock_guard lock(mutex_);
         const auto& r = get(handle);
         require(r.state != State::resident && r.pins == 0, "busy");
-        for (std::size_t i = 0; i < used_.size(); ++i) used_[i] -= r.bytes[i];
+        for (std::size_t i = 0; i < used_.size(); ++i)
+            used_[i] -= r.bytes[i];
         residents_.erase(handle);
     }
+
     Resident reservation(Handle handle) const {
         std::lock_guard lock(mutex_);
-        auto it=residents_.find(handle);
-        if(it==residents_.end()) throw std::runtime_error("stale_handle");
+        auto it = residents_.find(handle);
+        if (it == residents_.end())
+            throw std::runtime_error("stale_handle");
         return it->second;
     }
+
     Snapshot snapshot() const {
         std::lock_guard lock(mutex_);
         return {capacity_, used_, residents_.size()};
     }
+
 private:
-    static void require(bool ok, const char* error) { if (!ok) throw std::runtime_error(error); }
+    static void require(bool ok, const char* error) {
+        if (!ok)
+            throw std::runtime_error(error);
+    }
+
     Resident& get(Handle handle) {
         auto it = residents_.find(handle);
-        if (it == residents_.end()) throw std::runtime_error("stale_handle");
+        if (it == residents_.end())
+            throw std::runtime_error("stale_handle");
         return it->second;
     }
+
     Footprint capacity_limit_, capacity_, used_;
     std::map<Handle, Resident> residents_;
     Handle next_ = 1;
     mutable std::mutex mutex_;
 };
-} // namespace kadan
+}  // namespace kadan
