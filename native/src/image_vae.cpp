@@ -39,7 +39,10 @@ struct VaeDecoder::Impl{
  Impl(Resources& a,VaeConfig config,std::shared_ptr<DenseCompute> c):compute(std::move(c)),r(a),metadata(a,8*1024*1024),d(config),specs(layout(config)){for(std::size_t i=0;i<specs.size();++i)names.emplace(specs[i].name,i);}
  checkpoint::FloatSlice weight(const std::string& n,const std::atomic_bool& cancel){const auto& s=specs.at(names.at(n));return checkpoint::float_slice(r,Workload::image,*shard,n,0,s.count,cancel);}
  T make(std::size_t c,std::size_t h,std::size_t w){return std::make_unique<Tensor>(r,c,h,w);}
- T conv(const std::string& p,Tensor& x,const std::atomic_bool& cancel){const auto& spec=specs.at(names.at(p+".weight"));auto out=std::size_t(spec.shape[0]),kernel=std::size_t(spec.shape[2]),k=x.c*kernel*kernel,points=x.h*x.w;need(spec.shape[1]==x.c,"image_vae_conv_shape");auto bias=weight(p+".bias",cancel);auto y=make(out,x.h,x.w);constexpr std::size_t tile=64;Buffer columns(r,k*tile),result(r,out*tile);
+ T conv(const std::string& p,Tensor& x,const std::atomic_bool& cancel){const auto& spec=specs.at(names.at(p+".weight"));auto out=std::size_t(spec.shape[0]),kernel=std::size_t(spec.shape[2]),k=x.c*kernel*kernel,points=x.h*x.w;need(spec.shape[1]==x.c,"image_vae_conv_shape");auto bias=weight(p+".bias",cancel);auto y=make(out,x.h,x.w);
+   // Match the existing CUDA projection planner's maximum 256-row batch. Smaller
+   // batches repeat source lookup, device dispatch and synchronization.
+   constexpr std::size_t tile=256;Buffer columns(r,k*tile),result(r,out*tile);
    for(std::size_t at=0;at<points;at+=tile){stop(cancel);const auto count=std::min(tile,points-at);
     for(std::size_t t=0;t<count;++t)for(std::size_t ic=0;ic<x.c;++ic)for(std::size_t ky=0;ky<kernel;++ky)for(std::size_t kx=0;kx<kernel;++kx){const auto py=std::ptrdiff_t((at+t)/x.w+ky)-std::ptrdiff_t(kernel/2),px=std::ptrdiff_t((at+t)%x.w+kx)-std::ptrdiff_t(kernel/2);columns.data[t*k+(ic*kernel+ky)*kernel+kx]=(py>=0&&px>=0&&py<std::ptrdiff_t(x.h)&&px<std::ptrdiff_t(x.w))?x.values.data[ic*points+std::size_t(py)*x.w+std::size_t(px)]:0;}
     checkpoint::project_source(r,Workload::image,compute.get(),*shard,p+".weight",bias,columns.span().first(count*k),k,out,result.span().first(count*out),cancel);
