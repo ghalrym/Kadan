@@ -222,6 +222,22 @@ int main() {
     const auto normal =
         projection_plan(4096, 4096, 4, false, 1, 2ULL * 1024 * 1024 * 1024);
     check(normal.rows == 256 && normal.columns == 4096);
+    // Long image/video inputs fit without duplicating their upload per column chunk.
+    constexpr Bytes scratch = 2ULL * 1024 * 1024 * 1024;
+    const auto projection = projection_plan(12288, 341, 4, false, 1, scratch);
+    check(projection_input_rows(16394, 12288, projection, scratch) == 16394);
+    const auto needed = projection.bytes + (16394 - projection.rows) * 12288 * 4;
+    check(projection_input_rows(16394, 12288, projection, needed) == 16394);
+    check(
+        projection_input_rows(16394, 12288, projection, needed - 1) == projection.rows
+    );
+    check(projection_input_rows(1, 12288, projection, scratch) == projection.rows);
+    check(
+        projection_input_rows(SIZE_MAX, 12288, projection, scratch) == projection.rows
+    );
+    fails([&] { projection_input_rows(0, 12288, projection, scratch); });
+    fails([&] { projection_input_rows(1, 0, projection, scratch); });
+    fails([&] { projection_input_rows(1, 12288, projection, projection.bytes - 1); });
     const auto small = projection_plan(4096, 4096, 4, false, 1, 16ULL * 1024 * 1024);
     check(small.bytes <= 16ULL * 1024 * 1024 && small.columns < 4096);
     check(attention_plan(18432, 18432, 1024, 4, 2ULL * 1024 * 1024 * 1024).full_heads);
