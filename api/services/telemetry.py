@@ -1,4 +1,5 @@
 """Bounded process-local HTTP measurements; no prompts, outputs or credentials stored."""
+
 import asyncio
 from collections import deque
 from datetime import datetime, timezone
@@ -11,10 +12,13 @@ from uuid import uuid4
 from api.pydantic_models.requests import RequestRecord
 
 GENERATION_PATHS = {
-    '/v1/chat/completions': 'LLM', '/v1/decisions': 'Decision',
-    '/v1/images/generations': 'Image', '/v1/images/edits': 'Image',
-    '/v1/videos/generations': 'Video', '/v1/audio/speech': 'TTS',
-    '/v1/audio/transcriptions': 'STT',
+    "/v1/chat/completions": "LLM",
+    "/v1/decisions": "Decision",
+    "/v1/images/generations": "Image",
+    "/v1/images/edits": "Image",
+    "/v1/videos/generations": "Video",
+    "/v1/audio/speech": "TTS",
+    "/v1/audio/transcriptions": "STT",
 }
 MAX_BODY_SUMMARY_BYTES = 16_384
 
@@ -24,16 +28,17 @@ class TelemetryStore:
 
     Restarting creates a new epoch and clears all measurements. Callers pair
     each begin with one finish; records supplied to finish must not be mutated."""
+
     def __init__(self, capacity=1000):
         """Start an empty bounded history; reject nonpositive record capacity."""
         if capacity < 1:
-            raise ValueError('Telemetry capacity must be positive')
+            raise ValueError("Telemetry capacity must be positive")
         self.capacity = capacity
         self._records = deque(maxlen=capacity)
         self._lock = threading.Lock()
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.active = self.completed = 0
-        self._last_evicted = float('-inf')
+        self._last_evicted = float("-inf")
 
     def begin(self):
         """Increment the active-handler count under the store lock."""
@@ -72,12 +77,21 @@ class TelemetryStore:
         with self._lock:
             recent = [record for stamp, record in self._records if stamp > now - 60]
             return dict(
-                started_at=self.started_at, retention_limit=self.capacity,
-                retained_requests=len(self._records), completed_requests=self.completed,
-                active_requests=self.active, requests_per_minute=len(recent),
+                started_at=self.started_at,
+                retention_limit=self.capacity,
+                retained_requests=len(self._records),
+                completed_requests=self.completed,
+                active_requests=self.active,
+                requests_per_minute=len(recent),
                 window_truncated=self._last_evicted > now - 60,
-                p50_latency_seconds=median(r.latency_ms for r in recent) / 1000 if recent else None,
-                error_rate_percent=100 * sum(r.status >= 400 for r in recent) / len(recent) if recent else None,
+                p50_latency_seconds=median(r.latency_ms for r in recent) / 1000
+                if recent
+                else None,
+                error_rate_percent=100
+                * sum(r.status >= 400 for r in recent)
+                / len(recent)
+                if recent
+                else None,
             )
 
 
@@ -87,30 +101,33 @@ telemetry = TelemetryStore()
 def summarize(body, size, complete):
     """Summarize structure only; never retain user text, uploaded media or arbitrary keys."""
     if size > MAX_BODY_SUMMARY_BYTES:
-        return f'{size} request bytes; payload exceeds summary limit', None
+        return f"{size} request bytes; payload exceeds summary limit", None
     if not complete:
-        return f'{size} request bytes received; body incomplete or not consumed', None
+        return f"{size} request bytes received; body incomplete or not consumed", None
     try:
         value = json.loads(body)
     except (ValueError, UnicodeError, RecursionError):
-        return f'{size} request bytes; non-JSON or malformed JSON', None
+        return f"{size} request bytes; non-JSON or malformed JSON", None
     if not isinstance(value, dict):
-        return f'{size} request bytes; JSON {type(value).__name__}', None
-    parts = [f'{size} request bytes', 'JSON object']
-    messages = value.get('messages')
+        return f"{size} request bytes; JSON {type(value).__name__}", None
+    parts = [f"{size} request bytes", "JSON object"]
+    messages = value.get("messages")
     if isinstance(messages, list):
-        parts.append(f'{len(messages)} messages')
-        chars = sum(len(m.get('text', '')) for m in messages
-                    if isinstance(m, dict) and isinstance(m.get('text'), str))
-        parts.append(f'{chars} message characters')
-    for key in ('prompt', 'text', 'input', 'instruction', 'state'):
+        parts.append(f"{len(messages)} messages")
+        chars = sum(
+            len(m.get("text", ""))
+            for m in messages
+            if isinstance(m, dict) and isinstance(m.get("text"), str)
+        )
+        parts.append(f"{chars} message characters")
+    for key in ("prompt", "text", "input", "instruction", "state"):
         if isinstance(value.get(key), str):
-            parts.append(f'{key}: {len(value[key])} characters')
+            parts.append(f"{key}: {len(value[key])} characters")
     # Model IDs can also contain user text. Keep only the curated public IDs.
-    model = value.get('model')
-    if not isinstance(model, str) or model not in ('small', 'medium', 'large'):
+    model = value.get("model")
+    if not isinstance(model, str) or model not in ("small", "medium", "large"):
         model = None
-    return '; '.join(parts), model
+    return "; ".join(parts), model
 
 
 class TelemetryMiddleware:
@@ -118,6 +135,7 @@ class TelemetryMiddleware:
 
     Buffer at most 16 KiB transiently for structural summaries. Monitoring
     reads bypass this wrapper, preventing polling from monitoring itself."""
+
     def __init__(self, app, store=None):
         """Wrap an ASGI app with an injected store or the process-local default."""
         self.app, self.store = app, store if store is not None else telemetry
@@ -129,13 +147,17 @@ class TelemetryMiddleware:
         response bytes; never retain output bodies. Cancellation records 499, as does
         an observed disconnect before response completion. Other raised exceptions
         record 500 unless that disconnect takes precedence; errors propagate. Elapsed time covers handler validation and cleanup."""
-        path = scope.get('path', '')
-        if scope['type'] != 'http' or scope.get('method') != 'POST' or path not in GENERATION_PATHS:
+        path = scope.get("path", "")
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or path not in GENERATION_PATHS
+        ):
             return await self.app(scope, receive, send)
         start = time.monotonic()
-        measurement = scope.setdefault('kadan_measurement', {})
-        scope['kadan_request_started'] = start
-        timestamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+        measurement = scope.setdefault("kadan_measurement", {})
+        scope["kadan_request_started"] = start
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         body = bytearray()
         received = sent = 0
         status = 500
@@ -149,13 +171,13 @@ class TelemetryMiddleware:
             or the client disconnected; do not drain an unread request body."""
             nonlocal received, complete, disconnected
             message = await receive()
-            if message['type'] == 'http.request':
-                chunk = message.get('body', b'')
+            if message["type"] == "http.request":
+                chunk = message.get("body", b"")
                 received += len(chunk)
                 if len(body) < MAX_BODY_SUMMARY_BYTES:
-                    body.extend(chunk[:MAX_BODY_SUMMARY_BYTES - len(body)])
-                complete = not message.get('more_body', False)
-            elif message['type'] == 'http.disconnect':
+                    body.extend(chunk[: MAX_BODY_SUMMARY_BYTES - len(body)])
+                complete = not message.get("more_body", False)
+            elif message["type"] == "http.disconnect":
                 disconnected = True
             return message
 
@@ -164,12 +186,14 @@ class TelemetryMiddleware:
 
             Completion is marked only after the final body message sends successfully."""
             nonlocal status, sent, response_complete
-            if message['type'] == 'http.response.start':
-                status = message['status']
-            elif message['type'] == 'http.response.body':
-                sent += len(message.get('body', b''))
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            elif message["type"] == "http.response.body":
+                sent += len(message.get("body", b""))
             await send(message)
-            if message['type'] == 'http.response.body' and not message.get('more_body', False):
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
                 response_complete = True
 
         try:
@@ -185,14 +209,41 @@ class TelemetryMiddleware:
                 status = 499
             summary, model = summarize(body, received, complete)
             elapsed = max(0, (time.monotonic() - start) * 1000)
-            self.store.finish(RequestRecord(
-                id='req_' + uuid4().hex, time=timestamp, type=GENERATION_PATHS[path],
-                model=model, status=status, latency=f'{elapsed / 1000:.3f} s',
-                latency_ms=round(elapsed, 3), endpoint=path, prompt=summary,
-                output=f'HTTP {status}; {sent} response bytes' + ('' if response_complete else '; response incomplete'),
-                request_bytes=received, response_bytes=sent,
-                **{key: value for key, value in measurement.items() if key in {
-                    "video_job_id", "generation_ttft_ms", "stream_ttft_ms", "prefill_ms", "decode_tokens_per_second",
-                    "output_tokens", "prefill_tokens", "conversation_key", "cache_hit", "reused_tokens",
-                    "stored_tokens", "cache_reason", "retention_reason", "cached_prefix_sha256"}},
-            ))
+            self.store.finish(
+                RequestRecord(
+                    id="req_" + uuid4().hex,
+                    time=timestamp,
+                    type=GENERATION_PATHS[path],
+                    model=model,
+                    status=status,
+                    latency=f"{elapsed / 1000:.3f} s",
+                    latency_ms=round(elapsed, 3),
+                    endpoint=path,
+                    prompt=summary,
+                    output=f"HTTP {status}; {sent} response bytes"
+                    + ("" if response_complete else "; response incomplete"),
+                    request_bytes=received,
+                    response_bytes=sent,
+                    **{
+                        key: value
+                        for key, value in measurement.items()
+                        if key
+                        in {
+                            "video_job_id",
+                            "generation_ttft_ms",
+                            "stream_ttft_ms",
+                            "prefill_ms",
+                            "decode_tokens_per_second",
+                            "output_tokens",
+                            "prefill_tokens",
+                            "conversation_key",
+                            "cache_hit",
+                            "reused_tokens",
+                            "stored_tokens",
+                            "cache_reason",
+                            "retention_reason",
+                            "cached_prefix_sha256",
+                        }
+                    },
+                )
+            )

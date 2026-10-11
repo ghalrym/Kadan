@@ -11,7 +11,9 @@ router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
 class TranscriptionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    audio: str = Field(min_length=1, description="Base64 mono 16-bit PCM WAV data URL at 16000 Hz")
+    audio: str = Field(
+        min_length=1, description="Base64 mono 16-bit PCM WAV data URL at 16000 Hz"
+    )
     model: str | None = None
     language: str | None = None
     formatting: bool = True
@@ -24,7 +26,7 @@ class TranscriptionRequest(BaseModel):
             raise ValueError("Audio must not be blank")
         return value.strip()
 
-    @field_validator('model')
+    @field_validator("model")
     @classmethod
     def validate_model(cls, value):
         return checkpoint(value).name if value is not None else None
@@ -49,35 +51,48 @@ class WhisperModels(BaseModel):
 
 
 class WhisperSelection(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
     model: str
 
-    @field_validator('model')
+    @field_validator("model")
     @classmethod
     def canonical_model(cls, value):
         return checkpoint(value).name
 
 
-@router.get('/models', operation_id='getWhisperModels')
+@router.get("/models", operation_id="getWhisperModels")
 def get_models() -> WhisperModels:
     """List all unique official checkpoints and the persisted selection."""
-    return WhisperModels(models=list(get_whisper_checkpoints()), selected=whisper_selection.selected())
+    return WhisperModels(
+        models=list(get_whisper_checkpoints()), selected=whisper_selection.selected()
+    )
 
 
-@router.put('/models', operation_id='selectWhisperModel')
+@router.put("/models", operation_id="selectWhisperModel")
 def select_model(body: WhisperSelection) -> WhisperModels:
     try:
         whisper_selection.select(body.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(503, 'Cannot persist Whisper selection.') from exc
+        raise HTTPException(503, "Cannot persist Whisper selection.") from exc
     return get_models()
 
 
-@router.post("", operation_id="transcribeAudio", responses={503: {"model": TranscriptionUnavailable}})
-async def transcribe_audio(body: TranscriptionRequest, request: Request) -> TranscriptionResponse:
+@router.post(
+    "",
+    operation_id="transcribeAudio",
+    responses={503: {"model": TranscriptionUnavailable}},
+)
+async def transcribe_audio(
+    body: TranscriptionRequest, request: Request
+) -> TranscriptionResponse:
     """Queue native Whisper and preserve its raw transcript and formatting status."""
-    if not body.audio.startswith('data:audio/wav;base64,'):
-        raise HTTPException(422, 'Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.')
-    return TranscriptionResponse(**await infer(request, inference.submit(body, feature='stt')))
+    if not body.audio.startswith("data:audio/wav;base64,"):
+        raise HTTPException(
+            422,
+            "Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.",
+        )
+    return TranscriptionResponse(
+        **await infer(request, inference.submit(body, feature="stt"))
+    )

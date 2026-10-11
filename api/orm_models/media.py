@@ -11,7 +11,9 @@ class ImageSet(Base):
     __tablename__ = "image_sets"
     __table_args__ = (
         CheckConstraint("mode IN ('Generate', 'Edit')", name="mode"),
-        CheckConstraint("aspect IN ('square', 'landscape', 'portrait', 'wide')", name="aspect"),
+        CheckConstraint(
+            "aspect IN ('square', 'landscape', 'portrait', 'wide')", name="aspect"
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)

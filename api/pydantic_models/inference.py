@@ -1,4 +1,5 @@
 """The API-to-native request data contract."""
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -6,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
 from api.pydantic_models.decisions import DecisionQuestion
 
-Feature = Literal['llm', 'image', 'video', 'stt', 'tts', 'decisions']
-Operation = Literal['generate', 'completion', 'load', 'unload']
+Feature = Literal["llm", "image", "video", "stt", "tts", "decisions"]
+Operation = Literal["generate", "completion", "load", "unload"]
 
 
 class ChatInput(BaseModel):
@@ -61,7 +62,7 @@ class VideoPaths(BaseModel):
 
 
 class Payload(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
 
 class EmptyPayload(Payload):
@@ -105,4 +106,12 @@ class VideoPayload(Payload):
     request: VideoInput
 
 
-NativePayload = EmptyPayload | ChatPayload | DecisionPayload | ImagePayload | SpeechPayload | TranscriptionPayload | VideoPayload
+NativePayload = (
+    EmptyPayload
+    | ChatPayload
+    | DecisionPayload
+    | ImagePayload
+    | SpeechPayload
+    | TranscriptionPayload
+    | VideoPayload
+)

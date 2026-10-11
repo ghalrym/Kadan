@@ -1,4 +1,5 @@
 """Persist Whisper checkpoint selection without owning inference."""
+
 import json
 import threading
 
@@ -14,8 +15,16 @@ class WhisperSelection:
     def selected(self):
         """Restore a canonical selection without loading model weights."""
         try:
-            name = checkpoint(json.loads((self.store.root / 'whisper-selection.json').read_text())['model']).name
-            return name if name in get_whisper_checkpoints() else next(iter(get_whisper_checkpoints()), None)
+            name = checkpoint(
+                json.loads((self.store.root / "whisper-selection.json").read_text())[
+                    "model"
+                ]
+            ).name
+            return (
+                name
+                if name in get_whisper_checkpoints()
+                else next(iter(get_whisper_checkpoints()), None)
+            )
         except (OSError, ValueError, KeyError, TypeError):
             return next(iter(get_whisper_checkpoints()), None)
 
@@ -26,9 +35,9 @@ class WhisperSelection:
             raise ValueError("Whisper checkpoint is not enabled in this version")
         with self.lock:
             self.store.root.mkdir(parents=True, exist_ok=True)
-            temporary = self.store.root / 'whisper-selection.tmp'
-            temporary.write_text(json.dumps({'model': name}))
-            temporary.replace(self.store.root / 'whisper-selection.json')
+            temporary = self.store.root / "whisper-selection.tmp"
+            temporary.write_text(json.dumps({"model": name}))
+            temporary.replace(self.store.root / "whisper-selection.json")
         return name
 
 

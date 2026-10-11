@@ -7,7 +7,9 @@ from api.orm_models.base import Base
 class RequestRecord(Base):
     __tablename__ = "request_records"
     __table_args__ = (
-        CheckConstraint("type IN ('LLM', 'Image', 'Video', 'TTS', 'STT', 'Decision')", name="type"),
+        CheckConstraint(
+            "type IN ('LLM', 'Image', 'Video', 'TTS', 'STT', 'Decision')", name="type"
+        ),
         CheckConstraint("status IN (200, 202, 429, 500)", name="status"),
     )
 

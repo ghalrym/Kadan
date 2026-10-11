@@ -7,6 +7,7 @@ from api.pydantic_models.media import ImageSet
 
 router = APIRouter(prefix="/v1/images/generations", tags=["Images"])
 
+
 class ImageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
@@ -20,7 +21,13 @@ class ImageResponse(BaseModel):
     image: ImageSet
 
 
-@router.post("", responses={503: {"description": "Image provider unavailable"}}, operation_id="generateImages")
+@router.post(
+    "",
+    responses={503: {"description": "Image provider unavailable"}},
+    operation_id="generateImages",
+)
 async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
     """Submit image generation to the single native inference worker."""
-    return await infer(request, inference.submit(body, feature='image', operation='generate'))
+    return await infer(
+        request, inference.submit(body, feature="image", operation="generate")
+    )

@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 
 class DatabaseSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="POSTGRES_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="POSTGRES_", env_file=".env", extra="ignore"
+    )
 
     host: str = "postgres"
     port: int = Field(default=5432, ge=1, le=65535)

@@ -22,9 +22,11 @@ async def lifespan(app: FastAPI):
         await inference.start()
         yield
 
+
 app = FastAPI(
     lifespan=lifespan,
-    title="Kadan API", version="0.0.1",
+    title="Kadan API",
+    version="0.0.1",
     description="Local model downloads and selection are persisted. One native C++ worker owns the bounded FIFO, model engines, resource admission and lifecycle. The API submits requests and presents native results. Chat history is client-owned.",
 )
 
@@ -32,9 +34,21 @@ app = FastAPI(
 app.add_middleware(TelemetryMiddleware)
 
 for router in (
-    health.router, messages.router, completions.router, decisions.router,
-    images.router, image_generations.router, edits.router,
-    video_generations.router, videos.router, speech.router, transcriptions.router,
-    metrics.router, requests.router, settings.router, models.router, model_lifecycle.router,
+    health.router,
+    messages.router,
+    completions.router,
+    decisions.router,
+    images.router,
+    image_generations.router,
+    edits.router,
+    video_generations.router,
+    videos.router,
+    speech.router,
+    transcriptions.router,
+    metrics.router,
+    requests.router,
+    settings.router,
+    models.router,
+    model_lifecycle.router,
 ):
     app.include_router(router)

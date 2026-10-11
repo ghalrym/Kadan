@@ -1,9 +1,14 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
-from api.services.model_downloads import BusyError, DownloadStatus, ModelsStatus, model_manager
+from api.services.model_downloads import (
+    BusyError,
+    DownloadStatus,
+    ModelsStatus,
+    model_manager,
+)
 
-router = APIRouter(prefix='/v1/models', tags=['models'])
+router = APIRouter(prefix="/v1/models", tags=["models"])
 
 
 class ModelStatus(BaseModel):
@@ -12,7 +17,9 @@ class ModelStatus(BaseModel):
     revision: str
     license: str
     estimated_bytes: int
-    kind: Literal['llm', 'video', 'speech', 'transcription', 'formatting', 'image', 'decision']
+    kind: Literal[
+        "llm", "video", "speech", "transcription", "formatting", "image", "decision"
+    ]
     display_name: str | None
     license_url: str | None
     license_notice: str | None
@@ -21,7 +28,9 @@ class ModelStatus(BaseModel):
     downloaded_bytes: int
     total_bytes: int
     error: str | None
-    context_limit: int | None = Field(description="Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode.")
+    context_limit: int | None = Field(
+        description="Configured tokens; unset models use 65536. Explicit null preserves architecture-maximum mode."
+    )
     architecture_context_limit: int | None
 
 
@@ -31,22 +40,25 @@ class ModelsResponse(BaseModel):
 
 
 class SelectionRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    model_id: Literal['small', 'medium', 'large']
+    model_config = ConfigDict(extra="forbid")
+    model_id: Literal["small", "medium", "large"]
 
 
 class DownloadRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
     license_acknowledged: StrictBool = False
 
 
 class ContextRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    context_limit: StrictInt | None = Field(ge=1, le=2**31 - 1,
-        description='Total context tokens; null uses the checkpoint architecture maximum on load.')
+    model_config = ConfigDict(extra="forbid")
+    context_limit: StrictInt | None = Field(
+        ge=1,
+        le=2**31 - 1,
+        description="Total context tokens; null uses the checkpoint architecture maximum on load.",
+    )
 
 
-@router.put('/{model_id}/context', response_model=ModelsResponse)
+@router.put("/{model_id}/context", response_model=ModelsResponse)
 def configure_context(model_id: str, body: ContextRequest) -> ModelsStatus:
     """Persist the model's context limit and return refreshed catalog status.
 
@@ -60,10 +72,13 @@ def configure_context(model_id: str, body: ContextRequest) -> ModelsStatus:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(503, 'Model storage is unavailable; check directory permissions and disk space') from exc
+        raise HTTPException(
+            503,
+            "Model storage is unavailable; check directory permissions and disk space",
+        ) from exc
 
 
-@router.get('', response_model=ModelsResponse)
+@router.get("", response_model=ModelsResponse)
 def list_models() -> ModelsStatus:
     """Return current catalog, download progress, saved selection, and context limits.
 
@@ -73,7 +88,7 @@ def list_models() -> ModelsStatus:
     return model_manager.status()
 
 
-@router.put('/selection', response_model=ModelsResponse)
+@router.put("/selection", response_model=ModelsResponse)
 def select_model(body: SelectionRequest) -> ModelsStatus:
     """Save a completed model as the selection for a subsequent runtime load.
 
@@ -87,10 +102,13 @@ def select_model(body: SelectionRequest) -> ModelsStatus:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(503, 'Model storage is unavailable; check directory permissions and disk space') from exc
+        raise HTTPException(
+            503,
+            "Model storage is unavailable; check directory permissions and disk space",
+        ) from exc
 
 
-@router.post('/{model_id}/download', response_model=ModelsResponse, status_code=202)
+@router.post("/{model_id}/download", response_model=ModelsResponse, status_code=202)
 def download_model(model_id: str, body: DownloadRequest | None = None) -> ModelsStatus:
     """Start a catalog checkpoint download and return status with HTTP 202.
 
@@ -98,17 +116,22 @@ def download_model(model_id: str, body: DownloadRequest | None = None) -> Models
     Unknown models return 400; active/completed conflicts return 409 and storage
     failures return 503. Only pinned catalog checkpoints may be downloaded."""
     try:
-        model_manager.start(model_id, license_acknowledged=bool(body and body.license_acknowledged))
+        model_manager.start(
+            model_id, license_acknowledged=bool(body and body.license_acknowledged)
+        )
         return model_manager.status()
     except BusyError as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(503, 'Model storage is unavailable; check directory permissions and disk space') from exc
+        raise HTTPException(
+            503,
+            "Model storage is unavailable; check directory permissions and disk space",
+        ) from exc
 
 
-@router.delete('/{model_id}/download', response_model=ModelsResponse, status_code=202)
+@router.delete("/{model_id}/download", response_model=ModelsResponse, status_code=202)
 def cancel_download(model_id: str) -> ModelsStatus:
     """Request cancellation and return status with HTTP 202 before cleanup finishes.
 
@@ -122,4 +145,7 @@ def cancel_download(model_id: str) -> ModelsStatus:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(503, 'Model storage is unavailable; check directory permissions and disk space') from exc
+        raise HTTPException(
+            503,
+            "Model storage is unavailable; check directory permissions and disk space",
+        ) from exc

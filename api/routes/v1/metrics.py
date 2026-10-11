@@ -6,11 +6,12 @@ from api.services.inference import inference
 from api.services.memory_telemetry import physical_memory
 from api.pydantic_models.inference import ImageProgress
 
-router = APIRouter(prefix='/v1/metrics', tags=['Monitoring'])
+router = APIRouter(prefix="/v1/metrics", tags=["Monitoring"])
 
 
 class ResourceMeter(BaseModel):
     """Observed host or device-wide memory in GiB, including other processes."""
+
     label: str
     used: float
     total: float
@@ -36,13 +37,14 @@ class MetricsResponse(BaseModel):
     Null latency/error statistics mean no retained samples in the window. A
     truncated window covers retained records only; Online does not imply a
     loaded model or successful GPU inference."""
+
     inference_progress: InferenceProgress | None = None
-    status: Literal['Online'] = 'Online'
+    status: Literal["Online"] = "Online"
     resources: list[ResourceMeter]
     resource_errors: list[str]
     reservations: list[MemoryReservation]
     reservations_observed_at: str | None = None
-    memory_unit: Literal['GiB'] = 'GiB'
+    memory_unit: Literal["GiB"] = "GiB"
     started_at: str
     retention_limit: int
     retained_requests: int
@@ -58,11 +60,17 @@ class MetricsResponse(BaseModel):
 def memory_meters():
     """Sample physical usage; native reservation snapshots are admission state."""
     readings, errors = physical_memory()
-    return [ResourceMeter(label=reading.label, used=reading.used_bytes / 1024**3,
-                          total=reading.total_bytes / 1024**3) for reading in readings], errors
+    return [
+        ResourceMeter(
+            label=reading.label,
+            used=reading.used_bytes / 1024**3,
+            total=reading.total_bytes / 1024**3,
+        )
+        for reading in readings
+    ], errors
 
 
-@router.get('', operation_id='getMetrics')
+@router.get("", operation_id="getMetrics")
 def get_metrics() -> MetricsResponse:
     """Combine a fresh memory sample with the bounded telemetry snapshot.
 
@@ -70,10 +78,22 @@ def get_metrics() -> MetricsResponse:
     does not increase request counts or feed back into latency statistics."""
     resources, errors = memory_meters()
     memory = inference.worker.memory
-    reservations = [] if memory is None else [
-        MemoryReservation(label='System RAM' if index == 0 else f'GPU {index - 1}',
-                          reserved_gib=used / 1024**3)
-        for index, used in enumerate(memory.used)]
-    return MetricsResponse(reservations=reservations,
-                           reservations_observed_at=inference.worker.memory_observed_at,
-                           inference_progress=inference.progress, resources=resources, resource_errors=errors, **telemetry.metrics())
+    reservations = (
+        []
+        if memory is None
+        else [
+            MemoryReservation(
+                label="System RAM" if index == 0 else f"GPU {index - 1}",
+                reserved_gib=used / 1024**3,
+            )
+            for index, used in enumerate(memory.used)
+        ]
+    )
+    return MetricsResponse(
+        reservations=reservations,
+        reservations_observed_at=inference.worker.memory_observed_at,
+        inference_progress=inference.progress,
+        resources=resources,
+        resource_errors=errors,
+        **telemetry.metrics(),
+    )

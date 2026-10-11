@@ -8,7 +8,10 @@ class LifespanTests(unittest.IsolatedAsyncioTestCase):
     async def test_startup_starts_fifo_and_shutdown_closes_owners(self):
         downloads = Mock()
         manager = Mock(start=AsyncMock(), close=AsyncMock())
-        with patch('api.server.model_manager', downloads), patch('api.server.inference', manager):
+        with (
+            patch("api.server.model_manager", downloads),
+            patch("api.server.inference", manager),
+        ):
             async with lifespan(app):
                 manager.start.assert_awaited_once()
                 manager.close.assert_not_awaited()

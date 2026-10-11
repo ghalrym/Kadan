@@ -124,11 +124,23 @@ existing storage; copying the entire collection is unnecessary.
 
 ## Checks
 
+Install the pinned Python development tools and format Python files from the
+repository root:
+
+```sh
+python -m pip install -r requirements-dev.txt
+python -m ruff format .
+```
+
+CI runs `python -m ruff format --check .` on every push and pull request and fails
+if any Python file needs formatting.
+
 Automated tests use pure logic, synthetic checkpoint metadata or fake boundaries.
 They do not start the application, execute inference or benchmark GPUs.
 The workflows list the unit targets and API tests.
 
 ```sh
+python -m ruff format --check .
 python -m unittest discover -s api/tests -v
 npm --prefix frontend run lint
 npm --prefix frontend run build

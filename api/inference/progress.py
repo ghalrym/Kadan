@@ -1,10 +1,11 @@
 """Bounded process-local stage visibility for the single shared queue owner."""
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
 import time
 
-_current = ContextVar('inference_progress', default=None)
+_current = ContextVar("inference_progress", default=None)
 _lock = threading.Lock()
 _active = None
 
@@ -12,7 +13,13 @@ _active = None
 @contextmanager
 def track(job_id, workload):
     global _active
-    state = dict(job_id=job_id, workload=workload, stage='preparing', value=0, observed_unix_ns=time.time_ns())
+    state = dict(
+        job_id=job_id,
+        workload=workload,
+        stage="preparing",
+        value=0,
+        observed_unix_ns=time.time_ns(),
+    )
     token = _current.set(state)
     with _lock:
         _active = state

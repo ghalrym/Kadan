@@ -6,6 +6,7 @@ ModelType = Literal["LLM", "Image", "Video", "TTS", "STT"]
 
 class ModelSetting(BaseModel):
     """A catalog-backed selection; None means no model is selected."""
+
     label: str
     type: ModelType
     selected: str | None

@@ -5,6 +5,7 @@ complete directory is atomically published. Completed directories are immutable.
 Run one API worker; an OS lock prevents concurrent download writers even if a
 second process is accidentally started. Interrupted staging is removed on retry.
 """
+
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -22,7 +23,12 @@ from pydantic import TypeAdapter, ValidationError
 
 from api.inference.errors import ResourceCancelled
 from api.inference.progress import report
-from api.services.model_catalog import CATALOG, CatalogEntry, allowed_asset, validate_assets
+from api.services.model_catalog import (
+    CATALOG,
+    CatalogEntry,
+    allowed_asset,
+    validate_assets,
+)
 
 
 DEFAULT_CONTEXT_LIMIT = 65536
@@ -57,7 +63,7 @@ class ManifestFile(TypedDict):
     name: str
     size: int
     digest: str
-    algorithm: Literal['sha256', 'git-sha1']
+    algorithm: Literal["sha256", "git-sha1"]
     url: NotRequired[str]
 
 
@@ -66,12 +72,14 @@ class CompletionMarker(TypedDict):
     files: list[ManifestFile]
 
 
-DownloadStatus = Literal['not_downloaded', 'downloading', 'cancelling', 'cancelled', 'failed', 'complete']
+DownloadStatus = Literal[
+    "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
+]
 
 
 @dataclass
 class DownloadJob:
-    status: DownloadStatus = 'downloading'
+    status: DownloadStatus = "downloading"
     downloaded_bytes: int = 0
     total_bytes: int = 0
     error: str | None = None
@@ -110,42 +118,69 @@ def fetch_checkpoint_manifest(entry: CatalogEntry) -> list[ManifestFile]:
 
     Returns size/digest metadata without downloading weights. Network errors and
     invalid upstream metadata propagate; duplicate or missing assets fail closed."""
-    if entry.layout == 'composite':
-        manifest = TypeAdapter(list[ManifestFile]).validate_python(list(entry.manifest), strict=True)
-        validate_assets(entry, {item['name'] for item in manifest})
+    if entry.layout == "composite":
+        manifest = TypeAdapter(list[ManifestFile]).validate_python(
+            list(entry.manifest), strict=True
+        )
+        validate_assets(entry, {item["name"] for item in manifest})
         return manifest
-    if entry.layout == 'single_file':
-        if (not entry.asset_url or not entry.asset_url.startswith('https://')
-                or not entry.asset_name or not allowed_asset(entry.asset_name, entry)
-                or not re.fullmatch('[0-9a-f]{64}', entry.revision)):
-            raise ValueError('Invalid pinned single-file checkpoint metadata')
-        with urlopen(Request(entry.asset_url, method='HEAD'), timeout=30) as response:
-            value = response.headers.get('Content-Length', '')
+    if entry.layout == "single_file":
+        if (
+            not entry.asset_url
+            or not entry.asset_url.startswith("https://")
+            or not entry.asset_name
+            or not allowed_asset(entry.asset_name, entry)
+            or not re.fullmatch("[0-9a-f]{64}", entry.revision)
+        ):
+            raise ValueError("Invalid pinned single-file checkpoint metadata")
+        with urlopen(Request(entry.asset_url, method="HEAD"), timeout=30) as response:
+            value = response.headers.get("Content-Length", "")
         if not value.isdecimal() or int(value) <= 0:
-            raise ValueError('Upstream omitted valid checkpoint size metadata')
-        return [{'name': entry.asset_name, 'size': int(value),
-                 'digest': entry.revision, 'algorithm': 'sha256'}]
-    metadata_url = f'https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true'
+            raise ValueError("Upstream omitted valid checkpoint size metadata")
+        return [
+            {
+                "name": entry.asset_name,
+                "size": int(value),
+                "digest": entry.revision,
+                "algorithm": "sha256",
+            }
+        ]
+    metadata_url = f"https://huggingface.co/api/models/{entry.repo_id}/revision/{entry.revision}?blobs=true"
     with urlopen(metadata_url, timeout=30) as response:
-        checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(json.load(response), strict=True)
-    if checkpoint_metadata['sha'] != entry.revision:
-        raise ValueError('Upstream revision does not match the pinned catalog')
+        checkpoint_metadata = TypeAdapter(UpstreamCheckpoint).validate_python(
+            json.load(response), strict=True
+        )
+    if checkpoint_metadata["sha"] != entry.revision:
+        raise ValueError("Upstream revision does not match the pinned catalog")
     manifest: list[ManifestFile] = []
-    for upstream_file in checkpoint_metadata['siblings']:
-        filename = upstream_file['rfilename']
+    for upstream_file in checkpoint_metadata["siblings"]:
+        filename = upstream_file["rfilename"]
         if not allowed_asset(filename, entry):
             continue
-        large_file = upstream_file.get('lfs')
-        size = large_file['size'] if large_file else upstream_file.get('size')
-        digest = large_file['sha256'] if large_file else upstream_file.get('blobId')
+        large_file = upstream_file.get("lfs")
+        size = large_file["size"] if large_file else upstream_file.get("size")
+        digest = large_file["sha256"] if large_file else upstream_file.get("blobId")
         digest_length = 64 if large_file else 40
-        if size is None or size < 0 or digest is None or not re.fullmatch(f'[0-9a-f]{{{digest_length}}}', digest):
-            raise ValueError(f'Upstream omitted valid integrity metadata for {filename}')
-        manifest.append({'name': filename, 'size': size, 'digest': digest,
-                         'algorithm': 'sha256' if large_file else 'git-sha1'})
-    filenames = {item['name'] for item in manifest}
+        if (
+            size is None
+            or size < 0
+            or digest is None
+            or not re.fullmatch(f"[0-9a-f]{{{digest_length}}}", digest)
+        ):
+            raise ValueError(
+                f"Upstream omitted valid integrity metadata for {filename}"
+            )
+        manifest.append(
+            {
+                "name": filename,
+                "size": size,
+                "digest": digest,
+                "algorithm": "sha256" if large_file else "git-sha1",
+            }
+        )
+    filenames = {item["name"] for item in manifest}
     if len(filenames) != len(manifest):
-        raise ValueError('Upstream checkpoint contains duplicate filenames')
+        raise ValueError("Upstream checkpoint contains duplicate filenames")
     validate_assets(entry, filenames)
     return manifest
 
@@ -156,7 +191,12 @@ class ModelManager:
 
         Uses KADAN_MODEL_DIR when root is omitted. Resolves paths but creates no
         files or threads until an operation explicitly needs them."""
-        self.root = (root or Path(os.environ.get('KADAN_MODEL_DIR', '~/.local/share/kadan/models')).expanduser()).resolve()
+        self.root = (
+            root
+            or Path(
+                os.environ.get("KADAN_MODEL_DIR", "~/.local/share/kadan/models")
+            ).expanduser()
+        ).resolve()
         self._lock = threading.RLock()
         self._jobs: dict[str, DownloadJob] = {}
         self._configured: dict[str, CatalogEntry] = {}
@@ -171,18 +211,18 @@ class ModelManager:
             with self._lock:
                 existing = CATALOG.get(entry.id) or self._configured.get(entry.id)
                 if existing is not None and existing != entry:
-                    raise ValueError('Conflicting checkpoint identity')
+                    raise ValueError("Conflicting checkpoint identity")
                 self._configured[entry.id] = entry
             return entry
         if model_id not in CATALOG and model_id not in self._configured:
-            raise ValueError('Unknown catalog model')
+            raise ValueError("Unknown catalog model")
         return CATALOG.get(model_id) or self._configured[model_id]
 
     def _language_entry(self, model_id: str) -> CatalogEntry:
         """Require a language model before changing LLM lifecycle or context."""
         entry = self._catalog_entry(model_id)
-        if entry.kind != 'llm':
-            raise ValueError('This checkpoint is not a language model')
+        if entry.kind != "llm":
+            raise ValueError("This checkpoint is not a language model")
         return entry
 
     def get_checkpoint(self, model_id: str | CatalogEntry) -> tuple[CatalogEntry, Path]:
@@ -194,10 +234,12 @@ class ModelManager:
         with self._lock:
             entry = self._catalog_entry(model_id)
             if not self._checkpoint_complete(entry):
-                raise ValueError('Download this model completely in Settings first')
+                raise ValueError("Download this model completely in Settings first")
             return entry, self._checkpoint_directory(entry)
 
-    def ensure_checkpoint(self, model_id: str | CatalogEntry, cancel: threading.Event) -> tuple[CatalogEntry, Path]:
+    def ensure_checkpoint(
+        self, model_id: str | CatalogEntry, cancel: threading.Event
+    ) -> tuple[CatalogEntry, Path]:
         """Acquire a verified checkpoint for a queued request, waiting for writers.
 
         A request cancels only the download it started. It joins that writer through
@@ -209,7 +251,7 @@ class ModelManager:
         model_id = entry.id
         while True:
             if cancel.is_set():
-                raise ResourceCancelled('Checkpoint acquisition cancelled')
+                raise ResourceCancelled("Checkpoint acquisition cancelled")
             owned = False
             with self._lock:
                 if self._checkpoint_complete(entry):
@@ -219,22 +261,32 @@ class ModelManager:
                     try:
                         # An inference request authorizes preparation of its selected
                         # catalog model. The interactive Settings notice stays intact.
-                        self.start(model_id, license_acknowledged=True, request_cancel=cancel)
+                        self.start(
+                            model_id, license_acknowledged=True, request_cancel=cancel
+                        )
                     except BusyError:
                         thread = None  # Another process owns the shared writer lock.
                     else:
                         thread = self._thread
                         owned = True
                 job = self._jobs.get(model_id)
-                if job is not None and not owned and job.status not in ('downloading', 'cancelling'):
+                if (
+                    job is not None
+                    and not owned
+                    and job.status not in ("downloading", "cancelling")
+                ):
                     job = None
             if thread is None:
-                report('waiting_for_download_store')
-                cancel.wait(.05)
+                report("waiting_for_download_store")
+                cancel.wait(0.05)
                 continue
             while thread.is_alive():
-                report('downloading_bytes' if job is not None else 'waiting_for_download_store',
-                       job.downloaded_bytes if job is not None else 0)
+                report(
+                    "downloading_bytes"
+                    if job is not None
+                    else "waiting_for_download_store",
+                    job.downloaded_bytes if job is not None else 0,
+                )
                 if cancel.is_set():
                     if owned:
                         with self._lock:
@@ -242,12 +294,12 @@ class ModelManager:
                                 self._cancel.set()
                         # Never abandon a writer belonging to this queued request.
                         thread.join()
-                    raise ResourceCancelled('Checkpoint acquisition cancelled')
-                thread.join(.05)
+                    raise ResourceCancelled("Checkpoint acquisition cancelled")
+                thread.join(0.05)
             if cancel.is_set():
-                raise ResourceCancelled('Checkpoint acquisition cancelled')
-            if job is not None and job.status in ('failed', 'cancelled'):
-                raise ValueError(job.error or 'Checkpoint download cancelled')
+                raise ResourceCancelled("Checkpoint acquisition cancelled")
+            if job is not None and job.status in ("failed", "cancelled"):
+                raise ValueError(job.error or "Checkpoint download cancelled")
 
     def close(self) -> None:
         """Stop a download at the next read boundary during API shutdown."""
@@ -257,7 +309,7 @@ class ModelManager:
 
     def _checkpoint_directory(self, entry: CatalogEntry) -> Path:
         """Return the immutable destination path for this model and revision."""
-        return self.root / f'{entry.id}-{entry.revision}'
+        return self.root / f"{entry.id}-{entry.revision}"
 
     def _checkpoint_complete(self, entry: CatalogEntry) -> bool:
         """Check the completion marker and recorded file sizes without rehashing.
@@ -267,24 +319,44 @@ class ModelManager:
         verified during download, not on each status or selection check."""
         path = self._checkpoint_directory(entry)
         try:
-            marker = TypeAdapter(CompletionMarker).validate_json((path / 'complete.json').read_text(), strict=True)
-            files = marker['files']
-            if entry.layout == 'composite' and files != list(entry.manifest):
+            marker = TypeAdapter(CompletionMarker).validate_json(
+                (path / "complete.json").read_text(), strict=True
+            )
+            files = marker["files"]
+            if entry.layout == "composite" and files != list(entry.manifest):
                 return False
-            validate_assets(entry, {item['name'] for item in files})
-            return (not path.is_symlink() and marker['revision'] == entry.revision and bool(files)
-                    and all(allowed_asset(item['name'], entry) and not any(parent.is_symlink() for parent in (path / item['name']).parents if parent != self.root)
-                            and not (path / item['name']).is_symlink()
-                            and (path / item['name']).stat().st_size == item['size'] for item in files))
+            validate_assets(entry, {item["name"] for item in files})
+            return (
+                not path.is_symlink()
+                and marker["revision"] == entry.revision
+                and bool(files)
+                and all(
+                    allowed_asset(item["name"], entry)
+                    and not any(
+                        parent.is_symlink()
+                        for parent in (path / item["name"]).parents
+                        if parent != self.root
+                    )
+                    and not (path / item["name"]).is_symlink()
+                    and (path / item["name"]).stat().st_size == item["size"]
+                    for item in files
+                )
+            )
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
     def _read_selected_model_id(self) -> str | None:
         """Return the persisted catalog ID, or None for absent/invalid selection."""
         try:
-            selection = json.loads((self.root / 'selection.json').read_text())
-            model_id = selection['model_id']
-            return model_id if isinstance(model_id, str) and model_id in CATALOG and CATALOG[model_id].kind == 'llm' else None
+            selection = json.loads((self.root / "selection.json").read_text())
+            model_id = selection["model_id"]
+            return (
+                model_id
+                if isinstance(model_id, str)
+                and model_id in CATALOG
+                and CATALOG[model_id].kind == "llm"
+                else None
+            )
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
@@ -294,14 +366,20 @@ class ModelManager:
         An absent file means no overrides. Invalid values raise ValueError;
         unreadable files propagate OSError rather than silently resetting limits."""
         try:
-            value = json.loads((self.root / 'context.json').read_text())
+            value = json.loads((self.root / "context.json").read_text())
         except FileNotFoundError:
             return {}
         if not isinstance(value, dict) or any(
-            key not in CATALOG or (limit is not None and (type(limit) is not int or not 1 <= limit <= 2**31 - 1))
+            key not in CATALOG
+            or (
+                limit is not None
+                and (type(limit) is not int or not 1 <= limit <= 2**31 - 1)
+            )
             for key, limit in value.items()
         ):
-            raise ValueError('Invalid persisted context settings; repair context.json before loading')
+            raise ValueError(
+                "Invalid persisted context settings; repair context.json before loading"
+            )
         return value
 
     def configured_context(self, model_id: str) -> int | None:
@@ -318,15 +396,17 @@ class ModelManager:
         Returns None before download or when no positive maximum is declared.
         Malformed configuration raises ValueError; filesystem errors propagate."""
         entry = self._catalog_entry(model_id)
-        if entry.kind != 'llm' or not self._checkpoint_complete(entry):
+        if entry.kind != "llm" or not self._checkpoint_complete(entry):
             return None
-        checkpoint_config = json.loads((self._checkpoint_directory(entry) / 'config.json').read_text())
+        checkpoint_config = json.loads(
+            (self._checkpoint_directory(entry) / "config.json").read_text()
+        )
         if not isinstance(checkpoint_config, dict):
-            raise ValueError('Checkpoint configuration must be a JSON object')
-        text_config = checkpoint_config.get('text_config', checkpoint_config)
+            raise ValueError("Checkpoint configuration must be a JSON object")
+        text_config = checkpoint_config.get("text_config", checkpoint_config)
         if not isinstance(text_config, dict):
-            raise ValueError('Checkpoint text configuration must be a JSON object')
-        maximum = text_config.get('max_position_embeddings')
+            raise ValueError("Checkpoint text configuration must be a JSON object")
+        maximum = text_config.get("max_position_embeddings")
         if type(maximum) is not int or maximum <= 0:
             return None
         return maximum
@@ -339,18 +419,30 @@ class ModelManager:
         with self._lock:
             self._language_entry(model_id)
             if self._in_use:
-                raise BusyError('Unload the running model before changing context limits')
-            if context_limit is not None and (type(context_limit) is not int or not 1 <= context_limit <= 2**31 - 1):
-                raise ValueError('Context limit must be a positive integer or null for architecture maximum')
+                raise BusyError(
+                    "Unload the running model before changing context limits"
+                )
+            if context_limit is not None and (
+                type(context_limit) is not int or not 1 <= context_limit <= 2**31 - 1
+            ):
+                raise ValueError(
+                    "Context limit must be a positive integer or null for architecture maximum"
+                )
             maximum = self.architecture_context(model_id)
-            if context_limit is not None and maximum is not None and context_limit > maximum:
-                raise ValueError(f'Context limit exceeds the checkpoint architecture maximum of {maximum}')
+            if (
+                context_limit is not None
+                and maximum is not None
+                and context_limit > maximum
+            ):
+                raise ValueError(
+                    f"Context limit exceeds the checkpoint architecture maximum of {maximum}"
+                )
             settings = self._read_context_limits()
             settings[model_id] = context_limit
             self.root.mkdir(parents=True, exist_ok=True)
-            temporary = self.root / 'context.tmp'
+            temporary = self.root / "context.tmp"
             temporary.write_text(json.dumps(settings))
-            temporary.replace(self.root / 'context.json')
+            temporary.replace(self.root / "context.json")
 
     def status(self) -> ModelsStatus:
         """Return catalog, download, selection, and context state under one lock.
@@ -362,25 +454,47 @@ class ModelManager:
             context_limits = self._read_context_limits()
             models: list[ModelStatus] = []
             for entry in CATALOG.values():
-                job = self._jobs.get(entry.id, DownloadJob(status='not_downloaded'))
+                job = self._jobs.get(entry.id, DownloadJob(status="not_downloaded"))
                 status, error = job.status, job.error
                 if self._checkpoint_complete(entry):
-                    status, error = 'complete', None
-                elif status == 'complete':
-                    status = 'failed'
-                    error = 'Checkpoint files changed or are missing; inspect model storage'
-                models.append({
-                    'id': entry.id, 'repo_id': entry.repo_id, 'revision': entry.revision,
-                    'license': entry.license, 'estimated_bytes': entry.estimated_bytes,
-                    'kind': entry.kind, 'display_name': entry.display_name,
-                    'license_url': entry.license_url, 'license_notice': entry.license_notice,
-                    'inference_available': entry.inference_available,
-                    'status': status, 'downloaded_bytes': job.downloaded_bytes,
-                    'total_bytes': job.total_bytes, 'error': error,
-                    'context_limit': context_limits.get(entry.id, DEFAULT_CONTEXT_LIMIT) if entry.kind == 'llm' else None,
-                    'architecture_context_limit': self.architecture_context(entry.id) if entry.kind == 'llm' else None,
-                })
-            return {'models': models, 'selected_model_id': self._read_selected_model_id()}
+                    status, error = "complete", None
+                elif status == "complete":
+                    status = "failed"
+                    error = (
+                        "Checkpoint files changed or are missing; inspect model storage"
+                    )
+                models.append(
+                    {
+                        "id": entry.id,
+                        "repo_id": entry.repo_id,
+                        "revision": entry.revision,
+                        "license": entry.license,
+                        "estimated_bytes": entry.estimated_bytes,
+                        "kind": entry.kind,
+                        "display_name": entry.display_name,
+                        "license_url": entry.license_url,
+                        "license_notice": entry.license_notice,
+                        "inference_available": entry.inference_available,
+                        "status": status,
+                        "downloaded_bytes": job.downloaded_bytes,
+                        "total_bytes": job.total_bytes,
+                        "error": error,
+                        "context_limit": context_limits.get(
+                            entry.id, DEFAULT_CONTEXT_LIMIT
+                        )
+                        if entry.kind == "llm"
+                        else None,
+                        "architecture_context_limit": self.architecture_context(
+                            entry.id
+                        )
+                        if entry.kind == "llm"
+                        else None,
+                    }
+                )
+            return {
+                "models": models,
+                "selected_model_id": self._read_selected_model_id(),
+            }
 
     def get_selected(self) -> tuple[CatalogEntry, Path]:
         """Return the selected catalog entry and absolute completed directory.
@@ -390,10 +504,12 @@ class ModelManager:
         with self._lock:
             selected = self._read_selected_model_id()
             if not selected:
-                raise ValueError('No model selected; download and select a checkpoint in Settings')
+                raise ValueError(
+                    "No model selected; download and select a checkpoint in Settings"
+                )
             entry = self._catalog_entry(selected)
             if not self._checkpoint_complete(entry):
-                raise ValueError('Selected model is not completely downloaded')
+                raise ValueError("Selected model is not completely downloaded")
             return entry, self._checkpoint_directory(entry)
 
     def acquire_runtime_model(self) -> tuple[CatalogEntry, Path]:
@@ -403,7 +519,7 @@ class ModelManager:
         The caller must release the lease after unload or a failed load."""
         with self._lock:
             if self._in_use:
-                raise BusyError('A model is already loaded or loading; unload it first')
+                raise BusyError("A model is already loaded or loading; unload it first")
             selected = self.get_selected()
             self._in_use = True
             return selected
@@ -422,16 +538,22 @@ class ModelManager:
         incomplete models, and OSError when persistence fails. Does not load it."""
         with self._lock:
             if self._in_use:
-                raise BusyError('Unload the running model before changing selection')
+                raise BusyError("Unload the running model before changing selection")
             entry = self._language_entry(model_id)
             if not self._checkpoint_complete(entry):
-                raise ValueError('Download this model completely before selecting it')
+                raise ValueError("Download this model completely before selecting it")
             self.root.mkdir(parents=True, exist_ok=True)
-            temporary = self.root / 'selection.tmp'
-            temporary.write_text(json.dumps({'model_id': model_id}))
-            temporary.replace(self.root / 'selection.json')
+            temporary = self.root / "selection.tmp"
+            temporary.write_text(json.dumps({"model_id": model_id}))
+            temporary.replace(self.root / "selection.json")
 
-    def start(self, model_id: str, license_acknowledged: bool = False, *, request_cancel: threading.Event | None = None) -> None:
+    def start(
+        self,
+        model_id: str,
+        license_acknowledged: bool = False,
+        *,
+        request_cancel: threading.Event | None = None,
+    ) -> None:
         """Start one background download after acquiring the store's OS writer lock.
 
         Rejects unknown IDs, concurrent jobs, and completed checkpoints. Returns
@@ -440,32 +562,38 @@ class ModelManager:
         with self._lock:
             entry = self._catalog_entry(model_id)
             if entry.license_notice and license_acknowledged is not True:
-                raise ValueError('Read the model license notice and explicitly continue before downloading')
+                raise ValueError(
+                    "Read the model license notice and explicitly continue before downloading"
+                )
             if self._thread and self._thread.is_alive():
-                raise BusyError('Another download is running; wait or cancel it first')
+                raise BusyError("Another download is running; wait or cancel it first")
             if self._checkpoint_complete(entry):
-                raise BusyError('This pinned checkpoint is already downloaded')
+                raise BusyError("This pinned checkpoint is already downloaded")
             self.root.mkdir(parents=True, exist_ok=True)
-            lease = (self.root / '.download.lock').open('a')
+            lease = (self.root / ".download.lock").open("a")
             try:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 lease.close()
-                raise BusyError('Another API process owns the download store') from None
+                raise BusyError("Another API process owns the download store") from None
             except OSError:
                 lease.close()
                 raise
             if self._checkpoint_complete(entry):
                 lease.close()
-                raise BusyError('This pinned checkpoint is already downloaded')
+                raise BusyError("This pinned checkpoint is already downloaded")
             self._cancel.clear()
             self._jobs[model_id] = DownloadJob()
-            self._thread = threading.Thread(target=self._download, args=(entry, lease, request_cancel), daemon=True)
+            self._thread = threading.Thread(
+                target=self._download, args=(entry, lease, request_cancel), daemon=True
+            )
             try:
                 self._thread.start()
             except Exception:
                 lease.close()
-                self._jobs[model_id] = DownloadJob(status='failed', error='Could not start download worker')
+                self._jobs[model_id] = DownloadJob(
+                    status="failed", error="Could not start download worker"
+                )
                 raise
 
     def cancel(self, model_id: str) -> None:
@@ -476,12 +604,17 @@ class ModelManager:
         with self._lock:
             self._catalog_entry(model_id)
             job = self._jobs.get(model_id)
-            if job is None or job.status not in ('downloading', 'cancelling'):
-                raise BusyError('No active download for this model')
-            job.status = 'cancelling'
+            if job is None or job.status not in ("downloading", "cancelling"):
+                raise BusyError("No active download for this model")
+            job.status = "cancelling"
             self._cancel.set()
 
-    def _download(self, entry: CatalogEntry, lease: IO[str], request_cancel: threading.Event | None = None) -> None:
+    def _download(
+        self,
+        entry: CatalogEntry,
+        lease: IO[str],
+        request_cancel: threading.Event | None = None,
+    ) -> None:
         """Download, verify, and atomically publish one pinned checkpoint.
 
         Owns the supplied filesystem lease until cleanup. Writes only staging
@@ -489,83 +622,113 @@ class ModelManager:
         publication use the manager lock so a cancellation accepted before
         publication cannot be recorded as a successful download.
         Records failures in the job, removes staging, and always closes the lease."""
-        stage = self.root / f'.{entry.id}.partial'
+        stage = self.root / f".{entry.id}.partial"
         try:
             if stage.exists():
                 shutil.rmtree(stage)
             stage.mkdir()
             files = fetch_checkpoint_manifest(entry)
-            if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
+            if self._cancel.is_set() or (
+                request_cancel is not None and request_cancel.is_set()
+            ):
                 raise Cancelled()
-            total = sum(item['size'] for item in files)
+            total = sum(item["size"] for item in files)
             if shutil.disk_usage(self.root).free < total + 1024**3:
-                raise ValueError('Not enough disk space: checkpoint plus 1 GiB reserve required')
+                raise ValueError(
+                    "Not enough disk space: checkpoint plus 1 GiB reserve required"
+                )
             with self._lock:
                 self._jobs[entry.id].total_bytes = total
             downloaded = 0
             for item in files:
-                if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
+                if self._cancel.is_set() or (
+                    request_cancel is not None and request_cancel.is_set()
+                ):
                     raise Cancelled()
-                digest = hashlib.sha256() if item['algorithm'] == 'sha256' else hashlib.sha1()
-                if item['algorithm'] == 'git-sha1':
+                digest = (
+                    hashlib.sha256()
+                    if item["algorithm"] == "sha256"
+                    else hashlib.sha1()
+                )
+                if item["algorithm"] == "git-sha1":
                     digest.update(f"blob {item['size']}\0".encode())
                 size = 0
-                url = (item['url'] if entry.layout == 'composite' else entry.asset_url
-                       if entry.layout == 'single_file' else
-                       f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}")
-                (stage / item['name']).parent.mkdir(parents=True, exist_ok=True)
-                with urlopen(url, timeout=30) as source, (stage / item['name']).open('wb') as target:
+                url = (
+                    item["url"]
+                    if entry.layout == "composite"
+                    else entry.asset_url
+                    if entry.layout == "single_file"
+                    else f"https://huggingface.co/{entry.repo_id}/resolve/{entry.revision}/{item['name']}"
+                )
+                (stage / item["name"]).parent.mkdir(parents=True, exist_ok=True)
+                with (
+                    urlopen(url, timeout=30) as source,
+                    (stage / item["name"]).open("wb") as target,
+                ):
                     while True:
-                        if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
+                        if self._cancel.is_set() or (
+                            request_cancel is not None and request_cancel.is_set()
+                        ):
                             raise Cancelled()
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         size += len(chunk)
-                        if size > item['size']:
+                        if size > item["size"]:
                             raise ValueError(f"Unexpected file size: {item['name']}")
                         target.write(chunk)
                         digest.update(chunk)
                         downloaded += len(chunk)
                         with self._lock:
                             self._jobs[entry.id].downloaded_bytes = downloaded
-                if size != item['size'] or digest.hexdigest() != item['digest']:
+                if size != item["size"] or digest.hexdigest() != item["digest"]:
                     raise ValueError(f"Integrity verification failed: {item['name']}")
-            filenames = {item['name'] for item in files}
+            filenames = {item["name"] for item in files}
             for name in filenames:
-                if not name.endswith('.safetensors.index.json'):
+                if not name.endswith(".safetensors.index.json"):
                     continue
-                index = TypeAdapter(WeightIndex).validate_json((stage / name).read_text(), strict=True)
+                index = TypeAdapter(WeightIndex).validate_json(
+                    (stage / name).read_text(), strict=True
+                )
                 parent = PurePosixPath(name).parent
-                shards = {str(parent / shard) for shard in index['weight_map'].values()}
+                shards = {str(parent / shard) for shard in index["weight_map"].values()}
                 if not shards or not shards <= filenames:
-                    raise ValueError('Weight index references missing or disallowed shards')
+                    raise ValueError(
+                        "Weight index references missing or disallowed shards"
+                    )
             # Commit completion while holding the same lock as cancel(). A
             # cancellation accepted before publication must never become success.
             with self._lock:
-                if self._cancel.is_set() or (request_cancel is not None and request_cancel.is_set()):
+                if self._cancel.is_set() or (
+                    request_cancel is not None and request_cancel.is_set()
+                ):
                     raise Cancelled()
-                completion_marker: CompletionMarker = {'revision': entry.revision, 'files': files}
-                (stage / 'complete.json').write_text(json.dumps(completion_marker))
+                completion_marker: CompletionMarker = {
+                    "revision": entry.revision,
+                    "files": files,
+                }
+                (stage / "complete.json").write_text(json.dumps(completion_marker))
                 destination = self._checkpoint_directory(entry)
                 if destination.exists():
-                    raise ValueError('Checkpoint directory exists but is incomplete; inspect it manually')
+                    raise ValueError(
+                        "Checkpoint directory exists but is incomplete; inspect it manually"
+                    )
                 stage.rename(destination)
-                self._jobs[entry.id].status = 'complete'
+                self._jobs[entry.id].status = "complete"
         except Cancelled:
             with self._lock:
-                self._jobs[entry.id].status = 'cancelled'
+                self._jobs[entry.id].status = "cancelled"
                 self._jobs[entry.id].error = None
         except Exception as exc:
             # No URLs/tokens from network exceptions are exposed in the API.
             if isinstance(exc, ValidationError):
-                message = 'Checkpoint metadata is malformed'
+                message = "Checkpoint metadata is malformed"
             elif isinstance(exc, ValueError):
                 message = str(exc)
             else:
-                message = f'Download failed ({type(exc).__name__}); check network and disk, then retry'
+                message = f"Download failed ({type(exc).__name__}); check network and disk, then retry"
             with self._lock:
-                self._jobs[entry.id].status = 'failed'
+                self._jobs[entry.id].status = "failed"
                 self._jobs[entry.id].error = message
         finally:
             if stage.exists():

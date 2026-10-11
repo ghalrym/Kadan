@@ -1,4 +1,5 @@
 """Native video job queries, cancellation, and completed media."""
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
@@ -22,12 +23,18 @@ class VideoResponse(BaseModel):
 async def list_videos() -> VideosResponse:
     """Return jobs submitted to this API process."""
     try:
-        return VideosResponse(jobs=[video_jobs.get(job.id) for job in video_jobs.list()])
+        return VideosResponse(
+            jobs=[video_jobs.get(job.id) for job in video_jobs.list()]
+        )
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
 
 
-@router.get("/{video_id}", operation_id="getVideo", responses={404: {"description": "Video not found"}})
+@router.get(
+    "/{video_id}",
+    operation_id="getVideo",
+    responses={404: {"description": "Video not found"}},
+)
 async def get_video(video_id: str) -> VideoResponse:
     """Return the real worker state, including errors and cancellation."""
     try:
@@ -54,5 +61,7 @@ def get_video_content(video_id: str):
     try:
         path = video_jobs.content(video_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Completed video not found") from exc
+        raise HTTPException(
+            status_code=404, detail="Completed video not found"
+        ) from exc
     return FileResponse(path, media_type="video/mp4", filename=f"{video_id}.mp4")
