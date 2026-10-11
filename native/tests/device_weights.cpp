@@ -83,7 +83,7 @@ int main() {
     std::atomic_bool cancel = false;
     std::array<float, 8> values{};
     auto bytes = std::as_bytes(std::span(values));
-    DeviceWeights::Key key{{1}, 0, 8, 4};
+    DeviceWeights::Key key{{.device = 1}, 0, 8, 4};
     {
         Resources r({host, 1024});
         Fake gpu(r);
