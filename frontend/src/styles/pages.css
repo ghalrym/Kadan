@@ -873,6 +873,12 @@ textarea.input[aria-invalid='true'] {
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 12px;
 }
+.generated-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
 .video-job {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);

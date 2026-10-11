@@ -11,7 +11,9 @@ from unittest.mock import Mock, patch
 import wave
 
 from api.inference.errors import InferenceFailure
-from api.services.inference_requests import pcm_audio, prepare_request, prepare_chat
+from api.services.inference_requests import PreparedRequest, pcm_audio, prepare_request, prepare_chat, present_result
+from api.pydantic_models.inference import EmptyPayload
+from api.routes.v1.images.generations import ImageRequest, ImageResponse
 from api.routes.v1.audio.speech import SpeechRequest
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
@@ -57,3 +59,29 @@ class ChatTransportTests(unittest.TestCase):
             self.assertEqual(json.loads(Path(result.payload.input).read_text())['messages'][0]['text'], 'a' * 50000)
             self.assertEqual(result.payload.context_limit, 65536)
             self.assertLess(len(result.payload.model_dump_json()), 1024)
+
+
+class ImageResultTests(unittest.TestCase):
+    def test_response_serialization_preserves_png_payload_and_seed(self):
+        body = ImageRequest(prompt='A red mug', count=1)
+        prepared = PreparedRequest(checkpoint_id='image', payload=EmptyPayload(), seed=42)
+        workspace = Path('/unused')
+        png = b'\x89PNG\r\n\x1a\nmock-png-file'
+        with patch('api.services.inference_requests.read_artifact', return_value=png) as read:
+            result = present_result('image', 'qwen-image', body, prepared,
+                                    {'images': ['/unused/image-0.png']}, workspace, 'job')
+        response = json.loads(ImageResponse.model_validate(result).model_dump_json())['image']
+        self.assertEqual(response['images_base64'], [base64.b64encode(png).decode('ascii')])
+        self.assertEqual(response['mime_type'], 'image/png')
+        self.assertEqual(response['seeds'], [42])
+        self.assertEqual(response['prompt'], body.prompt)
+        read.assert_called_once_with(workspace / 'image-0.png', workspace, 2048 * 2048 * 4 + 1024**2)
+
+    def test_missing_images_fail_before_reading_artifacts(self):
+        body = ImageRequest(prompt='A red mug', count=2)
+        prepared = PreparedRequest(checkpoint_id='image', payload=EmptyPayload(), seed=42)
+        with patch('api.services.inference_requests.read_artifact') as read:
+            with self.assertRaisesRegex(InferenceFailure, 'output count'):
+                present_result('image', 'qwen-image', body, prepared,
+                               {'images': ['/unused/image-0.png']}, Path('/unused'), 'job')
+        read.assert_not_called()

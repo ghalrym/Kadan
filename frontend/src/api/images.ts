@@ -7,8 +7,7 @@ import type {
 export type ImageOptions = ApiRoutesV1ImagesGenerationsImageRequest
 /**
  * Send typed generation settings, or edit settings when source is supplied.
- * Forward the abort signal and reject network/HTTP failures. Even a 2xx metadata
- * response is rejected because this contract has no deliverable image URLs.
+ * Forward cancellation and reject failures or incomplete PNG payloads.
  */
 export async function requestImages(
   options: ImageOptions,
@@ -31,11 +30,15 @@ export async function requestImages(
       `Image request failed (HTTP ${response.response?.status}). Check your inputs and retry.`,
     )
   }
-  // The current API has metadata only, with no deliverable image URLs. Never
-  // turn a successful-looking placeholder into a fabricated generated image.
-  throw new Error(
-    'The API returned metadata without image files. No generated image is available.',
+  const image = response.data?.image
+  if (
+    !image || image.mime_type !== 'image/png' ||
+    !Array.isArray(image.images_base64) ||
+    image.images_base64.length !== (options.count ?? 4) ||
+    !image.images_base64.every(value => typeof value === 'string' && value.trim().length > 0)
   )
+    throw new Error('The image API returned incomplete PNG data. Please retry.')
+  return image
 }
 /**
  * Fetch the image metadata list with caller-controlled cancellation.

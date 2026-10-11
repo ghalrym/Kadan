@@ -31,6 +31,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [error, setError] = useState('')
   const [historyError, setHistoryError] = useState('')
   const [history, setHistory] = useState<ImageSet[]>([])
+  const [generated, setGenerated] = useState<ImageSet[]>([])
+  const images = [...generated, ...history]
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
@@ -69,7 +71,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     setBusy(true)
     setError('')
     try {
-      await requestImages(
+      const image = await requestImages(
         {
           prompt: prompt.trim(),
           aspect,
@@ -79,6 +81,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         controller.signal,
         edit ? { image: source.trim(), strength: strength / 100 } : undefined,
       )
+      if (active.current === controller && !controller.signal.aborted)
+        setGenerated(items => [image, ...items])
     } catch (error) {
       if (active.current === controller)
         setError(
@@ -120,8 +124,10 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
       <div className="workspace-results image-gallery" aria-label="Image gallery" aria-busy={loading}>
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
-        {!loading && !historyError && history.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
-        {history.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.seeds.map(seed => <MediaPlaceholder key={seed} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
+        {!loading && !historyError && images.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
+        {images.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.images_base64?.length && item.mime_type === 'image/png'
+          ? item.images_base64.map((data, index) => <img key={index} className="generated-image" src={`data:image/png;base64,${data}`} alt={`${item.prompt} — image ${index + 1}`} />)
+          : item.seeds.map((seed, index) => <MediaPlaceholder key={`${seed}-${index}`} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
       </div>
     </div>
   )
