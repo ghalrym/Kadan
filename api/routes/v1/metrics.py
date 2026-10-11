@@ -1,8 +1,7 @@
-import sys
 from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
-from api.services.telemetry import telemetry
+from api.services.telemetry import memory_meters, telemetry
 from api.inference.progress import snapshot
 
 router = APIRouter(prefix='/v1/metrics', tags=['Monitoring'])
@@ -44,40 +43,6 @@ class MetricsResponse(BaseModel):
     window_truncated: bool
     p50_latency_seconds: float | None
     error_rate_percent: float | None
-
-
-def memory_meters():
-    """Return observed memory meters and independent measurement-error messages.
-
-    Host usage is MemTotal minus MemAvailable, not process RSS or a cgroup
-    admission budget. CUDA driver readings run only when torch is already
-    imported; polling never imports inference dependencies or runs inference.
-    Unavailable probes leave explicit errors instead of fabricated readings."""
-    resources, errors = [], []
-    try:
-        with open('/proc/meminfo') as stream:
-            values = {parts[0].rstrip(':'): int(parts[1]) * 1024
-                      for line in stream if (parts := line.split()) and parts[0] in ('MemTotal:', 'MemAvailable:')}
-        total, available = values['MemTotal'], values['MemAvailable']
-        resources.append(ResourceMeter(label='Host RAM', used=max(0, total - available) / 1024**3, total=total / 1024**3))
-    except (OSError, KeyError, ValueError):
-        errors.append('Host RAM measurement unavailable')
-    # Do not import optional heavyweight inference dependencies for dashboard polls.
-    torch = sys.modules.get('torch')
-    if torch is None:
-        errors.append('GPU measurement unavailable until inference dependencies are loaded')
-    else:
-        try:
-            if not torch.cuda.is_available():
-                errors.append('CUDA GPU measurement unavailable')
-            else:
-                for device in range(torch.cuda.device_count()):
-                    free, total = torch.cuda.mem_get_info(device)
-                    resources.append(ResourceMeter(label=f'GPU {device} · VRAM',
-                                                   used=max(0, total - free) / 1024**3, total=total / 1024**3))
-        except Exception:
-            errors.append('GPU measurement failed')
-    return resources, errors
 
 
 @router.get('', operation_id='getMetrics')
