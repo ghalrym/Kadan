@@ -83,16 +83,6 @@ class ChatRuntime:
                     budgets, probe=probe_memory)
             return self.resources
 
-    async def start(self):
-        """Restore the saved selection in the background, exposing failures through status."""
-        selected = model_manager._read_selected_model_id()
-        if selected is None:
-            return
-        try:
-            await self.load()
-        except (InferenceFailure, OSError, ValueError) as exc:
-            self.model_id, self.state, self.error = selected, 'error', str(exc)
-
     def _construct(self, entry, path, cancel):
         """Build on a worker thread using the selected single GPU and shared budgets, then apply
         context settings; close the adapter if configuration fails.

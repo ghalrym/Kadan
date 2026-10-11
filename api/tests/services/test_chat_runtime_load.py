@@ -43,45 +43,15 @@ class ConfigureLoadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.state, 'ready')
         return self.runtime.adapter
 
-    async def test_start_restores_saved_selection_and_context(self):
+    async def test_explicit_load_uses_saved_selection_and_context(self):
         self.models.select('small')
         self.models.set_context('small', 32000)
-        await self.runtime.start()
+        await self.runtime.load()
         self.assertEqual(self.runtime.state, 'loading')
         await self.runtime.task
         self.assertEqual(self.runtime.state, 'ready')
         self.assertEqual(self.runtime.model_id, 'small')
         self.assertEqual(self.runtime.adapter.configured_context_limit, 32000)
-
-    async def test_start_without_selection_does_not_load(self):
-        await self.runtime.start()
-        self.assertEqual(self.runtime.state, 'unloaded')
-        self.factory.assert_not_called()
-
-    async def test_start_with_missing_checkpoint_exposes_error(self):
-        self.models.select('small')
-        with patch.object(self.models, '_checkpoint_complete', return_value=False):
-            await self.runtime.start()
-        self.assertEqual(self.runtime.state, 'error')
-        self.assertEqual(self.runtime.model_id, 'small')
-        self.assertTrue(self.runtime.error)
-        self.factory.assert_not_called()
-
-    async def test_start_with_invalid_context_exposes_error_and_releases_selection(self):
-        self.models.select('small')
-        (self.models.root / 'context.json').write_text('invalid')
-        await self.runtime.start()
-        self.assertEqual(self.runtime.state, 'error')
-        self.assertFalse(self.models._in_use)
-
-    async def test_start_with_failed_constructor_exposes_error(self):
-        self.models.select('small')
-        self.factory.side_effect = RuntimeError('CUDA allocation failed')
-        await self.runtime.start()
-        await self.runtime.task
-        self.assertEqual(self.runtime.state, 'error')
-        self.assertEqual(self.runtime.error, 'CUDA allocation failed')
-        self.assertFalse(self.models._in_use)
 
     async def test_default_and_explicit_null_switch_context(self):
         old = await self.ready()
