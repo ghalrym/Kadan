@@ -20,7 +20,7 @@ def check(cancel):
 
 
 def ensure_assets(kind, checkpoint, destination, resources, cancel=None, expected=None):
-    checkpoint, destination = Path(checkpoint), Path(destination)
+    checkpoint, destination = (Path(checkpoint), Path(destination))
     check(cancel)
     if destination.exists():
         return destination  # The adapter verifies manifests and all outputs before use.
@@ -33,12 +33,16 @@ def ensure_assets(kind, checkpoint, destination, resources, cancel=None, expecte
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                if cancel is not None:cancel.wait(.05)
-                else:time.sleep(.05)
-        if destination.exists():return destination
+                if cancel is not None:
+                    cancel.wait(0.05)
+                else:
+                    time.sleep(0.05)
+        if destination.exists():
+            return destination
         size = checkpoint.stat().st_size if kind == 'whisper' else 0
-        if size > 8 * 1024**3:raise ValueError('Native conversion checkpoint exceeds its size bound')
-        required = size + 64 * 1024**2
+        if size > 8 * 1024 ** 3:
+            raise ValueError('Native conversion checkpoint exceeds its size bound')
+        required = size + 64 * 1024 ** 2
         if shutil.disk_usage(destination.parent).free < required:
             raise ValueError('Insufficient disk space for native worker assets')
         admission = resources.reserve('native-assets-' + uuid4().hex, 'speech',
@@ -59,17 +63,20 @@ def ensure_assets(kind, checkpoint, destination, resources, cancel=None, expecte
                     report = export(checkpoint, expected, output, cancel)
                     check(cancel)
                     assets(report['dimensions']['n_vocab'], output / 'assets')
-                else:raise ValueError('Unsupported native asset kind')
+                else:
+                    raise ValueError('Unsupported native asset kind')
                 check(cancel)
                 # Same-filesystem publication under the process lock; never overwrite source.
-                if destination.exists():raise FileExistsError(destination)
+                if destination.exists():
+                    raise FileExistsError(destination)
                 output.rename(destination)
         except BaseException as error:
             clear_failure_frames(error)
             raise
         finally:
             try:
-                if staging is not None:shutil.rmtree(staging)
+                if staging is not None:
+                    shutil.rmtree(staging)
             finally:
                 # Disk cleanup errors propagate with their path, but cannot lose
                 # the host reservation after conversion buffers are destroyed.

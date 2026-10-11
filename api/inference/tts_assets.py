@@ -1,5 +1,4 @@
 """Export tokenizer metadata only; no model execution or downloads."""
-import argparse
 import hashlib
 import json
 from pathlib import Path
