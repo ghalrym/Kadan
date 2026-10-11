@@ -100,6 +100,18 @@ inline ProjectionPlan projection_plan(
     throw std::invalid_argument("projection_scratch_limit");
 }
 
+// Keep a complete projection input only when the existing workspace can hold it.
+// Count the original tile once; division keeps the fit check overflow-safe.
+inline std::size_t projection_input_rows(
+    std::size_t rows, std::size_t in, const ProjectionPlan& plan, Bytes limit
+) {
+    if (!rows || !in || in > 2147483647ULL || !plan.rows || plan.bytes > limit)
+        throw std::invalid_argument("projection_input_layout");
+    if (rows <= plan.rows)
+        return plan.rows;
+    return rows - plan.rows <= (limit - plan.bytes) / (in * 4) ? rows : plan.rows;
+}
+
 inline std::size_t projection_columns(
     std::size_t in,
     std::size_t out,

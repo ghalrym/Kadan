@@ -609,23 +609,42 @@ class Compute final : public H3Compute {
                 }
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
-                const auto plan = projection_plan(
-                    in,
-                    last_output - first_output,
-                    sizeof(Weight),
-                    precise,
-                    quant ? 4 : 1,
-                    arena.scratch_limit
-                );
                 // At most 16MiB of source staging per active device, independent of
-                // free VRAM. Readers may keep their own separately admitted cache.
+                // free VRAM. Plan for that actual chunk, leaving room for inputs.
                 constexpr std::size_t source_bytes = 16 * 1024 * 1024;
                 const auto alignment = quant ? 4u : 1u;
                 const auto host_columns =
                     (source_bytes / (in * sizeof(Weight))) / alignment * alignment;
                 require(!source || host_columns > 0, "h3_source_staging_floor");
-                const auto chunk_columns =
-                    source ? std::min(plan.columns, host_columns) : plan.columns;
+                const auto plan = projection_plan(
+                    in,
+                    source ? std::min(last_output - first_output, host_columns)
+                           : last_output - first_output,
+                    sizeof(Weight),
+                    precise,
+                    alignment,
+                    arena.scratch_limit
+                );
+                const auto chunk_columns = plan.columns;
+                const auto input_rows =
+                    projection_input_rows(end - begin, in, plan, arena.scratch_limit);
+                const bool keep_input = input_rows >= end - begin;
+                // Reserve the largest layout before uploading. Later chunks must
+                // neither move the input at offset zero nor grow the workspace.
+                device_workspace.ensure(
+                    plan.bytes + (input_rows - plan.rows) * in * sizeof(float)
+                );
+                if (keep_input)
+                    for (auto start = begin; start < end; start += plan.rows) {
+                        stop(cancel, failed);
+                        const auto rows = std::min(plan.rows, end - start);
+                        checked(cudaMemcpy(
+                            arena.at<float>(0) + (start - begin) * in,
+                            x.data() + start * in,
+                            rows * in * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        ));
+                    }
                 for (auto first_column = first_output; first_column < last_output;
                      first_column += chunk_columns) {
                     const auto out =
@@ -682,9 +701,9 @@ class Compute final : public H3Compute {
                             );
                     }
                     Layout l;
-                    const auto w = l.add(retained ? 0 : weights.size_bytes()),
+                    const auto input = l.add(input_rows * in * sizeof(float)),
+                               w = l.add(retained ? 0 : weights.size_bytes()),
                                b = l.add(out * 4), s = l.add(out * 4),
-                               input = l.add(tile * in * 4),
                                rotated = l.add(tile * in * 4), codes = l.add(tile * in),
                                row_scales = l.add(tile * 4),
                                sums = l.add(tile * out * 4),
@@ -732,17 +751,20 @@ class Compute final : public H3Compute {
                     for (std::size_t start = begin; start < end; start += tile) {
                         stop(cancel, failed);
                         const auto rows = std::min(tile, end - start);
-                        checked(cudaMemcpy(
-                            arena.at<void>(input),
-                            x.data() + start * in,
-                            rows * in * 4,
-                            cudaMemcpyHostToDevice
-                        ));
+                        auto* input_pointer = arena.at<float>(input)
+                                              + (keep_input ? (start - begin) * in : 0);
+                        if (!keep_input)
+                            checked(cudaMemcpy(
+                                input_pointer,
+                                x.data() + start * in,
+                                rows * in * sizeof(float),
+                                cudaMemcpyHostToDevice
+                            ));
                         if constexpr (quant) {
                             rotate_kernel<<<
                                 dim3(unsigned(rows), unsigned(in / group)),
                                 unsigned(group)>>>(
-                                arena.at<float>(input),
+                                input_pointer,
                                 arena.at<float>(rotated),
                                 in,
                                 unsigned(group)
@@ -788,9 +810,7 @@ class Compute final : public H3Compute {
                             );
                         } else if (precise) {
                             widen<<<unsigned((rows * in + 255) / 256), 256>>>(
-                                arena.at<float>(input),
-                                arena.at<double>(wide_input),
-                                rows * in
+                                input_pointer, arena.at<double>(wide_input), rows * in
                             );
                             checked(cudaGetLastError());
                             checked(
@@ -830,7 +850,7 @@ class Compute final : public H3Compute {
                                 &one,
                                 static_cast<float*>(weight_pointer),
                                 int(in),
-                                arena.at<float>(input),
+                                input_pointer,
                                 int(in),
                                 &zero,
                                 arena.at<float>(output),
