@@ -20,11 +20,6 @@ add_library(kadan_resources INTERFACE)
 target_include_directories(kadan_resources INTERFACE include)
 target_compile_features(kadan_resources INTERFACE cxx_std_20)
 target_link_libraries(kadan_resources INTERFACE Threads::Threads)
-add_executable(kadan-worker src/worker.cpp)
-target_link_libraries(kadan-worker PRIVATE kadan_resources)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
 add_library(kadan_quantization src/quantization.cpp)
 target_include_directories(kadan_quantization PUBLIC include)
 target_compile_features(kadan_quantization PUBLIC cxx_std_20)
@@ -86,17 +81,11 @@ add_library(kadan_model_worker_protocol src/model_worker_protocol.cpp src/reside
 target_link_libraries(kadan_model_worker_protocol PUBLIC kadan_resources)
 add_library(kadan_glm src/glm.cpp)
 target_link_libraries(kadan_glm PUBLIC kadan_manifest kadan_model_worker_protocol)
-add_executable(kadan-glm-worker src/glm_worker.cpp)
-target_link_libraries(kadan-glm-worker PRIVATE kadan_glm)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_glm PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  target_compile_options(kadan-glm-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-add_executable(kadan-model-worker src/model_worker.cpp)
-target_link_libraries(kadan-model-worker PRIVATE kadan_model kadan_model_worker_protocol)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_model_worker_protocol PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  target_compile_options(kadan-model-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 add_executable(kadan-model-plan src/model_plan.cpp)
 target_link_libraries(kadan-model-plan PRIVATE kadan_model)
@@ -130,8 +119,6 @@ if(KADAN_ENABLE_CUDA)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(kadan_gpu PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Werror>)
   endif()
-  target_compile_definitions(kadan-model-worker PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-model-worker PRIVATE kadan_gpu)
 
 
   # Explicit tiny GPU run only; never registered with automatic CPU CTest.
@@ -214,18 +201,6 @@ if(KADAN_ENABLE_DECISIONS)
   add_library(kadan_decision_executor src/decision_executor.cpp src/decision_tokenizer.cpp)
   target_link_libraries(kadan_decision_executor PUBLIC kadan_weight_backing kadan_resources nlohmann_json::nlohmann_json PRIVATE ICU::uc ICU::i18n ${KADAN_PCRE2} ${KADAN_OPENBLAS})
   target_compile_options(kadan_decision_executor PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_executable(kadan-decision-worker src/decision_worker.cpp)
-  target_link_libraries(kadan-decision-worker PRIVATE kadan_decision_executor ${KADAN_OPENBLAS})
-  # Bundle CPU math/text libraries built against the same base as the API.
-  # Keep the target platform's libc and loader; the launcher scopes library lookup.
-  install(TARGETS kadan-decision-worker
-    RUNTIME_DEPENDENCIES
-      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-    RUNTIME DESTINATION libexec COMPONENT decision-runtime
-    LIBRARY DESTINATION lib COMPONENT decision-runtime)
-  install(PROGRAMS packaging/run_decision_worker.sh
-    DESTINATION bin RENAME kadan-decision-worker COMPONENT decision-runtime)
 endif()
 
 # Complete CPU H3 VAE decode; text-to-video generation remains unsupported.
@@ -278,19 +253,6 @@ if(KADAN_ENABLE_H3_GENERATION)
   add_executable(kadan-h3-generate src/h3_generate.cpp)
   target_link_libraries(kadan-h3-generate PRIVATE kadan_h3_generation)
 endif()
-if(KADAN_ENABLE_H3_GENERATION)
-  add_executable(kadan-h3-worker src/h3_worker.cpp)
-  target_link_libraries(kadan-h3-worker PRIVATE kadan_h3_generation nlohmann_json::nlohmann_json)
-  target_compile_options(kadan-h3-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  install(TARGETS kadan-h3-worker
-    RUNTIME_DEPENDENCIES
-      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-    RUNTIME DESTINATION libexec COMPONENT h3-runtime
-    LIBRARY DESTINATION lib COMPONENT h3-runtime)
-  install(PROGRAMS packaging/run_h3_worker.sh
-    DESTINATION bin RENAME kadan-h3-worker COMPONENT h3-runtime)
-endif()
 
 if(KADAN_ENABLE_CUDA)
   add_library(kadan_h3_cuda src/h3_compute.cu)
@@ -305,14 +267,13 @@ add_library(kadan_h3_profile src/h3_profile.cpp)
 target_include_directories(kadan_h3_profile PUBLIC include)
 target_compile_features(kadan_h3_profile PUBLIC cxx_std_20)
 if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_H3_GENERATION)
-  foreach(target kadan-h3-denoise kadan-h3-text-encode kadan-video-decode kadan-h3-generate kadan-h3-worker)
+  foreach(target kadan-h3-denoise kadan-h3-text-encode kadan-video-decode kadan-h3-generate)
     target_compile_definitions(${target} PRIVATE KADAN_H3_CUDA=1)
     target_link_libraries(${target} PRIVATE kadan_h3_cuda)
   endforeach()
 endif()
 if(KADAN_ENABLE_H3_GENERATION)
   target_link_libraries(kadan-h3-generate PRIVATE kadan_h3_profile)
-  target_link_libraries(kadan-h3-worker PRIVATE kadan_h3_profile)
 endif()
 
 # Full CPU Whisper network; no model download or implicit GPU test.
@@ -324,21 +285,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_whisper PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-
-add_executable(kadan-whisper-worker src/whisper_worker.cpp)
-target_link_libraries(kadan-whisper-worker PRIVATE kadan_whisper kadan_stt)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan-whisper-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-install(TARGETS kadan-whisper-worker
-  RUNTIME_DEPENDENCIES
-    PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-    POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-  RUNTIME DESTINATION libexec COMPONENT whisper-runtime
-  LIBRARY DESTINATION lib COMPONENT whisper-runtime)
-install(PROGRAMS packaging/run_whisper_worker.sh
-  DESTINATION bin RENAME kadan-whisper-worker COMPONENT whisper-runtime)
 
 option(KADAN_ENABLE_WHISPER_BLAS "Accelerate CPU Whisper projections with single-thread OpenBLAS" OFF)
 if(KADAN_ENABLE_WHISPER_BLAS)
@@ -374,16 +320,6 @@ if(KADAN_ENABLE_TTS_WORKER)
   target_compile_options(kadan_tts_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_executable(kadan-tts-tokenize src/tts_tokenize.cpp)
   target_link_libraries(kadan-tts-tokenize PRIVATE kadan_tts_tokenizer)
-  add_executable(kadan-tts-worker src/tts_worker.cpp)
-  target_link_libraries(kadan-tts-worker PRIVATE kadan_tts_generator kadan_tts_audio kadan_tts_tokenizer)
-  target_compile_options(kadan-tts-worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  install(TARGETS kadan-tts-worker
-    RUNTIME_DEPENDENCIES
-      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-    RUNTIME DESTINATION libexec COMPONENT tts-runtime
-    LIBRARY DESTINATION lib COMPONENT tts-runtime)
-  install(PROGRAMS packaging/run_tts_worker.sh DESTINATION bin RENAME kadan-tts-worker COMPONENT tts-runtime)
 endif()
 
 add_library(kadan_image src/image.cpp)
@@ -450,38 +386,7 @@ if(KADAN_ENABLE_IMAGE_GENERATION)
 add_library(kadan_image_generation src/image_generation.cpp src/image_png.cpp)
 target_link_libraries(kadan_image_generation PUBLIC kadan_text_tokenizer kadan_image_text kadan_image_denoiser kadan_image_vae PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-add_executable(kadan-image-worker src/image_worker.cpp)
-target_link_libraries(kadan-image-worker PRIVATE kadan_image_generation nlohmann_json::nlohmann_json)
-
-install(TARGETS kadan-image-worker
-  RUNTIME_DEPENDENCIES
-    PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-    POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-  RUNTIME DESTINATION libexec COMPONENT image-runtime
-  LIBRARY DESTINATION lib COMPONENT image-runtime)
-install(PROGRAMS packaging/run_image_worker.sh DESTINATION bin RENAME kadan-image-worker COMPONENT image-runtime)
 endif()
-
-if(KADAN_ENABLE_CUDA)
-  foreach(target kadan-image-worker kadan-tts-worker kadan-whisper-worker)
-    if(TARGET ${target})
-      target_compile_definitions(${target} PRIVATE KADAN_WORKER_CUDA=1)
-      target_link_libraries(${target} PRIVATE kadan_h3_cuda)
-    endif()
-  endforeach()
-endif()
-
-
-
-# Install the resident text executor beside the other owned native workers.
-install(TARGETS kadan-model-worker kadan-glm-worker
-  RUNTIME_DEPENDENCIES
-    PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
-    POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-  RUNTIME DESTINATION libexec COMPONENT model-runtime
-  LIBRARY DESTINATION lib COMPONENT model-runtime)
-install(PROGRAMS packaging/run_model_worker.sh DESTINATION bin RENAME kadan-model-worker COMPONENT model-runtime)
-install(PROGRAMS packaging/run_glm_worker.sh DESTINATION bin RENAME kadan-glm-worker COMPONENT model-runtime)
 
 if(BUILD_TESTING)
   # Unit tests only. Model/worker integration is reviewed manually through the API.
