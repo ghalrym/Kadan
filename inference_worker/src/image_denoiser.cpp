@@ -289,6 +289,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     MediaSession& session,
     std::size_t block,
     std::size_t tokens,
+    HiddenBoundary boundary,
     const std::atomic_bool& cancel
 ) {
     Busy active(busy_);
@@ -327,7 +328,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
          MediaPhase::prepare}
     );
     if (auto error = m.blocks[block]->prepare_feed_forward(
-            session, tokens, HiddenBoundary::post_attention, cancel, std::move(manifest)
+            session, tokens, boundary, cancel, std::move(manifest)
         ))
         return error;
     try {
@@ -363,6 +364,7 @@ void Denoiser::execute_feed_forward(
     std::size_t block,
     std::size_t tokens,
     std::size_t text,
+    HiddenBoundary boundary,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
 ) {
@@ -372,6 +374,7 @@ void Denoiser::execute_feed_forward(
     const auto state = model_->d.block.state;
     const auto& spec = model_->specs.at(model_->names.at("modulation.1.weight"));
     const auto& plan = session.plan();
+    const bool attention = boundary == HiddenBoundary::pre_attention;
 
     struct Device {
         video::ImageFeedForwardLauncher* launcher;
@@ -381,9 +384,10 @@ void Denoiser::execute_feed_forward(
     try {
         need(
             tokens && text <= tokens && plan.rows
+                && (attention || boundary == HiddenBoundary::post_attention)
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
-                && plan.weights.size() == 4 * plan.devices.size(),
+                && plan.weights.size() == (attention ? 5 : 4) * plan.devices.size(),
             "image_ff_plan"
         );
         std::vector<Device> devices;
@@ -430,6 +434,20 @@ void Denoiser::execute_feed_forward(
             );
             const std::array ready{&d.time, &d.weight, &hidden};
             session.require_ready(ready);
+            if (attention) {
+                const std::array attended{&normalized};
+                session.require_ready(attended);
+                video::validate_image_attention_residual(
+                    planned.device,
+                    hidden.layout(),
+                    normalized.layout(),
+                    d.modulation.layout(),
+                    hidden.layout(),
+                    gates.layout(),
+                    status.layout(),
+                    text
+                );
+            }
             video::validate_image_modulation(
                 planned.device,
                 hidden.layout(),
@@ -478,7 +496,7 @@ void Denoiser::execute_feed_forward(
         devices.clear();
         auto& transformer = *model_->blocks[block];
         transformer.prepare_feed_forward_inputs(
-            session, tokens, text, HiddenBoundary::post_attention, launchers, cancel
+            session, tokens, text, boundary, launchers, cancel
         );
         transformer.execute_feed_forward(
             session, tokens, text, launchers, cancel, plan.devices.size()
