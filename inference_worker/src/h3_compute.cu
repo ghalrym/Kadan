@@ -14,6 +14,7 @@
 #include <cuda_runtime.h>
 
 #include "image_activation.hpp"
+#include "kadan/bf16_projection.hpp"
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
@@ -287,11 +288,70 @@ __global__ void add_bias(
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count) {
-        const float value = y[i] + bias[i % out];
+        const float value = y[i] + (bias ? bias[i % out] : 0.f);
         y[i] = value;
         if (nonfinite && !projection_output_finite(__float_as_uint(value)))
             atomicExch(nonfinite, 1U);
     }
+}
+
+// Shared with the synchronous host boundary; status clearing belongs to the
+// caller so that the host path continues accumulating failures across its tiles.
+void launch_bf16_projection(
+    cudaStream_t stream,
+    cublasHandle_t blas,
+    const float* input,
+    const void* weight,
+    const float* bias,
+    __nv_bfloat16* rounded,
+    float* output,
+    unsigned* status,
+    std::size_t rows,
+    std::size_t in,
+    std::size_t out
+) {
+    bf16_input<<<unsigned((rows * in + 255) / 256), 256, 0, stream>>>(
+        input, rounded, rows * in
+    );
+    checked(cudaGetLastError());
+    const float one = 1, zero = 0;
+    with_projection_math(
+        true,
+        CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION,
+        [&] {
+            cublasMath_t mode;
+            checked(cublasGetMathMode(blas, &mode));
+            return mode;
+        },
+        [&](cublasMath_t mode) { checked(cublasSetMathMode(blas, mode)); },
+        [&] {
+            checked(cublasGemmEx(
+                blas,
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                int(out),
+                int(rows),
+                int(in),
+                &one,
+                weight,
+                CUDA_R_16BF,
+                int(in),
+                rounded,
+                CUDA_R_16BF,
+                int(in),
+                &zero,
+                output,
+                CUDA_R_32F,
+                int(out),
+                CUBLAS_COMPUTE_32F,
+                CUBLAS_GEMM_DEFAULT
+            ));
+        }
+    );
+    add_bias<<<unsigned((rows * out + 255) / 256), 256, 0, stream>>>(
+        output, bias, rows * out, out, status
+    );
+    checked(cudaGetLastError());
 }
 
 template <class Real>
@@ -855,55 +915,19 @@ class Compute final : public H3Compute {
                             );
                         } else if constexpr (bf16) {
                             // Mutually exclusive with INT8 rotation; reuse its larger
-                            // scratch slice.
-                            bf16_input<<<unsigned((rows * in + 255) / 256), 256>>>(
+                            // scratch slice. The host boundary owns synchronization.
+                            launch_bf16_projection(
+                                cudaStreamLegacy,
+                                arena.blas,
                                 input_pointer,
-                                arena.at<__nv_bfloat16>(rotated),
-                                rows * in
-                            );
-                            checked(cudaGetLastError());
-                            const float one = 1, zero = 0;
-                            with_projection_math(
-                                true,
-                                CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION,
-                                [&] {
-                                    cublasMath_t mode;
-                                    checked(cublasGetMathMode(arena.blas, &mode));
-                                    return mode;
-                                },
-                                [&](cublasMath_t mode) {
-                                    checked(cublasSetMathMode(arena.blas, mode));
-                                },
-                                [&] {
-                                    checked(cublasGemmEx(
-                                        arena.blas,
-                                        CUBLAS_OP_T,
-                                        CUBLAS_OP_N,
-                                        int(out),
-                                        int(rows),
-                                        int(in),
-                                        &one,
-                                        weight_pointer,
-                                        CUDA_R_16BF,
-                                        int(in),
-                                        arena.at<void>(rotated),
-                                        CUDA_R_16BF,
-                                        int(in),
-                                        &zero,
-                                        arena.at<void>(output),
-                                        CUDA_R_32F,
-                                        int(out),
-                                        CUBLAS_COMPUTE_32F,
-                                        CUBLAS_GEMM_DEFAULT
-                                    ));
-                                }
-                            );
-                            add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
-                                arena.at<float>(output),
+                                weight_pointer,
                                 arena.at<float>(b),
-                                rows * out,
-                                out,
-                                nonfinite
+                                arena.at<__nv_bfloat16>(rotated),
+                                arena.at<float>(output),
+                                nonfinite,
+                                rows,
+                                in,
+                                out
                             );
                         } else if (precise) {
                             widen<<<unsigned((rows * in + 255) / 256), 256>>>(
@@ -1787,6 +1811,92 @@ public:
     }
 };
 }  // namespace
+
+CudaBf16Projection::CudaBf16Projection(
+    std::shared_ptr<DenseCompute> context_owner,
+    std::shared_ptr<MediaSessionActivity> activity,
+    int device
+)
+    : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
+      device_(device) {
+    require(
+        context_owner_ && activity_ && device >= 0, "bf16_projection_context_owner"
+    );
+    // Initialization may touch context resources even when CUDA reports failure.
+    ++activity_->owners;
+    checked(cudaSetDevice(device_));
+    int major = 0;
+    checked(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_));
+    require(major >= 8, "h3_cuda_bf16_policy");
+    cublasHandle_t handle = nullptr;
+    checked(cublasCreate(&handle));
+    blas_ = handle;
+}
+
+CudaBf16Projection::~CudaBf16Projection() {
+    try {
+        close();
+    } catch (...) {
+        // Unconfirmed cleanup must not permit WorkerCompute to park/reset.
+    }
+}
+
+void CudaBf16Projection::close() {
+    if (!blas_)
+        return;
+    try {
+        checked(cudaSetDevice(device_));
+        if (stream_)
+            checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+        checked(cublasDestroy(static_cast<cublasHandle_t>(blas_)));
+    } catch (...) {
+        quarantined_ = true;
+        throw;
+    }
+    blas_ = nullptr;
+    --activity_->owners;
+}
+
+void CudaBf16Projection::launch(
+    void* stream,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& weight,
+    const MediaDeviceSpan& bias,
+    const MediaDeviceSpan& rounded,
+    const MediaDeviceSpan& output,
+    const MediaDeviceSpan& workspace,
+    const MediaDeviceSpan& status
+) {
+    const auto shape = validate_bf16_projection(
+        device_, input, weight, bias, rounded, output, workspace, status
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    // Stream binding resets cuBLAS workspace, so bind before installing the
+    // session allocation. Never borrow the host wrapper's growable arena.
+    checked(cublasSetStream(handle, owned_stream));
+    checked(cublasSetWorkspace(handle, workspace.data, workspace.bytes));
+    checked(cudaMemsetAsync(status.data, 0, sizeof(unsigned), owned_stream));
+    launch_bf16_projection(
+        owned_stream,
+        handle,
+        static_cast<const float*>(input.data),
+        weight.data,
+        static_cast<const float*>(bias.data),
+        static_cast<__nv_bfloat16*>(rounded.data),
+        static_cast<float*>(output.data),
+        static_cast<unsigned*>(status.data),
+        shape.rows,
+        shape.in,
+        shape.out
+    );
+}
 
 std::shared_ptr<H3Compute>
 h3_cuda_compute(std::shared_ptr<Resources> r, std::vector<int> d) {
