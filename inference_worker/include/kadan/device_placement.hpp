@@ -68,6 +68,8 @@ void wait_for_device_allocation(Stop stop, Attempt attempt, Pause pause) {
 
 // Include alignment slack for all CUDA workspace slices. Geometry depends on
 // device admission, not token count, so retained projection keys remain stable.
+inline constexpr Bytes projection_status_bytes = 256;
+
 struct ProjectionPlan {
     std::size_t rows, columns;
     Bytes bytes;
@@ -86,8 +88,8 @@ inline ProjectionPlan projection_plan(
         || (alignment != 1 && alignment != 4) || out % alignment)
         throw std::invalid_argument("projection_layout");
     for (std::size_t tile = 256; tile; tile /= 2) {
-        const Bytes fixed =
-            8 * 1024 * 1024 + 4096 + tile * in * (9 + (precise ? 8 : 0)) + tile * 4;
+        const Bytes fixed = 8 * 1024 * 1024 + 4096 + projection_status_bytes
+                            + tile * in * (9 + (precise ? 8 : 0)) + tile * 4;
         const Bytes per_column =
             in * (width + (precise ? 8 : 0)) + 8 + tile * (8 + (precise ? 8 : 0));
         if (fixed >= limit)

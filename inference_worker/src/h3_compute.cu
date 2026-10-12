@@ -282,11 +282,16 @@ __global__ void finish_int8(
                + bias[i % out];
 }
 
-__global__ void
-add_bias(float* y, const float* bias, std::size_t count, std::size_t out) {
+__global__ void add_bias(
+    float* y, const float* bias, std::size_t count, std::size_t out, unsigned* nonfinite
+) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < count)
-        y[i] += bias[i % out];
+    if (i < count) {
+        const float value = y[i] + bias[i % out];
+        y[i] = value;
+        if (nonfinite && !projection_output_finite(__float_as_uint(value)))
+            atomicExch(nonfinite, 1U);
+    }
 }
 
 template <class Real>
@@ -602,6 +607,8 @@ class Compute final : public H3Compute {
                 require(std::isfinite(v) && v >= 0, "h3_cuda_scale");
         }
 
+        const bool validate_output = workload_ == Workload::image && !quant && !precise;
+        std::atomic_bool nonfinite_output = false;
         const auto total_out = out;
         const bool columns =
             identity
@@ -653,16 +660,21 @@ class Compute final : public H3Compute {
                     projection_input_rows(end - begin, in, plan, arena.scratch_limit);
                 const bool keep_input = input_rows >= end - begin;
                 // Reserve the largest layout before uploading. Later chunks must
-                // neither move the input at offset zero nor grow the workspace.
+                // neither move the input at its fixed offset nor grow the workspace.
                 device_workspace.ensure(
                     plan.bytes + (input_rows - plan.rows) * in * sizeof(float)
                 );
+                // The aligned status prefix stays fixed across every column chunk.
+                auto* nonfinite = validate_output ? arena.at<unsigned>(0) : nullptr;
+                if (nonfinite)
+                    checked(cudaMemset(nonfinite, 0, sizeof(unsigned)));
                 if (keep_input)
                     for (auto start = begin; start < end; start += plan.rows) {
                         stop(cancel, failed);
                         const auto rows = std::min(plan.rows, end - start);
                         checked(cudaMemcpy(
-                            arena.at<float>(0) + (start - begin) * in,
+                            arena.at<float>(projection_status_bytes)
+                                + (start - begin) * in,
                             x.data() + start * in,
                             rows * in * sizeof(float),
                             cudaMemcpyHostToDevice
@@ -730,6 +742,7 @@ class Compute final : public H3Compute {
                             );
                     }
                     Layout l;
+                    l.add(sizeof(unsigned));
                     const auto input = l.add(input_rows * in * sizeof(float)),
                                w = l.add(retained ? 0 : weights.size_bytes()),
                                b = l.add(out * 4), s = l.add(out * 4),
@@ -741,7 +754,10 @@ class Compute final : public H3Compute {
                                wide_weights = l.add(precise ? weight_count * 8 : 0),
                                wide_input = l.add(precise ? tile * in * 8 : 0),
                                wide_output = l.add(precise ? tile * out * 8 : 0);
-                    device_workspace.ensure(l.bytes);
+                    require(
+                        l.bytes <= device_workspace.retained_bytes(),
+                        "h3_cuda_projection_scratch"
+                    );
                     checked(cublasSetWorkspace(
                         arena.blas, arena.at<void>(workspace), 8 * 1024 * 1024
                     ));
@@ -886,7 +902,8 @@ class Compute final : public H3Compute {
                                 arena.at<float>(output),
                                 arena.at<float>(b),
                                 rows * out,
-                                out
+                                out,
+                                nonfinite
                             );
                         } else if (precise) {
                             widen<<<unsigned((rows * in + 255) / 256), 256>>>(
@@ -956,7 +973,8 @@ class Compute final : public H3Compute {
                                 arena.at<float>(output),
                                 arena.at<float>(b),
                                 rows * out,
-                                out
+                                out,
+                                nonfinite
                             );
                         }
                         checked(cudaGetLastError());
@@ -973,11 +991,21 @@ class Compute final : public H3Compute {
                         ));
                     }
                 }
+                if (nonfinite) {
+                    unsigned invalid = 0;
+                    checked(cudaMemcpy(
+                        &invalid, nonfinite, sizeof(invalid), cudaMemcpyDeviceToHost
+                    ));
+                    if (invalid)
+                        nonfinite_output = true;
+                }
             },
             identity != nullptr
         );
-        for (float v : y)
-            require(std::isfinite(v), "h3_cuda_nonfinite_output");
+        require(!nonfinite_output.load(), "h3_cuda_nonfinite_output");
+        if (!validate_output)
+            for (float v : y)
+                require(std::isfinite(v), "h3_cuda_nonfinite_output");
     }
 
 public:
@@ -1650,7 +1678,7 @@ public:
         return native_bf16_;
     }
 
-    bool dense_bf16_source(
+    ProjectionResult dense_bf16_source(
         const WeightIdentity& identity,
         const Bf16WeightSource& source,
         std::span<const float> b,
@@ -1661,14 +1689,14 @@ public:
         const std::atomic_bool& c
     ) override {
         if (!native_bf16_)
-            return false;
+            return ProjectionResult::unsupported;
         project<std::uint16_t>(
             {}, {}, b, x, in, out, 0, y, c, false, &identity, &source
         );
-        return true;
+        return ProjectionResult::finite;
     }
 
-    bool dense_source(
+    ProjectionResult dense_source(
         const WeightIdentity& identity,
         const FloatWeightSource& source,
         std::span<const float> b,
@@ -1683,7 +1711,7 @@ public:
         project<float>(
             {}, {}, b, x, in, out, 0, y, c, precise, &identity, &source, policy
         );
-        return true;
+        return ProjectionResult::finite;
     }
 
     bool convrot_source(

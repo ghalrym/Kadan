@@ -370,17 +370,17 @@ struct AudioDecoder::Impl {
             auto input = x.span().subspan(at * x.cols, count * x.cols),
                  output = projected->span().first(count * out * kernel);
             shard->check_unchanged();
-            if (!(compute
-                  && compute->dense_source(
-                      shard->tensor_identity(name),
-                      source,
-                      {},
-                      input,
-                      x.cols,
-                      out * kernel,
-                      output,
-                      cancel
-                  ))) {
+            if (!compute
+                || compute->dense_source(
+                       shard->tensor_identity(name),
+                       source,
+                       {},
+                       input,
+                       x.cols,
+                       out * kernel,
+                       output,
+                       cancel
+                   ) == ProjectionResult::unsupported) {
                 for (std::size_t row = 0; row < out * kernel; row += 32) {
                     auto nr = std::min<std::size_t>(32, out * kernel - row);
                     auto weights =

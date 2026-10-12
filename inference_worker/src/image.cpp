@@ -87,9 +87,10 @@ struct Pin {
     }
 };
 
-void finite(std::span<const float> x) {
-    for (float v : x)
-        need(std::isfinite(v), "image_nonfinite");
+void finite(
+    std::span<const float> x, ProjectionResult result = ProjectionResult::unvalidated
+) {
+    need(projection_output_finite(result, x), "image_nonfinite");
 }
 
 struct Spec {
@@ -180,7 +181,7 @@ struct TransformerBlock::Impl {
             spec.count == in * out && x.size() == rows * in && y.size() == rows * out,
             "image_projection_shape"
         );
-        checkpoint::project_source(
+        const auto result = checkpoint::project_source(
             r,
             Workload::image,
             compute.get(),
@@ -194,7 +195,7 @@ struct TransformerBlock::Impl {
             cancel,
             policy
         );
-        finite(y);
+        finite(y, result);
     }
 
     bool silu_pair(
