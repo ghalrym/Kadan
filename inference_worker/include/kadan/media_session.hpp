@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -15,6 +16,12 @@ enum class DeviceDType {
     i8,
     u8,
     u32
+};
+
+struct MediaEvent {
+    int device = -1;
+    std::uint64_t id = 0;
+    auto operator<=>(const MediaEvent&) const = default;
 };
 
 struct MediaDeviceLimit {
@@ -43,16 +50,22 @@ struct MediaDeviceSpan {
 };
 
 // CUDA and CPU lifecycle fakes implement the same device boundary. Allocation
-// failure must leave nothing behind. No runtime route selects this prerequisite.
+// failure must leave nothing behind. Events remain valid until release_events.
+// No cross-worker future waits: the request owner enqueues device event waits.
 class MediaDeviceOperations {
 public:
     virtual ~MediaDeviceOperations() = default;
     virtual std::size_t allocation_alignment() const = 0;
+    virtual void* stream(int device) = 0;
     virtual Bytes free_memory(int device) = 0;
     virtual bool direct_peer(int from, int to) = 0;
     virtual void* allocate(int device, Bytes bytes, std::size_t alignment) = 0;
     virtual void free(int device, void*) = 0;
+    virtual void wait(int device, MediaEvent) = 0;
+    virtual MediaEvent record(int device) = 0;
     virtual void synchronize(int device) = 0;
+    virtual void release_events(int device) = 0;
+    virtual std::uint32_t read_status(int device, const void*) = 0;
 };
 class MediaSessionState;
 
@@ -65,6 +78,7 @@ public:
     DeviceTensorView(const DeviceTensorView&) = delete;
     DeviceTensorView& operator=(const DeviceTensorView&) = delete;
     const MediaDeviceSpan& layout() const;
+    MediaEvent readiness() const;
 
 private:
     friend class MediaSession;
@@ -73,12 +87,16 @@ private:
     std::size_t slot_ = 0;
     MediaDeviceSpan layout_;
     std::string name_;
+    MediaEvent produced_;
     void release() noexcept;
 };
 
 // Session and its views are orchestrated by one request-owner thread.
 class MediaSession {
 public:
+    using Launch = std::function<void(
+        void* stream, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    )>;
     MediaSession(
         std::shared_ptr<Resources>,
         std::shared_ptr<MediaSessionActivity>,
@@ -108,6 +126,17 @@ public:
     );
     DeviceTensorView weight(const WeightSlice&);
     DeviceTensorView rows(DeviceTensorView&, std::size_t first, std::size_t count);
+    // Launchers must use this device's owned stream and write a zero/nonzero
+    // uint32 status word. They preserve model-specific casts/reduction order.
+    void launch(
+        int device,
+        std::span<DeviceTensorView* const> inputs,
+        std::span<DeviceTensorView* const> outputs,
+        const Launch&
+    );
+    // Every output and status must belong to the same completed launch event.
+    // No produced tensor can become another operation's input before this check.
+    void complete(std::span<DeviceTensorView* const> outputs, DeviceTensorView& status);
     void finish();
     void abort(std::exception_ptr first_error = {});
 
