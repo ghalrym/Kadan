@@ -96,6 +96,22 @@ __global__ void image_silu_pair_kernel(
 }
 
 __global__ void
+image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float projected = output[i];
+    if (!isfinite(projected)) {
+        atomicOr(status, 1U);
+        return;
+    }
+    const float activated = image::detail::silu(projected);
+    if (!isfinite(activated))
+        atomicOr(status, 2U);
+    output[i] = activated;
+}
+
+__global__ void
 image_projection_status(const unsigned* gate, const unsigned* up, unsigned* status) {
     *status = *gate | *up;
 }
@@ -2080,6 +2096,27 @@ void CudaBf16Projection::standard(
         outputs[2],
         outputs[3]
     );
+}
+
+void CudaBf16Projection::timestep(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    // Standard validates every span and stream before enqueue. Keep its status:
+    // SiLU must not conceal a nonfinite projection behind a finite negative tail.
+    standard(stream, inputs, outputs);
+    const auto count = outputs[0].bytes / sizeof(float);
+    image_timestep_silu_kernel<<<
+        unsigned((count + 255) / 256),
+        256,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(
+        static_cast<float*>(outputs[0].data),
+        count,
+        static_cast<unsigned*>(outputs[3].data)
+    );
+    checked(cudaGetLastError());
 }
 
 void CudaBf16Projection::attention_residual(
