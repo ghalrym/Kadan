@@ -77,21 +77,27 @@ struct Layout {
     }
 };
 
-__global__ void
-image_silu_pair_kernel(float* gate, const float* up, std::size_t count, int* status) {
+__global__ void image_silu_pair_kernel(
+    float* gate, const float* up, std::size_t count, unsigned* status
+) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
         return;
     // Match the existing bias-free projection's post-GEMM +0, including -0.
     const float g = __fadd_rn(gate[i], 0.f), u = __fadd_rn(up[i], 0.f);
     if (!isfinite(g) || !isfinite(u)) {
-        atomicOr(status, 1);
+        atomicOr(status, 1U);
         return;
     }
     const float fused = image::detail::silu_product(g, u);
     if (!isfinite(fused))
-        atomicOr(status, 2);
+        atomicOr(status, 2U);
     gate[i] = fused;
+}
+
+__global__ void
+image_projection_status(const unsigned* gate, const unsigned* up, unsigned* status) {
+    *status = *gate | *up;
 }
 
 // CUDA calls stay on the persistent thread that owns this selected device.
@@ -1663,7 +1669,7 @@ public:
                             arena.at<float>(gate),
                             arena.at<float>(up),
                             tile_rows * columns,
-                            arena.at<int>(status)
+                            arena.at<unsigned>(status)
                         );
                         checked(cudaGetLastError());
                         int result = 0;
@@ -1896,6 +1902,57 @@ void CudaBf16Projection::launch(
         shape.in,
         shape.out
     );
+}
+
+void CudaBf16Projection::launch_image_silu_pair(
+    void* stream,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& gate_weight,
+    const MediaDeviceSpan& up_weight,
+    const MediaDeviceSpan& rounded,
+    const MediaDeviceSpan& gate,
+    const MediaDeviceSpan& up,
+    const MediaDeviceSpan& workspace,
+    const MediaDeviceSpan& gate_status,
+    const MediaDeviceSpan& up_status,
+    const MediaDeviceSpan& status
+) {
+    const auto shape = validate_image_silu_pair(
+        device_,
+        input,
+        gate_weight,
+        up_weight,
+        rounded,
+        gate,
+        up,
+        workspace,
+        gate_status,
+        up_status,
+        status
+    );
+    const MediaDeviceSpan bias{nullptr, device_, DeviceDType::f32, {}, {}, 0, 0, 0};
+    launch(stream, input, gate_weight, bias, rounded, gate, workspace, gate_status);
+    launch(stream, input, up_weight, bias, rounded, up, workspace, up_status);
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    image_projection_status<<<1, 1, 0, owned_stream>>>(
+        static_cast<const unsigned*>(gate_status.data),
+        static_cast<const unsigned*>(up_status.data),
+        static_cast<unsigned*>(status.data)
+    );
+    checked(cudaGetLastError());
+    // F2 already performs the bias-free +0. Repeating it in the shared image
+    // kernel is idempotent, including -0; keep its existing arithmetic unchanged.
+    image_silu_pair_kernel<<<
+        unsigned((shape.rows * shape.out + 255) / 256),
+        256,
+        0,
+        owned_stream>>>(
+        static_cast<float*>(gate.data),
+        static_cast<const float*>(up.data),
+        shape.rows * shape.out,
+        static_cast<unsigned*>(status.data)
+    );
+    checked(cudaGetLastError());
 }
 
 std::shared_ptr<H3Compute>

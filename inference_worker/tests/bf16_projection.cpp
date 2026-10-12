@@ -96,5 +96,76 @@ int main() {
     validate();
     spans[2].bytes = 4;
     rejects();
+
+    std::array pair{
+        original[0],
+        original[1],
+        span(0x2100, DeviceDType::bf16, {4, 8}, {8, 1}, 64),
+        original[3],
+        original[4],
+        span(0x5100, DeviceDType::f32, {3, 4}, {4, 1}, 48),
+        original[5],
+        original[6],
+        span(bf16_projection_workspace_bytes + 0x6004, DeviceDType::u32, {1}, {1}, 4),
+        span(bf16_projection_workspace_bytes + 0x6008, DeviceDType::u32, {1}, {1}, 4)
+    };
+    auto validate_pair = [&] {
+        return validate_image_silu_pair(
+            0,
+            pair[0],
+            pair[1],
+            pair[2],
+            pair[3],
+            pair[4],
+            pair[5],
+            pair[6],
+            pair[7],
+            pair[8],
+            pair[9]
+        );
+    };
+    const auto pair_shape = validate_pair();
+    check(pair_shape.rows == 3 && pair_shape.in == 8 && pair_shape.out == 4);
+    const auto pair_original = pair;
+    auto rejects_pair = [&] {
+        bool rejected = false;
+        try {
+            validate_pair();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        pair = pair_original;
+    };
+    for (std::size_t i = 0; i < pair.size(); ++i) {
+        pair[i].device = 1;
+        rejects_pair();
+        pair[i].data = nullptr;
+        rejects_pair();
+        pair[i].bytes -= 1;
+        rejects_pair();
+        pair[i].strides.back() = 2;
+        rejects_pair();
+        pair[i].dtype = DeviceDType::f64;
+        rejects_pair();
+        pair[i].data = storage.data() + 0x1001;
+        rejects_pair();
+        // Include statuses, weights and both outputs across producer boundaries.
+        for (std::size_t j = 0; j < i; ++j) {
+            pair[i].data = pair[j].data;
+            rejects_pair();
+        }
+    }
+    pair[5].data = storage.data() + 0x5004;
+    rejects_pair();
+    pair[8].data = storage.data() + 0x5004;
+    rejects_pair();
+    // Both projections are valid individually, but their output widths differ.
+    pair[2].dimensions[0] = 3;
+    pair[2].bytes = 48;
+    pair[5].dimensions = {3, 3};
+    pair[5].strides = {3, 1};
+    pair[5].bytes = 36;
+    rejects_pair();
     std::cout << "BF16 projection layout validation passed\n";
 }
