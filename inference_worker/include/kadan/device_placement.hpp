@@ -82,8 +82,8 @@ inline ProjectionPlan projection_plan(
     Bytes limit
 ) {
     if (!in || in > 2147483647ULL || !out || out > 2147483647ULL
-        || (width != 1 && width != 4) || (alignment != 1 && alignment != 4)
-        || out % alignment)
+        || (width != 1 && width != 2 && width != 4)
+        || (alignment != 1 && alignment != 4) || out % alignment)
         throw std::invalid_argument("projection_layout");
     for (std::size_t tile = 256; tile; tile /= 2) {
         const Bytes fixed =

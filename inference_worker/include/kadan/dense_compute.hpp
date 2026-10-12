@@ -82,6 +82,25 @@ public:
         return false;
     }
 
+    virtual bool supports_bf16_weights() const {
+        return false;
+    }
+
+    using Bf16WeightSource = std::function<void(std::size_t, std::span<std::uint16_t>)>;
+
+    virtual bool dense_bf16_source(
+        const WeightIdentity&,
+        const Bf16WeightSource&,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&
+    ) {
+        return false;
+    }
+
     using FloatWeightSource = std::function<void(std::size_t, std::span<float>)>;
 
     virtual bool dense_source(

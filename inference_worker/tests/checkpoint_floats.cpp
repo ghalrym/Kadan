@@ -21,6 +21,43 @@ template <class F> void fails(F f) {
 }
 
 int main() {
+    // Transport only: preserve bit patterns and partition offsets without arithmetic.
+    {
+        std::atomic_bool cancelled = false;
+        std::vector<std::uint16_t> raw(float_read_buffer_bytes / 2 + 3);
+        std::vector<std::pair<std::size_t, std::size_t>> slices;
+        auto read = [&](std::size_t offset, std::span<std::uint8_t> bytes) {
+            slices.emplace_back(offset, bytes.size());
+            for (std::size_t i = 0; i < bytes.size(); i += 2) {
+                bytes[i] = 0x80;
+                bytes[i + 1] = 0x3f;
+            }
+        };
+        read_bf16(7, raw, cancelled, read);
+        check(
+            slices
+            == std::vector<std::pair<std::size_t, std::size_t>>{
+                {14, float_read_buffer_bytes}, {14 + float_read_buffer_bytes, 6}
+            }
+        );
+        check(std::all_of(raw.begin(), raw.end(), [](auto value) {
+            return value == 0x3f80;
+        }));
+        cancelled = true;
+        slices.clear();
+        fails([&] { read_bf16(0, raw, cancelled, read); });
+        check(slices.empty());
+        cancelled = false;
+        fails([&] {
+            read_bf16(0, raw, cancelled, [&](auto offset, auto bytes) {
+                read(offset, bytes);
+                cancelled = true;
+            });
+        });
+        check(slices.size() == 1);
+        cancelled = false;
+        fails([&] { read_bf16(SIZE_MAX / 2, raw, cancelled, read); });
+    }
     // Ownership/admission only, with no projection or model execution.
     kadan::Resources resources({64});
     {

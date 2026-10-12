@@ -82,6 +82,13 @@ struct WeightInventory {
     std::array<Group, 6> precision{};
     std::uint64_t stored_bytes = 0, floating_f32_bytes = 0, raw_nonfloating_bytes = 0;
 
+    std::uint64_t floating_execution_bytes(bool native_bf16) const {
+        return floating_f32_bytes
+               - (native_bf16
+                      ? precision.at(static_cast<std::size_t>(Dtype::bf16)).stored_bytes
+                      : 0);
+    }
+
     void add(const TensorInfo& tensor) {
         const auto raw = execution_weight_bytes(tensor, WeightRepresentation::raw);
         const auto index = static_cast<std::size_t>(tensor.dtype);

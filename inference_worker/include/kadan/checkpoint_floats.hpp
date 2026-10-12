@@ -4,11 +4,39 @@
 #include <bit>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 #include "kadan/checkpoint.hpp"
 
 namespace kadan::checkpoint {
 inline constexpr std::size_t float_read_buffer_bytes = 1024 * 1024;
+
+// Preserve serialized BF16 bits in caller-admitted storage. CUDA hosts are little
+// endian.
+template <class Read>
+void read_bf16(
+    std::size_t first,
+    std::span<std::uint16_t> output,
+    const std::atomic_bool& cancel,
+    Read read
+) {
+    static_assert(std::endian::native == std::endian::little);
+    if (first > std::numeric_limits<std::size_t>::max() / 2
+        || output.size() > std::numeric_limits<std::size_t>::max() / 2 - first)
+        throw std::overflow_error("checkpoint_bf16_range");
+    constexpr auto chunk = float_read_buffer_bytes / 2;
+    for (std::size_t at = 0; at < output.size(); at += chunk) {
+        if (cancel.load())
+            throw std::runtime_error("checkpoint_read_cancelled");
+        auto part = output.subspan(at, std::min(chunk, output.size() - at));
+        read(
+            (first + at) * 2,
+            std::span(reinterpret_cast<std::uint8_t*>(part.data()), part.size_bytes())
+        );
+        if (cancel.load())
+            throw std::runtime_error("checkpoint_read_cancelled");
+    }
+}
 
 // Bounded storage decoding only; no inference and no precision reduction. Both
 // scratch and output are admitted/owned by the caller. Notify after each chunk.
