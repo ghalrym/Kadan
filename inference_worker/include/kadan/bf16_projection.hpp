@@ -311,6 +311,57 @@ inline Bf16ProjectionShape validate_image_modulation(
     return {rows, state, state};
 }
 
+// Text RMS uses a learned (1 + weight) vector, preserving checkpoint storage.
+inline Bf16ProjectionShape validate_image_text_normalization(
+    int device,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& weight,
+    const MediaDeviceSpan& output,
+    const MediaDeviceSpan& status
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_text_normalization_layout");
+    };
+    require(input.dimensions.size() == 2);
+    const auto rows = input.dimensions[0], context = input.dimensions[1];
+    require(rows && context && rows <= INT_MAX && rows <= SIZE_MAX / context / 4);
+    for (const auto* span : {&input, &output})
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{rows, context}
+            && span->strides == std::vector<std::size_t>{context, 1}
+            && span->bytes == rows * context * sizeof(float)
+        );
+    require(
+        (weight.dtype == DeviceDType::bf16 || weight.dtype == DeviceDType::f32)
+        && weight.dimensions == std::vector<std::size_t>{context, 1}
+        && weight.strides == std::vector<std::size_t>{1, 1}
+        && weight.bytes == context * (weight.dtype == DeviceDType::bf16 ? 2 : 4)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&input, &weight, &output, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::bf16 ? 2u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, context, context};
+}
+
 // Final image rows exclude text; scale is the actual target norm_out projection.
 inline Bf16ProjectionShape validate_image_final_normalization(
     int device,
@@ -394,6 +445,14 @@ public:
     virtual void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // Inputs [condition,learned-norm]; outputs [normalized,status].
+    virtual void text_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
+    // Same spans as standard; tanh-approximate GELU follows projection in place.
+    virtual void text_projection(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
     // No inputs; outputs [frequency [2,256],status]. Target row then text t=0.
     virtual void frequency(void*, std::span<const MediaDeviceSpan>, float timestep) = 0;
     // Same spans as standard; exact timestep SiLU follows projection in place.
@@ -458,6 +517,12 @@ public:
     }
 
     void standard(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void text_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void text_projection(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
     void frequency(void*, std::span<const MediaDeviceSpan>, float) override;

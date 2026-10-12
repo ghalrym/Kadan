@@ -123,6 +123,54 @@ image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
     output[i] = activated;
 }
 
+__global__ void image_text_norm_kernel(
+    const float* input,
+    const void* weight,
+    bool bf16,
+    float* output,
+    std::size_t context,
+    unsigned* status
+) {
+    __shared__ float scale;
+    const auto base = std::size_t(blockIdx.x) * context;
+    if (threadIdx.x == 0) {
+        double sum = 0;
+        for (std::size_t c = 0; c < context; ++c) {
+            const double value = double(input[base + c]);
+            sum = __dadd_rn(sum, __dmul_rn(value, value));
+        }
+        // Match the host's ordered F64 sum and F32 reciprocal RMS cast.
+        scale = __double2float_rn(
+            __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(sum, double(context)), 1e-6)))
+        );
+    }
+    __syncthreads();
+    for (std::size_t c = threadIdx.x; c < context; c += blockDim.x) {
+        const float w =
+            bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c])
+                 : static_cast<const float*>(weight)[c];
+        const float value =
+            __fmul_rn(__fmul_rn(input[base + c], scale), __fadd_rn(1.f, w));
+        if (!isfinite(input[base + c]) || !isfinite(w) || !isfinite(value))
+            atomicOr(status, 1U);
+        output[base + c] = value;
+    }
+}
+
+__global__ void
+image_text_gelu_kernel(float* output, std::size_t count, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float v = output[i];
+    // Preserve host F32 expression order; this target disables contraction/FTZ.
+    const float value =
+        .5f * v * (1 + tanhf(.7978845608028654f * (v + .044715f * v * v * v)));
+    if (!isfinite(v) || !isfinite(value))
+        atomicOr(status, 1U);
+    output[i] = value;
+}
+
 __global__ void
 image_projection_status(const unsigned* gate, const unsigned* up, unsigned* status) {
     *status = *gate | *up;
@@ -2109,6 +2157,57 @@ void CudaBf16Projection::standard(
         outputs[2],
         outputs[3]
     );
+}
+
+void CudaBf16Projection::text_normalization(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(
+        inputs.size() == 2 && outputs.size() == 2, "image_text_normalization_layout"
+    );
+    const auto shape = validate_image_text_normalization(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1]
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_text_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[0].data),
+        inputs[1].data,
+        inputs[1].dtype == DeviceDType::bf16,
+        static_cast<float*>(outputs[0].data),
+        shape.in,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::text_projection(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    standard(stream, inputs, outputs);
+    const auto count = outputs[0].bytes / sizeof(float);
+    // Keep the projection status so activation cannot conceal a bad producer.
+    image_text_gelu_kernel<<<
+        unsigned((count + 255) / 256),
+        256,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(
+        static_cast<float*>(outputs[0].data),
+        count,
+        static_cast<unsigned*>(outputs[3].data)
+    );
+    checked(cudaGetLastError());
 }
 
 void CudaBf16Projection::frequency(

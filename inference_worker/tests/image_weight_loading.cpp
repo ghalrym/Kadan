@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "kadan/bf16_projection.hpp"
+#include "kadan/checkpoint.hpp"
 #include "kadan/image_denoiser.hpp"
 
 void check(bool b, std::source_location at = std::source_location::current()) {
@@ -92,7 +93,9 @@ struct Device final : kadan::MediaDeviceOperations {
 struct WeightOptions {
     bool attention_f32 = false, denoiser = false, modulation_f32 = false,
          timestep_f32 = false, linear1_f32 = false, final_f32 = false,
-         output_f32 = false;
+         output_f32 = false, norm_f32 = false;
+    const char* ingress_f32 = "";
+    std::size_t context = 0;
     std::size_t layers = 1, channels = 64;
 };
 
@@ -149,7 +152,9 @@ void write_weights(
                     && std::string_view(name)
                            == "time_text_embed.timestep_embedder.linear_1")
                 || (options.final_f32 && std::string_view(name) == "norm_out.linear")
-                || (options.output_f32 && std::string_view(name) == "proj_out");
+                || (options.output_f32 && std::string_view(name) == "proj_out")
+                || (std::string_view(name) == options.ingress_f32)
+                || (options.norm_f32 && std::string_view(name) == "txt_in.text_norm");
             const auto size = rows * (columns ? columns : 1) * (fp32 ? 4 : 2);
             header << ",\"" << name << ".weight\":{\"dtype\":\""
                    << (fp32 ? "F32" : "BF16") << "\",\"shape\":[" << rows;
@@ -159,8 +164,9 @@ void write_weights(
             bytes += size;
         };
         shared("img_in", state, options.channels);
-        shared("txt_in.text_norm", state, 0);
-        shared("txt_in.in_layer", state, state);
+        const auto context = options.context ? options.context : state;
+        shared("txt_in.text_norm", context, 0);
+        shared("txt_in.in_layer", state, context);
         shared("txt_in.out_layer", state, state);
         shared("time_text_embed.timestep_embedder.linear_1", state, 256);
         shared("time_text_embed.timestep_embedder.linear_2", state, state);
@@ -186,6 +192,18 @@ void write_weights(
 struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     Device& backend;
     int selected;
+    bool ingress = false;
+    std::size_t ingress_text = 3, ingress_context = 64;
+    char fail_ingress = 0, cancel_ingress_stage = 0;
+    std::atomic_bool* cancel_ingress = nullptr;
+    void* ingress_normalized = nullptr;
+    std::uint64_t ingress_normalized_generation = 0;
+    void* ingress_projected = nullptr;
+    std::uint64_t ingress_projected_generation = 0;
+    void* ingress_hidden = nullptr;
+    std::uint64_t ingress_hidden_generation = 0;
+    std::map<std::string, kadan::MediaDeviceSpan> ingress_weights;
+    std::vector<std::size_t> text_rows, image_rows;
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
@@ -227,6 +245,76 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::vector<std::size_t> residual_first;
 
     Launcher(Device& d, int id) : backend(d), selected(id) {
+    }
+
+    void expect_ingress_weights(kadan::MediaSession& session) {
+        for (const auto& w : session.plan().weights) {
+            if (w.device != selected
+                || !(w.name.starts_with("txt_in.") || w.name == "img_in.weight"))
+                continue;
+            check(w.first_row == 0 && w.identity.inode != 0);
+            auto view = session.weight(w);
+            ingress_weights.emplace(w.name, view.layout());
+        }
+        check(ingress_weights.size() == 4);
+    }
+
+    void ingress_status(char stage) {
+        calls.push_back(stage);
+        backend.status = fail_ingress == stage ? 1 : 0;
+        if (cancel_ingress && cancel_ingress_stage == stage)
+            cancel_ingress->store(true);
+    }
+
+    void check_ingress_weight(const kadan::MediaDeviceSpan& span, const char* name) {
+        const auto& expected = ingress_weights.at(name);
+        check(
+            span.data == expected.data && span.generation == expected.generation
+            && span.dimensions == expected.dimensions && span.dtype == expected.dtype
+        );
+    }
+
+    void text_normalization(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write
+    ) override {
+        check(ingress && read.size() == 2 && write.size() == 2 && calls.empty());
+        kadan::video::validate_image_text_normalization(
+            selected, read[0], read[1], write[0], write[1]
+        );
+        check(
+            read[0].dimensions
+            == std::vector<std::size_t>{ingress_text, ingress_context}
+        );
+        check_ingress_weight(read[1], "txt_in.text_norm.weight");
+        ingress_normalized = write[0].data;
+        ingress_normalized_generation = write[0].generation;
+        ingress_status('N');
+    }
+
+    void text_projection(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write
+    ) override {
+        check(ingress && read.size() == 2 && write.size() == 4);
+        const kadan::MediaDeviceSpan bias{
+            nullptr, selected, kadan::DeviceDType::f32, {}, {}, 0, 0, 0
+        };
+        kadan::video::validate_bf16_projection(
+            selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
+        );
+        check_ingress_weight(read[1], "txt_in.in_layer.weight");
+        check(
+            static_cast<std::byte*>(read[0].data) - read[0].offset == ingress_normalized
+            && read[0].generation == ingress_normalized_generation
+        );
+        check(read[0].offset / (ingress_context * 4) == text_rows.size());
+        text_rows.push_back(read[0].offset / (ingress_context * 4));
+        ingress_projected = static_cast<std::byte*>(write[0].data) - write[0].offset;
+        ingress_projected_generation = write[0].generation;
+        ingress_status('G');
     }
 
     void expect_final_weight(kadan::MediaSession& session) {
@@ -339,6 +427,37 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_bf16_projection(
             selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
         );
+        if (ingress) {
+            const bool image = read[1].data == ingress_weights.at("img_in.weight").data;
+            check_ingress_weight(
+                read[1], image ? "img_in.weight" : "txt_in.out_layer.weight"
+            );
+            check(write[0].dimensions == std::vector<std::size_t>{1, 64});
+            const auto row = write[0].offset / 256;
+            if (image) {
+                check(row == ingress_text + image_rows.size());
+                check(read[0].dimensions == std::vector<std::size_t>{1, channels});
+                image_rows.push_back(row);
+            } else {
+                check(text_rows.size() == ingress_text && row < ingress_text);
+                check(
+                    static_cast<std::byte*>(read[0].data) - read[0].offset
+                        == ingress_projected
+                    && read[0].generation == ingress_projected_generation
+                );
+            }
+            const auto hidden =
+                static_cast<std::byte*>(write[0].data) - write[0].offset;
+            if (ingress_hidden)
+                check(
+                    hidden == ingress_hidden
+                    && write[0].generation == ingress_hidden_generation
+                );
+            ingress_hidden = hidden;
+            ingress_hidden_generation = write[0].generation;
+            ingress_status(image ? 'I' : 'T');
+            return;
+        }
         if (!calls.empty() && calls.back() == 'z') {
             check(
                 read[0].dimensions == std::vector<std::size_t>{14, 64}
@@ -418,6 +537,11 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             selected, read[0], read[1], read[2], write[0], write[1], write[2], text
         );
         check(!calls.empty() && calls.back() == 'o');
+        if (ingress_hidden)
+            check(
+                read[0].data == ingress_hidden
+                && read[0].generation == ingress_hidden_generation
+            );
         check(read[1].data == attended && read[1].generation == attended_generation);
         check(read[1].dimensions == std::vector<std::size_t>{17, 64});
         if (modulation)
@@ -899,7 +1023,7 @@ int main() {
     write_weights(directory, false, 64, 512, {.denoiser = true});
     // The wider fake FF keeps both early and final manifests on two devices,
     // with room for retained owners and complete-phase output allocations.
-    constexpr kadan::Bytes conditioning_budget = budget + 200000;
+    constexpr kadan::Bytes conditioning_budget = budget + 230000;
     auto conditioning_resources = std::make_shared<kadan::Resources>(
         kadan::Footprint{128 * 1024 * 1024, conditioning_budget, conditioning_budget}
     );
@@ -908,6 +1032,211 @@ int main() {
     );
     const std::array<std::string, 1> files{"weights.safetensors"};
     const kadan::image::DenoiserConfig config{{64, 1, 64, 512, {0, 0, 64}}, 1, 64, 64};
+    denoiser.load(directory, files, config, cancel);
+    // Actual ingress producers are metadata fakes: no activation reads/arithmetic.
+    enum class IngressScenario {
+        complete,
+        fail_norm,
+        fail_gelu,
+        fail_text,
+        fail_image,
+        cancel_norm,
+        cancel_gelu,
+        cancel_text,
+        cancel_image,
+        missing_launcher,
+        invalid_condition,
+        invalid_latent,
+        nonfinite_condition,
+        nonfinite_latent
+    };
+    auto ingress_case = [&](IngressScenario scenario, bool two_devices) {
+        auto ingress_resources = std::make_shared<kadan::Resources>(
+            two_devices
+                ? kadan::
+                      Footprint{128 * 1024 * 1024, conditioning_budget, conditioning_budget}
+                : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+        );
+        kadan::image::Denoiser ingress_denoiser(
+            ingress_resources, std::make_shared<Compute>()
+        );
+        auto ingress_config = config;
+        ingress_config.context = 96;
+        ingress_config.channels = 32;
+        write_weights(
+            directory,
+            false,
+            64,
+            512,
+            {.denoiser = true, .norm_f32 = !two_devices, .context = 96, .channels = 32}
+        );
+        ingress_denoiser.load(directory, files, ingress_config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = two_devices ? conditioning_budget : 32 * 1024 * 1024;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            ingress_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            two_devices ? std::vector<kadan::MediaDeviceLimit>{{0}, {1}}
+                        : std::vector<kadan::MediaDeviceLimit>{{0}},
+            cancel
+        );
+        check(!ingress_denoiser.prepare_feed_forward(
+            resident, 0, 17, HiddenBoundary::pre_attention, cancel
+        ));
+        check(resident.plan().devices.size() == (two_devices ? 2 : 1));
+        Launcher first(metadata, 0), second(metadata, 1);
+        for (auto* launcher : {&first, &second}) {
+            launcher->ingress = true;
+            launcher->ingress_context = 96;
+            launcher->channels = 32;
+            launcher->cancel_ingress = &cancel;
+        }
+        for (const auto& d : resident.plan().devices)
+            (d.device == 0 ? first : second).expect_ingress_weights(resident);
+        auto& target = two_devices ? second : first;
+        if (scenario == IngressScenario::fail_norm)
+            target.fail_ingress = 'N';
+        if (scenario == IngressScenario::fail_gelu)
+            target.fail_ingress = 'G';
+        if (scenario == IngressScenario::fail_text)
+            target.fail_ingress = 'T';
+        if (scenario == IngressScenario::fail_image)
+            target.fail_ingress = 'I';
+        if (scenario == IngressScenario::cancel_norm)
+            target.cancel_ingress_stage = 'N';
+        if (scenario == IngressScenario::cancel_gelu)
+            target.cancel_ingress_stage = 'G';
+        if (scenario == IngressScenario::cancel_text)
+            target.cancel_ingress_stage = 'T';
+        if (scenario == IngressScenario::cancel_image)
+            target.cancel_ingress_stage = 'I';
+        std::vector<kadan::video::ImageFeedForwardLauncher*> launchers{&first};
+        if (two_devices)
+            launchers.push_back(&second);
+        if (scenario == IngressScenario::missing_launcher)
+            launchers.back() = nullptr;
+        std::vector<float> latent(14 * 32), condition(3 * 96);
+        if (scenario == IngressScenario::invalid_condition)
+            condition.pop_back();
+        if (scenario == IngressScenario::invalid_latent)
+            latent.pop_back();
+        if (scenario == IngressScenario::nonfinite_condition)
+            condition[0] = std::numeric_limits<float>::infinity();
+        if (scenario == IngressScenario::nonfinite_latent)
+            latent[0] = std::numeric_limits<float>::quiet_NaN();
+        bool rejected = false;
+        try {
+            ingress_denoiser.execute_ingress(
+                resident, latent, condition, 3, launchers, cancel
+            );
+        } catch (const std::exception& e) {
+            rejected = true;
+            const auto error = std::string_view(e.what());
+            check(
+                error
+                == (target.fail_ingress           ? "media_session_nonfinite_output"
+                    : target.cancel_ingress_stage ? "media_session_cancelled"
+                    : scenario == IngressScenario::missing_launcher
+                        ? "image_ingress_launcher"
+                    : (scenario == IngressScenario::nonfinite_condition
+                       || scenario == IngressScenario::nonfinite_latent)
+                        ? "image_nonfinite"
+                        : "image_ingress_shape")
+            );
+        }
+        check(rejected == (scenario != IngressScenario::complete));
+        cancel.store(false);
+        if (!rejected) {
+            check(
+                resident.transfers().input_upload
+                == (latent.size() + condition.size()) * 4 * launchers.size()
+            );
+            for (const auto& d : resident.plan().devices) {
+                auto& launcher = d.device == 0 ? first : second;
+                auto hidden = resident.tensor(
+                    d.device,
+                    "resident/hidden",
+                    kadan::DeviceDType::f32,
+                    {17, 64},
+                    {64, 1}
+                );
+                check(
+                    resident.ready(hidden)
+                    && hidden.layout().data == launcher.ingress_hidden
+                    && hidden.layout().generation == launcher.ingress_hidden_generation
+                );
+                check(launcher.calls.size() == 21 && launcher.calls.front() == 'N');
+                check(launcher.text_rows == std::vector<std::size_t>{0, 1, 2});
+                check(
+                    launcher.image_rows.front() == 3 && launcher.image_rows.back() == 16
+                );
+                // The existing block consumer binds this exact certified owner.
+                std::vector<std::byte> attended(17 * 64 * 4);
+                auto normalized = resident.tensor(
+                    d.device,
+                    "resident/normalized",
+                    kadan::DeviceDType::f32,
+                    {17, 64},
+                    {64, 1}
+                );
+                resident.upload_input(normalized, attended);
+                launcher.ingress = false;
+                launcher.calls.clear();
+                launcher.expect_final_weight(resident);
+            }
+            ingress_denoiser.execute_feed_forward(
+                resident,
+                0,
+                17,
+                3,
+                .625f,
+                HiddenBoundary::pre_attention,
+                launchers,
+                cancel
+            );
+        } else if (scenario >= IngressScenario::missing_launcher) {
+            check(
+                first.calls.empty() && second.calls.empty()
+                && !resident.transfers().input_upload
+            );
+        }
+        if (!rejected)
+            resident.finish();
+        if (target.fail_ingress || target.cancel_ingress_stage)
+            check(
+                target.calls.back()
+                == (target.fail_ingress ? target.fail_ingress
+                                        : target.cancel_ingress_stage)
+            );
+        check(metadata.allocations.empty() && activity->owners == 0);
+        check(ingress_resources->snapshot().used[1] == 0);
+        if (two_devices)
+            check(ingress_resources->snapshot().used[2] == 0);
+    };
+    for (bool two_devices : {false, true})
+        for (auto scenario :
+             {IngressScenario::complete,
+              IngressScenario::fail_norm,
+              IngressScenario::fail_gelu,
+              IngressScenario::fail_text,
+              IngressScenario::fail_image,
+              IngressScenario::cancel_norm,
+              IngressScenario::cancel_gelu,
+              IngressScenario::cancel_text,
+              IngressScenario::cancel_image,
+              IngressScenario::missing_launcher,
+              IngressScenario::invalid_condition,
+              IngressScenario::invalid_latent,
+              IngressScenario::nonfinite_condition,
+              IngressScenario::nonfinite_latent})
+            ingress_case(scenario, two_devices);
+    // Restore the original loaded model's checkpoint before conditioning checks.
+    denoiser.unload();
+    write_weights(directory, false, 64, 512, {.denoiser = true});
     denoiser.load(directory, files, config, cancel);
     enum class ConditioningScenario {
         complete,
@@ -1616,6 +1945,91 @@ int main() {
             && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
         );
         resident.finish();
+    }
+
+    for (const char* projection : {"img_in", "txt_in.in_layer", "txt_in.out_layer"}) {
+        write_weights(
+            directory, false, 64, 512, {.denoiser = true, .ingress_f32 = projection}
+        );
+        denoiser.load(directory, files, config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        kadan::MediaSession resident(
+            conditioning_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        const auto error = denoiser.prepare_feed_forward(
+            resident, 0, 17, HiddenBoundary::pre_attention, cancel
+        );
+        check(
+            error && error->detail == "image_ingress_standard_precision"
+            && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
+        );
+        resident.finish();
+        denoiser.unload();
+    }
+    for (const char* weight :
+         {"img_in.weight",
+          "txt_in.text_norm.weight",
+          "txt_in.in_layer.weight",
+          "txt_in.out_layer.weight"}) {
+        for (bool norm_f32 : {false, true}) {
+            if (norm_f32 && std::string_view(weight) != "txt_in.text_norm.weight")
+                continue;
+            write_weights(
+                directory, false, 64, 512, {.denoiser = true, .norm_f32 = norm_f32}
+            );
+            std::uint64_t offset = 0;
+            {
+                kadan::checkpoint::Shard shard(
+                    directory,
+                    "weights.safetensors",
+                    std::make_shared<kadan::checkpoint::MemoryBudget>(16 * 1024 * 1024)
+                );
+                offset = shard.tensor_identity(weight).payload_begin;
+            }
+            {
+                std::fstream file(
+                    std::string(directory) + "/weights.safetensors",
+                    std::ios::in | std::ios::out | std::ios::binary
+                );
+                file.seekp(std::streamoff(offset));
+                if (norm_f32) {
+                    file.put(0);
+                    file.put(0);
+                }
+                file.put(char(0x80));
+                file.put(char(0x7f));
+                check(bool(file));
+            }
+            denoiser.load(directory, files, config, cancel);
+            auto fake = std::make_unique<Device>();
+            auto& metadata = *fake;
+            metadata.metadata_execution = true;
+            kadan::MediaSession resident(
+                conditioning_resources,
+                activity,
+                std::move(fake),
+                kadan::Workload::image,
+                {{0}, {1}},
+                cancel
+            );
+            bool rejected = false;
+            try {
+                denoiser.prepare_feed_forward(
+                    resident, 0, 17, HiddenBoundary::pre_attention, cancel
+                );
+            } catch (const std::runtime_error& e) {
+                rejected = true;
+                check(std::string_view(e.what()) == "h3_cuda_nonfinite_weight");
+            }
+            check(rejected && metadata.allocations.empty() && activity->owners == 0);
+            denoiser.unload();
+        }
     }
 
     struct CorruptWeight {

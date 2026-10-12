@@ -962,8 +962,7 @@ void MediaSession::launch(
         read.push_back(v->layout_);
     }
     // FF preparation can apply the attention residual to its certified baseline.
-    // Require the very same hidden view as an input; other prepare overwrites stay
-    // forbidden.
+    // Require the same hidden input unless admission declares an ingress producer.
     for (auto* v : outputs) {
         if (!v)
             throw std::invalid_argument("media_session_null_view");
@@ -977,8 +976,9 @@ void MediaSession::launch(
                         ? s.phase != MediaPhase::ff
                               && !(
                                   s.phase == MediaPhase::prepare
-                                  && std::find(inputs.begin(), inputs.end(), v)
-                                         != inputs.end()
+                                  && (s.manifest.prepare_hidden
+                                      || std::find(inputs.begin(), inputs.end(), v)
+                                             != inputs.end())
                               )
                         : s.plan.kv_complete_before_hidden_write
                               && s.phase <= *s.plan.kv_complete_before_hidden_write)))
