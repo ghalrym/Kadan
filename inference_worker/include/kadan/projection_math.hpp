@@ -1,8 +1,18 @@
 #pragma once
+#include <cstdint>
+
 #include "kadan/cleanup_error.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan {
+// FP32 exponent bits classify the stored output without changing its value.
+#ifdef __CUDACC__
+__host__ __device__
+#endif
+    inline bool projection_output_finite(std::uint32_t bits) {
+    return (bits & 0x7f800000U) != 0x7f800000U;
+}
+
 enum class ProjectionPolicy {
     standard,
     image_feed_forward
