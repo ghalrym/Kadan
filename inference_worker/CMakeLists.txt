@@ -287,6 +287,10 @@ target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -
 endif()
 
 if(BUILD_TESTING)
+  add_executable(bf16-projection-tests tests/bf16_projection.cpp)
+  target_link_libraries(bf16-projection-tests PRIVATE kadan_media_session)
+  target_compile_options(bf16-projection-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME bf16-projection COMMAND bf16-projection-tests)
   add_executable(media-session-tests tests/media_session.cpp)
   target_link_libraries(media-session-tests PRIVATE kadan_media_session)
   target_compile_options(media-session-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)

@@ -14,6 +14,7 @@ from bin.process import ROOT, run
 app = typer.Typer(no_args_is_help=True)
 
 NATIVE_UNIT_TARGETS = [
+    "bf16-projection-tests",
     "media-session-tests",
     "media-residency-tests",
     "weight-backing-tests",
