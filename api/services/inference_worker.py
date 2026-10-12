@@ -1,26 +1,27 @@
 """Transport to the one inference owner; no Python inference scheduler."""
 
 import asyncio
-from collections import deque
-from datetime import datetime, timezone
-from contextlib import suppress
-from enum import StrEnum
 import json
 import logging
 import os
-from pathlib import Path
 import signal
+from collections import deque
+from contextlib import suppress
+from datetime import datetime, timezone
+from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from api.services.inference_errors import InferenceFailure
-from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
 from api.pydantic_models.inference import (
     ImageProgress,
+    InferenceProgress,
 )
+from api.pydantic_models.inference_task import InferenceTask
+from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
+from api.services.inference_errors import InferenceFailure
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +107,16 @@ class InferenceJob:
         self.model = None
         self.identified = asyncio.Event()
         self.stream_error = None
-        self.image_progress: ImageProgress | None = None
+        self.image_progress = (
+            ImageProgress(
+                image_index=1,
+                image_count=request.input.count,
+                steps_total=request.input.steps,
+            )
+            if request.feature == "image"
+            else None
+        )
+        self.progress: InferenceProgress | None = None
         self.events = asyncio.Queue(maxsize=64) if streaming else None
 
 
@@ -188,6 +198,8 @@ class InferenceWorker:
             raise InferenceFailure(
                 "Inference request exceeds its transport limit.", 413
             )
+        if request.id in self.jobs:
+            raise InferenceFailure("Request is already active.", 409)
         job = InferenceJob(request, streaming)
         self.jobs[request.id] = job
         try:

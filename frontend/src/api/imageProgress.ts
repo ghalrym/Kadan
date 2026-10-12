@@ -28,39 +28,6 @@ export type ImageProgressView = {
 
 export const MILESTONES = ['Queued', 'Load model', 'Generate'] as const
 
-// Worker stage names arrive as `phase || state`; most are completion events.
-const STAGES: Record<string, ImagePhase> = {
-  waiting_for_resources: 'queued',
-  preparing: 'queued',
-  loading: 'loading',
-  checkpoint_tensor_bytes: 'loading',
-  expanded_f32_inventory_bytes: 'loading',
-  nonfloating_inventory_bytes: 'loading',
-  tokenizer_loaded: 'loading',
-  text_checkpoint_read_bytes: 'loading',
-  text_loaded: 'loading',
-  denoiser_block_loaded: 'loading',
-  denoiser_loaded: 'loading',
-  vae_checkpoint_read_bytes: 'loading',
-  vae_loaded: 'loading',
-  running: 'prompt',
-  image_started: 'prompt',
-  text_layer: 'prompt',
-  conditioning: 'denoise',
-  block: 'denoise',
-  step_completed: 'denoise',
-  vae_up_block: 'decode',
-}
-
-const WORKLOADS: Record<string, string> = {
-  llm: 'a chat',
-  video: 'a video',
-  stt: 'a transcription',
-  tts: 'a speech',
-  decisions: 'a decision',
-  models: 'a model download',
-}
-
 function gigabytes(bytes: number) {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`
 }
@@ -94,19 +61,20 @@ function withinImage(phase: ImagePhase, step: number, steps: number) {
   return 1
 }
 
-/**
- * Describe shared worker activity, never the browser request's progress.
- * Undefined means no successful poll; null is an authoritative idle snapshot.
- * Only carry ambiguous phases and counters forward within the same worker job.
- */
+/** Retain only this request's progress across unavailable or delayed polls. */
 export function describeImageProgress(
   progress: InferenceProgress | null | undefined,
   previous: ImageProgressView | null,
+  requestId: string,
 ): ImageProgressView {
+  if (previous?.jobId !== requestId) previous = null
   if (progress === undefined && previous) return { ...previous, stale: true }
-  if (!progress || previous?.jobId !== progress.job_id) previous = null
+  if (progress && (progress.job_id !== requestId || progress.workload !== 'image'))
+    progress = undefined
+  if (progress && previous?.observedNs != null && progress.observed_unix_ns < previous.observedNs)
+    return previous
   const base = {
-    jobId: progress?.job_id ?? null,
+    jobId: requestId,
     stale: progress === undefined,
     imageIndex: previous?.imageIndex ?? 1,
     imageCount: previous?.imageCount ?? 1,
@@ -114,15 +82,14 @@ export function describeImageProgress(
     steps: previous?.steps ?? 0,
     observedNs: progress?.observed_unix_ns ?? null,
   }
-  if (!progress || progress.workload !== 'image') {
+  if (!progress) {
+    if (previous) return { ...previous, stale: true }
     return {
       ...base,
       phase: 'queued',
       milestone: 0,
-      title: progress ? 'Worker busy' : progress === undefined ? 'Worker status unavailable' : 'Worker idle',
-      detail: progress
-        ? `Processing ${WORKLOADS[progress.workload] ?? 'another'} job`
-        : 'No active worker job reported',
+      title: 'Waiting for images',
+      detail: 'Pending request',
       imageFraction: null,
       fraction: null,
     }
@@ -135,10 +102,7 @@ export function describeImageProgress(
     step: image?.steps_completed ?? base.step,
     steps: image?.steps_total ?? base.steps,
   }
-  const phase =
-    STAGES[progress.stage] ??
-    previous?.phase ??
-    (view.steps && view.step >= view.steps ? 'decode' : 'loading')
+  const phase = image?.phase ?? 'queued'
   if (phase === 'queued' || phase === 'loading')
     return {
       ...view,
@@ -167,7 +131,7 @@ export function describeImageProgress(
       phase === 'prompt'
         ? 'Reading the prompt'
         : phase === 'denoise'
-          ? `Denoising · step ${view.step} of ${view.steps}`
+          ? `Denoising · step ${Math.min(view.step + 1, view.steps)} of ${view.steps}`
           : 'Decoding pixels',
     imageFraction: within,
     fraction: (view.imageIndex - 1 + within) / Math.max(view.imageCount, 1),

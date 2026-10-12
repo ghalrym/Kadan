@@ -2,9 +2,9 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from api.routes.v1.images.generations import ImageRequest
-from api.routes.v1.chat.completions import CompletionRequest
 from api.pydantic_models.inference import ImageProgress
+from api.routes.v1.chat.completions import CompletionRequest
+from api.routes.v1.images.generations import ImageRequest
 from api.services.inference import InferenceService
 from api.services.inference_worker import InferenceJob, InferenceTask, WorkerEvent
 
@@ -137,12 +137,111 @@ class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
         report("image_started", 1)
         report("step_completed", 3)
         report("block", 0)
-        self.assertEqual(service.progress["image"]["steps_completed"], 3)
-        self.assertEqual(service.progress["image"]["steps_total"], 20)
+        self.assertEqual(service.progress.image.steps_completed, 3)
+        self.assertEqual(service.progress.image.steps_total, 20)
         report("image_started", 2)
         report("block", 15)
-        self.assertEqual(service.progress["image"]["image_index"], 2)
-        self.assertEqual(service.progress["image"]["image_count"], 4)
-        self.assertEqual(service.progress["image"]["steps_completed"], 0)
+        self.assertEqual(service.progress.image.image_index, 2)
+        self.assertEqual(service.progress.image.image_count, 4)
+        self.assertEqual(service.progress.image.steps_completed, 0)
         service._observe(job, WorkerEvent(id=job.request.id, state="succeeded"))
         self.assertIsNone(service.progress)
+
+    async def test_phase_survives_transient_stages_before_first_poll(self):
+        service = InferenceService()
+        job = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "test", "count": 1}),
+            False,
+        )
+        for phase, value in [
+            ("image_started", 1),
+            ("conditioning", 0),
+            ("block_started", 3),
+            ("qkv", 3),
+        ]:
+            service._observe(
+                job,
+                WorkerEvent(
+                    id=job.request.id, state="progress", phase=phase, value=value
+                ),
+            )
+        self.assertEqual(job.progress.image.phase, "denoise")
+        self.assertEqual(job.progress.image.steps_completed, 0)
+        first = job.progress
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id, state="progress", phase="step_completed", value=1
+            ),
+        )
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id,
+                state="progress",
+                phase="gpu_0_weight_planned_bytes",
+                value=99,
+            ),
+        )
+        self.assertEqual(job.progress.image.phase, "denoise")
+        self.assertEqual(job.progress.image.steps_completed, 1)
+        self.assertEqual(first.image.steps_completed, 0)
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id, state="progress", phase="vae_up_block", value=1
+            ),
+        )
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id,
+                state="progress",
+                phase="gpu_0_weight_planned_bytes",
+                value=99,
+            ),
+        )
+        self.assertEqual(job.progress.image.phase, "decode")
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id, state="progress", phase="image_started", value=2
+            ),
+        )
+        self.assertEqual(job.progress.image.phase, "prompt")
+        self.assertEqual(job.progress.image.steps_completed, 0)
+
+    async def test_queued_and_terminal_jobs_do_not_replace_another_active_job(self):
+        for terminal in ("succeeded", "failed", "cancelled", "rejected"):
+            service = InferenceService()
+            active = InferenceJob(
+                InferenceTask(input={"feature": "image", "prompt": "a"}), False
+            )
+            queued = InferenceJob(
+                InferenceTask(input={"feature": "image", "prompt": "b"}), False
+            )
+            service._observe(active, WorkerEvent(id=active.request.id, state="running"))
+            progress = service.progress
+            service._observe(queued, WorkerEvent(id=queued.request.id, state="queued"))
+            self.assertIs(service.progress, progress)
+            self.assertEqual(queued.progress.image.phase, "queued")
+            service._observe(queued, WorkerEvent(id=queued.request.id, state=terminal))
+            self.assertIsNone(queued.progress)
+            self.assertIs(service.progress, progress)
+            service._observe(active, WorkerEvent(id=active.request.id, state=terminal))
+            self.assertIsNone(service.progress)
+            self.assertIsNone(active.progress)
+
+    async def test_client_request_id_is_used_by_the_worker(self):
+        service = InferenceService()
+
+        async def submit(request, **kwargs):
+            self.assertEqual(request.id, "a" * 32)
+            job = InferenceJob(request, False)
+            job.result.set_result({"image": {}})
+            return job
+
+        with patch.object(service.worker, "submit", side_effect=submit):
+            await service.submit(
+                ImageRequest(prompt="test"), feature="image", job_id="a" * 32
+            )

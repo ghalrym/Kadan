@@ -1,7 +1,7 @@
 import asyncio
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.services.inference_worker import InferenceJob, InferenceTask, InferenceWorker
@@ -53,6 +53,36 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(worker, "_send", side_effect=send):
             job = await worker.submit(request)
         self.assertEqual(job.request, request)
+
+    async def test_duplicate_id_does_not_send_cancel_or_replace_original(self):
+        worker, job = InferenceWorker(Path("/unused")), self.job()
+        worker.jobs[job.request.id] = job
+        with (
+            patch.object(worker, "_send", new=AsyncMock()) as send,
+            self.assertRaisesRegex(Exception, "already active"),
+        ):
+            await worker.submit(job.request)
+        send.assert_not_awaited()
+        self.assertIs(worker.jobs[job.request.id], job)
+
+    async def test_image_progress_is_initialized_before_acceptance_events(self):
+        worker = InferenceWorker(Path("/unused"))
+        request = InferenceTask(
+            input={"feature": "image", "prompt": "test", "count": 2, "steps": 20}
+        )
+
+        async def send(_):
+            job = worker.jobs[request.id]
+            self.assertEqual(job.image_progress.image_count, 2)
+            self.assertEqual(job.image_progress.steps_total, 20)
+            job.image_progress.phase = "denoise"
+            job.image_progress.steps_completed = 1
+            job.accepted.set_result(None)
+
+        with patch.object(worker, "_send", side_effect=send):
+            job = await worker.submit(request)
+        self.assertEqual(job.image_progress.phase, "denoise")
+        self.assertEqual(job.image_progress.steps_completed, 1)
 
 
 class WorkerExitTests(unittest.IsolatedAsyncioTestCase):

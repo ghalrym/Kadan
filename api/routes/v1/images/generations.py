@@ -1,9 +1,12 @@
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Header, Request
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.pydantic_models.media import ImageSet
 from api.services.inference import inference
 from api.services.inference_http import infer
-from typing import Literal
-from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field
-from api.pydantic_models.media import ImageSet
 
 router = APIRouter(prefix="/v1/images/generations", tags=["Images"])
 
@@ -26,8 +29,18 @@ class ImageResponse(BaseModel):
     responses={503: {"description": "Image provider unavailable"}},
     operation_id="generateImages",
 )
-async def create_image(body: ImageRequest, request: Request) -> ImageResponse:
+async def create_image(
+    body: ImageRequest,
+    request: Request,
+    x_kadan_request_id: Annotated[UUID | None, Header()] = None,
+) -> ImageResponse:
     """Submit image generation to the single native inference worker."""
     return await infer(
-        request, inference.submit(body, feature="image", operation="generate")
+        request,
+        inference.submit(
+            body,
+            feature="image",
+            operation="generate",
+            job_id=x_kadan_request_id.hex if x_kadan_request_id is not None else None,
+        ),
     )

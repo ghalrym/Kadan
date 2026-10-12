@@ -2,8 +2,7 @@ import { MILESTONES, formatDuration, type ImageProgressView } from '../api/image
 import { MediaPlaceholder, type Aspect } from './Media'
 
 /**
- * Show shared worker progress and its estimated remaining time alongside
- * the browser request’s elapsed time.
+ * Show this request's latest progress and estimated remaining time.
  */
 export function ImageProgressPanel({
   view,
@@ -16,10 +15,10 @@ export function ImageProgressPanel({
 }) {
   const percent = view.fraction === null ? null : Math.round(view.fraction * 100)
   return (
-    <section className="image-progress" aria-label="Shared worker activity">
-      <span className="eyebrow">Shared worker activity</span>
-      <p className="muted">This may be another request. Your images are pending until delivered.</p>
-      {view.stale && <p role="status">Worker updates unavailable. Showing last known activity.</p>}
+    <section className="image-progress" aria-label="Image generation progress">
+      <span className="eyebrow">Generation progress</span>
+      <p className="muted">Your images are pending until delivered.</p>
+      {view.stale && <p role="status">Waiting for updates…</p>}
       <div className="image-progress__head">
         <strong role="status">{view.title}</strong>
         <span className="mono muted">{percent === null ? '' : `${percent}%`}</span>
@@ -27,7 +26,7 @@ export function ImageProgressPanel({
       <div
         className={`image-progress__bar${percent === null ? ' image-progress__bar--indeterminate' : ''}`}
         role="progressbar"
-        aria-label="Worker job progress"
+        aria-label="Image request progress"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent ?? undefined}
@@ -36,7 +35,7 @@ export function ImageProgressPanel({
       </div>
       <div className="image-progress__time mono faint">
         <span>Request elapsed: {formatDuration(elapsed)}</span>
-        {remaining !== null && !view.stale && <span>Worker ~{formatDuration(remaining)} left</span>}
+        {remaining !== null && !view.stale && <span>~{formatDuration(remaining)} left</span>}
       </div>
       <ol className="image-progress__steps">
         {MILESTONES.map((label, index) => {

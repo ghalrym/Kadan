@@ -111,6 +111,8 @@ export type {
   GetDecisionsResponse,
   GetDecisionsResponses,
   GetMetricsData,
+  GetMetricsError,
+  GetMetricsErrors,
   GetMetricsResponse,
   GetMetricsResponses,
   GetModelLifecycleStatusData,

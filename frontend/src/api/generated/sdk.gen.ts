@@ -42,6 +42,7 @@ import type {
   GetDecisionsData,
   GetDecisionsResponses,
   GetMetricsData,
+  GetMetricsErrors,
   GetMetricsResponses,
   GetModelLifecycleStatusData,
   GetModelLifecycleStatusResponses,
@@ -425,11 +426,12 @@ export const generateImages = <ThrowOnError extends boolean = false>(
  */
 export const getMetrics = <ThrowOnError extends boolean = false>(
   options?: Options<GetMetricsData, ThrowOnError>,
-): RequestResult<GetMetricsResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<GetMetricsResponses, unknown, ThrowOnError>({
-    url: '/v1/metrics',
-    ...options,
-  })
+): RequestResult<GetMetricsResponses, GetMetricsErrors, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetMetricsResponses,
+    GetMetricsErrors,
+    ThrowOnError
+  >({ url: '/v1/metrics', ...options })
 
 /**
  * List Models
