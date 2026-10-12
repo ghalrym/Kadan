@@ -29,6 +29,24 @@ public:
         const Hook& hook = {}
     );
     void unload();
+    // Explicit resident post-attention FF, using actual shared modulation. Initialize
+    // per-device launchers before admission. Native BF16 standard precision only.
+    std::optional<MediaPlanError> prepare_feed_forward(
+        MediaSession&, std::size_t block, std::size_t tokens, const std::atomic_bool&
+    );
+    // Caller supplies certified conditioning/time-activated [2,state]: actual
+    // timestep then text t=0, after the second timestep projection's SiLU.
+    // Supply post-attention hidden on every device and release ingress views,
+    // then project modulation directly into the FF preparation/execution.
+    // Returns complete; close launchers before destroying session streams.
+    void execute_feed_forward(
+        MediaSession&,
+        std::size_t block,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // F32 latent [height*width,channels], condition [text,context], velocity of
     // latent shape. All caller buffers are caller-admitted; timestep in [0,1].
     void execute(

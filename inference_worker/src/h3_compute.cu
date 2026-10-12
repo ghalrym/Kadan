@@ -2061,7 +2061,7 @@ void CudaBf16Projection::launch_image_silu_pair(
     checked(cudaGetLastError());
 }
 
-void CudaBf16Projection::attention_output(
+void CudaBf16Projection::standard(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,
     std::span<const MediaDeviceSpan> outputs

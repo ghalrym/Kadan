@@ -3,15 +3,16 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <source_location>
 #include <sstream>
 #include <unistd.h>
 
 #include "kadan/bf16_projection.hpp"
-#include "kadan/image.hpp"
+#include "kadan/image_denoiser.hpp"
 
-void check(bool b) {
+void check(bool b, std::source_location at = std::source_location::current()) {
     if (!b)
-        throw std::runtime_error("test_failed");
+        throw std::runtime_error("test_failed:" + std::to_string(at.line()));
 }
 
 // Checkpoint ingress and lifecycle metadata only; no projection arithmetic.
@@ -92,7 +93,9 @@ void write_weights(
     bool f32,
     std::size_t state = 2,
     std::size_t ff = 2,
-    bool attention_f32 = false
+    bool attention_f32 = false,
+    bool denoiser = false,
+    bool modulation_f32 = false
 ) {
     std::ostringstream header;
     header << '{';
@@ -105,9 +108,9 @@ void write_weights(
         const auto columns = name == "img_mlp.out" ? ff : state;
         const bool tensor_f32 = f32 || (attention_f32 && name == "attn.to_out.0");
         const auto size = (vector ? state : rows * columns) * (tensor_f32 ? 4 : 2);
-        header << "\"transformer_blocks.7." << name << ".weight\":{\"dtype\":\""
-               << (tensor_f32 ? "F32" : "BF16") << "\",\"shape\":["
-               << (vector ? state : rows);
+        header << "\"transformer_blocks." << (denoiser ? 0 : 7) << "." << name
+               << ".weight\":{\"dtype\":\"" << (tensor_f32 ? "F32" : "BF16")
+               << "\",\"shape\":[" << (vector ? state : rows);
         if (!vector)
             header << ',' << columns;
         header << "],\"data_offsets\":[" << bytes << ',' << bytes + size << "]}";
@@ -124,6 +127,28 @@ void write_weights(
         add(name, false);
     for (auto name : {"attn.norm_q", "attn.norm_k"})
         add(name, true);
+    if (denoiser) {
+        auto shared = [&](const char* name, std::size_t rows, std::size_t columns) {
+            const bool fp32 =
+                modulation_f32 && std::string_view(name) == "modulation.1";
+            const auto size = rows * (columns ? columns : 1) * (fp32 ? 4 : 2);
+            header << ",\"" << name << ".weight\":{\"dtype\":\""
+                   << (fp32 ? "F32" : "BF16") << "\",\"shape\":[" << rows;
+            if (columns)
+                header << ',' << columns;
+            header << "],\"data_offsets\":[" << bytes << ',' << bytes + size << "]}";
+            bytes += size;
+        };
+        shared("img_in", state, state);
+        shared("txt_in.text_norm", state, 0);
+        shared("txt_in.in_layer", state, state);
+        shared("txt_in.out_layer", state, state);
+        shared("time_text_embed.timestep_embedder.linear_1", state, 256);
+        shared("time_text_embed.timestep_embedder.linear_2", state, state);
+        shared("modulation.1", 4 * state, state);
+        shared("norm_out.linear", state, state);
+        shared("proj_out", state, state);
+    }
     header << '}';
     const auto text = header.str();
     {
@@ -143,7 +168,10 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     Device& backend;
     int selected;
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
-         fail_projection = false;
+         fail_projection = false, fail_modulation = false;
+    void* modulation = nullptr;
+    std::uint64_t modulation_generation = 0;
+    std::vector<std::size_t> time_rows;
     void* attended = nullptr;
     std::uint64_t attended_generation = 0;
     std::vector<std::size_t> projection_first;
@@ -157,7 +185,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         return selected;
     }
 
-    void attention_output(
+    void standard(
         void*,
         std::span<const kadan::MediaDeviceSpan> read,
         std::span<const kadan::MediaDeviceSpan> write
@@ -169,7 +197,22 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_bf16_projection(
             selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
         );
-        check(std::all_of(calls.begin(), calls.end(), [](char c) { return c == 'o'; }));
+        if (read[1].dimensions[0] == 256) {
+            check(read[0].dimensions == std::vector<std::size_t>{1, 64});
+            check(write[0].dimensions == std::vector<std::size_t>{1, 256});
+            check(std::all_of(calls.begin(), calls.end(), [](char c) {
+                return c == 'm';
+            }));
+            modulation = static_cast<std::byte*>(write[0].data) - write[0].offset;
+            modulation_generation = write[0].generation;
+            time_rows.push_back(read[0].offset / 256);
+            calls.push_back('m');
+            backend.status = fail_modulation ? 1 : 0;
+            return;
+        }
+        check(std::all_of(calls.begin(), calls.end(), [](char c) {
+            return c == 'o' || c == 'm';
+        }));
         attended = static_cast<std::byte*>(read[0].data) - read[0].offset;
         attended_generation = read[0].generation;
         projection_first.push_back(read[0].offset / (read[0].dimensions[1] * 4));
@@ -204,7 +247,12 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_image_modulation(
             selected, read[0], read[1], write[0], write[1], write[2], text
         );
-        check(calls.empty() || calls.back() == 'a');
+        check(calls.empty() || calls.back() == 'a' || calls.back() == 'm');
+        if (modulation)
+            check(
+                read[1].data == modulation
+                && read[1].generation == modulation_generation
+            );
         calls.push_back('n');
         backend.status = fail_preparation ? 1 : 0;
     }
@@ -624,6 +672,194 @@ int main() {
         {'a'}
     );
     tiled_block.unload();
+    write_weights(directory, false, 64, 128, false, true);
+    auto conditioning_resources = std::make_shared<kadan::Resources>(
+        kadan::Footprint{128 * 1024 * 1024, budget + 33024, budget + 33024}
+    );
+    kadan::image::Denoiser denoiser(
+        conditioning_resources, std::make_shared<Compute>()
+    );
+    const std::array<std::string, 1> files{"weights.safetensors"};
+    const kadan::image::DenoiserConfig config{{64, 1, 64, 128, {0, 0, 64}}, 1, 64, 64};
+    denoiser.load(directory, files, config, cancel);
+    enum class ConditioningScenario {
+        complete,
+        missing_time,
+        missing_hidden,
+        failed_modulation,
+        missing_launcher
+    };
+    auto conditioning_case = [&](ConditioningScenario scenario) {
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = budget + 33024;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            conditioning_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        check(!denoiser.prepare_feed_forward(resident, 0, 17, cancel));
+        check(resident.plan().devices.size() == 2 && resident.plan().rows < 17);
+        check(
+            std::count_if(
+                resident.plan().weights.begin(),
+                resident.plan().weights.end(),
+                [](const auto& w) {
+                    return w.name == "modulation.1.weight" && w.first_row == 0
+                           && w.rows == 256 && w.stored_bytes == 32768
+                           && w.identity.inode != 0;
+                }
+            )
+            == 2
+        );
+        for (const auto& d : resident.plan().devices) {
+            for (const auto* name :
+                 {"conditioning/time-activated", "resident/hidden"}) {
+                const bool time =
+                    std::string_view(name) == "conditioning/time-activated";
+                if (d.device == 1
+                    && ((time && scenario == ConditioningScenario::missing_time)
+                        || (!time && scenario == ConditioningScenario::missing_hidden)))
+                    continue;
+                auto view = resident.tensor(
+                    d.device,
+                    name,
+                    kadan::DeviceDType::f32,
+                    {time ? 2U : 17U, 64},
+                    {64, 1}
+                );
+                std::vector<std::byte> ingress(view.layout().bytes);
+                resident.upload_input(view, ingress);
+            }
+        }
+        Launcher first(metadata, 0), second(metadata, 1);
+        first.fail_modulation = scenario == ConditioningScenario::failed_modulation;
+        const std::array<kadan::video::ImageFeedForwardLauncher*, 2> launchers{
+            &first,
+            scenario == ConditioningScenario::missing_launcher ? &first : &second
+        };
+        bool rejected = false;
+        try {
+            denoiser.execute_feed_forward(resident, 0, 17, 3, launchers, cancel);
+        } catch (const std::exception& e) {
+            rejected = true;
+            const std::string_view error(e.what());
+            check(
+                error == "media_session_nonfinite_output"
+                || error == "media_session_unready_input"
+                || error == "image_ff_launcher" || error == "image_ff_plan"
+            );
+        }
+        check(rejected == (scenario != ConditioningScenario::complete));
+        if (scenario == ConditioningScenario::complete) {
+            check(
+                first.calls == second.calls && first.calls[0] == 'm'
+                && first.calls[1] == 'm'
+            );
+            check(
+                first.time_rows == std::vector<std::size_t>{0, 1}
+                && first.time_rows == second.time_rows
+            );
+            check(std::count(first.calls.begin(), first.calls.end(), 'n') == 1);
+            check(std::count(first.calls.begin(), first.calls.end(), 'a') == 0);
+            check(first.residual_first.size() > 1);
+            auto hidden = resident.tensor(
+                1, "resident/hidden", kadan::DeviceDType::f32, {17, 64}, {64, 1}
+            );
+            const std::array ready{&hidden};
+            resident.require_ready(ready);
+            hidden = {};
+            check(
+                !resident.transfers().activation_upload
+                && !resident.transfers().activation_download
+                && !resident.transfers().output_download
+            );
+            resident.finish();
+        } else if (scenario == ConditioningScenario::failed_modulation) {
+            check(first.calls == std::vector<char>{'m'} && second.calls.empty());
+        } else {
+            check(first.calls.empty() && second.calls.empty());
+        }
+        check(
+            metadata.allocations.empty() && activity->owners == 0
+            && conditioning_resources->snapshot().used[1] == 0
+            && conditioning_resources->snapshot().used[2] == 0
+        );
+    };
+    conditioning_case(ConditioningScenario::complete);
+    for (const auto scenario :
+         {ConditioningScenario::missing_time,
+          ConditioningScenario::missing_hidden,
+          ConditioningScenario::failed_modulation,
+          ConditioningScenario::missing_launcher})
+        conditioning_case(scenario);
+    denoiser.unload();
+    for (const bool native : {false, true}) {
+        write_weights(directory, false, 64, 128, false, true, native);
+        kadan::image::Denoiser unsupported_denoiser(
+            conditioning_resources, native ? std::make_shared<Compute>() : nullptr
+        );
+        unsupported_denoiser.load(directory, files, config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        kadan::MediaSession resident(
+            conditioning_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        const auto error =
+            unsupported_denoiser.prepare_feed_forward(resident, 0, 17, cancel);
+        check(
+            error && error->detail == "image_modulation_standard_precision"
+            && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
+        );
+        resident.finish();
+    }
+    write_weights(directory, false, 64, 128, false, true);
+    {
+        // Corrupt an actual shared raw weight before loading; no arithmetic runs.
+        std::fstream file(
+            std::string(directory) + "/weights.safetensors",
+            std::ios::in | std::ios::out | std::ios::binary
+        );
+        file.seekp(-std::streamoff(32768 + 2 * 8192), std::ios::end);
+        file.put(char(0x80));
+        file.put(char(0x7f));
+        check(bool(file));
+    }
+    denoiser.load(directory, files, config, cancel);
+    {
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            conditioning_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        bool rejected = false;
+        try {
+            denoiser.prepare_feed_forward(resident, 0, 17, cancel);
+        } catch (const std::runtime_error& e) {
+            rejected = true;
+            check(std::string_view(e.what()) == "h3_cuda_nonfinite_weight");
+        }
+        check(rejected);
+        check(metadata.allocations.empty());
+        check(activity->owners == 0);
+    }
+    denoiser.unload();
+    check(conditioning_resources->snapshot().used == kadan::Footprint({0, 0, 0}));
     write_weights(directory, true);
     block.load(directory, "weights.safetensors", 7, {2, 1, 2, 2, {0, 0, 2}}, cancel);
     auto unsupported_backend = std::make_unique<Device>();

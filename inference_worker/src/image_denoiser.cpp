@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 
+#include "kadan/bf16_projection.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/checkpoint_floats.hpp"
 #include "kadan/float_weights.hpp"
@@ -281,6 +282,210 @@ void Denoiser::unload() {
     if (model_) {
         resources_->begin_eviction(model_->weights->lease.h);
         model_.reset();
+    }
+}
+
+std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
+    auto& m = *model_;
+    const auto& spec = m.specs.at(m.names.at("modulation.1.weight"));
+    auto& shard = *m.shards[spec.shard];
+    shard.check_unchanged();
+    const auto tensor = shard.tensor(spec.name);
+    // Preserve project_source's STANDARD native-BF16 branch; F32 needs its own
+    // resident implementation rather than silently adopting the FF policy.
+    if (!compute_ || !compute_->supports_bf16_weights()
+        || tensor.dtype != checkpoint::Dtype::bf16)
+        return MediaPlanError{
+            PlanFailure::unsupported_layout, "image_modulation_standard_precision", {}
+        };
+    need(shard.tensor_identity(spec.name) == spec.identity, "image_weight_identity");
+    StageManifest manifest;
+    manifest.prepare_projection = true;
+    manifest.weights.push_back(
+        {spec.name,
+         spec.identity,
+         TensorStorage::bf16_exact,
+         4 * m.d.block.state,
+         m.d.block.state,
+         WeightPartition::replicated,
+         1,
+         1,
+         ProjectionPrecision::bf16_f32}
+    );
+    manifest.tensors.push_back(
+        {"conditioning/time-activated",
+         2 * m.d.block.state * sizeof(float),
+         MediaPhase::prepare,
+         MediaPhase::prepare}
+    );
+    if (auto error = m.blocks[block]->prepare_feed_forward(
+            session, tokens, HiddenBoundary::post_attention, cancel, std::move(manifest)
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            if (slice.name != spec.name)
+                continue;
+            stop(cancel);
+            shard.check_unchanged();
+            Lease staging(*resources_, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            shard.read_tensor(spec.name, 0, raw);
+            shard.check_unchanged();
+            stop(cancel);
+            // The standard host source validates raw weights, even when finite
+            // output cancellation could otherwise hide a nonfinite weight.
+            for (std::size_t i = 0; i < raw.size(); i += 2)
+                need(
+                    ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
+                    "h3_cuda_nonfinite_weight"
+                );
+            auto destination = session.weight(slice);
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
+}
+
+void Denoiser::execute_feed_forward(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
+    const auto state = model_->d.block.state;
+    const auto& spec = model_->specs.at(model_->names.at("modulation.1.weight"));
+    const auto& plan = session.plan();
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView time, modulation, weight;
+    };
+
+    try {
+        need(
+            tokens && text <= tokens && plan.rows
+                && plan.schedule == MediaSchedule::feed_forward
+                && launchers.size() == plan.devices.size()
+                && plan.weights.size() == 4 * plan.devices.size(),
+            "image_ff_plan"
+        );
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_ff_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_ff_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_ff_launcher");
+            const auto slice = std::find_if(
+                plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
+                    return w.device == planned.device && w.name == spec.name
+                           && w.identity == spec.identity && w.first_row == 0
+                           && w.rows == 4 * state
+                           && w.stored_bytes == 4 * state * state * 2;
+                }
+            );
+            need(slice != plan.weights.end(), "image_modulation_weight");
+            auto matrix = [&](const char* name, std::size_t rows, std::size_t columns) {
+                return session.tensor(
+                    planned.device,
+                    name,
+                    DeviceDType::f32,
+                    {rows, columns},
+                    {columns, 1}
+                );
+            };
+            devices.push_back(
+                {launcher,
+                 matrix("conditioning/time-activated", 2, state),
+                 matrix("ff/modulation", 2, 4 * state),
+                 session.weight(*slice)}
+            );
+            auto& d = devices.back();
+            auto hidden = matrix("resident/hidden", tokens, state);
+            auto normalized = matrix("resident/normalized", tokens, state);
+            auto gates = matrix("ff/residual-gates", 2, state);
+            auto status = session.tensor(
+                planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+            );
+            const std::array ready{&d.time, &d.weight, &hidden};
+            session.require_ready(ready);
+            video::validate_image_modulation(
+                planned.device,
+                hidden.layout(),
+                d.modulation.layout(),
+                normalized.layout(),
+                gates.layout(),
+                status.layout(),
+                text
+            );
+        }
+        // All ingress and consumer layouts are checked before any producer runs.
+        for (auto& d : devices) {
+            // One row at a time also works with the smallest admitted row tile.
+            for (std::size_t row = 0; row < 2; ++row) {
+                stop(cancel);
+                const auto device = d.launcher->device();
+                auto time = session.rows(d.time, row, 1);
+                auto modulation = session.rows(d.modulation, row, 1);
+                auto rounded = session.tensor(
+                    device,
+                    "resident/projection-conversion",
+                    DeviceDType::bf16,
+                    {1, state},
+                    {state, 1}
+                );
+                auto workspace = session.tensor(
+                    device,
+                    "resident/blas",
+                    DeviceDType::u8,
+                    {video::bf16_projection_workspace_bytes},
+                    {1}
+                );
+                auto status = session.tensor(
+                    device, "resident/status", DeviceDType::u32, {1}, {1}
+                );
+                const std::array read{&time, &d.weight};
+                const std::array write{&modulation, &rounded, &workspace, &status};
+                session.launch(
+                    device, read, write, [&](void* stream, auto in, auto out) {
+                        d.launcher->standard(stream, in, out);
+                    }
+                );
+                session.complete(write, status);
+            }
+        }
+        devices.clear();
+        auto& transformer = *model_->blocks[block];
+        transformer.prepare_feed_forward_inputs(
+            session, tokens, text, HiddenBoundary::post_attention, launchers, cancel
+        );
+        transformer.execute_feed_forward(
+            session, tokens, text, launchers, cancel, plan.devices.size()
+        );
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
     }
 }
 

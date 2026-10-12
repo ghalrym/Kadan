@@ -97,6 +97,8 @@ struct StageManifest {
     // FF consumes normalized input; nonzero attention_inner admits an output
     // projection in prepare with the same row buffer. No attention/KV execution.
     MediaSchedule schedule = MediaSchedule::full_block;
+    // A consumed conditioning projection also needs conversion scratch in prepare.
+    bool prepare_projection = false;
 };
 
 struct MediaShape {
