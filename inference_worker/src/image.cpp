@@ -414,6 +414,254 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     return {};
 }
 
+void TransformerBlock::execute_feed_forward(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    auto& m = *model_;
+    const auto& plan = session.plan();
+    need(
+        tokens && text <= tokens && plan.rows && plan.rows <= tokens
+            && plan.schedule == MediaSchedule::feed_forward
+            && launchers.size() == plan.devices.size()
+            && plan.weights.size() == 3 * plan.devices.size(),
+        "image_ff_plan"
+    );
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        const WeightSlice *gate_slice, *up_slice, *down_slice;
+        DeviceTensorView gate_weight, up_weight, down_weight, normalized, hidden, gates;
+    };
+
+    try {
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_ff_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_ff_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_ff_launcher");
+            auto slice = [&](const char* name) -> const WeightSlice& {
+                const auto& spec = m.specs.at(m.names.at(name));
+                const auto found = std::find_if(
+                    plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
+                        return w.device == planned.device && w.name == m.prefix + name
+                               && w.identity == spec.identity;
+                    }
+                );
+                need(found != plan.weights.end(), "image_ff_weight");
+                return *found;
+            };
+            const auto& gate = slice("img_mlp.gate_layer.weight");
+            const auto& up = slice("img_mlp.proj.weight");
+            const auto& down = slice("img_mlp.out.weight");
+            need(
+                gate.first_row == up.first_row && gate.rows == up.rows,
+                "image_ff_pair_partition"
+            );
+            auto matrix = [&](const char* name, std::size_t rows, std::size_t columns) {
+                return session.tensor(
+                    planned.device,
+                    name,
+                    DeviceDType::f32,
+                    {rows, columns},
+                    {columns, 1}
+                );
+            };
+            devices.push_back(
+                {launcher,
+                 &gate,
+                 &up,
+                 &down,
+                 session.weight(gate),
+                 session.weight(up),
+                 session.weight(down),
+                 matrix("resident/normalized", tokens, m.d.state),
+                 matrix("resident/hidden", tokens, m.d.state),
+                 matrix("ff/residual-gates", 2, m.d.state)}
+            );
+            auto& d = devices.back();
+            const std::array ready{
+                &d.normalized,
+                &d.hidden,
+                &d.gates,
+                &d.gate_weight,
+                &d.up_weight,
+                &d.down_weight
+            };
+            session.require_ready(ready);
+        }
+        // Gate/up and down have independently partitioned output channel domains.
+        auto ordered = [&](bool down) {
+            std::vector<Device*> result;
+            result.reserve(devices.size());
+            for (auto& d : devices)
+                result.push_back(&d);
+            std::sort(result.begin(), result.end(), [&](auto* a, auto* b) {
+                return (down ? a->down_slice : a->gate_slice)->first_row
+                       < (down ? b->down_slice : b->gate_slice)->first_row;
+            });
+            std::size_t column = 0;
+            for (auto* d : result) {
+                const auto& w = *(down ? d->down_slice : d->gate_slice);
+                need(
+                    w.first_row == column && w.rows
+                        && w.rows <= (down ? m.d.state : m.d.intermediate) - column,
+                    "image_ff_partition"
+                );
+                column += w.rows;
+            }
+            need(column == (down ? m.d.state : m.d.intermediate), "image_ff_partition");
+            return result;
+        };
+        const auto gate_order = ordered(false), down_order = ordered(true);
+        session.advance(MediaPhase::ff);
+        for (std::size_t first = 0; first < tokens;) {
+            stop(cancel);
+            const auto rows = std::min(plan.rows, tokens - first);
+
+            struct Tile {
+                Device* device;
+                DeviceTensorView input, hidden, pair, activated, rounded, workspace,
+                    gate_status, up_status, status, ff_input, down, gathered;
+            };
+
+            std::vector<Tile> tiles;
+            for (auto& d : devices) {
+                const auto device = d.launcher->device();
+                auto matrix = [&](const char* name,
+                                  DeviceDType type,
+                                  std::size_t r,
+                                  std::size_t c) {
+                    return session.tensor(device, name, type, {r, c}, {c, 1});
+                };
+                auto status = [&](const char* name) {
+                    return session.tensor(device, name, DeviceDType::u32, {1}, {1});
+                };
+                Tile t;
+                t.device = &d;
+                t.input = session.rows(d.normalized, first, rows);
+                t.hidden = session.rows(d.hidden, first, rows);
+                t.pair = matrix(
+                    "resident/ff-gate-up",
+                    DeviceDType::f32,
+                    2 * rows,
+                    d.gate_slice->rows
+                );
+                t.rounded = matrix(
+                    "resident/projection-conversion", DeviceDType::bf16, rows, m.d.state
+                );
+                t.workspace = session.tensor(
+                    device,
+                    "resident/blas",
+                    DeviceDType::u8,
+                    {video::bf16_projection_workspace_bytes},
+                    {1}
+                );
+                t.gate_status = status("ff/gate-status");
+                t.up_status = status("ff/up-status");
+                t.status = status("resident/status");
+                t.ff_input = matrix(
+                    "resident/ff-input", DeviceDType::f32, rows, m.d.intermediate
+                );
+                t.down = matrix(
+                    "resident/residual-tile", DeviceDType::f32, rows, d.down_slice->rows
+                );
+                const std::array inputs{&t.input, &d.gate_weight, &d.up_weight};
+                const std::array outputs{
+                    &t.pair,
+                    &t.rounded,
+                    &t.workspace,
+                    &t.gate_status,
+                    &t.up_status,
+                    &t.status
+                };
+                session.launch(
+                    device, inputs, outputs, [&](void* stream, auto read, auto write) {
+                        d.launcher->pair(stream, read, write);
+                    }
+                );
+                session.complete(outputs, t.status);
+                t.activated = session.rows(t.pair, 0, rows);
+                tiles.push_back(std::move(t));
+            }
+            auto tile = [&](Device* d) -> Tile& {
+                return *std::find_if(tiles.begin(), tiles.end(), [&](const auto& t) {
+                    return t.device == d;
+                });
+            };
+            for (auto& t : tiles) {
+                for (auto* d : gate_order)
+                    session.gather(
+                        tile(d).activated, t.ff_input, d->gate_slice->first_row
+                    );
+                // Release the old geometry before rebinding the reusable allocation.
+                t.rounded = {};
+                const auto device = t.device->launcher->device();
+                t.rounded = session.tensor(
+                    device,
+                    "resident/projection-conversion",
+                    DeviceDType::bf16,
+                    {rows, m.d.intermediate},
+                    {m.d.intermediate, 1}
+                );
+                const std::array inputs{&t.ff_input, &t.device->down_weight};
+                const std::array outputs{&t.down, &t.rounded, &t.workspace, &t.status};
+                session.launch(
+                    device, inputs, outputs, [&](void* stream, auto read, auto write) {
+                        t.device->launcher->down(stream, read, write);
+                    }
+                );
+                session.complete(outputs, t.status);
+            }
+            for (auto& t : tiles) {
+                auto* projected = &t.down;
+                const auto device = t.device->launcher->device();
+                if (tiles.size() > 1) {
+                    t.gathered = session.tensor(
+                        device,
+                        "resident/peer-tile",
+                        DeviceDType::f32,
+                        {rows, m.d.state},
+                        {m.d.state, 1}
+                    );
+                    for (auto* d : down_order)
+                        session.gather(
+                            tile(d).down, t.gathered, d->down_slice->first_row
+                        );
+                    projected = &t.gathered;
+                }
+                const std::array inputs{&t.hidden, projected, &t.device->gates};
+                const std::array outputs{&t.hidden, &t.status};
+                session.launch(
+                    device, inputs, outputs, [&](void* stream, auto read, auto write) {
+                        t.device->launcher->residual(
+                            stream, write[0], read[1], read[2], write[1], first, text
+                        );
+                    }
+                );
+                session.complete(outputs, t.status);
+            }
+            first += rows;
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    session.advance(MediaPhase::complete);
+}
+
 void TransformerBlock::load(
     const char* root,
     const std::string& filename,

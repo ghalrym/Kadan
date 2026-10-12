@@ -9,6 +9,10 @@
 #include "kadan/dense_compute.hpp"
 #include "kadan/media_session.hpp"
 
+namespace kadan::video {
+class ImageFeedForwardLauncher;
+}
+
 namespace kadan::image {
 struct BlockConfig {
     std::size_t state = 4096, heads = 32, head_dim = 128, intermediate = 12288;
@@ -48,6 +52,16 @@ public:
     // Initialize/account device launchers before this fresh admission probe.
     std::optional<MediaPlanError>
     prepare_feed_forward(MediaSession&, std::size_t tokens, const std::atomic_bool&);
+    // Explicit resident FF only. Caller owns initialized per-device launchers and
+    // complete normalized/hidden/[target,text] gates prepared by the model.
+    // Returns in complete phase; drain and close launchers before session destruction.
+    void execute_feed_forward(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // Caller admits input/output [text+height*width,state] and modulation
     // [2,4*state]: target timestep first, text t=0 second. No padded text rows.
     void execute(
