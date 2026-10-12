@@ -13,6 +13,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include "image_activation.hpp"
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
@@ -74,6 +75,23 @@ struct Layout {
         return at;
     }
 };
+
+__global__ void
+image_silu_pair_kernel(float* gate, const float* up, std::size_t count, int* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    // Match the existing bias-free projection's post-GEMM +0, including -0.
+    const float g = __fadd_rn(gate[i], 0.f), u = __fadd_rn(up[i], 0.f);
+    if (!isfinite(g) || !isfinite(u)) {
+        atomicOr(status, 1);
+        return;
+    }
+    const float fused = image::detail::silu_product(g, u);
+    if (!isfinite(fused))
+        atomicOr(status, 2);
+    gate[i] = fused;
+}
 
 // CUDA calls stay on the persistent thread that owns this selected device.
 class CudaDeviceOperations final : public DeviceOperations,
@@ -420,6 +438,7 @@ class Compute final : public H3Compute {
     mutable std::mutex operation_mutex_;
     Footprint weight_reservations_;
     std::vector<Bytes> weight_capacities_;
+    std::vector<Bytes> scratch_limits_;
     Bytes inventory_bytes_ = 0;
     bool replan_ = false;
 
@@ -434,13 +453,7 @@ class Compute final : public H3Compute {
                 if (!error)
                     error = std::current_exception();
             }
-        for (auto& task : tasks)
-            try {
-                task.get();
-            } catch (...) {
-                if (!error)
-                    error = std::current_exception();
-            }
+        join_device_tasks(tasks, error);
         if (error) {
             quarantined_ = true;
             std::rethrow_exception(error);
@@ -518,13 +531,7 @@ class Compute final : public H3Compute {
             failed = true;
             error = std::current_exception();
         }
-        for (auto& t : tasks)
-            try {
-                t.get();
-            } catch (...) {
-                if (!error)
-                    error = std::current_exception();
-            }
+        join_device_tasks(tasks, error);
         if (error || cancel.load()) {
             if (!error)
                 error =
@@ -1036,6 +1043,7 @@ public:
             native_bf16_ = native_bf16_ && major >= 8;
             const auto available = capacity[device + 1] - used[device + 1];
             const Bytes scratch = std::min<Bytes>(2ULL * 1024 * 1024 * 1024, available);
+            scratch_limits_.push_back(scratch);
             const Bytes limit = available > scratch ? available - scratch : 0;
             threads_.push_back(
                 std::make_unique<DeviceThread>(
@@ -1438,6 +1446,230 @@ private:
     }
 
 public:
+    bool image_silu_pair_bf16_source(
+        const WeightIdentity& gate_identity,
+        const Bf16WeightSource& gate_source,
+        const WeightIdentity& up_identity,
+        const Bf16WeightSource& up_source,
+        std::span<const float> x,
+        std::size_t in,
+        std::size_t intermediate,
+        std::span<float> y,
+        const std::atomic_bool& cancel
+    ) override {
+        if (!native_bf16_)
+            return false;
+        validate(x, {}, in, intermediate, y);
+        require(
+            !overlap(x.data(), x.size_bytes(), y.data(), y.size_bytes()),
+            "h3_cuda_alias"
+        );
+        require(bool(gate_source) && bool(up_source), "h3_cuda_weight_source");
+        // Preflight every selected device before any source read or output write.
+        // A partition can only be smaller than this conservative full width.
+        for (auto limit : scratch_limits_) {
+            try {
+                image_silu_pair_plan(in, intermediate, limit);
+            } catch (const std::invalid_argument& error) {
+                if (std::string_view(error.what()) == "image_pair_scratch_limit")
+                    return false;
+                throw;
+            }
+        }
+        std::mutex source_mutex;
+        split(
+            intermediate,
+            cancel,
+            [&](DeviceWorkspace& workspace,
+                std::size_t begin,
+                std::size_t end,
+                const std::atomic_bool& failed) {
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(workspace.operations());
+                const auto rows = x.size() / in;
+                const auto plan =
+                    image_silu_pair_plan(in, end - begin, arena.scratch_limit);
+                const auto input_rows =
+                    image_silu_pair_input_rows(rows, in, plan, arena.scratch_limit);
+                const bool keep_input = input_rows >= rows;
+                Layout layout;
+                const auto input = layout.add(input_rows * in * 4),
+                           bf16 = layout.add(input_rows * in * 2),
+                           gate_weight = layout.add(plan.columns * in * 2),
+                           up_weight = layout.add(plan.columns * in * 2),
+                           gate = layout.add(plan.rows * plan.columns * 4),
+                           up = layout.add(plan.rows * plan.columns * 4),
+                           blas = layout.add(8 * 1024 * 1024),
+                           status = layout.add(sizeof(int));
+                require(
+                    layout.bytes <= arena.scratch_limit, "image_pair_scratch_limit"
+                );
+                // Reserve once; no later ensure can invalidate live input or tiles.
+                workspace.ensure(layout.bytes);
+                checked(cublasSetWorkspace(
+                    arena.blas, arena.at<void>(blas), 8 * 1024 * 1024
+                ));
+                auto upload_input =
+                    [&](std::size_t first, std::size_t count, std::size_t offset) {
+                        stop(cancel, failed);
+                        checked(cudaMemcpy(
+                            arena.at<float>(input) + offset * in,
+                            x.data() + first * in,
+                            count * in * 4,
+                            cudaMemcpyHostToDevice
+                        ));
+                        stop(cancel, failed);
+                        bf16_input<<<unsigned((count * in + 255) / 256), 256>>>(
+                            arena.at<float>(input) + offset * in,
+                            arena.at<__nv_bfloat16>(bf16) + offset * in,
+                            count * in
+                        );
+                        checked(cudaGetLastError());
+                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        stop(cancel, failed);
+                    };
+                if (keep_input)
+                    for (std::size_t first = 0; first < rows; first += plan.rows)
+                        upload_input(first, std::min(plan.rows, rows - first), first);
+                for (auto first_column = begin; first_column < end;
+                     first_column += plan.columns) {
+                    const auto columns = std::min(plan.columns, end - first_column);
+                    const auto count = columns * in;
+                    auto weight = [&](const WeightIdentity& identity,
+                                      const Bf16WeightSource& source,
+                                      std::size_t destination) -> void* {
+                        stop(cancel, failed);
+                        const DeviceWeights::Key key{
+                            identity, first_column * in, count, sizeof(std::uint16_t)
+                        };
+                        if (auto retained = arena.weights.find(key))
+                            return retained;
+                        HostAdmission admission(
+                            *resources_, count * 2 + 4096, workload_
+                        );
+                        auto staging =
+                            std::make_unique_for_overwrite<std::uint16_t[]>(count);
+                        {
+                            // Shard callbacks may share parser state across
+                            // devices/tensors.
+                            std::lock_guard lock(source_mutex);
+                            stop(cancel, failed);
+                            source(first_column * in, {staging.get(), count});
+                        }
+                        stop(cancel, failed);
+                        const std::span<const std::uint16_t> values{
+                            staging.get(), count
+                        };
+                        for (auto value : values)
+                            require(
+                                (value & 0x7f80) != 0x7f80, "h3_cuda_nonfinite_weight"
+                            );
+                        if (auto retained = arena.weights.retain(
+                                key, std::as_bytes(values), cancel
+                            ))
+                            return retained;
+                        checked(cudaMemcpy(
+                            arena.at<void>(destination),
+                            staging.get(),
+                            count * 2,
+                            cudaMemcpyHostToDevice
+                        ));
+                        stop(cancel, failed);
+                        return arena.at<void>(destination);
+                    };
+                    // Release each host staging allocation before reading the other
+                    // tile.
+                    auto* gate_pointer =
+                        weight(gate_identity, gate_source, gate_weight);
+                    auto* up_pointer = weight(up_identity, up_source, up_weight);
+                    for (std::size_t first = 0; first < rows; first += plan.rows) {
+                        const auto tile_rows = std::min(plan.rows, rows - first);
+                        if (!keep_input)
+                            upload_input(first, tile_rows, 0);
+                        const auto* input_pointer = arena.at<__nv_bfloat16>(bf16)
+                                                    + (keep_input ? first * in : 0);
+                        auto gemm = [&](void* weights, std::size_t result) {
+                            stop(cancel, failed);
+                            const float one = 1, zero = 0;
+                            checked(cublasGemmEx(
+                                arena.blas,
+                                CUBLAS_OP_T,
+                                CUBLAS_OP_N,
+                                int(columns),
+                                int(tile_rows),
+                                int(in),
+                                &one,
+                                weights,
+                                CUDA_R_16BF,
+                                int(in),
+                                input_pointer,
+                                CUDA_R_16BF,
+                                int(in),
+                                &zero,
+                                arena.at<void>(result),
+                                CUDA_R_32F,
+                                int(columns),
+                                CUBLAS_COMPUTE_32F,
+                                CUBLAS_GEMM_DEFAULT
+                            ));
+                            checked(cudaStreamSynchronize(cudaStreamLegacy));
+                            stop(cancel, failed);
+                        };
+                        with_projection_math(
+                            true,
+                            CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION,
+                            [&] {
+                                cublasMath_t mode;
+                                checked(cublasGetMathMode(arena.blas, &mode));
+                                return mode;
+                            },
+                            [&](cublasMath_t mode) {
+                                checked(cublasSetMathMode(arena.blas, mode));
+                            },
+                            [&] {
+                                gemm(gate_pointer, gate);
+                                gemm(up_pointer, up);
+                            }
+                        );
+                        stop(cancel, failed);
+                        checked(cudaMemset(arena.at<void>(status), 0, sizeof(int)));
+                        image_silu_pair_kernel<<<
+                            unsigned((tile_rows * columns + 255) / 256),
+                            256>>>(
+                            arena.at<float>(gate),
+                            arena.at<float>(up),
+                            tile_rows * columns,
+                            arena.at<int>(status)
+                        );
+                        checked(cudaGetLastError());
+                        int result = 0;
+                        checked(cudaMemcpy(
+                            &result,
+                            arena.at<void>(status),
+                            sizeof(result),
+                            cudaMemcpyDeviceToHost
+                        ));
+                        stop(cancel, failed);
+                        require(!(result & 1), "h3_cuda_nonfinite_output");
+                        require(!(result & 2), "h3_cuda_nonfinite_input");
+                        checked(cudaMemcpy2D(
+                            y.data() + first * intermediate + first_column,
+                            intermediate * 4,
+                            arena.at<void>(gate),
+                            columns * 4,
+                            columns * 4,
+                            tile_rows,
+                            cudaMemcpyDeviceToHost
+                        ));
+                        stop(cancel, failed);
+                    }
+                }
+            },
+            true
+        );
+        return true;
+    }
+
     bool supports_weight_sources() const override {
         return true;
     }

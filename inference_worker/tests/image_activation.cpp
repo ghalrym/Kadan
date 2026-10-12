@@ -76,11 +76,43 @@ void nonfinite_values() {
         std::isnan(kadan::image::detail::silu(std::numeric_limits<float>::quiet_NaN()))
     );
 }
+
+void product_rounding() {
+    using kadan::image::detail::silu_product;
+    check(std::bit_cast<std::uint32_t>(silu_product(-0.f, 1.f)) == 0x80000000);
+    check(std::bit_cast<std::uint32_t>(silu_product(-0.f, -1.f)) == 0);
+    check(std::bit_cast<std::uint32_t>(silu_product(-100.f, 1.f)) == 0x80000a5f);
+    check(std::isinf(silu_product(std::numeric_limits<float>::max(), 2.f)));
+    check(
+        silu_product(
+            -std::numeric_limits<float>::max(), std::numeric_limits<float>::max()
+        )
+        == 0.f
+    );
+    bool distinct_rounding = false;
+    for (float gate : {-.5f, -1.f, .5f, 1.f, 2.f, 3.f})
+        for (float up : {1.00001f, 3.14159f, 1234567.f, -87654.f}) {
+            const double v = gate;
+            const double exponential = std::exp(v >= 0 ? -v : v);
+            const double activated =
+                v >= 0 ? v / (1 + exponential) : v * exponential / (1 + exponential);
+            const float rounded = float(activated);
+            const float expected = rounded * up;
+            check(
+                std::bit_cast<std::uint32_t>(silu_product(gate, up))
+                == std::bit_cast<std::uint32_t>(expected)
+            );
+            distinct_rounding |= std::bit_cast<std::uint32_t>(expected)
+                                 != std::bit_cast<std::uint32_t>(float(activated * up));
+        }
+    check(distinct_rounding);
+}
 }  // namespace
 
 int main() {
     values_and_signed_zero();
     preserves_previous_rounding();
     nonfinite_values();
+    product_rounding();
     std::cout << "image SiLU scalar arithmetic passed (no inference)\n";
 }

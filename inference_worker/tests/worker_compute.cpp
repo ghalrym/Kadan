@@ -204,8 +204,63 @@ void projection_math() {
     }
 }
 
+void image_pair_planning() {
+    constexpr Bytes limit = 2ULL * 1024 * 1024 * 1024;
+    auto aligned = [](Bytes n) {
+        return (n + 255) / 256 * 256;
+    };
+    for (std::size_t in : {1u, 17u, 4096u, 12288u, 2147483647u})
+        for (std::size_t out : {1u, 3u, 341u, 12288u}) {
+            if (in > 16 * 1024 * 1024 / 2) {
+                fails([&] { image_silu_pair_plan(in, out, limit); });
+                continue;
+            }
+            const auto plan = image_silu_pair_plan(in, out, limit);
+            check(plan.columns && plan.columns <= out && plan.bytes <= limit);
+            check(plan.columns * in * 2 <= 16 * 1024 * 1024);
+            const auto layout = aligned(plan.rows * in * 4)
+                                + aligned(plan.rows * in * 2)
+                                + 2 * aligned(plan.columns * in * 2)
+                                + 2 * aligned(plan.rows * plan.columns * 4)
+                                + aligned(8 * 1024 * 1024) + aligned(4);
+            check(layout <= plan.bytes);
+            // Column tails are complete; neither cached slot changes scratch admission.
+            std::size_t visited = 0;
+            for (std::size_t first = 0; first < out; first += plan.columns)
+                visited += std::min(plan.columns, out - first);
+            check(visited == out);
+            const auto rows = plan.rows + 17;
+            const auto exact = plan.bytes + 17 * in * 6;
+            check(image_silu_pair_input_rows(rows, in, plan, exact) == rows);
+            check(image_silu_pair_input_rows(rows, in, plan, exact - 1) == plan.rows);
+            check(image_silu_pair_input_rows(SIZE_MAX, in, plan, limit) == plan.rows);
+        }
+    fails([] { image_silu_pair_plan(0, 1, limit); });
+    fails([] { image_silu_pair_plan(SIZE_MAX, 1, limit); });
+    fails([] { image_silu_pair_plan(1, SIZE_MAX, limit); });
+    fails([] { image_silu_pair_plan(4096, 12288, 8 * 1024 * 1024); });
+    const auto small = image_silu_pair_plan(4096, 12288, 9 * 1024 * 1024);
+    check(small.bytes <= 9 * 1024 * 1024 && small.rows < 256);
+    const auto plan = image_silu_pair_plan(4096, 12288, limit);
+    fails([&] { image_silu_pair_input_rows(0, 4096, plan, limit); });
+    fails([&] { image_silu_pair_input_rows(1, 0, plan, limit); });
+    fails([&] { image_silu_pair_input_rows(1, 4096, plan, plan.bytes - 1); });
+    FakeContext unsupported;
+    std::atomic_bool cancel = false;
+    unsigned reads = 0;
+    DenseCompute::Bf16WeightSource source = [&](std::size_t, std::span<std::uint16_t>) {
+        ++reads;
+    };
+    std::array<float, 1> input{1}, output{17};
+    check(!unsupported.image_silu_pair_bf16_source(
+        {}, source, {}, source, input, 1, 1, output, cancel
+    ));
+    check(reads == 0 && output[0] == 17);
+}
+
 int main() {
     projection_output_classification();
+    image_pair_planning();
     projection_math();
     // Exercise only progress events, without a model, tensor or inference call.
     std::vector<std::pair<std::string, std::size_t>> updates;
