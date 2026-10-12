@@ -29,7 +29,7 @@ public:
         const Hook& hook = {}
     );
     void unload();
-    // Explicit resident block slice, using actual timestep linear_2 and modulation.
+    // Explicit resident block slice, using actual timestep conditioning and modulation.
     // Initialize per-device launchers before admission. Native BF16 standard precision
     // only.
     std::optional<MediaPlanError> prepare_feed_forward(
@@ -39,17 +39,17 @@ public:
         HiddenBoundary,
         const std::atomic_bool&
     );
-    // Caller supplies certified conditioning/time-linear1 [2,state]: actual
-    // timestep then text t=0, after the first timestep projection's SiLU.
-    // Linear_2 + SiLU produces time-activated, consumed directly by modulation.
-    // Also supply hidden and (pre_attention) attended on every device, release
-    // views, then project modulation directly into the residual/FF consumers.
+    // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
+    // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
+    // Caller supplies certified hidden and (pre_attention) attended on every device.
+    // Release views before execution; modulation feeds the residual/FF consumers.
     // Returns complete; close launchers before destroying session streams.
     void execute_feed_forward(
         MediaSession&,
         std::size_t block,
         std::size_t tokens,
         std::size_t text,
+        float timestep,
         HiddenBoundary,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&

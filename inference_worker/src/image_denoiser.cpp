@@ -295,7 +295,9 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     StageManifest manifest;
     manifest.prepare_projection = true;
     for (const auto* name :
-         {"time_text_embed.timestep_embedder.linear_2.weight", "modulation.1.weight"}) {
+         {"time_text_embed.timestep_embedder.linear_1.weight",
+          "time_text_embed.timestep_embedder.linear_2.weight",
+          "modulation.1.weight"}) {
         const auto& spec = m.specs.at(m.names.at(name));
         auto& shard = *m.shards[spec.shard];
         shard.check_unchanged();
@@ -319,13 +321,19 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
              spec.identity,
              TensorStorage::bf16_exact,
              std::size_t(tensor.shape[0]),
-             m.d.block.state,
+             std::size_t(tensor.shape[1]),
              WeightPartition::replicated,
              1,
              1,
              ProjectionPrecision::bf16_f32}
         );
     }
+    manifest.tensors.push_back(
+        {"conditioning/frequency",
+         512 * sizeof(float),
+         MediaPhase::prepare,
+         MediaPhase::prepare}
+    );
     manifest.tensors.push_back(
         {"conditioning/time-linear1",
          2 * m.d.block.state * sizeof(float),
@@ -344,7 +352,8 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         return error;
     try {
         for (const auto& slice : session.plan().weights) {
-            if (slice.name != "time_text_embed.timestep_embedder.linear_2.weight"
+            if (slice.name != "time_text_embed.timestep_embedder.linear_1.weight"
+                && slice.name != "time_text_embed.timestep_embedder.linear_2.weight"
                 && slice.name != "modulation.1.weight")
                 continue;
             const auto& spec = m.specs.at(m.names.at(slice.name));
@@ -378,6 +387,7 @@ void Denoiser::execute_feed_forward(
     std::size_t block,
     std::size_t tokens,
     std::size_t text,
+    float timestep,
     HiddenBoundary boundary,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
@@ -391,7 +401,8 @@ void Denoiser::execute_feed_forward(
 
     struct Device {
         video::ImageFeedForwardLauncher* launcher;
-        DeviceTensorView linear1, time, modulation, time_weight, modulation_weight;
+        DeviceTensorView frequency, linear1, time, modulation, linear1_weight,
+            time_weight, modulation_weight;
     };
 
     try {
@@ -400,7 +411,7 @@ void Denoiser::execute_feed_forward(
                 && (attention || boundary == HiddenBoundary::post_attention)
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
-                && plan.weights.size() == (attention ? 6 : 5) * plan.devices.size(),
+                && plan.weights.size() == (attention ? 7 : 6) * plan.devices.size(),
             "image_ff_plan"
         );
         std::vector<Device> devices;
@@ -414,13 +425,14 @@ void Denoiser::execute_feed_forward(
                 }
             }
             need(launcher, "image_ff_launcher");
-            auto weight = [&](const char* name, std::size_t rows) {
+            auto weight = [&](const char* name, std::size_t rows, std::size_t columns) {
                 const auto& spec = model_->specs.at(model_->names.at(name));
                 const auto slice = std::find_if(
                     plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
                         return w.device == planned.device && w.name == spec.name
                                && w.identity == spec.identity && w.first_row == 0
-                               && w.rows == rows && w.stored_bytes == rows * state * 2;
+                               && w.rows == rows
+                               && w.stored_bytes == rows * columns * 2;
                     }
                 );
                 need(slice != plan.weights.end(), "image_conditioning_weight");
@@ -437,11 +449,17 @@ void Denoiser::execute_feed_forward(
             };
             devices.push_back(
                 {launcher,
+                 matrix("conditioning/frequency", 2, 256),
                  matrix("conditioning/time-linear1", 2, state),
                  matrix("conditioning/time-activated", 2, state),
                  matrix("ff/modulation", 2, 4 * state),
-                 weight("time_text_embed.timestep_embedder.linear_2.weight", state),
-                 weight("modulation.1.weight", 4 * state)}
+                 weight(
+                     "time_text_embed.timestep_embedder.linear_1.weight", state, 256
+                 ),
+                 weight(
+                     "time_text_embed.timestep_embedder.linear_2.weight", state, state
+                 ),
+                 weight("modulation.1.weight", 4 * state, state)}
             );
             auto& d = devices.back();
             auto hidden = matrix("resident/hidden", tokens, state);
@@ -451,9 +469,49 @@ void Denoiser::execute_feed_forward(
                 planned.device, "resident/status", DeviceDType::u32, {1}, {1}
             );
             const std::array ready{
-                &d.linear1, &d.time_weight, &d.modulation_weight, &hidden
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight, &hidden
             };
             session.require_ready(ready);
+            video::validate_image_frequency(
+                planned.device, d.frequency.layout(), status.layout(), timestep
+            );
+            const std::array inputs{&d.frequency, &d.linear1, &d.time};
+            const std::array outputs{&d.linear1, &d.time, &d.modulation};
+            const std::array weights{
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight
+            };
+            auto workspace = session.tensor(
+                planned.device,
+                "resident/blas",
+                DeviceDType::u8,
+                {video::bf16_projection_workspace_bytes},
+                {1}
+            );
+            const MediaDeviceSpan bias{
+                nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+            };
+            for (std::size_t stage = 0; stage < weights.size(); ++stage) {
+                const auto columns = stage == 0 ? 256 : state;
+                auto input = session.rows(*inputs[stage], 0, 1);
+                auto output = session.rows(*outputs[stage], 0, 1);
+                auto rounded = session.tensor(
+                    planned.device,
+                    "resident/projection-conversion",
+                    DeviceDType::bf16,
+                    {1, columns},
+                    {columns, 1}
+                );
+                video::validate_bf16_projection(
+                    planned.device,
+                    input.layout(),
+                    weights[stage]->layout(),
+                    bias,
+                    rounded.layout(),
+                    output.layout(),
+                    workspace.layout(),
+                    status.layout()
+                );
+            }
             if (attention) {
                 const std::array attended{&normalized};
                 session.require_ready(attended);
@@ -480,21 +538,43 @@ void Denoiser::execute_feed_forward(
         }
         // All ingress and consumer layouts are checked before any producer runs.
         for (auto& d : devices) {
-            // Complete linear_2 + SiLU before modulation reads its output.
-            // One row at a time also fits the smallest admitted projection tile.
-            for (const bool timestep : {true, false}) {
+            stop(cancel);
+            {
+                auto status = session.tensor(
+                    d.launcher->device(), "resident/status", DeviceDType::u32, {1}, {1}
+                );
+                const std::array<DeviceTensorView*, 0> read{};
+                const std::array write{&d.frequency, &status};
+                session.launch(
+                    d.launcher->device(),
+                    read,
+                    write,
+                    [&](void* stream, auto, auto out) {
+                        d.launcher->frequency(stream, out, timestep);
+                    }
+                );
+                session.complete(write, status);
+            }
+            // Complete each producer before its consumer. One row at a time fits
+            // the smallest admitted projection tile, reusing conversion/BLAS scratch.
+            const std::array inputs{&d.frequency, &d.linear1, &d.time};
+            const std::array outputs{&d.linear1, &d.time, &d.modulation};
+            const std::array weights{
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight
+            };
+            for (std::size_t stage = 0; stage < weights.size(); ++stage) {
                 for (std::size_t row = 0; row < 2; ++row) {
                     stop(cancel);
                     const auto device = d.launcher->device();
-                    auto input = session.rows(timestep ? d.linear1 : d.time, row, 1);
-                    auto output =
-                        session.rows(timestep ? d.time : d.modulation, row, 1);
+                    auto input = session.rows(*inputs[stage], row, 1);
+                    auto output = session.rows(*outputs[stage], row, 1);
+                    const auto columns = stage == 0 ? 256 : state;
                     auto rounded = session.tensor(
                         device,
                         "resident/projection-conversion",
                         DeviceDType::bf16,
-                        {1, state},
-                        {state, 1}
+                        {1, columns},
+                        {columns, 1}
                     );
                     auto workspace = session.tensor(
                         device,
@@ -506,13 +586,11 @@ void Denoiser::execute_feed_forward(
                     auto status = session.tensor(
                         device, "resident/status", DeviceDType::u32, {1}, {1}
                     );
-                    const std::array read{
-                        &input, timestep ? &d.time_weight : &d.modulation_weight
-                    };
+                    const std::array read{&input, weights[stage]};
                     const std::array write{&output, &rounded, &workspace, &status};
                     session.launch(
                         device, read, write, [&](void* stream, auto in, auto out) {
-                            if (timestep)
+                            if (stage < 2)
                                 d.launcher->timestep(stream, in, out);
                             else
                                 d.launcher->standard(stream, in, out);
@@ -528,7 +606,7 @@ void Denoiser::execute_feed_forward(
             session, tokens, text, boundary, launchers, cancel
         );
         transformer.execute_feed_forward(
-            session, tokens, text, launchers, cancel, 2 * plan.devices.size()
+            session, tokens, text, launchers, cancel, 3 * plan.devices.size()
         );
     } catch (...) {
         session.abort(std::current_exception());
@@ -615,12 +693,9 @@ void Denoiser::execute(
         cancel
     );
     for (std::size_t row = 0; row < 2; ++row)
-        for (std::size_t c = 0; c < 128; ++c) {
-            float angle = (row ? 0.f : timestep * 1000.f)
-                          * std::exp(-std::log(10000.f) * float(c) / 128.f);
-            frequency.data[row * 256 + c] = std::cos(angle);
-            frequency.data[row * 256 + 128 + c] = std::sin(angle);
-        }
+        for (std::size_t c = 0; c < 256; ++c)
+            frequency.data[row * 256 + c] =
+                detail::timestep_frequency(row ? 0.f : timestep, c);
     m.linear(
         "time_text_embed.timestep_embedder.linear_1",
         frequency.span(),

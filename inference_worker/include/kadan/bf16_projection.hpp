@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <climits>
+#include <cmath>
 #include <stdexcept>
 
 #include "kadan/media_session.hpp"
@@ -89,6 +90,43 @@ inline Bf16ProjectionShape validate_bf16_projection(
         }
     }
     return {rows, in, out};
+}
+
+// Fixed target/text-zero conditioning rows, produced before the first projection.
+inline void validate_image_frequency(
+    int device,
+    const MediaDeviceSpan& frequency,
+    const MediaDeviceSpan& status,
+    float timestep
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_frequency_layout");
+    };
+    require(std::isfinite(timestep) && timestep >= 0 && timestep <= 1);
+    require(
+        frequency.dtype == DeviceDType::f32
+        && frequency.dimensions == std::vector<std::size_t>{2, 256}
+        && frequency.strides == std::vector<std::size_t>{256, 1}
+        && frequency.bytes == 512 * sizeof(float)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    for (const auto* span : {&frequency, &status}) {
+        const auto pointer = reinterpret_cast<std::uintptr_t>(span->data);
+        require(
+            span->device == device && pointer && pointer % 4 == 0
+            && pointer <= UINTPTR_MAX - span->bytes
+            && span->offset <= SIZE_MAX - span->bytes
+        );
+    }
+    const auto x = reinterpret_cast<std::uintptr_t>(frequency.data),
+               y = reinterpret_cast<std::uintptr_t>(status.data);
+    require(x <= y ? y - x >= frequency.bytes : x - y >= status.bytes);
 }
 
 // Bias-free image FF pair. Scratch is reused serially by the two projections;
@@ -308,6 +346,8 @@ public:
     virtual void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // No inputs; outputs [frequency [2,256],status]. Target row then text t=0.
+    virtual void frequency(void*, std::span<const MediaDeviceSpan>, float timestep) = 0;
     // Same spans as standard; exact timestep SiLU follows projection in place.
     // One aggregate status certifies both operations, without another buffer.
     virtual void timestep(
@@ -368,6 +408,7 @@ public:
     void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
+    void frequency(void*, std::span<const MediaDeviceSpan>, float) override;
     void timestep(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
