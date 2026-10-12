@@ -2061,6 +2061,27 @@ void CudaBf16Projection::launch_image_silu_pair(
     checked(cudaGetLastError());
 }
 
+void CudaBf16Projection::attention_output(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(inputs.size() == 2 && outputs.size() == 4, "image_attention_projection");
+    const MediaDeviceSpan bias{nullptr, device_, DeviceDType::f32, {}, {}, 0, 0, 0};
+    // This is also project_source's STANDARD native-BF16 branch: identical input
+    // rounding, FP32 reduction, post-GEMM +0 and stored-output finite check.
+    launch(
+        stream,
+        inputs[0],
+        inputs[1],
+        bias,
+        outputs[1],
+        outputs[0],
+        outputs[2],
+        outputs[3]
+    );
+}
+
 void CudaBf16Projection::attention_residual(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,

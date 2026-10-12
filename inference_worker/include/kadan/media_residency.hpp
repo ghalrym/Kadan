@@ -94,7 +94,8 @@ struct StageManifest {
     // scratch and boundary tensors are described. Missing evidence is unsupported.
     bool workspaces_complete = false;
     bool precise_attention = false, operators_supported = true;
-    // FF consumes normalized input and has no attention/KV operation or resources.
+    // FF consumes normalized input; nonzero attention_inner admits an output
+    // projection in prepare with the same row buffer. No attention/KV execution.
     MediaSchedule schedule = MediaSchedule::full_block;
 };
 

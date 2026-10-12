@@ -293,8 +293,9 @@ struct CandidateBuilder {
             "resident/projection-conversion",
             AllocationKind::conversion,
             conversion,
-            manifest.schedule == MediaSchedule::feed_forward ? MediaPhase::ff
-                                                             : MediaPhase::kv,
+            manifest.schedule == MediaSchedule::feed_forward
+                ? (shape.attention_inner ? MediaPhase::prepare : MediaPhase::ff)
+                : MediaPhase::kv,
             MediaPhase::ff,
             conversion_padding
         );
@@ -399,7 +400,8 @@ struct CandidateBuilder {
             "resident/residual-tile",
             AllocationKind::activation,
             norm,
-            ff_only ? MediaPhase::ff : MediaPhase::attention,
+            ff_only ? (shape.attention_inner ? MediaPhase::prepare : MediaPhase::ff)
+                    : MediaPhase::attention,
             MediaPhase::ff
         );
         // Conservative full gate/up tiles bound paired local results and gathers.

@@ -52,17 +52,19 @@ public:
         const std::atomic_bool&
     );
     void unload();
-    // Prepare only: actual bias-free BF16 gate/up/down checkpoint slices and
-    // session-owned FF resources. Caller prepares complete post-attention hidden
-    // and actual modulation [2,4*state] on every device, then releases its views.
+    // Prepare only: actual bias-free BF16 checkpoint slices and session resources.
+    // pre_attention also admits attn.to_out.0; resident/normalized starts attended.
+    // supports the native BF16 branch of the existing standard projection only.
     // Initialize/account device launchers before this fresh admission probe.
-    std::optional<MediaPlanError>
-    prepare_feed_forward(MediaSession&, std::size_t tokens, const std::atomic_bool&);
+    std::optional<MediaPlanError> prepare_feed_forward(
+        MediaSession&, std::size_t tokens, HiddenBoundary, const std::atomic_bool&
+    );
     // Explicit device normalization/modulation and [target,text] residual gates.
     // All hidden/modulation inputs must be certified on every device. At the
-    // pre_attention boundary, resident/normalized must hold the full certified
-    // attention projection: apply its residual first, then reuse that row buffer
-    // and gates for FF preparation. No attention/QKV execution occurs here.
+    // pre_attention boundary, resident/normalized holds full certified attended.
+    // Project it with the admitted actual attn.to_out.0 weight, apply its residual,
+    // then reuse the row buffer and gates for FF preparation. No QKV/attention
+    // execution occurs here. Caller releases ingress/producer views first.
     // Leaves the session in prepare; invoke execute_feed_forward next.
     void prepare_feed_forward_inputs(
         MediaSession&,
@@ -96,6 +98,12 @@ public:
     );
 
 private:
+    void execute_attention_output(
+        MediaSession&,
+        std::size_t tokens,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     struct Impl;
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<DenseCompute> compute_;
