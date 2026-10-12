@@ -91,6 +91,57 @@ inline Bf16ProjectionShape validate_bf16_projection(
     return {rows, in, out};
 }
 
+// Bias-free image FF pair. Scratch is reused serially by the two projections;
+// each producer has its own status so the second launch cannot erase the first.
+inline Bf16ProjectionShape validate_image_silu_pair(
+    int device,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& gate_weight,
+    const MediaDeviceSpan& up_weight,
+    const MediaDeviceSpan& rounded,
+    const MediaDeviceSpan& gate,
+    const MediaDeviceSpan& up,
+    const MediaDeviceSpan& workspace,
+    const MediaDeviceSpan& gate_status,
+    const MediaDeviceSpan& up_status,
+    const MediaDeviceSpan& status
+) {
+    const MediaDeviceSpan bias{nullptr, device, DeviceDType::f32, {}, {}, 0, 0, 0};
+    const auto shape = validate_bf16_projection(
+        device, input, gate_weight, bias, rounded, gate, workspace, gate_status
+    );
+    const auto up_shape = validate_bf16_projection(
+        device, input, up_weight, bias, rounded, up, workspace, up_status
+    );
+    // Also validate the aggregate status with the existing scalar layout rules.
+    validate_bf16_projection(
+        device, input, gate_weight, bias, rounded, gate, workspace, status
+    );
+    if (shape.out != up_shape.out)
+        throw std::invalid_argument("image_silu_pair_layout");
+    const std::array spans{
+        &input,
+        &gate_weight,
+        &up_weight,
+        &rounded,
+        &gate,
+        &up,
+        &workspace,
+        &gate_status,
+        &up_status,
+        &status
+    };
+    // Per-projection validation does not see cross-producer overlap.
+    for (std::size_t i = 0; i < spans.size(); ++i)
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto x = reinterpret_cast<std::uintptr_t>(spans[i]->data),
+                       y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            if (x <= y ? y - x < spans[i]->bytes : x - y < spans[j]->bytes)
+                throw std::invalid_argument("image_silu_pair_layout");
+        }
+    return shape;
+}
+
 // One request-owner thread. Construct before admission's fresh memory probe so
 // library handle/context costs are measured and charged in context_unaccounted;
 // declare the workspace above in the consumed manifest. Use WorkerCompute's same
@@ -117,6 +168,25 @@ public:
         const MediaDeviceSpan& rounded,
         const MediaDeviceSpan& output,
         const MediaDeviceSpan& workspace,
+        const MediaDeviceSpan& status
+    );
+    // Gate is overwritten with SiLU(gate) * up using image's double-intermediate
+    // formula and F32 cast before multiplication. All validation precedes enqueue.
+    // Pass certified input/weights and exclusive rounded/gate/up/workspace/three
+    // status outputs from ONE MediaSession::launch event. Complete gate and any
+    // other consumed outputs against aggregate status; projection statuses are
+    // internal producers, not separate session completion certificates.
+    void launch_image_silu_pair(
+        void* stream,
+        const MediaDeviceSpan& input,
+        const MediaDeviceSpan& gate_weight,
+        const MediaDeviceSpan& up_weight,
+        const MediaDeviceSpan& rounded,
+        const MediaDeviceSpan& gate,
+        const MediaDeviceSpan& up,
+        const MediaDeviceSpan& workspace,
+        const MediaDeviceSpan& gate_status,
+        const MediaDeviceSpan& up_status,
         const MediaDeviceSpan& status
     );
 
