@@ -721,9 +721,19 @@ void complete_partition_gather() {
     auto right = tensor(f.session, 1, "resident/attended", 4, 2);
     auto destination = tensor(f.session, 0, "resident/attention-input");
     auto status0 = flag(f.session, 0), status1 = flag(f.session, 1);
+    std::memset(left.layout().data, 0x11, left.layout().bytes);
+    std::memset(right.layout().data, 0x22, right.layout().bytes);
     produce(f.session, 0, left, status0);
     produce(f.session, 1, right, status1);
+    check(
+        fails([&] { f.session.gather(right, destination, 2); })
+        == "media_session_gather_cycle"
+    );
     f.session.gather(left, destination, 0);
+    check(
+        fails([&] { f.session.gather(left, destination, 1); })
+        == "media_session_gather_cycle"
+    );
     std::array<DeviceTensorView*, 1> read{&destination}, write{&status0};
     check(
         fails([&] { f.session.launch(0, read, write, [](void*, auto, auto) {}); })
@@ -733,6 +743,21 @@ void complete_partition_gather() {
     check(
         f.session.transfers().peer_activation == 32 && f.trace->peer_bytes.size() == 8
     );
+    f.session.launch(0, read, write, [](void*, auto, auto) {});
+    f.session.complete(write, status0);
+    std::memset(left.layout().data, 0x33, left.layout().bytes);
+    produce(f.session, 0, left, status0);
+    f.session.gather(left, destination, 0);
+    check(
+        fails([&] { f.session.launch(0, read, write, [](void*, auto, auto) {}); })
+        == "media_session_unready_input"
+    );
+    const auto* actual = static_cast<const unsigned char*>(destination.layout().data);
+    check(actual[0] == 0x33 && actual[8] == 0x22);
+    std::memset(right.layout().data, 0x44, right.layout().bytes);
+    produce(f.session, 1, right, status1);
+    f.session.gather(right, destination, 2);
+    check(actual[0] == 0x33 && actual[8] == 0x44);
     f.session.launch(0, read, write, [](void*, auto, auto) {});
     f.session.complete(write, status0);
     check(

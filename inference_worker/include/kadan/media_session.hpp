@@ -141,6 +141,8 @@ public:
     void upload_input(DeviceTensorView&, std::span<const std::byte>);
     void upload_weight(DeviceTensorView&, std::span<const std::byte>);
     void download_output(DeviceTensorView&, std::span<std::byte>);
+    // Each gather cycle starts at column zero and fills contiguous column shards
+    // in order. Restarting invalidates all prior coverage in the destination view.
     void gather(
         DeviceTensorView& source,
         DeviceTensorView& destination,
