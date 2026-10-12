@@ -3,6 +3,9 @@
 #include <iostream>
 #include <set>
 #include <string>
+
+#include "kadan/device_placement.hpp"
+#include "kadan/projection_math.hpp"
 using namespace kadan;
 
 namespace {
@@ -24,6 +27,7 @@ struct Counters {
     Bytes allocated = 0, peak = 0;
     unsigned allocations = 0, frees = 0, creates = 0, destroys = 0, resets = 0;
     bool handle = false;
+    unsigned status = 0, status_resets = 0, status_reads = 0;
     std::string fail, cleanup_fail;
     std::vector<std::string> events;
     std::set<std::thread::id> threads;
@@ -54,6 +58,7 @@ struct FakeOperations final : DeviceOperations {
         check(!counts->allocated && resources.snapshot().used[device + 1] >= bytes);
         event("allocate");
         counts->allocated = bytes;
+        counts->status = 0;
         counts->peak = std::max(counts->peak, bytes);
         ++counts->allocations;
     }
@@ -63,6 +68,26 @@ struct FakeOperations final : DeviceOperations {
         event("free");
         counts->allocated = 0;
         ++counts->frees;
+    }
+
+    // Fake status operations only: no tensor arithmetic or inference.
+    void reset_status() {
+        check(counts->allocated >= projection_status_bytes);
+        event("status_reset");
+        counts->status = 0;
+        ++counts->status_resets;
+    }
+
+    void observe_status(std::uint32_t bits) {
+        check(counts->allocated >= projection_status_bytes);
+        if (!projection_output_finite(bits))
+            counts->status = 1;
+    }
+
+    unsigned read_status() {
+        event("status_read");
+        ++counts->status_reads;
+        return counts->status;
     }
 
     void create_handle() override {
@@ -304,6 +329,97 @@ void persistent_threads_and_cancel() {
     check(r.snapshot().residents == 0 && a->threads.size() == 1);
 }
 
+void projection_status_lifecycle() {
+    Resources r({1024, 1024, 1024});
+    auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
+    {
+        DeviceThread first(r, 0, Workload::image, fake(r, a, 0)),
+            second(r, 1, Workload::image, fake(r, b, 1));
+        // Complete admission precedes reset; smaller later layouts cannot discard
+        // a flag set by an early tile. A fresh projection resets reused scratch.
+        for (bool invalid : {true, false}) {
+            auto task = [invalid](DeviceWorkspace& w) {
+                w.ensure(768);
+                auto& ops = static_cast<FakeOperations&>(w.operations());
+                ops.reset_status();
+                ops.observe_status(invalid ? 0x7f800000U : 0U);
+                w.ensure(512);
+                ops.observe_status(0x80000001U);
+                w.ensure(256);
+                ops.observe_status(0x80000000U);
+                check(ops.read_status() == unsigned(invalid));
+            };
+            auto x = first.submit_work(task), y = second.submit_work(task);
+            x.get();
+            y.get();
+            check(r.snapshot().used == Footprint({0, 768, 768}));
+        }
+        check(a->allocations == 1 && b->allocations == 1);
+        check(a->status_resets == 2 && b->status_resets == 2);
+        check(a->status_reads == 2 && b->status_reads == 2);
+        std::atomic_bool failed = false, nonfinite = false;
+        std::promise<void> status_read;
+        auto ready = status_read.get_future();
+        auto slow = first.submit_work(
+            [&](DeviceWorkspace& w) {
+                ready.wait();
+                check(!failed.load());
+                auto& ops = static_cast<FakeOperations&>(w.operations());
+                ops.reset_status();
+                ops.observe_status(1U);
+                if (ops.read_status())
+                    nonfinite = true;
+            },
+            &failed
+        );
+        auto invalid = second.submit_work(
+            [&](DeviceWorkspace& w) {
+                auto& ops = static_cast<FakeOperations&>(w.operations());
+                ops.reset_status();
+                ops.observe_status(0xff800000U);
+                if (ops.read_status())
+                    nonfinite = true;
+                status_read.set_value();
+            },
+            &failed
+        );
+        // Report validation only after both futures join: an invalid early device
+        // must not cancel the slower device and mask the nonfinite error.
+        slow.get();
+        invalid.get();
+        try {
+            if (nonfinite.load())
+                throw std::runtime_error("h3_cuda_nonfinite_output");
+            check(false);
+        } catch (const std::runtime_error& e) {
+            check(std::string(e.what()) == "h3_cuda_nonfinite_output");
+        }
+        check(!failed.load() && r.snapshot().used == Footprint({0, 768, 768}));
+        first.submit([](DeviceWorkspace& w) { w.release(); }).get();
+        second.submit([](DeviceWorkspace& w) { w.release(); }).get();
+        check(r.snapshot().residents == 0);
+        // Status-copy errors take the same cleanup path; uncertain cleanup stays
+        // charged, including the aligned scalar's allocation.
+        a->fail = "status_read";
+        a->cleanup_fail = "synchronize";
+        auto copy_failure = first.submit_work([](DeviceWorkspace& w) {
+            w.ensure(768);
+            auto& ops = static_cast<FakeOperations&>(w.operations());
+            ops.reset_status();
+            ops.read_status();
+        });
+        try {
+            copy_failure.get();
+            check(false);
+        } catch (const OperationCleanupError& e) {
+            check(exception_message(e.operation) == "status_read");
+            check(exception_message(e.cleanup) == "synchronize");
+        }
+        check(r.snapshot().used == Footprint({0, 768, 0}));
+    }
+    check(r.snapshot().used == Footprint({0, 768, 0}));
+}
+
 void selection_failure_never_uses_default_device() {
     Resources r({1024, 512});
     auto c = std::make_shared<Counters>();
@@ -359,6 +475,7 @@ int main() {
     uncertain_cleanup_stays_charged();
     reset_failure_keeps_context_accounting();
     persistent_threads_and_cancel();
+    projection_status_lifecycle();
     selection_failure_never_uses_default_device();
     destruction_does_not_acknowledge_failed_cleanup();
     bounded_mailbox();

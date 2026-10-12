@@ -1,5 +1,7 @@
 #include "kadan/worker_compute.hpp"
 
+#include <bit>
+#include <cmath>
 #include <iostream>
 #include <limits>
 
@@ -63,6 +65,32 @@ struct FakeContext final : DenseCompute {
             throw std::runtime_error("cleanup_unconfirmed");
     }
 };
+
+void projection_output_classification() {
+    for (std::uint32_t bits :
+         {0U,
+          0x80000000U,
+          1U,
+          0x80000001U,
+          0x007fffffU,
+          0x807fffffU,
+          0x00800000U,
+          0x80800000U,
+          0x7f7fffffU,
+          0xff7fffffU,
+          0x7f800000U,
+          0xff800000U,
+          0x7f800001U,
+          0xff800001U,
+          0x7fc00000U,
+          0xffc00000U,
+          0x7fffffffU,
+          0xffffffffU}) {
+        check(
+            projection_output_finite(bits) == std::isfinite(std::bit_cast<float>(bits))
+        );
+    }
+}
 
 void projection_math() {
     for (auto workload :
@@ -177,6 +205,7 @@ void projection_math() {
 }
 
 int main() {
+    projection_output_classification();
     projection_math();
     // Exercise only progress events, without a model, tensor or inference call.
     std::vector<std::pair<std::string, std::size_t>> updates;
@@ -285,7 +314,8 @@ int main() {
                     );
                     const Bytes t = plan.rows, o = plan.columns, w = in * o;
                     const auto bytes = aligned(
-                        {w * width,
+                        {sizeof(unsigned),
+                         w * width,
                          o * 4,
                          o * 4,
                          t * in * 4,
@@ -332,6 +362,45 @@ int main() {
                     check(queries_seen == n && keys_seen == keys);
                 }
     }
+    check(projection_status_bytes == aligned({sizeof(unsigned)}));
+    // Stable prefix and admitted high-water size, including retained weights and
+    // short row/column tails; no projection, device or model execution.
+    const auto tail_plan = projection_plan(24, 96769, 2, false, 1, 16ULL * 1024 * 1024);
+    const std::size_t row_count = tail_plan.rows + 1;
+    const auto input_rows =
+        projection_input_rows(row_count, 24, tail_plan, 16ULL * 1024 * 1024);
+    const auto reserved = tail_plan.bytes + (input_rows - tail_plan.rows) * 24 * 4;
+    for (bool retained : {false, true}) {
+        std::size_t columns_seen = 0;
+        for (std::size_t column = 0; column < 96769; column += tail_plan.columns) {
+            const auto out = std::min(tail_plan.columns, 96769 - column);
+            columns_seen += out;
+            const auto layout = aligned(
+                {sizeof(unsigned),
+                 input_rows * 24 * 4,
+                 retained ? 0 : out * 24 * 2,
+                 out * 4,
+                 out * 4,
+                 tail_plan.rows * 24 * 4,
+                 tail_plan.rows * 24,
+                 tail_plan.rows * 4,
+                 tail_plan.rows * out * 4,
+                 tail_plan.rows * out * 4,
+                 8 * 1024 * 1024}
+            );
+            check(layout <= reserved);
+            std::size_t rows_seen = 0;
+            for (std::size_t row = 0; row < row_count; row += tail_plan.rows)
+                rows_seen += std::min(tail_plan.rows, row_count - row);
+            check(rows_seen == row_count);
+        }
+        check(columns_seen == 96769 && tail_plan.columns < 96769);
+    }
+    // Smallest admitted plan: the aligned scalar still fits at the exact limit.
+    const auto minimum = projection_plan(1, 1, 4, false, 1, 8 * 1024 * 1024 + 8192);
+    check(projection_plan(1, 1, 4, false, 1, minimum.bytes).bytes == minimum.bytes);
+    fails([] { projection_plan(SIZE_MAX, 1, 4, false, 1, SIZE_MAX); });
+    fails([] { projection_plan(1, SIZE_MAX, 4, false, 1, SIZE_MAX); });
     const auto normal =
         projection_plan(4096, 4096, 4, false, 1, 2ULL * 1024 * 1024 * 1024);
     check(normal.rows == 256 && normal.columns == 4096);
