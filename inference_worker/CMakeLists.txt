@@ -36,6 +36,10 @@ target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nl
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+add_library(kadan_media_residency src/media_residency.cpp)
+target_link_libraries(kadan_media_residency PUBLIC kadan_resources)
+target_compile_options(kadan_media_residency PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(kadan_quantization src/quantization.cpp)
 target_include_directories(kadan_quantization PUBLIC include)
 target_compile_features(kadan_quantization PUBLIC cxx_std_20)
@@ -275,6 +279,10 @@ target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -
 endif()
 
 if(BUILD_TESTING)
+  add_executable(media-residency-tests tests/media_residency.cpp)
+  target_link_libraries(media-residency-tests PRIVATE kadan_media_residency)
+  target_compile_options(media-residency-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME media-residency COMMAND media-residency-tests)
   # Unit tests only. Model/worker integration is reviewed manually through the API.
   add_executable(weight-backing-tests tests/weight_backing.cpp)
   target_link_libraries(weight-backing-tests PRIVATE kadan_weight_backing)
