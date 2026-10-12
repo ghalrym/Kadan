@@ -76,6 +76,7 @@ public:
     virtual void peer(int from, const void*, int to, void*, Bytes) = 0;
     virtual std::uint32_t read_status(int device, const void*) = 0;
 };
+class DenseCompute;
 class MediaSessionState;
 
 class DeviceTensorView {
@@ -167,4 +168,10 @@ private:
     void upload(DeviceTensorView&, std::span<const std::byte>, bool weight);
 };
 
+// Holds WorkerCompute::compute until all views and confirmed request cleanup end.
+// Construct only after WorkerCompute has established/reserved its contexts.
+// No runtime route selects residency in this prerequisite slice.
+std::unique_ptr<MediaDeviceOperations> cuda_media_device_operations(
+    std::shared_ptr<DenseCompute> context_owner, std::span<const int>
+);
 }  // namespace kadan
