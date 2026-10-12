@@ -295,7 +295,9 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     StageManifest manifest;
     manifest.prepare_projection = true;
     const bool final = block + 1 == m.blocks.size();
-    const bool ingress = block == 0 && boundary == HiddenBoundary::pre_attention;
+    const bool ingress = block == 0
+                         && (boundary == HiddenBoundary::pre_attention
+                             || boundary == HiddenBoundary::pre_qkv);
     manifest.prepare_hidden = ingress;
     for (const auto* name :
          {"img_in.weight",
@@ -683,11 +685,77 @@ void Denoiser::execute_feed_forward(
     const std::atomic_bool& cancel
 ) {
     Busy active(busy_);
+    need(
+        boundary == HiddenBoundary::pre_attention
+            || boundary == HiddenBoundary::post_attention,
+        "image_ff_plan"
+    );
+    execute_conditioning(
+        session, block, tokens, text, timestep, boundary, launchers, cancel
+    );
+    const bool attention = boundary == HiddenBoundary::pre_attention;
+    const bool final = block + 1 == model_->blocks.size();
+    const auto& plan = session.plan();
+    try {
+        auto& transformer = *model_->blocks[block];
+        transformer.prepare_feed_forward_inputs(
+            session, tokens, text, boundary, launchers, cancel
+        );
+        transformer.execute_feed_forward(
+            session,
+            tokens,
+            text,
+            launchers,
+            cancel,
+            ((final ? 5 : 3) + (block == 0 && attention ? 4 : 0)) * plan.devices.size()
+        );
+        if (final)
+            execute_final_output(session, tokens, text, launchers, cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute_qkv(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::optional<float> timestep,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    execute_conditioning(
+        session,
+        block,
+        tokens,
+        text,
+        timestep,
+        HiddenBoundary::pre_qkv,
+        launchers,
+        cancel
+    );
+    model_->blocks[block]->execute_qkv(session, tokens, text, launchers, cancel);
+}
+
+void Denoiser::execute_conditioning(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::optional<float> timestep,
+    HiddenBoundary boundary,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
     stop(cancel);
     need(model_ && block < model_->blocks.size(), "image_load_state");
     const auto state = model_->d.block.state;
     const auto& plan = session.plan();
-    const bool attention = boundary == HiddenBoundary::pre_attention;
+    const bool qkv = boundary == HiddenBoundary::pre_qkv;
+    const bool attention = qkv || boundary == HiddenBoundary::pre_attention;
     const bool final = block + 1 == model_->blocks.size();
 
     struct Device {
@@ -703,8 +771,10 @@ void Denoiser::execute_feed_forward(
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
                 && plan.weights.size()
-                       == ((attention ? 7 : 6) + (final ? 2 : 0)
-                           + (block == 0 && attention ? 4 : 0))
+                       == ((qkv         ? 10
+                            : attention ? 7
+                                        : 6)
+                           + (final ? 2 : 0) + (block == 0 && attention ? 4 : 0))
                               * plan.devices.size(),
             "image_ff_plan"
         );
@@ -818,7 +888,7 @@ void Denoiser::execute_feed_forward(
                     status.layout()
                 );
             }
-            if (attention) {
+            if (attention && !qkv) {
                 const std::array attended{&normalized};
                 session.require_ready(attended);
                 video::validate_image_attention_residual(
@@ -909,20 +979,6 @@ void Denoiser::execute_feed_forward(
             }
         }
         devices.clear();
-        auto& transformer = *model_->blocks[block];
-        transformer.prepare_feed_forward_inputs(
-            session, tokens, text, boundary, launchers, cancel
-        );
-        transformer.execute_feed_forward(
-            session,
-            tokens,
-            text,
-            launchers,
-            cancel,
-            ((final ? 5 : 3) + (block == 0 && attention ? 4 : 0)) * plan.devices.size()
-        );
-        if (final)
-            execute_final_output(session, tokens, text, launchers, cancel);
     } catch (...) {
         session.abort(std::current_exception());
         throw;

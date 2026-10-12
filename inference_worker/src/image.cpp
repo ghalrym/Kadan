@@ -357,11 +357,12 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     need(bool(model_), "image_load_state");
     auto& m = *model_;
     need(
-        boundary == HiddenBoundary::pre_attention
+        boundary == HiddenBoundary::pre_qkv || boundary == HiddenBoundary::pre_attention
             || boundary == HiddenBoundary::post_attention,
         "image_ff_plan"
     );
-    const bool attention = boundary == HiddenBoundary::pre_attention;
+    const bool qkv = boundary == HiddenBoundary::pre_qkv;
+    const bool attention = qkv || boundary == HiddenBoundary::pre_attention;
     // project_source selects raw BF16 before its STANDARD F32 fallback only on
     // supported image compute. Other precision branches need their own producer.
     if (attention && (!compute_ || !compute_->supports_bf16_weights()))
@@ -390,7 +391,15 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
          {"img_mlp.gate_layer.weight",
           "img_mlp.proj.weight",
           "img_mlp.out.weight",
-          "attn.to_out.0.weight"}) {
+          "attn.to_out.0.weight",
+          "attn.to_q.weight",
+          "attn.to_k.weight",
+          "attn.to_v.weight"}) {
+        const bool qkv_weight = std::string_view(name) == "attn.to_q.weight"
+                                || std::string_view(name) == "attn.to_k.weight"
+                                || std::string_view(name) == "attn.to_v.weight";
+        if (!qkv && qkv_weight)
+            continue;
         if (!attention && std::string_view(name) == "attn.to_out.0.weight")
             continue;
         const auto& spec = m.specs.at(m.names.at(name));
@@ -401,7 +410,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         if (tensor.dtype != checkpoint::Dtype::bf16)
             return MediaPlanError{
                 PlanFailure::unsupported_layout,
-                std::string_view(name) == "attn.to_out.0.weight"
+                (qkv_weight || std::string_view(name) == "attn.to_out.0.weight")
                     ? "image_attention_standard_precision"
                     : "image_ff_bf16",
                 {}
@@ -415,7 +424,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
              TensorStorage::bf16_exact,
              std::size_t(tensor.shape[0]),
              std::size_t(tensor.shape[1]),
-             WeightPartition::channels,
+             qkv_weight ? WeightPartition::replicated : WeightPartition::channels,
              1,
              1,
              ProjectionPrecision::bf16_f32}
@@ -424,8 +433,16 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     // Planner owns full hidden/normalized boundaries, combined gate/up output,
     // ordered full-width FF gather, down/residual tile, and reusable BF16 input.
     // FF normalization uses actual modulation; there is no affine norm weight.
-    // pre_attention adds only the actual standard output projection, not QKV,
-    // masked attention or LoRA. Its row buffer is replaced tile by tile.
+    // QKV uses replicated full matrices/rows on each automatically selected
+    // device. Attention and channel-partitioned FF remain separate consumers.
+    if (qkv)
+        for (const auto* name : {"attention/q", "attention/k", "attention/v"})
+            manifest.tensors.push_back(
+                {name,
+                 tokens * m.d.state * sizeof(float),
+                 MediaPhase::prepare,
+                 MediaPhase::prepare}
+            );
     manifest.workspaces_complete = true;
     if (auto error = session.admit(
             manifest,
@@ -449,7 +466,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
             shard.read_tensor(slice.name, slice.first_row * spec.shape[1] * 2, raw);
             shard.check_unchanged();
             stop(cancel);
-            if (spec.name == "attn.to_out.0.weight")
+            if (spec.name.starts_with("attn.to_"))
                 for (std::size_t i = 0; i < raw.size(); i += 2)
                     need(
                         ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
@@ -463,6 +480,166 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         throw;
     }
     return {};
+}
+
+void TransformerBlock::execute_qkv(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto state = model_->d.state;
+    const auto& plan = session.plan();
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView hidden, modulation, normalized, gates, status, rounded,
+            workspace;
+        std::array<DeviceTensorView, 3> weights, outputs;
+    };
+
+    try {
+        need(
+            tokens && text <= tokens && plan.rows
+                && plan.schedule == MediaSchedule::feed_forward
+                && launchers.size() == plan.devices.size(),
+            "image_qkv_plan"
+        );
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            auto* launcher =
+                *std::find_if(launchers.begin(), launchers.end(), [&](auto* candidate) {
+                    return candidate->device() == planned.device;
+                });
+            auto matrix = [&](const char* name, std::size_t rows, std::size_t columns) {
+                return session.tensor(
+                    planned.device,
+                    name,
+                    DeviceDType::f32,
+                    {rows, columns},
+                    {columns, 1}
+                );
+            };
+            devices.push_back(
+                {launcher,
+                 matrix("resident/hidden", tokens, state),
+                 matrix("ff/modulation", 2, 4 * state),
+                 matrix("resident/normalized", tokens, state),
+                 matrix("ff/residual-gates", 2, state),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 ),
+                 session.tensor(
+                     planned.device,
+                     "resident/projection-conversion",
+                     DeviceDType::bf16,
+                     {1, state},
+                     {state, 1}
+                 ),
+                 session.tensor(
+                     planned.device,
+                     "resident/blas",
+                     DeviceDType::u8,
+                     {video::bf16_projection_workspace_bytes},
+                     {1}
+                 ),
+                 {},
+                 {}}
+            );
+            auto& d = devices.back();
+            const std::array ready{&d.hidden, &d.modulation};
+            session.require_ready(ready);
+            video::validate_image_modulation(
+                planned.device,
+                d.hidden.layout(),
+                d.modulation.layout(),
+                d.normalized.layout(),
+                d.gates.layout(),
+                d.status.layout(),
+                text
+            );
+            const std::array names{
+                "attn.to_q.weight", "attn.to_k.weight", "attn.to_v.weight"
+            };
+            const std::array outputs{"attention/q", "attention/k", "attention/v"};
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                const auto& spec = model_->specs.at(model_->names.at(names[i]));
+                const auto slice = std::find_if(
+                    plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
+                        return w.device == planned.device
+                               && w.name == model_->prefix + spec.name
+                               && w.identity == spec.identity && w.first_row == 0
+                               && w.rows == state
+                               && w.stored_bytes == state * state * 2;
+                    }
+                );
+                need(slice != plan.weights.end(), "image_qkv_weight");
+                d.weights[i] = session.weight(*slice);
+                d.outputs[i] = matrix(outputs[i], tokens, state);
+                const std::array weight_ready{&d.weights[i]};
+                session.require_ready(weight_ready);
+                auto input = session.rows(d.normalized, 0, 1);
+                auto output = session.rows(d.outputs[i], 0, 1);
+                const MediaDeviceSpan bias{
+                    nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+                };
+                video::validate_bf16_projection(
+                    planned.device,
+                    input.layout(),
+                    d.weights[i].layout(),
+                    bias,
+                    d.rounded.layout(),
+                    output.layout(),
+                    d.workspace.layout(),
+                    d.status.layout()
+                );
+            }
+        }
+        // Every device/weight/layout is validated before stage 0 submissions.
+        for (auto& d : devices) {
+            stop(cancel);
+            const std::array read{&d.hidden, &d.modulation};
+            const std::array write{&d.normalized, &d.gates, &d.status};
+            session.launch(
+                d.launcher->device(),
+                read,
+                write,
+                [&](void* stream, auto in, auto out) {
+                    d.launcher->prepare(
+                        stream, in, out, text, video::ImageModulationStage::qkv
+                    );
+                }
+            );
+            session.complete(write, d.status);
+            // One row fits the smallest admitted conversion tile, as in conditioning.
+            for (std::size_t i = 0; i < d.weights.size(); ++i)
+                for (std::size_t row = 0; row < tokens; ++row) {
+                    stop(cancel);
+                    auto input = session.rows(d.normalized, row, 1);
+                    auto output = session.rows(d.outputs[i], row, 1);
+                    const std::array inputs{&input, &d.weights[i]};
+                    const std::array outputs{
+                        &output, &d.rounded, &d.workspace, &d.status
+                    };
+                    session.launch(
+                        d.launcher->device(),
+                        inputs,
+                        outputs,
+                        [&](void* stream, auto in, auto out) {
+                            d.launcher->standard(stream, in, out);
+                        }
+                    );
+                    session.complete(outputs, d.status);
+                }
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
 }
 
 void TransformerBlock::execute_attention_output(
@@ -715,7 +892,13 @@ void TransformerBlock::prepare_feed_forward_inputs(
                 inputs,
                 outputs,
                 [&](void* stream, auto read, auto write) {
-                    d.launcher->prepare(stream, read, write, text);
+                    d.launcher->prepare(
+                        stream,
+                        read,
+                        write,
+                        text,
+                        video::ImageModulationStage::feed_forward
+                    );
                 }
             );
             session.complete(outputs, d.status);

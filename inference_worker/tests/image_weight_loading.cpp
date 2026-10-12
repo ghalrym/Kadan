@@ -95,6 +95,7 @@ struct WeightOptions {
          timestep_f32 = false, linear1_f32 = false, final_f32 = false,
          output_f32 = false, norm_f32 = false;
     const char* ingress_f32 = "";
+    const char* qkv_f32 = "";
     std::size_t context = 0;
     std::size_t layers = 1, channels = 64;
 };
@@ -116,8 +117,9 @@ void write_weights(
         const auto rows =
             name == "img_mlp.proj" || name == "img_mlp.gate_layer" ? ff : state;
         const auto columns = name == "img_mlp.out" ? ff : state;
-        const bool tensor_f32 =
-            f32 || (options.attention_f32 && name == "attn.to_out.0");
+        const bool tensor_f32 = f32
+                                || (options.attention_f32 && name == "attn.to_out.0")
+                                || name == options.qkv_f32;
         const auto size = (vector ? state : rows * columns) * (tensor_f32 ? 4 : 2);
         header << "\"transformer_blocks." << block << "." << name
                << ".weight\":{\"dtype\":\"" << (tensor_f32 ? "F32" : "BF16")
@@ -204,6 +206,14 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::uint64_t ingress_hidden_generation = 0;
     std::map<std::string, kadan::MediaDeviceSpan> ingress_weights;
     std::vector<std::size_t> text_rows, image_rows;
+    bool qkv = false;
+    std::size_t qkv_projection = 0;
+    char fail_qkv = 0, cancel_qkv_stage = 0;
+    std::atomic_bool* cancel_qkv = nullptr;
+    void* qkv_normalized = nullptr;
+    std::uint64_t qkv_normalized_generation = 0;
+    std::map<char, kadan::MediaDeviceSpan> qkv_weights, qkv_outputs;
+    std::map<char, std::vector<std::size_t>> qkv_rows;
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
@@ -458,6 +468,39 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             ingress_status(image ? 'I' : 'T');
             return;
         }
+        if (qkv && !calls.empty()
+            && (calls.back() == '0' || calls.back() == 'q' || calls.back() == 'k'
+                || calls.back() == 'v')) {
+            const std::array stages{'q', 'k', 'v'};
+            check(qkv_projection < stages.size());
+            const auto stage = stages[qkv_projection];
+            const auto& weight = qkv_weights.at(stage);
+            check(
+                read[1].data == weight.data && read[1].generation == weight.generation
+            );
+            check(
+                static_cast<std::byte*>(read[0].data) - read[0].offset == qkv_normalized
+                && read[0].generation == qkv_normalized_generation
+            );
+            const auto row = read[0].offset / 256;
+            check(row == qkv_rows[stage].size() && write[0].offset == read[0].offset);
+            qkv_rows[stage].push_back(row);
+            if (row == 0)
+                qkv_outputs[stage] = write[0];
+            else
+                check(
+                    static_cast<std::byte*>(write[0].data) - write[0].offset
+                        == qkv_outputs.at(stage).data
+                    && write[0].generation == qkv_outputs.at(stage).generation
+                );
+            if (row == 16)
+                ++qkv_projection;
+            calls.push_back(stage);
+            backend.status = fail_qkv == stage ? 1 : 0;
+            if (cancel_qkv && cancel_qkv_stage == stage)
+                cancel_qkv->store(true);
+            return;
+        }
         if (!calls.empty() && calls.back() == 'z') {
             check(
                 read[0].dimensions == std::vector<std::size_t>{14, 64}
@@ -557,8 +600,14 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         void*,
         std::span<const kadan::MediaDeviceSpan> read,
         std::span<const kadan::MediaDeviceSpan> write,
-        std::size_t text
+        std::size_t text,
+        kadan::video::ImageModulationStage stage
     ) override {
+        check(
+            stage
+            == (qkv ? kadan::video::ImageModulationStage::qkv
+                    : kadan::video::ImageModulationStage::feed_forward)
+        );
         check(read.size() == 2 && write.size() == 3 && text == 3);
         kadan::video::validate_image_modulation(
             selected, read[0], read[1], write[0], write[1], write[2], text
@@ -569,8 +618,21 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
                 read[1].data == modulation
                 && read[1].generation == modulation_generation
             );
-        calls.push_back('n');
-        backend.status = fail_preparation ? 1 : 0;
+        if (qkv) {
+            check(
+                read[0].data == ingress_hidden
+                && read[0].generation == ingress_hidden_generation
+            );
+            qkv_normalized = write[0].data;
+            qkv_normalized_generation = write[0].generation;
+            calls.push_back('0');
+            backend.status = fail_qkv == '0' ? 1 : 0;
+            if (cancel_qkv && cancel_qkv_stage == '0')
+                cancel_qkv->store(true);
+        } else {
+            calls.push_back('n');
+            backend.status = fail_preparation ? 1 : 0;
+        }
     }
 
     void final_normalization(
@@ -1050,11 +1112,30 @@ int main() {
         nonfinite_condition,
         nonfinite_latent
     };
-    auto ingress_case = [&](IngressScenario scenario, bool two_devices) {
+    // Each fake validates metadata/certificates; none reads an activation.
+    enum class QkvScenario {
+        complete,
+        fail_norm,
+        fail_q,
+        fail_k,
+        fail_v,
+        cancel_norm,
+        cancel_q,
+        cancel_k,
+        cancel_v,
+        missing_hidden,
+        missing_launcher,
+        invalid_text,
+        invalid_tokens,
+        wrong_boundary
+    };
+    auto ingress_case = [&](IngressScenario scenario,
+                            bool two_devices,
+                            std::optional<QkvScenario> qkv_scenario = {}) {
+        const auto ingress_budget = conditioning_budget + (qkv_scenario ? 40000 : 0);
         auto ingress_resources = std::make_shared<kadan::Resources>(
             two_devices
-                ? kadan::
-                      Footprint{128 * 1024 * 1024, conditioning_budget, conditioning_budget}
+                ? kadan::Footprint{128 * 1024 * 1024, ingress_budget, ingress_budget}
                 : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
         );
         kadan::image::Denoiser ingress_denoiser(
@@ -1073,7 +1154,7 @@ int main() {
         ingress_denoiser.load(directory, files, ingress_config, cancel);
         auto fake = std::make_unique<Device>();
         auto& metadata = *fake;
-        metadata.available = two_devices ? conditioning_budget : 32 * 1024 * 1024;
+        metadata.available = two_devices ? ingress_budget : 32 * 1024 * 1024;
         metadata.metadata_execution = true;
         kadan::MediaSession resident(
             ingress_resources,
@@ -1084,9 +1165,16 @@ int main() {
                         : std::vector<kadan::MediaDeviceLimit>{{0}},
             cancel
         );
-        check(!ingress_denoiser.prepare_feed_forward(
-            resident, 0, 17, HiddenBoundary::pre_attention, cancel
-        ));
+        if (const auto error = ingress_denoiser.prepare_feed_forward(
+                resident,
+                0,
+                17,
+                qkv_scenario && *qkv_scenario != QkvScenario::wrong_boundary
+                    ? HiddenBoundary::pre_qkv
+                    : HiddenBoundary::pre_attention,
+                cancel
+            ))
+            throw std::runtime_error("ingress_admission:" + error->detail);
         check(resident.plan().devices.size() == (two_devices ? 2 : 1));
         Launcher first(metadata, 0), second(metadata, 1);
         for (auto* launcher : {&first, &second}) {
@@ -1174,6 +1262,8 @@ int main() {
                 check(
                     launcher.image_rows.front() == 3 && launcher.image_rows.back() == 16
                 );
+                if (qkv_scenario)
+                    continue;
                 // The existing block consumer binds this exact certified owner.
                 std::vector<std::byte> attended(17 * 64 * 4);
                 auto normalized = resident.tensor(
@@ -1188,23 +1278,141 @@ int main() {
                 launcher.calls.clear();
                 launcher.expect_final_weight(resident);
             }
-            ingress_denoiser.execute_feed_forward(
-                resident,
-                0,
-                17,
-                3,
-                .625f,
-                HiddenBoundary::pre_attention,
-                launchers,
-                cancel
-            );
+            if (qkv_scenario) {
+                std::vector<Launcher*> qkv_launchers{&first};
+                if (two_devices)
+                    qkv_launchers.push_back(&second);
+                for (auto* launcher : qkv_launchers) {
+                    launcher->ingress = false;
+                    launcher->qkv = true;
+                    launcher->calls.clear();
+                    launcher->cancel_qkv = &cancel;
+                    for (const auto& w : resident.plan().weights) {
+                        if (w.device != launcher->device())
+                            continue;
+                        for (const auto stage : {'q', 'k', 'v'})
+                            if (w.name
+                                == std::string("transformer_blocks.0.attn.to_") + stage
+                                       + ".weight") {
+                                check(
+                                    w.first_row == 0 && w.rows == 64 && w.identity.inode
+                                );
+                                auto view = resident.weight(w);
+                                launcher->qkv_weights[stage] = view.layout();
+                            }
+                    }
+                }
+                const auto mode = *qkv_scenario;
+                const std::array stages{'0', 'q', 'k', 'v'};
+                if (mode >= QkvScenario::fail_norm && mode <= QkvScenario::fail_v)
+                    target.fail_qkv =
+                        stages[std::size_t(mode) - std::size_t(QkvScenario::fail_norm)];
+                if (mode >= QkvScenario::cancel_norm && mode <= QkvScenario::cancel_v)
+                    target.cancel_qkv_stage = stages
+                        [std::size_t(mode) - std::size_t(QkvScenario::cancel_norm)];
+                if (mode == QkvScenario::missing_hidden) {
+                    auto hidden = resident.tensor(
+                        target.device(),
+                        "resident/hidden",
+                        kadan::DeviceDType::f32,
+                        {17, 64},
+                        {64, 1}
+                    );
+                    const std::array<kadan::DeviceTensorView*, 0> read{};
+                    const std::array write{&hidden};
+                    resident.launch(
+                        target.device(), read, write, [](void*, auto, auto) {}
+                    );  // Deliberately uncertified producer.
+                }
+                if (mode == QkvScenario::missing_launcher)
+                    launchers.back() = nullptr;
+                bool qkv_rejected = false;
+                try {
+                    ingress_denoiser.execute_qkv(
+                        resident,
+                        0,
+                        mode == QkvScenario::invalid_tokens ? 18 : 17,
+                        mode == QkvScenario::invalid_text ? 18 : 3,
+                        .625f,
+                        launchers,
+                        cancel
+                    );
+                } catch (const std::exception&) {
+                    qkv_rejected = true;
+                }
+                check(qkv_rejected == (mode != QkvScenario::complete));
+                cancel.store(false);
+                if (mode == QkvScenario::complete) {
+                    for (auto* launcher : qkv_launchers)
+                        for (const auto stage : {'q', 'k', 'v'}) {
+                            const auto name = std::string("attention/") + stage;
+                            auto output = resident.tensor(
+                                launcher->device(),
+                                name,
+                                kadan::DeviceDType::f32,
+                                {17, 64},
+                                {64, 1}
+                            );
+                            check(resident.ready(output));
+                            check(
+                                output.layout().data
+                                    == launcher->qkv_outputs.at(stage).data
+                                && output.layout().generation
+                                       == launcher->qkv_outputs.at(stage).generation
+                            );
+                            check(
+                                launcher->qkv_rows.at(stage).size() == 17
+                                && launcher->qkv_rows.at(stage).back() == 16
+                            );
+                        }
+                    for (auto* launcher : qkv_launchers) {
+                        launcher->calls.clear();
+                        launcher->qkv_rows.clear();
+                        launcher->qkv_projection = 0;
+                    }
+                    const auto input_uploads = resident.transfers().input_upload;
+                    ingress_denoiser.execute_qkv(
+                        resident, 0, 17, 3, std::nullopt, launchers, cancel
+                    );
+                    check(resident.transfers().input_upload == input_uploads);
+                    for (auto* launcher : qkv_launchers)
+                        check(
+                            launcher->calls.front() == '0'
+                            && launcher->qkv_rows.at('v').size() == 17
+                        );
+                    resident.finish();
+                } else if (mode >= QkvScenario::missing_hidden) {
+                    check(first.calls.empty() && second.calls.empty());
+                } else {
+                    check(
+                        target.calls.back()
+                        == (target.fail_qkv ? target.fail_qkv : target.cancel_qkv_stage)
+                    );
+                }
+                check(
+                    !resident.transfers().activation_upload
+                    && !resident.transfers().activation_download
+                    && !resident.transfers().output_download
+                );
+            } else {
+                ingress_denoiser.execute_feed_forward(
+                    resident,
+                    0,
+                    17,
+                    3,
+                    .625f,
+                    HiddenBoundary::pre_attention,
+                    launchers,
+                    cancel
+                );
+            }
         } else if (scenario >= IngressScenario::missing_launcher) {
             check(
                 first.calls.empty() && second.calls.empty()
                 && !resident.transfers().input_upload
             );
         }
-        if (!rejected)
+        if (!rejected && !qkv_scenario)
             resident.finish();
         if (target.fail_ingress || target.cancel_ingress_stage)
             check(
@@ -1234,6 +1442,23 @@ int main() {
               IngressScenario::nonfinite_condition,
               IngressScenario::nonfinite_latent})
             ingress_case(scenario, two_devices);
+    for (bool two_devices : {false, true})
+        for (auto scenario :
+             {QkvScenario::complete,
+              QkvScenario::fail_norm,
+              QkvScenario::fail_q,
+              QkvScenario::fail_k,
+              QkvScenario::fail_v,
+              QkvScenario::cancel_norm,
+              QkvScenario::cancel_q,
+              QkvScenario::cancel_k,
+              QkvScenario::cancel_v,
+              QkvScenario::missing_hidden,
+              QkvScenario::missing_launcher,
+              QkvScenario::invalid_text,
+              QkvScenario::invalid_tokens,
+              QkvScenario::wrong_boundary})
+            ingress_case(IngressScenario::complete, two_devices, scenario);
     // Restore the original loaded model's checkpoint before conditioning checks.
     denoiser.unload();
     write_weights(directory, false, 64, 512, {.denoiser = true});
@@ -1947,9 +2172,22 @@ int main() {
         resident.finish();
     }
 
-    for (const char* projection : {"img_in", "txt_in.in_layer", "txt_in.out_layer"}) {
+    for (const char* projection :
+         {"img_in",
+          "txt_in.in_layer",
+          "txt_in.out_layer",
+          "attn.to_q",
+          "attn.to_k",
+          "attn.to_v"}) {
+        const bool qkv_weight = std::string_view(projection).starts_with("attn.");
         write_weights(
-            directory, false, 64, 512, {.denoiser = true, .ingress_f32 = projection}
+            directory,
+            false,
+            64,
+            512,
+            {.denoiser = true,
+             .ingress_f32 = qkv_weight ? "" : projection,
+             .qkv_f32 = qkv_weight ? projection : ""}
         );
         denoiser.load(directory, files, config, cancel);
         auto fake = std::make_unique<Device>();
@@ -1963,10 +2201,17 @@ int main() {
             cancel
         );
         const auto error = denoiser.prepare_feed_forward(
-            resident, 0, 17, HiddenBoundary::pre_attention, cancel
+            resident,
+            0,
+            17,
+            qkv_weight ? HiddenBoundary::pre_qkv : HiddenBoundary::pre_attention,
+            cancel
         );
         check(
-            error && error->detail == "image_ingress_standard_precision"
+            error
+            && error->detail
+                   == (qkv_weight ? "image_attention_standard_precision"
+                                  : "image_ingress_standard_precision")
             && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
         );
         resident.finish();
@@ -1976,7 +2221,10 @@ int main() {
          {"img_in.weight",
           "txt_in.text_norm.weight",
           "txt_in.in_layer.weight",
-          "txt_in.out_layer.weight"}) {
+          "txt_in.out_layer.weight",
+          "transformer_blocks.0.attn.to_q.weight",
+          "transformer_blocks.0.attn.to_k.weight",
+          "transformer_blocks.0.attn.to_v.weight"}) {
         for (bool norm_f32 : {false, true}) {
             if (norm_f32 && std::string_view(weight) != "txt_in.text_norm.weight")
                 continue;
@@ -2010,18 +2258,27 @@ int main() {
             auto fake = std::make_unique<Device>();
             auto& metadata = *fake;
             metadata.metadata_execution = true;
+            auto weight_resources = std::make_shared<kadan::Resources>(
+                kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+            );
             kadan::MediaSession resident(
-                conditioning_resources,
+                weight_resources,
                 activity,
                 std::move(fake),
                 kadan::Workload::image,
-                {{0}, {1}},
+                {{0}},
                 cancel
             );
             bool rejected = false;
             try {
                 denoiser.prepare_feed_forward(
-                    resident, 0, 17, HiddenBoundary::pre_attention, cancel
+                    resident,
+                    0,
+                    17,
+                    std::string_view(weight).starts_with("transformer_blocks.")
+                        ? HiddenBoundary::pre_qkv
+                        : HiddenBoundary::pre_attention,
+                    cancel
                 );
             } catch (const std::runtime_error& e) {
                 rejected = true;

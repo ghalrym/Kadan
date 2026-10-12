@@ -19,8 +19,9 @@ struct BlockConfig {
     std::array<std::size_t, 3> axes{16, 56, 56};
 };
 
-// Whether the certified hidden still needs its attention residual applied.
+// Next consumed boundary of the certified hidden.
 enum class HiddenBoundary {
+    pre_qkv,
     pre_attention,
     post_attention
 };
@@ -53,7 +54,8 @@ public:
     );
     void unload();
     // Prepare only: actual bias-free BF16 checkpoint slices and session resources.
-    // pre_attention also admits attn.to_out.0; resident/normalized starts attended.
+    // pre_qkv adds replicated Q/K/V; pre_attention admits attn.to_out.0
+    // with resident/normalized already attended.
     // supports the native BF16 branch of the existing standard projection only.
     // Initialize/account device launchers before this fresh admission probe.
     std::optional<MediaPlanError> prepare_feed_forward(
@@ -115,6 +117,13 @@ private:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&,
         std::size_t shared_weights
+    );
+    void execute_qkv(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
     );
     void execute_attention_output(
         MediaSession&,

@@ -225,6 +225,7 @@ __global__ void image_norm_kernel(
     std::size_t state,
     std::size_t text,
     bool final,
+    std::size_t stage,
     unsigned* status
 ) {
     __shared__ double mean;
@@ -251,7 +252,7 @@ __global__ void image_norm_kernel(
         );
     }
     __syncthreads();
-    const auto offset = final ? 0 : (row < text ? 4 * state : 0) + 2 * state;
+    const auto offset = final ? 0 : (row < text ? 4 * state : 0) + stage * 2 * state;
     for (std::size_t c = threadIdx.x; c < state; c += blockDim.x) {
         const float centered =
             __double2float_rn(__dsub_rn(double(hidden[base + c]), mean));
@@ -2309,9 +2310,15 @@ void CudaBf16Projection::prepare(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,
     std::span<const MediaDeviceSpan> outputs,
-    std::size_t text
+    std::size_t text,
+    ImageModulationStage stage
 ) {
     require(inputs.size() == 2 && outputs.size() == 3, "image_ff_preparation_layout");
+    require(
+        stage == ImageModulationStage::qkv
+            || stage == ImageModulationStage::feed_forward,
+        "image_modulation_stage"
+    );
     const auto shape = validate_image_modulation(
         device_, inputs[0], inputs[1], outputs[0], outputs[1], outputs[2], text
     );
@@ -2328,7 +2335,7 @@ void CudaBf16Projection::prepare(
         static_cast<const float*>(inputs[1].data),
         static_cast<float*>(outputs[1].data),
         shape.in,
-        1,
+        std::size_t(stage),
         status
     );
     checked(cudaGetLastError());
@@ -2339,6 +2346,7 @@ void CudaBf16Projection::prepare(
         shape.in,
         text,
         false,
+        std::size_t(stage),
         status
     );
     checked(cudaGetLastError());
@@ -2371,6 +2379,7 @@ void CudaBf16Projection::final_normalization(
         shape.in,
         0,
         true,
+        0,
         status
     );
     checked(cudaGetLastError());
