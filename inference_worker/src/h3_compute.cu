@@ -121,8 +121,12 @@ __global__ void image_residual_kernel(
     hidden[i] = result;
 }
 
-__global__ void image_ff_gates_kernel(
-    const float* modulation, float* gates, std::size_t state, unsigned* status
+__global__ void image_gates_kernel(
+    const float* modulation,
+    float* gates,
+    std::size_t state,
+    std::size_t stage,
+    unsigned* status
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     // Preserve the host boundary's finite check over the whole modulation tensor.
@@ -130,8 +134,8 @@ __global__ void image_ff_gates_kernel(
         atomicOr(status, 1U);
     if (i < 2 * state) {
         const auto group = i / state, channel = i % state;
-        const auto ff_gate = (group * 4 + 3) * state + channel;
-        const float value = tanhf(modulation[ff_gate]);
+        const auto gate = (group * 4 + stage * 2 + 1) * state + channel;
+        const float value = tanhf(modulation[gate]);
         if (!isfinite(value))
             atomicOr(status, 1U);
         gates[i] = value;
@@ -2057,6 +2061,60 @@ void CudaBf16Projection::launch_image_silu_pair(
     checked(cudaGetLastError());
 }
 
+void CudaBf16Projection::attention_residual(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t text
+) {
+    require(
+        inputs.size() == 3 && outputs.size() == 3, "image_attention_residual_layout"
+    );
+    const auto shape = validate_image_attention_residual(
+        device_,
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        outputs[0],
+        outputs[1],
+        outputs[2],
+        text
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[2].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_gates_kernel<<<unsigned((8 * shape.in + 255) / 256), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[2].data),
+        static_cast<float*>(outputs[1].data),
+        shape.in,
+        0,
+        status
+    );
+    checked(cudaGetLastError());
+    // Keep the gate producer's status; residual() would reset that certificate.
+    image_residual_kernel<<<
+        unsigned((shape.rows * shape.in + 255) / 256),
+        256,
+        0,
+        owned_stream>>>(
+        static_cast<float*>(outputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        static_cast<const float*>(outputs[1].data),
+        shape.rows * shape.in,
+        shape.in,
+        0,
+        text,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
 void CudaBf16Projection::prepare(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,
@@ -2064,7 +2122,7 @@ void CudaBf16Projection::prepare(
     std::size_t text
 ) {
     require(inputs.size() == 2 && outputs.size() == 3, "image_ff_preparation_layout");
-    const auto shape = validate_image_ff_preparation(
+    const auto shape = validate_image_modulation(
         device_, inputs[0], inputs[1], outputs[0], outputs[1], outputs[2], text
     );
     require(
@@ -2076,14 +2134,11 @@ void CudaBf16Projection::prepare(
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[2].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_ff_gates_kernel<<<
-        unsigned((8 * shape.in + 255) / 256),
-        256,
-        0,
-        owned_stream>>>(
+    image_gates_kernel<<<unsigned((8 * shape.in + 255) / 256), 256, 0, owned_stream>>>(
         static_cast<const float*>(inputs[1].data),
         static_cast<float*>(outputs[1].data),
         shape.in,
+        1,
         status
     );
     checked(cudaGetLastError());

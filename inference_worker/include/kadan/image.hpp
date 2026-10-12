@@ -19,6 +19,12 @@ struct BlockConfig {
     std::array<std::size_t, 3> axes{16, 56, 56};
 };
 
+// Whether the certified hidden still needs its attention residual applied.
+enum class HiddenBoundary {
+    pre_attention,
+    post_attention
+};
+
 // Complete Qwen-Image-2.1 transformer block, text-to-image layout only.
 // Text rows are causal; the one target-image block attends to the whole sequence.
 // This component neither tokenizes prompts nor generates a finished image.
@@ -53,12 +59,16 @@ public:
     std::optional<MediaPlanError>
     prepare_feed_forward(MediaSession&, std::size_t tokens, const std::atomic_bool&);
     // Explicit device normalization/modulation and [target,text] residual gates.
-    // All devices' hidden/modulation inputs must be certified before submission.
+    // All hidden/modulation inputs must be certified on every device. At the
+    // pre_attention boundary, resident/normalized must hold the full certified
+    // attention projection: apply its residual first, then reuse that row buffer
+    // and gates for FF preparation. No attention/QKV execution occurs here.
     // Leaves the session in prepare; invoke execute_feed_forward next.
     void prepare_feed_forward_inputs(
         MediaSession&,
         std::size_t tokens,
         std::size_t text,
+        HiddenBoundary,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );

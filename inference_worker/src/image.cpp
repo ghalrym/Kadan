@@ -423,6 +423,7 @@ void TransformerBlock::prepare_feed_forward_inputs(
     MediaSession& session,
     std::size_t tokens,
     std::size_t text,
+    HiddenBoundary boundary,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
 ) {
@@ -432,7 +433,10 @@ void TransformerBlock::prepare_feed_forward_inputs(
     const auto state = model_->d.state;
     const auto& plan = session.plan();
     need(
-        tokens && text <= tokens && plan.schedule == MediaSchedule::feed_forward
+        tokens && text <= tokens
+            && (boundary == HiddenBoundary::pre_attention
+                || boundary == HiddenBoundary::post_attention)
+            && plan.schedule == MediaSchedule::feed_forward
             && launchers.size() == plan.devices.size(),
         "image_ff_plan"
     );
@@ -476,7 +480,23 @@ void TransformerBlock::prepare_feed_forward_inputs(
             auto& d = devices.back();
             const std::array inputs{&d.hidden, &d.modulation};
             session.require_ready(inputs);
-            video::validate_image_ff_preparation(
+            if (boundary == HiddenBoundary::pre_attention) {
+                const std::array attention_inputs{
+                    &d.hidden, &d.normalized, &d.modulation
+                };
+                session.require_ready(attention_inputs);
+                video::validate_image_attention_residual(
+                    planned.device,
+                    d.hidden.layout(),
+                    d.normalized.layout(),
+                    d.modulation.layout(),
+                    d.hidden.layout(),
+                    d.gates.layout(),
+                    d.status.layout(),
+                    text
+                );
+            }
+            video::validate_image_modulation(
                 planned.device,
                 d.hidden.layout(),
                 d.modulation.layout(),
@@ -486,7 +506,24 @@ void TransformerBlock::prepare_feed_forward_inputs(
                 text
             );
         }
-        // Validate ALL devices before any output submission. Hidden stays read-only.
+        // Validate ALL devices before any hidden update or normalization submission.
+        if (boundary == HiddenBoundary::pre_attention) {
+            for (auto& d : devices) {
+                stop(cancel);
+                const std::array inputs{&d.hidden, &d.normalized, &d.modulation};
+                const std::array outputs{&d.hidden, &d.gates, &d.status};
+                session.launch(
+                    d.launcher->device(),
+                    inputs,
+                    outputs,
+                    [&](void* stream, auto read, auto write) {
+                        d.launcher->attention_residual(stream, read, write, text);
+                    }
+                );
+                session.complete(outputs, d.status);
+            }
+        }
+        // The same full views now hold completed post-attention hidden and scratch.
         for (auto& d : devices) {
             stop(cancel);
             const std::array inputs{&d.hidden, &d.modulation};

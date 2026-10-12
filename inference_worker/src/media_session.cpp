@@ -955,6 +955,9 @@ void MediaSession::launch(
             throw std::invalid_argument("media_session_unready_input");
         read.push_back(v->layout_);
     }
+    // FF preparation can apply the attention residual to its certified baseline.
+    // Require the very same hidden view as an input; other prepare overwrites stay
+    // forbidden.
     for (auto* v : outputs) {
         if (!v)
             throw std::invalid_argument("media_session_null_view");
@@ -966,6 +969,11 @@ void MediaSession::launch(
             || (v->name_ == "resident/hidden"
                 && (s.plan.schedule == MediaSchedule::feed_forward
                         ? s.phase != MediaPhase::ff
+                              && !(
+                                  s.phase == MediaPhase::prepare
+                                  && std::find(inputs.begin(), inputs.end(), v)
+                                         != inputs.end()
+                              )
                         : s.plan.kv_complete_before_hidden_write
                               && s.phase <= *s.plan.kv_complete_before_hidden_write)))
             throw std::invalid_argument("media_session_write_ownership");

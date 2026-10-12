@@ -256,7 +256,7 @@ int main() {
         original[6]
     };
     auto validate_preparation = [&] {
-        return validate_image_ff_preparation(
+        return validate_image_modulation(
             0,
             preparation[0],
             preparation[1],
@@ -303,7 +303,7 @@ int main() {
     rejects_preparation();
     bool bad_text = false;
     try {
-        validate_image_ff_preparation(
+        validate_image_modulation(
             0,
             preparation[0],
             preparation[1],
@@ -316,5 +316,48 @@ int main() {
         bad_text = true;
     }
     check(bad_text);
+    auto updated = preparation[0];
+    auto validate_attention = [&] {
+        return validate_image_attention_residual(
+            0,
+            preparation[0],
+            preparation[2],
+            preparation[1],
+            updated,
+            preparation[3],
+            preparation[4],
+            1
+        );
+    };
+    check(validate_attention().rows == 3);
+    auto rejects_updated = [&] {
+        bool rejected = false;
+        try {
+            validate_attention();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        updated = preparation[0];
+    };
+    updated.data = preparation[2].data;
+    rejects_updated();
+    updated.device = 1;
+    rejects_updated();
+    updated.dtype = DeviceDType::bf16;
+    rejects_updated();
+    updated.dimensions[0] = 2;
+    rejects_updated();
+    updated.strides[0] = 1;
+    rejects_updated();
+    updated.bytes -= 4;
+    rejects_updated();
+    updated.offset = 4;
+    rejects_updated();
+    updated.generation += 1;
+    rejects_updated();
+    // The shared layout must fit the attention residual's one-dimensional grid.
+    preparation[0].dimensions = {INT_MAX, 512};
+    rejects_preparation();
     std::cout << "BF16 projection layout validation passed\n";
 }
