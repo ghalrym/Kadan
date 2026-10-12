@@ -538,7 +538,7 @@ DeviceTensorView MediaSession::tensor(
     if (slot.owned.allocation.weight) {
         const auto weight = std::find_if(
             s.manifest.weights.begin(), s.manifest.weights.end(), [&](const auto& w) {
-                return slot.owned.allocation.name.starts_with("weight/" + w.name + "/");
+                return slot.owned.allocation.weight == w.identity;
             }
         );
         if (weight == s.manifest.weights.end())

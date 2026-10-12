@@ -242,6 +242,42 @@ void stage_ownership() {
     f.session.finish();
 }
 
+void weight_prefix_identity() {
+    for (bool reversed : {false, true}) {
+        Fixture f;
+        auto m = decoder();
+        m.weights = {
+            {"w",
+             {1, 2, 16, 0, 0, 0, 0, 0, 16},
+             TensorStorage::bf16_exact,
+             2,
+             4,
+             WeightPartition::replicated},
+            {"w/sub",
+             {1, 3, 48, 0, 0, 0, 0, 0, 48},
+             TensorStorage::f32,
+             2,
+             6,
+             WeightPartition::replicated}
+        };
+        if (reversed)
+            std::swap(m.weights[0], m.weights[1]);
+        check(!f.session.admit(m, shape()));
+        for (const auto& slice : f.session.plan().weights) {
+            auto view = f.session.weight(slice);
+            const bool nested = slice.name == "w/sub";
+            check(
+                view.layout().dtype == (nested ? DeviceDType::f32 : DeviceDType::bf16)
+            );
+            check(
+                view.layout().dimensions
+                == std::vector<std::size_t>{2, nested ? 6u : 4u}
+            );
+        }
+        f.session.finish();
+    }
+}
+
 void typed_admission_failures() {
     Fixture f;
     auto m = decoder();
@@ -272,6 +308,7 @@ int main() {
     lifecycle_failures();
     ownership_views();
     stage_ownership();
+    weight_prefix_identity();
     typed_admission_failures();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";
