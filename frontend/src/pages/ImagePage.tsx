@@ -1,10 +1,26 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ModeNavigation, SegmentedControl, UploadPlaceholder } from '../components/Controls'
-import { MediaPlaceholder } from '../components/Media'
+import { MediaPlaceholder, type Aspect } from '../components/Media'
+import { ImageProgressPanel, PendingImageSet } from '../components/ImageProgress'
 import { imageHistory, requestImages, type ImageOptions } from '../api/images'
+import { describeImageProgress, estimateRemaining, type ImageProgressView } from '../api/imageProgress'
 import { usePolling } from '../hooks/usePolling'
 import type { MetricsResponse } from '../api/generated/types.gen'
 import type { ImageSet } from '../api/generated/types.gen'
+
+const ASPECTS: Record<NonNullable<ImageOptions['aspect']>, Aspect> = {
+  '1:1': 'square',
+  '4:3': 'landscape',
+  '3:4': 'portrait',
+  '16:9': 'wide',
+}
+
+type Run = { prompt: string; aspect: Aspect; count: number; started: number }
+type Tracked = {
+  progress: MetricsResponse['inference_progress']
+  view: ImageProgressView | null
+  start: { ns: number; fraction: number } | null
+}
 
 /**
  * Select generate/edit mode and remount its workspace when the mode changes.
@@ -19,15 +35,36 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
  * errors without manufacturing image previews or claiming uploads.
  */
 function ImageWorkspace({ edit }: { edit: boolean }) {
-  const { data: metrics } = usePolling<MetricsResponse>('/v1/metrics')
+  const [busy, setBusy] = useState(false)
+  const { data: metrics } = usePolling<MetricsResponse>('/v1/metrics', busy ? 1000 : 3000)
   const progress = metrics?.inference_progress
+  const [run, setRun] = useState<Run | null>(null)
+  const [tracked, setTracked] = useState<Tracked>({ progress: undefined, view: null, start: null })
+  const [now, setNow] = useState(() => Date.now())
+  // Retain worker activity across failed polls, but reset timing when its job changes.
+  if (run && tracked.progress !== progress) {
+    const view = describeImageProgress(progress, tracked.view)
+    setTracked({
+      progress,
+      view,
+      start: (view.jobId === tracked.view?.jobId ? tracked.start : null) ?? (view.fraction !== null && view.observedNs !== null ? { ns: view.observedNs, fraction: view.fraction } : null),
+    })
+  }
+  const view = run ? tracked.view ?? describeImageProgress(progress, null) : null
+  const remaining = view && !view.stale && view.fraction != null && view.observedNs !== null
+    ? estimateRemaining(tracked.start, { ns: view.observedNs, fraction: view.fraction })
+    : null
+  useEffect(() => {
+    if (!run) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [run])
   const [prompt, setPrompt] = useState('')
   const [aspect, setAspect] = useState<NonNullable<ImageOptions['aspect']>>('1:1')
   const [count, setCount] = useState<1 | 2 | 4>(4)
   const [seed, setSeed] = useState('')
   const source = '' // Upload transport is not implemented; keep the original disabled placeholder.
   const [strength, setStrength] = useState(65)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [historyError, setHistoryError] = useState('')
   const [history, setHistory] = useState<ImageSet[]>([])
@@ -70,6 +107,9 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     active.current = controller
     setBusy(true)
     setError('')
+    setTracked({ progress: undefined, view: null, start: null })
+    setRun({ prompt: prompt.trim(), aspect: ASPECTS[aspect], count, started: Date.now() })
+    setNow(Date.now())
     try {
       const image = await requestImages(
         {
@@ -96,6 +136,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
       if (active.current === controller) {
         active.current = null
         setBusy(false)
+        setRun(null)
       }
     }
   }
@@ -113,18 +154,16 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         </div>
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
-        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Queued / working…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
-        {busy && progress && <p role="status">
-          Server {progress.workload}: {progress.image && <>image {progress.image.image_index}/{progress.image.image_count} · {progress.image.steps_completed}/{progress.image.steps_total} denoising steps complete · </>}
-          {progress.stage.replaceAll('_', ' ')} {progress.stage === 'block' ? progress.value + 1 : progress.value}
-        </p>}
+        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Waiting for images…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        {run && view && <ImageProgressPanel view={view} elapsed={(now - run.started) / 1000} remaining={remaining} />}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>
       <div className="workspace-results image-gallery" aria-label="Image gallery" aria-busy={loading}>
+        {run && <PendingImageSet prompt={run.prompt} aspect={run.aspect} count={run.count} />}
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
-        {!loading && !historyError && images.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
+        {!loading && !historyError && !run && images.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
         {images.map(item => <section className="stack" key={item.id}><header className="image-set-heading"><span className="badge type-Image">{item.mode}</span><p>{item.prompt}</p><span className="mono faint">{item.meta}</span></header><div className="image-grid">{item.images_base64?.length && item.mime_type === 'image/png'
           ? item.images_base64.map((data, index) => <img key={index} className="generated-image" src={`data:image/png;base64,${data}`} alt={`${item.prompt} — image ${index + 1}`} />)
           : item.seeds.map((seed, index) => <MediaPlaceholder key={`${seed}-${index}`} aspect={item.aspect} label="Image unavailable" />)}</div></section>)}
