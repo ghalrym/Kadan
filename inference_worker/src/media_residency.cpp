@@ -294,7 +294,9 @@ struct CandidateBuilder {
             AllocationKind::conversion,
             conversion,
             manifest.schedule == MediaSchedule::feed_forward
-                ? (shape.attention_inner ? MediaPhase::prepare : MediaPhase::ff)
+                ? ((shape.attention_inner || manifest.prepare_projection)
+                       ? MediaPhase::prepare
+                       : MediaPhase::ff)
                 : MediaPhase::kv,
             MediaPhase::ff,
             conversion_padding

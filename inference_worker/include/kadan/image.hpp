@@ -98,6 +98,15 @@ public:
     );
 
 private:
+    friend class Denoiser;
+    // Compose denoiser conditioning with the block's consumed admission.
+    std::optional<MediaPlanError> prepare_feed_forward(
+        MediaSession&,
+        std::size_t,
+        HiddenBoundary,
+        const std::atomic_bool&,
+        StageManifest
+    );
     void execute_attention_output(
         MediaSession&,
         std::size_t tokens,

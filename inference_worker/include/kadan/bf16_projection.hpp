@@ -303,9 +303,9 @@ class ImageFeedForwardLauncher {
 public:
     virtual ~ImageFeedForwardLauncher() = default;
     virtual int device() const = 0;
-    // Standard native-BF16 attention output: inputs [attended,weight]; outputs
+    // Standard native-BF16 projection: inputs [rows,weight]; outputs
     // [projected,rounded,workspace,status], with no FF projection policy override.
-    virtual void attention_output(
+    virtual void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
     // Inputs [hidden,projected,modulation]; outputs [same-hidden,gates,status].
@@ -360,7 +360,7 @@ public:
         return device_;
     }
 
-    void attention_output(
+    void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
     void attention_residual(

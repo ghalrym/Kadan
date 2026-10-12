@@ -342,6 +342,16 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     HiddenBoundary boundary,
     const std::atomic_bool& cancel
 ) {
+    return prepare_feed_forward(session, tokens, boundary, cancel, {});
+}
+
+std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
+    MediaSession& session,
+    std::size_t tokens,
+    HiddenBoundary boundary,
+    const std::atomic_bool& cancel,
+    StageManifest manifest
+) {
     Busy active(busy_);
     stop(cancel);
     need(bool(model_), "image_load_state");
@@ -358,27 +368,27 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         return MediaPlanError{
             PlanFailure::unsupported_layout, "image_attention_standard_precision", {}
         };
-    StageManifest manifest;
     manifest.schedule = MediaSchedule::feed_forward;
     manifest.blas_bytes = video::bf16_projection_workspace_bytes;
     manifest.status_bytes = sizeof(std::uint32_t);  // Aggregate certificate.
-    manifest.tensors = {
-        {"ff/modulation",
-         8 * m.d.state * sizeof(float),
-         MediaPhase::prepare,
-         MediaPhase::prepare},
-        {"ff/residual-gates", 2 * m.d.state * sizeof(float)},
-        {"ff/gate-status",
-         sizeof(std::uint32_t),
-         MediaPhase::ff,
-         MediaPhase::ff,
-         AllocationKind::status},
-        {"ff/up-status",
-         sizeof(std::uint32_t),
-         MediaPhase::ff,
-         MediaPhase::ff,
-         AllocationKind::status}
-    };
+    manifest.tensors.insert(
+        manifest.tensors.end(),
+        {{"ff/modulation",
+          8 * m.d.state * sizeof(float),
+          MediaPhase::prepare,
+          MediaPhase::prepare},
+         {"ff/residual-gates", 2 * m.d.state * sizeof(float)},
+         {"ff/gate-status",
+          sizeof(std::uint32_t),
+          MediaPhase::ff,
+          MediaPhase::ff,
+          AllocationKind::status},
+         {"ff/up-status",
+          sizeof(std::uint32_t),
+          MediaPhase::ff,
+          MediaPhase::ff,
+          AllocationKind::status}}
+    );
     for (const auto* name :
          {"img_mlp.gate_layer.weight",
           "img_mlp.proj.weight",
@@ -430,6 +440,9 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     try {
         for (const auto& slice : session.plan().weights) {
             stop(cancel);
+            // Denoiser uploads its own shared conditioning weight after admission.
+            if (!slice.name.starts_with(m.prefix))
+                continue;
             const auto& spec =
                 m.specs.at(m.names.at(slice.name.substr(m.prefix.size())));
             auto& shard = *m.shards[spec.shard];
@@ -555,7 +568,7 @@ void TransformerBlock::execute_attention_output(
                 };
                 session.launch(
                     device, read, write, [&](void* stream, auto in, auto out) {
-                        d.launcher->attention_output(stream, in, out);
+                        d.launcher->standard(stream, in, out);
                     }
                 );
                 session.complete(write, status);
@@ -728,12 +741,21 @@ void TransformerBlock::execute_feed_forward(
     need(bool(model_), "image_load_state");
     auto& m = *model_;
     const auto& plan = session.plan();
-    const bool attention = plan.weights.size() == 4 * plan.devices.size();
+    const bool attention =
+        std::any_of(plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
+            return w.name == m.prefix + "attn.to_out.0.weight";
+        });
+    const bool modulation =
+        std::any_of(plan.weights.begin(), plan.weights.end(), [](const auto& w) {
+            return w.name == "modulation.1.weight";
+        });
     need(
         tokens && text <= tokens && plan.rows && plan.rows <= tokens
             && plan.schedule == MediaSchedule::feed_forward
             && launchers.size() == plan.devices.size()
-            && plan.weights.size() == (attention ? 4 : 3) * plan.devices.size(),
+            && plan.weights.size()
+                   == ((attention ? 4 : 3) + std::size_t(modulation))
+                          * plan.devices.size(),
         "image_ff_plan"
     );
 
