@@ -299,8 +299,11 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
          {"time_text_embed.timestep_embedder.linear_1.weight",
           "time_text_embed.timestep_embedder.linear_2.weight",
           "modulation.1.weight",
-          "norm_out.linear.weight"}) {
-        if (!final && std::string_view(name) == "norm_out.linear.weight")
+          "norm_out.linear.weight",
+          "proj_out.weight"}) {
+        if (!final
+            && (std::string_view(name) == "norm_out.linear.weight"
+                || std::string_view(name) == "proj_out.weight"))
             continue;
         const auto& spec = m.specs.at(m.names.at(name));
         auto& shard = *m.shards[spec.shard];
@@ -312,7 +315,9 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
             || tensor.dtype != checkpoint::Dtype::bf16)
             return MediaPlanError{
                 PlanFailure::unsupported_layout,
-                spec.name == "norm_out.linear.weight" ? "image_final_standard_precision"
+                (spec.name == "norm_out.linear.weight"
+                 || spec.name == "proj_out.weight")
+                    ? "image_final_standard_precision"
                 : spec.name == "modulation.1.weight"
                     ? "image_modulation_standard_precision"
                     : "image_timestep_standard_precision",
@@ -360,10 +365,14 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
               MediaPhase::complete,
               MediaPhase::complete},
              {"final/projection-conversion",
-              m.d.block.state * sizeof(std::uint16_t),
+              tokens * m.d.block.state * sizeof(std::uint16_t),
               MediaPhase::complete,
               MediaPhase::complete,
-              AllocationKind::conversion}}
+              AllocationKind::conversion},
+             {"final/velocity",
+              tokens * m.d.channels * sizeof(float),
+              MediaPhase::complete,
+              MediaPhase::complete}}
         );
     }
     if (auto error = m.blocks[block]->prepare_feed_forward(
@@ -375,7 +384,8 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
             if (slice.name != "time_text_embed.timestep_embedder.linear_1.weight"
                 && slice.name != "time_text_embed.timestep_embedder.linear_2.weight"
                 && slice.name != "modulation.1.weight"
-                && slice.name != "norm_out.linear.weight")
+                && slice.name != "norm_out.linear.weight"
+                && slice.name != "proj_out.weight")
                 continue;
             const auto& spec = m.specs.at(m.names.at(slice.name));
             auto& shard = *m.shards[spec.shard];
@@ -436,7 +446,7 @@ void Denoiser::execute_feed_forward(
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
                 && plan.weights.size()
-                       == ((attention ? 7 : 6) + (final ? 1 : 0)) * plan.devices.size(),
+                       == ((attention ? 7 : 6) + (final ? 2 : 0)) * plan.devices.size(),
             "image_ff_plan"
         );
         std::vector<Device> devices;
@@ -499,7 +509,9 @@ void Denoiser::execute_feed_forward(
             session.require_ready(ready);
             if (final) {
                 auto final_weight = weight("norm_out.linear.weight", state, state);
-                const std::array final_ready{&final_weight};
+                auto output_weight =
+                    weight("proj_out.weight", model_->d.channels, state);
+                const std::array final_ready{&final_weight, &output_weight};
                 session.require_ready(final_ready);
             }
             if (timestep)
@@ -648,30 +660,31 @@ void Denoiser::execute_feed_forward(
             text,
             launchers,
             cancel,
-            (final ? 4 : 3) * plan.devices.size()
+            (final ? 5 : 3) * plan.devices.size()
         );
         if (final)
-            execute_final_normalization(session, tokens, text, launchers, cancel);
+            execute_final_output(session, tokens, text, launchers, cancel);
     } catch (...) {
         session.abort(std::current_exception());
         throw;
     }
 }
 
-void Denoiser::execute_final_normalization(
+void Denoiser::execute_final_output(
     MediaSession& session,
     std::size_t tokens,
     std::size_t text,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
 ) {
-    const auto state = model_->d.block.state;
+    const auto state = model_->d.block.state, channels = model_->d.channels;
     const auto& spec = model_->specs.at(model_->names.at("norm_out.linear.weight"));
+    const auto& output_spec = model_->specs.at(model_->names.at("proj_out.weight"));
 
     struct Device {
         video::ImageFeedForwardLauncher* launcher;
-        DeviceTensorView time, weight, hidden, scale, normalized, rounded, workspace,
-            status;
+        DeviceTensorView time, weight, output_weight, hidden, scale, normalized,
+            rounded, velocity, workspace, status;
     };
 
     std::vector<Device> devices;
@@ -690,6 +703,16 @@ void Denoiser::execute_final_normalization(
             }
         );
         need(slice != session.plan().weights.end(), "image_final_weight");
+        const auto output_slice = std::find_if(
+            session.plan().weights.begin(),
+            session.plan().weights.end(),
+            [&](const auto& w) {
+                return w.device == planned.device && w.name == output_spec.name
+                       && w.identity == output_spec.identity && w.first_row == 0
+                       && w.rows == channels && w.stored_bytes == channels * state * 2;
+            }
+        );
+        need(output_slice != session.plan().weights.end(), "image_final_weight");
         auto matrix = [&](const char* name,
                           std::size_t rows,
                           DeviceDType dtype = DeviceDType::f32) {
@@ -703,10 +726,18 @@ void Denoiser::execute_final_normalization(
             {launcher,
              session.rows(time, 0, 1),
              session.weight(*slice),
+             session.weight(*output_slice),
              session.rows(hidden, text, tokens - text),
              matrix("final/scale", 1),
              matrix("final/normalized", tokens - text),
-             matrix("final/projection-conversion", 1, DeviceDType::bf16),
+             matrix("final/projection-conversion", tokens - text, DeviceDType::bf16),
+             session.tensor(
+                 planned.device,
+                 "final/velocity",
+                 DeviceDType::f32,
+                 {tokens - text, channels},
+                 {channels, 1}
+             ),
              session.tensor(
                  planned.device,
                  "resident/blas",
@@ -719,7 +750,8 @@ void Denoiser::execute_final_normalization(
              )}
         );
         auto& d = devices.back();
-        const std::array ready{&d.time, &d.weight, &d.hidden};
+        const std::array ready{&d.time, &d.weight, &d.output_weight, &d.hidden};
+        auto rounded = session.rows(d.rounded, 0, 1);
         session.require_ready(ready);
         const MediaDeviceSpan bias{
             nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
@@ -729,7 +761,7 @@ void Denoiser::execute_final_normalization(
             d.time.layout(),
             d.weight.layout(),
             bias,
-            d.rounded.layout(),
+            rounded.layout(),
             d.scale.layout(),
             d.workspace.layout(),
             d.status.layout()
@@ -741,12 +773,23 @@ void Denoiser::execute_final_normalization(
             d.normalized.layout(),
             d.status.layout()
         );
+        video::validate_bf16_projection(
+            planned.device,
+            d.normalized.layout(),
+            d.output_weight.layout(),
+            bias,
+            d.rounded.layout(),
+            d.velocity.layout(),
+            d.workspace.layout(),
+            d.status.layout()
+        );
     }
     // All final ingress/layouts precede the first norm_out submission.
     for (auto& d : devices) {
         stop(cancel);
         const std::array read{&d.time, &d.weight};
-        const std::array write{&d.scale, &d.rounded, &d.workspace, &d.status};
+        auto rounded = session.rows(d.rounded, 0, 1);
+        const std::array write{&d.scale, &rounded, &d.workspace, &d.status};
         session.launch(
             d.launcher->device(), read, write, [&](void* stream, auto in, auto out) {
                 d.launcher->standard(stream, in, out);
@@ -762,6 +805,21 @@ void Denoiser::execute_final_normalization(
             }
         );
         session.complete(output, d.status);
+        stop(cancel);
+        const std::array projection_input{&d.normalized, &d.output_weight};
+        const std::array projection_output{
+            &d.velocity, &d.rounded, &d.workspace, &d.status
+        };
+        session.launch(
+            d.launcher->device(),
+            projection_input,
+            projection_output,
+            [&](void* stream, auto in, auto out) {
+                d.launcher->standard(stream, in, out);
+            }
+        );
+        session.complete(projection_output, d.status);
+        stop(cancel);
     }
 }
 

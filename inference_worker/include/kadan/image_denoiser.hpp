@@ -49,6 +49,8 @@ public:
     // Release views before execution; modulation feeds the residual/FF consumers.
     // The last block consumes target time2 in norm_out.linear, then certifies
     // final/normalized [tokens-text,state] from the final image hidden rows.
+    // Actual proj_out consumes those rows and certifies final/velocity
+    // [tokens-text,channels], retained at complete for the caller.
     // Returns complete; close launchers before destroying session streams.
     void execute_feed_forward(
         MediaSession&,
@@ -75,7 +77,7 @@ public:
     );
 
 private:
-    void execute_final_normalization(
+    void execute_final_output(
         MediaSession&,
         std::size_t tokens,
         std::size_t text,
