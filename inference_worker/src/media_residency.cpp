@@ -65,11 +65,15 @@ void validate(
     std::span<const OwnedMediaAllocation> owned
 ) {
     if (m.stage < MediaStage::text || m.stage > MediaStage::audio_decode || !s.tokens
-        || !s.hidden || s.text_tokens > s.tokens || s.tokens > 2147483647
-        || s.hidden > 2147483647 || budgets.empty() || !m.allocation_alignment
+        || m.schedule < MediaSchedule::full_block
+        || m.schedule > MediaSchedule::feed_forward || !s.hidden
+        || s.text_tokens > s.tokens || s.tokens > 2147483647 || s.hidden > 2147483647
+        || budgets.empty() || !m.allocation_alignment
         || (m.allocation_alignment & (m.allocation_alignment - 1)))
         throw std::invalid_argument("media_shape_or_alignment");
-    if (transformer(m.stage)
+    if (m.schedule == MediaSchedule::feed_forward && (!s.ff || s.ff > 2147483647))
+        throw std::invalid_argument("media_ff_shape");
+    if (transformer(m.stage) && m.schedule == MediaSchedule::full_block
         && (!s.heads || !s.kv_heads || s.heads % s.kv_heads || !s.head_dim || !s.ff
             || s.head_dim > 2048 || s.ff > 2147483647 || s.attention_inner > 2147483647
             || mul(s.heads, s.head_dim) != s.attention_inner))
@@ -180,7 +184,12 @@ struct CandidateBuilder {
         );
     }
 
-    void weights(DevicePeak& device, std::size_t shares) {
+    void weights(
+        DevicePeak& device,
+        std::size_t shares,
+        std::size_t first_share,
+        std::size_t share_count
+    ) {
         Bytes conversion = 0, conversion_padding = 0;
         for (const auto& w : manifest.weights) {
             const auto plane_rows = w.rows / w.planes;
@@ -194,8 +203,8 @@ struct CandidateBuilder {
                 count = device.heads / group * shape.head_dim;
             } else if (w.partition == WeightPartition::channels) {
                 const auto units = plane_rows / w.alignment;
-                const auto begin = mul(units, device.first_head) / shares;
-                const auto end = mul(units, device.first_head + device.heads) / shares;
+                const auto begin = mul(units, first_share) / shares;
+                const auto end = mul(units, first_share + share_count) / shares;
                 first = begin * w.alignment;
                 count = (end - begin) * w.alignment;
             }
@@ -284,7 +293,8 @@ struct CandidateBuilder {
             "resident/projection-conversion",
             AllocationKind::conversion,
             conversion,
-            MediaPhase::kv,
+            manifest.schedule == MediaSchedule::feed_forward ? MediaPhase::ff
+                                                             : MediaPhase::kv,
             MediaPhase::ff,
             conversion_padding
         );
@@ -311,11 +321,13 @@ struct CandidateBuilder {
         );
         if (!transformer(manifest.stage))
             return;
-        const auto local_inner = mul(d.heads, shape.head_dim);
-        const auto kv =
-            mul(mul(shape.tokens,
-                    mul(d.heads / (shape.heads / shape.kv_heads), shape.head_dim)),
-                4);
+        const bool ff_only = manifest.schedule == MediaSchedule::feed_forward;
+        const auto local_inner = ff_only ? 0 : mul(d.heads, shape.head_dim);
+        const auto kv = ff_only ? 0
+                                : mul(mul(shape.tokens,
+                                          mul(d.heads / (shape.heads / shape.kv_heads),
+                                              shape.head_dim)),
+                                      4);
         const auto norm = mul(mul(plan.rows, shape.hidden), 4);
         tensor(
             d,
@@ -346,7 +358,7 @@ struct CandidateBuilder {
             "resident/normalized",
             AllocationKind::activation,
             norm,
-            MediaPhase::kv,
+            ff_only ? MediaPhase::prepare : MediaPhase::kv,
             MediaPhase::ff
         );
         const auto q = mul(mul(plan.queries, local_inner), 4);
@@ -387,7 +399,7 @@ struct CandidateBuilder {
             "resident/residual-tile",
             AllocationKind::activation,
             norm,
-            MediaPhase::attention,
+            ff_only ? MediaPhase::ff : MediaPhase::attention,
             MediaPhase::ff
         );
         // Conservative full gate/up tiles bound paired local results and gathers.
@@ -434,9 +446,13 @@ struct CandidateBuilder {
                 "resident/peer-tile",
                 AllocationKind::peer,
                 mul(mul(plan.rows,
-                        std::max({shape.hidden, shape.attention_inner, shape.ff})),
+                        std::max(
+                            {shape.hidden,
+                             ff_only ? 0 : shape.attention_inner,
+                             shape.ff}
+                        )),
                     4),
-                MediaPhase::attention,
+                ff_only ? MediaPhase::ff : MediaPhase::attention,
                 MediaPhase::ff
             );
     }
@@ -446,6 +462,10 @@ struct CandidateBuilder {
             d.arena_bytes =
                 add(d.arena_bytes, aligned(a.bytes, manifest.allocation_alignment));
         for (int p = 0; p <= static_cast<int>(MediaPhase::complete); ++p) {
+            if (manifest.schedule == MediaSchedule::feed_forward
+                && (p == static_cast<int>(MediaPhase::kv)
+                    || p == static_cast<int>(MediaPhase::attention)))
+                continue;
             PhasePeak peak;
             peak.phase = static_cast<MediaPhase>(p);
             std::set<std::size_t> slots;
@@ -512,31 +532,42 @@ MediaResidencyPlan candidate(
     CandidateBuilder builder{m, s, {}, columns};
     auto& plan = builder.plan;
     plan.stage = m.stage;
+    plan.schedule = m.schedule;
+    const bool ff_only = m.schedule == MediaSchedule::feed_forward;
+    if (ff_only)
+        plan.kv_complete_before_hidden_write.reset();
     if (transformer(m.stage))
-        plan.hidden_write_phases = {MediaPhase::attention, MediaPhase::ff};
+        plan.hidden_write_phases =
+            ff_only ? std::vector<MediaPhase>{MediaPhase::ff}
+                    : std::vector<MediaPhase>{MediaPhase::attention, MediaPhase::ff};
     plan.rows = rows;
-    plan.queries = std::min<std::size_t>(rows, 128);
-    plan.keys = keys;
+    plan.queries = ff_only ? 0 : std::min<std::size_t>(rows, 128);
+    plan.keys = ff_only ? 0 : keys;
     plan.assumptions = {
         "Include explicit consumed scales, rotations, adapters and vectors.",
         "Reserve every arena slot; dormant buffers remain physically allocated.",
-        "Complete K/V before hidden overwrite; FF is token-local.",
+        ff_only ? "FF-only normalized input and hidden writes are token-local."
+                : "Complete K/V before hidden overwrite; FF is token-local.",
         "Gather full tiles before output-channel projections; direct peers only.",
         "Caller supplies actual operator, boundary, BLAS, status and context costs.",
         "Fit requires retirement, reprobe, reservation, then allocation."
     };
-    const auto shares = transformer(m.stage) ? s.heads : 1;
+    const auto shares = ff_only ? 2 : (transformer(m.stage) ? s.heads : 1);
     std::size_t first = 0;
     for (std::size_t i = 0; i < budgets.size(); ++i) {
         DevicePeak d;
         d.device = budgets[i].device;
-        d.first_head = first;
-        d.heads = budgets.size() == 1 ? shares
-                                      : (i == 0 ? first_heads : shares - first_heads);
-        builder.weights(d, shares);
+        const auto count = budgets.size() == 1
+                               ? shares
+                               : (i == 0 ? first_heads : shares - first_heads);
+        if (!ff_only) {
+            d.first_head = first;
+            d.heads = count;
+        }
+        builder.weights(d, shares, first, count);
         builder.activations(d, budgets.size() > 1);
         builder.peaks(d);
-        first += d.heads;
+        first += count;
         plan.devices.push_back(std::move(d));
     }
     for (auto& d : plan.devices) {
@@ -629,13 +660,34 @@ MediaPlanResult plan_media_stage(
                 return MediaPlanError{
                     PlanFailure::unsupported_layout, "media_storage_compute_layout", {}
                 };
+        if (m.schedule == MediaSchedule::feed_forward
+            && (!transformer(m.stage) || m.precise_attention
+                || std::any_of(
+                    m.weights.begin(),
+                    m.weights.end(),
+                    [](const auto& w) {
+                        return w.partition == WeightPartition::heads
+                               || w.partition == WeightPartition::kv_heads;
+                    }
+                )
+                || std::any_of(m.tensors.begin(), m.tensors.end(), [](const auto& t) {
+                       return t.first == MediaPhase::kv
+                              || t.first == MediaPhase::attention
+                              || t.last == MediaPhase::kv
+                              || t.last == MediaPhase::attention;
+                   })))
+            return MediaPlanError{
+                PlanFailure::unsupported_layout, "media_ff_schedule_layout", {}
+            };
         std::optional<MediaResidencyPlan> rejected;
         auto attempt = [&](std::span<const DeviceBudget> selected,
                            std::size_t heads) -> std::optional<MediaResidencyPlan> {
             const auto max_rows =
                 transformer(m.stage) ? std::min<std::size_t>(256, s.tokens) : 1;
             const auto max_keys =
-                transformer(m.stage) ? std::min<std::size_t>(4096, s.tokens) : 1;
+                transformer(m.stage) && m.schedule == MediaSchedule::full_block
+                    ? std::min<std::size_t>(4096, s.tokens)
+                    : 1;
             auto minimum = candidate(m, s, selected, owned, heads, 1, 1, 1);
             const auto shortage = shortfall(minimum);
             if (shortage) {
@@ -664,7 +716,8 @@ MediaPlanResult plan_media_stage(
         for (std::size_t i = 0; i < budgets.size(); ++i)
             if (auto plan = attempt(budgets.subspan(i, 1), s.heads))
                 return std::move(*plan);
-        if (budgets.size() == 2 && transformer(m.stage) && s.kv_heads > 1) {
+        if (budgets.size() == 2 && transformer(m.stage)
+            && (m.schedule == MediaSchedule::feed_forward || s.kv_heads > 1)) {
             const auto direct = [&](int from, int to) {
                 return std::any_of(peers.begin(), peers.end(), [&](const auto& edge) {
                     return edge.from == from && edge.to == to && edge.direct;
@@ -677,6 +730,15 @@ MediaPlanResult plan_media_stage(
                     "media_direct_peer_required_both_directions",
                     {}
                 };
+            if (m.schedule == MediaSchedule::feed_forward) {
+                if (auto plan = attempt(budgets, 1))
+                    return std::move(*plan);
+                return MediaPlanError{
+                    PlanFailure::capacity,
+                    "media_resident_arena_shortfall",
+                    std::move(rejected)
+                };
+            }
             const auto group = s.heads / s.kv_heads;
             const std::array<Bytes, 2> capacities{
                 std::min(budgets[0].ledger_remaining, budgets[0].physical_free),

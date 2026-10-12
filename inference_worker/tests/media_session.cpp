@@ -725,6 +725,65 @@ void allocation_failure_drains_and_unchecked_overwrite() {
     g.session.abort();
 }
 
+void feed_forward_phase_isolation() {
+    Fixture f;
+    StageManifest m;
+    m.status_bytes = 4;
+    m.workspaces_complete = true;
+    m.schedule = MediaSchedule::feed_forward;
+    m.tensors.push_back({"boundary", 64});
+    check(!f.session.admit(m, MediaShape{4, 4, 0, 0, 0, 8}));
+    const int d = f.session.plan().devices.front().device;
+    auto boundary = tensor(f.session, d, "boundary");
+    auto hidden = tensor(f.session, d, "resident/hidden");
+    auto normalized = tensor(f.session, d, "resident/normalized");
+    auto status = flag(f.session, d);
+    std::array<std::byte, 64> input{};
+    f.session.upload_input(boundary, input);
+    f.session.upload_input(hidden, input);
+    f.session.upload_input(normalized, input);
+    std::array<DeviceTensorView*, 1> read{&normalized};
+    std::array<DeviceTensorView*, 2> write{&hidden, &status};
+    check(
+        fails([&] { f.session.launch(d, read, write, [](void*, auto, auto) {}); })
+        == "media_session_write_ownership"
+    );
+    check(
+        fails([&] { f.session.gather(normalized, hidden, 0); })
+        == "media_session_gather_layout"
+    );
+    for (auto phase : {MediaPhase::kv, MediaPhase::attention})
+        check(fails([&] { f.session.advance(phase); }) == "media_session_phase");
+    check(
+        fails([&] { tensor(f.session, d, "resident/key"); })
+        == "media_session_tensor_name"
+    );
+    f.session.advance(MediaPhase::ff);  // No K/V production or dummy certificates.
+    f.session.launch(d, read, write, [](void*, auto, auto) {});
+    check(
+        fails([&] { f.session.advance(MediaPhase::complete); })
+        == "media_session_unchecked_status"
+    );
+    f.session.complete(write, status);
+    f.session.gather(normalized, hidden, 0);
+    normalized = {};
+    f.session.advance(MediaPhase::complete);
+    check(
+        fails([&] { produce(f.session, d, hidden, status); })
+        == "media_session_write_ownership"
+    );
+    check(
+        fails([&] { f.session.gather(boundary, hidden, 0); })
+        == "media_session_gather_layout"
+    );
+    f.session.download_output(hidden, input);
+    boundary = {};
+    hidden = {};
+    status = {};
+    f.session.finish();
+    check(f.activity->owners == 0 && f.trace->allocations.empty());
+}
+
 void kv_barrier_and_worker_idle() {
     Fixture f;
     StageManifest m;
@@ -771,6 +830,7 @@ int main() {
     complete_partition_gather();
     repeated_admission_invalidates_kv();
     allocation_failure_drains_and_unchecked_overwrite();
+    feed_forward_phase_isolation();
     kv_barrier_and_worker_idle();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";

@@ -546,10 +546,14 @@ const MediaTransferCounters& MediaSession::transfers() const {
 void MediaSession::advance(MediaPhase phase) {
     auto& s = *state_;
     s.healthy();
-    const bool next_block = s.phase == MediaPhase::ff && phase == MediaPhase::kv;
+    const bool ff_only = s.plan.schedule == MediaSchedule::feed_forward;
+    const bool next_block =
+        !ff_only && s.phase == MediaPhase::ff && phase == MediaPhase::kv;
     if (!s.unchecked.empty())
         throw std::runtime_error("media_session_unchecked_status");
-    if (!s.admitted || (phase < s.phase && !next_block) || phase > MediaPhase::complete)
+    if (!s.admitted || (phase < s.phase && !next_block) || phase > MediaPhase::complete
+        || (ff_only && phase != MediaPhase::prepare && phase != MediaPhase::ff
+            && phase != MediaPhase::complete))
         throw std::invalid_argument("media_session_phase");
     for (const auto& live : s.plan.tensors)
         if (((live.last < phase && live.last >= s.phase)
@@ -558,7 +562,7 @@ void MediaSession::advance(MediaPhase phase) {
             throw std::runtime_error("media_session_live_alias");
     try {
         s.drain();
-        if (s.phase <= MediaPhase::kv && phase >= MediaPhase::attention
+        if (!ff_only && s.phase <= MediaPhase::kv && phase >= MediaPhase::attention
             && !s.plan.hidden_write_phases.empty()) {
             for (const auto& live : s.plan.tensors)
                 if (live.name == "resident/key" || live.name == "resident/value") {
@@ -858,7 +862,10 @@ void MediaSession::gather(
              || destination.name_ == "resident/value")
             && s.phase != MediaPhase::kv)
         || (destination.name_ == "resident/hidden"
-            && s.phase <= s.plan.kv_complete_before_hidden_write))
+            && (s.plan.schedule == MediaSchedule::feed_forward
+                    ? s.phase != MediaPhase::ff
+                    : s.plan.kv_complete_before_hidden_write
+                          && s.phase <= *s.plan.kv_complete_before_hidden_write)))
         throw std::invalid_argument("media_session_gather_layout");
     if (x.device != y.device
         && !std::any_of(
@@ -946,7 +953,10 @@ void MediaSession::launch(
             || ((v->name_ == "resident/key" || v->name_ == "resident/value")
                 && s.phase != MediaPhase::kv)
             || (v->name_ == "resident/hidden"
-                && s.phase <= s.plan.kv_complete_before_hidden_write))
+                && (s.plan.schedule == MediaSchedule::feed_forward
+                        ? s.phase != MediaPhase::ff
+                        : s.plan.kv_complete_before_hidden_write
+                              && s.phase <= *s.plan.kv_complete_before_hidden_write)))
             throw std::invalid_argument("media_session_write_ownership");
         if (s.unchecked.contains(slot.ready))
             throw std::invalid_argument("media_session_unchecked_overwrite");
