@@ -88,6 +88,22 @@ int main() {
         Resources r({host, 1024});
         Fake gpu(r);
         DeviceWeights bank(r, 0, Workload::image, 64, gpu);
+        auto bf16_key = key;
+        bf16_key.width = 2;
+        std::array<std::uint16_t, 8> raw{};
+        auto retained = bank.retain(bf16_key, std::as_bytes(std::span(raw)), cancel);
+        check(retained && bank.allocated() == 16 && !bank.find(key));
+        check(bank.retain(key, bytes, cancel) != retained);
+        check(bank.allocated() == 48 && gpu.copies == 2);
+        check(bank.retain(bf16_key, std::as_bytes(std::span(raw)), cancel) == retained);
+        check(gpu.copies == 2);
+        bank.release();
+        check(gpu.frees == 2 && r.snapshot().residents == 0);
+    }
+    {
+        Resources r({host, 1024});
+        Fake gpu(r);
+        DeviceWeights bank(r, 0, Workload::image, 64, gpu);
         auto first = bank.retain(key, bytes, cancel);
         check(
             first && gpu.copies == 1 && bank.allocated() == 32 && bank.reserved() == 64

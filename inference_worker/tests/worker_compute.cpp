@@ -277,7 +277,7 @@ int main() {
     };
     for (Bytes limit :
          {16ULL * 1024 * 1024, 64ULL * 1024 * 1024, 2ULL * 1024 * 1024 * 1024}) {
-        for (std::size_t width : {1U, 4U})
+        for (std::size_t width : {1U, 2U, 4U})
             for (bool precise : {false, true})
                 for (std::size_t in : {24U, 3072U, 4096U, 16384U}) {
                     const auto plan = projection_plan(

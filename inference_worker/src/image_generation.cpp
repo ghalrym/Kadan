@@ -189,7 +189,11 @@ void Generator::load(
             );
             inventory.add(shard);
         }
-        compute_->prepare_weights(inventory.floating_f32_bytes);
+        const auto execution_bytes =
+            inventory.floating_execution_bytes(compute_->supports_bf16_weights());
+        compute_->prepare_weights(execution_bytes);
+        if (hook)
+            hook("execution_weight_inventory_bytes", execution_bytes);
         report_weight_inventory(inventory, hook);
         report_weight_placement(*compute_, hook);
     }

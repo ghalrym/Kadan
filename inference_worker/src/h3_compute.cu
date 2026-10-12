@@ -2,6 +2,7 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <cuda_bf16.h>
 #include <future>
 #include <limits>
 #include <stdexcept>
@@ -51,6 +52,13 @@ bool overlap(const void* a, std::size_t an, const void* b, std::size_t bn) {
     const auto x = reinterpret_cast<std::uintptr_t>(a),
                y = reinterpret_cast<std::uintptr_t>(b);
     return x <= y ? y - x < an : x - y < bn;
+}
+
+__global__ void
+bf16_input(const float* source, __nv_bfloat16* destination, std::size_t count) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count)
+        destination[i] = __float2bfloat16_rn(source[i]);
 }
 
 struct Layout {
@@ -399,6 +407,7 @@ __global__ void narrow_bias(
 class Compute final : public H3Compute {
     std::shared_ptr<Resources> resources_;
     std::vector<int> devices_;
+    bool native_bf16_ = false;
     Workload workload_;
     bool column_split_;
     std::atomic_bool quarantined_ = false;
@@ -573,6 +582,8 @@ class Compute final : public H3Compute {
             "h3_cuda_weight_shape"
         );
         constexpr bool quant = sizeof(Weight) == 1;
+        constexpr bool bf16 = std::is_same_v<Weight, std::uint16_t>;
+        require(!bf16 || (!precise && native_bf16_), "h3_cuda_bf16_policy");
         if constexpr (quant) {
             require(
                 (group == 64 || group == 256) && in % group == 0
@@ -695,7 +706,13 @@ class Compute final : public H3Compute {
                             }
                             weights = {host_weights.get(), weight_count};
                         }
-                        if constexpr (!quant)
+                        if constexpr (bf16) {
+                            for (auto value : weights)
+                                require(
+                                    (value & 0x7f80) != 0x7f80,
+                                    "h3_cuda_nonfinite_weight"
+                                );
+                        } else if constexpr (!quant)
                             for (float value : weights)
                                 require(
                                     std::isfinite(value), "h3_cuda_nonfinite_weight"
@@ -810,6 +827,57 @@ class Compute final : public H3Compute {
                                 arena.at<float>(s),
                                 arena.at<float>(b),
                                 arena.at<float>(output),
+                                rows * out,
+                                out
+                            );
+                        } else if constexpr (bf16) {
+                            // Mutually exclusive with INT8 rotation; reuse its larger
+                            // scratch slice.
+                            bf16_input<<<unsigned((rows * in + 255) / 256), 256>>>(
+                                input_pointer,
+                                arena.at<__nv_bfloat16>(rotated),
+                                rows * in
+                            );
+                            checked(cudaGetLastError());
+                            const float one = 1, zero = 0;
+                            with_projection_math(
+                                true,
+                                CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION,
+                                [&] {
+                                    cublasMath_t mode;
+                                    checked(cublasGetMathMode(arena.blas, &mode));
+                                    return mode;
+                                },
+                                [&](cublasMath_t mode) {
+                                    checked(cublasSetMathMode(arena.blas, mode));
+                                },
+                                [&] {
+                                    checked(cublasGemmEx(
+                                        arena.blas,
+                                        CUBLAS_OP_T,
+                                        CUBLAS_OP_N,
+                                        int(out),
+                                        int(rows),
+                                        int(in),
+                                        &one,
+                                        weight_pointer,
+                                        CUDA_R_16BF,
+                                        int(in),
+                                        arena.at<void>(rotated),
+                                        CUDA_R_16BF,
+                                        int(in),
+                                        &zero,
+                                        arena.at<void>(output),
+                                        CUDA_R_32F,
+                                        int(out),
+                                        CUBLAS_COMPUTE_32F,
+                                        CUBLAS_GEMM_DEFAULT
+                                    ));
+                                }
+                            );
+                            add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
+                                arena.at<float>(output),
+                                arena.at<float>(b),
                                 rows * out,
                                 out
                             );
@@ -931,7 +999,13 @@ public:
         weight_reservations_.resize(capacity.size());
         weight_capacities_.resize(devices_.size());
         const auto used = resources_->snapshot().used;
+        native_bf16_ = workload_ == Workload::image;
         for (int device : devices_) {
+            int major = 0;
+            checked(cudaDeviceGetAttribute(
+                &major, cudaDevAttrComputeCapabilityMajor, device
+            ));
+            native_bf16_ = native_bf16_ && major >= 8;
             const auto available = capacity[device + 1] - used[device + 1];
             const Bytes scratch = std::min<Bytes>(2ULL * 1024 * 1024 * 1024, available);
             const Bytes limit = available > scratch ? available - scratch : 0;
@@ -1324,6 +1398,28 @@ private:
 
 public:
     bool supports_weight_sources() const override {
+        return true;
+    }
+
+    bool supports_bf16_weights() const override {
+        return native_bf16_;
+    }
+
+    bool dense_bf16_source(
+        const WeightIdentity& identity,
+        const Bf16WeightSource& source,
+        std::span<const float> b,
+        std::span<const float> x,
+        std::size_t in,
+        std::size_t out,
+        std::span<float> y,
+        const std::atomic_bool& c
+    ) override {
+        if (!native_bf16_)
+            return false;
+        project<std::uint16_t>(
+            {}, {}, b, x, in, out, 0, y, c, false, &identity, &source
+        );
         return true;
     }
 

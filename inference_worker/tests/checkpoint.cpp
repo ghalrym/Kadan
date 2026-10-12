@@ -439,6 +439,14 @@ void inventory_cases() {
         },
         "weight_inventory_float_representation"
     );
+    {
+        WeightInventory mixed;
+        mixed.add(TensorInfo{"bf16", Dtype::bf16, {2, 3}, 2, 12});
+        mixed.add(TensorInfo{"fp16", Dtype::fp16, {2, 3}, 2, 12});
+        mixed.add(TensorInfo{"fp32", Dtype::fp32, {2, 3}, 2, 24});
+        check(mixed.floating_execution_bytes(false) == 72);
+        check(mixed.floating_execution_bytes(true) == 60);
+    }
     TensorInfo t{"half", Dtype::fp16, {2, 3}, 2, 12};
     check(execution_weight_bytes(t, WeightRepresentation::f32) == 24);
     t.bytes = 13;

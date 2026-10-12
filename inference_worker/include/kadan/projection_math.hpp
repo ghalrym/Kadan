@@ -19,8 +19,8 @@ inline bool projection_uses_tf32(
 // checking cancellation or using that handle for attention/another projection.
 // Callbacks keep this state transition testable without CUDA or model execution.
 template <class Mode, class Get, class Set, class Run>
-void with_projection_math(bool tf32, Mode mode, Get get, Set set, Run run) {
-    if (!tf32) {
+void with_projection_math(bool enabled, Mode mode, Get get, Set set, Run run) {
+    if (!enabled) {
         run();
         return;
     }

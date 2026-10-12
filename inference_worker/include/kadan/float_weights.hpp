@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "kadan/checkpoint.hpp"
+#include "kadan/checkpoint_floats.hpp"
 #include "kadan/dense_compute.hpp"
 #include "kadan/worker_compute.hpp"
 #if defined(KADAN_IMAGE_BLAS) || defined(KADAN_WHISPER_BLAS)
@@ -115,6 +116,32 @@ static inline void project_source(
         shard.read_float_tensor(name, first, dst, cancel);
     };
     shard.check_unchanged();
+    if (workload == Workload::image && compute && compute->supports_bf16_weights()
+        && shard.tensor(name).dtype == Dtype::bf16) {
+        auto raw_source = [&](std::size_t first, std::span<std::uint16_t> dst) {
+            read_bf16(
+                first,
+                dst,
+                cancel,
+                [&](std::size_t offset, std::span<std::uint8_t> bytes) {
+                    shard.read_tensor(name, offset, bytes);
+                }
+            );
+        };
+        if (compute->dense_bf16_source(
+                shard.tensor_identity(name),
+                raw_source,
+                bias,
+                input,
+                in,
+                out,
+                output,
+                cancel
+            )) {
+            shard.check_unchanged();
+            return;
+        }
+    }
     if (compute
         && compute->dense_source(
             shard.tensor_identity(name),
