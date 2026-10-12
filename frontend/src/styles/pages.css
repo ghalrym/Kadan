@@ -900,8 +900,7 @@ textarea.input[aria-invalid='true'] {
   font-weight: 500;
 }
 .image-progress__bar,
-.image-progress__substeps,
-.pending-image__bar {
+.image-progress__substeps {
   position: relative;
   display: block;
   height: 6px;
@@ -910,8 +909,7 @@ textarea.input[aria-invalid='true'] {
   overflow: hidden;
 }
 .image-progress__bar > span,
-.image-progress__substeps > span,
-.pending-image__bar > span {
+.image-progress__substeps > span {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -1012,35 +1010,9 @@ textarea.input[aria-invalid='true'] {
 .image-progress__substeps {
   height: 3px;
 }
-.pending-image {
-  position: relative;
-  gap: 8px;
-}
-.pending-image.is-active {
-  border-color: color-mix(in srgb, var(--image) 60%, transparent);
-  background: linear-gradient(110deg, #16181c 30%, #1f1a24 50%, #16181c 70%);
-  background-size: 200% 100%;
-  animation: shimmer 1.6s ease-in-out infinite;
-}
-.pending-image.is-active > span:first-child {
-  color: var(--text-secondary);
-}
-.pending-image.is-done {
-  border-color: color-mix(in srgb, var(--image) 35%, transparent);
-}
-.pending-image.is-done > span:first-child {
-  color: var(--image);
-}
-.pending-image.is-waiting {
-  opacity: 0.55;
-}
-.pending-image__bar {
-  height: 3px;
-}
 @media (prefers-reduced-motion: reduce) {
   .image-progress__bar--indeterminate > span,
-  .image-progress__step.is-active .image-progress__marker,
-  .pending-image.is-active {
+  .image-progress__step.is-active .image-progress__marker {
     animation: none;
   }
 }

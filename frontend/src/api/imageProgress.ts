@@ -6,12 +6,13 @@ export type ImagePhase =
   | 'prompt'
   | 'denoise'
   | 'decode'
-  | 'finishing'
 
 export type ImageProgressView = {
+  jobId: string | null
+  stale: boolean
   phase: ImagePhase
-  /** Index of the user-facing step: queued, load model, generate, deliver. */
-  milestone: 0 | 1 | 2 | 3
+  /** Index of the user-facing step: queued, load model, generate. */
+  milestone: 0 | 1 | 2
   title: string
   detail: string
   imageIndex: number
@@ -25,9 +26,7 @@ export type ImageProgressView = {
   observedNs: number | null
 }
 
-export const MILESTONES = ['Queued', 'Load model', 'Generate', 'Deliver'] as const
-
-const GENERATING: ImagePhase[] = ['prompt', 'denoise', 'decode']
+export const MILESTONES = ['Queued', 'Load model', 'Generate'] as const
 
 // Worker stage names arrive as `phase || state`; most are completion events.
 const STAGES: Record<string, ImagePhase> = {
@@ -96,43 +95,34 @@ function withinImage(phase: ImagePhase, step: number, steps: number) {
 }
 
 /**
- * Translate the worker's raw progress snapshot into user-facing phases.
- * `previous` resolves stages that are reported in several phases (weight
- * placement) and lets a cleared snapshot read as delivery instead of queueing.
+ * Describe shared worker activity, never the browser request's progress.
+ * Undefined means no successful poll; null is an authoritative idle snapshot.
+ * Only carry ambiguous phases and counters forward within the same worker job.
  */
 export function describeImageProgress(
   progress: InferenceProgress | null | undefined,
-  count: number,
   previous: ImageProgressView | null,
 ): ImageProgressView {
+  if (progress === undefined && previous) return { ...previous, stale: true }
+  if (!progress || previous?.jobId !== progress.job_id) previous = null
   const base = {
+    jobId: progress?.job_id ?? null,
+    stale: progress === undefined,
     imageIndex: previous?.imageIndex ?? 1,
-    imageCount: previous?.imageCount ?? count,
+    imageCount: previous?.imageCount ?? 1,
     step: previous?.step ?? 0,
     steps: previous?.steps ?? 0,
     observedNs: progress?.observed_unix_ns ?? null,
   }
   if (!progress || progress.workload !== 'image') {
-    if (previous && (GENERATING.includes(previous.phase) || previous.phase === 'finishing'))
-      return {
-        ...base,
-        phase: 'finishing',
-        milestone: 3,
-        title: 'Finishing up',
-        detail: 'Saving and delivering images',
-        step: base.steps,
-        imageIndex: base.imageCount,
-        imageFraction: 1,
-        fraction: 1,
-      }
     return {
       ...base,
       phase: 'queued',
       milestone: 0,
-      title: 'Queued',
+      title: progress ? 'Worker busy' : progress === undefined ? 'Worker status unavailable' : 'Worker idle',
       detail: progress
-        ? `Waiting for ${WORKLOADS[progress.workload] ?? 'another'} job to finish`
-        : 'Waiting for the worker to start',
+        ? `Processing ${WORKLOADS[progress.workload] ?? 'another'} job`
+        : 'No active worker job reported',
       imageFraction: null,
       fraction: null,
     }
@@ -149,12 +139,12 @@ export function describeImageProgress(
     STAGES[progress.stage] ??
     previous?.phase ??
     (view.steps && view.step >= view.steps ? 'decode' : 'loading')
-  if (phase === 'queued' || phase === 'loading' || phase === 'finishing')
+  if (phase === 'queued' || phase === 'loading')
     return {
       ...view,
       phase,
-      milestone: phase === 'queued' ? 0 : phase === 'loading' ? 1 : 3,
-      title: phase === 'queued' ? 'Queued' : phase === 'loading' ? 'Loading model' : 'Finishing up',
+      milestone: phase === 'queued' ? 0 : 1,
+      title: phase === 'queued' ? 'Queued' : 'Loading model',
       detail:
         phase === 'loading'
           ? loadingDetail(progress.stage, progress.value)

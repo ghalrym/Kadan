@@ -1,9 +1,9 @@
 import { MILESTONES, formatDuration, type ImageProgressView } from '../api/imageProgress'
-import type { Aspect } from './Media'
+import { MediaPlaceholder, type Aspect } from './Media'
 
 /**
- * Summarize a running image request: an overall bar with elapsed/remaining
- * time, then the four user-facing milestones with the active one expanded.
+ * Show shared worker progress and its estimated remaining time alongside
+ * the browser request’s elapsed time.
  */
 export function ImageProgressPanel({
   view,
@@ -16,7 +16,10 @@ export function ImageProgressPanel({
 }) {
   const percent = view.fraction === null ? null : Math.round(view.fraction * 100)
   return (
-    <section className="image-progress" aria-label="Generation progress">
+    <section className="image-progress" aria-label="Shared worker activity">
+      <span className="eyebrow">Shared worker activity</span>
+      <p className="muted">This may be another request. Your images are pending until delivered.</p>
+      {view.stale && <p role="status">Worker updates unavailable. Showing last known activity.</p>}
       <div className="image-progress__head">
         <strong role="status">{view.title}</strong>
         <span className="mono muted">{percent === null ? '' : `${percent}%`}</span>
@@ -24,7 +27,7 @@ export function ImageProgressPanel({
       <div
         className={`image-progress__bar${percent === null ? ' image-progress__bar--indeterminate' : ''}`}
         role="progressbar"
-        aria-label="Overall progress"
+        aria-label="Worker job progress"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent ?? undefined}
@@ -32,8 +35,8 @@ export function ImageProgressPanel({
         <span style={percent === null ? undefined : { width: `${percent}%` }} />
       </div>
       <div className="image-progress__time mono faint">
-        <span>{formatDuration(elapsed)} elapsed</span>
-        {remaining !== null && view.phase !== 'finishing' && <span>~{formatDuration(remaining)} left</span>}
+        <span>Request elapsed: {formatDuration(elapsed)}</span>
+        {remaining !== null && !view.stale && <span>Worker ~{formatDuration(remaining)} left</span>}
       </div>
       <ol className="image-progress__steps">
         {MILESTONES.map((label, index) => {
@@ -58,58 +61,26 @@ export function ImageProgressPanel({
   )
 }
 
-/**
- * Reserve gallery tiles for the batch in flight so finished, current and
- * waiting images are visible at a glance until the PNGs are delivered.
- */
+/** Keep request tiles pending until its response delivers actual images. */
 export function PendingImageSet({
-  view,
   prompt,
   aspect,
   count,
 }: {
-  view: ImageProgressView
   prompt: string
   aspect: Aspect
   count: number
 }) {
-  const generating = view.milestone === 2
   return (
-    <section className="stack" aria-label="Images in progress">
+    <section className="stack" aria-label="Images pending delivery">
       <header className="image-set-heading">
-        <span className="badge type-Image">Generating</span>
+        <span className="badge type-Image">Pending</span>
         <p>{prompt}</p>
       </header>
       <div className="image-grid">
-        {Array.from({ length: count }, (_, i) => {
-          const index = i + 1
-          const state =
-            view.milestone === 3 || (generating && index < view.imageIndex)
-              ? 'done'
-              : generating && index === view.imageIndex
-                ? 'active'
-                : 'waiting'
-          return (
-            <div key={index} className={`media-placeholder pending-image is-${state} aspect-${aspect}`}>
-              <span>
-                {state === 'done'
-                  ? '✓ Done'
-                  : state === 'active'
-                    ? view.phase === 'denoise'
-                      ? `Step ${view.step} / ${view.steps}`
-                      : view.detail
-                    : view.milestone < 2 && index === 1
-                      ? view.title
-                      : 'Waiting'}
-              </span>
-              {state === 'active' && view.imageFraction !== null && (
-                <span className="pending-image__bar" aria-hidden="true">
-                  <span style={{ width: `${view.imageFraction * 100}%` }} />
-                </span>
-              )}
-            </div>
-          )
-        })}
+        {Array.from({ length: count }, (_, index) => (
+          <MediaPlaceholder key={index} aspect={aspect} label="Waiting for images" />
+        ))}
       </div>
     </section>
   )

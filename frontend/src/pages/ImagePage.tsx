@@ -41,17 +41,17 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [run, setRun] = useState<Run | null>(null)
   const [tracked, setTracked] = useState<Tracked>({ progress: undefined, view: null, start: null })
   const [now, setNow] = useState(() => Date.now())
-  // Fold each new metrics snapshot into the run's progress view during render.
+  // Retain worker activity across failed polls, but reset timing when its job changes.
   if (run && tracked.progress !== progress) {
-    const view = describeImageProgress(progress, run.count, tracked.view)
+    const view = describeImageProgress(progress, tracked.view)
     setTracked({
       progress,
       view,
-      start: tracked.start ?? (view.fraction !== null && view.observedNs !== null ? { ns: view.observedNs, fraction: view.fraction } : null),
+      start: (view.jobId === tracked.view?.jobId ? tracked.start : null) ?? (view.fraction !== null && view.observedNs !== null ? { ns: view.observedNs, fraction: view.fraction } : null),
     })
   }
-  const view = run ? tracked.view ?? describeImageProgress(progress, run.count, null) : null
-  const remaining = view?.fraction != null && view.observedNs !== null
+  const view = run ? tracked.view ?? describeImageProgress(progress, null) : null
+  const remaining = view && !view.stale && view.fraction != null && view.observedNs !== null
     ? estimateRemaining(tracked.start, { ns: view.observedNs, fraction: view.fraction })
     : null
   useEffect(() => {
@@ -154,13 +154,13 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         </div>
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /></label>}
         <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
-        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Generating…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
+        <button className="button button--primary" disabled={busy || !prompt.trim() || edit}>{busy ? 'Waiting for images…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
         {run && view && <ImageProgressPanel view={view} elapsed={(now - run.started) / 1000} remaining={remaining} />}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>
       <div className="workspace-results image-gallery" aria-label="Image gallery" aria-busy={loading}>
-        {run && view && <PendingImageSet view={view} prompt={run.prompt} aspect={run.aspect} count={run.count} />}
+        {run && <PendingImageSet prompt={run.prompt} aspect={run.aspect} count={run.count} />}
         {loading && <p role="status">Loading images…</p>}
         {historyError && <div role="alert" className="error-panel">{historyError}<button className="button" onClick={() => { setLoading(true); setHistoryError(''); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!loading && !historyError && !run && images.length === 0 && <section className="stack" aria-label="Empty image gallery"><header className="image-set-heading"><span className="eyebrow">Images</span></header><div className="image-grid">{Array.from({ length: 4 }, (_, i) => <MediaPlaceholder key={i} aspect="square" label="No image" />)}</div></section>}
