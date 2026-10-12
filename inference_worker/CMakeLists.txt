@@ -43,6 +43,10 @@ target_compile_options(kadan_media_residency PRIVATE -Wall -Wextra -Wpedantic -W
 add_library(kadan_media_session src/media_session.cpp)
 target_link_libraries(kadan_media_session PUBLIC kadan_media_residency)
 target_compile_options(kadan_media_session PRIVATE -Wall -Wextra -Wpedantic -Werror)
+if(KADAN_ENABLE_CUDA)
+  target_sources(kadan_media_session PRIVATE src/cuda_media_session.cpp)
+  target_link_libraries(kadan_media_session PRIVATE CUDA::cudart)
+endif()
 
 add_library(kadan_quantization src/quantization.cpp)
 target_include_directories(kadan_quantization PUBLIC include)

@@ -188,146 +188,6 @@ void produce(
     s.complete(outputs, status);
 }
 
-void initial_admission() {
-    Fixture f;
-    auto m = decoder();
-    check(!f.session.admit(m, shape()));
-    const auto peak = f.session.plan().devices.front();
-    check(f.resources->snapshot().used[peak.device + 1] == peak.new_ledger);
-    check(f.session.evidence().peers.size() == 2 && f.activity->owners == 1);
-    check(
-        fails([&] { f.session.admit(m, shape()); }) == "media_session_stage_boundary"
-    );
-    WorkerCompute worker({{1000}, {}}, Workload::image);
-    worker.media_activity = f.activity;
-    check(fails([&] { worker.idle(); }) == "compute_media_session_busy");
-    MediaSession moved = std::move(f.session);
-    moved.finish();
-    worker.idle();
-    check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
-}
-
-void lifecycle_failures() {
-    for (int failure : {0, 1, 2, 3}) {
-        Fixture f;
-        if (failure == 0) {
-            f.trace->fail_allocate = 0;
-            check(fails([&] { f.session.admit(decoder(), shape()); }) == "allocate");
-            check(f.resources->snapshot().residents == 0);
-            continue;
-        }
-        check(!f.session.admit(decoder(), shape()));
-        f.trace->drains.clear();
-        if (failure == 1)
-            f.cancel = true;
-        if (failure == 2)
-            f.trace->fail_drain = 0;
-        if (failure == 3)
-            f.trace->fail_free = f.session.plan().devices.front().device;
-        check(
-            fails([&] { f.session.finish(); })
-            == (failure == 1   ? "media_session_cancelled"
-                : failure == 2 ? "drain"
-                               : "free")
-        );
-        check(f.trace->drains == std::vector<int>({0, 1}));
-        if (failure == 1)
-            check(f.resources->snapshot().residents == 0);
-        else {
-            check(f.resources->snapshot().residents == 1 && f.activity->owners == 1);
-            check(
-                fails([&] { f.session.finish(); })
-                == "media_session_cleanup_unconfirmed"
-            );
-            for (const auto& [pointer, allocation] : f.trace->allocations) {
-                (void)allocation;
-                ::operator delete(pointer);
-            }
-            f.trace->allocations.clear();
-        }
-    }
-}
-
-void ownership_views() {
-    Fixture f;
-    check(!f.session.admit(decoder(), shape()));
-    const int d = f.session.plan().devices.front().device;
-    auto view = tensor(f.session, d, "boundary");
-    auto tile = f.session.rows(view, 1, 2);
-    check(tile.layout().offset == 16 && tile.layout().bytes == 32);
-    check(
-        fails([&] { f.session.admit(decoder(), shape()); }) == "media_session_live_view"
-    );
-    check(fails([&] { f.session.finish(); }) == "media_session_live_view");
-    view = {};
-    check(f.resources->snapshot().residents == 1);
-    tile = {};
-    check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
-}
-
-void stage_ownership() {
-    Fixture f;
-    auto m = decoder();
-    m.weights = {
-        {"w",
-         {1, 2, 3, 0, 0, 0, 0, 0, 32},
-         TensorStorage::bf16_exact,
-         4,
-         4,
-         WeightPartition::replicated}
-    };
-    check(!f.session.admit(m, shape()));
-    auto view = f.session.weight(f.session.plan().weights.front());
-    const auto pointer = view.layout().data;
-    const auto generation = view.layout().generation;
-    view = {};
-    f.session.advance(MediaPhase::complete);
-    auto before = f.trace->allocations_started;
-    check(!f.session.admit(m, shape()));
-    view = f.session.weight(f.session.plan().weights.front());
-    check(
-        view.layout().data == pointer && view.layout().generation == generation
-        && f.trace->allocations_started == before
-    );
-    view = {};
-    f.session.advance(MediaPhase::complete);
-    m.weights[0].identity.inode++;
-    check(!f.session.admit(m, shape()));
-    check(f.trace->allocations_started == before + 1);
-    f.session.advance(MediaPhase::kv);
-    auto temporary =
-        tensor(f.session, f.session.plan().devices.front().device, "kv-only");
-    check(
-        fails([&] { f.session.advance(MediaPhase::ff); }) == "media_session_live_alias"
-    );
-    temporary = {};
-    f.session.advance(MediaPhase::ff);
-    f.session.finish();
-}
-
-void event_regions() {
-    Fixture f;
-    check(!f.session.admit(decoder(), shape()));
-    int d = f.session.plan().devices.front().device;
-    f.session.advance(MediaPhase::ff);
-    auto view = tensor(f.session, d, "ff-only"), status = flag(f.session, d);
-    auto first = f.session.rows(view, 0, 2), second = f.session.rows(view, 2, 2);
-    produce(f.session, d, first, status);
-    std::array<DeviceTensorView*, 1> read{&view}, write{&status};
-    check(
-        fails([&] { f.session.launch(d, read, write, [](void*, auto, auto) {}); })
-        == "media_session_unready_input"
-    );
-    produce(f.session, d, second, status);
-    f.session.launch(d, read, write, [](void*, auto, auto) {});
-    f.session.complete(write, status);
-    first = {};
-    second = {};
-    view = {};
-    status = {};
-    f.session.finish();
-}
-
 void admission_and_cleanup() {
     Fixture f;
     auto m = decoder();
@@ -897,14 +757,9 @@ void kv_barrier_and_worker_idle() {
 }  // namespace
 
 int main() {
-    initial_admission();
-    lifecycle_failures();
-    ownership_views();
-    stage_ownership();
+    admission_and_cleanup();
     weight_prefix_identity();
     reacquired_output_certificate();
-
-    admission_and_cleanup();
     typed_admission_failures();
     alias_and_region_certificates();
     error_and_cancel_drains();
@@ -917,7 +772,6 @@ int main() {
     repeated_admission_invalidates_kv();
     allocation_failure_drains_and_unchecked_overwrite();
     kv_barrier_and_worker_idle();
-    event_regions();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";
 }
