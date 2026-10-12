@@ -804,6 +804,21 @@ void feed_forward_phase_isolation() {
         fails([&] { tensor(f.session, d, "resident/key"); })
         == "media_session_tensor_name"
     );
+    // Preparation may update a certified hidden in place; an unrelated producer
+    // cannot overwrite it before FF. The output still needs its status certificate.
+    std::array<DeviceTensorView*, 2> residual_read{&hidden, &normalized};
+    f.session.launch(d, residual_read, write, [](void*, auto, auto) {});
+    check(
+        fails([&] {
+            f.session.launch(d, residual_read, write, [](void*, auto, auto) {});
+        })
+        == "media_session_unready_input"
+    );
+    check(
+        fails([&] { f.session.advance(MediaPhase::ff); })
+        == "media_session_unchecked_status"
+    );
+    f.session.complete(write, status);
     f.session.advance(MediaPhase::ff);  // No K/V production or dummy certificates.
     f.session.launch(d, read, write, [](void*, auto, auto) {});
     check(

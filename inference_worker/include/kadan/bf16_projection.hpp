@@ -217,8 +217,9 @@ inline Bf16ProjectionShape validate_image_residual(
     return {rows, state, state};
 }
 
-// FF stage of image.cpp norm_mod: no affine normalization checkpoint weight.
-inline Bf16ProjectionShape validate_image_ff_preparation(
+// Shared full-row layout for attention residual and FF normalization/modulation.
+// The row buffer holds attention projection first, then normalized FF input.
+inline Bf16ProjectionShape validate_image_modulation(
     int device,
     const MediaDeviceSpan& hidden,
     const MediaDeviceSpan& modulation,
@@ -229,14 +230,14 @@ inline Bf16ProjectionShape validate_image_ff_preparation(
 ) {
     auto require = [](bool valid) {
         if (!valid)
-            throw std::invalid_argument("image_ff_preparation_layout");
+            throw std::invalid_argument("image_modulation_layout");
     };
     require(hidden.dimensions.size() == 2);
     const auto rows = hidden.dimensions[0], state = hidden.dimensions[1];
     require(
         rows && state && rows <= INT_MAX && rows <= SIZE_MAX / state / 4
         && state <= SIZE_MAX / 32 && state * 8 <= std::size_t(INT_MAX) * 256
-        && text <= rows
+        && rows * state <= std::size_t(INT_MAX) * 256 && text <= rows
     );
     auto matrix = [&](const MediaDeviceSpan& span, std::size_t r, std::size_t c) {
         require(
@@ -272,6 +273,28 @@ inline Bf16ProjectionShape validate_image_ff_preparation(
     return {rows, state, state};
 }
 
+// The hidden input/output must be the same full view, including its lifetime.
+inline Bf16ProjectionShape validate_image_attention_residual(
+    int device,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& projected,
+    const MediaDeviceSpan& modulation,
+    const MediaDeviceSpan& updated,
+    const MediaDeviceSpan& gates,
+    const MediaDeviceSpan& status,
+    std::size_t text
+) {
+    const auto shape = validate_image_modulation(
+        device, hidden, modulation, projected, gates, status, text
+    );
+    if (updated.data != hidden.data || updated.device != hidden.device
+        || updated.dtype != hidden.dtype || updated.dimensions != hidden.dimensions
+        || updated.strides != hidden.strides || updated.bytes != hidden.bytes
+        || updated.generation != hidden.generation || updated.offset != hidden.offset)
+        throw std::invalid_argument("image_attention_residual_layout");
+    return shape;
+}
+
 // The host scheduler uses this boundary without linking CUDA or doing arithmetic.
 // Projection inputs are [input,gate-weight,up-weight] or [input,down-weight];
 // outputs are [pair,rounded,workspace,gate-status,up-status,aggregate-status]
@@ -280,6 +303,14 @@ class ImageFeedForwardLauncher {
 public:
     virtual ~ImageFeedForwardLauncher() = default;
     virtual int device() const = 0;
+    // Inputs [hidden,projected,modulation]; outputs [same-hidden,gates,status].
+    // Derive attention gates and update hidden under one aggregate certificate.
+    virtual void attention_residual(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t text
+    ) = 0;
     // Inputs [hidden,modulation]; outputs [normalized,gates,aggregate-status].
     // Complete both outputs before the FF consumer can bind them.
     virtual void prepare(
@@ -324,6 +355,12 @@ public:
         return device_;
     }
 
+    void attention_residual(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t
+    ) override;
     void prepare(
         void*,
         std::span<const MediaDeviceSpan>,
