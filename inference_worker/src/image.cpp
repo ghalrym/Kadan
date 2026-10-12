@@ -7,6 +7,7 @@
 #include <set>
 #include <vector>
 
+#include "image_activation.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/checkpoint_floats.hpp"
 #include "kadan/float_weights.hpp"
@@ -89,11 +90,6 @@ struct Pin {
 void finite(std::span<const float> x) {
     for (float v : x)
         need(std::isfinite(v), "image_nonfinite");
-}
-
-float silu(float x) {
-    double v = x;
-    return float(v >= 0 ? v / (1 + std::exp(-v)) : v * std::exp(v) / (1 + std::exp(v)));
 }
 
 struct Spec {
@@ -500,7 +496,7 @@ void TransformerBlock::execute(
         ProjectionPolicy::image_feed_forward
     );
     for (std::size_t i = 0; i < gate.n; ++i)
-        gate.data[i] = silu(gate.data[i]) * up.data[i];
+        gate.data[i] = detail::silu(gate.data[i]) * up.data[i];
     m.linear(
         "img_mlp.out",
         gate.span(),

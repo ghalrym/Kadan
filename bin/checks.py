@@ -20,6 +20,7 @@ NATIVE_UNIT_TARGETS = [
     "checkpoint-tests",
     "checkpoint-floats-tests",
     "image-weight-loading-tests",
+    "image-activation-tests",
     "cuda-plan-tests",
     "fp8-plan-tests",
     "placement-tests",
