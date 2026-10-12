@@ -62,14 +62,59 @@ public:
         quarantined
     };
 
+    struct InitializedRange {
+        Bytes begin = 0, end = 0;
+        auto operator<=>(const InitializedRange&) const = default;
+    };
+
     struct Slot {
         OwnedMediaAllocation owned;
         void* pointer = nullptr;
         std::uint64_t generation = 0;
         std::size_t views = 0;
+        MediaEvent ready;
+        std::vector<MediaEvent> consumers;
         std::string logical_name;
         DeviceDType dtype = DeviceDType::u8;
         std::vector<std::size_t> dimensions, strides;
+        std::vector<InitializedRange> initialized;
+
+        bool contains(Bytes offset, Bytes bytes) const {
+            return std::any_of(
+                initialized.begin(), initialized.end(), [&](const auto& r) {
+                    return r.begin <= offset && offset + bytes <= r.end;
+                }
+            );
+        }
+
+        void certify(Bytes offset, Bytes bytes) {
+            initialized.emplace_back(offset, add(offset, bytes));
+            std::sort(initialized.begin(), initialized.end());
+            std::size_t count = 0;
+            for (const auto& range : initialized) {
+                if (count && range.begin <= initialized[count - 1].end)
+                    initialized[count - 1].end =
+                        std::max(initialized[count - 1].end, range.end);
+                else
+                    initialized[count++] = range;
+            }
+            initialized.resize(count);
+        }
+
+        void invalidate(Bytes offset, Bytes bytes) {
+            std::vector<InitializedRange> retained;
+            for (const auto& range : initialized) {
+                if (range.end <= offset || range.begin >= offset + bytes)
+                    retained.push_back(range);
+                else {
+                    if (range.begin < offset)
+                        retained.emplace_back(range.begin, offset);
+                    if (range.end > offset + bytes)
+                        retained.emplace_back(offset + bytes, range.end);
+                }
+            }
+            initialized.swap(retained);
+        }
     };
 
     std::shared_ptr<Resources> resources;
@@ -86,6 +131,7 @@ public:
     std::map<std::pair<int, std::size_t>, std::size_t> mapping;
     Footprint charge;
     Handle reservation = 0;
+    std::set<MediaEvent> unchecked;
     MediaPhase phase = MediaPhase::prepare;
     bool admitted = false;
     Lifecycle lifecycle = Lifecycle::active;
@@ -150,6 +196,8 @@ public:
             lifecycle = Lifecycle::quarantined;
             std::rethrow_exception(first);
         }
+        for (auto& slot : slots)
+            slot.consumers.clear();
     }
 
     void cleanup() {
@@ -169,6 +217,14 @@ public:
             try {
                 operations->free(slot.owned.device, slot.pointer);
                 slot.pointer = nullptr;
+            } catch (...) {
+                if (!first)
+                    first = std::current_exception();
+            }
+        }
+        for (const auto& limit : limits) {
+            try {
+                operations->release_events(limit.device);
             } catch (...) {
                 if (!first)
                     first = std::current_exception();
@@ -219,6 +275,13 @@ public:
     }
 
     Slot& view(DeviceTensorView& v);
+
+    void dependencies(int device, Slot& slot) {
+        if (slot.ready.id)
+            operations->wait(device, slot.ready);
+        for (const auto& event : slot.consumers)
+            operations->wait(device, event);
+    }
 };
 
 MediaSessionState::Slot& MediaSessionState::view(DeviceTensorView& v) {
@@ -230,7 +293,7 @@ MediaSessionState::Slot& MediaSessionState::view(DeviceTensorView& v) {
 
 DeviceTensorView::DeviceTensorView(DeviceTensorView&& v) noexcept
     : state_(std::move(v.state_)), slot_(v.slot_), layout_(std::move(v.layout_)),
-      name_(std::move(v.name_)) {
+      name_(std::move(v.name_)), produced_(v.produced_) {
 }
 
 DeviceTensorView& DeviceTensorView::operator=(DeviceTensorView&& v) noexcept {
@@ -240,6 +303,7 @@ DeviceTensorView& DeviceTensorView::operator=(DeviceTensorView&& v) noexcept {
         slot_ = v.slot_;
         layout_ = std::move(v.layout_);
         name_ = std::move(v.name_);
+        produced_ = v.produced_;
     }
     return *this;
 }
@@ -265,6 +329,12 @@ const MediaDeviceSpan& DeviceTensorView::layout() const {
     if (!state_)
         throw std::runtime_error("media_session_empty_view");
     return layout_;
+}
+
+MediaEvent DeviceTensorView::readiness() const {
+    if (!state_)
+        throw std::runtime_error("media_session_empty_view");
+    return state_->slots[slot_].ready;
 }
 
 MediaSession::MediaSession(
@@ -308,6 +378,8 @@ std::optional<MediaPlanError>
 MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
     auto& s = *state_;
     s.healthy();
+    if (!s.unchecked.empty())
+        throw std::runtime_error("media_session_unchecked_status");
     s.no_views();
     if (s.admitted && s.phase != MediaPhase::complete)
         throw std::runtime_error("media_session_stage_boundary");
@@ -351,6 +423,12 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             slot.pointer = nullptr;
         }
         std::erase_if(s.slots, [](const auto& slot) { return !slot.pointer; });
+        for (const auto& limit : s.limits)
+            s.operations->release_events(limit.device);
+        for (auto& slot : s.slots) {
+            slot.ready = {slot.owned.device, 0};
+            slot.consumers.clear();
+        }
         std::fill(s.charge.begin(), s.charge.end(), 0);
         for (const auto& slot : s.slots)
             if (slot.pointer)
@@ -370,6 +448,14 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         s.plan = *candidate;
         s.manifest = m;
         s.shape = shape;
+        for (auto& slot : s.slots)
+            if (!slot.owned.allocation.weight && slot.logical_name != "resident/hidden"
+                && !std::any_of(m.tensors.begin(), m.tensors.end(), [&](const auto& t) {
+                       return t.name == slot.logical_name
+                              && t.first == MediaPhase::prepare
+                              && t.last == MediaPhase::complete;
+                   }))
+                slot.initialized.clear();
         s.mapping.clear();
         std::size_t count = 0;
         for (const auto& d : s.plan.devices)
@@ -448,6 +534,8 @@ void MediaSession::advance(MediaPhase phase) {
     auto& s = *state_;
     s.healthy();
     const bool next_block = s.phase == MediaPhase::ff && phase == MediaPhase::kv;
+    if (!s.unchecked.empty())
+        throw std::runtime_error("media_session_unchecked_status");
     if (!s.admitted || (phase < s.phase && !next_block) || phase > MediaPhase::complete)
         throw std::invalid_argument("media_session_phase");
     for (const auto& live : s.plan.tensors)
@@ -457,6 +545,35 @@ void MediaSession::advance(MediaPhase phase) {
             throw std::runtime_error("media_session_live_alias");
     try {
         s.drain();
+        if (s.phase <= MediaPhase::kv && phase >= MediaPhase::attention
+            && !s.plan.hidden_write_phases.empty()) {
+            for (const auto& live : s.plan.tensors)
+                if (live.name == "resident/key" || live.name == "resident/value") {
+                    const auto& slot =
+                        s.slots[s.mapping.at({live.device, live.allocation})];
+                    if (slot.logical_name != live.name || !slot.contains(0, live.bytes))
+                        throw std::runtime_error("media_session_incomplete_kv");
+                }
+        }
+        if (next_block) {
+            for (auto& slot : s.slots)
+                if (slot.logical_name != "resident/hidden"
+                    && !slot.owned.allocation.weight
+                    && !std::any_of(
+                        s.manifest.tensors.begin(),
+                        s.manifest.tensors.end(),
+                        [&](const auto& t) {
+                            return t.name == slot.logical_name
+                                   && t.first == MediaPhase::prepare
+                                   && t.last == MediaPhase::complete;
+                        }
+                    ))
+                    slot.initialized.clear();
+        }
+        for (const auto& limit : s.limits)
+            s.operations->release_events(limit.device);
+        for (auto& slot : s.slots)
+            slot.ready = {slot.owned.device, 0};
         s.phase = phase;
     } catch (...) {
         abort(std::current_exception());
@@ -558,6 +675,7 @@ DeviceTensorView MediaSession::tensor(
     }
     if (slot.logical_name != name || slot.dtype != type || slot.dimensions != dimensions
         || slot.strides != strides) {
+        slot.initialized.clear();
         slot.logical_name = name;
         slot.dtype = type;
         slot.dimensions = dimensions;
@@ -650,9 +768,103 @@ MediaSession::rows(DeviceTensorView& parent, std::size_t first, std::size_t coun
     return result;
 }
 
+void MediaSession::launch(
+    int device,
+    std::span<DeviceTensorView* const> inputs,
+    std::span<DeviceTensorView* const> outputs,
+    const Launch& launch
+) {
+    auto& s = *state_;
+    s.healthy();
+    if (outputs.empty() || !launch)
+        throw std::invalid_argument("media_session_launch");
+    std::vector<MediaDeviceSpan> read, write;
+    std::set<std::size_t> output_slots;
+    for (auto* v : inputs) {
+        if (!v)
+            throw std::invalid_argument("media_session_null_view");
+        auto& slot = s.view(*v);
+        if (v->layout_.device != device
+            || !slot.contains(v->layout_.offset, v->layout_.bytes))
+            throw std::invalid_argument("media_session_unready_input");
+        read.push_back(v->layout_);
+    }
+    for (auto* v : outputs) {
+        if (!v)
+            throw std::invalid_argument("media_session_null_view");
+        auto& slot = s.view(*v);
+        if (v->layout_.device != device || slot.owned.allocation.weight
+            || !output_slots.insert(v->slot_).second
+            || ((v->name_ == "resident/key" || v->name_ == "resident/value")
+                && s.phase != MediaPhase::kv)
+            || (v->name_ == "resident/hidden"
+                && s.phase <= s.plan.kv_complete_before_hidden_write))
+            throw std::invalid_argument("media_session_write_ownership");
+        if (s.unchecked.contains(slot.ready))
+            throw std::invalid_argument("media_session_unchecked_overwrite");
+        write.push_back(v->layout_);
+    }
+    try {
+        for (auto* v : inputs) {
+            auto& slot = s.view(*v);
+            s.dependencies(device, slot);
+            slot.consumers.reserve(slot.consumers.size() + 1);
+        }
+        for (auto* v : outputs) {
+            s.dependencies(device, s.view(*v));
+            s.view(*v).invalidate(v->layout_.offset, v->layout_.bytes);
+        }
+        launch(s.operations->stream(device), read, write);
+        const auto event = s.operations->record(device);
+        s.unchecked.insert(event);
+        for (auto* v : inputs)
+            s.view(*v).consumers.push_back(event);
+        for (auto* v : outputs) {
+            s.view(*v).ready = event;
+            v->produced_ = event;
+        }
+    } catch (...) {
+        abort(std::current_exception());
+    }
+}
+
+void MediaSession::complete(
+    std::span<DeviceTensorView* const> outputs, DeviceTensorView& status
+) {
+    auto& s = *state_;
+    s.healthy();
+    auto& flag = s.view(status);
+    if (outputs.empty() || status.layout_.dtype != DeviceDType::u32
+        || status.layout_.bytes != 4
+        || flag.owned.allocation.kind != AllocationKind::status || !flag.ready.id
+        || status.produced_ != flag.ready)
+        throw std::invalid_argument("media_session_status");
+    for (auto* v : outputs)
+        if (!v || s.view(*v).ready != flag.ready || v->produced_ != status.produced_)
+            throw std::invalid_argument("media_session_status_event");
+    try {
+        s.operations->synchronize(flag.ready.device);
+        const auto invalid = s.operations->read_status(flag.ready.device, flag.pointer);
+        if (invalid)
+            throw std::runtime_error("media_session_nonfinite_output");
+        for (auto* v : outputs)
+            s.view(*v).certify(v->layout_.offset, v->layout_.bytes);
+        flag.certify(status.layout_.offset, status.layout_.bytes);
+        s.unchecked.erase(flag.ready);
+    } catch (...) {
+        abort(std::current_exception());
+    }
+}
+
 void MediaSession::finish() {
     if (state_->lifecycle == MediaSessionState::Lifecycle::quarantined)
         throw std::runtime_error("media_session_cleanup_unconfirmed");
+    if (!state_->unchecked.empty())
+        abort(
+            std::make_exception_ptr(
+                std::runtime_error("media_session_unchecked_status")
+            )
+        );
     if (state_->cancel.load()) {
         abort(std::make_exception_ptr(std::runtime_error("media_session_cancelled")));
     }
