@@ -33,6 +33,7 @@ public:
         const Hook& hook = {}
     );
     void unload();
+    Bytes release_device_weights();
     // Caller-admitted IDs and F32 [tokens,state] output; 1..2048 text tokens.
     void execute(
         std::span<const std::uint32_t>,

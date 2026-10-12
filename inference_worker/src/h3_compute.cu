@@ -1251,6 +1251,19 @@ public:
         replan_ = inventory_bytes_ != 0;
     }
 
+    Bytes release_weights(std::span<const WeightIdentity> sources) override {
+        std::lock_guard lock(operation_mutex_);
+        require(!quarantined_.load(), "h3_cuda_cleanup_unconfirmed");
+        std::atomic<Bytes> released = 0;
+        all_devices([&](DeviceWorkspace& workspace) {
+            released.fetch_add(
+                static_cast<CudaDeviceOperations&>(workspace.operations())
+                    .weights.release_sources(sources)
+            );
+        });
+        return released.load();
+    }
+
     Footprint retained_weights() const override {
         std::lock_guard lock(operation_mutex_);
         return weight_reservations_;
