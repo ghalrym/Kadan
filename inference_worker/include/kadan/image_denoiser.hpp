@@ -47,6 +47,8 @@ public:
     // timestep to overwrite both for the next step.
     // Activated time2 remains available through complete for final normalization.
     // Release views before execution; modulation feeds the residual/FF consumers.
+    // The last block consumes target time2 in norm_out.linear, then certifies
+    // final/normalized [tokens-text,state] from the final image hidden rows.
     // Returns complete; close launchers before destroying session streams.
     void execute_feed_forward(
         MediaSession&,
@@ -73,6 +75,13 @@ public:
     );
 
 private:
+    void execute_final_normalization(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     struct Impl;
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<DenseCompute> compute_;

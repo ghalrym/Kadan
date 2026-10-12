@@ -91,7 +91,7 @@ struct Device final : kadan::MediaDeviceOperations {
 
 struct WeightOptions {
     bool attention_f32 = false, denoiser = false, modulation_f32 = false,
-         timestep_f32 = false, linear1_f32 = false;
+         timestep_f32 = false, linear1_f32 = false, final_f32 = false;
     std::size_t layers = 1;
 };
 
@@ -146,7 +146,8 @@ void write_weights(
                            == "time_text_embed.timestep_embedder.linear_2")
                 || (options.linear1_f32
                     && std::string_view(name)
-                           == "time_text_embed.timestep_embedder.linear_1");
+                           == "time_text_embed.timestep_embedder.linear_1")
+                || (options.final_f32 && std::string_view(name) == "norm_out.linear");
             const auto size = rows * (columns ? columns : 1) * (fp32 ? 4 : 2);
             header << ",\"" << name << ".weight\":{\"dtype\":\""
                    << (fp32 ? "F32" : "BF16") << "\",\"shape\":[" << rows;
@@ -187,6 +188,11 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
     bool fail_frequency = false, fail_linear1 = false, fail_linear1_row1 = false;
+    bool fail_final_projection = false, fail_final_normalization = false;
+    std::atomic_bool* cancel_final_projection = nullptr;
+    void* final_hidden = nullptr;
+    std::uint64_t final_hidden_generation = 0;
+    void* final_scale = nullptr;
     std::atomic_bool* cancel_frequency = nullptr;
     std::atomic_bool* cancel_linear1 = nullptr;
     float expected_timestep = .625f;
@@ -298,6 +304,21 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_bf16_projection(
             selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
         );
+        if (!calls.empty() && calls.back() == 'r') {
+            check(read[0].dimensions == std::vector<std::size_t>{1, 64});
+            check(
+                read[0].data == activated && read[0].offset == 0
+                && read[0].generation == activated_generation
+            );
+            check(read[1].dimensions == std::vector<std::size_t>{64, 64});
+            check(write[0].dimensions == std::vector<std::size_t>{1, 64});
+            final_scale = write[0].data;
+            calls.push_back('s');
+            backend.status = fail_final_projection ? 1 : 0;
+            if (cancel_final_projection)
+                cancel_final_projection->store(true);
+            return;
+        }
         if (read[1].dimensions[0] == 256) {
             check(read[0].dimensions == std::vector<std::size_t>{1, 64});
             check(write[0].dimensions == std::vector<std::size_t>{1, 256});
@@ -368,6 +389,32 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         backend.status = fail_preparation ? 1 : 0;
     }
 
+    void final_normalization(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write
+    ) override {
+        check(read.size() == 2 && write.size() == 2 && calls.back() == 's');
+        kadan::video::validate_image_final_normalization(
+            selected, read[0], read[1], write[0], write[1]
+        );
+        check(
+            read[0].dimensions == std::vector<std::size_t>{14, 64}
+            && read[0].offset == 3 * 64 * 4
+        );
+        check(
+            static_cast<std::byte*>(read[0].data) - read[0].offset == final_hidden
+            && read[0].generation == final_hidden_generation
+        );
+        check(
+            read[1].data == final_scale
+            && read[1].dimensions == std::vector<std::size_t>{1, 64}
+        );
+        check(write[0].dimensions == std::vector<std::size_t>{14, 64});
+        calls.push_back('z');
+        backend.status = fail_final_normalization ? 1 : 0;
+    }
+
     void pair(
         void*,
         std::span<const kadan::MediaDeviceSpan> read,
@@ -421,6 +468,8 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_image_residual(
             selected, hidden, projected, gates, status, first, text
         );
+        final_hidden = static_cast<std::byte*>(hidden.data) - hidden.offset;
+        final_hidden_generation = hidden.generation;
         residual_first.push_back(first);
         calls.push_back('r');
     }
@@ -816,7 +865,10 @@ int main() {
         cancelled_timestep,
         wrong_boundary,
         missing_launcher,
-        missing_conditioning
+        missing_conditioning,
+        failed_final_projection,
+        failed_final_normalization,
+        cancelled_final_projection
     };
     auto conditioning_case = [&](HiddenBoundary boundary,
                                  ConditioningScenario scenario) {
@@ -926,6 +978,12 @@ int main() {
             &first,
             scenario == ConditioningScenario::missing_launcher ? &first : &second
         };
+        first.fail_final_projection =
+            scenario == ConditioningScenario::failed_final_projection;
+        first.fail_final_normalization =
+            scenario == ConditioningScenario::failed_final_normalization;
+        if (scenario == ConditioningScenario::cancelled_final_projection)
+            first.cancel_final_projection = &cancel;
         std::optional<float> timestep = .625f;
         if (scenario == ConditioningScenario::missing_conditioning)
             timestep.reset();
@@ -994,8 +1052,20 @@ int main() {
             auto hidden = resident.tensor(
                 1, "resident/hidden", kadan::DeviceDType::f32, {17, 64}, {64, 1}
             );
-            const std::array ready{&hidden};
+            auto final = resident.tensor(
+                1, "final/normalized", kadan::DeviceDType::f32, {14, 64}, {64, 1}
+            );
+            const std::array ready{&hidden, &final};
             resident.require_ready(ready);
+            check(first.calls.back() == 'z' && second.calls.back() == 'z');
+            for (const auto& live : resident.plan().tensors) {
+                if (live.name.starts_with("final/"))
+                    check(
+                        live.first == kadan::MediaPhase::complete
+                        && live.last == kadan::MediaPhase::complete
+                    );
+            }
+            final = {};
             hidden = {};
             check(
                 !resident.transfers().activation_upload
@@ -1051,6 +1121,17 @@ int main() {
                         ? std::vector<char>{'f'}
                         : std::vector<char>{'f', 'l'})
             );
+        } else if (
+            scenario == ConditioningScenario::failed_final_projection
+            || scenario == ConditioningScenario::cancelled_final_projection
+            || scenario == ConditioningScenario::failed_final_normalization
+        ) {
+            check(
+                first.calls.back()
+                == (scenario == ConditioningScenario::failed_final_normalization ? 'z'
+                                                                                 : 's')
+            );
+            check(second.calls.back() == 'r');
         } else {
             check(first.calls.empty() && second.calls.empty());
         }
@@ -1080,7 +1161,10 @@ int main() {
           ConditioningScenario::failed_timestep_row1,
           ConditioningScenario::supplied_output,
           ConditioningScenario::cancelled_timestep,
-          ConditioningScenario::missing_launcher})
+          ConditioningScenario::missing_launcher,
+          ConditioningScenario::failed_final_projection,
+          ConditioningScenario::failed_final_normalization,
+          ConditioningScenario::cancelled_final_projection})
         conditioning_case(HiddenBoundary::post_attention, scenario);
     conditioning_case(HiddenBoundary::pre_attention, ConditioningScenario::complete);
     for (const auto scenario :
@@ -1103,7 +1187,10 @@ int main() {
           ConditioningScenario::failed_timestep_row1,
           ConditioningScenario::supplied_output,
           ConditioningScenario::cancelled_timestep,
-          ConditioningScenario::missing_launcher})
+          ConditioningScenario::missing_launcher,
+          ConditioningScenario::failed_final_projection,
+          ConditioningScenario::failed_final_normalization,
+          ConditioningScenario::cancelled_final_projection})
         conditioning_case(HiddenBoundary::pre_attention, scenario);
     conditioning_case(
         HiddenBoundary::post_attention, ConditioningScenario::wrong_boundary
@@ -1167,6 +1254,10 @@ int main() {
                     first.modulation_generation = modulation_generation[0];
                     second.modulation = modulation[1];
                     second.modulation_generation = modulation_generation[1];
+                    first.activated = time[0];
+                    first.activated_generation = time_generation[0];
+                    second.activated = time[1];
+                    second.activated_generation = time_generation[1];
                 }
 
                 const float timestep = step ? .25f : .625f;
@@ -1234,9 +1325,13 @@ int main() {
             }
         }
 
-        // Only the first admission uploads the three replicated shared weights.
+        // Conditioning weights upload once; each return to block 1 admits its
+        // replicated norm_out weight after block 0 retired it.
         const auto block_bytes = 2 * (64 * 128 + 128 * 64 + 64 * 128);
-        check(resident.transfers().weight_upload == shared_bytes + 4 * block_bytes);
+        check(
+            resident.transfers().weight_upload
+            == shared_bytes + 4 * block_bytes + 2 * 2 * 64 * 64 * 2
+        );
         check(
             !resident.transfers().activation_upload
             && !resident.transfers().activation_download
@@ -1315,7 +1410,7 @@ int main() {
     missing_retained_conditioning("conditioning/time-activated", 64);
     missing_retained_conditioning("ff/modulation", 256);
     denoiser.unload();
-    for (const int unsupported : {0, 1, 2, 3}) {
+    for (const int unsupported : {0, 1, 2, 3, 4}) {
         const bool native = unsupported != 0;
         write_weights(
             directory,
@@ -1325,7 +1420,8 @@ int main() {
             {.denoiser = true,
              .modulation_f32 = unsupported == 1,
              .timestep_f32 = unsupported == 2,
-             .linear1_f32 = unsupported == 3}
+             .linear1_f32 = unsupported == 3,
+             .final_f32 = unsupported == 4}
         );
         kadan::image::Denoiser unsupported_denoiser(
             conditioning_resources, native ? std::make_shared<Compute>() : nullptr
@@ -1347,13 +1443,14 @@ int main() {
         check(
             error
             && error->detail
-                   == (unsupported == 1 ? "image_modulation_standard_precision"
-                                        : "image_timestep_standard_precision")
+                   == (unsupported == 4   ? "image_final_standard_precision"
+                       : unsupported == 1 ? "image_modulation_standard_precision"
+                                          : "image_timestep_standard_precision")
             && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
         );
         resident.finish();
     }
-    for (const int timestep : {0, 1, 2}) {
+    for (const int timestep : {0, 1, 2, 3}) {
         write_weights(directory, false, 64, 128, {.denoiser = true});
         {
             // Corrupt an actual shared raw weight before loading; no arithmetic runs.
@@ -1363,10 +1460,11 @@ int main() {
             );
             file.seekp(
                 -std::streamoff(
-                    32768 + 2 * 8192
-                    + (timestep == 2   ? 8192 + 32768
-                       : timestep == 1 ? 8192
-                                       : 0)
+                    (timestep == 3 ? 2 * 8192
+                                   : 32768 + 2 * 8192
+                                         + (timestep == 2   ? 8192 + 32768
+                                            : timestep == 1 ? 8192
+                                                            : 0))
                 ),
                 std::ios::end
             );

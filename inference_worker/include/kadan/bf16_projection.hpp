@@ -311,6 +311,54 @@ inline Bf16ProjectionShape validate_image_modulation(
     return {rows, state, state};
 }
 
+// Final image rows exclude text; scale is the actual target norm_out projection.
+inline Bf16ProjectionShape validate_image_final_normalization(
+    int device,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& scale,
+    const MediaDeviceSpan& normalized,
+    const MediaDeviceSpan& status
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_final_normalization_layout");
+    };
+    require(hidden.dimensions.size() == 2);
+    const auto rows = hidden.dimensions[0], state = hidden.dimensions[1];
+    require(rows && state && rows <= INT_MAX && rows <= SIZE_MAX / state / 4);
+    auto matrix = [&](const MediaDeviceSpan& span, std::size_t r, std::size_t c) {
+        require(
+            span.dtype == DeviceDType::f32
+            && span.dimensions == std::vector<std::size_t>{r, c}
+            && span.strides == std::vector<std::size_t>{c, 1}
+            && span.bytes == r * c * sizeof(float)
+        );
+    };
+    matrix(hidden, rows, state);
+    matrix(scale, 1, state);
+    matrix(normalized, rows, state);
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&hidden, &scale, &normalized, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        require(
+            a.device == device && x && x % 4 == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
 // The hidden input/output must be the same full view, including its lifetime.
 inline Bf16ProjectionShape validate_image_attention_residual(
     int device,
@@ -369,6 +417,10 @@ public:
         std::span<const MediaDeviceSpan>,
         std::size_t text
     ) = 0;
+    // Inputs [image-hidden,target-scale]; outputs [normalized,status].
+    virtual void final_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
     virtual void
     pair(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
     virtual void
@@ -423,6 +475,9 @@ public:
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
         std::size_t
+    ) override;
+    void final_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
     void pair(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
