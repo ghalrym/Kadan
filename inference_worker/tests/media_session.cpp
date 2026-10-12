@@ -115,6 +115,16 @@ MediaShape shape() {
     return {4, 4, 4, 2, 2, 8, 0, 2};
 }
 
+DeviceTensorView tensor(
+    MediaSession& s,
+    int device,
+    std::string_view name,
+    std::size_t rows = 4,
+    std::size_t columns = 4
+) {
+    return s.tensor(device, name, DeviceDType::f32, {rows, columns}, {columns, 1});
+}
+
 void initial_admission() {
     Fixture f;
     auto m = decoder();
@@ -122,7 +132,9 @@ void initial_admission() {
     const auto peak = f.session.plan().devices.front();
     check(f.resources->snapshot().used[peak.device + 1] == peak.new_ledger);
     check(f.session.evidence().peers.size() == 2 && f.activity->owners == 1);
-    check(f.session.admit(m, shape())->reason == PlanFailure::unsupported_layout);
+    check(
+        fails([&] { f.session.admit(m, shape()); }) == "media_session_stage_boundary"
+    );
     WorkerCompute worker({{1000}, {}}, Workload::image);
     worker.media_activity = f.activity;
     check(fails([&] { worker.idle(); }) == "compute_media_session_busy");
@@ -173,6 +185,63 @@ void lifecycle_failures() {
     }
 }
 
+void ownership_views() {
+    Fixture f;
+    check(!f.session.admit(decoder(), shape()));
+    const int d = f.session.plan().devices.front().device;
+    auto view = tensor(f.session, d, "boundary");
+    auto tile = f.session.rows(view, 1, 2);
+    check(tile.layout().offset == 16 && tile.layout().bytes == 32);
+    check(
+        fails([&] { f.session.admit(decoder(), shape()); }) == "media_session_live_view"
+    );
+    check(fails([&] { f.session.finish(); }) == "media_session_live_view");
+    view = {};
+    check(f.resources->snapshot().residents == 1);
+    tile = {};
+    check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
+}
+
+void stage_ownership() {
+    Fixture f;
+    auto m = decoder();
+    m.weights = {
+        {"w",
+         {1, 2, 3, 0, 0, 0, 0, 0, 32},
+         TensorStorage::bf16_exact,
+         4,
+         4,
+         WeightPartition::replicated}
+    };
+    check(!f.session.admit(m, shape()));
+    auto view = f.session.weight(f.session.plan().weights.front());
+    const auto pointer = view.layout().data;
+    const auto generation = view.layout().generation;
+    view = {};
+    f.session.advance(MediaPhase::complete);
+    auto before = f.trace->allocations_started;
+    check(!f.session.admit(m, shape()));
+    view = f.session.weight(f.session.plan().weights.front());
+    check(
+        view.layout().data == pointer && view.layout().generation == generation
+        && f.trace->allocations_started == before
+    );
+    view = {};
+    f.session.advance(MediaPhase::complete);
+    m.weights[0].identity.inode++;
+    check(!f.session.admit(m, shape()));
+    check(f.trace->allocations_started == before + 1);
+    f.session.advance(MediaPhase::kv);
+    auto temporary =
+        tensor(f.session, f.session.plan().devices.front().device, "kv-only");
+    check(
+        fails([&] { f.session.advance(MediaPhase::ff); }) == "media_session_live_alias"
+    );
+    temporary = {};
+    f.session.advance(MediaPhase::ff);
+    f.session.finish();
+}
+
 void typed_admission_failures() {
     Fixture f;
     auto m = decoder();
@@ -201,6 +270,8 @@ void typed_admission_failures() {
 int main() {
     initial_admission();
     lifecycle_failures();
+    ownership_views();
+    stage_ownership();
     typed_admission_failures();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";
