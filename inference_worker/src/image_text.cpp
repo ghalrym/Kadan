@@ -332,6 +332,18 @@ void TextEncoder::unload() {
     }
 }
 
+Bytes TextEncoder::release_device_weights() {
+    need(!busy_, "busy");
+    need(bool(model_), "image_text_not_loaded");
+    if (!compute_)
+        return 0;
+    std::vector<WeightIdentity> sources;
+    sources.reserve(model_->specs.size());
+    for (const auto& spec : model_->specs)
+        sources.push_back(spec.identity);
+    return compute_->release_weights(sources);
+}
+
 void TextEncoder::execute(
     std::span<const std::uint32_t> ids,
     std::span<float> output,

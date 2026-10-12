@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kadan/cleanup_error.hpp"
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_schedule.hpp"
 #include "kadan/image_text.hpp"
@@ -275,12 +276,23 @@ void Generator::generate(
     auto drop = m.tokenizer.encode(prefix, system, cancel);
     need(drop == 14 && count > drop, "image_prompt_prefix");
     std::vector<float> features(count * 4096);
-    m.text.execute(
-        std::span(tokens).first(count), features, cancel, [&](std::size_t i) {
-            if (hook)
-                hook("text_layer", i);
-        }
-    );
+    try {
+        m.text.execute(
+            std::span(tokens).first(count), features, cancel, [&](std::size_t i) {
+                if (hook)
+                    hook("text_layer", i);
+            }
+        );
+    } catch (...) {
+        rethrow_after_cleanup(std::current_exception(), [&] {
+            m.text.release_device_weights();
+        });
+    }
+    // Conditioning is host-owned now. Retire only text tiles on every image,
+    // leaving a warm denoiser bank intact across images and later requests.
+    const auto released = m.text.release_device_weights();
+    if (hook)
+        hook("text_gpu_weights_released_bytes", released);
     if (compute_)
         report_weight_placement(*compute_, hook);
     auto condition = std::span(features).subspan(drop * 4096);

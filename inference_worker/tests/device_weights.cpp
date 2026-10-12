@@ -25,7 +25,8 @@ struct Fake final : WeightDeviceOperations {
     bool fail_free = false;
     std::atomic_bool* cancellation = nullptr;
     Bytes free_bytes = 1024;
-    bool oom = false;
+    bool oom = false, synchronized = false;
+    std::uintptr_t next_pointer = 0;
 
     Bytes available_weight_bytes() override {
         return free_bytes;
@@ -45,7 +46,7 @@ struct Fake final : WeightDeviceOperations {
             throw std::runtime_error("allocate");
         // Distinct fake handles; these are never dereferenced or sent to a GPU.
         auto pointer = reinterpret_cast<void*>(  // NOLINT(performance-no-int-to-ptr)
-            std::uintptr_t(pointers.size() + 1)
+            ++next_pointer
         );
         pointers.emplace(pointer, bytes);
         return pointer;
@@ -66,6 +67,8 @@ struct Fake final : WeightDeviceOperations {
     }
 
     void free_weight(void* p) override {
+        check(synchronized);
+        synchronized = false;
         if (fail == "free" || fail_free)
             throw std::runtime_error("free");
         check(pointers.erase(p) == 1);
@@ -73,6 +76,7 @@ struct Fake final : WeightDeviceOperations {
     }
 
     void synchronize_weights() override {
+        synchronized = true;
         if (fail == "sync")
             throw std::runtime_error("sync");
     }
@@ -144,6 +148,60 @@ int main() {
         check(bank.retain(key, bytes, cancel) && gpu.copies == 1);
         bank.release();
         check(r.snapshot().residents == 0);
+    }
+    {
+        Resources r({host, 1024});
+        Fake gpu(r);
+        DeviceWeights bank(r, 0, Workload::image, 128, gpu);
+        auto text = key;
+        text.source.inode = 7;
+        auto text_tail = text;
+        text_tail.first = 8;
+        auto denoiser = text;
+        // Same shard, different tensor: identity includes the payload interval.
+        denoiser.source.payload_begin = 64;
+        denoiser.source.payload_end = 96;
+        const std::array sources{text.source, text.source};
+        auto warm = bank.retain(denoiser, bytes, cancel);
+        for (int request = 0; request < 2; ++request) {
+            for (int image = 0; image < 4; ++image) {
+                check(bank.retain(text, bytes, cancel));
+                check(bank.retain(text_tail, bytes, cancel));
+                auto missing = text;
+                missing.source.inode = 99;
+                check(bank.release_sources(std::span(&missing.source, 1)) == 0);
+                // Cancellation must not prevent stage cleanup after work is joined.
+                cancel = true;
+                check(bank.release_sources(sources) == 64);
+                cancel = false;
+                check(!bank.find(text) && !bank.find(text_tail));
+                check(bank.find(denoiser) == warm && bank.allocated() == 32);
+                check(bank.reserved() == 128 && bank.capacity() == 128);
+                check(bank.release_sources(sources) == 0);
+            }
+        }
+        // A full warmed bank may stream text; retirement still preserves it.
+        auto other = denoiser;
+        for (std::size_t first : {8, 16, 24}) {
+            other.first = first;
+            check(bank.retain(other, bytes, cancel));
+        }
+        check(!bank.retain(text, bytes, cancel));
+        check(bank.release_sources(sources) == 0 && bank.allocated() == 128);
+        check(bank.find(denoiser) == warm);
+        bank.release();
+        check(gpu.pointers.empty() && r.snapshot().residents == 0);
+    }
+    for (const auto* failure : {"sync", "free"}) {
+        Resources r({host, 1024});
+        Fake gpu(r);
+        DeviceWeights bank(r, 0, Workload::image, 64, gpu);
+        check(bank.retain(key, bytes, cancel));
+        gpu.fail = failure;
+        fails([&] { bank.release_sources(std::span(&key.source, 1)); });
+        check(bank.quarantined() && bank.allocated() == 32 && bank.reserved() == 64);
+        fails([&] { bank.find(key); });
+        check(!gpu.pointers.empty() && r.snapshot().residents == 1);
     }
     for (const auto* fail : {"allocate", "copy"}) {
         Resources r({host, 1024});

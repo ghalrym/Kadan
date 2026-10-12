@@ -47,6 +47,12 @@ public:
     virtual void release_devices() {
     }
 
+    // Retire only these immutable tensor identities at a synchronous stage boundary.
+    // Keep device contexts, execution threads and other retained weights.
+    virtual Bytes release_weights(std::span<const WeightIdentity>) {
+        return 0;
+    }
+
     virtual Footprint retained_weights() const {
         return {};
     }

@@ -148,6 +148,25 @@ public:
         }
     }
 
+    // Keep the admitted bank envelope/partition for the next stage. Only physical
+    // tiles matching these exact tensor identities are retired.
+    Bytes release_sources(std::span<const WeightIdentity> sources) {
+        healthy();
+        const auto before = allocated_;
+        try {
+            for (auto it = entries_.begin(); it != entries_.end();) {
+                auto entry = it++;
+                if (std::find(sources.begin(), sources.end(), entry->first.source)
+                    != sources.end())
+                    drop(entry);
+            }
+        } catch (...) {
+            quarantined_ = true;
+            throw;
+        }
+        return before - allocated_;
+    }
+
     void release() {
         healthy();
         try {
