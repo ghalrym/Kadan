@@ -41,7 +41,11 @@ enum class PlanFailure {
     unsupported_layout,
     invalid_shape
 };
-// Inclusive lifetimes. Complete K/V is a barrier before hidden row overwrite.
+enum class MediaSchedule {
+    full_block,
+    feed_forward
+};
+// Inclusive lifetimes. Full blocks require complete K/V before hidden overwrite.
 enum class MediaPhase {
     prepare,
     kv,
@@ -90,6 +94,8 @@ struct StageManifest {
     // scratch and boundary tensors are described. Missing evidence is unsupported.
     bool workspaces_complete = false;
     bool precise_attention = false, operators_supported = true;
+    // FF consumes normalized input and has no attention/KV operation or resources.
+    MediaSchedule schedule = MediaSchedule::full_block;
 };
 
 struct MediaShape {
@@ -171,13 +177,14 @@ struct AllocationReuse {
 
 struct MediaResidencyPlan {
     MediaStage stage = MediaStage::denoise;
+    MediaSchedule schedule = MediaSchedule::full_block;
     std::size_t rows = 0, queries = 0, keys = 0;
     std::vector<WeightSlice> weights;
     std::vector<TensorLiveRange> tensors;
     std::vector<DevicePeak> devices;
     std::vector<AllocationReuse> reuse;
     std::vector<std::string> retire_owners, assumptions;
-    MediaPhase kv_complete_before_hidden_write = MediaPhase::kv;
+    std::optional<MediaPhase> kv_complete_before_hidden_write = MediaPhase::kv;
     std::vector<MediaPhase> hidden_write_phases;
 };
 

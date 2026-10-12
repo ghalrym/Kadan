@@ -127,6 +127,68 @@ void check_aliases(const MediaResidencyPlan& p) {
     check(tensor(p, "resident/hidden").last == MediaPhase::complete);
 }
 
+void feed_forward_schedule() {
+    auto m = manifest();
+    m.weights.erase(m.weights.begin());
+    m.schedule = MediaSchedule::feed_forward;
+    const MediaShape s{4, 8, 0, 0, 0, 16};
+    auto p = resident(plan_media_stage(m, s, budgets(), {}));
+    check(p.schedule == MediaSchedule::feed_forward && !p.queries && !p.keys);
+    check(!p.kv_complete_before_hidden_write);
+    check(p.hidden_write_phases == std::vector<MediaPhase>{MediaPhase::ff});
+    check(p.tensors.size() == 6);  // Five FF activations plus BF16 conversion.
+    check(tensor(p, "resident/normalized").first == MediaPhase::prepare);
+    for (const auto& t : p.tensors)
+        check(t.first != MediaPhase::kv && t.first != MediaPhase::attention);
+    check(p.devices[0].phases.size() == 3 && p.devices[0].heads == 0);
+    const auto minimum =
+        failure(plan_media_stage(m, s, budgets(0), {}), PlanFailure::capacity)
+            .rejected->devices[0]
+            .new_physical;
+    resident(plan_media_stage(m, s, budgets(minimum), {}));
+    failure(plan_media_stage(m, s, budgets(minimum - 1), {}), PlanFailure::capacity);
+    m.weights[0] = weight(
+        "ff", 32, 256, TensorStorage::bf16_exact, WeightPartition::channels, 4, 2
+    );
+    const MediaShape split{1, 256, 0, 0, 0, 16};
+    const auto single =
+        resident(plan_media_stage(m, split, budgets(), {})).devices[0].new_physical;
+    std::vector<DeviceBudget> b{
+        {0, single * 3 / 4, single * 3 / 4}, {1, single * 3 / 4, single * 3 / 4}
+    };
+    p = resident(plan_media_stage(m, split, b, peers()));
+    check(p.devices.size() == 2);
+    const auto& w = m.weights[0];
+    for (std::size_t plane = 0; plane < w.planes; ++plane) {
+        std::size_t next = plane * w.rows / w.planes;
+        for (const auto& slice : p.weights)
+            if (slice.identity == w.identity
+                && slice.first_row >= plane * w.rows / w.planes
+                && slice.first_row < (plane + 1) * w.rows / w.planes) {
+                check(slice.first_row == next && slice.rows % w.alignment == 0);
+                next += slice.rows;
+            }
+        check(next == (plane + 1) * w.rows / w.planes);
+    }
+    failure(plan_media_stage(m, split, b, {{0, 1, true}}), PlanFailure::topology);
+    m.tensors.push_back(
+        {"attention", 16, MediaPhase::attention, MediaPhase::attention}
+    );
+    failure(plan_media_stage(m, s, budgets(), {}), PlanFailure::unsupported_layout);
+    m.tensors.clear();
+    m.weights.push_back(manifest().weights[0]);
+    failure(
+        plan_media_stage(m, shape(), budgets(), {}), PlanFailure::unsupported_layout
+    );
+    m.weights.pop_back();
+    m.stage = MediaStage::image_decode;
+    failure(plan_media_stage(m, s, budgets(), {}), PlanFailure::unsupported_layout);
+    m.stage = MediaStage::denoise;
+    auto invalid = s;
+    invalid.ff = 0;
+    failure(plan_media_stage(m, invalid, budgets(), {}), PlanFailure::invalid_shape);
+}
+
 void exact_fit_and_validation() {
     auto m = manifest();
     auto s = shape();
@@ -639,6 +701,7 @@ void concrete_profiles() {
 
 int main() {
     try {
+        feed_forward_schedule();
         exact_fit_and_validation();
         precision_and_lifetimes();
         reuse_and_retirement();
