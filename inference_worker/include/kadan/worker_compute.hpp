@@ -6,6 +6,7 @@
 
 #include "kadan/dense_compute.hpp"
 #include "kadan/device_placement.hpp"
+#include "kadan/media_session.hpp"
 
 namespace kadan {
 inline constexpr Bytes compute_context_bytes = 384ULL * 1024 * 1024;
@@ -72,6 +73,8 @@ inline ComputePlan worker_compute_plan(Bytes host, const char* selection_name) {
 struct WorkerCompute {
     std::shared_ptr<Resources> resources;
     std::shared_ptr<DenseCompute> compute;
+    std::shared_ptr<MediaSessionActivity> media_activity =
+        std::make_shared<MediaSessionActivity>();
     Footprint context;
     Handle context_handle = 0;
     Workload workload;
@@ -115,6 +118,8 @@ struct WorkerCompute {
     }
 
     void idle() const {
+        if (media_activity->owners.load())
+            throw std::runtime_error("compute_media_session_busy");
         if (compute)
             compute->release_scratch();
         const auto retained = compute ? compute->retained_weights() : Footprint{};
