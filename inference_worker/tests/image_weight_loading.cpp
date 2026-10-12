@@ -233,11 +233,6 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         check(!calls.empty() && calls.back() == 'o');
         check(read[1].data == attended && read[1].generation == attended_generation);
         check(read[1].dimensions == std::vector<std::size_t>{17, 64});
-        if (modulation)
-            check(
-                read[2].data == modulation
-                && read[2].generation == modulation_generation
-            );
         calls.push_back('a');
         backend.status = fail_attention ? 1 : 0;
     }
@@ -691,13 +686,10 @@ int main() {
         complete,
         missing_time,
         missing_hidden,
-        missing_attended,
         failed_modulation,
-        wrong_boundary,
         missing_launcher
     };
-    auto conditioning_case = [&](HiddenBoundary boundary,
-                                 ConditioningScenario scenario) {
+    auto conditioning_case = [&](ConditioningScenario scenario) {
         auto fake = std::make_unique<Device>();
         auto& metadata = *fake;
         metadata.available = budget + 33024;
@@ -710,7 +702,7 @@ int main() {
             {{0}, {1}},
             cancel
         );
-        check(!denoiser.prepare_feed_forward(resident, 0, 17, boundary, cancel));
+        check(!denoiser.prepare_feed_forward(resident, 0, 17, cancel));
         check(resident.plan().devices.size() == 2 && resident.plan().rows < 17);
         check(
             std::count_if(
@@ -726,18 +718,12 @@ int main() {
         );
         for (const auto& d : resident.plan().devices) {
             for (const auto* name :
-                 {"conditioning/time-activated",
-                  "resident/hidden",
-                  "resident/normalized"}) {
+                 {"conditioning/time-activated", "resident/hidden"}) {
                 const bool time =
                     std::string_view(name) == "conditioning/time-activated";
-                const bool hidden = std::string_view(name) == "resident/hidden";
-                if ((d.device == 1
-                     && ((time && scenario == ConditioningScenario::missing_time)
-                         || (hidden && scenario == ConditioningScenario::missing_hidden)
-                         || (!time && !hidden
-                             && scenario == ConditioningScenario::missing_attended)))
-                    || (!time && !hidden && boundary == HiddenBoundary::post_attention))
+                if (d.device == 1
+                    && ((time && scenario == ConditioningScenario::missing_time)
+                        || (!time && scenario == ConditioningScenario::missing_hidden)))
                     continue;
                 auto view = resident.tensor(
                     d.device,
@@ -758,17 +744,7 @@ int main() {
         };
         bool rejected = false;
         try {
-            denoiser.execute_feed_forward(
-                resident,
-                0,
-                17,
-                3,
-                scenario == ConditioningScenario::wrong_boundary
-                    ? HiddenBoundary::pre_attention
-                    : boundary,
-                launchers,
-                cancel
-            );
+            denoiser.execute_feed_forward(resident, 0, 17, 3, launchers, cancel);
         } catch (const std::exception& e) {
             rejected = true;
             const std::string_view error(e.what());
@@ -789,10 +765,7 @@ int main() {
                 && first.time_rows == second.time_rows
             );
             check(std::count(first.calls.begin(), first.calls.end(), 'n') == 1);
-            check(
-                std::count(first.calls.begin(), first.calls.end(), 'a')
-                == (boundary == HiddenBoundary::pre_attention ? 1 : 0)
-            );
+            check(std::count(first.calls.begin(), first.calls.end(), 'a') == 0);
             check(first.residual_first.size() > 1);
             auto hidden = resident.tensor(
                 1, "resident/hidden", kadan::DeviceDType::f32, {17, 64}, {64, 1}
@@ -817,18 +790,13 @@ int main() {
             && conditioning_resources->snapshot().used[2] == 0
         );
     };
-    conditioning_case(HiddenBoundary::post_attention, ConditioningScenario::complete);
-    conditioning_case(HiddenBoundary::pre_attention, ConditioningScenario::complete);
+    conditioning_case(ConditioningScenario::complete);
     for (const auto scenario :
          {ConditioningScenario::missing_time,
           ConditioningScenario::missing_hidden,
-          ConditioningScenario::missing_attended,
           ConditioningScenario::failed_modulation,
           ConditioningScenario::missing_launcher})
-        conditioning_case(HiddenBoundary::pre_attention, scenario);
-    conditioning_case(
-        HiddenBoundary::post_attention, ConditioningScenario::wrong_boundary
-    );
+        conditioning_case(scenario);
     denoiser.unload();
     for (const bool native : {false, true}) {
         write_weights(directory, false, 64, 128, false, true, native);
@@ -846,9 +814,8 @@ int main() {
             {{0}, {1}},
             cancel
         );
-        const auto error = unsupported_denoiser.prepare_feed_forward(
-            resident, 0, 17, HiddenBoundary::post_attention, cancel
-        );
+        const auto error =
+            unsupported_denoiser.prepare_feed_forward(resident, 0, 17, cancel);
         check(
             error && error->detail == "image_modulation_standard_precision"
             && !metadata.probes && !metadata.uploaded && metadata.allocations.empty()
@@ -882,9 +849,7 @@ int main() {
         );
         bool rejected = false;
         try {
-            denoiser.prepare_feed_forward(
-                resident, 0, 17, HiddenBoundary::post_attention, cancel
-            );
+            denoiser.prepare_feed_forward(resident, 0, 17, cancel);
         } catch (const std::runtime_error& e) {
             rejected = true;
             check(std::string_view(e.what()) == "h3_cuda_nonfinite_weight");
