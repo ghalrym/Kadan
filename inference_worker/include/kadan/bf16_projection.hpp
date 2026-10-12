@@ -308,6 +308,11 @@ public:
     virtual void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // Same spans as standard; exact timestep SiLU follows projection in place.
+    // One aggregate status certifies both operations, without another buffer.
+    virtual void timestep(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
     // Inputs [hidden,projected,modulation]; outputs [same-hidden,gates,status].
     // Derive attention gates and update hidden under one aggregate certificate.
     virtual void attention_residual(
@@ -361,6 +366,9 @@ public:
     }
 
     void standard(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void timestep(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
     void attention_residual(

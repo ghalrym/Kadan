@@ -29,8 +29,9 @@ public:
         const Hook& hook = {}
     );
     void unload();
-    // Explicit resident block slice, using actual shared modulation. Initialize
-    // per-device launchers before admission. Native BF16 standard precision only.
+    // Explicit resident block slice, using actual timestep linear_2 and modulation.
+    // Initialize per-device launchers before admission. Native BF16 standard precision
+    // only.
     std::optional<MediaPlanError> prepare_feed_forward(
         MediaSession&,
         std::size_t block,
@@ -38,8 +39,9 @@ public:
         HiddenBoundary,
         const std::atomic_bool&
     );
-    // Caller supplies certified conditioning/time-activated [2,state]: actual
-    // timestep then text t=0, after the second timestep projection's SiLU.
+    // Caller supplies certified conditioning/time-linear1 [2,state]: actual
+    // timestep then text t=0, after the first timestep projection's SiLU.
+    // Linear_2 + SiLU produces time-activated, consumed directly by modulation.
     // Also supply hidden and (pre_attention) attended on every device, release
     // views, then project modulation directly into the residual/FF consumers.
     // Returns complete; close launchers before destroying session streams.
