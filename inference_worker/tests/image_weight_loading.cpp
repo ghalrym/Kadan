@@ -193,6 +193,8 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     void* final_hidden = nullptr;
     std::uint64_t final_hidden_generation = 0;
     void* final_scale = nullptr;
+    void* final_weight = nullptr;
+    std::uint64_t final_weight_generation = 0;
     std::atomic_bool* cancel_frequency = nullptr;
     std::atomic_bool* cancel_linear1 = nullptr;
     float expected_timestep = .625f;
@@ -216,6 +218,18 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::vector<std::size_t> residual_first;
 
     Launcher(Device& d, int id) : backend(d), selected(id) {
+    }
+
+    void expect_final_weight(kadan::MediaSession& session) {
+        const auto& weights = session.plan().weights;
+        const auto found =
+            std::find_if(weights.begin(), weights.end(), [&](const auto& w) {
+                return w.device == selected && w.name == "norm_out.linear.weight";
+            });
+        check(found != weights.end() && found->identity.inode != 0);
+        auto view = session.weight(*found);
+        final_weight = view.layout().data;
+        final_weight_generation = view.layout().generation;
     }
 
     int device() const override {
@@ -312,6 +326,10 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             );
             check(read[1].dimensions == std::vector<std::size_t>{64, 64});
             check(write[0].dimensions == std::vector<std::size_t>{1, 64});
+            check(
+                read[1].data == final_weight
+                && read[1].generation == final_weight_generation
+            );
             final_scale = write[0].data;
             calls.push_back('s');
             backend.status = fail_final_projection ? 1 : 0;
@@ -957,6 +975,8 @@ int main() {
             }
         }
         Launcher first(metadata, 0), second(metadata, 1);
+        first.expect_final_weight(resident);
+        second.expect_final_weight(resident);
         first.fail_frequency = scenario == ConditioningScenario::failed_frequency;
         second.fail_frequency =
             scenario == ConditioningScenario::failed_second_frequency;
@@ -1198,6 +1218,66 @@ int main() {
     conditioning_case(
         HiddenBoundary::post_attention, ConditioningScenario::missing_conditioning
     );
+    {
+        // Automatic placement uses one device when the actual final manifest fits.
+        auto single_resources = std::make_shared<kadan::Resources>(
+            kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+        );
+        kadan::image::Denoiser single(single_resources, std::make_shared<Compute>());
+        single.load(directory, files, config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            single_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}},
+            cancel
+        );
+        check(!single.prepare_feed_forward(
+            resident, 0, 17, HiddenBoundary::post_attention, cancel
+        ));
+        check(
+            resident.plan().devices.size() == 1
+            && resident.plan().devices[0].device == 0
+        );
+        {
+            auto hidden = resident.tensor(
+                0, "resident/hidden", kadan::DeviceDType::f32, {17, 64}, {64, 1}
+            );
+            std::vector<std::byte> ingress(hidden.layout().bytes);
+            resident.upload_input(hidden, ingress);
+        }
+        Launcher launcher(metadata, 0);
+        launcher.expect_final_weight(resident);
+        const std::array<kadan::video::ImageFeedForwardLauncher*, 1> launchers{
+            &launcher
+        };
+        single.execute_feed_forward(
+            resident, 0, 17, 3, .625f, HiddenBoundary::post_attention, launchers, cancel
+        );
+        check(launcher.calls.back() == 'z');
+        {
+            auto output = resident.tensor(
+                0, "final/normalized", kadan::DeviceDType::f32, {14, 64}, {64, 1}
+            );
+            check(resident.ready(output));
+        }
+        check(
+            !resident.transfers().activation_upload
+            && !resident.transfers().activation_download
+            && !resident.transfers().peer_activation
+            && !resident.transfers().output_download
+        );
+        resident.finish();
+        single.unload();
+        check(
+            metadata.allocations.empty() && activity->owners == 0
+            && single_resources->snapshot().used == kadan::Footprint({0, 0})
+        );
+    }
     denoiser.unload();
 
     // Two actual block manifests reuse only session-owned certified conditioning.
@@ -1250,6 +1330,8 @@ int main() {
                     &first, &second
                 };
                 if (block_index) {
+                    first.expect_final_weight(resident);
+                    second.expect_final_weight(resident);
                     first.modulation = modulation[0];
                     first.modulation_generation = modulation_generation[0];
                     second.modulation = modulation[1];
