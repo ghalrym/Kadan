@@ -147,6 +147,15 @@ void feed_forward_schedule() {
             .new_physical;
     resident(plan_media_stage(m, s, budgets(minimum), {}));
     failure(plan_media_stage(m, s, budgets(minimum - 1), {}), PlanFailure::capacity);
+    // Force row tiling. The prepare boundary must still contain all future rows.
+    auto tiled_shape = s;
+    tiled_shape.tokens = 64;
+    const auto full = resident(plan_media_stage(m, tiled_shape, budgets(), {}));
+    p = resident(
+        plan_media_stage(m, tiled_shape, budgets(full.devices[0].new_physical - 1), {})
+    );
+    check(p.rows < tiled_shape.tokens);
+    check(tensor(p, "resident/normalized").bytes == 64 * s.hidden * 4);
     m.weights[0] = weight(
         "ff", 32, 256, TensorStorage::bf16_exact, WeightPartition::channels, 4, 2
     );

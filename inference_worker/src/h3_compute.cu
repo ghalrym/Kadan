@@ -1821,12 +1821,16 @@ public:
 CudaBf16Projection::CudaBf16Projection(
     std::shared_ptr<DenseCompute> context_owner,
     std::shared_ptr<MediaSessionActivity> activity,
+    std::shared_ptr<Resources> resources,
+    Workload workload,
     int device
 )
     : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
-      device_(device) {
+      resources_(std::move(resources)), device_(device) {
     require(
-        context_owner_ && activity_ && device >= 0, "bf16_projection_context_owner"
+        context_owner_ && activity_ && resources_ && device >= 0
+            && std::size_t(device) + 1 < resources_->snapshot().capacity.size(),
+        "bf16_projection_context_owner"
     );
     // Initialization may touch context resources even when CUDA reports failure.
     ++activity_->owners;
@@ -1834,9 +1838,20 @@ CudaBf16Projection::CudaBf16Projection(
     int major = 0;
     checked(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_));
     require(major >= 8, "h3_cuda_bf16_policy");
+    std::size_t before = 0, after = 0, total = 0;
+    checked(cudaMemGetInfo(&before, &total));
     cublasHandle_t handle = nullptr;
     checked(cublasCreate(&handle));
     blas_ = handle;
+    try {
+        checked(cudaMemGetInfo(&after, &total));
+        Footprint charge(resources_->snapshot().capacity.size());
+        charge[device_ + 1] = before > after ? before - after : 0;
+        library_charge_ = resources_->reserve(workload, charge);
+    } catch (...) {
+        close();
+        throw;
+    }
 }
 
 CudaBf16Projection::~CudaBf16Projection() {
@@ -1860,6 +1875,10 @@ void CudaBf16Projection::close() {
         throw;
     }
     blas_ = nullptr;
+    if (library_charge_) {
+        resources_->released(library_charge_);
+        library_charge_ = 0;
+    }
     --activity_->owners;
 }
 

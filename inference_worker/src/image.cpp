@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "image_activation.hpp"
+#include "kadan/bf16_projection.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/checkpoint_floats.hpp"
 #include "kadan/float_weights.hpp"
@@ -333,6 +334,84 @@ TransformerBlock::TransformerBlock(
 
 TransformerBlock::~TransformerBlock() {
     unload();
+}
+
+std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
+    MediaSession& session, std::size_t tokens, const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    auto& m = *model_;
+    StageManifest manifest;
+    manifest.schedule = MediaSchedule::feed_forward;
+    manifest.blas_bytes = video::bf16_projection_workspace_bytes;
+    manifest.status_bytes = sizeof(std::uint32_t);  // Aggregate certificate.
+    manifest.tensors = {
+        {"ff/residual-gates", 2 * m.d.state * sizeof(float)},
+        {"ff/gate-status",
+         sizeof(std::uint32_t),
+         MediaPhase::ff,
+         MediaPhase::ff,
+         AllocationKind::status},
+        {"ff/up-status",
+         sizeof(std::uint32_t),
+         MediaPhase::ff,
+         MediaPhase::ff,
+         AllocationKind::status}
+    };
+    for (const auto* name :
+         {"img_mlp.gate_layer.weight", "img_mlp.proj.weight", "img_mlp.out.weight"}) {
+        const auto& spec = m.specs.at(m.names.at(name));
+        auto& shard = *m.shards[spec.shard];
+        shard.check_unchanged();
+        const auto qualified = m.prefix + spec.name;
+        const auto tensor = shard.tensor(qualified);
+        if (tensor.dtype != checkpoint::Dtype::bf16)
+            return MediaPlanError{PlanFailure::unsupported_layout, "image_ff_bf16", {}};
+        need(
+            shard.tensor_identity(qualified) == spec.identity, "image_weight_identity"
+        );
+        manifest.weights.push_back(
+            {qualified,
+             spec.identity,
+             TensorStorage::bf16_exact,
+             std::size_t(tensor.shape[0]),
+             std::size_t(tensor.shape[1]),
+             WeightPartition::channels,
+             1,
+             1,
+             ProjectionPrecision::bf16_f32}
+        );
+    }
+    // Planner owns full hidden/normalized boundaries, combined gate/up output,
+    // ordered full-width FF gather, down/residual tile, and reusable BF16 input.
+    // No normalization/attention/LoRA operator is part of this FF boundary.
+    manifest.workspaces_complete = true;
+    if (auto error = session.admit(
+            manifest, MediaShape{tokens, m.d.state, 0, 0, 0, m.d.intermediate}
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            stop(cancel);
+            const auto& spec =
+                m.specs.at(m.names.at(slice.name.substr(m.prefix.size())));
+            auto& shard = *m.shards[spec.shard];
+            shard.check_unchanged();
+            Lease staging(*resources_, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            shard.read_tensor(slice.name, slice.first_row * spec.shape[1] * 2, raw);
+            shard.check_unchanged();
+            stop(cancel);
+            auto destination = session.weight(slice);
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
 }
 
 void TransformerBlock::load(

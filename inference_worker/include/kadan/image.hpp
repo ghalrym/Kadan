@@ -7,6 +7,7 @@
 #include <string>
 
 #include "kadan/dense_compute.hpp"
+#include "kadan/media_session.hpp"
 
 namespace kadan::image {
 struct BlockConfig {
@@ -41,6 +42,12 @@ public:
         const std::atomic_bool&
     );
     void unload();
+    // Prepare only: actual bias-free BF16 gate/up/down checkpoint slices and
+    // session-owned FF resources. Caller prepares complete normalized input,
+    // hidden and [target,text] residual gates before advancing to ff.
+    // Initialize/account device launchers before this fresh admission probe.
+    std::optional<MediaPlanError>
+    prepare_feed_forward(MediaSession&, std::size_t tokens, const std::atomic_bool&);
     // Caller admits input/output [text+height*width,state] and modulation
     // [2,4*state]: target timestep first, text t=0 second. No padded text rows.
     void execute(

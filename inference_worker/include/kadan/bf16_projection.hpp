@@ -143,7 +143,7 @@ inline Bf16ProjectionShape validate_image_silu_pair(
 }
 
 // One request-owner thread. Construct before admission's fresh memory probe so
-// library handle/context costs are measured and charged in context_unaccounted;
+// library handle costs are measured and retained in the same worker ledger;
 // declare the workspace above in the consumed manifest. Use WorkerCompute's same
 // activity guard. Close after draining, before the session destroys its stream;
 // failed cleanup retains the worker busy charge through process shutdown.
@@ -152,6 +152,8 @@ public:
     CudaBf16Projection(
         std::shared_ptr<DenseCompute> context_owner,
         std::shared_ptr<MediaSessionActivity> activity,
+        std::shared_ptr<Resources> resources,
+        Workload workload,
         int device
     );
     ~CudaBf16Projection();
@@ -193,6 +195,8 @@ public:
 private:
     std::shared_ptr<DenseCompute> context_owner_;
     std::shared_ptr<MediaSessionActivity> activity_;
+    std::shared_ptr<Resources> resources_;
+    Handle library_charge_ = 0;
     int device_;
     void* stream_ = nullptr;
     void* blas_ = nullptr;
