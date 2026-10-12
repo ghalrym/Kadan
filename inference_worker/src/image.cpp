@@ -44,7 +44,7 @@ struct Lease {
 };
 
 // Every consumed element is first written by checkpoint decoding, input copy,
-// normalization or a complete projection/attention output. Scratch tails are unused.
+// normalization, residual or a complete projection/attention output. Tails are unused.
 struct Buffer {
     Lease lease;
     std::unique_ptr<float[]> data;
@@ -409,14 +409,13 @@ void TransformerBlock::execute(
         mix(*resources_, input.size()), delta(*resources_, input.size()),
         scores(*resources_, rows), gate(*resources_, rows * d.intermediate),
         up(*resources_, rows * d.intermediate);
-    std::copy(input.begin(), input.end(), x.data.get());
     // Gates depend on text/image and channel, not on the token position.
     for (std::size_t group = 0; group < 2; ++group)
         for (std::size_t stage = 0; stage < 2; ++stage)
             for (std::size_t c = 0; c < d.state; ++c)
                 gates.data[(group * 2 + stage) * d.state + c] =
                     std::tanh(modulation[(group * 4 + stage * 2 + 1) * d.state + c]);
-    m.norm_mod(x.span(), modulation, n.span(), rows, text, 0, cancel);
+    m.norm_mod(input, modulation, n.span(), rows, text, 0, cancel);
     for (auto item :
          {std::pair{"attn.to_q", q.span()},
           std::pair{"attn.to_k", k.span()},
@@ -474,8 +473,9 @@ void TransformerBlock::execute(
     m.linear("attn.to_out.0", mix.span(), delta.span(), rows, d.state, d.state, cancel);
     for (std::size_t t = 0; t < rows; ++t)
         for (std::size_t c = 0; c < d.state; ++c)
-            x.data[t * d.state + c] += gates.data[(t < text ? 2 * d.state : 0) + c]
-                                       * delta.data[t * d.state + c];
+            x.data[t * d.state + c] = input[t * d.state + c]
+                                      + gates.data[(t < text ? 2 * d.state : 0) + c]
+                                            * delta.data[t * d.state + c];
     if (hook)
         hook("attention");
     m.norm_mod(x.span(), modulation, n.span(), rows, text, 1, cancel);
