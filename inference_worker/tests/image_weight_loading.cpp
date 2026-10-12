@@ -6,6 +6,7 @@
 #include <sstream>
 #include <unistd.h>
 
+#include "kadan/bf16_projection.hpp"
 #include "kadan/image.hpp"
 
 void check(bool b) {
@@ -13,11 +14,14 @@ void check(bool b) {
         throw std::runtime_error("test_failed");
 }
 
-// Checkpoint ingress and allocation ownership only; no projection callbacks.
+// Checkpoint ingress and lifecycle metadata only; no projection arithmetic.
 struct Device final : kadan::MediaDeviceOperations {
     kadan::Bytes available = 32 * 1024 * 1024, uploaded = 0;
     std::map<void*, kadan::Bytes> allocations;
-    std::size_t probes = 0;
+    std::size_t probes = 0, next_event = 1;
+    std::map<int, kadan::Bytes> remaining;
+    bool metadata_execution = false;
+    std::uint32_t status = 0;
 
     std::size_t allocation_alignment() const override {
         return 256;
@@ -27,25 +31,25 @@ struct Device final : kadan::MediaDeviceOperations {
         return nullptr;
     }
 
-    kadan::Bytes free_memory(int) override {
+    kadan::Bytes free_memory(int d) override {
         ++probes;
-        return available;
+        return remaining.try_emplace(d, available).first->second;
     }
 
     bool direct_peer(int, int) override {
-        return false;
+        return metadata_execution;
     }
 
-    void* allocate(int, kadan::Bytes bytes, std::size_t alignment) override {
+    void* allocate(int d, kadan::Bytes bytes, std::size_t alignment) override {
         check(probes >= 2);
         void* p = ::operator new(bytes, std::align_val_t(alignment));
         allocations.emplace(p, bytes);
-        available -= bytes;
+        remaining.at(d) -= bytes;
         return p;
     }
 
-    void free(int, void* p) override {
-        available += allocations.at(p);
+    void free(int d, void* p) override {
+        remaining.at(d) += allocations.at(p);
         allocations.erase(p);
         ::operator delete(p, std::align_val_t(256));
     }
@@ -54,7 +58,7 @@ struct Device final : kadan::MediaDeviceOperations {
     }
 
     kadan::MediaEvent record(int d) override {
-        return {d, 1};
+        return {d, next_event++};
     }
 
     void synchronize(int) override {
@@ -74,26 +78,33 @@ struct Device final : kadan::MediaDeviceOperations {
     }
 
     void peer(int, const void*, int, void*, kadan::Bytes) override {
-        throw std::runtime_error("unexpected_peer_copy");
+        check(metadata_execution);
     }
 
     std::uint32_t read_status(int, const void*) override {
-        throw std::runtime_error("unexpected_execution");
+        check(metadata_execution);
+        return status;
     }
 };
 
-void write_weights(const char* directory, bool f32) {
+void write_weights(
+    const char* directory, bool f32, std::size_t state = 2, std::size_t ff = 2
+) {
     std::ostringstream header;
     header << '{';
     std::size_t bytes = 0, count = 0;
     auto add = [&](std::string name, bool vector) {
         if (count++)
             header << ',';
-        const auto size = (vector ? 2 : 4) * (f32 ? 4 : 2);
+        const auto rows =
+            name == "img_mlp.proj" || name == "img_mlp.gate_layer" ? ff : state;
+        const auto columns = name == "img_mlp.out" ? ff : state;
+        const auto size = (vector ? state : rows * columns) * (f32 ? 4 : 2);
         header << "\"transformer_blocks.7." << name << ".weight\":{\"dtype\":\""
-               << (f32 ? "F32" : "BF16")
-               << "\",\"shape\":" << (vector ? "[2]" : "[2,2]") << ",\"data_offsets\":["
-               << bytes << ',' << bytes + size << "]}";
+               << (f32 ? "F32" : "BF16") << "\",\"shape\":[" << (vector ? state : rows);
+        if (!vector)
+            header << ',' << columns;
+        header << "],\"data_offsets\":[" << bytes << ',' << bytes + size << "]}";
         bytes += size;
     };
     for (auto name :
@@ -120,6 +131,79 @@ void write_weights(const char* directory, bool f32) {
             file.put(0);
     }
 }
+
+// No-op launchers inspect metadata and submission order; never read tensor data.
+struct Launcher final : kadan::video::ImageFeedForwardLauncher {
+    Device& backend;
+    int selected;
+    bool fail_pair = false;
+    std::vector<char> calls;
+    std::vector<std::size_t> residual_first;
+
+    Launcher(Device& d, int id) : backend(d), selected(id) {
+    }
+
+    int device() const override {
+        return selected;
+    }
+
+    void pair(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write
+    ) override {
+        check(read.size() == 3 && write.size() == 6);
+        const auto halves =
+            kadan::video::split_image_silu_pair(write[0], read[0].dimensions[0]);
+        kadan::video::validate_image_silu_pair(
+            selected,
+            read[0],
+            read[1],
+            read[2],
+            write[1],
+            halves[0],
+            halves[1],
+            write[2],
+            write[3],
+            write[4],
+            write[5]
+        );
+        calls.push_back('p');
+        backend.status = fail_pair ? 1 : 0;
+    }
+
+    void down(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write
+    ) override {
+        check(read.size() == 2 && write.size() == 4 && calls.back() == 'p');
+        const kadan::MediaDeviceSpan bias{
+            nullptr, selected, kadan::DeviceDType::f32, {}, {}, 0, 0, 0
+        };
+        kadan::video::validate_bf16_projection(
+            selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
+        );
+        calls.push_back('d');
+    }
+
+    void residual(
+        void*,
+        const kadan::MediaDeviceSpan& hidden,
+        const kadan::MediaDeviceSpan& projected,
+        const kadan::MediaDeviceSpan& gates,
+        const kadan::MediaDeviceSpan& status,
+        std::size_t first,
+        std::size_t text
+    ) override {
+        check(calls.back() == 'd' && text == 3);
+        kadan::video::validate_image_residual(
+            selected, hidden, projected, gates, status, first, text
+        );
+        residual_first.push_back(first);
+        calls.push_back('r');
+    }
+};
 
 int main() {
     char directory[] = "/tmp/kadan-weight-load-XXXXXX";
@@ -176,6 +260,98 @@ int main() {
     check(resources->snapshot().used[1] == 0 && device.allocations.empty());
     block.unload();
     check(resources->snapshot().used[0] == 0);
+    write_weights(directory, false, 64, 128);
+    constexpr kadan::Bytes budget = 8 * 1024 * 1024 + 44000;
+    auto tiled_resources = std::make_shared<kadan::Resources>(
+        kadan::Footprint{64 * 1024 * 1024, budget, budget}
+    );
+    kadan::image::TransformerBlock tiled_block(tiled_resources);
+    tiled_block.load(
+        directory, "weights.safetensors", 7, {64, 1, 64, 128, {0, 0, 64}}, cancel
+    );
+    enum class Scenario {
+        missing_boundary,
+        pair_failure,
+        tiled
+    };
+    for (const auto scenario :
+         {Scenario::missing_boundary, Scenario::pair_failure, Scenario::tiled}) {
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = budget;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            tiled_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        check(!tiled_block.prepare_feed_forward(resident, 17, cancel));
+        check(resident.plan().devices.size() == 2 && resident.plan().rows < 17);
+        for (const auto& d : resident.plan().devices) {
+            for (auto name :
+                 {"resident/normalized", "resident/hidden", "ff/residual-gates"}) {
+                const std::size_t rows =
+                    std::string_view(name) == "ff/residual-gates" ? 2 : 17;
+                auto view = resident.tensor(
+                    d.device, name, kadan::DeviceDType::f32, {rows, 64}, {64, 1}
+                );
+                if (scenario != Scenario::missing_boundary
+                    || std::string_view(name) != "resident/normalized") {
+                    std::vector<std::byte> ingress(view.layout().bytes);
+                    resident.upload_input(view, ingress);
+                }
+            }
+        }
+        Launcher first(metadata, 0), second(metadata, 1);
+        first.fail_pair = scenario == Scenario::pair_failure;
+        const std::array<kadan::video::ImageFeedForwardLauncher*, 2> launchers{
+            &first, &second
+        };
+        bool rejected = false;
+        try {
+            tiled_block.execute_feed_forward(resident, 17, 3, launchers, cancel);
+        } catch (const std::exception& e) {
+            rejected = true;
+            check(
+                std::string_view(e.what())
+                == (scenario == Scenario::missing_boundary
+                        ? "media_session_unready_input"
+                        : "media_session_nonfinite_output")
+            );
+        }
+        check(rejected == (scenario != Scenario::tiled));
+        if (scenario == Scenario::missing_boundary)
+            check(first.calls.empty() && second.calls.empty());
+        if (scenario == Scenario::pair_failure)
+            check(first.calls == std::vector<char>{'p'} && second.calls.empty());
+        if (scenario == Scenario::tiled) {
+            check(
+                first.calls.size() == 3 * first.residual_first.size()
+                && first.calls == second.calls
+            );
+            check(first.residual_first.size() > 1 && first.residual_first.front() == 0);
+            check(first.residual_first.back() + resident.plan().rows >= 17);
+            check(
+                resident.transfers().peer_activation
+                && resident.transfers().local_activation
+            );
+            check(
+                !resident.transfers().activation_upload
+                && !resident.transfers().activation_download
+                && !resident.transfers().output_download
+            );
+        }
+        if (!rejected)
+            resident.finish();
+        check(
+            metadata.allocations.empty() && tiled_resources->snapshot().used[1] == 0
+            && tiled_resources->snapshot().used[2] == 0
+        );
+    }
+    tiled_block.unload();
     write_weights(directory, true);
     block.load(directory, "weights.safetensors", 7, {2, 1, 2, 2, {0, 0, 2}}, cancel);
     auto unsupported_backend = std::make_unique<Device>();
