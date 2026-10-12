@@ -31,6 +31,8 @@ struct Trace {
     std::vector<int> drains;
     std::vector<std::pair<int, MediaEvent>> waits;
     std::vector<Bytes> peer_bytes;
+    std::vector<int> memory_probes;
+    std::vector<std::pair<int, int>> peer_probes;
     std::size_t allocations_started = 0, releases = 0;
     bool peer01 = true, peer10 = true;
     int fail_allocate = -1, fail_drain = -1, fail_free = -1;
@@ -57,10 +59,12 @@ struct Fake final : MediaDeviceOperations {
     }
 
     Bytes free_memory(int d) override {
+        trace->memory_probes.push_back(d);
         return trace->free.at(d);
     }
 
     bool direct_peer(int a, int b) override {
+        trace->peer_probes.emplace_back(a, b);
         return a == 0 && b == 1 ? trace->peer01 : trace->peer10;
     }
 
@@ -727,12 +731,27 @@ void allocation_failure_drains_and_unchecked_overwrite() {
 
 void feed_forward_phase_isolation() {
     Fixture f;
+    // Simulate initialized library ownership before fresh admission evidence.
+    const auto library = f.resources->reserve(Workload::image, {0, 4096, 8192});
+    f.trace->free[0] -= 4096;
+    f.trace->free[1] -= 8192;
     StageManifest m;
     m.status_bytes = 4;
     m.workspaces_complete = true;
     m.schedule = MediaSchedule::feed_forward;
     m.tensors.push_back({"boundary", 64});
     check(!f.session.admit(m, MediaShape{4, 4, 0, 0, 0, 8}));
+    check(f.trace->memory_probes == std::vector<int>({0, 1, 0, 1}));
+    check(
+        f.trace->peer_probes
+        == std::vector<std::pair<int, int>>({{0, 1}, {1, 0}, {0, 1}, {1, 0}})
+    );
+    check(f.session.evidence().budgets[0].physical_free == 1000000 - 4096);
+    check(f.session.evidence().budgets[1].physical_free == 1000000 - 8192);
+    check(
+        f.session.evidence().budgets[0].ledger_remaining
+        == f.resources->snapshot().capacity[1] - 4096
+    );
     const int d = f.session.plan().devices.front().device;
     auto boundary = tensor(f.session, d, "boundary");
     auto hidden = tensor(f.session, d, "resident/hidden");
@@ -782,6 +801,8 @@ void feed_forward_phase_isolation() {
     status = {};
     f.session.finish();
     check(f.activity->owners == 0 && f.trace->allocations.empty());
+    check(f.resources->snapshot().used[1] == 4096);
+    f.resources->released(library);
 }
 
 void kv_barrier_and_worker_idle() {

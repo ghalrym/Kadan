@@ -357,7 +357,7 @@ struct CandidateBuilder {
             d,
             "resident/normalized",
             AllocationKind::activation,
-            norm,
+            ff_only ? mul(mul(shape.tokens, shape.hidden), 4) : norm,
             ff_only ? MediaPhase::prepare : MediaPhase::kv,
             MediaPhase::ff
         );

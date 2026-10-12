@@ -235,7 +235,7 @@ endif()
 option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
 
 add_library(kadan_image src/image.cpp)
-target_link_libraries(kadan_image PUBLIC kadan_checkpoint kadan_resources)
+target_link_libraries(kadan_image PUBLIC kadan_checkpoint kadan_resources kadan_media_session)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_image PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
