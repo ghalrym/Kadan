@@ -254,7 +254,7 @@ public:
         Workload workload,
         int device
     );
-    ~CudaBf16Projection();
+    ~CudaBf16Projection() override;
     void close();
 
     int device() const override {
