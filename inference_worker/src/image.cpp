@@ -736,6 +736,17 @@ void TransformerBlock::execute_feed_forward(
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
 ) {
+    execute_feed_forward(session, tokens, text, launchers, cancel, 0);
+}
+
+void TransformerBlock::execute_feed_forward(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel,
+    std::size_t shared_weights
+) {
     Busy active(busy_);
     stop(cancel);
     need(bool(model_), "image_load_state");
@@ -745,17 +756,12 @@ void TransformerBlock::execute_feed_forward(
         std::any_of(plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
             return w.name == m.prefix + "attn.to_out.0.weight";
         });
-    const bool modulation =
-        std::any_of(plan.weights.begin(), plan.weights.end(), [](const auto& w) {
-            return w.name == "modulation.1.weight";
-        });
     need(
         tokens && text <= tokens && plan.rows && plan.rows <= tokens
             && plan.schedule == MediaSchedule::feed_forward
             && launchers.size() == plan.devices.size()
             && plan.weights.size()
-                   == ((attention ? 4 : 3) + std::size_t(modulation))
-                          * plan.devices.size(),
+                   == (attention ? 4 : 3) * plan.devices.size() + shared_weights,
         "image_ff_plan"
     );
 

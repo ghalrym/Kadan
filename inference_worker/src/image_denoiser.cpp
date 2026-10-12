@@ -480,7 +480,9 @@ void Denoiser::execute_feed_forward(
         transformer.prepare_feed_forward_inputs(
             session, tokens, text, HiddenBoundary::post_attention, launchers, cancel
         );
-        transformer.execute_feed_forward(session, tokens, text, launchers, cancel);
+        transformer.execute_feed_forward(
+            session, tokens, text, launchers, cancel, plan.devices.size()
+        );
     } catch (...) {
         session.abort(std::current_exception());
         throw;

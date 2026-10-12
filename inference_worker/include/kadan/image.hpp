@@ -107,6 +107,15 @@ private:
         const std::atomic_bool&,
         StageManifest
     );
+    // Denoiser validates its shared weights; the block validates its own slices.
+    void execute_feed_forward(
+        MediaSession&,
+        std::size_t,
+        std::size_t,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&,
+        std::size_t shared_weights
+    );
     void execute_attention_output(
         MediaSession&,
         std::size_t tokens,
