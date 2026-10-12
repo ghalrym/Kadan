@@ -68,6 +68,11 @@ public:
     };
 
     struct Slot {
+        struct GatherProgress {
+            InitializedRange region;
+            std::size_t next_column;
+        };
+
         OwnedMediaAllocation owned;
         void* pointer = nullptr;
         std::uint64_t generation = 0;
@@ -78,6 +83,7 @@ public:
         DeviceDType dtype = DeviceDType::u8;
         std::vector<std::size_t> dimensions, strides;
         std::vector<InitializedRange> initialized;
+        std::optional<GatherProgress> gather;
 
         bool contains(Bytes offset, Bytes bytes) const {
             return std::any_of(
@@ -102,6 +108,7 @@ public:
         }
 
         void invalidate(Bytes offset, Bytes bytes) {
+            gather.reset();
             std::vector<InitializedRange> retained;
             for (const auto& range : initialized) {
                 if (range.end <= offset || range.begin >= offset + bytes)
@@ -127,6 +134,7 @@ public:
     StageManifest manifest;
     MediaShape shape;
     MediaAdmissionEvidence evidence;
+    MediaTransferCounters transfers;
     std::vector<Slot> slots;
     std::map<std::pair<int, std::size_t>, std::size_t> mapping;
     Footprint charge;
@@ -428,6 +436,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         for (auto& slot : s.slots) {
             slot.ready = {slot.owned.device, 0};
             slot.consumers.clear();
+            slot.gather.reset();
         }
         std::fill(s.charge.begin(), s.charge.end(), 0);
         for (const auto& slot : s.slots)
@@ -530,6 +539,10 @@ const MediaAdmissionEvidence& MediaSession::evidence() const {
     return state_->evidence;
 }
 
+const MediaTransferCounters& MediaSession::transfers() const {
+    return state_->transfers;
+}
+
 void MediaSession::advance(MediaPhase phase) {
     auto& s = *state_;
     s.healthy();
@@ -572,8 +585,10 @@ void MediaSession::advance(MediaPhase phase) {
         }
         for (const auto& limit : s.limits)
             s.operations->release_events(limit.device);
-        for (auto& slot : s.slots)
+        for (auto& slot : s.slots) {
             slot.ready = {slot.owned.device, 0};
+            slot.gather.reset();
+        }
         s.phase = phase;
     } catch (...) {
         abort(std::current_exception());
@@ -676,6 +691,7 @@ DeviceTensorView MediaSession::tensor(
     if (slot.logical_name != name || slot.dtype != type || slot.dimensions != dimensions
         || slot.strides != strides) {
         slot.initialized.clear();
+        slot.gather.reset();
         slot.logical_name = name;
         slot.dtype = type;
         slot.dimensions = dimensions;
@@ -744,6 +760,60 @@ DeviceTensorView MediaSession::weight(const WeightSlice& slice) {
     );
 }
 
+void MediaSession::upload(
+    DeviceTensorView& v, std::span<const std::byte> bytes, bool weight
+) {
+    auto& s = *state_;
+    s.healthy();
+    auto& slot = s.view(v);
+    if (s.phase != MediaPhase::prepare || v.layout_.offset
+        || (slot.owned.allocation.kind == AllocationKind::weight) != weight
+        || (!weight && slot.owned.allocation.kind != AllocationKind::activation)
+        || bytes.size() != v.layout_.bytes)
+        throw std::invalid_argument("media_session_upload_boundary");
+    try {
+        s.dependencies(v.layout_.device, slot);
+        slot.gather.reset();
+        s.operations->upload(v.layout_.device, slot.pointer, bytes);
+        slot.ready = s.operations->record(v.layout_.device);
+        s.operations->synchronize(v.layout_.device);
+        slot.certify(v.layout_.offset, v.layout_.bytes);
+        auto& counter = weight ? s.transfers.weight_upload : s.transfers.input_upload;
+        counter = add(counter, bytes.size());
+    } catch (...) {
+        abort(std::current_exception());
+    }
+}
+
+void MediaSession::upload_input(DeviceTensorView& v, std::span<const std::byte> bytes) {
+    upload(v, bytes, false);
+}
+
+void MediaSession::upload_weight(
+    DeviceTensorView& v, std::span<const std::byte> bytes
+) {
+    upload(v, bytes, true);
+}
+
+void MediaSession::download_output(DeviceTensorView& v, std::span<std::byte> bytes) {
+    auto& s = *state_;
+    s.healthy();
+    auto& slot = s.view(v);
+    if (s.phase != MediaPhase::complete
+        || !slot.contains(v.layout_.offset, v.layout_.bytes)
+        || bytes.size() != v.layout_.bytes
+        || slot.owned.allocation.kind != AllocationKind::activation)
+        throw std::invalid_argument("media_session_output_boundary");
+    try {
+        s.dependencies(v.layout_.device, slot);
+        s.operations->download(v.layout_.device, bytes, v.layout_.data);
+        s.operations->synchronize(v.layout_.device);
+        s.transfers.output_download = add(s.transfers.output_download, bytes.size());
+    } catch (...) {
+        abort(std::current_exception());
+    }
+}
+
 DeviceTensorView
 MediaSession::rows(DeviceTensorView& parent, std::size_t first, std::size_t count) {
     auto& s = *state_;
@@ -766,6 +836,84 @@ MediaSession::rows(DeviceTensorView& parent, std::size_t first, std::size_t coun
     result.state_ = state_;
     ++s.slots[parent.slot_].views;
     return result;
+}
+
+void MediaSession::gather(
+    DeviceTensorView& source, DeviceTensorView& destination, std::size_t first_column
+) {
+    auto& s = *state_;
+    s.healthy();
+    auto& a = s.view(source);
+    auto& b = s.view(destination);
+    const auto& x = source.layout_;
+    const auto& y = destination.layout_;
+    if (&a == &b || a.owned.allocation.weight || !a.contains(x.offset, x.bytes)
+        || x.dtype != y.dtype || x.dimensions.size() != 2 || y.dimensions.size() != 2
+        || x.dimensions[0] != y.dimensions[0]
+        || x.strides != std::vector<std::size_t>{x.dimensions[1], 1}
+        || y.strides != std::vector<std::size_t>{y.dimensions[1], 1}
+        || first_column > y.dimensions[1]
+        || x.dimensions[1] > y.dimensions[1] - first_column || b.owned.allocation.weight
+        || ((destination.name_ == "resident/key"
+             || destination.name_ == "resident/value")
+            && s.phase != MediaPhase::kv)
+        || (destination.name_ == "resident/hidden"
+            && s.phase <= s.plan.kv_complete_before_hidden_write))
+        throw std::invalid_argument("media_session_gather_layout");
+    if (x.device != y.device
+        && !std::any_of(
+            s.evidence.peers.begin(), s.evidence.peers.end(), [&](const auto& p) {
+                return p.from == x.device && p.to == y.device && p.direct;
+            }
+        ))
+        throw std::runtime_error("media_session_direct_peer_required");
+    const auto bytes = mul(x.dimensions[1], width(x.dtype));
+    if (s.unchecked.contains(b.ready))
+        throw std::invalid_argument("media_session_unchecked_overwrite");
+    const MediaSessionState::InitializedRange region{y.offset, add(y.offset, y.bytes)};
+    if (first_column
+        && (!b.gather || b.gather->region != region
+            || b.gather->next_column != first_column))
+        throw std::invalid_argument("media_session_gather_cycle");
+    try {
+        s.dependencies(y.device, a);
+        s.dependencies(y.device, b);
+        a.consumers.reserve(a.consumers.size() + 1);
+        if (!first_column)
+            b.invalidate(y.offset, y.bytes);
+        for (std::size_t row = 0; row < x.dimensions[0]; ++row) {
+            const auto offset =
+                mul(add(mul(row, y.dimensions[1]), first_column), width(y.dtype));
+            b.invalidate(add(y.offset, offset), bytes);
+            s.operations->peer(
+                x.device,
+                static_cast<std::byte*>(x.data) + row * bytes,
+                y.device,
+                static_cast<std::byte*>(y.data) + offset,
+                bytes
+            );
+        }
+        b.ready = s.operations->record(y.device);
+        a.consumers.push_back(b.ready);
+        // A peer copy preserves a validated source. Coverage becomes usable only
+        // after the destination event completes, including every contributing shard.
+        s.operations->synchronize(y.device);
+        for (std::size_t row = 0; row < x.dimensions[0]; ++row)
+            b.certify(
+                add(y.offset,
+                    mul(add(mul(row, y.dimensions[1]), first_column), width(y.dtype))),
+                bytes
+            );
+        const auto next_column = first_column + x.dimensions[1];
+        if (next_column < y.dimensions[1])
+            b.gather = MediaSessionState::Slot::GatherProgress{region, next_column};
+        if (x.device != y.device)
+            s.transfers.peer_activation = add(s.transfers.peer_activation, x.bytes);
+        else
+            s.transfers.local_activation = add(s.transfers.local_activation, x.bytes);
+    } catch (...) {
+        abort(std::current_exception());
+    }
 }
 
 void MediaSession::launch(
@@ -845,6 +993,7 @@ void MediaSession::complete(
     try {
         s.operations->synchronize(flag.ready.device);
         const auto invalid = s.operations->read_status(flag.ready.device, flag.pointer);
+        s.transfers.control_download = add(s.transfers.control_download, 4);
         if (invalid)
             throw std::runtime_error("media_session_nonfinite_output");
         for (auto* v : outputs)

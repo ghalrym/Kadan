@@ -34,6 +34,12 @@ struct MediaAdmissionEvidence {
     PeerMatrix peers;
 };
 
+struct MediaTransferCounters {
+    Bytes activation_upload = 0, activation_download = 0, local_activation = 0;
+    Bytes input_upload = 0, weight_upload = 0, output_download = 0, peer_activation = 0,
+          control_download = 0;
+};
+
 // Shared with WorkerCompute: even an unconfirmed cleanup blocks idle/park.
 struct MediaSessionActivity {
     std::atomic_size_t owners = 0;
@@ -65,6 +71,9 @@ public:
     virtual MediaEvent record(int device) = 0;
     virtual void synchronize(int device) = 0;
     virtual void release_events(int device) = 0;
+    virtual void upload(int device, void*, std::span<const std::byte>) = 0;
+    virtual void download(int device, std::span<std::byte>, const void*) = 0;
+    virtual void peer(int from, const void*, int to, void*, Bytes) = 0;
     virtual std::uint32_t read_status(int device, const void*) = 0;
 };
 class MediaSessionState;
@@ -116,6 +125,7 @@ public:
     std::optional<MediaPlanError> admit(const StageManifest&, const MediaShape&);
     const MediaResidencyPlan& plan() const;
     const MediaAdmissionEvidence& evidence() const;
+    const MediaTransferCounters& transfers() const;
     void advance(MediaPhase);
     DeviceTensorView tensor(
         int device,
@@ -126,6 +136,18 @@ public:
     );
     DeviceTensorView weight(const WeightSlice&);
     DeviceTensorView rows(DeviceTensorView&, std::size_t first, std::size_t count);
+    // Explicit host boundaries, synchronous for host-span lifetime. The ingress
+    // caller supplies validated input; weight copies preserve original raw bytes.
+    void upload_input(DeviceTensorView&, std::span<const std::byte>);
+    void upload_weight(DeviceTensorView&, std::span<const std::byte>);
+    void download_output(DeviceTensorView&, std::span<std::byte>);
+    // Each gather cycle starts at column zero and fills contiguous column shards
+    // in order. Restarting invalidates all prior coverage in the destination view.
+    void gather(
+        DeviceTensorView& source,
+        DeviceTensorView& destination,
+        std::size_t first_column
+    );
     // Launchers must use this device's owned stream and write a zero/nonzero
     // uint32 status word. They preserve model-specific casts/reduction order.
     void launch(
@@ -142,6 +164,7 @@ public:
 
 private:
     std::shared_ptr<MediaSessionState> state_;
+    void upload(DeviceTensorView&, std::span<const std::byte>, bool weight);
 };
 
 }  // namespace kadan

@@ -1,6 +1,7 @@
 #include "kadan/media_session.hpp"
 
 #include <array>
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <source_location>
@@ -29,6 +30,7 @@ struct Trace {
     std::map<void*, std::pair<int, Bytes>> allocations;
     std::vector<int> drains;
     std::vector<std::pair<int, MediaEvent>> waits;
+    std::vector<Bytes> peer_bytes;
     std::size_t allocations_started = 0, releases = 0;
     bool peer01 = true, peer10 = true;
     int fail_allocate = -1, fail_drain = -1, fail_free = -1;
@@ -109,6 +111,19 @@ struct Fake final : MediaDeviceOperations {
             else
                 ++it;
         }
+    }
+
+    void upload(int, void* p, std::span<const std::byte> source) override {
+        std::memcpy(p, source.data(), source.size());
+    }
+
+    void download(int, std::span<std::byte> dest, const void* p) override {
+        std::memcpy(dest.data(), p, dest.size());
+    }
+
+    void peer(int, const void* a, int, void* b, Bytes bytes) override {
+        trace->peer_bytes.push_back(bytes);
+        std::memcpy(b, a, bytes);
     }
 
     std::uint32_t read_status(int, const void*) override {
@@ -426,6 +441,103 @@ void typed_admission_failures() {
     check(f.trace->allocations_started == 0);
 }
 
+void alias_and_region_certificates() {
+    Fixture f;
+    auto m = decoder();
+    check(!f.session.admit(m, shape()));
+    const int d = f.session.plan().devices.front().device;
+    auto boundary = tensor(f.session, d, "boundary");
+    std::array<std::byte, 64> input{};
+    f.session.upload_input(boundary, input);
+    f.session.advance(MediaPhase::kv);
+    auto kv = tensor(f.session, d, "kv-only");
+    auto status = flag(f.session, d);
+    produce(f.session, d, kv, status);
+    check(
+        fails([&] { f.session.advance(MediaPhase::ff); }) == "media_session_live_alias"
+    );
+    kv = {};
+    status = {};
+    f.session.advance(MediaPhase::ff);
+    auto ff = tensor(f.session, d, "ff-only");
+    status = flag(f.session, d);
+    std::array<DeviceTensorView*, 1> read{&ff}, write{&status};
+    check(
+        fails([&] { f.session.launch(d, read, write, [](void*, auto, auto) {}); })
+        == "media_session_unready_input"
+    );
+    check(
+        fails([&] { f.session.upload_input(ff, input); })
+        == "media_session_upload_boundary"
+    );
+    auto half = f.session.rows(ff, 0, 2);
+    produce(f.session, d, half, status);
+    check(
+        fails([&] { f.session.launch(d, read, write, [](void*, auto, auto) {}); })
+        == "media_session_unready_input"
+    );
+    auto rest = f.session.rows(ff, 2, 2);
+    produce(f.session, d, rest, status);
+    f.session.launch(d, read, write, [](void*, auto, auto) {});
+    f.session.complete(write, status);
+    check(
+        f.session.transfers().control_download == 16
+        && f.session.transfers().input_upload == 64
+    );
+    half = {};
+    rest = {};
+    ff = {};
+    status = {};
+    boundary = {};
+    f.session.finish();
+}
+
+void error_and_cancel_drains() {
+    for (bool cancel : {false, true}) {
+        Fixture f;
+        check(!f.session.admit(decoder(), shape()));
+        const int d = f.session.plan().devices.front().device;
+        auto v = tensor(f.session, d, "boundary");
+        std::array<std::byte, 64> input{};
+        f.session.upload_input(v, input);
+        f.trace->drains.clear();
+        if (cancel) {
+            f.cancel = true;
+            check(
+                fails([&] { f.session.upload_input(v, input); })
+                == "media_session_cancelled"
+            );
+        } else {
+            f.session.advance(MediaPhase::kv);
+            auto status = flag(f.session, d);
+            std::array<DeviceTensorView*, 2> outputs{&v, &status};
+            check(
+                fails([&] {
+                    f.session.launch(d, {}, outputs, [](void*, auto, auto) {
+                        throw std::runtime_error("launch");
+                    });
+                })
+                == "launch"
+            );
+            check(
+                fails([&] { f.session.advance(MediaPhase::ff); })
+                == "media_session_closed_or_quarantined"
+            );
+        }
+        check(
+            std::find(f.trace->drains.begin(), f.trace->drains.end(), 0)
+            != f.trace->drains.end()
+        );
+        check(
+            std::find(f.trace->drains.begin(), f.trace->drains.end(), 1)
+            != f.trace->drains.end()
+        );
+        check(!f.trace->allocations.empty());
+        v = {};
+        check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
+    }
+}
+
 void uncertain_cleanup_and_first_error() {
     Fixture f;
     check(!f.session.admit(decoder(), shape()));
@@ -484,6 +596,205 @@ void status_and_move_lifecycle() {
     check(f.resources->snapshot().residents == 0);
 }
 
+void explicit_output_and_outliving_views() {
+    Fixture f;
+    check(!f.session.admit(decoder(), shape()));
+    int d = f.session.plan().devices.front().device;
+    auto output = tensor(f.session, d, "boundary");
+    std::array<std::byte, 64> bytes{};
+    f.session.upload_input(output, bytes);
+    check(
+        fails([&] { f.session.download_output(output, bytes); })
+        == "media_session_output_boundary"
+    );
+    f.session.advance(MediaPhase::complete);
+    f.session.download_output(output, bytes);
+    check(
+        f.session.transfers().output_download == 64
+        && f.session.transfers().activation_upload == 0
+        && f.session.transfers().activation_download == 0
+    );
+    std::optional<MediaSession> owner(std::move(f.session));
+    owner.reset();
+    check(
+        output.layout().data && f.activity->owners == 1
+        && f.resources->snapshot().residents == 1
+    );
+    output = {};
+    check(f.activity->owners == 0 && f.resources->snapshot().residents == 0);
+}
+
+void record_and_free_errors() {
+    Fixture f;
+    check(!f.session.admit(decoder(), shape()));
+    int d = f.session.plan().devices.front().device;
+    auto input = tensor(f.session, d, "boundary");
+    std::array<std::byte, 64> bytes{};
+    f.trace->fail_record = true;
+    f.trace->drains.clear();
+    check(fails([&] { f.session.upload_input(input, bytes); }) == "record");
+    check(f.trace->drains == std::vector<int>({0, 1}));
+    input = {};
+    check(f.resources->snapshot().residents == 0);
+    Fixture g;
+    check(!g.session.admit(decoder(), shape()));
+    g.trace->fail_free = g.session.plan().devices.front().device;
+    check(fails([&] { g.session.finish(); }) == "free");
+    check(fails([&] { g.session.finish(); }) == "media_session_cleanup_unconfirmed");
+    check(fails([&] { g.session.abort(); }) == "media_session_cleanup_unconfirmed");
+    check(
+        g.resources->snapshot().residents == 1 && g.activity->owners == 1
+        && !g.trace->allocations.empty()
+    );
+    for (const auto& [pointer, allocation] : g.trace->allocations) {
+        (void)allocation;
+        ::operator delete(pointer);
+    }
+    g.trace->allocations.clear();
+}
+
+void owner_reuse_retirement() {
+    Fixture f;
+    auto m = decoder();
+    m.weights = {
+        {"w",
+         {1, 2, 3, 0, 0, 0, 0, 0, 32},
+         TensorStorage::bf16_exact,
+         4,
+         4,
+         WeightPartition::replicated}
+    };
+    check(!f.session.admit(m, shape()));
+    auto slice = f.session.plan().weights.front();
+    auto v = f.session.weight(slice);
+    check(
+        v.layout().dtype == DeviceDType::bf16
+        && v.layout().dimensions == std::vector<std::size_t>({4, 4})
+    );
+    std::array<std::byte, 32> bytes{};
+    f.session.upload_weight(v, bytes);
+    const auto pointer = v.layout().data;
+    const auto generation = v.layout().generation;
+    v = {};
+    f.session.advance(MediaPhase::complete);
+    auto before = f.trace->allocations_started;
+    check(!f.session.admit(m, shape()));
+    check(f.trace->allocations_started == before && !f.session.plan().reuse.empty());
+    v = f.session.weight(f.session.plan().weights.front());
+    check(v.layout().data == pointer && v.layout().generation == generation);
+    v = {};
+    f.session.advance(MediaPhase::complete);
+    m.weights[0].identity.inode = 4;
+    check(!f.session.admit(m, shape()));
+    check(f.trace->releases >= 1);
+    check(f.trace->allocations_started == before + 1);
+    f.session.finish();
+    check(f.resources->snapshot().residents == 0);
+}
+
+void complete_partition_gather() {
+    Fixture f;
+    f.trace->free[0] = f.trace->free[1] = 250000;
+    StageManifest m;
+    m.workspaces_complete = true;
+    m.status_bytes = 4;
+    m.weights = {
+        {"channels",
+         {1, 2, 400000, 0, 0, 0, 0, 0, 400000},
+         TensorStorage::f32,
+         100000,
+         1,
+         WeightPartition::channels}
+    };
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.size() == 2);
+    f.session.advance(MediaPhase::kv);
+    for (int d : {0, 1}) {
+        auto key = tensor(f.session, d, "resident/key", 4, 2);
+        auto value = tensor(f.session, d, "resident/value", 4, 2);
+        auto status = flag(f.session, d);
+        produce(f.session, d, key, status);
+        produce(f.session, d, value, status);
+    }
+    f.session.advance(MediaPhase::attention);
+    auto left = tensor(f.session, 0, "resident/attended", 4, 2);
+    auto right = tensor(f.session, 1, "resident/attended", 4, 2);
+    auto destination = tensor(f.session, 0, "resident/attention-input");
+    auto status0 = flag(f.session, 0), status1 = flag(f.session, 1);
+    std::memset(left.layout().data, 0x11, left.layout().bytes);
+    std::memset(right.layout().data, 0x22, right.layout().bytes);
+    produce(f.session, 0, left, status0);
+    produce(f.session, 1, right, status1);
+    check(
+        fails([&] { f.session.gather(right, destination, 2); })
+        == "media_session_gather_cycle"
+    );
+    f.session.gather(left, destination, 0);
+    check(
+        fails([&] { f.session.gather(left, destination, 1); })
+        == "media_session_gather_cycle"
+    );
+    std::array<DeviceTensorView*, 1> read{&destination}, write{&status0};
+    check(
+        fails([&] { f.session.launch(0, read, write, [](void*, auto, auto) {}); })
+        == "media_session_unready_input"
+    );
+    f.session.gather(right, destination, 2);
+    check(
+        f.session.transfers().peer_activation == 32 && f.trace->peer_bytes.size() == 8
+    );
+    f.session.launch(0, read, write, [](void*, auto, auto) {});
+    f.session.complete(write, status0);
+    std::memset(left.layout().data, 0x33, left.layout().bytes);
+    produce(f.session, 0, left, status0);
+    f.session.gather(left, destination, 0);
+    check(
+        fails([&] { f.session.launch(0, read, write, [](void*, auto, auto) {}); })
+        == "media_session_unready_input"
+    );
+    const auto* actual = static_cast<const unsigned char*>(destination.layout().data);
+    check(actual[0] == 0x33 && actual[8] == 0x22);
+    std::memset(right.layout().data, 0x44, right.layout().bytes);
+    produce(f.session, 1, right, status1);
+    f.session.gather(right, destination, 2);
+    check(actual[0] == 0x33 && actual[8] == 0x44);
+    f.session.launch(0, read, write, [](void*, auto, auto) {});
+    f.session.complete(write, status0);
+    check(
+        std::any_of(f.trace->waits.begin(), f.trace->waits.end(), [](const auto& wait) {
+            return wait.first == 0 && wait.second.device == 1;
+        })
+    );
+    auto key = tensor(f.session, 0, "resident/key", 4, 2);
+    std::array<DeviceTensorView*, 2> frozen_write{&key, &status0};
+    check(
+        fails([&] { f.session.launch(0, {}, frozen_write, [](void*, auto, auto) {}); })
+        == "media_session_write_ownership"
+    );
+    check(
+        fails([&] { f.session.gather(left, key, 0); }) == "media_session_gather_layout"
+    );
+    key = {};
+    auto hidden = tensor(f.session, 0, "resident/hidden");
+    check(
+        fails([&] { f.session.gather(left, hidden, 3); })
+        == "media_session_gather_layout"
+    );
+    left = {};
+    right = {};
+    destination = {};
+    status0 = {};
+    status1 = {};
+    hidden = {};
+    f.session.advance(MediaPhase::ff);
+    f.session.advance(MediaPhase::kv);
+    check(
+        fails([&] { f.session.advance(MediaPhase::attention); })
+        == "media_session_incomplete_kv"
+    );
+    check(f.resources->snapshot().residents == 0);
+}
+
 void repeated_admission_invalidates_kv() {
     Fixture f;
     StageManifest m;
@@ -501,12 +812,57 @@ void repeated_admission_invalidates_kv() {
     }
     f.session.advance(MediaPhase::complete);
     check(!f.session.admit(m, shape()));
+    auto hidden = tensor(f.session, d, "resident/hidden");
+    std::array<std::byte, 64> bytes{};
+    f.session.upload_input(hidden, bytes);
+    hidden = {};
     f.session.advance(MediaPhase::kv);
     check(
         fails([&] { f.session.advance(MediaPhase::attention); })
         == "media_session_incomplete_kv"
     );
     check(f.resources->snapshot().residents == 0);
+}
+
+void allocation_failure_drains_and_unchecked_overwrite() {
+    Fixture f;
+    f.trace->fail_allocate = 0;
+    check(fails([&] { f.session.admit(decoder(), shape()); }) == "allocate");
+    check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
+    Fixture g;
+    check(!g.session.admit(decoder(), shape()));
+    int d = g.session.plan().devices.front().device;
+    auto output = tensor(g.session, d, "boundary");
+    auto status = flag(g.session, d);
+    auto first = g.session.rows(output, 0, 2), second = g.session.rows(output, 2, 2);
+    std::array<DeviceTensorView*, 2> a{&first, &status}, b{&second, &status};
+    g.session.launch(d, {}, a, [](void*, auto, auto) {});
+    check(
+        fails([&] { g.session.launch(d, {}, b, [](void*, auto, auto) {}); })
+        == "media_session_unchecked_overwrite"
+    );
+    g.session.complete(a, status);
+    g.session.launch(d, {}, b, [](void*, auto, auto) {});
+    check(
+        fails([&] { g.session.complete(a, status); }) == "media_session_status_event"
+    );
+    g.session.complete(b, status);
+    output = {};
+    status = {};
+    first = {};
+    second = {};
+    g.session.advance(MediaPhase::complete);
+    auto final_output = tensor(g.session, d, "boundary");
+    auto final_status = flag(g.session, d);
+    std::array<DeviceTensorView*, 2> final_write{&final_output, &final_status};
+    g.session.launch(d, {}, final_write, [](void*, auto, auto) {});
+    final_output = {};
+    final_status = {};
+    check(
+        fails([&] { g.session.admit(decoder(), shape()); })
+        == "media_session_unchecked_status"
+    );
+    g.session.abort();
 }
 
 void kv_barrier_and_worker_idle() {
@@ -547,11 +903,19 @@ int main() {
     stage_ownership();
     weight_prefix_identity();
     reacquired_output_certificate();
+
     admission_and_cleanup();
     typed_admission_failures();
+    alias_and_region_certificates();
+    error_and_cancel_drains();
     uncertain_cleanup_and_first_error();
     status_and_move_lifecycle();
+    explicit_output_and_outliving_views();
+    record_and_free_errors();
+    owner_reuse_retirement();
+    complete_partition_gather();
     repeated_admission_invalidates_kv();
+    allocation_failure_drains_and_unchecked_overwrite();
     kv_barrier_and_worker_idle();
     event_regions();
     std::cout
