@@ -73,6 +73,7 @@ class CudaDeviceOperations final : public DeviceOperations,
 public:
     void* data = nullptr;
     cublasHandle_t blas = nullptr;
+    int compute_major = 0;
     const std::atomic_bool* cancellation = nullptr;
     const std::atomic_bool* failed = nullptr;
     Bytes scratch_bytes = 0;
@@ -129,6 +130,9 @@ public:
 
     void select(int device) override {
         checked(cudaSetDevice(device));
+        checked(cudaDeviceGetAttribute(
+            &compute_major, cudaDevAttrComputeCapabilityMajor, device
+        ));
     }
 
     void allocate(Bytes bytes) override {
@@ -548,7 +552,8 @@ class Compute final : public H3Compute {
         const std::atomic_bool& cancel,
         bool precise = false,
         const WeightIdentity* identity = nullptr,
-        const std::function<void(std::size_t, std::span<Weight>)>* source = nullptr
+        const std::function<void(std::size_t, std::span<Weight>)>* source = nullptr,
+        ProjectionPolicy policy = ProjectionPolicy::standard
     ) {
         require(!cancel.load(), "h3_cuda_cancelled");
         validate(x, bias, in, out, y);
@@ -840,22 +845,38 @@ class Compute final : public H3Compute {
                             );
                         } else {
                             const float one = 1, zero = 0;
-                            checked(cublasSgemm(
-                                arena.blas,
-                                CUBLAS_OP_T,
-                                CUBLAS_OP_N,
-                                int(out),
-                                int(rows),
-                                int(in),
-                                &one,
-                                static_cast<float*>(weight_pointer),
-                                int(in),
-                                input_pointer,
-                                int(in),
-                                &zero,
-                                arena.at<float>(output),
-                                int(out)
-                            ));
+                            with_projection_math(
+                                projection_uses_tf32(
+                                    policy, workload_, arena.compute_major, precise
+                                ),
+                                CUBLAS_TF32_TENSOR_OP_MATH,
+                                [&] {
+                                    cublasMath_t mode;
+                                    checked(cublasGetMathMode(arena.blas, &mode));
+                                    return mode;
+                                },
+                                [&](cublasMath_t mode) {
+                                    checked(cublasSetMathMode(arena.blas, mode));
+                                },
+                                [&] {
+                                    checked(cublasSgemm(
+                                        arena.blas,
+                                        CUBLAS_OP_T,
+                                        CUBLAS_OP_N,
+                                        int(out),
+                                        int(rows),
+                                        int(in),
+                                        &one,
+                                        static_cast<float*>(weight_pointer),
+                                        int(in),
+                                        input_pointer,
+                                        int(in),
+                                        &zero,
+                                        arena.at<float>(output),
+                                        int(out)
+                                    ));
+                                }
+                            );
                             add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
                                 arena.at<float>(output),
                                 arena.at<float>(b),
@@ -1135,7 +1156,6 @@ public:
                                     int(dim)
                                 )
                             );
-                            checked(cudaStreamSynchronize(cudaStreamLegacy));
                         }
                         divide_attention<<<unsigned((rows * dim + 255) / 256), 256>>>(
                             arena.at<Real>(dy),
@@ -1144,6 +1164,8 @@ public:
                             unsigned(dim)
                         );
                         checked(cudaGetLastError());
+                        // The legacy stream orders all key tiles; this blocking copy
+                        // waits for the complete query tile before host consumption.
                         checked(cudaMemcpy(
                             hy,
                             arena.at<void>(dy),
@@ -1314,9 +1336,12 @@ public:
         std::size_t out,
         std::span<float> y,
         const std::atomic_bool& c,
-        bool precise
+        bool precise,
+        ProjectionPolicy policy
     ) override {
-        project<float>({}, {}, b, x, in, out, 0, y, c, precise, &identity, &source);
+        project<float>(
+            {}, {}, b, x, in, out, 0, y, c, precise, &identity, &source, policy
+        );
         return true;
     }
 

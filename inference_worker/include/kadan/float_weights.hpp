@@ -104,7 +104,8 @@ static inline void project_source(
     std::size_t in,
     std::size_t out,
     std::span<float> output,
-    const std::atomic_bool& cancel
+    const std::atomic_bool& cancel,
+    ProjectionPolicy policy = ProjectionPolicy::standard
 ) {
     if (!in || !out || input.size() % in || output.size() % out
         || output.size() / out != input.size() / in
@@ -116,7 +117,16 @@ static inline void project_source(
     shard.check_unchanged();
     if (compute
         && compute->dense_source(
-            shard.tensor_identity(name), source, bias, input, in, out, output, cancel
+            shard.tensor_identity(name),
+            source,
+            bias,
+            input,
+            in,
+            out,
+            output,
+            cancel,
+            false,
+            policy
         )) {
         shard.check_unchanged();
         return;

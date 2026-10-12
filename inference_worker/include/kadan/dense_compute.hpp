@@ -5,6 +5,7 @@
 #include <span>
 #include <vector>
 
+#include "kadan/projection_math.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/weight_identity.hpp"
 
@@ -92,7 +93,8 @@ public:
         std::size_t,
         std::span<float>,
         const std::atomic_bool&,
-        bool = false
+        bool = false,
+        ProjectionPolicy = ProjectionPolicy::standard
     ) {
         return false;
     }

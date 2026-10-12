@@ -176,7 +176,8 @@ struct TransformerBlock::Impl {
         std::size_t rows,
         std::size_t in,
         std::size_t out,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        ProjectionPolicy policy = ProjectionPolicy::standard
     ) {
         const auto& spec = specs.at(names.at(name + ".weight"));
         need(
@@ -194,7 +195,8 @@ struct TransformerBlock::Impl {
             in,
             out,
             y,
-            cancel
+            cancel,
+            policy
         );
         finite(y);
     }
@@ -484,15 +486,30 @@ void TransformerBlock::execute(
         rows,
         d.state,
         d.intermediate,
-        cancel
+        cancel,
+        ProjectionPolicy::image_feed_forward
     );
     m.linear(
-        "img_mlp.proj", n.span(), up.span(), rows, d.state, d.intermediate, cancel
+        "img_mlp.proj",
+        n.span(),
+        up.span(),
+        rows,
+        d.state,
+        d.intermediate,
+        cancel,
+        ProjectionPolicy::image_feed_forward
     );
     for (std::size_t i = 0; i < gate.n; ++i)
         gate.data[i] = silu(gate.data[i]) * up.data[i];
     m.linear(
-        "img_mlp.out", gate.span(), delta.span(), rows, d.intermediate, d.state, cancel
+        "img_mlp.out",
+        gate.span(),
+        delta.span(),
+        rows,
+        d.intermediate,
+        d.state,
+        cancel,
+        ProjectionPolicy::image_feed_forward
     );
     for (std::size_t t = 0; t < rows; ++t)
         for (std::size_t c = 0; c < d.state; ++c)

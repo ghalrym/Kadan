@@ -64,7 +64,120 @@ struct FakeContext final : DenseCompute {
     }
 };
 
+void projection_math() {
+    for (auto workload :
+         {Workload::llm,
+          Workload::image,
+          Workload::video,
+          Workload::speech,
+          Workload::tts,
+          Workload::decision})
+        for (int major : {7, 8, 9})
+            for (bool precise : {false, true}) {
+                check(!projection_uses_tf32(
+                    ProjectionPolicy::standard, workload, major, precise
+                ));
+                check(
+                    projection_uses_tf32(
+                        ProjectionPolicy::image_feed_forward, workload, major, precise
+                    )
+                    == (workload == Workload::image && major >= 8 && !precise)
+                );
+            }
+
+    // Fake handle state only: no device, tensor, projection or model execution.
+    for (bool enabled : {false, true}) {
+        int mode = 17, gets = 0, sets = 0, calls = 0;
+        with_projection_math(
+            enabled,
+            23,
+            [&] {
+                ++gets;
+                return mode;
+            },
+            [&](int next) {
+                ++sets;
+                mode = next;
+            },
+            [&] {
+                ++calls;
+                check(mode == (enabled ? 23 : 17));
+            }
+        );
+        check(
+            mode == 17 && calls == 1 && gets == int(enabled) && sets == 2 * int(enabled)
+        );
+    }
+    // Preserve the exact previous mode, including an already-fast handle.
+    for (int previous : {17, 23}) {
+        int mode = previous;
+        try {
+            with_projection_math(
+                true,
+                23,
+                [&] { return mode; },
+                [&](int next) { mode = next; },
+                [] { throw std::runtime_error("cancelled_or_gemm_error"); }
+            );
+            check(false);
+        } catch (const std::runtime_error& e) {
+            check(std::string(e.what()) == "cancelled_or_gemm_error");
+        }
+        check(mode == previous);
+    }
+    // Even a failing enable may have changed external state; attempt restoration.
+    {
+        int mode = 17, calls = 0;
+        try {
+            with_projection_math(
+                true,
+                23,
+                [&] { return mode; },
+                [&](int next) {
+                    mode = next;
+                    if (next == 23)
+                        throw std::runtime_error("set_failed");
+                },
+                [&] { ++calls; }
+            );
+            check(false);
+        } catch (const std::runtime_error& e) {
+            check(std::string(e.what()) == "set_failed");
+        }
+        check(mode == 17 && calls == 0);
+    }
+    // Restoration failures must propagate to existing workspace cleanup, never
+    // allow a contaminated handle to be silently reused or hide the first error.
+    for (bool operation_fails : {false, true}) {
+        int mode = 17;
+        try {
+            with_projection_math(
+                true,
+                23,
+                [&] { return mode; },
+                [&](int next) {
+                    if (next == 17)
+                        throw std::runtime_error("restore_failed");
+                    mode = next;
+                },
+                [&] {
+                    if (operation_fails)
+                        throw std::runtime_error("gemm_failed");
+                }
+            );
+            check(false);
+        } catch (const OperationCleanupError& e) {
+            check(operation_fails);
+            check(exception_message(e.operation) == "gemm_failed");
+            check(exception_message(e.cleanup) == "restore_failed");
+        } catch (const std::runtime_error& e) {
+            check(!operation_fails && std::string(e.what()) == "restore_failed");
+        }
+    }
+}
+
 int main() {
+    projection_math();
     // Exercise only progress events, without a model, tensor or inference call.
     std::vector<std::pair<std::string, std::size_t>> updates;
     video::VideoProgress progress([&](const char* phase, std::size_t count) {

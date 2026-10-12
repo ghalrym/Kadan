@@ -397,8 +397,20 @@ void Denoiser::execute(
     if (hook)
         hook("conditioning", 0);
     for (std::size_t i = 0; i < d.layers; ++i) {
+        if (hook)
+            hook("block_started", i);
         m.blocks[i]->execute(
-            x.span(), modulation.span(), text, height, width, next.span(), cancel
+            x.span(),
+            modulation.span(),
+            text,
+            height,
+            width,
+            next.span(),
+            cancel,
+            [&](const char* phase) {
+                if (hook)
+                    hook(phase, i);
+            }
         );
         std::swap(x.data, next.data);
         if (hook)
