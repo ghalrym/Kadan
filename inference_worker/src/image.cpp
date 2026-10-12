@@ -348,6 +348,10 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     manifest.blas_bytes = video::bf16_projection_workspace_bytes;
     manifest.status_bytes = sizeof(std::uint32_t);  // Aggregate certificate.
     manifest.tensors = {
+        {"ff/modulation",
+         8 * m.d.state * sizeof(float),
+         MediaPhase::prepare,
+         MediaPhase::prepare},
         {"ff/residual-gates", 2 * m.d.state * sizeof(float)},
         {"ff/gate-status",
          sizeof(std::uint32_t),
@@ -386,7 +390,8 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     }
     // Planner owns full hidden/normalized boundaries, combined gate/up output,
     // ordered full-width FF gather, down/residual tile, and reusable BF16 input.
-    // No normalization/attention/LoRA operator is part of this FF boundary.
+    // FF normalization uses actual modulation; there is no affine norm weight.
+    // Attention/LoRA remain outside this explicit FF boundary.
     manifest.workspaces_complete = true;
     if (auto error = session.admit(
             manifest, MediaShape{tokens, m.d.state, 0, 0, 0, m.d.intermediate}
@@ -412,6 +417,94 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         throw;
     }
     return {};
+}
+
+void TransformerBlock::prepare_feed_forward_inputs(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto state = model_->d.state;
+    const auto& plan = session.plan();
+    need(
+        tokens && text <= tokens && plan.schedule == MediaSchedule::feed_forward
+            && launchers.size() == plan.devices.size(),
+        "image_ff_plan"
+    );
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView hidden, modulation, normalized, gates, status;
+    };
+
+    try {
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_ff_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_ff_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_ff_launcher");
+            auto matrix = [&](const char* name, std::size_t rows, std::size_t columns) {
+                return session.tensor(
+                    planned.device,
+                    name,
+                    DeviceDType::f32,
+                    {rows, columns},
+                    {columns, 1}
+                );
+            };
+            devices.push_back(
+                {launcher,
+                 matrix("resident/hidden", tokens, state),
+                 matrix("ff/modulation", 2, 4 * state),
+                 matrix("resident/normalized", tokens, state),
+                 matrix("ff/residual-gates", 2, state),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array inputs{&d.hidden, &d.modulation};
+            session.require_ready(inputs);
+            video::validate_image_ff_preparation(
+                planned.device,
+                d.hidden.layout(),
+                d.modulation.layout(),
+                d.normalized.layout(),
+                d.gates.layout(),
+                d.status.layout(),
+                text
+            );
+        }
+        // Validate ALL devices before any output submission. Hidden stays read-only.
+        for (auto& d : devices) {
+            stop(cancel);
+            const std::array inputs{&d.hidden, &d.modulation};
+            const std::array outputs{&d.normalized, &d.gates, &d.status};
+            session.launch(
+                d.launcher->device(),
+                inputs,
+                outputs,
+                [&](void* stream, auto read, auto write) {
+                    d.launcher->prepare(stream, read, write, text);
+                }
+            );
+            session.complete(outputs, d.status);
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
 }
 
 void TransformerBlock::execute_feed_forward(

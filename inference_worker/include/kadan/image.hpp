@@ -47,11 +47,21 @@ public:
     );
     void unload();
     // Prepare only: actual bias-free BF16 gate/up/down checkpoint slices and
-    // session-owned FF resources. Caller prepares complete normalized input,
-    // hidden and [target,text] residual gates before advancing to ff.
+    // session-owned FF resources. Caller prepares complete post-attention hidden
+    // and actual modulation [2,4*state] on every device, then releases its views.
     // Initialize/account device launchers before this fresh admission probe.
     std::optional<MediaPlanError>
     prepare_feed_forward(MediaSession&, std::size_t tokens, const std::atomic_bool&);
+    // Explicit device normalization/modulation and [target,text] residual gates.
+    // All devices' hidden/modulation inputs must be certified before submission.
+    // Leaves the session in prepare; invoke execute_feed_forward next.
+    void prepare_feed_forward_inputs(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // Explicit resident FF only. Caller owns initialized per-device launchers and
     // complete normalized/hidden/[target,text] gates prepared by the model.
     // Returns in complete phase; drain and close launchers before session destruction.
