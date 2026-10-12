@@ -1126,7 +1126,7 @@ void H3DecoderBlock::compute(
                         out,
                         y,
                         cancel
-                    ),
+                    ) != ProjectionResult::unsupported,
                     "video_projection_source"
                 );
             } else
@@ -1431,7 +1431,7 @@ void H3VideoDecoder::execute(
                         out,
                         y,
                         cancel
-                    ),
+                    ) != ProjectionResult::unsupported,
                     "video_projection_source"
                 );
             else
@@ -1566,7 +1566,7 @@ void H3VideoDecoder::execute(
                     patch_values,
                     projected,
                     cancel
-                ),
+                ) != ProjectionResult::unsupported,
                 "video_projection_source"
             );
         else

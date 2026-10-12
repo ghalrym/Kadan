@@ -94,7 +94,7 @@ inline FloatSlice float_slice(
 
 // Both GPU and CPU paths consume output-row tiles. GPU owns its separately
 // bounded source staging; no full dense weight matrix is created by this helper.
-static inline void project_source(
+static inline ProjectionResult project_source(
     Resources& r,
     Workload workload,
     DenseCompute* compute,
@@ -128,22 +128,23 @@ static inline void project_source(
                 }
             );
         };
-        if (compute->dense_bf16_source(
-                shard.tensor_identity(name),
-                raw_source,
-                bias,
-                input,
-                in,
-                out,
-                output,
-                cancel
-            )) {
+        const auto result = compute->dense_bf16_source(
+            shard.tensor_identity(name),
+            raw_source,
+            bias,
+            input,
+            in,
+            out,
+            output,
+            cancel
+        );
+        if (result != ProjectionResult::unsupported) {
             shard.check_unchanged();
-            return;
+            return result;
         }
     }
-    if (compute
-        && compute->dense_source(
+    if (compute) {
+        const auto result = compute->dense_source(
             shard.tensor_identity(name),
             source,
             bias,
@@ -154,9 +155,11 @@ static inline void project_source(
             cancel,
             false,
             policy
-        )) {
-        shard.check_unchanged();
-        return;
+        );
+        if (result != ProjectionResult::unsupported) {
+            shard.check_unchanged();
+            return result;
+        }
     }
     const auto rows = input.size() / in;
     for (std::size_t first = 0; first < out; first += 64) {
@@ -202,5 +205,6 @@ static inline void project_source(
         }
     }
     shard.check_unchanged();
+    return ProjectionResult::unvalidated;
 }
 }  // namespace kadan::checkpoint

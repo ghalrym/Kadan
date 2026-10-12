@@ -1,5 +1,7 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <span>
@@ -32,6 +34,22 @@ struct DeviceWeightPlacement {
     int device;
     Bytes planned_bytes, allocated_bytes;
 };
+
+// Per-call result: finite certifies every stored post-bias output, after all
+// partitions synchronize. Unsupported leaves the caller's fallback responsible.
+enum class ProjectionResult {
+    unsupported,
+    unvalidated,
+    finite
+};
+
+inline bool
+projection_output_finite(ProjectionResult result, std::span<const float> output) {
+    return result == ProjectionResult::finite
+           || std::all_of(output.begin(), output.end(), [](float v) {
+                  return std::isfinite(v);
+              });
+}
 
 // Synchronous projection boundary. Caller owns admitted host spans until return;
 // implementations admit staging/device memory and synchronize before returning.
@@ -94,7 +112,7 @@ public:
 
     using Bf16WeightSource = std::function<void(std::size_t, std::span<std::uint16_t>)>;
 
-    virtual bool dense_bf16_source(
+    virtual ProjectionResult dense_bf16_source(
         const WeightIdentity&,
         const Bf16WeightSource&,
         std::span<const float>,
@@ -104,12 +122,12 @@ public:
         std::span<float>,
         const std::atomic_bool&
     ) {
-        return false;
+        return ProjectionResult::unsupported;
     }
 
     using FloatWeightSource = std::function<void(std::size_t, std::span<float>)>;
 
-    virtual bool dense_source(
+    virtual ProjectionResult dense_source(
         const WeightIdentity&,
         const FloatWeightSource&,
         std::span<const float>,
@@ -121,7 +139,7 @@ public:
         bool = false,
         ProjectionPolicy = ProjectionPolicy::standard
     ) {
-        return false;
+        return ProjectionResult::unsupported;
     }
 
     // Return false to retain the model's CPU attention. Q/K/V use [token,head,dim].

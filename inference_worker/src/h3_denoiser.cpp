@@ -270,18 +270,18 @@ void project_base(
     } else {
         if (compute
             && compute->dense_source(
-                shard.tensor_identity(prefix + ".weight"),
-                [&](std::size_t first, std::span<float> target) {
-                    read_dense(shard, prefix + ".weight", target, cancel, first);
-                },
-                {bias_values.get(), out},
-                input,
-                in,
-                out,
-                output,
-                cancel,
-                true
-            ))
+                   shard.tensor_identity(prefix + ".weight"),
+                   [&](std::size_t first, std::span<float> target) {
+                       read_dense(shard, prefix + ".weight", target, cancel, first);
+                   },
+                   {bias_values.get(), out},
+                   input,
+                   in,
+                   out,
+                   output,
+                   cancel,
+                   true
+               ) != ProjectionResult::unsupported)
             return;
         if (compute) {
             Admission dense_admission(resources, in * out * sizeof(float));
