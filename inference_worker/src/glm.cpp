@@ -418,7 +418,7 @@ struct Store {
                 y,
                 *cancel,
                 false
-            ),
+            ) != ProjectionResult::unsupported,
             "glm_cuda_source_required"
         );
         if (rounded)

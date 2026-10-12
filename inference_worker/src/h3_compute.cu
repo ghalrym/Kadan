@@ -1446,7 +1446,7 @@ public:
         return native_bf16_;
     }
 
-    bool dense_bf16_source(
+    ProjectionResult dense_bf16_source(
         const WeightIdentity& identity,
         const Bf16WeightSource& source,
         std::span<const float> b,
@@ -1457,14 +1457,14 @@ public:
         const std::atomic_bool& c
     ) override {
         if (!native_bf16_)
-            return false;
+            return ProjectionResult::unsupported;
         project<std::uint16_t>(
             {}, {}, b, x, in, out, 0, y, c, false, &identity, &source
         );
-        return true;
+        return ProjectionResult::finite;
     }
 
-    bool dense_source(
+    ProjectionResult dense_source(
         const WeightIdentity& identity,
         const FloatWeightSource& source,
         std::span<const float> b,
@@ -1479,7 +1479,7 @@ public:
         project<float>(
             {}, {}, b, x, in, out, 0, y, c, precise, &identity, &source, policy
         );
-        return true;
+        return ProjectionResult::finite;
     }
 
     bool convrot_source(
