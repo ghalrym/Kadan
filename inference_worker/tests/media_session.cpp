@@ -281,6 +281,33 @@ void reacquired_output_certificate() {
     f.session.complete(write, status);
 }
 
+void prepared_boundary_readiness() {
+    Fixture f;
+    check(!f.session.admit(decoder(), shape()));
+    auto full = tensor(f.session, 0, "boundary");
+    auto first = f.session.rows(full, 0, 2), rest = f.session.rows(full, 2, 2);
+    auto status = flag(f.session, 0);
+    const std::array whole{&full}, partial{&first};
+    check(
+        fails([&] { f.session.require_ready(whole); }) == "media_session_unready_input"
+    );
+    produce(f.session, 0, first, status);
+    f.session.require_ready(partial);
+    check(
+        fails([&] { f.session.require_ready(whole); }) == "media_session_unready_input"
+    );
+    produce(f.session, 0, rest, status);
+    f.session.require_ready(whole);
+    const std::array outputs{&first, &status};
+    f.session.launch(0, {}, outputs, [](void*, auto, auto) {});
+    check(
+        fails([&] { f.session.require_ready(partial); })
+        == "media_session_unready_input"
+    );
+    f.session.complete(outputs, status);
+    f.session.require_ready(whole);
+}
+
 void typed_admission_failures() {
     Fixture f;
     auto m = decoder();
@@ -840,6 +867,7 @@ int main() {
     admission_and_cleanup();
     weight_prefix_identity();
     reacquired_output_certificate();
+    prepared_boundary_readiness();
     typed_admission_failures();
     alias_and_region_certificates();
     error_and_cancel_drains();

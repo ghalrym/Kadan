@@ -764,6 +764,17 @@ DeviceTensorView MediaSession::weight(const WeightSlice& slice) {
     );
 }
 
+void MediaSession::require_ready(std::span<DeviceTensorView* const> views) {
+    auto& s = *state_;
+    s.healthy();
+    for (auto* v : views) {
+        if (!v)
+            throw std::invalid_argument("media_session_null_view");
+        if (!s.view(*v).contains(v->layout_.offset, v->layout_.bytes))
+            throw std::invalid_argument("media_session_unready_input");
+    }
+}
+
 void MediaSession::upload(
     DeviceTensorView& v, std::span<const std::byte> bytes, bool weight
 ) {

@@ -142,12 +142,110 @@ inline Bf16ProjectionShape validate_image_silu_pair(
     return shape;
 }
 
+// A single session output owns this envelope; only completed halves are gathered.
+inline std::array<MediaDeviceSpan, 2>
+split_image_silu_pair(const MediaDeviceSpan& envelope, std::size_t rows) {
+    const auto pointer = reinterpret_cast<std::uintptr_t>(envelope.data);
+    if (!rows || rows > SIZE_MAX / 2 || envelope.dimensions.size() != 2
+        || !envelope.dimensions[1] || envelope.dimensions[0] != 2 * rows
+        || rows > SIZE_MAX / envelope.dimensions[1] / 8
+        || envelope.dtype != DeviceDType::f32 || !pointer || pointer % 4
+        || envelope.strides != std::vector<std::size_t>{envelope.dimensions[1], 1}
+        || envelope.bytes != rows * envelope.dimensions[1] * 8
+        || pointer > UINTPTR_MAX - envelope.bytes
+        || envelope.offset > SIZE_MAX - envelope.bytes)
+        throw std::invalid_argument("image_ff_pair_layout");
+    auto gate = envelope;
+    gate.dimensions[0] = rows;
+    gate.bytes /= 2;
+    auto up = gate;
+    up.data = static_cast<std::byte*>(gate.data) + gate.bytes;
+    up.offset += gate.bytes;
+    return {gate, up};
+}
+
+// Layout only; hidden is both the certified input and the exclusive output.
+inline Bf16ProjectionShape validate_image_residual(
+    int device,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& projected,
+    const MediaDeviceSpan& gates,
+    const MediaDeviceSpan& status,
+    std::size_t first,
+    std::size_t /*text*/
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_residual_layout");
+    };
+    require(hidden.dimensions.size() == 2);
+    const auto rows = hidden.dimensions[0], state = hidden.dimensions[1];
+    require(
+        rows && state && rows <= SIZE_MAX / state / 4 && state <= SIZE_MAX / 8
+        && rows * state <= std::size_t(INT_MAX) * 256 && first <= SIZE_MAX - rows
+    );
+    auto matrix = [&](const MediaDeviceSpan& span, std::size_t count) {
+        require(
+            span.dtype == DeviceDType::f32
+            && span.dimensions == std::vector<std::size_t>{count, state}
+            && span.strides == std::vector<std::size_t>{state, 1}
+            && span.bytes == count * state * sizeof(float)
+        );
+    };
+    matrix(hidden, rows);
+    matrix(projected, rows);
+    matrix(gates, 2);
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&hidden, &projected, &gates, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        require(
+            a.device == device && a.data
+            && reinterpret_cast<std::uintptr_t>(a.data) % 4 == 0
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto x = reinterpret_cast<std::uintptr_t>(a.data),
+                       y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
+// The host scheduler uses this boundary without linking CUDA or doing arithmetic.
+// Projection inputs are [input,gate-weight,up-weight] or [input,down-weight];
+// outputs are [pair,rounded,workspace,gate-status,up-status,aggregate-status]
+// or [down,rounded,workspace,aggregate-status]. Pair is compact [2*rows,local-out].
+class ImageFeedForwardLauncher {
+public:
+    virtual ~ImageFeedForwardLauncher() = default;
+    virtual int device() const = 0;
+    virtual void
+    pair(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
+    virtual void
+    down(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
+    virtual void residual(
+        void*,
+        const MediaDeviceSpan& hidden,
+        const MediaDeviceSpan& projected,
+        const MediaDeviceSpan& gates,
+        const MediaDeviceSpan& status,
+        std::size_t first,
+        std::size_t text
+    ) = 0;
+};
+
 // One request-owner thread. Construct before admission's fresh memory probe so
 // library handle costs are measured and retained in the same worker ledger;
 // declare the workspace above in the consumed manifest. Use WorkerCompute's same
 // activity guard. Close after draining, before the session destroys its stream;
 // failed cleanup retains the worker busy charge through process shutdown.
-class CudaBf16Projection {
+class CudaBf16Projection final : public ImageFeedForwardLauncher {
 public:
     CudaBf16Projection(
         std::shared_ptr<DenseCompute> context_owner,
@@ -158,6 +256,26 @@ public:
     );
     ~CudaBf16Projection();
     void close();
+
+    int device() const override {
+        return device_;
+    }
+
+    void pair(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void down(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void residual(
+        void*,
+        const MediaDeviceSpan&,
+        const MediaDeviceSpan&,
+        const MediaDeviceSpan&,
+        const MediaDeviceSpan&,
+        std::size_t,
+        std::size_t
+    ) override;
     CudaBf16Projection(const CudaBf16Projection&) = delete;
     CudaBf16Projection& operator=(const CudaBf16Projection&) = delete;
     // Pass the stream supplied by MediaSession::launch. Rounded input, output,

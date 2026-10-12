@@ -100,6 +100,27 @@ image_projection_status(const unsigned* gate, const unsigned* up, unsigned* stat
     *status = *gate | *up;
 }
 
+__global__ void image_residual_kernel(
+    float* hidden,
+    const float* projected,
+    const float* gates,
+    std::size_t count,
+    std::size_t state,
+    std::size_t first,
+    std::size_t text,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const auto gate = (first + i / state < text ? state : 0) + i % state;
+    // Match image.cpp's F32 product, then F32 addition with contraction disabled.
+    const float result = __fadd_rn(hidden[i], __fmul_rn(gates[gate], projected[i]));
+    if (!isfinite(result))
+        atomicOr(status, 1U);
+    hidden[i] = result;
+}
+
 // CUDA calls stay on the persistent thread that owns this selected device.
 class CudaDeviceOperations final : public DeviceOperations,
                                    public WeightDeviceOperations {
@@ -1969,6 +1990,84 @@ void CudaBf16Projection::launch_image_silu_pair(
         static_cast<float*>(gate.data),
         static_cast<const float*>(up.data),
         shape.rows * shape.out,
+        static_cast<unsigned*>(status.data)
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::pair(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(inputs.size() == 3 && outputs.size() == 6, "image_ff_pair_layout");
+    require(inputs[0].dimensions.size() == 2, "image_ff_pair_layout");
+    const auto [gate, up] = split_image_silu_pair(outputs[0], inputs[0].dimensions[0]);
+    launch_image_silu_pair(
+        stream,
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        outputs[1],
+        gate,
+        up,
+        outputs[2],
+        outputs[3],
+        outputs[4],
+        outputs[5]
+    );
+}
+
+void CudaBf16Projection::down(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(inputs.size() == 2 && outputs.size() == 4, "image_ff_down_layout");
+    const MediaDeviceSpan bias{nullptr, device_, DeviceDType::f32, {}, {}, 0, 0, 0};
+    launch(
+        stream,
+        inputs[0],
+        inputs[1],
+        bias,
+        outputs[1],
+        outputs[0],
+        outputs[2],
+        outputs[3]
+    );
+}
+
+void CudaBf16Projection::residual(
+    void* stream,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& projected,
+    const MediaDeviceSpan& gates,
+    const MediaDeviceSpan& status,
+    std::size_t first,
+    std::size_t text
+) {
+    const auto shape =
+        validate_image_residual(device_, hidden, projected, gates, status, first, text);
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    checked(cudaMemsetAsync(status.data, 0, sizeof(unsigned), owned_stream));
+    image_residual_kernel<<<
+        unsigned((shape.rows * shape.in + 255) / 256),
+        256,
+        0,
+        owned_stream>>>(
+        static_cast<float*>(hidden.data),
+        static_cast<const float*>(projected.data),
+        static_cast<const float*>(gates.data),
+        shape.rows * shape.in,
+        shape.in,
+        first,
+        text,
         static_cast<unsigned*>(status.data)
     );
     checked(cudaGetLastError());

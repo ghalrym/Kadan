@@ -167,5 +167,86 @@ int main() {
     pair[5].strides = {3, 1};
     pair[5].bytes = 36;
     rejects_pair();
+    auto envelope = span(0x5000, DeviceDType::f32, {6, 4}, {4, 1}, 96);
+    const auto halves = split_image_silu_pair(envelope, 3);
+    check(
+        halves[0].bytes == 48 && halves[1].offset == 48
+        && halves[1].data == storage.data() + 0x5030
+    );
+    const auto envelope_original = envelope;
+    auto reject_envelope = [&] {
+        bool rejected = false;
+        try {
+            split_image_silu_pair(envelope, 3);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        envelope = envelope_original;
+    };
+    envelope.dimensions[0] = 5;
+    reject_envelope();
+    envelope.strides[0] = 5;
+    reject_envelope();
+    envelope.bytes = 95;
+    reject_envelope();
+    envelope.dtype = DeviceDType::bf16;
+    reject_envelope();
+    envelope.data = nullptr;
+    reject_envelope();
+    envelope.offset = SIZE_MAX;
+    reject_envelope();
+
+    std::array residual{
+        original[0],
+        span(0x5000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x3000, DeviceDType::f32, {2, 8}, {8, 1}, 64),
+        original[6]
+    };
+    std::size_t first = 4;
+    auto validate_residual = [&] {
+        return validate_image_residual(
+            0, residual[0], residual[1], residual[2], residual[3], first, 5
+        );
+    };
+    check(validate_residual().rows == 3);
+    const auto residual_original = residual;
+    auto rejects_residual = [&] {
+        bool rejected = false;
+        try {
+            validate_residual();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        residual = residual_original;
+        first = 4;
+    };
+    for (std::size_t i = 0; i < residual.size(); ++i) {
+        residual[i].device = 1;
+        rejects_residual();
+        residual[i].data = nullptr;
+        rejects_residual();
+        residual[i].bytes -= 1;
+        rejects_residual();
+        residual[i].strides.back() = 2;
+        rejects_residual();
+        residual[i].dtype = DeviceDType::f64;
+        rejects_residual();
+        residual[i].data = storage.data() + 0x1001;
+        rejects_residual();
+        for (std::size_t j = 0; j < i; ++j) {
+            residual[i].data = residual[j].data;
+            rejects_residual();
+        }
+    }
+    residual[1].data = storage.data() + 0x1004;
+    rejects_residual();
+    residual[2].dimensions[0] = 1;
+    rejects_residual();
+    residual[0].dimensions[0] = 0;
+    rejects_residual();
+    first = SIZE_MAX;
+    rejects_residual();
     std::cout << "BF16 projection layout validation passed\n";
 }
