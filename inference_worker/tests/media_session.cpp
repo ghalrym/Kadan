@@ -433,6 +433,8 @@ void record_and_free_errors() {
     check(!g.session.admit(decoder(), shape()));
     g.trace->fail_free = g.session.plan().devices.front().device;
     check(fails([&] { g.session.finish(); }) == "free");
+    check(fails([&] { g.session.finish(); }) == "media_session_cleanup_unconfirmed");
+    check(fails([&] { g.session.abort(); }) == "media_session_cleanup_unconfirmed");
     check(
         g.resources->snapshot().residents == 1 && g.activity->owners == 1
         && !g.trace->allocations.empty()

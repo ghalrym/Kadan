@@ -981,6 +981,8 @@ void MediaSession::complete(
 }
 
 void MediaSession::finish() {
+    if (state_->lifecycle == MediaSessionState::Lifecycle::quarantined)
+        throw std::runtime_error("media_session_cleanup_unconfirmed");
     if (!state_->unchecked.empty())
         abort(
             std::make_exception_ptr(
@@ -995,6 +997,11 @@ void MediaSession::finish() {
 }
 
 void MediaSession::abort(std::exception_ptr first) {
+    if (state_->lifecycle == MediaSessionState::Lifecycle::quarantined) {
+        if (first)
+            std::rethrow_exception(first);
+        throw std::runtime_error("media_session_cleanup_unconfirmed");
+    }
     try {
         state_->cleanup();
     } catch (...) {
