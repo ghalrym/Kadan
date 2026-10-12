@@ -217,6 +217,61 @@ inline Bf16ProjectionShape validate_image_residual(
     return {rows, state, state};
 }
 
+// FF stage of image.cpp norm_mod: no affine normalization checkpoint weight.
+inline Bf16ProjectionShape validate_image_ff_preparation(
+    int device,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& modulation,
+    const MediaDeviceSpan& normalized,
+    const MediaDeviceSpan& gates,
+    const MediaDeviceSpan& status,
+    std::size_t text
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_ff_preparation_layout");
+    };
+    require(hidden.dimensions.size() == 2);
+    const auto rows = hidden.dimensions[0], state = hidden.dimensions[1];
+    require(
+        rows && state && rows <= INT_MAX && rows <= SIZE_MAX / state / 4
+        && state <= SIZE_MAX / 32 && state * 8 <= std::size_t(INT_MAX) * 256
+        && text <= rows
+    );
+    auto matrix = [&](const MediaDeviceSpan& span, std::size_t r, std::size_t c) {
+        require(
+            span.dtype == DeviceDType::f32
+            && span.dimensions == std::vector<std::size_t>{r, c}
+            && span.strides == std::vector<std::size_t>{c, 1}
+            && span.bytes == r * c * sizeof(float)
+        );
+    };
+    matrix(hidden, rows, state);
+    matrix(modulation, 2, 4 * state);
+    matrix(normalized, rows, state);
+    matrix(gates, 2, state);
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&hidden, &modulation, &normalized, &gates, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        require(
+            a.device == device && x && x % 4 == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
 // The host scheduler uses this boundary without linking CUDA or doing arithmetic.
 // Projection inputs are [input,gate-weight,up-weight] or [input,down-weight];
 // outputs are [pair,rounded,workspace,gate-status,up-status,aggregate-status]
@@ -225,6 +280,14 @@ class ImageFeedForwardLauncher {
 public:
     virtual ~ImageFeedForwardLauncher() = default;
     virtual int device() const = 0;
+    // Inputs [hidden,modulation]; outputs [normalized,gates,aggregate-status].
+    // Complete both outputs before the FF consumer can bind them.
+    virtual void prepare(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t text
+    ) = 0;
     virtual void
     pair(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
     virtual void
@@ -261,6 +324,12 @@ public:
         return device_;
     }
 
+    void prepare(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t
+    ) override;
     void pair(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;

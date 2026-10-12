@@ -136,7 +136,7 @@ void write_weights(
 struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     Device& backend;
     int selected;
-    bool fail_pair = false;
+    bool fail_pair = false, fail_preparation = false;
     std::vector<char> calls;
     std::vector<std::size_t> residual_first;
 
@@ -145,6 +145,21 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
 
     int device() const override {
         return selected;
+    }
+
+    void prepare(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write,
+        std::size_t text
+    ) override {
+        check(read.size() == 2 && write.size() == 3 && text == 3);
+        kadan::video::validate_image_ff_preparation(
+            selected, read[0], read[1], write[0], write[1], write[2], text
+        );
+        check(calls.empty());
+        calls.push_back('n');
+        backend.status = fail_preparation ? 1 : 0;
     }
 
     void pair(
@@ -261,7 +276,7 @@ int main() {
     block.unload();
     check(resources->snapshot().used[0] == 0);
     write_weights(directory, false, 64, 128);
-    constexpr kadan::Bytes budget = 8 * 1024 * 1024 + 44000;
+    constexpr kadan::Bytes budget = 8 * 1024 * 1024 + 46500;
     auto tiled_resources = std::make_shared<kadan::Resources>(
         kadan::Footprint{64 * 1024 * 1024, budget, budget}
     );
@@ -346,6 +361,86 @@ int main() {
         }
         if (!rejected)
             resident.finish();
+        check(
+            metadata.allocations.empty() && tiled_resources->snapshot().used[1] == 0
+            && tiled_resources->snapshot().used[2] == 0
+        );
+    }
+    enum class PreparationScenario {
+        complete,
+        missing_hidden,
+        missing_modulation,
+        failed_status
+    };
+    for (const auto scenario :
+         {PreparationScenario::complete,
+          PreparationScenario::missing_hidden,
+          PreparationScenario::missing_modulation,
+          PreparationScenario::failed_status}) {
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = budget;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            tiled_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        check(!tiled_block.prepare_feed_forward(resident, 17, cancel));
+        check(resident.plan().devices.size() == 2 && resident.plan().rows < 17);
+        for (const auto& d : resident.plan().devices) {
+            auto hidden = resident.tensor(
+                d.device, "resident/hidden", kadan::DeviceDType::f32, {17, 64}, {64, 1}
+            );
+            auto modulation = resident.tensor(
+                d.device, "ff/modulation", kadan::DeviceDType::f32, {2, 256}, {256, 1}
+            );
+            if (d.device != 1 || scenario != PreparationScenario::missing_hidden) {
+                std::vector<std::byte> ingress(hidden.layout().bytes);
+                resident.upload_input(hidden, ingress);
+            }
+            if (d.device != 1 || scenario != PreparationScenario::missing_modulation) {
+                std::vector<std::byte> ingress(modulation.layout().bytes);
+                resident.upload_input(modulation, ingress);
+            }
+        }
+        Launcher first(metadata, 0), second(metadata, 1);
+        first.fail_preparation = scenario == PreparationScenario::failed_status;
+        const std::array<kadan::video::ImageFeedForwardLauncher*, 2> launchers{
+            &first, &second
+        };
+        bool rejected = false;
+        try {
+            tiled_block.prepare_feed_forward_inputs(resident, 17, 3, launchers, cancel);
+            tiled_block.execute_feed_forward(resident, 17, 3, launchers, cancel);
+        } catch (const std::exception& e) {
+            rejected = true;
+            check(
+                std::string_view(e.what())
+                == (scenario == PreparationScenario::failed_status
+                        ? "media_session_nonfinite_output"
+                        : "media_session_unready_input")
+            );
+        }
+        check(rejected == (scenario != PreparationScenario::complete));
+        if (scenario == PreparationScenario::missing_hidden
+            || scenario == PreparationScenario::missing_modulation)
+            check(first.calls.empty() && second.calls.empty());
+        if (scenario == PreparationScenario::failed_status)
+            check(first.calls == std::vector<char>{'n'} && second.calls.empty());
+        if (scenario == PreparationScenario::complete) {
+            check(first.calls.front() == 'n' && first.calls == second.calls);
+            check(first.calls.size() == 1 + 3 * first.residual_first.size());
+            check(first.residual_first.size() > 1);
+            check(
+                !resident.transfers().activation_upload
+                && !resident.transfers().activation_download
+            );
+            resident.finish();
+        }
         check(
             metadata.allocations.empty() && tiled_resources->snapshot().used[1] == 0
             && tiled_resources->snapshot().used[2] == 0

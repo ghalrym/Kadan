@@ -248,5 +248,73 @@ int main() {
     rejects_residual();
     first = SIZE_MAX;
     rejects_residual();
+    std::array preparation{
+        original[0],
+        span(0x2200, DeviceDType::f32, {2, 32}, {32, 1}, 256),
+        span(0x3200, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x4200, DeviceDType::f32, {2, 8}, {8, 1}, 64),
+        original[6]
+    };
+    auto validate_preparation = [&] {
+        return validate_image_ff_preparation(
+            0,
+            preparation[0],
+            preparation[1],
+            preparation[2],
+            preparation[3],
+            preparation[4],
+            1
+        );
+    };
+    const auto prep_shape = validate_preparation();
+    check(prep_shape.rows == 3 && prep_shape.in == 8);
+    const auto prep_original = preparation;
+    auto rejects_preparation = [&] {
+        bool rejected = false;
+        try {
+            validate_preparation();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        preparation = prep_original;
+    };
+    for (std::size_t i = 0; i < preparation.size(); ++i) {
+        preparation[i].device = 1;
+        rejects_preparation();
+        preparation[i].data = nullptr;
+        rejects_preparation();
+        preparation[i].bytes -= 1;
+        rejects_preparation();
+        preparation[i].strides.back() = 2;
+        rejects_preparation();
+        preparation[i].dtype = DeviceDType::f64;
+        rejects_preparation();
+        preparation[i].offset = SIZE_MAX;
+        rejects_preparation();
+        for (std::size_t j = 0; j < i; ++j) {
+            preparation[i].data = preparation[j].data;
+            rejects_preparation();
+        }
+    }
+    preparation[1].dimensions = {8, 8};
+    rejects_preparation();
+    preparation[0].dimensions[0] = std::size_t(INT_MAX) + 1;
+    rejects_preparation();
+    bool bad_text = false;
+    try {
+        validate_image_ff_preparation(
+            0,
+            preparation[0],
+            preparation[1],
+            preparation[2],
+            preparation[3],
+            preparation[4],
+            4
+        );
+    } catch (const std::invalid_argument&) {
+        bad_text = true;
+    }
+    check(bad_text);
     std::cout << "BF16 projection layout validation passed\n";
 }

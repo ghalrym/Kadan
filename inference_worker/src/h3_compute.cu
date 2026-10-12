@@ -121,6 +121,68 @@ __global__ void image_residual_kernel(
     hidden[i] = result;
 }
 
+__global__ void image_ff_gates_kernel(
+    const float* modulation, float* gates, std::size_t state, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    // Preserve the host boundary's finite check over the whole modulation tensor.
+    if (i < 8 * state && !isfinite(modulation[i]))
+        atomicOr(status, 1U);
+    if (i < 2 * state) {
+        const auto group = i / state, channel = i % state;
+        const auto ff_gate = (group * 4 + 3) * state + channel;
+        const float value = tanhf(modulation[ff_gate]);
+        if (!isfinite(value))
+            atomicOr(status, 1U);
+        gates[i] = value;
+    }
+}
+
+__global__ void image_ff_norm_kernel(
+    const float* hidden,
+    const float* modulation,
+    float* normalized,
+    std::size_t state,
+    std::size_t text,
+    unsigned* status
+) {
+    __shared__ double mean;
+    __shared__ float scale;
+    const auto row = std::size_t(blockIdx.x);
+    const auto base = row * state;
+    if (threadIdx.x == 0) {
+        double sum = 0;
+        for (std::size_t c = 0; c < state; ++c) {
+            const float value = hidden[base + c];
+            if (!isfinite(value))
+                atomicOr(status, 1U);
+            sum = __dadd_rn(sum, double(value));
+        }
+        mean = __ddiv_rn(sum, double(state));
+        double variance = 0;
+        for (std::size_t c = 0; c < state; ++c) {
+            const double v = __dsub_rn(double(hidden[base + c]), mean);
+            variance = __dadd_rn(variance, __dmul_rn(v, v));
+        }
+        // Ordered double reductions and casts match image.cpp norm_mod exactly.
+        scale = __double2float_rn(
+            __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(variance, double(state)), 1e-6)))
+        );
+    }
+    __syncthreads();
+    const auto offset = (row < text ? 4 * state : 0) + 2 * state;
+    for (std::size_t c = threadIdx.x; c < state; c += blockDim.x) {
+        const float centered =
+            __double2float_rn(__dsub_rn(double(hidden[base + c]), mean));
+        const float value = __fmul_rn(
+            __fmul_rn(centered, scale), __fadd_rn(1.f, modulation[offset + c])
+        );
+        if (!isfinite(value))
+            atomicOr(status, 1U);
+        normalized[base + c] = value;
+    }
+}
+
 // CUDA calls stay on the persistent thread that owns this selected device.
 class CudaDeviceOperations final : public DeviceOperations,
                                    public WeightDeviceOperations {
@@ -1991,6 +2053,47 @@ void CudaBf16Projection::launch_image_silu_pair(
         static_cast<const float*>(up.data),
         shape.rows * shape.out,
         static_cast<unsigned*>(status.data)
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::prepare(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t text
+) {
+    require(inputs.size() == 2 && outputs.size() == 3, "image_ff_preparation_layout");
+    const auto shape = validate_image_ff_preparation(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1], outputs[2], text
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[2].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_ff_gates_kernel<<<
+        unsigned((8 * shape.in + 255) / 256),
+        256,
+        0,
+        owned_stream>>>(
+        static_cast<const float*>(inputs[1].data),
+        static_cast<float*>(outputs[1].data),
+        shape.in,
+        status
+    );
+    checked(cudaGetLastError());
+    image_ff_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        static_cast<float*>(outputs[0].data),
+        shape.in,
+        text,
+        status
     );
     checked(cudaGetLastError());
 }
