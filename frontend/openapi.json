@@ -817,6 +817,18 @@
             "title": "Image Index",
             "type": "integer"
           },
+          "phase": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "loading",
+              "prompt",
+              "denoise",
+              "decode"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
           "steps_completed": {
             "default": 0,
             "minimum": 0.0,
@@ -3124,6 +3136,25 @@
       "post": {
         "description": "Submit image generation to the single native inference worker.",
         "operationId": "generateImages",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-kadan-request-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Kadan-Request-Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3169,6 +3200,25 @@
       "get": {
         "description": "Combine a fresh memory sample with the bounded telemetry snapshot.\n\nThis monitoring read is excluded from generation telemetry, so polling\ndoes not increase request counts or feed back into latency statistics.",
         "operationId": "getMetrics",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "image_request_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Image Request Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3179,6 +3229,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Metrics",

@@ -60,3 +60,31 @@ test('preserves transport and provider failures', async () => {
     await assert.rejects(api.requestImages({ prompt: 'mug', count: 1 }, new AbortController().signal), message)
   }
 })
+
+
+test('sends the exact request ID header without changing generation settings', async () => {
+  const { api, calls } = await imageApi({ response: { ok: true }, data: { image } })
+  const options = { prompt: 'mug', count: 1 }
+  await api.requestImages(options, new AbortController().signal, undefined, 'a'.repeat(32))
+  assert.deepEqual(calls[0].args.headers, { 'X-Kadan-Request-Id': 'a'.repeat(32) })
+  assert.equal(calls[0].args.body, options)
+})
+
+
+test('creates a native job ID when randomUUID is unavailable on HTTP', async () => {
+  const { api } = await imageApi({})
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  let bytesRequested = 0
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {
+    getRandomValues(bytes) {
+      bytesRequested = bytes.length
+      return bytes.map((_, index) => index)
+    },
+  } })
+  try {
+    assert.equal(api.createImageRequestId(), '000102030405060708090a0b0c0d0e0f')
+    assert.equal(bytesRequested, 16)
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', original)
+  }
+})

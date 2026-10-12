@@ -3,18 +3,20 @@ import { readFile } from 'node:fs/promises'
 import { stripTypeScriptTypes } from 'node:module'
 import { test } from 'node:test'
 const source = stripTypeScriptTypes(await readFile(new URL('../src/api/imageProgress.ts', import.meta.url), 'utf8'))
-const { describeImageProgress, estimateRemaining, formatDuration } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+const { describeImageProgress: describe, estimateRemaining, formatDuration } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 
+const describeImageProgress = (progress, previous, requestId = 'job') => describe(progress, previous, requestId)
+
+const phases = { waiting_for_resources: 'queued', running: 'prompt', text_layer: 'prompt', step_completed: 'denoise', vae_up_block: 'decode', denoiser_block_loaded: 'loading' }
 const snapshot = (stage, value = 0, image = { image_index: 1, image_count: 4, steps_completed: 0, steps_total: 50 }) =>
-  ({ job_id: 'job', workload: 'image', stage, value, observed_unix_ns: 1, image })
+  ({ job_id: 'job', workload: 'image', stage, value, observed_unix_ns: 1, image: image ? { ...image, phase: phases[stage] ?? 'loading' } : null })
 
-test('describes idle and non-image worker activity', () => {
-  const idle = describeImageProgress(null, null)
-  assert.equal(idle.phase, 'queued')
-  assert.equal(idle.fraction, null)
-  const other = describeImageProgress({ ...snapshot('running'), workload: 'llm', image: null }, null)
-  assert.equal(other.phase, 'queued')
-  assert.match(other.detail, /chat/)
+test('idle and unrelated jobs never claim request progress', () => {
+  for (const progress of [null, { ...snapshot('running'), workload: 'llm' }, { ...snapshot('running'), job_id: 'other' }]) {
+    const view = describeImageProgress(progress, null)
+    assert.equal(view.fraction, null)
+    assert.equal(view.title, 'Waiting for images')
+  }
   assert.equal(describeImageProgress(snapshot('waiting_for_resources'), null).detail, 'Waiting for GPU memory')
 })
 
@@ -29,15 +31,22 @@ test('maps denoising steps to batch progress', () => {
   const view = describeImageProgress(snapshot('step_completed', 25, { image_index: 2, image_count: 4, steps_completed: 25, steps_total: 50 }), null)
   assert.equal(view.milestone, 2)
   assert.equal(view.title, 'Generating image 2 of 4')
-  assert.equal(view.detail, 'Denoising · step 25 of 50')
+  assert.equal(view.detail, 'Denoising · step 26 of 50')
   assert.ok(Math.abs(view.fraction - (1 + 0.03 + 0.46) / 4) < 1e-9)
   assert.equal(describeImageProgress(snapshot('vae_up_block', 1), null).phase, 'decode')
 })
 
-test('keeps the previous phase for ambiguous weight placement stages', () => {
-  const prompt = describeImageProgress(snapshot('text_layer', 3), null)
-  assert.equal(describeImageProgress(snapshot('gpu_0_weight_planned_bytes', 9), prompt).phase, 'prompt')
-  assert.equal(describeImageProgress(snapshot('gpu_0_weight_planned_bytes', 9), null).phase, 'loading')
+test('a first poll during qkv retains the API denoising phase', () => {
+  const progress = snapshot('qkv', 3)
+  progress.image.phase = 'denoise'
+  progress.image.steps_completed = 1
+  const view = describeImageProgress(progress, null)
+  assert.equal(view.phase, 'denoise')
+  assert.equal(view.detail, 'Denoising · step 2 of 50')
+  assert.equal(Math.round(view.fraction * 100), 1)
+  const decode = snapshot('gpu_0_weight_planned_bytes', 99)
+  decode.image.phase = 'decode'
+  assert.equal(describeImageProgress(decode, null).phase, 'decode')
 })
 
 test('failed polls preserve generation as stale until polling recovers', () => {
@@ -55,31 +64,28 @@ test('an unavailable first poll does not claim progress', () => {
   const view = describeImageProgress(undefined, null)
   assert.equal(view.stale, true)
   assert.equal(view.fraction, null)
-  assert.equal(view.title, 'Worker status unavailable')
+  assert.equal(view.title, 'Waiting for images')
 })
 
-test('an idle worker after generation does not imply request completion', () => {
+test('idle and unavailable polls retain the last sample without claiming completion', () => {
   const decode = describeImageProgress(snapshot('vae_up_block', 3), null)
   const idle = describeImageProgress(null, decode)
-  assert.equal(idle.title, 'Worker idle')
-  assert.equal(idle.fraction, null)
-  assert.equal(idle.jobId, null)
-  assert.equal(idle.stale, false)
+  assert.equal(idle.fraction, decode.fraction)
+  assert.equal(idle.stale, true)
+  assert.notEqual(idle.fraction, 1)
 })
 
-test('overlapping image jobs reset worker counters and phase on job changes', () => {
-  const other = describeImageProgress(snapshot('step_completed', 25, { image_index: 2, image_count: 4, steps_completed: 25, steps_total: 50 }), null)
-  assert.equal(other.jobId, 'job')
-  const next = describeImageProgress({ ...snapshot('gpu_0_weight_planned_bytes', 9, null), job_id: 'next-job' }, other)
-  assert.equal(next.jobId, 'next-job')
-  assert.equal(next.phase, 'loading')
-  assert.equal(next.imageIndex, 1)
-  assert.equal(next.imageCount, 1)
+test('new requests discard previous counters and unrelated global activity', () => {
+  const old = describeImageProgress(snapshot('step_completed', 25), null)
+  const next = describeImageProgress(snapshot('step_completed', 25), old, 'new')
+  assert.equal(next.jobId, 'new')
   assert.equal(next.step, 0)
   assert.equal(next.fraction, null)
-  const chat = describeImageProgress({ ...snapshot('running'), workload: 'llm', job_id: 'chat-job', image: null }, other)
-  assert.equal(chat.title, 'Worker busy')
-  assert.equal(chat.fraction, null)
+})
+
+test('older successful polls cannot regress the retained phase or counters', () => {
+  const current = describeImageProgress({ ...snapshot('step_completed', 25), observed_unix_ns: 10 }, null)
+  assert.equal(describeImageProgress(snapshot('running'), current), current)
 })
 
 test('estimates remaining time once progress is measurable', () => {

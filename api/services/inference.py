@@ -1,23 +1,25 @@
 """Queue submission, response streaming, and observed worker status."""
 
 from __future__ import annotations
+
 import asyncio
-from contextlib import suppress
 import logging
 import time
+from contextlib import suppress
+
 from pydantic import BaseModel
 
-from api.services.inference_cancellation import await_cleanup
-from api.services.inference_errors import InferenceFailure
 from api.pydantic_models.inference import (
     Feature,
+    InferenceProgress,
     Operation,
-    ImageProgress,
 )
+from api.pydantic_models.inference_task import DownloadTask
+from api.pydantic_models.model_store import DownloadObservation, ModelStoreStatus
+from api.services.inference_cancellation import await_cleanup
+from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import InferenceTask, InferenceWorker
 from api.services.video_jobs import video_jobs
-from api.pydantic_models.model_store import DownloadObservation, ModelStoreStatus
-from api.pydantic_models.inference_task import DownloadTask
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ class InferenceService:
         self.state = "unloaded"
         self.error = None
         self.context = {}
-        self.progress = None
+        self.progress: InferenceProgress | None = None
         self.downloads: dict[str, DownloadObservation] = {}
 
     async def start(self):
@@ -159,31 +161,45 @@ class InferenceService:
             self.context = event.context
         if feature == "llm" and event.model is not None:
             self.model_id = event.model
-        if job.image_progress is not None and event.state == "progress":
-            if event.phase == "image_started":
-                job.image_progress.image_index = event.value
-                job.image_progress.steps_completed = 0
-            elif event.phase == "step_completed":
-                job.image_progress.steps_completed = event.value
+        image = job.image_progress
+        if image is not None:
+            if event.state in ("preparing", "waiting_for_resources", "loading"):
+                image.phase = "loading" if event.state == "loading" else "queued"
+            elif event.state == "running":
+                image.phase = "prompt"
+            elif event.state == "progress":
+                if event.phase == "image_started":
+                    image.phase = "prompt"
+                    image.image_index = event.value
+                    image.steps_completed = 0
+                elif event.phase == "step_completed":
+                    image.phase = "denoise"
+                    image.steps_completed = event.value
+                elif event.phase in ("conditioning", "block_started", "block", "qkv"):
+                    image.phase = "denoise"
+                elif event.phase == "vae_up_block":
+                    image.phase = "decode"
         if event.state in (
+            "queued",
             "preparing",
             "loading",
             "running",
             "waiting_for_resources",
             "progress",
         ):
-            self.progress = dict(
+            job.progress = InferenceProgress(
                 job_id=job.request.id,
                 workload=feature,
                 stage=event.phase or event.state,
                 value=event.value,
                 observed_unix_ns=time.time_ns(),
-                image=job.image_progress.model_dump()
-                if job.image_progress is not None
-                else None,
+                image=image.model_copy() if image is not None else None,
             )
-        elif event.state in ("succeeded", "failed", "cancelled"):
-            if self.progress and self.progress["job_id"] == job.request.id:
+            if event.state != "queued":
+                self.progress = job.progress
+        elif event.state in ("succeeded", "failed", "cancelled", "rejected"):
+            job.progress = None
+            if self.progress and self.progress.job_id == job.request.id:
                 self.progress = None
         if event.state == "loading":
             if feature == "llm":
@@ -225,8 +241,10 @@ class InferenceService:
         feature: Feature,
         operation: Operation,
         streaming: bool = False,
+        job_id: str | None = None,
     ):
         request = InferenceTask(
+            **({"id": job_id} if job_id is not None else {}),
             operation=operation,
             input={
                 "feature": feature,
@@ -243,12 +261,6 @@ class InferenceService:
                     request.id, status="Failed", progress_text="Not accepted"
                 )
             raise
-        if feature == "image":
-            job.image_progress = ImageProgress(
-                image_index=1,
-                image_count=request.input.count,
-                steps_total=request.input.steps,
-            )
         task = asyncio.create_task(self._complete(job))
         self.tasks[request.id] = task
         task.add_done_callback(lambda completed: self.tasks.pop(request.id, None))
@@ -260,8 +272,9 @@ class InferenceService:
         *,
         feature: Feature,
         operation: Operation = "generate",
+        job_id: str | None = None,
     ):
-        job, task = await self._submit(body, feature, operation)
+        job, task = await self._submit(body, feature, operation, job_id=job_id)
         if feature == "video":
             # Completion is reflected by the video metadata endpoint.
             task.add_done_callback(self._background_finished)
@@ -301,6 +314,8 @@ class InferenceService:
                         asyncio.create_task(self.worker.cancel_and_join(job))
                     )
             finally:
+                if self.progress and self.progress.job_id == job.request.id:
+                    self.progress = None
                 self.worker.jobs.pop(job.request.id, None)
 
     async def cancel(self, job_id):

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ModeNavigation, SegmentedControl, UploadPlaceholder } from '../components/Controls'
 import { MediaPlaceholder, type Aspect } from '../components/Media'
 import { ImageProgressPanel, PendingImageSet } from '../components/ImageProgress'
-import { imageHistory, requestImages, type ImageOptions } from '../api/images'
+import { createImageRequestId, imageHistory, requestImages, type ImageOptions } from '../api/images'
 import { describeImageProgress, estimateRemaining, type ImageProgressView } from '../api/imageProgress'
 import { usePolling } from '../hooks/usePolling'
 import type { MetricsResponse } from '../api/generated/types.gen'
@@ -15,7 +15,7 @@ const ASPECTS: Record<NonNullable<ImageOptions['aspect']>, Aspect> = {
   '16:9': 'wide',
 }
 
-type Run = { prompt: string; aspect: Aspect; count: number; started: number }
+type Run = { id: string; prompt: string; aspect: Aspect; count: number; started: number }
 type Tracked = {
   progress: MetricsResponse['inference_progress']
   view: ImageProgressView | null
@@ -36,21 +36,21 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
  */
 function ImageWorkspace({ edit }: { edit: boolean }) {
   const [busy, setBusy] = useState(false)
-  const { data: metrics } = usePolling<MetricsResponse>('/v1/metrics', busy ? 1000 : 3000)
-  const progress = metrics?.inference_progress
   const [run, setRun] = useState<Run | null>(null)
+  const { data: metrics } = usePolling<MetricsResponse>(run ? `/v1/metrics?image_request_id=${run.id}` : '/v1/metrics', busy ? 1000 : 3000)
+  const progress = run ? metrics?.inference_progress : undefined
   const [tracked, setTracked] = useState<Tracked>({ progress: undefined, view: null, start: null })
   const [now, setNow] = useState(() => Date.now())
-  // Retain worker activity across failed polls, but reset timing when its job changes.
+  // Keep the last request snapshot across failed polls.
   if (run && tracked.progress !== progress) {
-    const view = describeImageProgress(progress, tracked.view)
+    const view = describeImageProgress(progress, tracked.view, run.id)
     setTracked({
       progress,
       view,
       start: (view.jobId === tracked.view?.jobId ? tracked.start : null) ?? (view.fraction !== null && view.observedNs !== null ? { ns: view.observedNs, fraction: view.fraction } : null),
     })
   }
-  const view = run ? tracked.view ?? describeImageProgress(progress, null) : null
+  const view = run ? tracked.view ?? describeImageProgress(progress, null, run.id) : null
   const remaining = view && !view.stale && view.fraction != null && view.observedNs !== null
     ? estimateRemaining(tracked.start, { ns: view.observedNs, fraction: view.fraction })
     : null
@@ -103,12 +103,13 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (active.current || edit) return
+    const requestId = createImageRequestId()
     const controller = new AbortController()
     active.current = controller
     setBusy(true)
     setError('')
     setTracked({ progress: undefined, view: null, start: null })
-    setRun({ prompt: prompt.trim(), aspect: ASPECTS[aspect], count, started: Date.now() })
+    setRun({ id: requestId, prompt: prompt.trim(), aspect: ASPECTS[aspect], count, started: Date.now() })
     setNow(Date.now())
     try {
       const image = await requestImages(
@@ -120,6 +121,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         },
         controller.signal,
         edit ? { image: source.trim(), strength: strength / 100 } : undefined,
+        requestId,
       )
       if (active.current === controller && !controller.signal.aborted)
         setGenerated(items => [image, ...items])

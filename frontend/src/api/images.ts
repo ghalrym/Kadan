@@ -5,6 +5,12 @@ import type {
 } from './generated/types.gen'
 
 export type ImageOptions = ApiRoutesV1ImagesGenerationsImageRequest
+
+/** Random job identity also works on the home server's HTTP origin. */
+export function createImageRequestId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 /**
  * Send typed generation settings, or edit settings when source is supplied.
  * Forward cancellation and reject failures or incomplete PNG payloads.
@@ -13,10 +19,11 @@ export async function requestImages(
   options: ImageOptions,
   signal: AbortSignal,
   source?: { image: string; strength: number },
+  requestId?: string,
 ): Promise<ImageSet> {
   const response = source
     ? await editImages({ body: { ...options, ...source }, signal })
-    : await generateImages({ body: options, signal })
+    : await generateImages({ body: options, signal, headers: requestId ? { 'X-Kadan-Request-Id': requestId } : undefined })
   if (!response.response)
     throw new Error(
       'Cannot reach the image API. Check that the backend is running, then retry.',

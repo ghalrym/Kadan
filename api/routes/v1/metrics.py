@@ -1,10 +1,13 @@
 from typing import Literal
+from uuid import UUID
+
 from fastapi import APIRouter
 from pydantic import BaseModel
-from api.services.telemetry import telemetry
+
+from api.pydantic_models.inference import InferenceProgress
 from api.services.inference import inference
 from api.services.memory_telemetry import physical_memory
-from api.pydantic_models.inference import ImageProgress
+from api.services.telemetry import telemetry
 
 router = APIRouter(prefix="/v1/metrics", tags=["Monitoring"])
 
@@ -20,15 +23,6 @@ class ResourceMeter(BaseModel):
 class MemoryReservation(BaseModel):
     label: str
     reserved_gib: float
-
-
-class InferenceProgress(BaseModel):
-    job_id: str
-    workload: str
-    stage: str
-    value: int
-    observed_unix_ns: int
-    image: ImageProgress | None = None
 
 
 class MetricsResponse(BaseModel):
@@ -71,7 +65,7 @@ def memory_meters():
 
 
 @router.get("", operation_id="getMetrics")
-def get_metrics() -> MetricsResponse:
+def get_metrics(image_request_id: UUID | None = None) -> MetricsResponse:
     """Combine a fresh memory sample with the bounded telemetry snapshot.
 
     This monitoring read is excluded from generation telemetry, so polling
@@ -89,10 +83,20 @@ def get_metrics() -> MetricsResponse:
             for index, used in enumerate(memory.used)
         ]
     )
+    progress = inference.progress
+    if image_request_id is not None:
+        job = inference.worker.jobs.get(image_request_id.hex)
+        progress = (
+            job.progress
+            if job is not None
+            and job.request.feature == "image"
+            and not job.result.done()
+            else None
+        )
     return MetricsResponse(
         reservations=reservations,
         reservations_observed_at=inference.worker.memory_observed_at,
-        inference_progress=inference.progress,
+        inference_progress=progress,
         resources=resources,
         resource_errors=errors,
         **telemetry.metrics(),

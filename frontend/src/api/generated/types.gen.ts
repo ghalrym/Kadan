@@ -459,6 +459,10 @@ export type ImageProgress = {
    */
   image_index: number
   /**
+   * Phase
+   */
+  phase?: 'queued' | 'loading' | 'prompt' | 'denoise' | 'decode'
+  /**
    * Steps Completed
    */
   steps_completed?: number
@@ -1813,6 +1817,12 @@ export type EditImagesResponse = EditImagesResponses[keyof EditImagesResponses]
 
 export type GenerateImagesData = {
   body: ApiRoutesV1ImagesGenerationsImageRequest
+  headers?: {
+    /**
+     * X-Kadan-Request-Id
+     */
+    'x-kadan-request-id'?: string | null
+  }
   path?: never
   query?: never
   url: '/v1/images/generations'
@@ -1845,9 +1855,23 @@ export type GenerateImagesResponse =
 export type GetMetricsData = {
   body?: never
   path?: never
-  query?: never
+  query?: {
+    /**
+     * Image Request Id
+     */
+    image_request_id?: string | null
+  }
   url: '/v1/metrics'
 }
+
+export type GetMetricsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetMetricsError = GetMetricsErrors[keyof GetMetricsErrors]
 
 export type GetMetricsResponses = {
   /**
