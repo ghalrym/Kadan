@@ -94,6 +94,23 @@ public:
 
     using Bf16WeightSource = std::function<void(std::size_t, std::span<std::uint16_t>)>;
 
+    // Synchronous bias-free image gate/up pair. False means unsupported before
+    // reading either source or changing output. Execution failures throw; callers
+    // must never retry a partially completed operation through the fallback.
+    virtual bool image_silu_pair_bf16_source(
+        const WeightIdentity&,
+        const Bf16WeightSource&,
+        const WeightIdentity&,
+        const Bf16WeightSource&,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&
+    ) {
+        return false;
+    }
+
     virtual bool dense_bf16_source(
         const WeightIdentity&,
         const Bf16WeightSource&,

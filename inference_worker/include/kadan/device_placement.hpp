@@ -125,6 +125,39 @@ inline std::size_t projection_columns(
         .columns;
 }
 
+// Both uncached BF16 weights and both FP32 results fit at once. Weight staging
+// remains sequential and bounded to 16MiB, independent of the retained bank.
+inline ProjectionPlan
+image_silu_pair_plan(std::size_t in, std::size_t out, Bytes limit) {
+    if (!in || in > 2147483647ULL || !out || out > 2147483647ULL)
+        throw std::invalid_argument("image_pair_layout");
+    const auto staging_columns = (16 * 1024 * 1024) / (in * 2);
+    for (std::size_t rows = 256; rows; rows /= 2) {
+        // Eight aligned slices: F32/BF16 input, two weights, two outputs,
+        // BLAS workspace and finite status. Each can waste at most 255 bytes.
+        const Bytes fixed = 8 * 1024 * 1024 + 8 * 255 + 4 + rows * in * 6;
+        const Bytes per_column = in * 4 + rows * 8;
+        if (fixed >= limit)
+            continue;
+        const auto columns = std::min<Bytes>(
+            std::min(out, staging_columns), (limit - fixed) / per_column
+        );
+        if (columns)
+            return {rows, columns, fixed + columns * per_column};
+    }
+    throw std::invalid_argument("image_pair_scratch_limit");
+}
+
+inline std::size_t image_silu_pair_input_rows(
+    std::size_t rows, std::size_t in, const ProjectionPlan& plan, Bytes limit
+) {
+    if (!rows || !in || in > 2147483647ULL || !plan.rows || plan.bytes > limit)
+        throw std::invalid_argument("image_pair_input_layout");
+    if (rows <= plan.rows)
+        return plan.rows;
+    return rows - plan.rows <= (limit - plan.bytes) / (in * 6) ? rows : plan.rows;
+}
+
 struct AttentionPlan {
     std::size_t queries, keys;
     bool full_heads;

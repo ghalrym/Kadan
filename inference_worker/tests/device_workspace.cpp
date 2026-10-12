@@ -350,6 +350,56 @@ void bounded_mailbox() {
     pending.get();
     check(rejected);
 }
+
+void joining_failed_devices() {
+    // A fake resource task fails while another still owns caller storage.
+    // Joining must release both lifetimes before propagating the first error.
+    for (bool submission_failed : {false, true}) {
+        Resources resources({1024, 512, 512});
+        auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
+        DeviceThread first(resources, 0, Workload::image, fake(resources, a, 0)),
+            second(resources, 1, Workload::image, fake(resources, b, 1));
+        std::atomic_bool failed = false;
+        std::promise<void> entered, finish;
+        auto completed = finish.get_future();
+        int callback_owned = 17;
+        std::vector<std::future<void>> tasks;
+        tasks.push_back(first.submit_work(
+            [](DeviceWorkspace& workspace) {
+                workspace.ensure(128);
+                throw std::runtime_error("pair_cancelled_or_gemm_error");
+            },
+            &failed
+        ));
+        tasks.push_back(second.submit_work([&](DeviceWorkspace& workspace) {
+            workspace.ensure(256);
+            entered.set_value();
+            completed.wait();
+            check(callback_owned == 17);
+        }));
+        entered.get_future().get();
+        auto error =
+            submission_failed
+                ? std::make_exception_ptr(std::runtime_error("submission_failed"))
+                : std::exception_ptr{};
+        finish.set_value();
+        join_device_tasks(tasks, error);
+        check(!tasks[0].valid() && !tasks[1].valid());
+        check(error && failed.load() && !a->allocated && b->allocated == 256);
+        callback_owned = 0;
+        try {
+            std::rethrow_exception(error);
+        } catch (const std::runtime_error& e) {
+            check(
+                std::string(e.what())
+                == (submission_failed ? "submission_failed"
+                                      : "pair_cancelled_or_gemm_error")
+            );
+        }
+        second.submit([](DeviceWorkspace& workspace) { workspace.release(); }).get();
+        check(resources.snapshot().residents == 0);
+    }
+}
 }  // namespace
 
 int main() {
@@ -362,5 +412,6 @@ int main() {
     selection_failure_never_uses_default_device();
     destruction_does_not_acknowledge_failed_cleanup();
     bounded_mailbox();
+    joining_failed_devices();
     std::cout << "Mock device workspace lifecycle passed (no CUDA or inference)\n";
 }

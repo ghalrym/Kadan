@@ -197,6 +197,53 @@ struct TransformerBlock::Impl {
         finite(y);
     }
 
+    bool silu_pair(
+        std::span<const float> input,
+        std::span<float> output,
+        const std::atomic_bool& cancel
+    ) {
+        if (!compute || !compute->supports_bf16_weights())
+            return false;
+        const auto& gate = specs.at(names.at("img_mlp.gate_layer.weight"));
+        const auto& up = specs.at(names.at("img_mlp.proj.weight"));
+        auto& gate_shard = *shards[gate.shard];
+        auto& up_shard = *shards[up.shard];
+        const auto gate_name = prefix + gate.name, up_name = prefix + up.name;
+        if (gate_shard.tensor(gate_name).dtype != checkpoint::Dtype::bf16
+            || up_shard.tensor(up_name).dtype != checkpoint::Dtype::bf16)
+            return false;
+        auto source = [&](checkpoint::Shard& shard, const std::string& name) {
+            return [&shard,
+                    &name,
+                    &cancel](std::size_t first, std::span<std::uint16_t> dst) {
+                checkpoint::read_bf16(
+                    first,
+                    dst,
+                    cancel,
+                    [&](std::size_t offset, std::span<std::uint8_t> bytes) {
+                        shard.read_tensor(name, offset, bytes);
+                    }
+                );
+            };
+        };
+        gate_shard.check_unchanged();
+        up_shard.check_unchanged();
+        const bool completed = compute->image_silu_pair_bf16_source(
+            gate.identity,
+            source(gate_shard, gate_name),
+            up.identity,
+            source(up_shard, up_name),
+            input,
+            d.state,
+            d.intermediate,
+            output,
+            cancel
+        );
+        gate_shard.check_unchanged();
+        up_shard.check_unchanged();
+        return completed;
+    }
+
     void norm_mod(
         std::span<const float> x,
         std::span<const float> modulation,
@@ -403,8 +450,7 @@ void TransformerBlock::execute(
         n(*resources_, input.size()), q(*resources_, input.size()),
         k(*resources_, input.size()), v(*resources_, input.size()),
         mix(*resources_, input.size()), delta(*resources_, input.size()),
-        scores(*resources_, rows), gate(*resources_, rows * d.intermediate),
-        up(*resources_, rows * d.intermediate);
+        scores(*resources_, rows), gate(*resources_, rows * d.intermediate);
     // Gates depend on text/image and channel, not on the token position.
     for (std::size_t group = 0; group < 2; ++group)
         for (std::size_t stage = 0; stage < 2; ++stage)
@@ -475,28 +521,31 @@ void TransformerBlock::execute(
     if (hook)
         hook("attention");
     m.norm_mod(x.span(), modulation, n.span(), rows, text, 1, cancel);
-    m.linear(
-        "img_mlp.gate_layer",
-        n.span(),
-        gate.span(),
-        rows,
-        d.state,
-        d.intermediate,
-        cancel,
-        ProjectionPolicy::image_feed_forward
-    );
-    m.linear(
-        "img_mlp.proj",
-        n.span(),
-        up.span(),
-        rows,
-        d.state,
-        d.intermediate,
-        cancel,
-        ProjectionPolicy::image_feed_forward
-    );
-    for (std::size_t i = 0; i < gate.n; ++i)
-        gate.data[i] = detail::silu(gate.data[i]) * up.data[i];
+    if (!m.silu_pair(n.span(), gate.span(), cancel)) {
+        Buffer up(*resources_, rows * d.intermediate);
+        m.linear(
+            "img_mlp.gate_layer",
+            n.span(),
+            gate.span(),
+            rows,
+            d.state,
+            d.intermediate,
+            cancel,
+            ProjectionPolicy::image_feed_forward
+        );
+        m.linear(
+            "img_mlp.proj",
+            n.span(),
+            up.span(),
+            rows,
+            d.state,
+            d.intermediate,
+            cancel,
+            ProjectionPolicy::image_feed_forward
+        );
+        for (std::size_t i = 0; i < gate.n; ++i)
+            gate.data[i] = detail::silu_product(gate.data[i], up.data[i]);
+    }
     m.linear(
         "img_mlp.out",
         gate.span(),

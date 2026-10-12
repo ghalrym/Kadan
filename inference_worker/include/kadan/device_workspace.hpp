@@ -5,12 +5,26 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <span>
 #include <thread>
 
 #include "kadan/cleanup_error.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan {
+// All submitted work must finish before caller-owned callbacks/spans are released,
+// even when submission or an earlier device has failed. Preserve the first error.
+inline void
+join_device_tasks(std::span<std::future<void>> tasks, std::exception_ptr& error) {
+    for (auto& task : tasks)
+        try {
+            task.get();
+        } catch (...) {
+            if (!error)
+                error = std::current_exception();
+        }
+}
+
 // The CUDA adapter and CPU-only unit fakes implement this lifecycle boundary.
 // Failed allocate/create operations must leave no allocation/handle behind.
 // These resource methods run on one owned thread; compute is supplied separately.
