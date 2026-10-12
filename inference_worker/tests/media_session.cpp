@@ -563,7 +563,9 @@ void owner_reuse_retirement() {
         && v.layout().dimensions == std::vector<std::size_t>({4, 4})
     );
     std::array<std::byte, 32> bytes{};
+    check(!f.session.ready(v));
     f.session.upload_weight(v, bytes);
+    check(f.session.ready(v));
     const auto pointer = v.layout().data;
     const auto generation = v.layout().generation;
     v = {};
@@ -573,12 +575,16 @@ void owner_reuse_retirement() {
     check(f.trace->allocations_started == before && !f.session.plan().reuse.empty());
     v = f.session.weight(f.session.plan().weights.front());
     check(v.layout().data == pointer && v.layout().generation == generation);
+    check(f.session.ready(v));
     v = {};
     f.session.advance(MediaPhase::complete);
     m.weights[0].identity.inode = 4;
     check(!f.session.admit(m, shape()));
     check(f.trace->releases >= 1);
     check(f.trace->allocations_started == before + 1);
+    v = f.session.weight(f.session.plan().weights.front());
+    check(!f.session.ready(v));
+    v = {};
     f.session.finish();
     check(f.resources->snapshot().residents == 0);
 }

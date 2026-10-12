@@ -98,11 +98,13 @@ void write_weights(
     bool denoiser = false,
     bool modulation_f32 = false,
     bool timestep_f32 = false,
-    bool linear1_f32 = false
+    bool linear1_f32 = false,
+    std::size_t layers = 1
 ) {
     std::ostringstream header;
     header << '{';
     std::size_t bytes = 0, count = 0;
+    std::size_t block = denoiser ? 0 : 7;
     auto add = [&](std::string name, bool vector) {
         if (count++)
             header << ',';
@@ -111,7 +113,7 @@ void write_weights(
         const auto columns = name == "img_mlp.out" ? ff : state;
         const bool tensor_f32 = f32 || (attention_f32 && name == "attn.to_out.0");
         const auto size = (vector ? state : rows * columns) * (tensor_f32 ? 4 : 2);
-        header << "\"transformer_blocks." << (denoiser ? 0 : 7) << "." << name
+        header << "\"transformer_blocks." << block << "." << name
                << ".weight\":{\"dtype\":\"" << (tensor_f32 ? "F32" : "BF16")
                << "\",\"shape\":[" << (vector ? state : rows);
         if (!vector)
@@ -119,17 +121,20 @@ void write_weights(
         header << "],\"data_offsets\":[" << bytes << ',' << bytes + size << "]}";
         bytes += size;
     };
-    for (auto name :
-         {"attn.to_q",
-          "attn.to_k",
-          "attn.to_v",
-          "attn.to_out.0",
-          "img_mlp.proj",
-          "img_mlp.gate_layer",
-          "img_mlp.out"})
-        add(name, false);
-    for (auto name : {"attn.norm_q", "attn.norm_k"})
-        add(name, true);
+    for (std::size_t layer = 0; layer < layers; ++layer) {
+        block = denoiser ? layer : 7;
+        for (auto name :
+             {"attn.to_q",
+              "attn.to_k",
+              "attn.to_v",
+              "attn.to_out.0",
+              "img_mlp.proj",
+              "img_mlp.gate_layer",
+              "img_mlp.out"})
+            add(name, false);
+        for (auto name : {"attn.norm_q", "attn.norm_k"})
+            add(name, true);
+    }
     if (denoiser) {
         auto shared = [&](const char* name, std::size_t rows, std::size_t columns) {
             const bool fp32 =
@@ -805,7 +810,8 @@ int main() {
         supplied_output,
         cancelled_timestep,
         wrong_boundary,
-        missing_launcher
+        missing_launcher,
+        missing_conditioning
     };
     auto conditioning_case = [&](HiddenBoundary boundary,
                                  ConditioningScenario scenario) {
@@ -915,7 +921,9 @@ int main() {
             &first,
             scenario == ConditioningScenario::missing_launcher ? &first : &second
         };
-        float timestep = .625f;
+        std::optional<float> timestep = .625f;
+        if (scenario == ConditioningScenario::missing_conditioning)
+            timestep.reset();
         if (scenario == ConditioningScenario::invalid_negative)
             timestep = -.01f;
         if (scenario == ConditioningScenario::invalid_overshoot)
@@ -1095,6 +1103,166 @@ int main() {
     conditioning_case(
         HiddenBoundary::post_attention, ConditioningScenario::wrong_boundary
     );
+    conditioning_case(
+        HiddenBoundary::post_attention, ConditioningScenario::missing_conditioning
+    );
+    denoiser.unload();
+
+    // Two actual block manifests reuse only session-owned certified conditioning.
+    // This fake checks lifetime, identities and submissions, never activation data.
+    write_weights(directory, false, 64, 128, false, true, false, false, false, 2);
+    auto shared_config = config;
+    shared_config.layers = 2;
+    denoiser.load(directory, files, shared_config, cancel);
+    for (const bool missing_second : {false, true}) {
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.metadata_execution = true;
+        metadata.available = budget + 78592;
+        kadan::MediaSession resident(
+            conditioning_resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            {{0}, {1}},
+            cancel
+        );
+        std::array<void*, 2> time{}, modulation{};
+        std::array<std::uint64_t, 2> time_generation{}, modulation_generation{};
+        kadan::Bytes shared_bytes = 0;
+        for (std::size_t step = 0; step < 2; ++step) {
+            for (std::size_t block_index = 0; block_index < 2; ++block_index) {
+                check(!denoiser.prepare_feed_forward(
+                    resident, block_index, 17, HiddenBoundary::post_attention, cancel
+                ));
+                check(resident.plan().devices.size() == 2);
+                if (!step && !block_index) {
+                    for (const auto& w : resident.plan().weights)
+                        if (!w.name.starts_with("transformer_blocks."))
+                            shared_bytes += w.stored_bytes;
+                    for (const auto& d : resident.plan().devices) {
+                        auto hidden = resident.tensor(
+                            d.device,
+                            "resident/hidden",
+                            kadan::DeviceDType::f32,
+                            {17, 64},
+                            {64, 1}
+                        );
+                        std::vector<std::byte> ingress(hidden.layout().bytes);
+                        resident.upload_input(hidden, ingress);
+                    }
+                }
+                const auto uploads = resident.transfers().weight_upload;
+                Launcher first(metadata, 0), second(metadata, 1);
+                const std::array<kadan::video::ImageFeedForwardLauncher*, 2> launchers{
+                    &first, &second
+                };
+                if (block_index) {
+                    first.modulation = modulation[0];
+                    first.modulation_generation = modulation_generation[0];
+                    second.modulation = modulation[1];
+                    second.modulation_generation = modulation_generation[1];
+                    if (missing_second) {
+                        auto retained = resident.tensor(
+                            1,
+                            "conditioning/time-activated",
+                            kadan::DeviceDType::f32,
+                            {2, 64},
+                            {64, 1}
+                        );
+                        // An incompatible interpretation discards full-row coverage.
+                        retained = {};
+                        auto changed = resident.tensor(
+                            1,
+                            "conditioning/time-activated",
+                            kadan::DeviceDType::f32,
+                            {128},
+                            {1}
+                        );
+                    }
+                }
+                bool rejected = false;
+                try {
+                    denoiser.execute_feed_forward(
+                        resident,
+                        block_index,
+                        17,
+                        3,
+                        block_index ? std::optional<float>{}
+                                    : std::optional<float>{.625f},
+                        HiddenBoundary::post_attention,
+                        launchers,
+                        cancel
+                    );
+                } catch (const std::invalid_argument& e) {
+                    check(std::string_view(e.what()) == "media_session_unready_input");
+                    rejected = true;
+                }
+                check(rejected == (missing_second && block_index));
+                if (rejected) {
+                    check(first.calls.empty() && second.calls.empty());
+                    break;
+                }
+                check(resident.transfers().weight_upload == uploads);
+                check(first.calls == second.calls);
+                check(first.calls.front() == (block_index ? 'n' : 'f'));
+                if (block_index)
+                    check(std::count(first.calls.begin(), first.calls.end(), 't') == 0);
+                for (const auto& d : resident.plan().devices) {
+                    auto retained = resident.tensor(
+                        d.device,
+                        "conditioning/time-activated",
+                        kadan::DeviceDType::f32,
+                        {2, 64},
+                        {64, 1}
+                    );
+                    check(resident.ready(retained));
+                    auto target = resident.rows(retained, 0, 1);
+                    const std::array ready{&target};
+                    resident.require_ready(ready);
+                    if (step || block_index)
+                        check(
+                            retained.layout().data == time[d.device]
+                            && retained.layout().generation == time_generation[d.device]
+                        );
+                    time[d.device] = retained.layout().data;
+                    time_generation[d.device] = retained.layout().generation;
+                    retained = {};
+                    target = {};
+                    auto mod = resident.tensor(
+                        d.device,
+                        "ff/modulation",
+                        kadan::DeviceDType::f32,
+                        {2, 256},
+                        {256, 1}
+                    );
+                    check(resident.ready(mod));
+                    if (step || block_index)
+                        check(
+                            mod.layout().data == modulation[d.device]
+                            && mod.layout().generation
+                                   == modulation_generation[d.device]
+                        );
+                    modulation[d.device] = mod.layout().data;
+                    modulation_generation[d.device] = mod.layout().generation;
+                }
+            }
+            if (missing_second)
+                break;
+        }
+        if (!missing_second) {
+            // Only the first admission uploads the three replicated shared weights.
+            const auto block_bytes = 2 * (64 * 128 + 128 * 64 + 64 * 128);
+            check(resident.transfers().weight_upload == shared_bytes + 4 * block_bytes);
+            check(
+                !resident.transfers().activation_upload
+                && !resident.transfers().activation_download
+                && !resident.transfers().output_download
+            );
+            resident.finish();
+        }
+        check(metadata.allocations.empty() && activity->owners == 0);
+    }
     denoiser.unload();
     for (const int unsupported : {0, 1, 2, 3}) {
         const bool native = unsupported != 0;

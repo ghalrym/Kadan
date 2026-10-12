@@ -42,6 +42,10 @@ public:
     // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
     // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
     // Caller supplies certified hidden and (pre_attention) attended on every device.
+    // nullopt consumes certified time2/modulation retained by this session across
+    // drained block admissions of the same loaded model and timestep. Supply a
+    // timestep to overwrite both for the next step.
+    // Activated time2 remains available through complete for final normalization.
     // Release views before execution; modulation feeds the residual/FF consumers.
     // Returns complete; close launchers before destroying session streams.
     void execute_feed_forward(
@@ -49,7 +53,7 @@ public:
         std::size_t block,
         std::size_t tokens,
         std::size_t text,
-        float timestep,
+        std::optional<float> timestep,
         HiddenBoundary,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
