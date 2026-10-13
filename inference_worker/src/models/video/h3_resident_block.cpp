@@ -29,34 +29,36 @@ void add_projection(
     std::size_t& rank,
     std::size_t& elements
 ) {
+    const bool convrot = p.storage == TensorStorage::i8_convrot;
     m.weights.push_back(
         {p.weight,
          p.weight_id,
-         TensorStorage::i8_convrot,
+         p.storage,
          rows,
          columns,
          partition,
          4,
          planes,
-         ProjectionPrecision::convrot,
-         p.group}
+         convrot ? ProjectionPrecision::convrot : ProjectionPrecision::precise_f64,
+         convrot ? p.group : 0}
     );
-    m.weights.push_back(
-        {p.scale,
-         p.scale_id,
-         TensorStorage::f32,
-         rows,
-         1,
-         partition,
-         4,
-         planes,
-         ProjectionPrecision::f32}
-    );
+    if (convrot)
+        m.weights.push_back(
+            {p.scale,
+             p.scale_id,
+             TensorStorage::f32,
+             rows,
+             1,
+             partition,
+             4,
+             planes,
+             ProjectionPrecision::f32}
+        );
     if (!p.bias.empty())
         m.weights.push_back(
             {p.bias,
              p.bias_id,
-             TensorStorage::bf16_exact,
+             p.bias_storage,
              rows,
              1,
              partition,
@@ -167,7 +169,7 @@ Projection bind(
     };
     for (std::size_t i = 0; i < planes; ++i) {
         const auto& w = slice(spec.weight, i);
-        const auto& s = slice(spec.scale, i);
+        const auto& s = spec.scale.empty() ? w : slice(spec.scale, i);
         auto& plane = p.planes[i];
         plane.first = w.first_row - i * plane_rows;
         plane.rows = w.rows;
@@ -178,7 +180,8 @@ Projection bind(
             "h3_resident_partition"
         );
         plane.weight = session.weight(w);
-        plane.scale = session.weight(s);
+        if (!spec.scale.empty())
+            plane.scale = session.weight(s);
         if (!spec.bias.empty()) {
             const auto& b = slice(spec.bias, i);
             require(
@@ -202,7 +205,8 @@ Projection bind(
 void ready(Projection& p, std::vector<DeviceTensorView*>& views) {
     for (auto& plane : p.planes) {
         views.push_back(&plane.weight);
-        views.push_back(&plane.scale);
+        if (!p.spec->scale.empty())
+            views.push_back(&plane.scale);
         if (!p.spec->bias.empty())
             views.push_back(&plane.bias);
         if (p.spec->rank)
@@ -217,8 +221,9 @@ void ready(Projection& p, std::vector<DeviceTensorView*>& views) {
 struct Lane {
     H3ResidentLauncher* launcher = nullptr;
     int id = -1;
-    Projection qkv, out, adaln, fc1, fc2;
+    Projection qkv, out, adaln, fc1, fc2, video, audio;
     std::array<DeviceTensorView, 4> norm;
+    DeviceTensorView final_norm, time_ids;
     DeviceTensorView hidden, modulation, groups, rotary, time, normalized, key, value;
     DeviceTensorView conversion, lora_weights, blas, status;
 };
@@ -333,7 +338,10 @@ void project(
     auto& part = p.planes[plane];
     const auto& spec = *p.spec;
     std::optional<DeviceTensorView> low;
-    std::vector<DeviceTensorView*> read{&input, &part.weight, &part.scale};
+    const bool convrot = spec.storage == TensorStorage::i8_convrot;
+    std::vector<DeviceTensorView*> read{&input, &part.weight};
+    if (convrot)
+        read.push_back(&part.scale);
     std::vector<DeviceTensorView*> write{&output, &lane.conversion};
     if (!spec.bias.empty())
         read.push_back(&part.bias);
@@ -347,11 +355,41 @@ void project(
     write.push_back(&lane.blas);
     write.push_back(&lane.status);
     run(session, lane, read, write, [&](void* stream, auto in, auto out) {
-        lane.launcher->convrot(stream, in, out, spec.group, spec.lora_scale);
+        if (convrot)
+            lane.launcher->convrot(stream, in, out, spec.group, spec.lora_scale);
+        else
+            lane.launcher->dense(stream, in, out, spec.lora_scale);
     });
 }
 
-// RMS norm and AdaLN modulation of hidden rows into a normalized tile.
+// RMS norm of hidden rows into `normalized`, modulated by the block's AdaLN table
+// with `shift`. A plain norm (modulation null) may write the hidden rows in place.
+void normalize(
+    MediaSession& session,
+    Lane& lane,
+    DeviceTensorView& weight,
+    std::size_t first,
+    std::size_t rows,
+    DeviceTensorView& normalized,
+    DeviceTensorView* modulation = nullptr,
+    DeviceTensorView* groups = nullptr,
+    std::size_t shift = 0,
+    std::size_t stride = h3_modulation_rows
+) {
+    auto hidden = session.rows(lane.hidden, first, rows);
+    std::vector<DeviceTensorView*> read{&hidden, &weight};
+    if (modulation) {
+        read.push_back(modulation);
+        read.push_back(groups);
+    }
+    // In place, the output is the same hidden rows the kernel reads.
+    auto* output = &normalized == &lane.hidden ? &hidden : &normalized;
+    const std::array write{output, &lane.status};
+    run(session, lane, read, write, [&](void* stream, auto in, auto out) {
+        lane.launcher->normalize(stream, in, out, first, shift, stride);
+    });
+}
+
 void normalize(
     MediaSession& session,
     Lane& lane,
@@ -361,11 +399,31 @@ void normalize(
     std::size_t shift,
     DeviceTensorView& normalized
 ) {
+    normalize(
+        session,
+        lane,
+        lane.norm[norm],
+        first,
+        rows,
+        normalized,
+        &lane.modulation,
+        &lane.groups,
+        shift
+    );
+}
+
+void add(
+    MediaSession& session,
+    Lane& lane,
+    DeviceTensorView& projected,
+    std::size_t first,
+    std::size_t rows
+) {
     auto hidden = session.rows(lane.hidden, first, rows);
-    const std::array read{&hidden, &lane.norm[norm], &lane.modulation, &lane.groups};
-    const std::array write{&normalized, &lane.status};
+    const std::array read{&hidden, &projected};
+    const std::array write{&hidden, &lane.status};
     run(session, lane, read, write, [&](void* stream, auto in, auto out) {
-        lane.launcher->normalize(stream, in, out, first, shift);
+        lane.launcher->add(stream, in, out);
     });
 }
 
@@ -522,6 +580,112 @@ void download(MediaSession& session, std::vector<Lane>& all, std::span<float> hi
     session.download_output(result, std::as_writable_bytes(hidden));
 }
 
+// Attention scratch for every head of one query tile against one key tile.
+void add_attention_tensors(
+    StageManifest& m,
+    std::size_t heads,
+    std::size_t queries,
+    std::size_t keys,
+    MediaPhase first,
+    MediaPhase last
+) {
+    m.tensors.push_back(
+        {"attention/scores",
+         h3_attention_scores_bytes(heads, queries, keys),
+         first,
+         last,
+         AllocationKind::conversion}
+    );
+    m.tensors.push_back(
+        {"attention/state",
+         2 * heads * queries * sizeof(double),
+         first,
+         last,
+         AllocationKind::conversion}
+    );
+    m.tensors.push_back(
+        {"attention/wide",
+         h3_attention_wide_bytes(heads, queries, keys),
+         first,
+         last,
+         AllocationKind::conversion}
+    );
+}
+
+void add_norm(
+    StageManifest& m,
+    const std::string& name,
+    const WeightIdentity& id,
+    std::size_t rows
+) {
+    m.weights.push_back(
+        {name,
+         id,
+         TensorStorage::bf16_exact,
+         rows,
+         1,
+         WeightPartition::replicated,
+         1,
+         1,
+         ProjectionPrecision::f32}
+    );
+}
+
+DeviceTensorView norm_view(MediaSession& session, int device, const std::string& name) {
+    const auto& slices = session.plan().weights;
+    const auto w = std::find_if(slices.begin(), slices.end(), [&](const auto& s) {
+        return s.device == device && s.name == name;
+    });
+    require(w != slices.end(), "h3_resident_weight");
+    return session.weight(*w);
+}
+
+// One attention call for a query tile against every key, into `attended`.
+void attend(
+    MediaSession& session,
+    Lane& lane,
+    DeviceTensorView& query,
+    DeviceTensorView& key,
+    DeviceTensorView& value,
+    DeviceTensorView& attended,
+    std::size_t heads,
+    std::size_t rows,
+    std::size_t key_tile
+) {
+    auto scores = session.tensor(
+        lane.id, "attention/scores", DeviceDType::f64, {heads * rows * key_tile}, {1}
+    );
+    auto state = session.tensor(
+        lane.id, "attention/state", DeviceDType::f64, {2 * heads * rows}, {1}
+    );
+    auto wide = session.tensor(
+        lane.id,
+        "attention/wide",
+        DeviceDType::f64,
+        {std::size_t(h3_attention_wide_bytes(heads, rows, key_tile) / sizeof(double))},
+        {1}
+    );
+    const std::array read{&query, &key, &value};
+    const std::array write{&attended, &scores, &state, &wide, &lane.blas, &lane.status};
+    run(session, lane, read, write, [&](void* stream, auto in, auto out) {
+        lane.launcher->attention(stream, in, out, key_tile);
+    });
+}
+
+void normalize_qk(
+    MediaSession& session,
+    Lane& lane,
+    DeviceTensorView& x,
+    std::size_t norm,
+    std::size_t first
+) {
+    const std::array read{&x, &lane.norm[norm]};
+    const std::array write{&x, &lane.status};
+    run(session, lane, read, write, [&](void* stream, auto in, auto out) {
+        lane.launcher->qk_rotary(stream, in, out, first);
+    });
+}
+
 }  // namespace
 
 void close_h3_resident(
@@ -595,17 +759,7 @@ StageManifest h3_block_manifest(
     m.schedule = MediaSchedule::full_block;
     const auto hidden = b.ff.hidden, inner = b.heads * b.head_dim;
     for (std::size_t i = 0; i < b.norm.size(); ++i)
-        m.weights.push_back(
-            {b.norm[i],
-             b.norm_id[i],
-             TensorStorage::bf16_exact,
-             i < 2 ? hidden : b.head_dim,
-             1,
-             WeightPartition::replicated,
-             1,
-             1,
-             ProjectionPrecision::f32}
-        );
+        add_norm(m, b.norm[i], b.norm_id[i], i < 2 ? hidden : b.head_dim);
     std::size_t rank = 0, elements = 0;
     add_projection(
         m, b.qkv, 3 * inner, hidden, WeightPartition::heads, 3, tokens, rank, elements
@@ -657,26 +811,8 @@ StageManifest h3_block_manifest(
         };
     const auto queries = std::min<std::size_t>(128, tokens),
                keys = std::min<std::size_t>(4096, tokens);
-    m.tensors.push_back(
-        {"attention/scores",
-         h3_attention_scores_bytes(b.heads, queries, keys),
-         MediaPhase::attention,
-         MediaPhase::attention,
-         AllocationKind::conversion}
-    );
-    m.tensors.push_back(
-        {"attention/state",
-         2 * b.heads * queries * sizeof(double),
-         MediaPhase::attention,
-         MediaPhase::attention,
-         AllocationKind::conversion}
-    );
-    m.tensors.push_back(
-        {"attention/wide",
-         h3_attention_wide_bytes(b.heads, queries, keys),
-         MediaPhase::attention,
-         MediaPhase::attention,
-         AllocationKind::conversion}
+    add_attention_tensors(
+        m, b.heads, queries, keys, MediaPhase::attention, MediaPhase::attention
     );
     m.workspaces_complete = true;
     return m;
@@ -718,18 +854,18 @@ void upload_h3_feed_forward_inputs(
     }
 }
 
-void upload_h3_block_inputs(
+void upload_h3_step_inputs(
     MediaSession& session,
-    const H3Block& b,
+    std::size_t width,
+    std::size_t time_width,
     std::span<const float> hidden,
     std::span<const float> time,
     std::span<const std::uint32_t> token_groups,
     std::span<const double> rotary
 ) {
-    const auto width = b.ff.hidden, tokens = token_groups.size(),
-               timesteps = time.size() / b.time_width;
+    const auto tokens = token_groups.size(), timesteps = time.size() / time_width;
     require(
-        tokens && timesteps && timesteps <= 3 && time.size() == timesteps * b.time_width
+        tokens && timesteps && timesteps <= 3 && time.size() == timesteps * time_width
             && hidden.size() == tokens * width && rotary.size() == tokens * 96,
         "h3_resident_input_shape"
     );
@@ -737,7 +873,7 @@ void upload_h3_block_inputs(
         const auto d = planned.device;
         auto hidden_view = matrix(session, d, "resident/hidden", tokens, width);
         session.upload_input(hidden_view, std::as_bytes(hidden));
-        auto time_view = matrix(session, d, "block/time", timesteps, b.time_width);
+        auto time_view = matrix(session, d, "block/time", timesteps, time_width);
         session.upload_input(time_view, std::as_bytes(time));
         auto groups_view =
             session.tensor(d, "block/token-groups", DeviceDType::u32, {tokens}, {1});
@@ -745,6 +881,18 @@ void upload_h3_block_inputs(
         auto rotary_view =
             matrix(session, d, "block/rotary", tokens, 96, DeviceDType::f64);
         session.upload_input(rotary_view, std::as_bytes(rotary));
+    }
+}
+
+void upload_h3_final_inputs(
+    MediaSession& session, std::span<const std::uint32_t> time_ids
+) {
+    require(!time_ids.empty(), "h3_resident_input_shape");
+    for (const auto& planned : session.plan().devices) {
+        auto view = session.tensor(
+            planned.device, "final/time-ids", DeviceDType::u32, {time_ids.size()}, {1}
+        );
+        session.upload_input(view, std::as_bytes(time_ids));
     }
 }
 
@@ -858,15 +1006,8 @@ void execute_h3_block(
                 && lane.qkv.planes[0].rows == plan.devices[i].heads * b.head_dim,
             "h3_resident_partition"
         );
-        for (std::size_t n = 0; n < b.norm.size(); ++n) {
-            const auto& slices = plan.weights;
-            const auto w =
-                std::find_if(slices.begin(), slices.end(), [&](const auto& s) {
-                    return s.device == lane.id && s.name == b.norm[n];
-                });
-            require(w != slices.end(), "h3_resident_weight");
-            lane.norm[n] = session.weight(*w);
-        }
+        for (std::size_t n = 0; n < b.norm.size(); ++n)
+            lane.norm[n] = norm_view(session, lane.id, b.norm[n]);
         bind_boundaries(session, lane, tokens, width);
         lane.rotary =
             matrix(session, lane.id, "block/rotary", tokens, 96, DeviceDType::f64);
@@ -944,32 +1085,17 @@ void execute_h3_block(
             project(session, lane, lane.qkv, 0, normalized, query, rows);
             rotary(session, lane, query, 2, first);
             attended[i] = matrix(session, lane.id, "resident/attended", rows, local);
-            auto scores = session.tensor(
-                lane.id,
-                "attention/scores",
-                DeviceDType::f64,
-                {heads * rows * plan.keys},
-                {1}
+            attend(
+                session,
+                lane,
+                query,
+                lane.key,
+                lane.value,
+                attended[i],
+                heads,
+                rows,
+                plan.keys
             );
-            auto state = session.tensor(
-                lane.id, "attention/state", DeviceDType::f64, {2 * heads * rows}, {1}
-            );
-            auto wide = session.tensor(
-                lane.id,
-                "attention/wide",
-                DeviceDType::f64,
-                {std::size_t(
-                    h3_attention_wide_bytes(heads, rows, plan.keys) / sizeof(double)
-                )},
-                {1}
-            );
-            const std::array read{&query, &lane.key, &lane.value};
-            const std::array write{
-                &attended[i], &scores, &state, &wide, &lane.blas, &lane.status
-            };
-            run(session, lane, read, write, [&](void* stream, auto in, auto out) {
-                lane.launcher->attention(stream, in, out, plan.keys);
-            });
         }
         const auto inputs = gather(
             session,
@@ -1034,5 +1160,357 @@ void execute_h3_block(
     // Hidden stays resident for the next block's admission.
     all.clear();
     session.advance(MediaPhase::complete);
+}
+
+StageManifest h3_refiner_manifest(
+    const H3Refiner& r,
+    std::size_t tokens,
+    std::size_t text,
+    std::size_t timesteps,
+    bool retained
+) {
+    require(
+        text && text <= tokens && timesteps && timesteps <= 3, "h3_resident_input_shape"
+    );
+    StageManifest m;
+    m.stage = MediaStage::denoise;
+    m.schedule = MediaSchedule::feed_forward;
+    const auto inner = r.heads * r.head_dim;
+    for (std::size_t i = 0; i < r.norm.size(); ++i)
+        add_norm(m, r.norm[i], r.norm_id[i], i < 2 ? r.hidden : r.head_dim);
+    if (!r.final_norm.empty())
+        add_norm(m, r.final_norm, r.final_norm_id, r.hidden);
+    std::size_t rank = 0, elements = 0;
+    const auto replicated = WeightPartition::replicated;
+    add_projection(
+        m, r.qkv, 3 * inner, r.hidden, replicated, 3, tokens, rank, elements
+    );
+    add_projection(m, r.out, r.hidden, inner, replicated, 1, tokens, rank, elements);
+    add_projection(
+        m, r.fc1, 2 * r.width, r.hidden, replicated, 2, tokens, rank, elements
+    );
+    add_projection(m, r.fc2, r.hidden, r.width, replicated, 1, tokens, rank, elements);
+    // The stage carries the step's token groups, rotary and time embedding for the
+    // blocks that follow; its modulation table is unused.
+    add_shared_tensors(
+        m,
+        r.hidden,
+        tokens,
+        timesteps * h3_modulation_tags,
+        rank,
+        elements,
+        MediaPhase::ff
+    );
+    m.tensors.push_back({"block/rotary", tokens * 96 * sizeof(double)});
+    m.tensors.push_back({"block/time", timesteps * r.time_width * sizeof(float)});
+    const auto queries = std::min<std::size_t>(128, text),
+               keys = std::min<std::size_t>(4096, text);
+    for (const auto* name : {"refiner/query", "refiner/key", "refiner/value"})
+        m.tensors.push_back(
+            {name, text * inner * sizeof(float), MediaPhase::ff, MediaPhase::ff}
+        );
+    m.tensors.push_back(
+        {"refiner/attended",
+         queries * inner * sizeof(float),
+         MediaPhase::ff,
+         MediaPhase::ff}
+    );
+    add_attention_tensors(m, r.heads, queries, keys, MediaPhase::ff, MediaPhase::ff);
+    if (retained)
+        m.retained_inputs = {
+            "resident/hidden", "block/token-groups", "block/rotary", "block/time"
+        };
+    m.workspaces_complete = true;
+    return m;
+}
+
+MediaShape h3_refiner_shape(const H3Refiner& r, std::size_t tokens) {
+    return {tokens, r.hidden, 0, 0, 0, r.width};
+}
+
+StageManifest h3_final_manifest(
+    const H3Final& f,
+    std::size_t tokens,
+    std::size_t video,
+    std::size_t audio,
+    std::size_t timesteps
+) {
+    require(
+        timesteps && timesteps <= 3 && (video || audio) && video + audio <= tokens,
+        "h3_resident_input_shape"
+    );
+    StageManifest m;
+    m.stage = MediaStage::denoise;
+    m.schedule = MediaSchedule::feed_forward;
+    m.blas_bytes = h3_resident_blas_bytes;
+    m.status_bytes = sizeof(std::uint32_t);
+    add_norm(m, f.norm, f.norm_id, f.hidden);
+    std::size_t rank = 0, elements = 0;
+    const auto replicated = WeightPartition::replicated;
+    add_projection(
+        m,
+        f.adaln,
+        h3_final_modulation_rows * f.hidden,
+        f.time_width,
+        replicated,
+        1,
+        tokens,
+        rank,
+        elements
+    );
+    if (video)
+        add_projection(
+            m, f.video, f.video_width, f.hidden, replicated, 1, tokens, rank, elements
+        );
+    if (audio)
+        add_projection(
+            m, f.audio, f.audio_width, f.hidden, replicated, 1, tokens, rank, elements
+        );
+    m.tensors.push_back({"block/time", timesteps * f.time_width * sizeof(float)});
+    m.tensors.push_back(
+        {"final/modulation",
+         timesteps * h3_final_modulation_rows * f.hidden * sizeof(float)}
+    );
+    m.tensors.push_back({"final/time-ids", tokens * sizeof(std::uint32_t)});
+    if (video)
+        m.tensors.push_back({"final/video", video * f.video_width * sizeof(float)});
+    if (audio)
+        m.tensors.push_back({"final/audio", audio * f.audio_width * sizeof(float)});
+    m.retained_inputs = {"resident/hidden", "block/time"};
+    m.workspaces_complete = true;
+    return m;
+}
+
+MediaShape h3_final_shape(const H3Final& f, std::size_t tokens) {
+    // The planner's FF tiles go unused; size them at the hidden width.
+    return {tokens, f.hidden, 0, 0, 0, f.hidden};
+}
+
+// Every device holds every refiner weight and computes the same text rows on its
+// own hidden copy, so no peer gathers are needed.
+void execute_h3_refiner(
+    MediaSession& session,
+    std::span<H3ResidentLauncher* const> launchers,
+    const H3Refiner& r,
+    std::size_t tokens,
+    std::size_t text,
+    const std::atomic_bool& cancel
+) {
+    const auto& plan = session.plan();
+    const auto inner = r.heads * r.head_dim;
+    require(
+        plan.schedule == MediaSchedule::feed_forward && plan.rows && text
+            && text <= tokens,
+        "h3_resident_plan"
+    );
+    auto all = lanes(session, launchers);
+    for (auto& lane : all) {
+        lane.qkv = bind(session, lane.id, r.qkv, 3, inner, r.hidden);
+        lane.out = bind(session, lane.id, r.out, 1, r.hidden, inner);
+        lane.fc1 = bind(session, lane.id, r.fc1, 2, r.width, r.hidden);
+        lane.fc2 = bind(session, lane.id, r.fc2, 1, r.hidden, r.width);
+        for (std::size_t n = 0; n < r.norm.size(); ++n)
+            lane.norm[n] = norm_view(session, lane.id, r.norm[n]);
+        lane.hidden = matrix(session, lane.id, "resident/hidden", tokens, r.hidden);
+        lane.normalized =
+            matrix(session, lane.id, "resident/normalized", tokens, r.hidden);
+        std::vector<DeviceTensorView*> views{&lane.hidden};
+        for (auto& norm : lane.norm)
+            views.push_back(&norm);
+        if (!r.final_norm.empty()) {
+            lane.final_norm = norm_view(session, lane.id, r.final_norm);
+            views.push_back(&lane.final_norm);
+        }
+        for (auto* p : {&lane.qkv, &lane.out, &lane.fc1, &lane.fc2})
+            ready(*p, views);
+        session.require_ready(views);
+    }
+    session.advance(MediaPhase::ff);
+    const auto queries = std::min<std::size_t>({128, plan.rows, text}),
+               key_tile = std::min<std::size_t>(4096, text);
+    auto tiles = [&](std::size_t size, auto body) {
+        for (std::size_t first = 0; first < text;) {
+            stop(cancel);
+            const auto rows = std::min(size, text - first);
+            body(first, rows);
+            first += rows;
+        }
+    };
+    for (auto& lane : all) {
+        bind_scratch(session, lane);
+        auto query = matrix(session, lane.id, "refiner/query", text, inner);
+        auto key = matrix(session, lane.id, "refiner/key", text, inner);
+        auto value = matrix(session, lane.id, "refiner/value", text, inner);
+        // Q, K and V for every text token before any hidden row changes.
+        tiles(plan.rows, [&](std::size_t first, std::size_t rows) {
+            auto normalized = session.rows(lane.normalized, first, rows);
+            normalize(session, lane, lane.norm[0], first, rows, normalized);
+            auto q = session.rows(query, first, rows);
+            project(session, lane, lane.qkv, 0, normalized, q, rows);
+            normalize_qk(session, lane, q, 2, first);
+            auto k = session.rows(key, first, rows);
+            project(session, lane, lane.qkv, 1, normalized, k, rows);
+            normalize_qk(session, lane, k, 3, first);
+            auto v = session.rows(value, first, rows);
+            project(session, lane, lane.qkv, 2, normalized, v, rows);
+        });
+        tiles(queries, [&](std::size_t first, std::size_t rows) {
+            auto q = session.rows(query, first, rows);
+            auto attended = matrix(session, lane.id, "refiner/attended", rows, inner);
+            attend(session, lane, q, key, value, attended, r.heads, rows, key_tile);
+            auto projected =
+                matrix(session, lane.id, "resident/residual-tile", rows, r.hidden);
+            project(session, lane, lane.out, 0, attended, projected, rows);
+            add(session, lane, projected, first, rows);
+        });
+        tiles(plan.rows, [&](std::size_t first, std::size_t rows) {
+            auto normalized = session.rows(lane.normalized, first, rows);
+            normalize(session, lane, lane.norm[1], first, rows, normalized);
+            auto pair =
+                matrix(session, lane.id, "resident/ff-gate-up", 2 * rows, r.width);
+            auto gate = session.rows(pair, 0, rows);
+            auto up = session.rows(pair, rows, rows);
+            project(session, lane, lane.fc1, 0, normalized, gate, rows);
+            project(session, lane, lane.fc1, 1, normalized, up, rows);
+            const std::array read{&gate, &up};
+            const std::array write{&gate, &lane.status};
+            run(session, lane, read, write, [&](void* stream, auto in, auto out) {
+                lane.launcher->silu_gate(stream, in, out);
+            });
+            auto down =
+                matrix(session, lane.id, "resident/residual-tile", rows, r.hidden);
+            project(session, lane, lane.fc2, 0, gate, down, rows);
+            add(session, lane, down, first, rows);
+        });
+        if (!r.final_norm.empty())
+            tiles(plan.rows, [&](std::size_t first, std::size_t rows) {
+                normalize(session, lane, lane.final_norm, first, rows, lane.hidden);
+            });
+    }
+    all.clear();
+    session.advance(MediaPhase::complete);
+}
+
+void execute_h3_final(
+    MediaSession& session,
+    std::span<H3ResidentLauncher* const> launchers,
+    const H3Final& f,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<float> video,
+    std::span<float> audio,
+    const std::atomic_bool& cancel
+) {
+    const auto& plan = session.plan();
+    const auto nv = video.size() / f.video_width, na = audio.size() / f.audio_width;
+    require(
+        plan.schedule == MediaSchedule::feed_forward && plan.rows
+            && video.size() == nv * f.video_width && audio.size() == na * f.audio_width
+            && (nv || na) && text + nv + na == tokens,
+        "h3_resident_plan"
+    );
+    const auto& tensors = plan.tensors;
+    const auto time = std::find_if(tensors.begin(), tensors.end(), [](const auto& t) {
+        return t.name == "block/time";
+    });
+    require(time != tensors.end(), "h3_resident_plan");
+    const auto timesteps = std::size_t(time->bytes / sizeof(float) / f.time_width);
+    auto all = lanes(session, launchers);
+    std::vector<DeviceTensorView> outputs[2];
+    for (auto& lane : all) {
+        lane.adaln = bind(
+            session,
+            lane.id,
+            f.adaln,
+            1,
+            h3_final_modulation_rows * f.hidden,
+            f.time_width
+        );
+        if (nv)
+            lane.video = bind(session, lane.id, f.video, 1, f.video_width, f.hidden);
+        if (na)
+            lane.audio = bind(session, lane.id, f.audio, 1, f.audio_width, f.hidden);
+        lane.final_norm = norm_view(session, lane.id, f.norm);
+        lane.hidden = matrix(session, lane.id, "resident/hidden", tokens, f.hidden);
+        lane.normalized =
+            matrix(session, lane.id, "resident/normalized", tokens, f.hidden);
+        lane.time = matrix(session, lane.id, "block/time", timesteps, f.time_width);
+        lane.modulation = matrix(
+            session,
+            lane.id,
+            "final/modulation",
+            timesteps,
+            h3_final_modulation_rows * f.hidden
+        );
+        lane.time_ids =
+            session.tensor(lane.id, "final/time-ids", DeviceDType::u32, {tokens}, {1});
+        std::vector<DeviceTensorView*> views{
+            &lane.hidden, &lane.time, &lane.time_ids, &lane.final_norm
+        };
+        ready(lane.adaln, views);
+        if (nv)
+            ready(lane.video, views);
+        if (na)
+            ready(lane.audio, views);
+        session.require_ready(views);
+    }
+    session.advance(MediaPhase::ff);
+    for (auto& lane : all) {
+        bind_scratch(session, lane);
+        project(session, lane, lane.adaln, 0, lane.time, lane.modulation, timesteps);
+
+        // Only the selected video then audio rows are normalized and projected.
+        struct OutputSegment {
+            std::size_t start, count;
+            Projection* projection;
+            const char* name;
+            std::size_t width;
+        };
+
+        const std::array<OutputSegment, 2> segments{
+            {{text, nv, &lane.video, "final/video", f.video_width},
+             {text + nv, na, &lane.audio, "final/audio", f.audio_width}}
+        };
+        std::size_t index = 0;
+        for (const auto& [start, count, projection, name, width] : segments) {
+            auto& output = outputs[index++];
+            if (!count) {
+                output.emplace_back();
+                continue;
+            }
+            output.push_back(matrix(session, lane.id, name, count, width));
+            for (std::size_t first = start; first < start + count;) {
+                stop(cancel);
+                const auto rows = std::min(plan.rows, start + count - first);
+                auto normalized = session.rows(lane.normalized, first, rows);
+                normalize(
+                    session,
+                    lane,
+                    lane.final_norm,
+                    first,
+                    rows,
+                    normalized,
+                    &lane.modulation,
+                    &lane.time_ids,
+                    0,
+                    h3_final_modulation_rows
+                );
+                auto out = session.rows(output.back(), first - start, rows);
+                project(session, lane, *projection, 0, normalized, out, rows);
+                first += rows;
+            }
+        }
+    }
+    // Every device computes the same rows; download the first copy.
+    auto video_view = std::move(outputs[0].front());
+    auto audio_view = std::move(outputs[1].front());
+    for (auto& output : outputs)
+        output.clear();
+    all.clear();
+    session.advance(MediaPhase::complete);
+    if (nv)
+        session.download_output(video_view, std::as_writable_bytes(video));
+    if (na)
+        session.download_output(audio_view, std::as_writable_bytes(audio));
 }
 }  // namespace kadan::video::detail

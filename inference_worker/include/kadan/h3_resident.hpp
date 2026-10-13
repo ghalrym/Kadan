@@ -144,6 +144,95 @@ inline H3ConvrotShape validate_h3_convrot(
     return shape;
 }
 
+// FP64 dense scratch for `rows` inputs of width `in`: the widened input, then per
+// output column a widened weight row and a widened output value per row.
+inline std::size_t h3_dense_tile(Bytes scratch, std::size_t rows, std::size_t in) {
+    using detail::h3_aligned;
+    const auto fixed = h3_aligned(Bytes(rows) * in * 8);
+    if (!rows || !in || scratch <= fixed)
+        return 0;
+    return std::size_t((scratch - fixed) / (Bytes(in) * 8 + Bytes(rows) * 8) / 4 * 4);
+}
+
+struct H3DenseShape {
+    std::size_t rows = 0, in = 0, out = 0, rank = 0, tile = 0;
+    bool bias = false;
+};
+
+// The host's precise dense projection: inputs [input [rows,in] F32, weight [out,in]
+// BF16 or F32], then either [bias [out,1] BF16 or F32] or, with Turbo LoRA,
+// [lora-a [rank,in] BF16, lora-b [out,rank] BF16]. Outputs match convrot.
+// output = F32(input . weight^T in F64) + bias, then LoRA in host order.
+inline H3DenseShape validate_h3_dense(
+    int device,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write
+) {
+    using namespace detail;
+    const bool lora = read.size() == 4, bias = read.size() == 3;
+    h3_need(
+        ((read.size() == 2 || bias) && write.size() == 4)
+            || (lora && write.size() == 6),
+        "h3_dense_arity"
+    );
+    const auto& input = read[0];
+    h3_need(
+        input.dimensions.size() == 2 && read[1].dimensions.size() == 2,
+        "h3_dense_layout"
+    );
+    H3DenseShape shape{
+        input.dimensions[0], input.dimensions[1], read[1].dimensions[0], 0, 0, bias
+    };
+    const auto real = [](DeviceDType t) {
+        return t == DeviceDType::bf16 || t == DeviceDType::f32;
+    };
+    h3_need(
+        shape.rows && shape.rows <= std::size_t(INT_MAX) && shape.in
+            && shape.in <= std::size_t(INT_MAX) && shape.out
+            && shape.out <= std::size_t(INT_MAX)
+            && h3_matrix(input, device, DeviceDType::f32, shape.rows, shape.in)
+            && real(read[1].dtype)
+            && h3_matrix(read[1], device, read[1].dtype, shape.out, shape.in)
+            && (!bias
+                || (real(read[2].dtype)
+                    && h3_matrix(read[2], device, read[2].dtype, shape.out, 1)))
+            && h3_matrix(write[0], device, DeviceDType::f32, shape.rows, shape.out),
+        "h3_dense_layout"
+    );
+    const auto& conversion = write[1];
+    const auto& blas = write[write.size() - 2];
+    const auto& status = write.back();
+    h3_need(
+        h3_buffer(conversion, device, DeviceDType::u8)
+            && h3_buffer(blas, device, DeviceDType::u8)
+            && blas.bytes >= h3_resident_blas_bytes
+            && h3_buffer(status, device, DeviceDType::u32) && status.bytes == 4,
+        "h3_dense_workspace"
+    );
+    shape.tile =
+        std::min(shape.out, h3_dense_tile(conversion.bytes, shape.rows, shape.in));
+    h3_need(shape.tile >= std::min<std::size_t>(4, shape.out), "h3_dense_workspace");
+    if (lora) {
+        h3_need(read[2].dimensions.size() == 2, "h3_dense_lora");
+        shape.rank = read[2].dimensions[0];
+        h3_need(
+            shape.rank && shape.rank <= h3_lora_rank_limit
+                && h3_matrix(read[2], device, DeviceDType::bf16, shape.rank, shape.in)
+                && h3_matrix(read[3], device, DeviceDType::bf16, shape.out, shape.rank)
+                && h3_matrix(write[2], device, DeviceDType::f64, shape.rows, shape.rank)
+                && h3_buffer(write[3], device, DeviceDType::f64)
+                && write[3].dimensions[0] >= shape.rank * shape.in
+                                                 + shape.out * shape.rank
+                                                 + shape.rows * shape.in,
+            "h3_dense_lora"
+        );
+    }
+    for (const auto& w : write)
+        for (const auto& r : read)
+            h3_need(h3_disjoint(w, r), "h3_dense_alias");
+    return shape;
+}
+
 // Inputs [gate, value]; outputs [same gate, status]. gate = SiLU(gate) * value.
 inline std::size_t validate_h3_silu_gate(
     int device,
@@ -173,33 +262,37 @@ inline std::size_t validate_h3_silu_gate(
 // g = timestep * 3 + tag starts at row-major offset g * 6 * hidden.
 inline constexpr std::size_t h3_modulation_rows = 6, h3_modulation_tags = 3;
 
-// Modulation [timesteps, 18 * hidden] F32 and token-groups [tokens] U32 shared by
-// the normalization and residual checks. Returns the group count.
+// The final layer's AdaLN gives each timestep two [hidden] vectors (shift, scale)
+// and indexes them by timestep alone.
+inline constexpr std::size_t h3_final_modulation_rows = 2;
+
+// Modulation [timesteps, groups-per-timestep * stride * hidden] F32 and per-token
+// groups [tokens] U32, shared by the normalization and residual checks. Each
+// group owns `stride` consecutive [hidden] vectors. Returns the group count.
 inline std::size_t h3_modulation(
     int device,
     const MediaDeviceSpan& modulation,
     const MediaDeviceSpan& groups,
     std::size_t width,
     std::size_t first,
-    std::size_t rows
+    std::size_t rows,
+    std::size_t stride = h3_modulation_rows
 ) {
     using namespace detail;
-    h3_need(modulation.dimensions.size() == 2, "h3_modulation_layout");
-    const auto timesteps = modulation.dimensions[0];
     h3_need(
-        timesteps && timesteps <= 3
-            && h3_matrix(
-                modulation,
-                device,
-                DeviceDType::f32,
-                timesteps,
-                h3_modulation_tags * h3_modulation_rows * width
-            )
+        modulation.dimensions.size() == 2 && width && stride, "h3_modulation_layout"
+    );
+    const auto timesteps = modulation.dimensions[0], columns = modulation.dimensions[1];
+    const auto count =
+        columns % (stride * width) ? 0 : timesteps * (columns / (stride * width));
+    h3_need(
+        timesteps && timesteps <= 3 && count && count <= 9
+            && h3_matrix(modulation, device, DeviceDType::f32, timesteps, columns)
             && h3_buffer(groups, device, DeviceDType::u32)
             && first <= groups.dimensions[0] && rows <= groups.dimensions[0] - first,
         "h3_modulation_layout"
     );
-    return timesteps * h3_modulation_tags;
+    return count;
 }
 
 // Inputs [hidden rows, projected, modulation, token-groups]; outputs [same hidden
@@ -234,40 +327,80 @@ inline std::size_t validate_h3_gated_residual(
     return rows * width;
 }
 
-// Inputs [hidden rows, norm-weight [hidden,1] BF16, modulation, token-groups];
-// outputs [normalized [rows,hidden], status]. RMS norm (epsilon 1e-5), then
-// normalized * (1 + modulation[group*6 + shift + 1]) + modulation[group*6 + shift].
+// Inputs [hidden rows, norm-weight [hidden,1] BF16] and, when modulated,
+// [modulation, token-groups]; outputs [normalized [rows,hidden], status]. RMS norm
+// (epsilon 1e-5), then, when modulated, normalized * (1 + modulation[group *
+// stride + shift + 1]) + modulation[group * stride + shift]. A plain norm may
+// write its input in place; a modulated one writes a separate tile.
 inline std::size_t validate_h3_normalize(
     int device,
     std::span<const MediaDeviceSpan> read,
     std::span<const MediaDeviceSpan> write,
     std::size_t first,
-    std::size_t shift
+    std::size_t shift,
+    std::size_t stride = h3_modulation_rows
 ) {
     using namespace detail;
-    h3_need(read.size() == 4 && write.size() == 2, "h3_normalize_arity");
+    const bool modulated = read.size() == 4;
+    h3_need((modulated || read.size() == 2) && write.size() == 2, "h3_normalize_arity");
     const auto& hidden = read[0];
     h3_need(
-        hidden.dimensions.size() == 2 && (shift == 0 || shift == 3),
+        hidden.dimensions.size() == 2
+            && (modulated ? (stride == h3_modulation_rows
+                             || stride == h3_final_modulation_rows)
+                                && shift % (stride / 2) == 0 && shift + 1 < stride
+                          : shift == 0),
         "h3_normalize_layout"
     );
     const auto rows = hidden.dimensions[0], width = hidden.dimensions[1];
-    h3_modulation(device, read[2], read[3], width, first, rows);
+    if (modulated)
+        h3_modulation(device, read[2], read[3], width, first, rows, stride);
+    const bool in_place = write[0].data == hidden.data
+                          && write[0].dimensions == hidden.dimensions
+                          && write[0].strides == hidden.strides;
+    bool disjoint = true;
+    for (const auto& r : read)
+        disjoint = disjoint && h3_disjoint(write[0], r);
     h3_need(
         h3_matrix(hidden, device, DeviceDType::f32, rows, width)
             && h3_matrix(read[1], device, DeviceDType::bf16, width, 1)
             && h3_matrix(write[0], device, DeviceDType::f32, rows, width)
             && h3_buffer(write[1], device, DeviceDType::u32) && write[1].bytes == 4
-            && h3_disjoint(write[0], hidden) && h3_disjoint(write[0], read[1])
-            && h3_disjoint(write[0], read[2]) && h3_disjoint(write[0], read[3]),
+            && (disjoint || (!modulated && in_place && h3_disjoint(hidden, read[1]))),
         "h3_normalize_layout"
     );
     return rows;
 }
 
-// Inputs [Q-or-K rows [rows,heads*128], norm-weight [128,1] BF16, rotary
-// [tokens,96] F64 cos/sin pairs]; outputs [same rows, status]. Per-head RMS norm
-// (epsilon 1e-5), then rotation of channels c and c+48 for c < 48.
+// Inputs [hidden rows, projected]; outputs [same hidden rows, status].
+// hidden += projected, the refiner's ungated residual.
+inline std::size_t validate_h3_add(
+    int device,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write
+) {
+    using namespace detail;
+    h3_need(read.size() == 2 && write.size() == 2, "h3_add_arity");
+    const auto& hidden = read[0];
+    h3_need(hidden.dimensions.size() == 2, "h3_add_layout");
+    const auto rows = hidden.dimensions[0], width = hidden.dimensions[1];
+    h3_need(
+        h3_matrix(hidden, device, DeviceDType::f32, rows, width)
+            && h3_matrix(read[1], device, DeviceDType::f32, rows, width)
+            && write[0].data == hidden.data && write[0].dimensions == hidden.dimensions
+            && write[0].strides == hidden.strides && write[0].dtype == hidden.dtype
+            && write[0].device == device
+            && h3_buffer(write[1], device, DeviceDType::u32) && write[1].bytes == 4
+            && h3_disjoint(hidden, read[1]),
+        "h3_add_layout"
+    );
+    return rows * width;
+}
+
+// Inputs [Q-or-K rows [rows,heads*128], norm-weight [128,1] BF16] and optionally
+// [rotary [tokens,96] F64 cos/sin pairs]; outputs [same rows, status]. Per-head
+// RMS norm (epsilon 1e-5), then, with rotary, rotation of channels c and c+48 for
+// c < 48. The refiner's text attention has no rotary.
 inline std::size_t validate_h3_qk_rotary(
     int device,
     std::span<const MediaDeviceSpan> read,
@@ -275,22 +408,26 @@ inline std::size_t validate_h3_qk_rotary(
     std::size_t first
 ) {
     using namespace detail;
-    h3_need(read.size() == 3 && write.size() == 2, "h3_rotary_arity");
+    const bool rotary = read.size() == 3;
+    h3_need((rotary || read.size() == 2) && write.size() == 2, "h3_rotary_arity");
     const auto& x = read[0];
     h3_need(
-        x.dimensions.size() == 2 && read[2].dimensions.size() == 2, "h3_rotary_layout"
+        x.dimensions.size() == 2 && (!rotary || read[2].dimensions.size() == 2),
+        "h3_rotary_layout"
     );
     const auto rows = x.dimensions[0], width = x.dimensions[1],
-               tokens = read[2].dimensions[0];
+               tokens = rotary ? read[2].dimensions[0] : first + rows;
     h3_need(
         width && width % 128 == 0 && h3_matrix(x, device, DeviceDType::f32, rows, width)
             && h3_matrix(read[1], device, DeviceDType::bf16, 128, 1)
-            && h3_matrix(read[2], device, DeviceDType::f64, tokens, 96)
+            && (!rotary
+                || (h3_matrix(read[2], device, DeviceDType::f64, tokens, 96)
+                    && h3_disjoint(x, read[2])))
             && first <= tokens && rows <= tokens - first && write[0].data == x.data
             && write[0].dimensions == x.dimensions && write[0].strides == x.strides
             && write[0].dtype == x.dtype && write[0].device == device
             && h3_buffer(write[1], device, DeviceDType::u32) && write[1].bytes == 4
-            && h3_disjoint(x, read[1]) && h3_disjoint(x, read[2]),
+            && h3_disjoint(x, read[1]),
         "h3_rotary_layout"
     );
     return rows * (width / 128);
@@ -397,8 +534,20 @@ public:
         std::span<const MediaDeviceSpan> read,
         std::span<const MediaDeviceSpan> write,
         std::size_t first,
-        std::size_t shift
+        std::size_t shift,
+        std::size_t stride
     ) = 0;
+    // Spans follow validate_h3_dense.
+    virtual void dense(
+        void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write,
+        float lora_scale
+    ) = 0;
+    virtual void
+    add(void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write) = 0;
     virtual void qk_rotary(
         void* stream,
         std::span<const MediaDeviceSpan> read,
@@ -455,8 +604,16 @@ public:
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
         std::size_t,
+        std::size_t,
         std::size_t
     ) override;
+    void dense(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>, float
+    ) override;
+    void
+    add(void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>) override;
     void qk_rotary(
         void*,
         std::span<const MediaDeviceSpan>,
@@ -480,6 +637,20 @@ private:
     void* blas_ = nullptr;
     bool quarantined_ = false;
     void own(void* stream);
+    // Widen the adapter and input, then the rank-space product, into `low`.
+    void lora(
+        void* stream,
+        const MediaDeviceSpan& input,
+        const MediaDeviceSpan& a,
+        const MediaDeviceSpan& b,
+        const MediaDeviceSpan& low,
+        const MediaDeviceSpan& weights,
+        std::size_t rows,
+        std::size_t in,
+        std::size_t out,
+        std::size_t rank,
+        unsigned* status
+    );
     void bind(void* stream, const MediaDeviceSpan& workspace);
 };
 }  // namespace kadan::video

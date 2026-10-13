@@ -63,17 +63,18 @@ public:
         return bool(turbo_);
     }
 
-    // Device-resident execution. Each block runs in a fresh session that is
-    // finished before the next host-staged operation, so its memory is released
-    // between blocks. With `attention`, the whole block (norms, attention and
-    // feed-forward) is tried first; otherwise, or when that is rejected, only the
-    // feed-forward. A rejected first block is recorded and that call falls back;
-    // later rejections fail the call.
+    // Device-resident execution. With `attention`, one session spans the update:
+    // with `refiner`, the two refiner blocks open it, then the whole denoiser
+    // blocks (norms, attention and feed-forward) follow and the final layer ends
+    // it, downloading only the output rows. Hidden stays resident throughout.
+    // Without them, or when rejected, only each block's feed-forward is resident,
+    // in a fresh session per block. Only the first admission of a stage may be
+    // rejected: it is recorded and that call falls back; later rejections fail.
     struct Resident {
         std::function<std::unique_ptr<MediaSession>()> session;
         std::span<H3ResidentLauncher* const> launchers;
-        bool attention = true;
-        std::optional<MediaPlanError> attention_rejected, rejected;
+        bool refiner = true, attention = true;
+        std::optional<MediaPlanError> refiner_rejected, attention_rejected, rejected;
     };
 
     // Computes both output heads and returns selected live video/audio rows.

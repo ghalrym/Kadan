@@ -504,6 +504,24 @@ MediaPlanError unsupported(const char* why) {
 
 // The released INT8 convrot layout with optional Turbo adapters. Any other layout
 // keeps the host-staged path rather than adopting a different contract.
+std::optional<MediaPlanError> describe_lora(
+    Shard* turbo,
+    const std::string& prefix,
+    std::size_t rows,
+    std::size_t columns,
+    detail::H3Projection& p,
+    const std::atomic_bool& cancel
+);
+
+std::optional<MediaPlanError> describe_norms(
+    Shard& shard,
+    const std::string& prefix,
+    std::size_t hidden,
+    std::size_t head_dim,
+    std::array<std::string, 4>& names,
+    std::array<WeightIdentity, 4>& ids
+);
+
 std::optional<MediaPlanError> describe_projection(
     Shard& shard,
     Shard* turbo,
@@ -521,6 +539,55 @@ std::optional<MediaPlanError> describe_projection(
     p.weight_id = shard.tensor_identity(p.weight);
     p.scale_id = shard.tensor_identity(p.scale);
     p.group = quant_group(shard, prefix);
+    return describe_lora(turbo, prefix, rows, columns, p, cancel);
+}
+
+// Exact BF16 or F32 weights on the host's precise dense path, with an optional
+// bias and, when Turbo is loaded, its adapter.
+std::optional<MediaPlanError> describe_dense(
+    Shard& shard,
+    Shard* turbo,
+    const std::string& prefix,
+    std::size_t rows,
+    std::size_t columns,
+    bool bias,
+    detail::H3Projection& p,
+    const std::atomic_bool& cancel
+) {
+    auto storage = [](Dtype dtype) -> std::optional<TensorStorage> {
+        if (dtype == Dtype::bf16)
+            return TensorStorage::bf16_exact;
+        if (dtype == Dtype::fp32)
+            return TensorStorage::f32;
+        return {};
+    };
+    p.weight = prefix + ".weight";
+    const auto weight = shard.tensor(p.weight);
+    const auto weight_storage = storage(weight.dtype);
+    if (!weight_storage || !matrix(shard, p.weight, weight.dtype, rows, columns))
+        return unsupported("h3_resident_dense_layout");
+    p.storage = *weight_storage;
+    p.weight_id = shard.tensor_identity(p.weight);
+    if (bias) {
+        p.bias = prefix + ".bias";
+        const auto t = shard.tensor(p.bias);
+        const auto bias_storage = storage(t.dtype);
+        if (!bias_storage || t.rank != 1 || t.shape[0] != rows)
+            return unsupported("h3_resident_dense_layout");
+        p.bias_storage = *bias_storage;
+        p.bias_id = shard.tensor_identity(p.bias);
+    }
+    return describe_lora(turbo, prefix, rows, columns, p, cancel);
+}
+
+std::optional<MediaPlanError> describe_lora(
+    Shard* turbo,
+    const std::string& prefix,
+    std::size_t rows,
+    std::size_t columns,
+    detail::H3Projection& p,
+    const std::atomic_bool& cancel
+) {
     if (!turbo)
         return {};
     p.lora_a = "diffusion_model." + prefix + ".lora_A.weight";
@@ -593,18 +660,117 @@ std::variant<detail::H3Block, MediaPlanError> describe_block(
     if (bias.dtype != Dtype::bf16 || bias.rank != 1 || bias.shape[0] != modulation)
         return unsupported("h3_resident_adaln_layout");
     b.adaln.bias_id = shard.tensor_identity(b.adaln.bias);
+    if (auto error =
+            describe_norms(shard, p, b.ff.hidden, b.head_dim, b.norm, b.norm_id))
+        return *error;
+    return b;
+}
+
+std::optional<MediaPlanError> describe_norms(
+    Shard& shard,
+    const std::string& prefix,
+    std::size_t hidden,
+    std::size_t head_dim,
+    std::array<std::string, 4>& names,
+    std::array<WeightIdentity, 4>& ids
+) {
     const std::array<const char*, 4> norms{
         "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight"
     };
     for (std::size_t i = 0; i < norms.size(); ++i) {
-        b.norm[i] = p + norms[i];
-        const auto t = shard.tensor(b.norm[i]);
+        names[i] = prefix + norms[i];
+        const auto t = shard.tensor(names[i]);
         if (t.dtype != Dtype::bf16 || t.rank != 1
-            || t.shape[0] != (i < 2 ? b.ff.hidden : b.head_dim))
+            || t.shape[0] != (i < 2 ? hidden : head_dim))
             return unsupported("h3_resident_norm_layout");
-        b.norm_id[i] = shard.tensor_identity(b.norm[i]);
+        ids[i] = shard.tensor_identity(names[i]);
     }
-    return b;
+    return {};
+}
+
+// The released BF16 token refiner with optional Turbo adapters. The last block
+// also carries the refiner's final norm.
+std::variant<detail::H3Refiner, MediaPlanError> describe_refiner(
+    Shard& shard, Shard* turbo, std::size_t block, const std::atomic_bool& cancel
+) {
+    detail::H3Refiner r;
+    const auto p = "token_refiner.blocks." + std::to_string(block) + ".";
+    const auto inner = r.heads * r.head_dim;
+
+    struct ProjectionDescription {
+        const char* name;
+        std::size_t rows, columns;
+        detail::H3Projection* projection;
+    };
+
+    const std::array<ProjectionDescription, 4> projections{
+        {{"attn.qkv_proj", 3 * inner, r.hidden, &r.qkv},
+         {"attn.out_proj", r.hidden, inner, &r.out},
+         {"mlp.fc1", 2 * r.width, r.hidden, &r.fc1},
+         {"mlp.fc2", r.hidden, r.width, &r.fc2}}
+    };
+    for (const auto& [name, rows, columns, projection] : projections)
+        if (auto error = describe_dense(
+                shard, turbo, p + name, rows, columns, false, *projection, cancel
+            ))
+            return *error;
+    if (auto error = describe_norms(shard, p, r.hidden, r.head_dim, r.norm, r.norm_id))
+        return *error;
+    if (block + 1 == 2) {
+        r.final_norm = "token_refiner.final_norm.weight";
+        const auto t = shard.tensor(r.final_norm);
+        if (t.dtype != Dtype::bf16 || t.rank != 1 || t.shape[0] != r.hidden)
+            return unsupported("h3_resident_norm_layout");
+        r.final_norm_id = shard.tensor_identity(r.final_norm);
+    }
+    return r;
+}
+
+// Final AdaLN, norm and the selected latent output projections; no adapters.
+std::variant<detail::H3Final, MediaPlanError>
+describe_final(Shard& shard, bool video, bool audio, const std::atomic_bool& cancel) {
+    detail::H3Final f;
+    if (auto error = describe_dense(
+            shard,
+            nullptr,
+            "final_layer.adaln_proj.linear",
+            h3_final_modulation_rows * f.hidden,
+            f.time_width,
+            true,
+            f.adaln,
+            cancel
+        ))
+        return *error;
+    if (video)
+        if (auto error = describe_dense(
+                shard,
+                nullptr,
+                "final_layer.video_out",
+                f.video_width,
+                f.hidden,
+                true,
+                f.video,
+                cancel
+            ))
+            return *error;
+    if (audio)
+        if (auto error = describe_dense(
+                shard,
+                nullptr,
+                "final_layer.audio_out",
+                f.audio_width,
+                f.hidden,
+                true,
+                f.audio,
+                cancel
+            ))
+            return *error;
+    f.norm = "final_layer.norm.weight";
+    const auto t = shard.tensor(f.norm);
+    if (t.dtype != Dtype::bf16 || t.rank != 1 || t.shape[0] != f.hidden)
+        return unsupported("h3_resident_norm_layout");
+    f.norm_id = shard.tensor_identity(f.norm);
+    return f;
 }
 
 // Admit one block stage and upload its exact checkpoint bytes.
@@ -651,7 +817,11 @@ std::optional<MediaPlanError> prepare(
                 for (std::size_t i = 0; i < raw.size(); i += 4) {
                     float value;
                     std::memcpy(&value, raw.data() + i, sizeof(value));
-                    require(std::isfinite(value) && value >= 0, "h3_cuda_scale");
+                    require(
+                        std::isfinite(value)
+                            && (value >= 0 || !slice.name.ends_with(".weight_scale")),
+                        "h3_cuda_scale"
+                    );
                 }
             auto destination = session.weight(slice);
             session.upload_weight(destination, std::as_bytes(std::span(raw)));
@@ -968,41 +1138,6 @@ void H3Denoiser::execute(
         current.first(nt * hidden),
         true
     );
-    for (std::size_t b = 0; b < 2; ++b) {
-        auto p = "token_refiner.blocks." + std::to_string(b);
-        norm(
-            *shard_,
-            p + ".norm1.weight",
-            current.first(nt * hidden),
-            normalized.first(nt * hidden),
-            norm_weight,
-            cancel
-        );
-        attn(p + ".attn", nt, false);
-        for (std::size_t i = 0; i < nt * hidden; ++i)
-            current[i] += projected[i];
-        norm(
-            *shard_,
-            p + ".norm2.weight",
-            current.first(nt * hidden),
-            normalized.first(nt * hidden),
-            norm_weight,
-            cancel
-        );
-        feed(p + ".mlp", nt);
-        for (std::size_t i = 0; i < nt * hidden; ++i)
-            current[i] += projected[i];
-        if (hook)
-            hook("refiner_completed", b + 1);
-    }
-    norm(
-        *shard_,
-        "token_refiner.final_norm.weight",
-        current.first(nt * hidden),
-        current.first(nt * hidden),
-        norm_weight,
-        cancel
-    );
     if (nv)
         linear(
             "video_patch_proj",
@@ -1052,6 +1187,44 @@ void H3Denoiser::execute(
         double a = t_embed[i];
         t_embed[i] = a / (1 + std::exp(-a));
     }
+    // Host-staged refiner over the text rows, used when it is not resident.
+    auto host_refiner = [&] {
+        for (std::size_t b = 0; b < 2; ++b) {
+            auto p = "token_refiner.blocks." + std::to_string(b);
+            norm(
+                *shard_,
+                p + ".norm1.weight",
+                current.first(nt * hidden),
+                normalized.first(nt * hidden),
+                norm_weight,
+                cancel
+            );
+            attn(p + ".attn", nt, false);
+            for (std::size_t i = 0; i < nt * hidden; ++i)
+                current[i] += projected[i];
+            norm(
+                *shard_,
+                p + ".norm2.weight",
+                current.first(nt * hidden),
+                normalized.first(nt * hidden),
+                norm_weight,
+                cancel
+            );
+            feed(p + ".mlp", nt);
+            for (std::size_t i = 0; i < nt * hidden; ++i)
+                current[i] += projected[i];
+            if (hook)
+                hook("refiner_completed", b + 1);
+        }
+        norm(
+            *shard_,
+            "token_refiner.final_norm.weight",
+            current.first(nt * hidden),
+            current.first(nt * hidden),
+            norm_weight,
+            cancel
+        );
+    };
     auto modulate = [&](std::size_t group) {
         for (std::size_t t = 0; t < n; ++t) {
             const auto base = (time_ids[t] * 3 + input.tags[t]) * 6 * hidden;
@@ -1081,16 +1254,27 @@ void H3Denoiser::execute(
         for (std::size_t t = 0; t < n; ++t)
             token_groups[t] = std::uint32_t(time_ids[t] * 3 + input.tags[t]);
     }
-    // Full blocks share one session for the whole update. Hidden, token groups,
-    // rotary and the time embedding stay resident across block admissions, AdaLN
-    // runs on the device, and hidden is downloaded once after the last block, so
-    // nothing host-staged runs between those blocks.
+    // The refiner, full blocks and final layer share one session. Hidden and
+    // step inputs stay resident across admissions; only output rows return to
+    // the host after the final layer.
     std::unique_ptr<MediaSession> held;
     auto close_held = [&](bool abort) {
         if (!held)
             return;
         auto session = std::move(held);
         detail::close_h3_resident(*session, resident->launchers, abort);
+    };
+    // The first resident stage uploads hidden and the step's shared inputs.
+    auto upload_step = [&](std::size_t time_width) {
+        detail::upload_h3_step_inputs(
+            *held,
+            hidden,
+            time_width,
+            current,
+            t_embed.first(time_count * time_width),
+            token_groups,
+            {rotary.get(), n * 96}
+        );
     };
 
     auto resident_block = [&](std::size_t block) {
@@ -1117,7 +1301,8 @@ void H3Denoiser::execute(
             );
         }
         if (error) {
-            if (block)
+            // After a resident refiner, hidden lives only in the session.
+            if (block || retained)
                 throw std::runtime_error("h3_resident_admission: " + error->detail);
             resident->attention_rejected = std::move(error);
             close_held(false);
@@ -1125,21 +1310,91 @@ void H3Denoiser::execute(
         }
         const auto& layout = std::get<detail::H3Block>(described);
         if (!retained)
-            detail::upload_h3_block_inputs(
-                *held,
-                layout,
-                current,
-                t_embed.first(time_count * layout.time_width),
-                token_groups,
-                {rotary.get(), n * 96}
-            );
+            upload_step(layout.time_width);
         detail::execute_h3_block(*held, resident->launchers, layout, n, cancel);
-        if (block + 1 == layers) {
-            detail::download_h3_hidden(*held, hidden, current);
-            close_held(false);
-            finite(current);
+        return true;
+    };
+    // Both refiner blocks open the update's session, before block 0. Only the
+    // first admission may fall back; the host refiner then runs instead.
+    auto resident_refiner = [&] {
+        if (resident->refiner_rejected || !resident->refiner
+            || resident->attention_rejected || !resident->attention)
+            return false;
+        held = resident->session();
+        require(bool(held), "h3_resident_session");
+        for (std::size_t block = 0; block < 2; ++block) {
+            auto described = describe_refiner(*shard_, turbo_.get(), block, cancel);
+            std::optional<MediaPlanError> error;
+            if (auto* rejected = std::get_if<MediaPlanError>(&described))
+                error = std::move(*rejected);
+            else {
+                const auto& layout = std::get<detail::H3Refiner>(described);
+                error = prepare(
+                    *held,
+                    *shard_,
+                    turbo_.get(),
+                    detail::h3_refiner_manifest(layout, n, nt, time_count, block != 0),
+                    detail::h3_refiner_shape(layout, n),
+                    *resources_,
+                    cancel
+                );
+            }
+            if (error) {
+                if (block)
+                    throw std::runtime_error("h3_resident_admission: " + error->detail);
+                resident->refiner_rejected = std::move(error);
+                close_held(false);
+                return false;
+            }
+            const auto& layout = std::get<detail::H3Refiner>(described);
+            if (!block)
+                upload_step(layout.time_width);
+            detail::execute_h3_refiner(
+                *held, resident->launchers, layout, n, nt, cancel
+            );
+            if (hook)
+                hook("refiner_completed", block + 1);
         }
         return true;
+    };
+    // After the last resident block, the final layer downloads only the output
+    // rows; hidden never returns to the host.
+    auto resident_final = [&] {
+        auto described = describe_final(*shard_, nv != 0, na != 0, cancel);
+        std::optional<MediaPlanError> error;
+        if (auto* rejected = std::get_if<MediaPlanError>(&described))
+            error = std::move(*rejected);
+        else {
+            const auto& layout = std::get<detail::H3Final>(described);
+            error = prepare(
+                *held,
+                *shard_,
+                nullptr,
+                detail::h3_final_manifest(layout, n, nv, na, time_count),
+                detail::h3_final_shape(layout, n),
+                *resources_,
+                cancel
+            );
+        }
+        if (error)
+            throw std::runtime_error("h3_resident_admission: " + error->detail);
+        std::vector<std::uint32_t> ids(n);
+        for (std::size_t t = 0; t < n; ++t)
+            ids[t] = std::uint32_t(time_ids[t]);
+        detail::upload_h3_final_inputs(*held, ids);
+        detail::execute_h3_final(
+            *held,
+            resident->launchers,
+            std::get<detail::H3Final>(described),
+            n,
+            nt,
+            video_out,
+            audio_out,
+            cancel
+        );
+        close_held(false);
+        finite(video_out);
+        finite(audio_out);
     };
     // FF-only fallback: one fresh session per block, finished before the next
     // host-staged operation. The block's AdaLN rows come from the host.
@@ -1194,7 +1449,10 @@ void H3Denoiser::execute(
         finite(current);
         return true;
     };
+    bool final_done = false;
     try {
+        if (!resident || !resident_refiner())
+            host_refiner();
         for (std::size_t b = 0; b < layers; ++b) {
             stop(cancel);
             auto p = "blocks." + std::to_string(b);
@@ -1228,44 +1486,52 @@ void H3Denoiser::execute(
             if (hook)
                 hook("block_completed", b + 1);
         }
+        if (held) {
+            resident_final();
+            final_done = true;
+        }
     } catch (...) {
         rethrow_after_cleanup(std::current_exception(), [&] { close_held(true); });
     }
-    linear(
-        "final_layer.adaln_proj.linear",
-        t_embed.first(time_count * 2688),
-        2688,
-        hidden * 2,
-        adaln.first(time_count * hidden * 2),
-        true
-    );
-    norm(*shard_, "final_layer.norm.weight", current, normalized, norm_weight, cancel);
-    for (std::size_t t = 0; t < n; ++t)
-        for (std::size_t c = 0; c < hidden; ++c)
-            normalized[t * hidden + c] =
-                normalized[t * hidden + c]
-                    * (1 + adaln[(time_ids[t] * 2 + 1) * hidden + c])
-                + adaln[time_ids[t] * 2 * hidden + c];
-    // Compute selected rows only; dense F64 reductions have no batch-dependent kernel
-    // choice.
-    if (nv)
+    if (!final_done) {
         linear(
-            "final_layer.video_out",
-            normalized.subspan(nt * hidden, nv * hidden),
-            hidden,
-            video_width,
-            video_out,
+            "final_layer.adaln_proj.linear",
+            t_embed.first(time_count * 2688),
+            2688,
+            hidden * 2,
+            adaln.first(time_count * hidden * 2),
             true
         );
-    if (na)
-        linear(
-            "final_layer.audio_out",
-            normalized.subspan((nt + nv) * hidden, na * hidden),
-            hidden,
-            audio_width,
-            audio_out,
-            true
+        norm(
+            *shard_, "final_layer.norm.weight", current, normalized, norm_weight, cancel
         );
+        for (std::size_t t = 0; t < n; ++t)
+            for (std::size_t c = 0; c < hidden; ++c)
+                normalized[t * hidden + c] =
+                    normalized[t * hidden + c]
+                        * (1 + adaln[(time_ids[t] * 2 + 1) * hidden + c])
+                    + adaln[time_ids[t] * 2 * hidden + c];
+        // Compute selected rows only; dense F64 reductions have no batch-dependent
+        // kernel choice.
+        if (nv)
+            linear(
+                "final_layer.video_out",
+                normalized.subspan(nt * hidden, nv * hidden),
+                hidden,
+                video_width,
+                video_out,
+                true
+            );
+        if (na)
+            linear(
+                "final_layer.audio_out",
+                normalized.subspan((nt + nv) * hidden, na * hidden),
+                hidden,
+                audio_width,
+                audio_out,
+                true
+            );
+    }
     stop(cancel);
     shard_->check_unchanged();
     if (turbo_)
