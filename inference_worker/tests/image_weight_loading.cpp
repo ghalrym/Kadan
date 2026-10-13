@@ -283,14 +283,14 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         check(ingress_weights.size() == 4);
     }
 
-    void expect_qkv_weights(kadan::MediaSession& session) {
+    void expect_qkv_weights(kadan::MediaSession& session, std::size_t block = 0) {
         for (const auto& w : session.plan().weights) {
             if (w.device != selected)
                 continue;
             for (const auto stage : {'q', 'k', 'v'})
                 if (w.name
-                    == std::string("transformer_blocks.0.attn.to_") + stage
-                           + ".weight") {
+                    == "transformer_blocks." + std::to_string(block) + ".attn.to_"
+                           + stage + ".weight") {
                     check(w.first_row == 0 && w.rows == 64 && w.identity.inode);
                     auto view = session.weight(w);
                     qkv_weights[stage] = view.layout();
@@ -1859,6 +1859,7 @@ int main() {
     enum class AttentionScenario {
         complete,
         query_tail,
+        next_block,
         failed_status,
         cancelled,
         missing_q,
@@ -1885,6 +1886,7 @@ int main() {
             resources, std::make_shared<Compute>()
         );
         auto attention_config = config;
+        attention_config.layers = scenario == AttentionScenario::next_block ? 2 : 1;
         attention_config.context = 96;
         attention_config.channels = 32;
         attention_config.block.heads = 2;
@@ -1901,6 +1903,7 @@ int main() {
              .norm_k_f32 = scenario == AttentionScenario::complete,
              .head_dim = 32,
              .context = 96,
+             .layers = attention_config.layers,
              .channels = 32}
         );
         attention_denoiser.load(directory, files, attention_config, cancel);
@@ -2011,7 +2014,8 @@ int main() {
         for (auto* launcher : qkv_launchers) {
             launcher->qkv = false;
             launcher->calls.clear();
-            launcher->expect_final_weight(resident);
+            if (attention_config.layers == 1)
+                launcher->expect_final_weight(resident);
         }
         if (scenario == AttentionScenario::failed_status)
             target.fail_masked_attention = true;
@@ -2061,7 +2065,7 @@ int main() {
         } catch (const std::exception&) {
             rejected = true;
         }
-        const bool success = scenario <= AttentionScenario::query_tail;
+        const bool success = scenario <= AttentionScenario::next_block;
         check(rejected == !success);
         cancel.store(false);
         if (success) {
@@ -2080,20 +2084,140 @@ int main() {
                     !launcher->projection_first.empty()
                     && !launcher->residual_first.empty()
                 );
-                check(launcher->calls.back() == 'v');
-                auto velocity = resident.tensor(
-                    launcher->device(),
-                    "final/velocity",
-                    kadan::DeviceDType::f32,
-                    {tokens - 3, 32},
-                    {32, 1}
+                if (attention_config.layers == 1) {
+                    check(launcher->calls.back() == 'v');
+                    auto velocity = resident.tensor(
+                        launcher->device(),
+                        "final/velocity",
+                        kadan::DeviceDType::f32,
+                        {tokens - 3, 32},
+                        {32, 1}
+                    );
+                    check(resident.ready(velocity));
+                }
+            }
+            if (scenario == AttentionScenario::next_block) {
+                std::map<std::pair<int, std::string>, kadan::MediaDeviceSpan> completed;
+                for (const auto& d : resident.plan().devices)
+                    for (const auto* name :
+                         {"resident/hidden",
+                          "conditioning/time-activated",
+                          "ff/modulation"}) {
+                        const auto rows =
+                            std::string_view(name) == "resident/hidden" ? tokens : 2;
+                        const auto columns =
+                            std::string_view(name) == "ff/modulation" ? 256 : 64;
+                        auto input = resident.tensor(
+                            d.device,
+                            name,
+                            kadan::DeviceDType::f32,
+                            {rows, std::size_t(columns)},
+                            {std::size_t(columns), 1}
+                        );
+                        check(resident.ready(input));
+                        completed[{d.device, name}] = input.layout();
+                    }
+                check(!attention_denoiser.prepare_feed_forward(
+                    resident, 1, tokens, HiddenBoundary::pre_qkv, cancel
+                ));
+                check(resident.plan().devices.size() == launchers.size());
+                Launcher next_first(metadata, 0), next_second(metadata, 1);
+                std::vector<Launcher*> next_devices{&next_first};
+                std::vector<kadan::video::ImageFeedForwardLauncher*> next_launchers{
+                    &next_first
+                };
+                if (two_devices) {
+                    next_devices.push_back(&next_second);
+                    next_launchers.push_back(&next_second);
+                }
+                for (auto* launcher : next_devices) {
+                    for (const auto* name :
+                         {"resident/hidden",
+                          "conditioning/time-activated",
+                          "ff/modulation"}) {
+                        const auto& previous = completed.at({launcher->device(), name});
+                        auto input = resident.tensor(
+                            launcher->device(),
+                            name,
+                            previous.dtype,
+                            previous.dimensions,
+                            previous.strides
+                        );
+                        check(
+                            resident.ready(input)
+                            && input.layout().data == previous.data
+                            && input.layout().generation == previous.generation
+                        );
+                    }
+                    const auto& hidden =
+                        completed.at({launcher->device(), "resident/hidden"});
+                    launcher->ingress_hidden = hidden.data;
+                    launcher->ingress_hidden_generation = hidden.generation;
+                    const auto& time = completed.at(
+                        {launcher->device(), "conditioning/time-activated"}
+                    );
+                    launcher->activated = time.data;
+                    launcher->activated_generation = time.generation;
+                    const auto& mod =
+                        completed.at({launcher->device(), "ff/modulation"});
+                    launcher->modulation = mod.data;
+                    launcher->modulation_generation = mod.generation;
+                    launcher->tokens = tokens;
+                    launcher->channels = 32;
+                    launcher->qkv = true;
+                    launcher->expect_qkv_weights(resident, 1);
+                    launcher->expect_final_weight(resident);
+                    for (const auto& w : resident.plan().weights) {
+                        if (w.device != launcher->device())
+                            continue;
+                        for (char stage : {'q', 'k'})
+                            if (w.name
+                                == std::string("transformer_blocks.1.attn.norm_")
+                                       + stage + ".weight") {
+                                auto norm = resident.weight(w);
+                                launcher->rotary_norms[stage] = norm.layout();
+                            }
+                    }
+                }
+                const auto weights = resident.transfers().weight_upload;
+                attention_denoiser.execute_qkv(
+                    resident, 1, tokens, 3, std::nullopt, next_launchers, cancel
                 );
-                check(resident.ready(velocity));
+                for (auto* launcher : next_devices) {
+                    check(
+                        !launcher->supplied_timestep && launcher->calls.front() == '0'
+                    );
+                    for (char stage : {'q', 'k', 'v'})
+                        check(launcher->qkv_rows.at(stage).size() == tokens);
+                }
+                attention_denoiser.execute_rotary(
+                    resident, 1, tokens, 3, 2, (tokens - 3) / 2, next_launchers, cancel
+                );
+                for (auto* launcher : next_devices) {
+                    launcher->qkv = false;
+                    launcher->calls.clear();
+                }
+                attention_denoiser.execute_attention(
+                    resident, 1, tokens, 3, next_launchers, cancel
+                );
+                for (auto* launcher : next_devices) {
+                    check(launcher->calls.back() == 'v');
+                    auto velocity = resident.tensor(
+                        launcher->device(),
+                        "final/velocity",
+                        kadan::DeviceDType::f32,
+                        {tokens - 3, 32},
+                        {32, 1}
+                    );
+                    check(resident.ready(velocity));
+                }
+                check(resident.transfers().weight_upload == weights);
             }
             const auto after = resident.transfers();
             check(
                 after.input_upload == before.input_upload
-                && after.weight_upload == before.weight_upload
+                && (scenario == AttentionScenario::next_block
+                    || after.weight_upload == before.weight_upload)
                 && after.activation_upload == before.activation_upload
                 && after.activation_download == before.activation_download
                 && after.output_download == before.output_download
@@ -2119,6 +2243,7 @@ int main() {
         for (auto scenario :
              {AttentionScenario::complete,
               AttentionScenario::query_tail,
+              AttentionScenario::next_block,
               AttentionScenario::failed_status,
               AttentionScenario::cancelled,
               AttentionScenario::missing_q,

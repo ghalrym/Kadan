@@ -34,6 +34,7 @@ struct Trace {
     std::vector<int> memory_probes;
     std::vector<std::pair<int, int>> peer_probes;
     std::size_t allocations_started = 0, releases = 0;
+    std::size_t make_device0_free_at_probe = 0;
     bool peer01 = true, peer10 = true;
     int fail_allocate = -1, fail_drain = -1, fail_free = -1;
     bool fail_record = false;
@@ -60,6 +61,8 @@ struct Fake final : MediaDeviceOperations {
 
     Bytes free_memory(int d) override {
         trace->memory_probes.push_back(d);
+        if (trace->make_device0_free_at_probe == trace->memory_probes.size())
+            trace->free[0] = 1000000;
         return trace->free.at(d);
     }
 
@@ -886,6 +889,202 @@ void ingress_hidden_certificate() {
     check(f.activity->owners == 0 && f.trace->allocations.empty());
 }
 
+void retained_admission_inputs() {
+    enum class Scenario {
+        complete,
+        partial,
+        missing,
+        shorter,
+        duplicate,
+        absent,
+        short_lifetime,
+        placement_change,
+        cancelled,
+        live_view
+    };
+
+    struct Case {
+        Scenario scenario;
+        bool rejected, ready;
+    };
+
+    for (const auto& test :
+         {Case{Scenario::complete, false, true},
+          Case{Scenario::partial, true, false},
+          Case{Scenario::missing, true, false},
+          Case{Scenario::shorter, true, true},
+          Case{Scenario::duplicate, true, true},
+          Case{Scenario::absent, true, true},
+          Case{Scenario::short_lifetime, true, true},
+          Case{Scenario::placement_change, true, true},
+          Case{Scenario::cancelled, false, true},
+          Case{Scenario::live_view, false, true}}) {
+        const auto scenario = test.scenario;
+        Fixture f;
+        auto m = decoder();
+        check(!f.session.admit(m, shape()));
+        auto boundary = tensor(f.session, 0, "boundary");
+        auto status = flag(f.session, 0);
+        const auto original = boundary.layout();
+        if (scenario == Scenario::partial) {
+            auto half = f.session.rows(boundary, 0, 2);
+            produce(f.session, 0, half, status);
+        } else if (scenario != Scenario::missing) {
+            produce(f.session, 0, boundary, status);
+        }
+        boundary = {};
+        status = {};
+        f.session.advance(MediaPhase::complete);
+        const auto allocations = f.trace->allocations_started;
+        const auto releases = f.trace->releases;
+        const auto charge = f.resources->snapshot().used;
+        m.retained_inputs = {"boundary"};
+        if (scenario == Scenario::shorter)
+            m.tensors.front().bytes = 32;
+        if (scenario == Scenario::duplicate)
+            m.retained_inputs.emplace_back("boundary");
+        if (scenario == Scenario::absent)
+            m.retained_inputs = {"absent"};
+        if (scenario == Scenario::short_lifetime)
+            m.tensors.front().last = MediaPhase::prepare;
+        if (scenario == Scenario::placement_change) {
+            // Force automatic placement onto the other device. The original
+            // owner must survive the typed rejection, with no new allocations.
+            f.trace->free[0] = 0;
+            m.tensors.push_back({"additional", 2048});
+        }
+        if (scenario == Scenario::cancelled) {
+            f.cancel = true;
+            check(
+                fails([&] { f.session.admit(m, shape()); }) == "media_session_cancelled"
+            );
+            check(f.trace->allocations.empty() && f.activity->owners == 0);
+            continue;
+        }
+        if (scenario == Scenario::live_view) {
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                fails([&] { f.session.admit(m, shape()); }) == "media_session_live_view"
+            );
+            check(boundary.layout().data == original.data && f.session.ready(boundary));
+            boundary = {};
+        }
+        auto error = f.session.admit(m, shape());
+        check(bool(error) == test.rejected);
+        if (error) {
+            check(error->reason == PlanFailure::unsupported_layout);
+            check(
+                f.trace->releases == releases
+                && f.trace->allocations_started == allocations
+            );
+            check(f.resources->snapshot().used == charge);
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                boundary.layout().data == original.data
+                && boundary.layout().generation == original.generation
+            );
+            check(f.session.ready(boundary) == test.ready);
+            boundary = {};
+            // A rejected request does not consume the previous admission.
+            m = decoder();
+            if (test.ready) {
+                m.retained_inputs = {"boundary"};
+                check(!f.session.admit(m, shape()));
+            }
+        } else {
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                f.session.ready(boundary) && boundary.layout().data == original.data
+                && boundary.layout().generation == original.generation
+            );
+            boundary = {};
+        }
+        check(
+            !f.session.transfers().activation_upload
+            && !f.session.transfers().activation_download
+            && !f.session.transfers().peer_activation
+        );
+        f.session.finish();
+        check(
+            f.trace->allocations.empty() && f.activity->owners == 0
+            && f.resources->snapshot().used == Footprint({0, 0, 0})
+        );
+    }
+}
+
+void retained_reprobe_selection() {
+    Fixture f;
+    f.trace->free[0] = 0;
+    auto m = decoder();
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.front().device == 1);
+    auto boundary = tensor(f.session, 1, "boundary");
+    auto status = flag(f.session, 1);
+    produce(f.session, 1, boundary, status);
+    const auto original = boundary.layout();
+    boundary = {};
+    status = {};
+    f.session.advance(MediaPhase::complete);
+    // Device 0 becomes free only at the second probe. It must not displace the
+    // device whose certified owners were accepted before retirement.
+    f.trace->make_device0_free_at_probe = f.trace->memory_probes.size() + 3;
+    m.retained_inputs = {"boundary"};
+    m.tensors.resize(1);  // Retire obsolete scratch at this boundary too.
+    check(!f.session.admit(m, shape()));
+    check(
+        f.session.plan().devices.size() == 1
+        && f.session.plan().devices.front().device == 1
+    );
+    check(f.trace->free[0] == 1000000);
+    boundary = tensor(f.session, 1, "boundary");
+    check(
+        f.session.ready(boundary) && boundary.layout().data == original.data
+        && boundary.layout().generation == original.generation
+    );
+    boundary = {};
+    f.session.finish();
+    check(
+        f.trace->allocations.empty() && f.activity->owners == 0
+        && f.resources->snapshot().used == Footprint({0, 0, 0})
+    );
+}
+
+void retained_hidden_shape() {
+    Fixture f;
+    StageManifest m;
+    m.schedule = MediaSchedule::feed_forward;
+    m.prepare_hidden = true;
+    m.status_bytes = 4;
+    m.workspaces_complete = true;
+    check(!f.session.admit(m, shape()));
+    auto hidden = tensor(f.session, 0, "resident/hidden");
+    auto status = flag(f.session, 0);
+    produce(f.session, 0, hidden, status);
+    const auto original = hidden.layout();
+    hidden = {};
+    status = {};
+    f.session.advance(MediaPhase::complete);
+    m.prepare_hidden = false;
+    m.retained_inputs = {"resident/hidden"};
+    auto shorter = shape();
+    --shorter.tokens;
+    const auto releases = f.trace->releases;
+    const auto error = f.session.admit(m, shorter);
+    check(
+        error && error->detail == "media_session_retained_shape"
+        && f.trace->releases == releases
+    );
+    hidden = tensor(f.session, 0, "resident/hidden");
+    check(
+        f.session.ready(hidden) && hidden.layout().data == original.data
+        && hidden.layout().generation == original.generation
+    );
+    hidden = {};
+    check(!f.session.admit(m, shape()));
+    f.session.finish();
+    check(f.trace->allocations.empty() && f.activity->owners == 0);
+}
+
 void kv_barrier_and_worker_idle() {
     Fixture f;
     StageManifest m;
@@ -935,6 +1134,9 @@ int main() {
     allocation_failure_drains_and_unchecked_overwrite();
     feed_forward_phase_isolation();
     ingress_hidden_certificate();
+    retained_admission_inputs();
+    retained_reprobe_selection();
+    retained_hidden_shape();
     kv_barrier_and_worker_idle();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";

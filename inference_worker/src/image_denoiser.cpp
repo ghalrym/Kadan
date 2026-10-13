@@ -299,6 +299,10 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
                          && (boundary == HiddenBoundary::pre_attention
                              || boundary == HiddenBoundary::pre_qkv);
     manifest.prepare_hidden = ingress;
+    if (block && boundary == HiddenBoundary::pre_qkv)
+        manifest.retained_inputs = {
+            "resident/hidden", "conditioning/time-activated", "ff/modulation"
+        };
     for (const auto* name :
          {"img_in.weight",
           "txt_in.text_norm.weight",
