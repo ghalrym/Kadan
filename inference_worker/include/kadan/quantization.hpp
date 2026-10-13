@@ -15,13 +15,16 @@ float fp32_le(
 
 enum class Encoding {
     modelopt_nvfp4,
-    modelopt_fp8
+    modelopt_fp8,
+    mxfp4
 };
 
 // Canonical unswizzled row-major views. Callers own the storage and must keep it
 // alive and immutable throughout each operation. NVFP4: low nibble is first,
 // block scale per 16 columns, exactly one global multiplier. FP8: scalar or row
-// multiplier. No inference from byte length; encodings must be selected explicitly.
+// multiplier. MXFP4: low nibble first, one E8M0 scale per 32 columns, no global
+// multiplier; scale 255 is invalid. No inference from byte length; encodings must
+// be selected explicitly. These views do not describe swizzled GPU layouts.
 struct Matrix {
     Encoding encoding;
     std::size_t rows;
