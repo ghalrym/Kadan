@@ -1,5 +1,6 @@
 #include "kadan/preparation.hpp"
 
+#include <algorithm>
 #include <archive.h>
 #include <archive_entry.h>
 #include <array>
@@ -382,6 +383,7 @@ void upstream_manifest_units() {
     siblings[0]["blobId"] = "9e26dfeeb6e641a33dae4961196235bdb965b21b";
     Json upstream{{"sha", "wrong-revision"}, {"siblings", siblings}};
     unsigned bodies = 0;
+    std::vector<std::string> fetched;
     ModelStore store(
         root,
         data,
@@ -391,7 +393,8 @@ void upstream_manifest_units() {
                 write(upstream.dump());
             else {
                 ++bodies;
-                write(contents.at(fs::path(url).filename().string()));
+                fetched.push_back(fs::path(url).filename().string());
+                write(contents.at(fetched.back()));
             }
             return 0;
         }
@@ -405,18 +408,85 @@ void upstream_manifest_units() {
     upstream["siblings"] = siblings;
     const auto checkpoint = store.acquire("test", running);
     assert(bodies == 4 && store.complete(CatalogEntry::parse(model)));
+    assert(fetched.front() == "model.safetensors.index.json");
+    assert(store.acquire("test", running) == checkpoint && bodies == 4);
     fs::remove_all(checkpoint);
-    // A correctly hashed index still cannot reference missing or escaping shards.
-    contents["model.safetensors.index.json"] =
-        R"({"weight_map":{"weight":"../outside.safetensors"}})";
-    const auto changed = local_manifest(tmp.path / "source", contents);
-    for (std::size_t i = 0; i < changed.size(); ++i)
-        if (changed[i].at("name") == "model.safetensors.index.json")
-            upstream["siblings"][i]["lfs"] = {
-                {"size", changed[i].at("size")}, {"sha256", changed[i].at("digest")}
-            };
+    // Authenticate and validate index metadata before any tensor transfer.
+    for (const Json& map :
+         {Json::object(),
+          Json::array({"model.safetensors"}),
+          Json("model.safetensors"),
+          Json{{"weight", 1}},
+          Json{{"weight", "missing.safetensors"}},
+          Json{{"weight", "../outside.safetensors"}},
+          Json{{"weight", "/outside.safetensors"}},
+          Json{{"weight", "config.json"}}}) {
+        contents["model.safetensors.index.json"] = Json{{"weight_map", map}}.dump();
+        const auto changed = local_manifest(tmp.path / "source", contents);
+        for (std::size_t i = 0; i < changed.size(); ++i)
+            if (changed[i].at("name") == "model.safetensors.index.json")
+                upstream["siblings"][i]["lfs"] = {
+                    {"size", changed[i].at("size")}, {"sha256", changed[i].at("digest")}
+                };
+        fetched.clear();
+        rejects([&] { store.acquire("test", running); });
+        assert(fetched == std::vector<std::string>{"model.safetensors.index.json"});
+        assert(!fs::exists(checkpoint) && !fs::exists(root / ".test.partial"));
+    }
+    for (auto& item : upstream["siblings"])
+        if (item["rfilename"] == "model.safetensors.index.json")
+            item["lfs"]["size"] = 32 * 1024 * 1024 + 1;
+    fetched.clear();
     rejects([&] { store.acquire("test", running); });
-    assert(!fs::exists(checkpoint) && !fs::exists(root / ".test.partial"));
+    assert(fetched.empty());
+
+    for (const bool valid : {false, true}) {
+        contents = {
+            {"transformer/model.safetensors", "payload"},
+            {"text_encoder/model.safetensors", "payload"},
+            {"transformer/model.safetensors.index.json",
+             R"({"weight_map":{"weight":"model.safetensors"}})"},
+            {"text_encoder/model.safetensors.index.json",
+             Json{
+                 {"weight_map",
+                  {{"weight", valid ? "model.safetensors" : "missing.safetensors"}}}
+             }.dump()}
+        };
+        auto component_files = local_manifest(tmp.path / "source", contents);
+        // Interleave payloads and indexes to exercise download ordering.
+        std::reverse(component_files.begin(), component_files.end());
+        const auto component = entry("components", component_files);
+        catalog(data, Json::array({component}));
+        fetched.clear();
+        ModelStore components(
+            root,
+            data,
+            [&](const std::string& url, const auto& write, const auto&, bool head) {
+                assert(!head);
+                const auto name =
+                    url.substr(std::string("https://unit.invalid/").size());
+                fetched.push_back(name);
+                write(contents.at(name));
+                return 0;
+            }
+        );
+        if (valid) {
+            const auto path = components.acquire("components", running);
+            assert(components.complete(components.entry("components")));
+            assert(components.acquire("components", running) == path);
+            assert(fetched.size() == 4);
+            // Composite completion comparison requires the original manifest order.
+            assert(
+                read_document(path / "complete.json").at("files") == component_files
+            );
+        } else {
+            rejects([&] { components.acquire("components", running); });
+            assert(fetched.size() == 2);
+            assert(!fs::exists(root / ".components.partial"));
+        }
+        assert(fetched[0] == "transformer/model.safetensors.index.json");
+        assert(fetched[1] == "text_encoder/model.safetensors.index.json");
+    }
 }
 
 void job_units() {

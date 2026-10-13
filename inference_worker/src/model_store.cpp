@@ -521,9 +521,21 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     fs::create_directory(stage);
     try {
         const auto files = manifest(catalog, cancel);
+        auto ordered = files;
+        // Validate all index metadata before transferring any tensor payloads.
+        std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
+            return file.name.ends_with(".safetensors.index.json");
+        });
+        std::set<std::string> names;
         std::uint64_t total = 1024ULL * 1024 * 1024;
         for (const auto& file : files) {
+            names.insert(file.name);
             const auto size = file.size;
+            preparation_check(
+                !file.name.ends_with(".safetensors.index.json")
+                    || size <= 32 * 1024 * 1024,
+                "Checkpoint weight index exceeds size limit"
+            );
             preparation_check(size <= UINT64_MAX - total, "Checkpoint size overflow");
             total += size;
         }
@@ -544,7 +556,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
                 reported = downloaded;
             }
         };
-        for (const auto& file : files) {
+        for (const auto& file : ordered) {
             preparation_cancel(cancel);
             const auto name = file.name;
             const auto url = catalog.layout == "composite" ? file.url
@@ -553,22 +565,21 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
                                  : "https://huggingface.co/" + catalog.repo_id
                                        + "/resolve/" + revision + "/" + name;
             download(url, stage / name, file, cancel, fetch_, progress);
-        }
-        for (const auto& file : files) {
-            const auto name = file.name;
             if (!name.ends_with(".safetensors.index.json"))
                 continue;
             const auto index = read_document(stage / name);
             preparation_check(
-                !index.at("weight_map").empty(), "Empty checkpoint weight index"
+                index.at("weight_map").is_object() && !index.at("weight_map").empty(),
+                "Invalid checkpoint weight index"
             );
             for (const auto& shard : index.at("weight_map")) {
                 const auto relative =
                     (fs::path(name).parent_path() / shard.get<std::string>())
                         .generic_string();
                 preparation_check(
-                    safe_name(relative) && fs::is_regular_file(stage / relative),
-                    "Weight index references missing shard"
+                    safe_name(relative) && relative.ends_with(".safetensors")
+                        && names.contains(relative),
+                    "Weight index references missing or unsupported shard"
                 );
             }
         }
