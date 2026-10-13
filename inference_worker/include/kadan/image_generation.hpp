@@ -6,6 +6,7 @@
 #include <string>
 
 #include "kadan/dense_compute.hpp"
+#include "kadan/media_session.hpp"
 
 namespace kadan::image {
 struct ImageRequest {
@@ -14,13 +15,16 @@ struct ImageRequest {
     std::uint64_t seed = 0;
 };
 
-// Complete checkpoint-specific text-to-image pipeline, single CPU image. Editing
+// Complete checkpoint-specific text-to-image pipeline, one image at a time. Editing
 // and CFG are not supported by this boundary. Executors own separate pipelines.
 class Generator {
 public:
     using Hook = std::function<void(const char*, std::size_t)>;
     explicit Generator(
-        std::shared_ptr<Resources>, std::shared_ptr<DenseCompute> compute = {}
+        std::shared_ptr<Resources>,
+        std::shared_ptr<DenseCompute>,
+        std::shared_ptr<MediaSessionActivity>,
+        std::vector<int> devices
     );
     ~Generator();
     void load(const std::string& root, const std::atomic_bool&, const Hook& = {});
@@ -37,6 +41,8 @@ private:
     struct Impl;
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<DenseCompute> compute_;
+    std::shared_ptr<MediaSessionActivity> media_activity_;
+    std::vector<int> devices_;
     std::unique_ptr<Impl> model_;
     bool busy_ = false;
 };

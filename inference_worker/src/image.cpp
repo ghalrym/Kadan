@@ -352,6 +352,69 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     const std::atomic_bool& cancel,
     StageManifest manifest
 ) {
+    auto built = feed_forward_manifest(tokens, boundary, cancel, std::move(manifest));
+    if (auto* error = std::get_if<MediaPlanError>(&built))
+        return *error;
+    Busy active(busy_);
+    auto& m = *model_;
+    const bool attention = boundary != HiddenBoundary::post_attention;
+    auto& consumed = std::get<StageManifest>(built);
+    if (auto error = session.admit(
+            consumed,
+            MediaShape{
+                tokens, m.d.state, attention ? m.d.state : 0, 0, 0, m.d.intermediate
+            }
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            stop(cancel);
+            // Denoiser uploads its own shared conditioning weight after admission.
+            if (!slice.name.starts_with(m.prefix))
+                continue;
+            const auto& spec =
+                m.specs.at(m.names.at(slice.name.substr(m.prefix.size())));
+            auto& shard = *m.shards[spec.shard];
+            shard.check_unchanged();
+            Lease staging(*resources_, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            const auto dtype = shard.tensor(slice.name).dtype;
+            const auto element_bytes = dtype == checkpoint::Dtype::bf16 ? 2 : 4;
+            const auto columns = spec.shape.size() == 1 ? 1 : spec.shape[1];
+            shard.read_tensor(
+                slice.name, slice.first_row * columns * element_bytes, raw
+            );
+            shard.check_unchanged();
+            stop(cancel);
+            if (spec.name.starts_with("attn."))
+                for (std::size_t i = 0; i < raw.size(); i += element_bytes)
+                    need(
+                        dtype == checkpoint::Dtype::fp32
+                            ? ((std::uint32_t(raw[i + 3]) << 24
+                                | std::uint32_t(raw[i + 2]) << 16
+                                | std::uint32_t(raw[i + 1]) << 8 | raw[i])
+                               & 0x7f800000)
+                                  != 0x7f800000
+                            : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
+                                  != 0x7f80,
+                        "h3_cuda_nonfinite_weight"
+                    );
+            auto destination = session.weight(slice);
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
+}
+
+std::variant<StageManifest, MediaPlanError> TransformerBlock::feed_forward_manifest(
+    std::size_t tokens,
+    HiddenBoundary boundary,
+    const std::atomic_bool& cancel,
+    StageManifest manifest
+) {
     Busy active(busy_);
     stop(cancel);
     need(bool(model_), "image_load_state");
@@ -459,54 +522,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         );
     }
     manifest.workspaces_complete = true;
-    if (auto error = session.admit(
-            manifest,
-            MediaShape{
-                tokens, m.d.state, attention ? m.d.state : 0, 0, 0, m.d.intermediate
-            }
-        ))
-        return error;
-    try {
-        for (const auto& slice : session.plan().weights) {
-            stop(cancel);
-            // Denoiser uploads its own shared conditioning weight after admission.
-            if (!slice.name.starts_with(m.prefix))
-                continue;
-            const auto& spec =
-                m.specs.at(m.names.at(slice.name.substr(m.prefix.size())));
-            auto& shard = *m.shards[spec.shard];
-            shard.check_unchanged();
-            Lease staging(*resources_, slice.stored_bytes);
-            std::vector<std::uint8_t> raw(slice.stored_bytes);
-            const auto dtype = shard.tensor(slice.name).dtype;
-            const auto element_bytes = dtype == checkpoint::Dtype::bf16 ? 2 : 4;
-            const auto columns = spec.shape.size() == 1 ? 1 : spec.shape[1];
-            shard.read_tensor(
-                slice.name, slice.first_row * columns * element_bytes, raw
-            );
-            shard.check_unchanged();
-            stop(cancel);
-            if (spec.name.starts_with("attn."))
-                for (std::size_t i = 0; i < raw.size(); i += element_bytes)
-                    need(
-                        dtype == checkpoint::Dtype::fp32
-                            ? ((std::uint32_t(raw[i + 3]) << 24
-                                | std::uint32_t(raw[i + 2]) << 16
-                                | std::uint32_t(raw[i + 1]) << 8 | raw[i])
-                               & 0x7f800000)
-                                  != 0x7f800000
-                            : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
-                                  != 0x7f80,
-                        "h3_cuda_nonfinite_weight"
-                    );
-            auto destination = session.weight(slice);
-            session.upload_weight(destination, std::as_bytes(std::span(raw)));
-        }
-    } catch (...) {
-        session.abort(std::current_exception());
-        throw;
-    }
-    return {};
+    return manifest;
 }
 
 void TransformerBlock::execute_qkv(

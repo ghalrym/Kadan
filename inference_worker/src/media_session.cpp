@@ -383,6 +383,25 @@ MediaSession& MediaSession::operator=(MediaSession&& other) noexcept {
 }
 
 std::optional<MediaPlanError>
+MediaSession::preflight(const StageManifest& manifest, const MediaShape& shape) {
+    auto& s = *state_;
+    s.healthy();
+    s.no_views();
+    if (s.admitted)
+        throw std::runtime_error("media_session_preflight_after_admission");
+    if (manifest.allocation_alignment > s.operations->allocation_alignment())
+        return MediaPlanError{
+            PlanFailure::unsupported_layout, "media_session_allocation_alignment", {}
+        };
+    s.probe();
+    auto result =
+        plan_media_stage(manifest, shape, s.evidence.budgets, s.evidence.peers);
+    if (auto* error = std::get_if<MediaPlanError>(&result))
+        return *error;
+    return {};
+}
+
+std::optional<MediaPlanError>
 MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
     auto& s = *state_;
     s.healthy();

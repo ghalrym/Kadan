@@ -29,6 +29,15 @@ public:
         const Hook& hook = {}
     );
     void unload();
+    // Metadata-only check of every consumed block, including final output and
+    // scheduler ownership, against current capacity. Does not reserve future fit.
+    std::optional<MediaPlanError> preflight(
+        MediaSession&,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width,
+        const std::atomic_bool&
+    );
     // Explicit resident block slice, using actual timestep conditioning and modulation.
     // Initialize per-device launchers before admission. Native BF16 standard precision
     // only.
@@ -136,6 +145,23 @@ public:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
+    // Complete resident transformer step. Caller admits block 0 as pre_qkv with
+    // resident_text first; later blocks are admitted here. Supply all initialized
+    // device launchers; each block uses only its automatically selected owners.
+    // Empty input spans reuse the prior scheduler's certified latent/conditioning.
+    // Returns complete with final velocity ready for the separate scheduler.
+    void execute(
+        MediaSession&,
+        std::span<const float> latent,
+        std::span<const float> condition,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width,
+        float timestep,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&,
+        const Hook& = {}
+    );
     // F32 latent [height*width,channels], condition [text,context], velocity of
     // latent shape. All caller buffers are caller-admitted; timestep in [0,1].
     void execute(
@@ -151,6 +177,14 @@ public:
     );
 
 private:
+    std::variant<StageManifest, MediaPlanError> feed_forward_manifest(
+        std::size_t,
+        std::size_t,
+        HiddenBoundary,
+        const std::atomic_bool&,
+        std::optional<std::size_t>,
+        bool retain_latent
+    );
     void execute_conditioning(
         MediaSession&,
         std::size_t block,

@@ -100,6 +100,7 @@ struct WeightOptions {
     std::size_t head_dim = 0;
     std::size_t context = 0;
     std::size_t layers = 1, channels = 64;
+    std::optional<std::size_t> qkv_f32_block = {};
 };
 
 void write_weights(
@@ -121,7 +122,9 @@ void write_weights(
         const auto columns = name == "img_mlp.out" ? ff : state;
         const bool tensor_f32 =
             f32 || (options.attention_f32 && name == "attn.to_out.0")
-            || name == options.qkv_f32 || (options.norm_q_f32 && name == "attn.norm_q")
+            || (name == options.qkv_f32
+                && (!options.qkv_f32_block || block == *options.qkv_f32_block))
+            || (options.norm_q_f32 && name == "attn.norm_q")
             || (options.norm_k_f32 && name == "attn.norm_k");
         const auto vector_size = options.head_dim ? options.head_dim : state;
         const auto size =
@@ -966,6 +969,77 @@ int main() {
             throw std::runtime_error("unexpected_dense");
         }
     };
+
+    // Complete-path selection is metadata only, including later blocks and final
+    // output. No launchers, forward passes or synthetic activation producers.
+    auto preflight_case = [&](WeightOptions options,
+                              kadan::Bytes free,
+                              std::optional<kadan::PlanFailure> expected,
+                              bool cancelled = false) {
+        options.denoiser = true;
+        options.layers = 2;
+        write_weights(directory, false, 64, 128, options);
+        auto r = std::make_shared<kadan::Resources>(
+            kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+        );
+        auto guard = std::make_shared<kadan::MediaSessionActivity>();
+        std::atomic_bool cancelled_request = false;
+        kadan::image::Denoiser model(r, std::make_shared<Compute>());
+        const std::array<std::string, 1> files{"weights.safetensors"};
+        model.load(
+            directory,
+            files,
+            {{64, 1, 64, 128, {0, 0, 64}}, 2, 64, 64},
+            cancelled_request
+        );
+        auto fake = std::make_unique<Device>();
+        auto& device = *fake;
+        device.available = free;
+        kadan::MediaSession request(
+            r, guard, std::move(fake), kadan::Workload::image, {{0}}, cancelled_request
+        );
+        cancelled_request = cancelled;
+        if (cancelled) {
+            bool caught = false;
+            try {
+                model.preflight(request, 3, 2, 2, cancelled_request);
+            } catch (const std::runtime_error& e) {
+                caught = std::string_view(e.what()) == "image_cancelled";
+            }
+            check(caught && !device.probes);
+        } else {
+            const auto result = model.preflight(request, 3, 2, 2, cancelled_request);
+            check(bool(result) == bool(expected));
+            if (expected) {
+                check(result->reason == *expected);
+                check(
+                    bool(result->rejected)
+                    == (*expected == kadan::PlanFailure::capacity)
+                );
+                if (*expected == kadan::PlanFailure::unsupported_layout)
+                    check(!device.probes);
+            }
+            check(request.plan().devices.empty());
+        }
+        check(
+            !device.uploaded && device.allocations.empty() && r->snapshot().used[1] == 0
+        );
+        request.abort();
+        check(guard->owners == 0);
+        model.unload();
+        check(r->snapshot().used == kadan::Footprint({0, 0}));
+    };
+    preflight_case({}, 32 * 1024 * 1024, {});
+    preflight_case({}, 1, kadan::PlanFailure::capacity);
+    preflight_case({.output_f32 = true}, 1, kadan::PlanFailure::unsupported_layout);
+    preflight_case({.final_f32 = true}, 1, kadan::PlanFailure::unsupported_layout);
+    preflight_case(
+        {.qkv_f32 = "attn.to_k", .qkv_f32_block = 1},
+        1,
+        kadan::PlanFailure::unsupported_layout
+    );
+    preflight_case({}, 32 * 1024 * 1024, {}, true);
+    write_weights(directory, false, 64, 128);
 
     kadan::image::TransformerBlock tiled_block(
         tiled_resources, std::make_shared<Compute>()
