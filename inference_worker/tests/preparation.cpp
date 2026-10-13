@@ -146,7 +146,8 @@ void gpt_oss_catalog_units() {
     ModelStore store(
         tmp.path,
         worker_data_directory(),
-        [&](const auto&, const auto&, const auto&, bool) -> std::int64_t {
+        [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+            -> std::int64_t {
             ++transfers;
             throw RequestError("Unexpected checkpoint transfer");
         }
@@ -824,12 +825,163 @@ void upstream_manifest_units() {
     }
 }
 
+void text_checkpoint_units() {
+    // Metadata-only profiles. No shard contents are parsed or executed here.
+    for (const auto* profile : {"qwen", "glm", "gpt_oss", "gpt_oss_120b"}) {
+        const bool gpt = std::string_view(profile).starts_with("gpt_oss");
+        auto original = read_document(
+            worker_data_directory() / "tests/fixtures"
+            / (std::string(gpt ? "gpt_oss" : profile) + "_config.json")
+        );
+        if (std::string_view(profile) == "gpt_oss_120b") {
+            original["num_hidden_layers"] = 36;
+            original["num_local_experts"] = 128;
+            for (std::size_t i = 24; i < 36; ++i)
+                original["layer_types"].push_back(
+                    i % 2 ? "full_attention" : "sliding_attention"
+                );
+        }
+        for (const auto* variant :
+             {"valid",
+              "architecture",
+              "quantization",
+              "oversized",
+              "missing",
+              "malformed"}) {
+            Directory tmp;
+            auto config = original;
+            const std::string test = variant;
+            const bool root_layout = gpt && test != "missing";
+            if (test == "architecture")
+                config["model_type"] = "unsupported";
+            if (test == "quantization")
+                config["quantization_config"]["quant_method"] = "unsupported";
+            std::map<std::string, std::string> content{
+                {"config.json", config.dump()},
+                {"model.safetensors.index.json",
+                 R"({"weight_map":{"weight":"model.safetensors"}})"},
+                {"model.safetensors", "fake payload"}
+            };
+            if (root_layout)
+                content["tokenizer_config.json"] = "{}";
+            if (test == "missing")
+                content.erase("config.json");
+            if (test == "malformed")
+                content["config.json"] = "{";
+            auto manifest = local_manifest(tmp.path / "source", content);
+            std::reverse(manifest.begin(), manifest.end());
+            if (test == "oversized")
+                for (auto& file : manifest)
+                    if (file["name"] == "config.json")
+                        file["size"] = 16 * 1024 * 1024 + 1;
+            auto model = entry("test", manifest);
+            model["kind"] = "llm";
+            model["inference_available"] = !gpt;
+            if (root_layout)
+                model["layout"] = "root";
+            catalog(tmp.path / "data", Json::array({model}));
+            auto document = read_document(tmp.path / "data/catalog.json");
+            document["assets"] = {
+                "config.json", "tokenizer_config.json", "model.safetensors.index.json"
+            };
+            write_document(tmp.path / "data/catalog.json", document);
+            Json siblings = Json::array();
+            for (const auto& file : manifest)
+                siblings.push_back(
+                    {{"rfilename", file.at("name")},
+                     {"lfs",
+                      {{"size", file.at("size")}, {"sha256", file.at("digest")}}}}
+                );
+            std::vector<std::string> fetched;
+            ModelStore store(
+                tmp.path / "models",
+                tmp.path / "data",
+                [&](const std::string& url,
+                    const auto& write,
+                    const auto&,
+                    bool head,
+                    auto offset) {
+                    assert(!head && offset == 0);
+                    if (url.find("/api/models/") != std::string::npos) {
+                        write(Json{{"sha", "revision"}, {"siblings", siblings}}.dump());
+                        return 0;
+                    }
+                    const auto name = fs::path(url).filename().string();
+                    fetched.push_back(name);
+                    write(content.at(name));
+                    return 0;
+                }
+            );
+            // GPT-OSS remains blocked before acquisition for inference requests.
+            if (gpt) {
+                ChatRequest input;
+                input.model = "test";
+                InferenceRequest task;
+                task.operation = Operation::load;
+                rejects([&] { prepare_input(input, task, store, running); });
+                assert(fetched.empty());
+            }
+            DownloadRequest input;
+            input.model = "test";
+            InferenceRequest task;
+            task.operation = Operation::download;
+            const auto acquire = [&] {
+                prepare_input(input, task, store, running);
+            };
+            if (test == "valid") {
+                acquire();
+                assert(fetched.size() == (root_layout ? 4 : 3));
+                assert(fetched[0] == "config.json");
+                assert(fetched[1] == "model.safetensors.index.json");
+                assert(store.complete(store.entry("test")));
+                fetched.clear();
+                acquire();
+                assert(fetched.empty());
+                // Cached completion does not bypass compatibility validation.
+                const auto type = config.at("model_type").get<std::string>();
+                config["model_type"] = std::string(type.size(), 'x');
+                write_document(task.configuration.checkpoint / "config.json", config);
+                assert(store.complete(store.entry("test")));
+                rejects(acquire);
+                assert(fetched.empty());
+            } else {
+                try {
+                    acquire();
+                    assert(false);
+                } catch (const RequestError& error) {
+                    assert(error.status == 422);
+                    if (test == "quantization") {
+                        const auto expected =
+                            std::string(profile) == "qwen"  ? "unsupported_quantization"
+                            : std::string(profile) == "glm" ? "glm_quant_format"
+                                                            : "gpt_oss_quantization";
+                        assert(
+                            std::string(error.what()).find(expected)
+                            != std::string::npos
+                        );
+                    }
+                }
+                if (test == "missing" || test == "oversized")
+                    assert(fetched.empty());
+                else {
+                    assert(fetched == std::vector<std::string>{"config.json"});
+                    fetched.clear();
+                    rejects(acquire);  // Resume revalidates the authenticated config.
+                    assert(fetched.empty());
+                }
+                assert(!store.complete(store.entry("test")));
+            }
+        }
+    }
+}
+
 void job_units() {
     Directory tmp;
     const auto data = tmp.path / "data", root = tmp.path / "models",
                jobs = tmp.path / "jobs";
     const auto config =
-        Json{{"model_type", "qwen3_5_moe"}, {"max_position_embeddings", 32768}}.dump();
+        read_document(worker_data_directory() / "tests/fixtures/qwen_config.json")
+            .dump();
     Json models = Json::array();
     for (const auto* id : {"small", "qwen-image-2.1", "laya", "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
@@ -1116,6 +1268,7 @@ int main() {
     partial_initialization_units();
     single_file_acquisition_units();
     upstream_manifest_units();
+    text_checkpoint_units();
     job_units();
     whisper_conversion_units();
     tokenizer_asset_units();

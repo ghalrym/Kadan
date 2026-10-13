@@ -12,10 +12,40 @@
 #include <thread>
 #include <unistd.h>
 
+#include "kadan/glm.hpp"
+#include "kadan/gpt_oss_manifest.hpp"
+#include "kadan/model_manifest.hpp"
 #include "kadan/preparation.hpp"
+#include "metadata_json.hpp"
 
 namespace kadan::serving {
 namespace {
+void validate_text_checkpoint(const fs::path& checkpoint) {
+    try {
+        auto budget = std::make_shared<checkpoint::MemoryBudget>(512ULL * 1024 * 1024);
+        const auto root = checkpoint.string();
+        std::string architecture;
+        {
+            const auto config = checkpoint::json::read(
+                root.c_str(), "config.json", 16 * 1024 * 1024, budget
+            );
+            architecture = config.at("model_type").string();
+        }
+        if (architecture == "qwen3_5_moe")
+            checkpoint::read_text_config(root.c_str(), budget);
+        else if (architecture == "glm5_next")
+            glm::validate_config(root.c_str(), budget);
+        else if (architecture == "gpt_oss")
+            gpt_oss::read_config(root.c_str(), budget);
+        else
+            throw std::invalid_argument("unsupported_model_type");
+    } catch (const std::exception& error) {
+        throw RequestError(
+            std::string("Unsupported text checkpoint: ") + error.what(), 422
+        );
+    }
+}
+
 struct Transfer {
     std::function<void(std::size_t)> progress;
     std::string bytes;
@@ -545,12 +575,18 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     const auto revision = catalog.revision;
     const auto destination = root_ / (model + "-" + revision);
     preparation_cancel(cancel);
-    if (complete(catalog))
+    if (complete(catalog)) {
+        if (catalog.kind == "llm")
+            validate_text_checkpoint(destination);
         return destination;
+    }
     fs::create_directories(root_);
     StoreLock lock(root_ / ".download.lock", cancel);
-    if (complete(catalog))
+    if (complete(catalog)) {
+        if (catalog.kind == "llm")
+            validate_text_checkpoint(destination);
         return destination;
+    }
     preparation_check(
         !fs::exists(destination),
         "Checkpoint directory is incomplete; inspect model storage.",
@@ -570,15 +606,30 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
         return file.name.ends_with(".safetensors.index.json");
     });
+    if (catalog.kind == "llm")
+        std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
+            return file.name == "config.json";
+        });
     std::set<std::string> names;
     for (const auto& file : files) {
         names.insert(file.name);
+        preparation_check(
+            catalog.kind != "llm" || file.name != "config.json"
+                || file.size <= 16 * 1024 * 1024,
+            "Text checkpoint config exceeds size limit",
+            422
+        );
         preparation_check(
             !file.name.ends_with(".safetensors.index.json")
                 || file.size <= 32 * 1024 * 1024,
             "Checkpoint weight index exceeds size limit"
         );
     }
+    preparation_check(
+        catalog.kind != "llm" || names.contains("config.json"),
+        "Text checkpoint is missing config.json",
+        422
+    );
     auto identity_files = files;
     std::sort(
         identity_files.begin(),
@@ -661,6 +712,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
                              : "https://huggingface.co/" + catalog.repo_id + "/resolve/"
                                    + revision + "/" + name;
         download(url, stage / name, file, cancel, fetch_, progress);
+        if (catalog.kind == "llm" && name == "config.json")
+            validate_text_checkpoint(stage);
         if (!name.ends_with(".safetensors.index.json"))
             continue;
         const auto index = read_document(stage / name);

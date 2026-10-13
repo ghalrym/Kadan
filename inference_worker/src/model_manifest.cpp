@@ -144,6 +144,11 @@ TextArchitecture architecture(const json::Value& config) {
 }
 }  // namespace
 
+TextArchitecture
+read_text_config(const char* root, std::shared_ptr<MemoryBudget> budget) {
+    return architecture(json::read(root, "config.json", 1024 * 1024, budget));
+}
+
 struct ModelManifest::Impl {
     struct Entry {
         std::string_view name;

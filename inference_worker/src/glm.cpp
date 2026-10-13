@@ -75,107 +75,7 @@ struct Store {
         if (requested)
             cancel = requested;
         need(!cancel->load(), "glm_cancelled");
-        auto cfg = checkpoint::json::read(root, "config.json", 16 << 20, budget);
-        need(cfg.at("model_type").string() == "glm5_next", "glm_model_type");
-        const auto& t = cfg.at("text_config");
-        for (auto [key, value] :
-             std::initializer_list<std::pair<const char*, std::size_t>>{
-                 {"hidden_size", H},
-                 {"num_hidden_layers", 45},
-                 {"vocab_size", 154880},
-                 {"num_attention_heads", 64},
-                 {"q_lora_rank", 1536},
-                 {"kv_lora_rank", 512},
-                 {"qk_nope_head_dim", 256},
-                 {"qk_rope_head_dim", 0},
-                 {"v_head_dim", 256},
-                 {"n_routed_experts", 288},
-                 {"num_experts_per_tok", 8},
-                 {"first_k_dense_replace", 3},
-                 {"intermediate_size", 12288},
-                 {"moe_intermediate_size", 2048},
-                 {"n_shared_experts", 1},
-                 {"hc_mult", 4},
-                 {"hc_sinkhorn_iters", 20},
-                 {"index_head_dim", 128},
-                 {"index_n_heads", 32},
-                 {"index_topk", 2048},
-                 {"index_kpool", 4},
-                 {"n_group", 1},
-                 {"topk_group", 1}
-             })
-            need(t.at(key).integer() == value, "glm_config_shape");
-        need(
-            t.at("rms_norm_eps").number() == 1e-5 && t.at("hc_eps").number() == 1e-6
-                && t.at("routed_scaling_factor").number() == 2.5
-                && t.at("swiglu_limit").number() == 10,
-            "glm_config_math"
-        );
-        need(
-            t.at("mhc").boolean() && t.at("mla_use_nope").boolean()
-                && t.at("norm_topk_prob").boolean()
-                && t.at("index_kpool_compress").boolean()
-                && t.at("index_kpool_always_select_tail").boolean(),
-            "glm_config_flags"
-        );
-        need(
-            t.at("scoring_func").string() == "sigmoid"
-                && t.at("topk_method").string() == "noaux_tc",
-            "glm_router_config"
-        );
-        const auto& linear = t.at("linear_attn_config");
-        need(
-            linear.at("num_heads").integer() == 64
-                && linear.at("head_dim").integer() == 128
-                && linear.at("short_conv_kernel_size").integer() == 4
-                && linear.at("gate_lower_bound").number() == -5,
-            "glm_kda_config"
-        );
-        const auto& types = t.at("layer_types").children;
-        need(types.size() == 45, "glm_layer_count");
-        for (std::size_t i = 0; i < 45; ++i)
-            need(
-                types[i].string()
-                    == (i % 4 == 3 ? "deepseek_sparse_attention" : "linear_attention"),
-                "glm_layer_type"
-            );
-        const auto& quant = cfg.at("quantization_config");
-        need(
-            quant.at("quant_method").string() == "compressed-tensors"
-                && quant.at("format").string() == "nvfp4-pack-quantized",
-            "glm_quant_format"
-        );
-        need(
-            t.at("max_position_embeddings").integer() == 1048576
-                && t.at("hidden_act").string() == "silu",
-            "glm_context_activation"
-        );
-        const auto& mlpt = t.at("mlp_layer_types").children;
-        const auto& idxt = t.at("indexer_types").children;
-        need(mlpt.size() == 45 && idxt.size() == 45, "glm_block_types");
-        for (std::size_t i = 0; i < 45; ++i)
-            need(
-                mlpt[i].string() == (i < 3 ? "dense" : "sparse")
-                    && idxt[i].string() == "full",
-                "glm_block_type"
-            );
-        const auto& groups = quant.at("config_groups").children;
-        need(groups.size() == 1, "glm_quant_groups");
-        const auto& group = groups[0];
-        const auto& w = group.at("weights");
-        need(
-            group.at("format").string() == "nvfp4-pack-quantized"
-                && group.at("input_activations").kind
-                       == checkpoint::json::Value::Kind::null
-                && group.at("output_activations").kind
-                       == checkpoint::json::Value::Kind::null
-                && w.at("group_size").integer() == 16 && w.at("num_bits").integer() == 4
-                && w.at("type").string() == "float"
-                && w.at("strategy").string() == "tensor_group"
-                && w.at("symmetric").boolean() && !w.at("dynamic").boolean()
-                && w.at("scale_dtype").string() == "torch.float8_e4m3fn",
-            "glm_quant_contract"
-        );
+        validate_config(root, budget);
         auto generation =
             checkpoint::json::read(root, "generation_config.json", 65536, budget);
         const auto& eos = generation.at("eos_token_id").children;
@@ -436,6 +336,109 @@ std::size_t state_bytes(std::size_t context) {
     need(context && context <= serving::max_resident_capacity, "glm_context_bound");
     return 34ULL * (64 * 128 * 128 + 3 * 8192 * 4) * 4
            + 11ULL * (context * 512 + ((context + 3) / 4) * 128 + 8 * 128) * 4;
+}
+
+void validate_config(
+    const char* root, std::shared_ptr<checkpoint::MemoryBudget> budget
+) {
+    auto cfg = checkpoint::json::read(root, "config.json", 16 << 20, budget);
+    need(cfg.at("model_type").string() == "glm5_next", "glm_model_type");
+    const auto& t = cfg.at("text_config");
+    for (auto [key, value] : std::initializer_list<std::pair<const char*, std::size_t>>{
+             {"hidden_size", H},
+             {"num_hidden_layers", 45},
+             {"vocab_size", 154880},
+             {"num_attention_heads", 64},
+             {"q_lora_rank", 1536},
+             {"kv_lora_rank", 512},
+             {"qk_nope_head_dim", 256},
+             {"qk_rope_head_dim", 0},
+             {"v_head_dim", 256},
+             {"n_routed_experts", 288},
+             {"num_experts_per_tok", 8},
+             {"first_k_dense_replace", 3},
+             {"intermediate_size", 12288},
+             {"moe_intermediate_size", 2048},
+             {"n_shared_experts", 1},
+             {"hc_mult", 4},
+             {"hc_sinkhorn_iters", 20},
+             {"index_head_dim", 128},
+             {"index_n_heads", 32},
+             {"index_topk", 2048},
+             {"index_kpool", 4},
+             {"n_group", 1},
+             {"topk_group", 1}
+         })
+        need(t.at(key).integer() == value, "glm_config_shape");
+    need(
+        t.at("rms_norm_eps").number() == 1e-5 && t.at("hc_eps").number() == 1e-6
+            && t.at("routed_scaling_factor").number() == 2.5
+            && t.at("swiglu_limit").number() == 10,
+        "glm_config_math"
+    );
+    need(
+        t.at("mhc").boolean() && t.at("mla_use_nope").boolean()
+            && t.at("norm_topk_prob").boolean()
+            && t.at("index_kpool_compress").boolean()
+            && t.at("index_kpool_always_select_tail").boolean(),
+        "glm_config_flags"
+    );
+    need(
+        t.at("scoring_func").string() == "sigmoid"
+            && t.at("topk_method").string() == "noaux_tc",
+        "glm_router_config"
+    );
+    const auto& linear = t.at("linear_attn_config");
+    need(
+        linear.at("num_heads").integer() == 64 && linear.at("head_dim").integer() == 128
+            && linear.at("short_conv_kernel_size").integer() == 4
+            && linear.at("gate_lower_bound").number() == -5,
+        "glm_kda_config"
+    );
+    const auto& types = t.at("layer_types").children;
+    need(types.size() == 45, "glm_layer_count");
+    for (std::size_t i = 0; i < 45; ++i)
+        need(
+            types[i].string()
+                == (i % 4 == 3 ? "deepseek_sparse_attention" : "linear_attention"),
+            "glm_layer_type"
+        );
+    const auto& quant = cfg.at("quantization_config");
+    need(
+        quant.at("quant_method").string() == "compressed-tensors"
+            && quant.at("format").string() == "nvfp4-pack-quantized",
+        "glm_quant_format"
+    );
+    need(
+        t.at("max_position_embeddings").integer() == 1048576
+            && t.at("hidden_act").string() == "silu",
+        "glm_context_activation"
+    );
+    const auto& mlpt = t.at("mlp_layer_types").children;
+    const auto& idxt = t.at("indexer_types").children;
+    need(mlpt.size() == 45 && idxt.size() == 45, "glm_block_types");
+    for (std::size_t i = 0; i < 45; ++i)
+        need(
+            mlpt[i].string() == (i < 3 ? "dense" : "sparse")
+                && idxt[i].string() == "full",
+            "glm_block_type"
+        );
+    const auto& groups = quant.at("config_groups").children;
+    need(groups.size() == 1, "glm_quant_groups");
+    const auto& group = groups[0];
+    const auto& w = group.at("weights");
+    need(
+        group.at("format").string() == "nvfp4-pack-quantized"
+            && group.at("input_activations").kind == checkpoint::json::Value::Kind::null
+            && group.at("output_activations").kind
+                   == checkpoint::json::Value::Kind::null
+            && w.at("group_size").integer() == 16 && w.at("num_bits").integer() == 4
+            && w.at("type").string() == "float"
+            && w.at("strategy").string() == "tensor_group"
+            && w.at("symmetric").boolean() && !w.at("dynamic").boolean()
+            && w.at("scale_dtype").string() == "torch.float8_e4m3fn",
+        "glm_quant_contract"
+    );
 }
 
 Plan plan(const char* root, std::size_t context, const std::atomic_bool* cancel) {

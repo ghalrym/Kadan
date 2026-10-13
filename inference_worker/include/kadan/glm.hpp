@@ -1,6 +1,7 @@
 #pragma once
 #include <map>
 
+#include "kadan/checkpoint.hpp"
 #include "kadan/model_worker.hpp"
 #include "kadan/worker_compute.hpp"
 
@@ -9,6 +10,9 @@ namespace kadan::glm {
 constexpr bool is_eos(unsigned token) {
     return token == 154820 || token == 154827 || token == 154829;
 }
+
+// Config-only validation shared by acquisition and the native loader.
+void validate_config(const char* root, std::shared_ptr<checkpoint::MemoryBudget>);
 
 struct Plan {
     std::size_t context, host, packed, tensors, execution_weights;

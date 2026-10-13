@@ -32,7 +32,7 @@ add_library(kadan_preparation src/preparation_io.cpp src/model_store.cpp
   src/inference_decision_request.cpp src/inference_speech_request.cpp
   src/inference_whisper_request.cpp src/inference_video_request.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive)
+  PRIVATE kadan_manifest kadan_glm CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
