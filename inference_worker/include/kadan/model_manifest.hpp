@@ -23,6 +23,10 @@ struct TextArchitecture {
     std::array<std::size_t, 3> rope_sections{};
     std::array<LayerKind, 256> layer_types{};
 };
+
+// Config-only validation shared by acquisition and the native manifest.
+TextArchitecture read_text_config(const char* root, std::shared_ptr<MemoryBudget>);
+
 enum class ItemKind {
     dense,
     fp8,
