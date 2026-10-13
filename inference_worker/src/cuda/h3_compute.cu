@@ -19,6 +19,7 @@
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
 #include "kadan/h3_compute.hpp"
+#include "kadan/h3_resident.hpp"
 #include "kadan/image_vae.hpp"
 
 namespace kadan::video {
@@ -3235,6 +3236,414 @@ void CudaBf16Projection::residual(
         first,
         text,
         static_cast<unsigned*>(status.data)
+    );
+    checked(cudaGetLastError());
+}
+
+namespace {
+unsigned blocks(std::size_t count) {
+    return unsigned((count + 255) / 256);
+}
+
+__global__ void h3_finite_kernel(const float* x, std::size_t count, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count && !isfinite(x[i]))
+        atomicOr(status, 1U);
+}
+
+__global__ void h3_widen_kernel(
+    const std::uint16_t* source, float* destination, std::size_t count, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const auto value = __uint_as_float(unsigned(source[i]) << 16);
+    if (!isfinite(value))
+        atomicOr(status, 1U);
+    destination[i] = value;
+}
+
+// Matches the host projection's bias-free post-GEMM +0, including -0.
+__global__ void h3_zero_bias_kernel(float* x, std::size_t count) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count)
+        x[i] = __fadd_rn(x[i], 0.f);
+}
+
+// Same arithmetic as finish_int8 with a zero bias, into a column tile of y.
+__global__ void h3_finish_int8_kernel(
+    const std::int32_t* sums,
+    const float* row_scale,
+    const float* weight_scale,
+    float* y,
+    std::size_t rows,
+    std::size_t tile,
+    std::size_t out,
+    std::size_t first_column,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= rows * tile)
+        return;
+    const auto row = i / tile, column = i % tile;
+    const float value = __fadd_rn(
+        __fmul_rn(
+            __fmul_rn(float(sums[i]), row_scale[row]),
+            weight_scale[first_column + column]
+        ),
+        0.f
+    );
+    if (!isfinite(value))
+        atomicOr(status, 2U);
+    y[row * out + first_column + column] = value;
+}
+
+// Host Turbo order: delta gets the projection's +0, then y += delta * scale.
+__global__ void h3_lora_add_kernel(
+    const float* delta,
+    float* y,
+    std::size_t rows,
+    std::size_t tile,
+    std::size_t out,
+    std::size_t first_column,
+    float scale,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= rows * tile)
+        return;
+    const auto at = (i / tile) * out + first_column + i % tile;
+    const float value = __fadd_rn(y[at], __fmul_rn(__fadd_rn(delta[i], 0.f), scale));
+    if (!isfinite(value))
+        atomicOr(status, 2U);
+    y[at] = value;
+}
+
+// h3_denoiser.cpp feed(): double SiLU, F32 cast, then F32 product.
+__global__ void h3_silu_gate_kernel(
+    float* gate, const float* value, std::size_t count, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const double g = gate[i];
+    const float result = __fmul_rn(float(g / (1.0 + exp(-g))), value[i]);
+    if (!isfinite(result))
+        atomicOr(status, 1U);
+    gate[i] = result;
+}
+
+// h3_denoiser.cpp residual(): F32 product, then F32 addition.
+__global__ void h3_gated_residual_kernel(
+    float* hidden,
+    const float* projected,
+    const float* gates,
+    const std::uint32_t* token_groups,
+    std::size_t count,
+    std::size_t width,
+    std::size_t groups,
+    std::size_t first,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const auto group = token_groups[first + i / width];
+    if (group >= groups) {
+        atomicOr(status, 4U);
+        return;
+    }
+    const float result =
+        __fadd_rn(hidden[i], __fmul_rn(projected[i], gates[group * width + i % width]));
+    if (!isfinite(result))
+        atomicOr(status, 1U);
+    hidden[i] = result;
+}
+}  // namespace
+
+CudaH3Launcher::CudaH3Launcher(
+    std::shared_ptr<DenseCompute> context_owner,
+    std::shared_ptr<MediaSessionActivity> activity,
+    std::shared_ptr<Resources> resources,
+    int device
+)
+    : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
+      resources_(std::move(resources)), device_(device) {
+    require(
+        context_owner_ && activity_ && resources_ && device >= 0
+            && std::size_t(device) + 1 < resources_->snapshot().capacity.size(),
+        "h3_resident_context_owner"
+    );
+    // Initialization may touch context resources even when CUDA reports failure.
+    ++activity_->owners;
+    checked(cudaSetDevice(device_));
+    std::size_t before = 0, after = 0, total = 0;
+    checked(cudaMemGetInfo(&before, &total));
+    cublasHandle_t handle = nullptr;
+    checked(cublasCreate(&handle));
+    blas_ = handle;
+    try {
+        checked(cudaMemGetInfo(&after, &total));
+        Footprint charge(resources_->snapshot().capacity.size());
+        charge[device_ + 1] = before > after ? before - after : 0;
+        library_charge_ = resources_->reserve(Workload::video, charge);
+    } catch (...) {
+        close();
+        throw;
+    }
+}
+
+CudaH3Launcher::~CudaH3Launcher() {
+    try {
+        close();
+    } catch (...) {
+        // Unconfirmed cleanup keeps the activity guard and its busy charge.
+    }
+}
+
+void CudaH3Launcher::close() {
+    if (!blas_)
+        return;
+    try {
+        checked(cudaSetDevice(device_));
+        if (stream_)
+            checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+        checked(cublasDestroy(static_cast<cublasHandle_t>(blas_)));
+    } catch (...) {
+        quarantined_ = true;
+        throw;
+    }
+    blas_ = nullptr;
+    if (library_charge_) {
+        resources_->released(library_charge_);
+        library_charge_ = 0;
+    }
+    --activity_->owners;
+}
+
+void CudaH3Launcher::release_stream() {
+    if (!stream_)
+        return;
+    try {
+        checked(cudaSetDevice(device_));
+        checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+    } catch (...) {
+        // Never touch a stream its session may already have destroyed.
+        stream_ = nullptr;
+        quarantined_ = true;
+        throw;
+    }
+    stream_ = nullptr;
+}
+
+void CudaH3Launcher::bind(void* stream, const MediaDeviceSpan& workspace) {
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "h3_resident_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    // Stream binding resets the cuBLAS workspace; install the session buffer after.
+    checked(cublasSetStream(handle, static_cast<cudaStream_t>(stream)));
+    checked(cublasSetWorkspace(handle, workspace.data, workspace.bytes));
+}
+
+void CudaH3Launcher::convrot(
+    void* stream,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    std::size_t group,
+    float lora_scale
+) {
+    const auto shape = validate_h3_convrot(device_, read, write, group);
+    const bool lora = shape.rank != 0;
+    bind(stream, write[write.size() - 2]);
+    const auto s = static_cast<cudaStream_t>(stream);
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    auto* status = static_cast<unsigned*>(write.back().data);
+    const auto rows = shape.rows, in = shape.in, out = shape.out;
+    const auto* input = static_cast<const float*>(read[0].data);
+    auto* output = static_cast<float*>(write[0].data);
+    auto* scratch = static_cast<std::byte*>(write[1].data);
+    auto* rotated = reinterpret_cast<float*>(scratch);
+    auto* codes = reinterpret_cast<std::int8_t*>(
+        scratch + detail::h3_aligned(Bytes(rows) * in * 4)
+    );
+    auto* row_scales = reinterpret_cast<float*>(
+        reinterpret_cast<std::byte*>(codes) + detail::h3_aligned(Bytes(rows) * in)
+    );
+    auto* sums =
+        reinterpret_cast<std::byte*>(row_scales) + detail::h3_aligned(Bytes(rows) * 4);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    checked(cudaGetLastError());
+    rotate_kernel<<<
+        dim3(unsigned(rows), unsigned(in / group)),
+        unsigned(group),
+        0,
+        s>>>(input, rotated, in, unsigned(group));
+    checked(cudaGetLastError());
+    quantize_kernel<<<unsigned(rows), 256, 0, s>>>(rotated, codes, row_scales, in);
+    checked(cudaGetLastError());
+    float* low = nullptr;
+    const float* lora_b = nullptr;
+    if (lora) {
+        const auto rank = shape.rank;
+        auto* widened = static_cast<float*>(write[3].data);
+        h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
+            static_cast<const std::uint16_t*>(read[3].data), widened, rank * in, status
+        );
+        checked(cudaGetLastError());
+        h3_widen_kernel<<<blocks(out * rank), 256, 0, s>>>(
+            static_cast<const std::uint16_t*>(read[4].data),
+            widened + rank * in,
+            out * rank,
+            status
+        );
+        checked(cudaGetLastError());
+        lora_b = widened + rank * in;
+        low = static_cast<float*>(write[2].data);
+        const float one = 1, zero = 0;
+        checked(cublasSgemm(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            int(rank),
+            int(rows),
+            int(in),
+            &one,
+            widened,
+            int(in),
+            input,
+            int(in),
+            &zero,
+            low,
+            int(rank)
+        ));
+        h3_zero_bias_kernel<<<blocks(rows * rank), 256, 0, s>>>(low, rows * rank);
+        checked(cudaGetLastError());
+    }
+    for (std::size_t first = 0; first < out; first += shape.tile) {
+        const auto tile = std::min(shape.tile, out - first);
+        const std::int32_t one = 1, zero = 0;
+        checked(cublasGemmEx(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            int(tile),
+            int(rows),
+            int(in),
+            &one,
+            static_cast<const std::int8_t*>(read[1].data) + first * in,
+            CUDA_R_8I,
+            int(in),
+            codes,
+            CUDA_R_8I,
+            int(in),
+            &zero,
+            sums,
+            CUDA_R_32I,
+            int(tile),
+            CUBLAS_COMPUTE_32I,
+            CUBLAS_GEMM_DEFAULT
+        ));
+        h3_finish_int8_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+            reinterpret_cast<const std::int32_t*>(sums),
+            row_scales,
+            static_cast<const float*>(read[2].data),
+            output,
+            rows,
+            tile,
+            out,
+            first,
+            status
+        );
+        checked(cudaGetLastError());
+        if (!lora)
+            continue;
+        // The INT32 tile is consumed; reuse it for this tile's F32 LoRA delta.
+        const float unit = 1, none = 0;
+        checked(cublasSgemm(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            int(tile),
+            int(rows),
+            int(shape.rank),
+            &unit,
+            lora_b + first * shape.rank,
+            int(shape.rank),
+            low,
+            int(shape.rank),
+            &none,
+            reinterpret_cast<float*>(sums),
+            int(tile)
+        ));
+        h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+            reinterpret_cast<const float*>(sums),
+            output,
+            rows,
+            tile,
+            out,
+            first,
+            lora_scale,
+            status
+        );
+        checked(cudaGetLastError());
+    }
+}
+
+void CudaH3Launcher::silu_gate(
+    void* stream,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write
+) {
+    const auto count = validate_h3_silu_gate(device_, read, write);
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "h3_resident_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto s = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(write[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    h3_silu_gate_kernel<<<blocks(count), 256, 0, s>>>(
+        static_cast<float*>(write[0].data),
+        static_cast<const float*>(read[1].data),
+        count,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaH3Launcher::gated_residual(
+    void* stream,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    std::size_t first
+) {
+    const auto count = validate_h3_gated_residual(device_, read, write, first);
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "h3_resident_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto s = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(write[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    h3_gated_residual_kernel<<<blocks(count), 256, 0, s>>>(
+        static_cast<float*>(write[0].data),
+        static_cast<const float*>(read[1].data),
+        static_cast<const float*>(read[2].data),
+        static_cast<const std::uint32_t*>(read[3].data),
+        count,
+        read[0].dimensions[1],
+        read[2].dimensions[0],
+        first,
+        status
     );
     checked(cudaGetLastError());
 }

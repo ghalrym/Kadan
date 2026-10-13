@@ -46,7 +46,9 @@ public:
         cache_ = video::h3_weight_cache(
             resources_, paths_, cache_bytes, cancel, compute_, progress_
         );
-        model_ = std::make_unique<video::H3Generation>(resources_, compute_, cache_);
+        model_ = std::make_unique<video::H3Generation>(
+            resources_, compute_, cache_, plan.devices, media_activity_
+        );
     }
 
     void prepare(
@@ -91,6 +93,9 @@ public:
     void close() override {
         model_.reset();
         cache_.reset();
+        // An unconfirmed resident launcher keeps its context; never reset under it.
+        if (media_activity_->owners.load())
+            throw std::runtime_error("video_media_session_busy");
         if (compute_)
             compute_->release_devices();
         compute_.reset();
@@ -106,6 +111,8 @@ private:
     Progress progress_;
     Handle context_ = 0;
     std::shared_ptr<video::H3Compute> compute_;
+    std::shared_ptr<MediaSessionActivity> media_activity_ =
+        std::make_shared<MediaSessionActivity>();
     std::shared_ptr<checkpoint::ReadCache> cache_;
     std::unique_ptr<video::H3Generation> model_;
     video::H3GenerationPaths paths_;
