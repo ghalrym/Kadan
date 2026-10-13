@@ -24,7 +24,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "checkpoint-floats-tests",
     "projection-validation-tests",
     "image-weight-loading-tests",
-    "h3-feed-forward-tests",
+    "h3-resident-block-tests",
     "image-activation-tests",
     "image-schedule-tests",
     "image-timing-tests",
