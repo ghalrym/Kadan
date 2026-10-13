@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <map>
 
+#include "image_aten_modulation.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_checkpoint_config.hpp"
@@ -434,36 +435,6 @@ Tensor rotate_image(const Tensor& input, const Rotary& rotary) {
         .to(input.scalar_type());
 }
 
-Tensor
-modulated(const Tensor& x, const Tensor& modulation, std::int64_t text, int offset) {
-    auto normalized = at::layer_norm(x, {4096}, {}, {}, 1e-6);
-    auto image =
-        normalized.slice(0, text) * (1 + modulation[0].slice(0, offset, offset + 4096));
-    if (!text)
-        return image;
-    auto prefix = normalized.slice(0, 0, text)
-                  * (1 + modulation[1].slice(0, offset, offset + 4096));
-    return at::cat({prefix, image}, 0);
-}
-
-Tensor gated(
-    const Tensor& x,
-    const Tensor& delta,
-    const Tensor& modulation,
-    std::int64_t text,
-    int offset
-) {
-    auto image = x.slice(0, text)
-                 + delta.slice(0, text)
-                       * at::tanh(modulation[0].slice(0, offset, offset + 4096));
-    if (!text)
-        return image;
-    auto prefix = x.slice(0, 0, text)
-                  + delta.slice(0, 0, text)
-                        * at::tanh(modulation[1].slice(0, offset, offset + 4096));
-    return at::cat({prefix, image}, 0);
-}
-
 Tensor denoise(
     Stage& stage,
     Tensor latent_cpu,
@@ -511,7 +482,7 @@ Tensor denoise(
             )
         );
         auto activated_time = at::silu(time);
-        auto modulation = stage.linear("modulation.1", activated_time);
+        detail::AtenModulation modulation(stage.linear("modulation.1", activated_time));
         auto image = stage.linear("img_in", latent.to(at::kBFloat16));
         Tensor x = step ? image : at::cat({projected, image}, 0);
         const auto prefix = step ? 0 : text;
@@ -523,7 +494,7 @@ Tensor denoise(
             if (hook)
                 hook("block_started", layer);
             auto p = "transformer_blocks." + std::to_string(layer) + ".";
-            auto n = modulated(x, modulation, prefix, 0);
+            auto n = detail::aten_modulated_norm(x, modulation.attention_scale, prefix);
             auto q = rotate_image(
                 stage.rms(
                     p + "attn.norm_q", heads(stage.linear(p + "attn.to_q", n), 32)
@@ -554,25 +525,28 @@ Tensor denoise(
                     at::cat({prefix_v[layer], v}, 2)
                 );
             }
-            x = gated(
+            x = detail::aten_gated_residual(
                 x,
                 stage.linear(p + "attn.to_out.0", unheads(mix)),
-                modulation,
-                prefix,
-                4096
+                modulation.attention_gate,
+                prefix
             );
-            n = modulated(x, modulation, prefix, 8192);
+            n = detail::aten_modulated_norm(x, modulation.mlp_scale, prefix);
             auto gate = at::silu(stage.linear(p + "img_mlp.gate_layer", n));
             auto up = stage.linear(p + "img_mlp.proj", n);
-            x = gated(
-                x, stage.linear(p + "img_mlp.out", gate * up), modulation, prefix, 12288
+            x = detail::aten_gated_residual(
+                x,
+                stage.linear(p + "img_mlp.out", gate * up),
+                modulation.mlp_gate,
+                prefix
             );
             if (hook)
                 hook("block", layer);
         }
-        auto scale = stage.linear("norm_out.linear", activated_time.slice(0, 0, 1));
-        auto normalized =
-            at::layer_norm(x.slice(0, prefix), {4096}, {}, {}, 1e-6) * (1 + scale);
+        auto scale = stage.linear("norm_out.linear", activated_time.slice(0, 0, 1))
+                         .to(at::kFloat)
+                         .add(1);
+        auto normalized = detail::aten_modulated_norm(x.slice(0, prefix), scale, 0);
         auto velocity = stage.linear("proj_out", normalized).to(at::kFloat);
         latent = latent + velocity * (times.sigma[step + 1] - times.sigma[step]);
         if (hook)
