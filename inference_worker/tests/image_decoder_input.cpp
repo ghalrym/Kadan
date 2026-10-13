@@ -136,6 +136,167 @@ void nonfinite_and_cancelled_host_input() {
         check(value == -99.f);
 }
 
+void normalization_cpu_formula() {
+    std::array<float, 15> input{
+        0.f,
+        -0.f,
+        1e-30f,
+        1.f,
+        3.f,
+        0.f,
+        -0.f,
+        -1e-30f,
+        -2.f,
+        4.f,
+        0.f,
+        -0.f,
+        2e-30f,
+        3.f,
+        -5.f
+    };
+    const std::array<float, 3> gamma{1.2345f, -3.14159f, .5f};
+    std::array<float, 15> output{};
+    std::atomic_bool cancel = false;
+    for (bool activate : {false, true}) {
+        image::normalize_vae_features(input, gamma, 5, output, activate, cancel);
+        for (std::size_t p = 0; p < 5; ++p) {
+            double sum = 0;
+            for (std::size_t c = 0; c < 3; ++c)
+                sum += double(input[c * 5 + p]) * input[c * 5 + p];
+            const float scale = float(std::sqrt(3.) / std::max(std::sqrt(sum), 1e-12));
+            for (std::size_t c = 0; c < 3; ++c) {
+                const float value = input[c * 5 + p] * scale * gamma[c];
+                const double v = value;
+                const float expected =
+                    activate ? float(
+                                   v >= 0 ? v / (1 + std::exp(-v))
+                                          : v * std::exp(v) / (1 + std::exp(v))
+                               )
+                             : value;
+                check(
+                    std::bit_cast<std::uint32_t>(output[c * 5 + p])
+                    == std::bit_cast<std::uint32_t>(expected)
+                );
+            }
+        }
+    }
+}
+
+struct NormalizationDevice final : DenseCompute {
+    bool supported = true, fail = false;
+    unsigned calls = 0;
+    std::atomic_bool* cancel_after = nullptr;
+
+    void dense(
+        std::span<const float>,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&,
+        bool
+    ) override {
+        throw std::runtime_error("unexpected_projection");
+    }
+
+    bool image_vae_normalize(
+        std::span<const float> input,
+        std::span<const float> gamma,
+        std::size_t points,
+        std::span<float> output,
+        bool activate,
+        const std::atomic_bool& cancel
+    ) override {
+        ++calls;
+        check(input.size() == 3 && gamma.size() == 1 && points == 3 && activate);
+        check(!cancel.load());
+        if (!supported)
+            return false;
+        output[0] = 17.f;  // Fake dispatch only, no device arithmetic.
+        if (fail)
+            throw std::runtime_error("normalization_device_failed");
+        output[1] = 18.f;
+        output[2] = 19.f;
+        if (cancel_after)
+            *cancel_after = true;
+        return true;
+    }
+};
+
+void normalization_dispatch_and_failures() {
+    std::array<float, 3> input{1.f, -2.f, 3.f}, output{-99.f, -99.f, -99.f};
+    std::array<float, 1> gamma{1.f};
+    std::atomic_bool cancel = false;
+    NormalizationDevice device;
+    auto run = [&] {
+        image::normalize_vae_features(input, gamma, 3, output, true, cancel, &device);
+    };
+    run();
+    check(device.calls == 1 && output == std::array<float, 3>{17.f, 18.f, 19.f});
+    device.supported = false;
+    run();
+    std::array<float, 3> reference{};
+    image::normalize_vae_features(input, gamma, 3, reference, true, cancel);
+    check(output == reference && device.calls == 2);
+    device.supported = true;
+    device.fail = true;
+    check(fails(run) == "normalization_device_failed");
+    check(output[0] == 17.f && output[1] == reference[1]);
+    device.fail = false;
+    device.cancel_after = &cancel;
+    check(fails(run) == "image_vae_cancelled");
+    const auto calls = device.calls;
+    output.fill(-99.f);
+    check(fails(run) == "image_vae_cancelled" && device.calls == calls);
+    check(output == std::array<float, 3>{-99.f, -99.f, -99.f});
+    cancel = false;
+    for (auto invalid_points :
+         {0ULL, 2ULL, std::numeric_limits<unsigned long long>::max()})
+        check(
+            fails([&] {
+                image::normalize_vae_features(
+                    input, gamma, invalid_points, output, false, cancel
+                );
+            })
+            == "image_vae_norm_shape"
+        );
+    check(
+        fails([&] {
+            image::normalize_vae_features(input, gamma, 3, input, false, cancel);
+        })
+        == "image_vae_norm_overlap"
+    );
+    check(
+        fails([&] {
+            image::normalize_vae_features(
+                input, std::span(output).first(1), 3, output, false, cancel
+            );
+        })
+        == "image_vae_norm_overlap"
+    );
+    for (float invalid :
+         {std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()}) {
+        input[0] = invalid;
+        check(
+            fails([&] {
+                image::normalize_vae_features(input, gamma, 3, output, false, cancel);
+            })
+            == "image_vae_nonfinite"
+        );
+        input[0] = 1.f;
+        gamma[0] = invalid;
+        check(
+            fails([&] {
+                image::normalize_vae_features(input, gamma, 3, output, true, cancel);
+            })
+            == "image_vae_nonfinite"
+        );
+        gamma[0] = 1.f;
+    }
+}
+
 struct Trace {
     std::size_t allocations = 0, downloads = 0, synchronizations = 0;
     int downloaded_device = -1;
@@ -322,6 +483,8 @@ void resident_cancellation_and_transfer_failure() {
 
 int main() {
     layout_and_rounding();
+    normalization_cpu_formula();
+    normalization_dispatch_and_failures();
     invalid_host_inputs();
     nonfinite_and_cancelled_host_input();
     resident_handoff();

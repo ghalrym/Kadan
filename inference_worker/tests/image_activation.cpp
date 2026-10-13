@@ -99,6 +99,46 @@ void nonfinite_values() {
     );
 }
 
+void vae_normalization_rounding() {
+    using kadan::image::detail::vae_norm_scale;
+    using kadan::image::detail::vae_norm_value;
+    for (std::size_t channels : {1u, 3u, 144u, 1152u})
+        for (double sum : {0., 1e-30, 1e-24, 1e-12, 1., 3., 1e78}) {
+            const float previous =
+                float(std::sqrt(double(channels)) / std::max(std::sqrt(sum), 1e-12));
+            check(
+                std::bit_cast<std::uint32_t>(vae_norm_scale(sum, channels))
+                == std::bit_cast<std::uint32_t>(previous)
+            );
+        }
+    for (float x :
+         {0.f,
+          -0.f,
+          std::numeric_limits<float>::denorm_min(),
+          -100.f,
+          -.5f,
+          1.00001f,
+          12345.f})
+        for (float scale : {.12345f, 1.f, 123.f})
+            for (float gamma : {-3.14159f, 0.f, 1.f})
+                for (bool activate : {false, true}) {
+                    const float value = x * scale * gamma;
+                    const double v = value;
+                    const float previous =
+                        activate ? float(
+                                       v >= 0 ? v / (1 + std::exp(-v))
+                                              : v * std::exp(v) / (1 + std::exp(v))
+                                   )
+                                 : value;
+                    check(
+                        std::bit_cast<std::uint32_t>(
+                            vae_norm_value(x, scale, gamma, activate)
+                        )
+                        == std::bit_cast<std::uint32_t>(previous)
+                    );
+                }
+}
+
 void product_rounding() {
     using kadan::image::detail::silu_product;
     check(std::bit_cast<std::uint32_t>(silu_product(-0.f, 1.f)) == 0x80000000);
@@ -137,5 +177,6 @@ int main() {
     nonfinite_values();
     frequency_rounding_and_order();
     product_rounding();
+    vae_normalization_rounding();
     std::cout << "image SiLU scalar arithmetic passed (no inference)\n";
 }

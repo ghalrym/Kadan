@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <charconv>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -165,6 +166,32 @@ struct AttentionPlan {
     bool full_heads;
     Bytes bytes;
 };
+
+struct VaeNormalizationPlan {
+    std::size_t points;
+    Bytes bytes;
+};
+
+// Two planar tiles, gamma and finite status. Spatial tiling bounds memory and
+// cancellation latency without changing the ordered channel reduction.
+inline std::optional<VaeNormalizationPlan>
+image_vae_normalization_plan(std::size_t channels, std::size_t points, Bytes limit) {
+    if (!channels || !points)
+        throw std::invalid_argument("image_vae_norm_shape");
+    // Keep host/device pitches within CUDA's signed 31-bit limit.
+    if (channels > 2147483647ULL || points > 2147483647ULL / 4)
+        return {};
+    auto aligned = [](Bytes bytes) {
+        return (bytes + 255) / 256 * 256;
+    };
+    for (auto count = std::min<std::size_t>(points, 65536); count; count /= 2) {
+        const auto bytes = 2 * aligned(channels * count * 4) + aligned(channels * 4)
+                           + projection_status_bytes;
+        if (bytes <= limit)
+            return VaeNormalizationPlan{count, bytes};
+    }
+    return {};
+}
 
 inline AttentionPlan attention_plan(
     std::size_t queries,

@@ -4,6 +4,15 @@
 #include <cstddef>
 
 namespace kadan::image::detail {
+// Preserve VAE's ordered double sum and clamped L2 denominator, not an
+// epsilon-added or parallel RMS reduction.
+#ifdef __CUDACC__
+__host__ __device__
+#endif
+    inline float vae_norm_scale(double sum, std::size_t channels) {
+    const double norm = ::sqrt(sum);
+    return float(::sqrt(double(channels)) / (norm < 1e-12 ? 1e-12 : norm));
+}
 #ifdef __CUDACC__
 __host__ __device__
 #endif
@@ -24,6 +33,14 @@ __host__ __device__
     // Keep the negative-tail formula and double intermediates; only reuse exp(v).
     const double exponential = ::exp(v);
     return float(v * exponential / (1 + exponential));
+}
+
+#ifdef __CUDACC__
+__host__ __device__
+#endif
+    inline float vae_norm_value(float x, float scale, float gamma, bool activate) {
+    const float value = x * scale * gamma;
+    return activate ? silu(value) : value;
 }
 
 #ifdef __CUDACC__

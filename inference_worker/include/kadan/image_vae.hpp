@@ -1,14 +1,49 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 
 #include "kadan/dense_compute.hpp"
 #include "kadan/media_session.hpp"
 
 namespace kadan::image {
+inline void validate_vae_normalization(
+    std::span<const float> input,
+    std::span<const float> gamma,
+    std::size_t points,
+    std::span<float> output
+) {
+    const auto maximum = std::numeric_limits<std::size_t>::max();
+    if (!points || gamma.empty() || gamma.size() > maximum / points
+        || gamma.size() * points > maximum / sizeof(float)
+        || input.size() != gamma.size() * points || output.size() != input.size()
+        || !input.data() || !gamma.data() || !output.data())
+        throw std::invalid_argument("image_vae_norm_shape");
+    for (auto source : {input, gamma}) {
+        const auto x = reinterpret_cast<std::uintptr_t>(source.data()),
+                   y = reinterpret_cast<std::uintptr_t>(output.data());
+        if (x <= y ? y - x < source.size_bytes() : x - y < output.size_bytes())
+            throw std::invalid_argument("image_vae_norm_overlap");
+    }
+}
+
+// Caller-admitted, disjoint CHW buffers. A supported device operation completes
+// and validates all partitions before return; unsupported keeps the CPU formula.
+void normalize_vae_features(
+    std::span<const float>,
+    std::span<const float>,
+    std::size_t points,
+    std::span<float>,
+    bool activate,
+    const std::atomic_bool&,
+    DenseCompute* = nullptr
+);
+
 struct VaeConfig {
     std::size_t base = 144, latent = 64, channels = 4, residuals = 2;
 };

@@ -19,6 +19,7 @@
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
 #include "kadan/h3_compute.hpp"
+#include "kadan/image_vae.hpp"
 
 namespace kadan::video {
 namespace {
@@ -76,6 +77,40 @@ struct Layout {
         return at;
     }
 };
+
+__global__ void image_vae_norm_kernel(
+    const float* input,
+    const float* gamma,
+    float* output,
+    unsigned* status,
+    std::size_t channels,
+    std::size_t stride,
+    std::size_t count,
+    bool activate
+) {
+    const auto point = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (point >= count)
+        return;
+    double sum = 0;
+    bool invalid = false;
+    // Adjacent threads read adjacent spatial points. Each point retains the
+    // CPU channel order and separate double multiply/add rounding.
+    for (std::size_t c = 0; c < channels; ++c) {
+        const float value = input[c * stride + point];
+        sum = __dadd_rn(sum, __dmul_rn(double(value), double(value)));
+        invalid |= !isfinite(value);
+    }
+    const auto scale = image::detail::vae_norm_scale(sum, channels);
+    for (std::size_t c = 0; c < channels; ++c) {
+        const float value = image::detail::vae_norm_value(
+            input[c * stride + point], scale, gamma[c], activate
+        );
+        output[c * stride + point] = value;
+        invalid |= !isfinite(gamma[c]) || !isfinite(value);
+    }
+    if (invalid)
+        atomicOr(status, 1U);
+}
 
 __global__ void image_silu_pair_kernel(
     float* gate, const float* up, std::size_t count, unsigned* status
@@ -1760,6 +1795,100 @@ private:
     }
 
 public:
+    bool image_vae_normalize(
+        std::span<const float> input,
+        std::span<const float> gamma,
+        std::size_t points,
+        std::span<float> output,
+        bool activate,
+        const std::atomic_bool& cancel
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        image::validate_vae_normalization(input, gamma, points, output);
+        // Unsupported must precede submission or output writes on every device.
+        for (auto limit : scratch_limits_)
+            if (!image_vae_normalization_plan(gamma.size(), points, limit))
+                return false;
+        std::atomic_bool nonfinite = false;
+        split(
+            points,
+            cancel,
+            [&](DeviceWorkspace& workspace,
+                std::size_t begin,
+                std::size_t end,
+                const std::atomic_bool& failed) {
+                stop(cancel, failed);
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(workspace.operations());
+                const auto plan = *image_vae_normalization_plan(
+                    gamma.size(), end - begin, arena.scratch_limit
+                );
+                Layout layout;
+                const auto g = layout.add(gamma.size_bytes()),
+                           x = layout.add(gamma.size() * plan.points * 4),
+                           y = layout.add(gamma.size() * plan.points * 4),
+                           status = layout.add(sizeof(unsigned));
+                require(layout.bytes <= plan.bytes, "image_vae_norm_scratch");
+                workspace.ensure(layout.bytes);
+                checked(cudaMemcpy(
+                    arena.at<void>(g),
+                    gamma.data(),
+                    gamma.size_bytes(),
+                    cudaMemcpyHostToDevice
+                ));
+                checked(cudaMemset(arena.at<void>(status), 0, sizeof(unsigned)));
+                for (std::size_t first = begin; first < end; first += plan.points) {
+                    stop(cancel, failed);
+                    const auto count = std::min(plan.points, end - first);
+                    checked(cudaMemcpy2D(
+                        arena.at<void>(x),
+                        plan.points * 4,
+                        input.data() + first,
+                        points * 4,
+                        count * 4,
+                        gamma.size(),
+                        cudaMemcpyHostToDevice
+                    ));
+                    image_vae_norm_kernel<<<unsigned((count + 255) / 256), 256>>>(
+                        arena.at<float>(x),
+                        arena.at<float>(g),
+                        arena.at<float>(y),
+                        arena.at<unsigned>(status),
+                        gamma.size(),
+                        plan.points,
+                        count,
+                        activate
+                    );
+                    checked(cudaGetLastError());
+                    checked(cudaStreamSynchronize(cudaStreamLegacy));
+                    unsigned invalid = 0;
+                    checked(cudaMemcpy(
+                        &invalid,
+                        arena.at<void>(status),
+                        sizeof(invalid),
+                        cudaMemcpyDeviceToHost
+                    ));
+                    if (invalid) {
+                        nonfinite = true;
+                        return;
+                    }
+                    stop(cancel, failed);
+                    checked(cudaMemcpy2D(
+                        output.data() + first,
+                        points * 4,
+                        arena.at<void>(y),
+                        plan.points * 4,
+                        count * 4,
+                        gamma.size(),
+                        cudaMemcpyDeviceToHost
+                    ));
+                }
+            }
+        );
+        require(!nonfinite.load(), "image_vae_nonfinite");
+        return true;
+    }
+
     bool image_silu_pair_bf16_source(
         const WeightIdentity& gate_identity,
         const Bf16WeightSource& gate_source,
