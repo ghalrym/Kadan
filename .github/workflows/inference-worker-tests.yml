@@ -1,4 +1,4 @@
-name: Native unit tests
+name: Inference worker unit tests
 on:
   push:
   pull_request:
@@ -6,10 +6,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: native-units-${{ github.workflow }}-${{ github.ref }}
+  group: inference-worker-units-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  native:
+  inference-worker:
     name: C++ unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -22,8 +22,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev
       - name: Install tooling dependencies
         run: python3 -m pip install -r bin/requirements.txt
-      - name: Run native unit checks
-        run: python3 bin/kadan.py check native --build-dir /tmp/kadan-native --sanitize
+      - name: Run inference worker unit checks
+        run: python3 bin/kadan.py check inference-worker --build-dir /tmp/kadan-inference-worker --sanitize
   cpp-format:
     name: C++ format
     runs-on: ubuntu-latest
@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Install native component headers
+      - name: Install inference worker component headers
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev libicu-dev libopenblas-dev libpcre2-dev libcurl4-openssl-dev libssl-dev libarchive-dev
       - uses: actions/setup-python@v7
         with:

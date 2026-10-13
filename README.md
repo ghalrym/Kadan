@@ -111,7 +111,7 @@ checkpoint metadata and plan memory; they do not load or execute models. Use
 The optional profiler additionally requires the CUDA toolkit. It can analyze an
 already instrumented live worker; the CLI never launches an inference process.
 
-All generation runs in the API-owned native worker. CLI commands send the same
+All generation runs in the API-owned inference worker. CLI commands send the same
 JSON request bodies as the frontend to the existing API endpoints. The API applies
 validation, checkpoint preparation, queueing, memory admission, and cancellation.
 The CLI has no local inference fallback. Select a server with
@@ -156,7 +156,7 @@ docker compose -f compose.yaml -f compose.development.yaml up -d --no-build api 
 ```
 
 Python and frontend edits reload automatically. Edit Python only when inference
-is idle or cancellation is acceptable: reloading also replaces its owned native
+is idle or cancellation is acceptable: reloading also replaces its owned inference
 worker. C++ changes need an image rebuild and replacement of only the API:
 
 ```sh
@@ -222,7 +222,7 @@ python bin/kadan.py check format
 python bin/kadan.py check cpp-format
 python bin/kadan.py check cpp-lint
 python bin/kadan.py check api
-python bin/kadan.py check native
+python bin/kadan.py check inference-worker
 python bin/kadan.py check frontend-lint
 python bin/kadan.py check frontend-unit
 python bin/kadan.py check frontend-build

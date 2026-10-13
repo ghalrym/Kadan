@@ -416,9 +416,9 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
 endif()
 
 if(BUILD_TESTING)
-  add_executable(native-text-tests tests/native_text.cpp)
-  target_link_libraries(native-text-tests PRIVATE kadan_resources kadan_h3_profile)
-  add_test(NAME native-text COMMAND native-text-tests)
+  add_executable(inference-worker-text-tests tests/inference_worker_text.cpp)
+  target_link_libraries(inference-worker-text-tests PRIVATE kadan_resources kadan_h3_profile)
+  add_test(NAME inference-worker-text COMMAND inference-worker-text-tests)
 endif()
 
 if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
