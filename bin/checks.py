@@ -26,6 +26,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-weight-loading-tests",
     "image-activation-tests",
     "image-decoder-input-tests",
+    "image-convolution-tests",
     "cuda-plan-tests",
     "fp8-plan-tests",
     "placement-tests",

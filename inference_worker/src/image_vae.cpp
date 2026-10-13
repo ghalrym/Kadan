@@ -342,6 +342,29 @@ struct VaeDecoder::Impl {
         need(spec.shape[1] == x.c, "image_vae_conv_shape");
         auto bias = weight(p + ".bias", cancel);
         auto y = make(out, x.h, x.w);
+        // Serialized F32 weights keep exactly the existing standard projection
+        // policy. BF16/unsupported shapes retain their current source path.
+        if (compute && shard->tensor(p + ".weight").dtype == checkpoint::Dtype::fp32) {
+            const auto name = p + ".weight";
+            shard->check_unchanged();
+            const DenseCompute::FloatWeightSource source =
+                [&](std::size_t first, std::span<float> target) {
+                    shard->read_float_tensor(name, first, target, cancel);
+                };
+            const bool supported = compute->image_vae_convolution_source(
+                shard->tensor_identity(name),
+                source,
+                bias,
+                x.span(),
+                {x.c, x.h, x.w, out, kernel},
+                y->span(),
+                cancel
+            );
+            shard->check_unchanged();
+            stop(cancel);
+            if (supported)
+                return y;
+        }
         // Match the existing CUDA projection planner's maximum 256-row batch. Smaller
         // batches repeat source lookup, device dispatch and synchronization.
         constexpr std::size_t tile = 256;
