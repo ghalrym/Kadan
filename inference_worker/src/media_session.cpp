@@ -499,7 +499,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
     };
 
     std::vector<Migration> migrations;
-    auto retained_error =
+    auto prepare_migrations =
         [&](const MediaResidencyPlan& next) -> std::optional<MediaPlanError> {
         migrations.clear();
         for (const auto& name : m.retained_inputs) {
@@ -545,7 +545,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             return error;
         candidate = &*std::get<MediaPlanError>(result).rejected;
     }
-    if (auto error = retained_error(*candidate))
+    if (auto error = prepare_migrations(*candidate))
         return error;
     if (!m.retained_inputs.empty())
         for (const auto& device : candidate->devices)
@@ -600,7 +600,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         candidate = std::get_if<MediaResidencyPlan>(&result);
         if (!candidate)
             return std::get<MediaPlanError>(result);
-        if (auto error = retained_error(*candidate))
+        if (auto error = prepare_migrations(*candidate))
             return error;
         s.plan = *candidate;
         s.manifest = m;
