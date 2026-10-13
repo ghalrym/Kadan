@@ -146,7 +146,8 @@ void gpt_oss_catalog_units() {
     ModelStore store(
         tmp.path,
         worker_data_directory(),
-        [&](const auto&, const auto&, const auto&, bool) -> std::int64_t {
+        [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+            -> std::int64_t {
             ++transfers;
             throw RequestError("Unexpected checkpoint transfer");
         }
