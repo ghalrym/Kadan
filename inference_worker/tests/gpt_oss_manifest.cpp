@@ -448,6 +448,76 @@ void expert_admission() {
         check(exhausted && small->used() == 0 && !reads);
     }
 }
+
+void routing_admission() {
+    Fixture f;
+    f.build(24, 32);
+    auto metadata = memory(), workspace = memory();
+    Manifest m(f.root.c_str(), metadata);
+    std::array<float, Config::hidden> input{}, output{};
+    std::array<float, 32> logits{};
+    std::atomic_bool cancel{false};
+    unsigned reads = 0;
+    kadan::checkpoint::TensorReader read = [&](auto, auto, auto) {
+        ++reads;
+    };
+    // Pre-read checks only: never call an assembled expert or MoE forward.
+    fails(
+        [&] { routed_experts(m, 24, input, logits, output, workspace, cancel, read); },
+        "gpt_oss_layer"
+    );
+    fails(
+        [&] { routed_experts(m, 0, {}, logits, output, workspace, cancel, read); },
+        "gpt_oss_expert_shape"
+    );
+    fails(
+        [&] { routed_experts(m, 0, input, {}, output, workspace, cancel, read); },
+        "gpt_oss_router_shape"
+    );
+    fails(
+        [&] { routed_experts(m, 0, input, logits, output, {}, cancel, read); },
+        "gpt_oss_payload_budget"
+    );
+    fails(
+        [&] { routed_experts(m, 0, input, logits, input, workspace, cancel, read); },
+        "math_overlap"
+    );
+    fails(
+        [&] {
+            routed_experts(
+                m,
+                0,
+                input,
+                std::span(output).first(32),
+                output,
+                workspace,
+                cancel,
+                read
+            );
+        },
+        "math_overlap"
+    );
+    logits.back() = 1.001F;
+    fails(
+        [&] { routed_experts(m, 0, input, logits, output, workspace, cancel, read); },
+        "gpt_oss_input_bf16"
+    );
+    logits.back() = 0;
+    cancel = true;
+    fails(
+        [&] { routed_experts(m, 0, input, logits, output, workspace, cancel, read); },
+        "gpt_oss_expert_cancelled"
+    );
+    cancel = false;
+    auto small = std::make_shared<kadan::checkpoint::MemoryBudget>(0);
+    bool exhausted = false;
+    try {
+        routed_experts(m, 0, input, logits, output, small, cancel, read);
+    } catch (const std::bad_alloc&) {
+        exhausted = true;
+    }
+    check(exhausted && small->used() == 0 && workspace->used() == 0 && !reads);
+}
 }  // namespace
 
 int main() {
@@ -458,6 +528,7 @@ int main() {
         manifest_rejections();
         multiple_shards();
         expert_admission();
+        routing_admission();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

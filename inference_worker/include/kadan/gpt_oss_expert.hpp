@@ -26,4 +26,40 @@ void expert(
     const std::atomic_bool& cancel,
     const checkpoint::TensorReader& reader = {}
 );
+
+struct Routing {
+    std::array<std::size_t, Config::experts_per_token> indices;
+    std::array<float, Config::experts_per_token> weights;
+};
+
+// Finite BF16 logits for 32 or 128 experts. Select four in descending score
+// order, then softmax only those logits in FP32 and round weights to BF16.
+// Lower expert id breaks exact ties (torch.topk does not guarantee tie order).
+// Rounded weights are not renormalized and need not sum to exactly one.
+Routing route(std::span<const float> logits);
+
+// Four BF16 expert rows [rank,width], weighted in rank order with FP32 FMA
+// accumulation, then one BF16 output rounding. No per-product/per-expert BF16
+// rounding. Width is 1..hidden; weights are finite BF16 in [0,1]. Output is
+// disjoint from both inputs and must be discarded after an exception.
+void weighted_sum(
+    std::span<const float> values,
+    std::span<const float> weights,
+    std::span<float> output
+);
+
+// Consume supplied BF16 router logits and normalized BF16 input. Owns only
+// four selected expert outputs plus the reused bounded expert workspace.
+// No normalization, router projection, residual, or decoder state is implied.
+// No fused-device bit parity; cancellation/failure invalidates partial output.
+void routed_experts(
+    const Manifest& manifest,
+    std::size_t layer,
+    std::span<const float> input,
+    std::span<const float> logits,
+    std::span<float> output,
+    std::shared_ptr<checkpoint::MemoryBudget> workspace,
+    const std::atomic_bool& cancel,
+    const checkpoint::TensorReader& reader = {}
+);
 }  // namespace kadan::gpt_oss

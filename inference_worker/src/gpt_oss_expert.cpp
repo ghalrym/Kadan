@@ -133,4 +133,98 @@ void expert(
     cancelled(cancel);
     manifest.check_unchanged();
 }
+
+Routing route(std::span<const float> logits) {
+    require(logits.size() == 32 || logits.size() == 128, "gpt_oss_router_shape");
+    bf16_input(logits);
+    Routing result{};
+    for (std::size_t rank = 0; rank < Config::experts_per_token; ++rank) {
+        auto selected = logits.size();
+        for (std::size_t candidate = 0; candidate < logits.size(); ++candidate) {
+            const auto end = result.indices.begin() + rank;
+            if (std::find(result.indices.begin(), end, candidate) != end)
+                continue;
+            if (selected == logits.size() || logits[candidate] > logits[selected])
+                selected = candidate;
+        }
+        result.indices[rank] = selected;
+    }
+    const float maximum = logits[result.indices[0]];
+    float total = 0;
+    for (std::size_t rank = 0; rank < Config::experts_per_token; ++rank) {
+        // Negative overflow of the difference represents a zero softmax term.
+        result.weights[rank] = std::exp(logits[result.indices[rank]] - maximum);
+        total += result.weights[rank];
+    }
+    for (float& weight : result.weights)
+        weight = linear::bf16_round(weight / total);
+    return result;
+}
+
+void weighted_sum(
+    std::span<const float> values,
+    std::span<const float> weights,
+    std::span<float> output
+) {
+    require(
+        !output.empty() && output.size() <= Config::hidden
+            && values.size() == Config::experts_per_token * output.size()
+            && weights.size() == Config::experts_per_token,
+        "gpt_oss_sum_shape"
+    );
+    math::detail::output_alias(values, output, false);
+    math::detail::output_alias(weights, output, false);
+    bf16_input(values);
+    bf16_input(weights);
+    for (float weight : weights)
+        require(weight >= 0 && weight <= 1, "gpt_oss_routing_weight");
+    for (std::size_t channel = 0; channel < output.size(); ++channel) {
+        float sum = 0;
+        for (std::size_t rank = 0; rank < Config::experts_per_token; ++rank)
+            sum = std::fma(values[rank * output.size() + channel], weights[rank], sum);
+        output[channel] = linear::bf16_round(sum);
+    }
+}
+
+void routed_experts(
+    const Manifest& manifest,
+    std::size_t layer,
+    std::span<const float> input,
+    std::span<const float> logits,
+    std::span<float> output,
+    std::shared_ptr<checkpoint::MemoryBudget> workspace,
+    const std::atomic_bool& cancel,
+    const checkpoint::TensorReader& reader
+) {
+    require(layer < manifest.config().layers, "gpt_oss_layer");
+    require(
+        input.size() == Config::hidden && output.size() == Config::hidden,
+        "gpt_oss_expert_shape"
+    );
+    require(logits.size() == manifest.config().experts, "gpt_oss_router_shape");
+    require(bool(workspace), "gpt_oss_payload_budget");
+    math::detail::output_alias(input, output, false);
+    math::detail::output_alias(logits, output, false);
+    bf16_input(input);
+    cancelled(cancel);
+    const auto selected = route(logits);
+    std::pmr::vector<float> values(
+        Config::experts_per_token * Config::hidden, workspace.get()
+    );
+    for (std::size_t rank = 0; rank < Config::experts_per_token; ++rank)
+        expert(
+            manifest,
+            layer,
+            selected.indices[rank],
+            input,
+            std::span(values).subspan(rank * Config::hidden, Config::hidden),
+            workspace,
+            cancel,
+            reader
+        );
+    cancelled(cancel);
+    weighted_sum(values, selected.weights, output);
+    cancelled(cancel);
+    manifest.check_unchanged();
+}
 }  // namespace kadan::gpt_oss
