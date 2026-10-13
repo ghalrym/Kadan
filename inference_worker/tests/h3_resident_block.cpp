@@ -134,11 +134,15 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
         std::size_t group,
         float scale
     ) override {
-        check(stream == backend.stream(selected) && group == 64 && scale == 0.5f);
+        check(stream == backend.stream(selected) && group == 64);
         const auto shape =
             kadan::video::validate_h3_convrot(selected, read, write, group);
-        check(shape.rank == 8 && shape.tile >= 4);
-        calls.push_back('c');
+        check(shape.tile >= 4);
+        // AdaLN (m) carries a bias and no adapter; every other projection (c) has
+        // Turbo LoRA.
+        const bool adaln = read.size() == 4;
+        check(adaln ? !shape.rank && scale == 0 : shape.rank == 8 && scale == 0.5f);
+        calls.push_back(adaln ? 'm' : 'c');
         backend.status = 0;
     }
 
@@ -206,8 +210,9 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
     static constexpr std::size_t tokens = 17;
 };
 
-constexpr std::size_t hidden = 64, width = 128, rank = 8, tokens = Launcher::tokens,
-                      groups = 3, heads = 2, head_dim = 128, inner = heads * head_dim;
+constexpr std::size_t time_width = 64, hidden = 64, width = 128, rank = 8,
+                      tokens = Launcher::tokens, groups = 3, heads = 2, head_dim = 128,
+                      inner = heads * head_dim;
 
 struct Identities {
     std::uint64_t inode = 1;
@@ -255,6 +260,12 @@ detail::H3Block block(bool lora) {
     detail::H3Block b;
     b.heads = heads;
     b.head_dim = head_dim;
+    b.time_width = time_width;
+    b.adaln = projection(
+        identity, "blocks.0.adaln_proj.linear", 18 * hidden, time_width, false
+    );
+    b.adaln.bias = "blocks.0.adaln_proj.linear.bias";
+    b.adaln.bias_id = identity(18 * hidden * 2);
     b.ff = feed_forward(identity, lora);
     b.qkv = projection(identity, "blocks.0.attn.qkv_proj", 3 * inner, hidden, lora);
     b.out = projection(identity, "blocks.0.attn.out_proj", hidden, inner, lora);
@@ -388,10 +399,10 @@ void layouts() {
         "h3_silu_layout"
     );
 
-    // Residual and normalization share the [groups * 6, hidden] modulation.
+    // Residual and normalization share the [timesteps, 18 * hidden] AdaLN table.
     auto rows_hidden = span(DeviceDType::f32, {rows, hidden}, 4);
     auto projected = span(DeviceDType::f32, {rows, hidden}, 4);
-    auto modulation = span(DeviceDType::f32, {groups * 6, hidden}, 4);
+    auto modulation = span(DeviceDType::f32, {groups / 3, 18 * hidden}, 4);
     auto token_groups = span(DeviceDType::u32, {tokens}, 4);
     const std::vector residual_read{rows_hidden, projected, modulation, token_groups};
     const std::vector residual_write{rows_hidden, status};
@@ -417,7 +428,7 @@ void layouts() {
         },
         "h3_residual_layout"
     );
-    auto partial = span(DeviceDType::f32, {groups * 6 - 1, hidden}, 4);
+    auto partial = span(DeviceDType::f32, {groups / 3, 18 * hidden - 1}, 4);
     rejects(
         [&] {
             const std::vector read{rows_hidden, projected, partial, token_groups};
@@ -562,7 +573,14 @@ void manifests() {
         check(resident && resident->devices.size() == 1 && resident->rows == tokens);
 
         const auto b = block(lora);
-        const auto full = detail::h3_block_manifest(b, tokens, groups);
+        const auto full = detail::h3_block_manifest(b, tokens, groups, false);
+        check(full.retained_inputs.empty());
+        check(
+            detail::h3_block_manifest(b, tokens, groups, true).retained_inputs
+            == (std::vector<std::string>{
+                "resident/hidden", "block/token-groups", "block/rotary", "block/time"
+            })
+        );
         check(full.schedule == kadan::MediaSchedule::full_block);
         for (const auto& tensor : full.tensors) {
             if (tensor.name == "attention/scores")
@@ -572,7 +590,16 @@ void manifests() {
             if (tensor.name == "attention/wide")
                 check(tensor.bytes == 4 * tokens * inner * sizeof(double));
         }
-        check(full.weights.size() == 4 + (lora ? 16u : 8u));
+        check(full.weights.size() == 4 + (lora ? 16u : 8u) + 3);
+        const auto adaln =
+            std::find_if(full.weights.begin(), full.weights.end(), [&](auto& w) {
+                return w.name == b.adaln.weight;
+            });
+        check(
+            adaln != full.weights.end() && adaln->rows == 18 * hidden
+            && adaln->columns == time_width
+            && adaln->partition == kadan::WeightPartition::replicated
+        );
         const auto qkv =
             std::find_if(full.weights.begin(), full.weights.end(), [&](auto& w) {
                 return w.name == b.qkv.weight;
@@ -596,9 +623,18 @@ struct Run {
     std::vector<std::string> calls;
     std::vector<std::vector<std::size_t>> residual_index, normalize_shift;
     std::size_t peers = 0, downloads = 0;
+    kadan::Bytes first_inputs = 0, inputs = 0;
 };
 
-Run run(kadan::Bytes budget, std::vector<int> ids, bool full, bool fail = false) {
+// Full blocks run `blocks` admissions in one session; later ones retain hidden,
+// token groups, rotary and time, and hidden is downloaded once at the end.
+Run run(
+    kadan::Bytes budget,
+    std::vector<int> ids,
+    bool full,
+    bool fail = false,
+    std::size_t blocks = 1
+) {
     std::atomic_bool cancel = false;
     auto resources = std::make_shared<kadan::Resources>(
         kadan::Footprint{1ULL << 30, budget, budget}
@@ -619,31 +655,34 @@ Run run(kadan::Bytes budget, std::vector<int> ids, bool full, bool fail = false)
         cancel
     );
     const auto b = block(true);
-    check(
-        !(full ? session.admit(
-                     detail::h3_block_manifest(b, tokens, groups),
-                     detail::h3_block_shape(b, tokens)
-                 )
-               : session.admit(
-                     detail::h3_feed_forward_manifest(b.ff, tokens, groups),
-                     detail::h3_feed_forward_shape(b.ff, tokens)
-                 ))
-    );
-    for (const auto& slice : session.plan().weights) {
-        auto view = session.weight(slice);
-        std::vector<std::byte> raw(slice.stored_bytes);
-        session.upload_weight(view, raw);
-    }
+    auto admit = [&](bool retained) {
+        check(
+            !(full ? session.admit(
+                         detail::h3_block_manifest(b, tokens, groups, retained),
+                         detail::h3_block_shape(b, tokens)
+                     )
+                   : session.admit(
+                         detail::h3_feed_forward_manifest(b.ff, tokens, groups),
+                         detail::h3_feed_forward_shape(b.ff, tokens)
+                     ))
+        );
+        for (const auto& slice : session.plan().weights) {
+            auto view = session.weight(slice);
+            if (session.ready(view))
+                continue;
+            std::vector<std::byte> raw(slice.stored_bytes);
+            session.upload_weight(view, raw);
+        }
+    };
+    admit(false);
     std::vector<float> normalized(tokens * hidden), state(tokens * hidden, 1.f),
-        modulation(groups * 6 * hidden);
+        modulation(groups * 6 * hidden), time(groups / 3 * time_width);
     std::vector<double> rotary(tokens * 96);
     std::vector<std::uint32_t> token_groups(tokens);
     for (std::size_t t = 0; t < tokens; ++t)
         token_groups[t] = std::uint32_t(t % groups);
     if (full)
-        detail::upload_h3_block_inputs(
-            session, b, state, modulation, token_groups, rotary
-        );
+        detail::upload_h3_block_inputs(session, b, state, time, token_groups, rotary);
     else
         detail::upload_h3_feed_forward_inputs(
             session, b.ff, normalized, state, modulation, token_groups
@@ -659,10 +698,16 @@ Run run(kadan::Bytes budget, std::vector<int> ids, bool full, bool fail = false)
     result.rows = session.plan().rows;
     result.queries = session.plan().queries;
     result.devices = session.plan().devices.size();
+    result.first_inputs = session.transfers().input_upload;
     try {
-        if (full)
-            detail::execute_h3_block(session, launchers, b, tokens, state, cancel);
-        else
+        if (full) {
+            for (std::size_t block = 0; block < blocks; ++block) {
+                if (block)
+                    admit(true);
+                detail::execute_h3_block(session, launchers, b, tokens, cancel);
+            }
+            detail::download_h3_hidden(session, hidden, state);
+        } else
             detail::execute_h3_feed_forward(
                 session, launchers, b.ff, tokens, state, cancel
             );
@@ -679,6 +724,7 @@ Run run(kadan::Bytes budget, std::vector<int> ids, bool full, bool fail = false)
     }
     result.peers = device.peers;
     result.downloads = device.downloads;
+    result.inputs = session.transfers().input_upload;
     // The downloaded hidden is the uploaded baseline; launchers never wrote it.
     for (float v : state)
         check(v == 1.f);
@@ -727,15 +773,29 @@ void orchestration() {
     auto whole = run(64 << 20, {0}, true);
     check(whole.devices == 1 && whole.rows == tokens && whole.queries == tokens);
     check(whole.key_tile == tokens);
-    check(whole.calls == std::vector<std::string>{"ncqcncqacrnccscr"});
+    check(whole.calls == std::vector<std::string>{"mncqcncqacrnccscr"});
     check(whole.residual_index[0] == (std::vector<std::size_t>{2, 5}));
     check(whole.normalize_shift[0] == (std::vector<std::size_t>{0, 0, 3}));
     check(whole.peers == 0 && whole.downloads == 1);
 
+    // Consecutive blocks retain hidden and the step inputs: no further input
+    // upload, AdaLN recomputed per block, and one hidden download at the end.
+    auto retained = run(64 << 20, {0}, true, false, 3);
+    check(
+        retained.calls
+        == std::vector<std::string>{std::string(
+            "mncqcncqacrnccscr"
+            "mncqcncqacrnccscr"
+            "mncqcncqacrnccscr"
+        )}
+    );
+    check(retained.inputs == retained.first_inputs && retained.inputs > 0);
+    check(retained.downloads == 1);
+
     // Two devices split heads for Q/K/V and attention, gathering attention
     // outputs before out_proj and every channel-split projection after it.
     auto heads_split = split(true);
-    const auto expected = repeat("ncqc", heads_split.rows)
+    const auto expected = "m" + repeat("ncqc", heads_split.rows)
                           + repeat("ncqacr", heads_split.queries)
                           + repeat("nccscr", heads_split.rows);
     check(heads_split.calls == std::vector<std::string>(2, expected));
@@ -766,7 +826,7 @@ void cleanup() {
             );
             const auto b = block(true);
             check(!session.admit(
-                full ? detail::h3_block_manifest(b, tokens, groups)
+                full ? detail::h3_block_manifest(b, tokens, groups, false)
                      : detail::h3_feed_forward_manifest(b.ff, tokens, groups),
                 full ? detail::h3_block_shape(b, tokens)
                      : detail::h3_feed_forward_shape(b.ff, tokens)
