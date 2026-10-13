@@ -43,7 +43,7 @@ int main() {
         const auto vae = aten_stage_workspace(AtenImageStage::vae, 16384, 2034);
         check(text > 2 * gib && 17 * gib + text < 24 * gib);
         check(denoiser > 4 * gib && 14 * gib + denoiser < 24 * gib);
-        check(vae == 15 * gib + gib / 2 && 2 * gib + vae < 24 * gib);
+        check(vae == 20 * gib && 2 * gib + vae < 24 * gib);
         // Regression: the observed 7.74 GiB live + 2.31 GiB cached + next
         // 4.50 GiB convolution exceeded the old 14.22 GiB weight+stage cap.
         check(gib + vae > 15 * gib);

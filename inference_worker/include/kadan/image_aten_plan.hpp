@@ -42,9 +42,11 @@ inline Bytes aten_stage_workspace(AtenImageStage stage, Bytes points, Bytes toke
         // 4.50 GiB at 2048x2048 (also the observed failed convolution allocation).
         // Its shortcut reshape can hold three such buffers at once. Normalization
         // and residual updates reuse owned outputs; the shortcut releases its
-        // source before reshaping. Keep 2 GiB for library scratch/allocator slack.
+        // source before reshaping. Allow one more largest buffer for cached/split
+        // allocator blocks (the failure retained 2.31 GiB), separately from the
+        // existing 2 GiB library scratch allowance.
         const auto largest_activation = points * 256 * 288 * 4;
-        return 2 * gib + 3 * largest_activation;
+        return 2 * gib + 4 * largest_activation;
     }
     throw std::invalid_argument("image_aten_stage");
 }
