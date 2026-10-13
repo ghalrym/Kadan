@@ -802,28 +802,13 @@ __global__ void pack_image_attention(
     }
 }
 
-// K and V use the same source coordinates and are consumed together on this stream.
-__global__ void pack_image_key_value(
-    const float* key,
-    const float* value,
-    float* packed_key,
-    float* packed_value,
-    unsigned rows,
-    unsigned state,
-    unsigned dim,
-    unsigned first,
-    unsigned head,
-    unsigned* status
+// Check all resident K/V, including masked keys, before direct strided GEMMs.
+__global__ void check_image_key_value(
+    const float* key, const float* value, unsigned count, unsigned* status
 ) {
     const auto i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < rows * dim) {
-        const auto source = (first + i / dim) * state + head * dim + i % dim;
-        const float k = key[source], v = value[source];
-        if (!isfinite(k) || !isfinite(v))
-            atomicOr(status, 2U);
-        packed_key[i] = k;
-        packed_value[i] = v;
-    }
+    if (i < count && (!isfinite(key[i]) || !isfinite(value[i])))
+        atomicOr(status, 2U);
 }
 
 __global__ void scatter_image_attention(
@@ -2813,6 +2798,14 @@ void CudaBf16Projection::masked_attention(
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
     const auto tokens = inputs[0].dimensions[0];
     const ImageAttentionScratch layout(tokens, head_dim);
+    const auto* key_source = static_cast<const float*>(inputs[1].data);
+    const auto* value_source = static_cast<const float*>(inputs[2].data);
+    check_image_key_value<<<
+        unsigned((tokens * shape.in + 255) / 256),
+        256,
+        0,
+        owned_stream>>>(key_source, value_source, unsigned(tokens * shape.in), status);
+    checked(cudaGetLastError());
     auto at = [&](Bytes offset) {
         return reinterpret_cast<float*>(
             static_cast<std::byte*>(outputs[1].data) + offset
@@ -2860,23 +2853,7 @@ void CudaBf16Projection::masked_attention(
                 for (std::size_t key = 0; key < tokens; key += layout.keys) {
                     require(!cancel.load(), "h3_cuda_cancelled");
                     const auto keys = std::min(layout.keys, tokens - key);
-                    pack_image_key_value<<<
-                        unsigned((keys * head_dim + 255) / 256),
-                        256,
-                        0,
-                        owned_stream>>>(
-                        static_cast<const float*>(inputs[1].data),
-                        static_cast<const float*>(inputs[2].data),
-                        at(layout.k),
-                        at(layout.v),
-                        unsigned(keys),
-                        unsigned(shape.in),
-                        unsigned(head_dim),
-                        unsigned(key),
-                        unsigned(head),
-                        status
-                    );
-                    checked(cudaGetLastError());
+                    const auto source = key * shape.in + head * head_dim;
                     checked(
                         gemm<float>(
                             handle,
@@ -2886,8 +2863,8 @@ void CudaBf16Projection::masked_attention(
                             int(shape.rows),
                             int(head_dim),
                             scale,
-                            at(layout.k),
-                            int(head_dim),
+                            key_source + source,
+                            int(shape.in),
                             at(layout.q),
                             int(head_dim),
                             zero,
@@ -2918,8 +2895,8 @@ void CudaBf16Projection::masked_attention(
                             int(shape.rows),
                             int(keys),
                             one,
-                            at(layout.v),
-                            int(head_dim),
+                            value_source + source,
+                            int(shape.in),
                             at(layout.scores),
                             int(keys),
                             one,

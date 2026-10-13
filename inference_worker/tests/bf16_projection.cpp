@@ -161,7 +161,14 @@ int main() {
     };
     const ImageAttentionScratch attention_layout(131, 32);
     check(attention_layout.queries == 128 && attention_layout.keys == 131);
-    check(ImageAttentionScratch(32768, 128).keys == 4096);
+    const ImageAttentionScratch full_attention_layout(32768, 128);
+    check(full_attention_layout.keys == 4096);
+    check(full_attention_layout.queries == 128);
+    check(full_attention_layout.bytes == 2229248);
+    check(ImageAttentionScratch(16409, 128).bytes == full_attention_layout.bytes);
+    const ImageAttentionScratch single_attention_layout(1, 1);
+    check(single_attention_layout.queries == 1 && single_attention_layout.keys == 1);
+    check(single_attention_layout.bytes == 5 * 256);
     auto attention = std::array{
         attention_span(0x10000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
         attention_span(0x20000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
@@ -237,6 +244,10 @@ int main() {
             rejects_attention();
         }
     }
+    // The removed packed K/V allocation is no longer part of the scratch contract.
+    attention[4].bytes += 2 * ((131 * 32 * sizeof(float) + 255) / 256 * 256);
+    attention[4].dimensions[0] = attention[4].bytes;
+    rejects_attention();
     attention[2].dimensions[0] = 130;
     rejects_attention();
     attention[3].dimensions[0] = 4;

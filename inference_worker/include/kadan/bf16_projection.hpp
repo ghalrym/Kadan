@@ -437,11 +437,11 @@ inline Bf16ProjectionShape validate_image_rotary(
 }
 
 // One head at a time, using the existing attention query/key tile sizes.
-// F32 packed Q/K/V, accumulated rows, scores, maxima and totals share one
+// F32 packed Q, accumulated rows, scores, maxima and totals share one
 // admitted allocation; cuBLAS uses the existing resident workspace separately.
 struct ImageAttentionScratch {
     std::size_t queries, keys;
-    Bytes q, k, v, output, scores, maximum, total, bytes;
+    Bytes q, output, scores, maximum, total, bytes;
 
     ImageAttentionScratch(std::size_t tokens, std::size_t dim) {
         if (!tokens || tokens > 32768 || !dim || dim > 128)
@@ -455,8 +455,6 @@ struct ImageAttentionScratch {
             return offset;
         };
         q = add(queries * dim);
-        k = add(keys * dim);
-        v = add(keys * dim);
         output = add(queries * dim);
         scores = add(queries * keys);
         maximum = add(queries);
