@@ -17,6 +17,7 @@ router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 
 
 class CompletionMessage(ChatMessage):
+    model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, validation_alias=AliasChoices("text", "content"))
 
 
