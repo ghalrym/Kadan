@@ -48,4 +48,9 @@ std::vector<float> decode_rows(
 std::vector<float> matvec(
     const Matrix& matrix, std::span<const float> input, std::size_t max_output_bytes
 );
+// Same numerical reference in caller-admitted output, with no allocation.
+// Output must not overlap any input storage; discard it after an exception.
+void matvec(
+    const Matrix& matrix, std::span<const float> input, std::span<float> output
+);
 }  // namespace kadan::quantization

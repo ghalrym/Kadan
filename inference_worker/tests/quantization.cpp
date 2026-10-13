@@ -266,6 +266,40 @@ void mxfp4_extremes() {
     scales[0] = 253;
     fails<std::overflow_error>([&] { decode_rows(m, 0, 1, 128); }, "nonfinite_result");
 }
+
+void caller_output() {
+    std::array<std::uint8_t, 32> packed{};
+    packed.fill(0xA2);
+    const std::array<std::uint8_t, 2> scales{127, 129};
+    Matrix m{Encoding::mxfp4, 2, 32, packed, scales, {}};
+    std::array<float, 32> input{};
+    input[0] = 3;
+    input[1] = 1;
+    std::array<float, 2> output{};
+    matvec(m, input, output);
+    check(output == std::array<float, 2>{2, 8});
+    check(matvec(m, input, 8) == std::vector<float>({2, 8}));
+    fails([&] { matvec(m, input, std::span(output).first(1)); }, "output_shape");
+    fails([&] { matvec(m, std::span(input).first(31), output); }, "input_shape");
+    fails([&] { matvec(m, input, std::span(input).first(2)); }, "output_overlap");
+    input.back() = std::numeric_limits<float>::infinity();
+    fails([&] { matvec(m, input, output); }, "nonfinite_input");
+    check(output == std::array<float, 2>{2, 8});
+    input.back() = 0;
+    std::array<float, 8> storage{};
+    auto bytes =
+        std::span(reinterpret_cast<std::uint8_t*>(storage.data()), sizeof(storage));
+    auto aliased = m;
+    aliased.weights = bytes;
+    fails(
+        [&] { matvec(aliased, input, std::span(storage).first(2)); }, "output_overlap"
+    );
+    aliased = m;
+    aliased.block_scales = bytes.first(2);
+    fails(
+        [&] { matvec(aliased, input, std::span(storage).first(2)); }, "output_overlap"
+    );
+}
 }  // namespace
 
 int main() {
@@ -277,6 +311,7 @@ int main() {
         fp8();
         mxfp4();
         mxfp4_extremes();
+        caller_output();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
