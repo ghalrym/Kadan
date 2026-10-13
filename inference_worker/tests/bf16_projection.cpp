@@ -5,6 +5,8 @@
 #include <iostream>
 #include <limits>
 
+#include "kadan/dense_compute.hpp"
+
 using namespace kadan;
 using namespace kadan::video;
 
@@ -82,6 +84,126 @@ int main() {
             rejects();
         }
     }
+    // Attention contract and tile tails, without reading activations.
+    alignas(256) static std::array<std::byte, 10 * 1024 * 1024> attention_storage;
+    auto attention_span = [&](std::size_t offset,
+                              DeviceDType type,
+                              std::vector<std::size_t> dimensions,
+                              std::vector<std::size_t> strides,
+                              Bytes bytes) {
+        return MediaDeviceSpan{
+            attention_storage.data() + offset, 0, type, dimensions, strides, bytes, 1, 0
+        };
+    };
+    const ImageAttentionScratch attention_layout(131, 32);
+    check(attention_layout.queries == 128 && attention_layout.keys == 131);
+    check(ImageAttentionScratch(32768, 128).keys == 4096);
+    auto attention = std::array{
+        attention_span(0x10000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x20000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x30000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x40000, DeviceDType::f32, {3, 64}, {64, 1}, 3 * 64 * 4),
+        attention_span(
+            0x50000,
+            DeviceDType::u8,
+            {attention_layout.bytes},
+            {1},
+            attention_layout.bytes
+        ),
+        attention_span(
+            0x100000,
+            DeviceDType::u8,
+            {bf16_projection_workspace_bytes},
+            {1},
+            bf16_projection_workspace_bytes
+        ),
+        attention_span(0x900000, DeviceDType::u32, {1}, {1}, 4)
+    };
+    auto attention_heads = std::size_t(2), attention_dim = std::size_t(32),
+         attention_text = std::size_t(3), attention_first = std::size_t(128);
+    auto validate_masked_attention = [&] {
+        return validate_image_masked_attention(
+            0,
+            attention[0],
+            attention[1],
+            attention[2],
+            attention[3],
+            attention[4],
+            attention[5],
+            attention[6],
+            attention_heads,
+            attention_dim,
+            attention_text,
+            attention_first
+        );
+    };
+    check(validate_masked_attention().rows == 3);
+    const auto masked_original = attention;
+    auto rejects_attention = [&] {
+        bool rejected = false;
+        try {
+            validate_masked_attention();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        attention = masked_original;
+        attention_heads = 2;
+        attention_dim = 32;
+        attention_text = 3;
+        attention_first = 128;
+    };
+    for (std::size_t i = 0; i < attention.size(); ++i) {
+        attention[i].device = 1;
+        rejects_attention();
+        attention[i].data = nullptr;
+        rejects_attention();
+        --attention[i].bytes;
+        rejects_attention();
+        attention[i].dtype = DeviceDType::f64;
+        rejects_attention();
+        attention[i].strides.back() = 2;
+        rejects_attention();
+        attention[i].offset = SIZE_MAX;
+        rejects_attention();
+        attention[i].data = attention_storage.data() + 1;
+        rejects_attention();
+        for (std::size_t j = 0; j < i; ++j) {
+            attention[i].data = attention[j].data;
+            rejects_attention();
+        }
+    }
+    attention[2].dimensions[0] = 130;
+    rejects_attention();
+    attention[3].dimensions[0] = 4;
+    attention[3].bytes = 4 * 64 * 4;
+    rejects_attention();
+    attention[3].data = static_cast<std::byte*>(attention[0].data) + 4;
+    rejects_attention();
+    attention_heads = 0;
+    rejects_attention();
+    attention_heads = 33;
+    rejects_attention();
+    attention_dim = 0;
+    rejects_attention();
+    attention_dim = 129;
+    rejects_attention();
+    attention_text = 0;
+    rejects_attention();
+    attention_text = 132;
+    rejects_attention();
+    attention_first = 131;
+    rejects_attention();
+    attention_first = 0;
+    attention[3].dimensions[0] = 129;
+    attention[3].bytes = 129 * 64 * 4;
+    rejects_attention();
+    // Shared visibility rule used by both CUDA attention paths.
+    for (std::size_t query = 0; query < 131; ++query)
+        for (std::size_t key = 0; key < 131; ++key)
+            check(
+                attention_visible(query, key, 3, 0, 0) == (query >= 3 || key <= query)
+            );
     // Partially overlapping, naturally aligned output must also be rejected.
     spans[4].data = storage.data() + 0x1004;
     rejects();

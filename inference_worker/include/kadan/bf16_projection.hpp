@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cmath>
@@ -435,6 +436,102 @@ inline Bf16ProjectionShape validate_image_rotary(
     return {rows, state, state};
 }
 
+// One head at a time, using the existing attention query/key tile sizes.
+// F32 packed Q/K/V, accumulated rows, scores, maxima and totals share one
+// admitted allocation; cuBLAS uses the existing resident workspace separately.
+struct ImageAttentionScratch {
+    std::size_t queries, keys;
+    Bytes q, k, v, output, scores, maximum, total, bytes;
+
+    ImageAttentionScratch(std::size_t tokens, std::size_t dim) {
+        if (!tokens || tokens > 32768 || !dim || dim > 128)
+            throw std::invalid_argument("image_attention_layout");
+        queries = std::min<std::size_t>(128, tokens);
+        keys = std::min<std::size_t>(4096, tokens);
+        bytes = 0;
+        auto add = [&](std::size_t values) {
+            const auto offset = bytes;
+            bytes += (values * sizeof(float) + 255) / 256 * 256;
+            return offset;
+        };
+        q = add(queries * dim);
+        k = add(keys * dim);
+        v = add(keys * dim);
+        output = add(queries * dim);
+        scores = add(queries * keys);
+        maximum = add(queries);
+        total = add(queries);
+    }
+};
+
+// Full certified Q/K/V feed a disjoint attended query tile.
+inline Bf16ProjectionShape validate_image_masked_attention(
+    int device,
+    const MediaDeviceSpan& q,
+    const MediaDeviceSpan& k,
+    const MediaDeviceSpan& v,
+    const MediaDeviceSpan& attended,
+    const MediaDeviceSpan& scratch,
+    const MediaDeviceSpan& workspace,
+    const MediaDeviceSpan& status,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t text,
+    std::size_t first
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_attention_layout");
+    };
+    require(q.dimensions.size() == 2 && attended.dimensions.size() == 2);
+    const auto tokens = q.dimensions[0], state = q.dimensions[1];
+    require(heads && heads <= 32 && head_dim && head_dim <= 128);
+    require(state == heads * head_dim && tokens && tokens <= 32768);
+    require(text && text <= 2048 && text <= tokens && first < tokens);
+    const ImageAttentionScratch layout(tokens, head_dim);
+    const auto rows = attended.dimensions[0];
+    require(rows && rows <= layout.queries && rows <= tokens - first);
+    for (const auto* span : {&q, &k, &v, &attended}) {
+        const auto count = span == &attended ? rows : tokens;
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{count, state}
+            && span->strides == std::vector<std::size_t>{state, 1}
+            && span->bytes == count * state * sizeof(float)
+        );
+    }
+    for (const auto* span : {&scratch, &workspace}) {
+        const auto bytes =
+            span == &scratch ? layout.bytes : bf16_projection_workspace_bytes;
+        require(
+            span->dtype == DeviceDType::u8
+            && span->dimensions == std::vector<std::size_t>{bytes}
+            && span->strides == std::vector<std::size_t>{1} && span->bytes == bytes
+        );
+    }
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&q, &k, &v, &attended, &scratch, &workspace, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::u8 ? 256u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
 // Final image rows exclude text; scale is the actual target norm_out projection.
 inline Bf16ProjectionShape validate_image_final_normalization(
     int device,
@@ -539,6 +636,17 @@ public:
         std::size_t height,
         std::size_t width
     ) = 0;
+    // Inputs [full-Q,full-K,full-V]; outputs [attended-tile,scratch,BLAS,status].
+    virtual void masked_attention(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t heads,
+        std::size_t head_dim,
+        std::size_t text,
+        std::size_t first,
+        const std::atomic_bool& cancel
+    ) = 0;
     // Same spans as standard; tanh-approximate GELU follows projection in place.
     virtual void text_projection(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
@@ -624,6 +732,16 @@ public:
         std::size_t,
         std::size_t,
         std::size_t
+    ) override;
+    void masked_attention(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        const std::atomic_bool&
     ) override;
     void text_projection(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>

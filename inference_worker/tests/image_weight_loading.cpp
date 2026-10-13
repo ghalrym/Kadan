@@ -211,6 +211,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::uint64_t ingress_hidden_generation = 0;
     std::map<std::string, kadan::MediaDeviceSpan> ingress_weights;
     std::vector<std::size_t> text_rows, image_rows;
+    std::size_t tokens = 17;
     bool qkv = false;
     std::size_t qkv_projection = 0;
     char fail_qkv = 0, cancel_qkv_stage = 0;
@@ -222,6 +223,11 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::map<char, kadan::MediaDeviceSpan> rotary_norms;
     char fail_rotary = 0, cancel_rotary_stage = 0;
     std::vector<char> rotary_calls;
+    bool fail_masked_attention = false;
+    std::atomic_bool* cancel_masked_attention = nullptr;
+    std::vector<std::size_t> attended_first, attended_rows;
+    void* produced_attended = nullptr;
+    std::uint64_t produced_attended_generation = 0;
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
@@ -516,7 +522,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
                         == qkv_outputs.at(stage).data
                     && write[0].generation == qkv_outputs.at(stage).generation
                 );
-            if (row == 16)
+            if (row + 1 == tokens)
                 ++qkv_projection;
             calls.push_back(stage);
             backend.status = fail_qkv == stage ? 1 : 0;
@@ -526,7 +532,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         }
         if (!calls.empty() && calls.back() == 'z') {
             check(
-                read[0].dimensions == std::vector<std::size_t>{14, 64}
+                read[0].dimensions == std::vector<std::size_t>{tokens - 3, 64}
                 && read[0].offset == 0 && read[0].data == final_normalized
                 && read[0].generation == final_normalized_generation
             );
@@ -536,8 +542,8 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
                 && read[1].generation == output_weight_generation
             );
             check(
-                write[0].dimensions == std::vector<std::size_t>{14, channels}
-                && write[1].dimensions == std::vector<std::size_t>{14, 64}
+                write[0].dimensions == std::vector<std::size_t>{tokens - 3, channels}
+                && write[1].dimensions == std::vector<std::size_t>{tokens - 3, 64}
             );
             calls.push_back('v');
             backend.status = fail_velocity ? 1 : 0;
@@ -585,6 +591,12 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         check(std::all_of(calls.begin(), calls.end(), [](char c) {
             return c == 'o' || c == 'f' || c == 'l' || c == 't' || c == 'm';
         }));
+        if (produced_attended)
+            check(
+                static_cast<std::byte*>(read[0].data) - read[0].offset
+                    == produced_attended
+                && read[0].generation == produced_attended_generation
+            );
         attended = static_cast<std::byte*>(read[0].data) - read[0].offset;
         attended_generation = read[0].generation;
         projection_first.push_back(read[0].offset / (read[0].dimensions[1] * 4));
@@ -607,7 +619,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         check(
             heads == 2 && head_dim == 32
             && axes == std::array<std::size_t, 3>{8, 12, 12} && text == 3 && height == 2
-            && width == 7
+            && width == (tokens - 3) / 2
         );
         kadan::video::validate_image_rotary(
             selected,
@@ -638,6 +650,58 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             cancel_qkv->store(true);
     }
 
+    void masked_attention(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write,
+        std::size_t heads,
+        std::size_t head_dim,
+        std::size_t text,
+        std::size_t first,
+        const std::atomic_bool& cancellation
+    ) override {
+        check(!cancellation.load() && read.size() == 3 && write.size() == 4);
+        check(rotary_calls == std::vector<char>{'q', 'k'});
+        kadan::video::validate_image_masked_attention(
+            selected,
+            read[0],
+            read[1],
+            read[2],
+            write[0],
+            write[1],
+            write[2],
+            write[3],
+            heads,
+            head_dim,
+            text,
+            first
+        );
+        check(heads == 2 && head_dim == 32 && text == 3);
+        const std::array stages{'q', 'k', 'v'};
+        for (std::size_t i = 0; i < stages.size(); ++i) {
+            const auto& producer = qkv_outputs.at(stages[i]);
+            check(
+                read[i].data == producer.data
+                && read[i].generation == producer.generation
+            );
+            check(read[i].dimensions == std::vector<std::size_t>{tokens, 64});
+        }
+        attended_first.push_back(first);
+        attended_rows.push_back(write[0].dimensions[0]);
+        const auto pointer = static_cast<std::byte*>(write[0].data) - write[0].offset;
+        if (produced_attended)
+            check(
+                pointer == produced_attended
+                && write[0].generation == produced_attended_generation
+            );
+        produced_attended = pointer;
+        produced_attended_generation = write[0].generation;
+        check(write[0].offset == first * 64 * sizeof(float));
+        backend.status = fail_masked_attention ? 1 : 0;
+        if (cancel_masked_attention)
+            cancel_masked_attention->store(true);
+    }
+
     void attention_residual(
         void*,
         std::span<const kadan::MediaDeviceSpan> read,
@@ -655,7 +719,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
                 && read[0].generation == ingress_hidden_generation
             );
         check(read[1].data == attended && read[1].generation == attended_generation);
-        check(read[1].dimensions == std::vector<std::size_t>{17, 64});
+        check(read[1].dimensions == std::vector<std::size_t>{tokens, 64});
         if (modulation)
             check(
                 read[2].data == modulation
@@ -714,7 +778,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             selected, read[0], read[1], write[0], write[1]
         );
         check(
-            read[0].dimensions == std::vector<std::size_t>{14, 64}
+            read[0].dimensions == std::vector<std::size_t>{tokens - 3, 64}
             && read[0].offset == 3 * 64 * 4
         );
         check(
@@ -725,7 +789,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             read[1].data == final_scale
             && read[1].dimensions == std::vector<std::size_t>{1, 64}
         );
-        check(write[0].dimensions == std::vector<std::size_t>{14, 64});
+        check(write[0].dimensions == std::vector<std::size_t>{tokens - 3, 64});
         final_normalized = write[0].data;
         final_normalized_generation = write[0].generation;
         calls.push_back('z');
@@ -1792,6 +1856,282 @@ int main() {
               RotaryScenario::invalid_geometry,
               RotaryScenario::shorter_sequence})
             rotary_case(scenario, two_devices);
+    enum class AttentionScenario {
+        complete,
+        query_tail,
+        failed_status,
+        cancelled,
+        missing_q,
+        missing_k,
+        missing_v,
+        missing_launcher,
+        duplicate_launcher,
+        null_launcher,
+        wrong_device,
+        invalid_text,
+        invalid_tokens,
+        shorter_sequence
+    };
+    auto attention_case = [&](AttentionScenario scenario, bool two_devices) {
+        const std::size_t tokens = scenario == AttentionScenario::query_tail ? 131 : 17;
+        const auto budget = conditioning_budget + 40000 + (tokens - 17) * 3072
+                            + kadan::video::ImageAttentionScratch(tokens, 32).bytes
+                            - kadan::video::ImageAttentionScratch(17, 32).bytes;
+        auto resources = std::make_shared<kadan::Resources>(
+            two_devices ? kadan::Footprint{128 * 1024 * 1024, budget, budget}
+                        : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+        );
+        kadan::image::Denoiser attention_denoiser(
+            resources, std::make_shared<Compute>()
+        );
+        auto attention_config = config;
+        attention_config.context = 96;
+        attention_config.channels = 32;
+        attention_config.block.heads = 2;
+        attention_config.block.head_dim = 32;
+        attention_config.block.axes = {8, 12, 12};
+        write_weights(
+            directory,
+            false,
+            64,
+            512,
+            {.denoiser = true,
+             .norm_f32 = !two_devices,
+             .norm_q_f32 = scenario == AttentionScenario::complete,
+             .norm_k_f32 = scenario == AttentionScenario::complete,
+             .head_dim = 32,
+             .context = 96,
+             .channels = 32}
+        );
+        attention_denoiser.load(directory, files, attention_config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = two_devices ? budget : 32 * 1024 * 1024;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            two_devices ? std::vector<kadan::MediaDeviceLimit>{{0}, {1}}
+                        : std::vector<kadan::MediaDeviceLimit>{{0}},
+            cancel
+        );
+        if (const auto error = attention_denoiser.prepare_feed_forward(
+                resident, 0, tokens, HiddenBoundary::pre_qkv, cancel
+            ))
+            throw std::runtime_error("attention_admission:" + error->detail);
+        check(resident.plan().devices.size() == (two_devices ? 2 : 1));
+        Launcher first(metadata, 0), second(metadata, 1);
+        std::vector<Launcher*> qkv_launchers{&first};
+        std::vector<kadan::video::ImageFeedForwardLauncher*> launchers{&first};
+        if (two_devices) {
+            qkv_launchers.push_back(&second);
+            launchers.push_back(&second);
+        }
+        for (auto* launcher : qkv_launchers) {
+            launcher->tokens = tokens;
+            launcher->ingress = true;
+            launcher->ingress_context = 96;
+            launcher->channels = 32;
+            launcher->expect_ingress_weights(resident);
+        }
+        std::vector<float> latent((tokens - 3) * 32), condition(3 * 96);
+        attention_denoiser.execute_ingress(
+            resident, latent, condition, 3, launchers, cancel
+        );
+        check(
+            resident.transfers().input_upload
+            == (latent.size() + condition.size()) * 4 * launchers.size()
+        );
+        for (auto* launcher : qkv_launchers) {
+            auto hidden = resident.tensor(
+                launcher->device(),
+                "resident/hidden",
+                kadan::DeviceDType::f32,
+                {tokens, 64},
+                {64, 1}
+            );
+            check(
+                resident.ready(hidden)
+                && hidden.layout().data == launcher->ingress_hidden
+                && hidden.layout().generation == launcher->ingress_hidden_generation
+            );
+            launcher->ingress = false;
+            launcher->qkv = true;
+            launcher->calls.clear();
+            launcher->cancel_qkv = &cancel;
+            launcher->expect_qkv_weights(resident);
+        }
+        attention_denoiser.execute_qkv(
+            resident, 0, tokens, 3, .625f, launchers, cancel
+        );
+        for (auto* launcher : qkv_launchers)
+            for (char stage : {'q', 'k', 'v'}) {
+                auto value = resident.tensor(
+                    launcher->device(),
+                    std::string("attention/") + stage,
+                    kadan::DeviceDType::f32,
+                    {tokens, 64},
+                    {64, 1}
+                );
+                const auto& producer = launcher->qkv_outputs.at(stage);
+                check(
+                    resident.ready(value) && value.layout().data == producer.data
+                    && value.layout().generation == producer.generation
+                );
+                check(
+                    launcher->qkv_rows.at(stage).size() == tokens
+                    && launcher->qkv_rows.at(stage).back() == tokens - 1
+                );
+            }
+        auto& target = two_devices ? second : first;
+        for (auto* launcher : qkv_launchers)
+            for (const auto& w : resident.plan().weights) {
+                if (w.device != launcher->device())
+                    continue;
+                for (char stage : {'q', 'k'})
+                    if (w.name
+                        == std::string("transformer_blocks.0.attn.norm_") + stage
+                               + ".weight") {
+                        check(w.first_row == 0 && w.rows == 32 && w.identity.inode);
+                        auto norm = resident.weight(w);
+                        const bool norm_f32 = scenario == AttentionScenario::complete;
+                        check(
+                            norm.layout().dtype
+                            == (norm_f32 ? kadan::DeviceDType::f32
+                                         : kadan::DeviceDType::bf16)
+                        );
+                        launcher->rotary_norms[stage] = norm.layout();
+                    }
+            }
+        attention_denoiser.execute_rotary(
+            resident, 0, tokens, 3, 2, (tokens - 3) / 2, launchers, cancel
+        );
+        for (auto* launcher : qkv_launchers) {
+            launcher->qkv = false;
+            launcher->calls.clear();
+            launcher->expect_final_weight(resident);
+        }
+        if (scenario == AttentionScenario::failed_status)
+            target.fail_masked_attention = true;
+        if (scenario == AttentionScenario::cancelled)
+            target.cancel_masked_attention = &cancel;
+        if (scenario >= AttentionScenario::missing_q
+            && scenario <= AttentionScenario::missing_v) {
+            const char name = scenario == AttentionScenario::missing_q   ? 'q'
+                              : scenario == AttentionScenario::missing_k ? 'k'
+                                                                         : 'v';
+            auto value = resident.tensor(
+                target.device(),
+                std::string("attention/") + name,
+                kadan::DeviceDType::f32,
+                {tokens, 64},
+                {64, 1}
+            );
+            const std::array<kadan::DeviceTensorView*, 0> read{};
+            const std::array write{&value};
+            resident.launch(target.device(), read, write, [](void*, auto, auto) {});
+        }
+        if (scenario == AttentionScenario::missing_launcher)
+            launchers.pop_back();
+        if (scenario == AttentionScenario::duplicate_launcher) {
+            if (two_devices)
+                launchers.back() = &first;
+            else
+                launchers.push_back(&first);
+        }
+        if (scenario == AttentionScenario::null_launcher)
+            launchers.back() = nullptr;
+        if (scenario == AttentionScenario::wrong_device)
+            target.selected = 2;
+        const auto before = resident.transfers();
+        bool rejected = false;
+        try {
+            attention_denoiser.execute_attention(
+                resident,
+                0,
+                scenario == AttentionScenario::invalid_tokens     ? tokens + 1
+                : scenario == AttentionScenario::shorter_sequence ? tokens - 1
+                                                                  : tokens,
+                scenario == AttentionScenario::invalid_text ? tokens + 1 : 3,
+                launchers,
+                cancel
+            );
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        const bool success = scenario <= AttentionScenario::query_tail;
+        check(rejected == !success);
+        cancel.store(false);
+        if (success) {
+            for (auto* launcher : qkv_launchers) {
+                const std::vector<std::size_t> expected_first =
+                    tokens == 131 ? std::vector<std::size_t>{0, 128}
+                                  : std::vector<std::size_t>{0};
+                const std::vector<std::size_t> expected_rows =
+                    tokens == 131 ? std::vector<std::size_t>{128, 3}
+                                  : std::vector<std::size_t>{17};
+                check(
+                    launcher->attended_first == expected_first
+                    && launcher->attended_rows == expected_rows
+                );
+                check(
+                    !launcher->projection_first.empty()
+                    && !launcher->residual_first.empty()
+                );
+                check(launcher->calls.back() == 'v');
+                auto velocity = resident.tensor(
+                    launcher->device(),
+                    "final/velocity",
+                    kadan::DeviceDType::f32,
+                    {tokens - 3, 32},
+                    {32, 1}
+                );
+                check(resident.ready(velocity));
+            }
+            const auto after = resident.transfers();
+            check(
+                after.input_upload == before.input_upload
+                && after.weight_upload == before.weight_upload
+                && after.activation_upload == before.activation_upload
+                && after.activation_download == before.activation_download
+                && after.output_download == before.output_download
+            );
+            resident.finish();
+        } else if (scenario >= AttentionScenario::missing_q) {
+            check(first.attended_first.empty() && second.attended_first.empty());
+            check(first.projection_first.empty() && second.projection_first.empty());
+        } else {
+            check(target.attended_first.size() == 1 && target.projection_first.empty());
+        }
+        check(
+            !resident.transfers().activation_upload
+            && !resident.transfers().activation_download
+            && !resident.transfers().output_download
+        );
+        check(metadata.allocations.empty() && activity->owners == 0);
+        check(resources->snapshot().used[1] == 0);
+        if (two_devices)
+            check(resources->snapshot().used[2] == 0);
+    };
+    for (bool two_devices : {false, true})
+        for (auto scenario :
+             {AttentionScenario::complete,
+              AttentionScenario::query_tail,
+              AttentionScenario::failed_status,
+              AttentionScenario::cancelled,
+              AttentionScenario::missing_q,
+              AttentionScenario::missing_k,
+              AttentionScenario::missing_v,
+              AttentionScenario::missing_launcher,
+              AttentionScenario::duplicate_launcher,
+              AttentionScenario::null_launcher,
+              AttentionScenario::wrong_device,
+              AttentionScenario::invalid_text,
+              AttentionScenario::invalid_tokens,
+              AttentionScenario::shorter_sequence})
+            attention_case(scenario, two_devices);
     // Restore the original loaded model's checkpoint before conditioning checks.
     denoiser.unload();
     write_weights(directory, false, 64, 512, {.denoiser = true});

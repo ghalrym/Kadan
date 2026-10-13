@@ -758,6 +758,38 @@ void Denoiser::execute_rotary(
     );
 }
 
+void Denoiser::execute_attention(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
+    try {
+        auto& transformer = *model_->blocks[block];
+        transformer.execute_masked_attention(session, tokens, text, launchers, cancel);
+        transformer.prepare_feed_forward_inputs(
+            session, tokens, text, HiddenBoundary::pre_attention, launchers, cancel
+        );
+        const bool final = block + 1 == model_->blocks.size();
+        // Five replicated Q/K/V/norm weights accompany the existing FF slice.
+        const auto shared = ((final ? 5 : 3) + (block == 0 ? 4 : 0) + 5)
+                            * session.plan().devices.size();
+        transformer.execute_feed_forward(
+            session, tokens, text, launchers, cancel, shared
+        );
+        if (final)
+            execute_final_output(session, tokens, text, launchers, cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
 void Denoiser::execute_conditioning(
     MediaSession& session,
     std::size_t block,
