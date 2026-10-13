@@ -125,6 +125,15 @@ private:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
+    void execute_rotary(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     void execute_attention_output(
         MediaSession&,
         std::size_t tokens,

@@ -96,6 +96,8 @@ struct WeightOptions {
          output_f32 = false, norm_f32 = false;
     const char* ingress_f32 = "";
     const char* qkv_f32 = "";
+    bool norm_q_f32 = false, norm_k_f32 = false;
+    std::size_t head_dim = 0;
     std::size_t context = 0;
     std::size_t layers = 1, channels = 64;
 };
@@ -117,13 +119,16 @@ void write_weights(
         const auto rows =
             name == "img_mlp.proj" || name == "img_mlp.gate_layer" ? ff : state;
         const auto columns = name == "img_mlp.out" ? ff : state;
-        const bool tensor_f32 = f32
-                                || (options.attention_f32 && name == "attn.to_out.0")
-                                || name == options.qkv_f32;
-        const auto size = (vector ? state : rows * columns) * (tensor_f32 ? 4 : 2);
+        const bool tensor_f32 =
+            f32 || (options.attention_f32 && name == "attn.to_out.0")
+            || name == options.qkv_f32 || (options.norm_q_f32 && name == "attn.norm_q")
+            || (options.norm_k_f32 && name == "attn.norm_k");
+        const auto vector_size = options.head_dim ? options.head_dim : state;
+        const auto size =
+            (vector ? vector_size : rows * columns) * (tensor_f32 ? 4 : 2);
         header << "\"transformer_blocks." << block << "." << name
                << ".weight\":{\"dtype\":\"" << (tensor_f32 ? "F32" : "BF16")
-               << "\",\"shape\":[" << (vector ? state : rows);
+               << "\",\"shape\":[" << (vector ? vector_size : rows);
         if (!vector)
             header << ',' << columns;
         header << "],\"data_offsets\":[" << bytes << ',' << bytes + size << "]}";
@@ -214,6 +219,9 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     std::uint64_t qkv_normalized_generation = 0;
     std::map<char, kadan::MediaDeviceSpan> qkv_weights, qkv_outputs;
     std::map<char, std::vector<std::size_t>> qkv_rows;
+    std::map<char, kadan::MediaDeviceSpan> rotary_norms;
+    char fail_rotary = 0, cancel_rotary_stage = 0;
+    std::vector<char> rotary_calls;
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
@@ -267,6 +275,21 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             ingress_weights.emplace(w.name, view.layout());
         }
         check(ingress_weights.size() == 4);
+    }
+
+    void expect_qkv_weights(kadan::MediaSession& session) {
+        for (const auto& w : session.plan().weights) {
+            if (w.device != selected)
+                continue;
+            for (const auto stage : {'q', 'k', 'v'})
+                if (w.name
+                    == std::string("transformer_blocks.0.attn.to_") + stage
+                           + ".weight") {
+                    check(w.first_row == 0 && w.rows == 64 && w.identity.inode);
+                    auto view = session.weight(w);
+                    qkv_weights[stage] = view.layout();
+                }
+        }
     }
 
     void ingress_status(char stage) {
@@ -567,6 +590,52 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         projection_first.push_back(read[0].offset / (read[0].dimensions[1] * 4));
         calls.push_back('o');
         backend.status = fail_projection ? 1 : 0;
+    }
+
+    void rotary(
+        void*,
+        std::span<const kadan::MediaDeviceSpan> read,
+        std::span<const kadan::MediaDeviceSpan> write,
+        std::size_t heads,
+        std::size_t head_dim,
+        const std::array<std::size_t, 3>& axes,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width
+    ) override {
+        check(read.size() == 2 && write.size() == 2);
+        check(
+            heads == 2 && head_dim == 32
+            && axes == std::array<std::size_t, 3>{8, 12, 12} && text == 3 && height == 2
+            && width == 7
+        );
+        kadan::video::validate_image_rotary(
+            selected,
+            read[0],
+            read[1],
+            write[0],
+            write[1],
+            heads,
+            head_dim,
+            axes,
+            text,
+            height,
+            width
+        );
+        const char stage = read[0].data == qkv_outputs.at('q').data ? 'q' : 'k';
+        const auto& producer = qkv_outputs.at(stage);
+        const auto& norm = rotary_norms.at(stage);
+        check(
+            read[0].data == producer.data && read[0].generation == producer.generation
+        );
+        check(
+            read[1].data == norm.data && read[1].generation == norm.generation
+            && read[1].dtype == norm.dtype
+        );
+        rotary_calls.push_back(stage);
+        backend.status = fail_rotary == stage ? 1 : 0;
+        if (cancel_qkv && cancel_rotary_stage == stage)
+            cancel_qkv->store(true);
     }
 
     void attention_residual(
@@ -1287,20 +1356,7 @@ int main() {
                     launcher->qkv = true;
                     launcher->calls.clear();
                     launcher->cancel_qkv = &cancel;
-                    for (const auto& w : resident.plan().weights) {
-                        if (w.device != launcher->device())
-                            continue;
-                        for (const auto stage : {'q', 'k', 'v'})
-                            if (w.name
-                                == std::string("transformer_blocks.0.attn.to_") + stage
-                                       + ".weight") {
-                                check(
-                                    w.first_row == 0 && w.rows == 64 && w.identity.inode
-                                );
-                                auto view = resident.weight(w);
-                                launcher->qkv_weights[stage] = view.layout();
-                            }
-                    }
+                    launcher->expect_qkv_weights(resident);
                 }
                 const auto mode = *qkv_scenario;
                 const std::array stages{'0', 'q', 'k', 'v'};
@@ -1459,6 +1515,283 @@ int main() {
               QkvScenario::invalid_tokens,
               QkvScenario::wrong_boundary})
             ingress_case(IngressScenario::complete, two_devices, scenario);
+    enum class RotaryScenario {
+        complete,
+        q_f32,
+        k_f32,
+        both_f32,
+        fail_q,
+        fail_k,
+        cancel_q,
+        cancel_k,
+        missing_q,
+        missing_k,
+        missing_launcher,
+        duplicate_launcher,
+        null_launcher,
+        wrong_device,
+        invalid_text,
+        invalid_tokens,
+        invalid_height,
+        invalid_width,
+        invalid_geometry,
+        shorter_sequence
+    };
+    auto rotary_case = [&](RotaryScenario scenario, bool two_devices) {
+        const auto budget = conditioning_budget + 40000;
+        auto resources = std::make_shared<kadan::Resources>(
+            two_devices ? kadan::Footprint{128 * 1024 * 1024, budget, budget}
+                        : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+        );
+        kadan::image::Denoiser rotary_denoiser(resources, std::make_shared<Compute>());
+        auto rotary_config = config;
+        rotary_config.context = 96;
+        rotary_config.channels = 32;
+        rotary_config.block.heads = 2;
+        rotary_config.block.head_dim = 32;
+        rotary_config.block.axes = {8, 12, 12};
+        write_weights(
+            directory,
+            false,
+            64,
+            512,
+            {.denoiser = true,
+             .norm_f32 = !two_devices,
+             .norm_q_f32 = scenario == RotaryScenario::q_f32
+                           || scenario == RotaryScenario::both_f32,
+             .norm_k_f32 = scenario == RotaryScenario::k_f32
+                           || scenario == RotaryScenario::both_f32,
+             .head_dim = 32,
+             .context = 96,
+             .channels = 32}
+        );
+        rotary_denoiser.load(directory, files, rotary_config, cancel);
+        auto fake = std::make_unique<Device>();
+        auto& metadata = *fake;
+        metadata.available = two_devices ? budget : 32 * 1024 * 1024;
+        metadata.metadata_execution = true;
+        kadan::MediaSession resident(
+            resources,
+            activity,
+            std::move(fake),
+            kadan::Workload::image,
+            two_devices ? std::vector<kadan::MediaDeviceLimit>{{0}, {1}}
+                        : std::vector<kadan::MediaDeviceLimit>{{0}},
+            cancel
+        );
+        if (const auto error = rotary_denoiser.prepare_feed_forward(
+                resident, 0, 17, HiddenBoundary::pre_qkv, cancel
+            ))
+            throw std::runtime_error("rotary_admission:" + error->detail);
+        check(resident.plan().devices.size() == (two_devices ? 2 : 1));
+        Launcher first(metadata, 0), second(metadata, 1);
+        std::vector<Launcher*> qkv_launchers{&first};
+        std::vector<kadan::video::ImageFeedForwardLauncher*> launchers{&first};
+        if (two_devices) {
+            qkv_launchers.push_back(&second);
+            launchers.push_back(&second);
+        }
+        for (auto* launcher : qkv_launchers) {
+            launcher->ingress = true;
+            launcher->ingress_context = 96;
+            launcher->channels = 32;
+            launcher->expect_ingress_weights(resident);
+        }
+        std::vector<float> latent(14 * 32), condition(3 * 96);
+        rotary_denoiser.execute_ingress(
+            resident, latent, condition, 3, launchers, cancel
+        );
+        check(
+            resident.transfers().input_upload
+            == (latent.size() + condition.size()) * 4 * launchers.size()
+        );
+        for (auto* launcher : qkv_launchers) {
+            auto hidden = resident.tensor(
+                launcher->device(),
+                "resident/hidden",
+                kadan::DeviceDType::f32,
+                {17, 64},
+                {64, 1}
+            );
+            check(
+                resident.ready(hidden)
+                && hidden.layout().data == launcher->ingress_hidden
+                && hidden.layout().generation == launcher->ingress_hidden_generation
+            );
+            launcher->ingress = false;
+            launcher->qkv = true;
+            launcher->calls.clear();
+            launcher->cancel_qkv = &cancel;
+            launcher->expect_qkv_weights(resident);
+        }
+        rotary_denoiser.execute_qkv(resident, 0, 17, 3, .625f, launchers, cancel);
+        for (auto* launcher : qkv_launchers)
+            for (char stage : {'q', 'k', 'v'}) {
+                auto value = resident.tensor(
+                    launcher->device(),
+                    std::string("attention/") + stage,
+                    kadan::DeviceDType::f32,
+                    {17, 64},
+                    {64, 1}
+                );
+                const auto& producer = launcher->qkv_outputs.at(stage);
+                check(
+                    resident.ready(value) && value.layout().data == producer.data
+                    && value.layout().generation == producer.generation
+                );
+                check(
+                    launcher->qkv_rows.at(stage).size() == 17
+                    && launcher->qkv_rows.at(stage).back() == 16
+                );
+            }
+        auto& target = two_devices ? second : first;
+        for (auto* launcher : qkv_launchers)
+            for (const auto& w : resident.plan().weights) {
+                if (w.device != launcher->device())
+                    continue;
+                for (char stage : {'q', 'k'})
+                    if (w.name
+                        == std::string("transformer_blocks.0.attn.norm_") + stage
+                               + ".weight") {
+                        check(w.first_row == 0 && w.rows == 32 && w.identity.inode);
+                        auto norm = resident.weight(w);
+                        const bool norm_f32 =
+                            scenario == RotaryScenario::both_f32
+                            || (stage == 'q' ? scenario == RotaryScenario::q_f32
+                                             : scenario == RotaryScenario::k_f32);
+                        check(
+                            norm.layout().dtype
+                            == (norm_f32 ? kadan::DeviceDType::f32
+                                         : kadan::DeviceDType::bf16)
+                        );
+                        launcher->rotary_norms[stage] = norm.layout();
+                    }
+            }
+        if (scenario == RotaryScenario::fail_q)
+            target.fail_rotary = 'q';
+        if (scenario == RotaryScenario::fail_k)
+            target.fail_rotary = 'k';
+        if (scenario == RotaryScenario::cancel_q)
+            target.cancel_rotary_stage = 'q';
+        if (scenario == RotaryScenario::cancel_k)
+            target.cancel_rotary_stage = 'k';
+        if (scenario == RotaryScenario::missing_q
+            || scenario == RotaryScenario::missing_k) {
+            auto value = resident.tensor(
+                target.device(),
+                scenario == RotaryScenario::missing_q ? "attention/q" : "attention/k",
+                kadan::DeviceDType::f32,
+                {17, 64},
+                {64, 1}
+            );
+            const std::array<kadan::DeviceTensorView*, 0> read{};
+            const std::array write{&value};
+            resident.launch(target.device(), read, write, [](void*, auto, auto) {});
+        }
+        if (scenario == RotaryScenario::missing_launcher)
+            launchers.pop_back();
+        if (scenario == RotaryScenario::duplicate_launcher) {
+            if (two_devices)
+                launchers.back() = &first;
+            else
+                launchers.push_back(&first);
+        }
+        if (scenario == RotaryScenario::null_launcher)
+            launchers.back() = nullptr;
+        if (scenario == RotaryScenario::wrong_device)
+            target.selected = 2;
+        const auto before = resident.transfers();
+        bool rotary_rejected = false;
+        try {
+            rotary_denoiser.execute_rotary(
+                resident,
+                0,
+                scenario == RotaryScenario::invalid_tokens     ? 18
+                : scenario == RotaryScenario::shorter_sequence ? 15
+                                                               : 17,
+                scenario == RotaryScenario::invalid_text ? 18 : 3,
+                scenario == RotaryScenario::invalid_height ? 0 : 2,
+                scenario == RotaryScenario::invalid_width      ? 0
+                : scenario == RotaryScenario::invalid_geometry ? 8
+                : scenario == RotaryScenario::shorter_sequence ? 6
+                                                               : 7,
+                launchers,
+                cancel
+            );
+        } catch (const std::exception&) {
+            rotary_rejected = true;
+        }
+        const bool success = scenario <= RotaryScenario::both_f32;
+        check(rotary_rejected == !success);
+        cancel.store(false);
+        if (success) {
+            for (auto* launcher : qkv_launchers) {
+                check(launcher->rotary_calls == std::vector<char>{'q', 'k'});
+                for (char stage : {'q', 'k', 'v'}) {
+                    auto value = resident.tensor(
+                        launcher->device(),
+                        std::string("attention/") + stage,
+                        kadan::DeviceDType::f32,
+                        {17, 64},
+                        {64, 1}
+                    );
+                    const auto& producer = launcher->qkv_outputs.at(stage);
+                    check(
+                        resident.ready(value) && value.layout().data == producer.data
+                        && value.layout().generation == producer.generation
+                    );
+                }
+            }
+            const auto after = resident.transfers();
+            check(
+                after.input_upload == before.input_upload
+                && after.activation_upload == before.activation_upload
+                && after.activation_download == before.activation_download
+                && after.output_download == before.output_download
+            );
+            resident.finish();
+        } else if (scenario >= RotaryScenario::missing_q) {
+            check(first.rotary_calls.empty() && second.rotary_calls.empty());
+        } else {
+            check(
+                target.rotary_calls.back()
+                == (target.fail_rotary ? target.fail_rotary
+                                       : target.cancel_rotary_stage)
+            );
+        }
+        check(
+            !resident.transfers().activation_upload
+            && !resident.transfers().activation_download
+            && !resident.transfers().output_download
+        );
+        check(metadata.allocations.empty() && activity->owners == 0);
+        check(resources->snapshot().used[1] == 0);
+        if (two_devices)
+            check(resources->snapshot().used[2] == 0);
+    };
+    for (bool two_devices : {false, true})
+        for (auto scenario :
+             {RotaryScenario::complete,
+              RotaryScenario::q_f32,
+              RotaryScenario::k_f32,
+              RotaryScenario::both_f32,
+              RotaryScenario::fail_q,
+              RotaryScenario::fail_k,
+              RotaryScenario::cancel_q,
+              RotaryScenario::cancel_k,
+              RotaryScenario::missing_q,
+              RotaryScenario::missing_k,
+              RotaryScenario::missing_launcher,
+              RotaryScenario::duplicate_launcher,
+              RotaryScenario::null_launcher,
+              RotaryScenario::wrong_device,
+              RotaryScenario::invalid_text,
+              RotaryScenario::invalid_tokens,
+              RotaryScenario::invalid_height,
+              RotaryScenario::invalid_width,
+              RotaryScenario::invalid_geometry,
+              RotaryScenario::shorter_sequence})
+            rotary_case(scenario, two_devices);
     // Restore the original loaded model's checkpoint before conditioning checks.
     denoiser.unload();
     write_weights(directory, false, 64, 512, {.denoiser = true});
@@ -2224,12 +2557,23 @@ int main() {
           "txt_in.out_layer.weight",
           "transformer_blocks.0.attn.to_q.weight",
           "transformer_blocks.0.attn.to_k.weight",
-          "transformer_blocks.0.attn.to_v.weight"}) {
+          "transformer_blocks.0.attn.to_v.weight",
+          "transformer_blocks.0.attn.norm_q.weight",
+          "transformer_blocks.0.attn.norm_k.weight"}) {
         for (bool norm_f32 : {false, true}) {
-            if (norm_f32 && std::string_view(weight) != "txt_in.text_norm.weight")
+            if (norm_f32 && std::string_view(weight) != "txt_in.text_norm.weight"
+                && !std::string_view(weight).ends_with("attn.norm_q.weight")
+                && !std::string_view(weight).ends_with("attn.norm_k.weight"))
                 continue;
             write_weights(
-                directory, false, 64, 512, {.denoiser = true, .norm_f32 = norm_f32}
+                directory,
+                false,
+                64,
+                512,
+                {.denoiser = true,
+                 .norm_f32 = norm_f32,
+                 .norm_q_f32 = norm_f32,
+                 .norm_k_f32 = norm_f32}
             );
             std::uint64_t offset = 0;
             {

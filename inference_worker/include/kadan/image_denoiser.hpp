@@ -64,6 +64,19 @@ public:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
+    // Consume certified Q/K from execute_qkv with the loaded per-head learned
+    // RMS weights, then rotate text/image positions in place. Leaves certified
+    // Q/K in prepare for attention; V is retained. Release caller views first.
+    void execute_rotary(
+        MediaSession&,
+        std::size_t block,
+        std::size_t tokens,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
     // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
     // Caller supplies certified hidden and (pre_attention) attended on every device.
