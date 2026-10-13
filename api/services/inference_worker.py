@@ -101,6 +101,7 @@ class InferenceJob:
 
     def __init__(self, request: InferenceTask, streaming: bool):
         self.request = request
+        self.sent = False
         self.state = JobState.QUEUED
         self.accepted = asyncio.get_running_loop().create_future()
         self.result = asyncio.get_running_loop().create_future()
@@ -180,6 +181,8 @@ class InferenceWorker:
             )
         async with self.write_lock:
             self.process.stdin.write(encoded)
+            if message["command"] == "submit":
+                self.jobs[message["id"]].sent = True
             await asyncio.wait_for(self.process.stdin.drain(), 10)
 
     async def submit(self, request: InferenceTask, *, streaming=False) -> InferenceJob:
@@ -206,8 +209,9 @@ class InferenceWorker:
             await self._send(message)
             await asyncio.wait_for(asyncio.shield(job.accepted), 10)
         except BaseException:
-            with suppress(Exception, asyncio.CancelledError):
-                await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
+            if job.sent:
+                with suppress(Exception, asyncio.CancelledError):
+                    await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
             self.jobs.pop(request.id, None)
             raise
         return job

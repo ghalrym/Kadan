@@ -1,8 +1,9 @@
 import asyncio
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from api.services.inference_worker import InferenceJob, InferenceTask, InferenceWorker
 
@@ -12,6 +13,75 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
         return InferenceJob(
             InferenceTask(input={"feature": "image", "prompt": "test"}), False
         )
+
+    async def test_cancellation_before_write_does_not_wait_for_unknown_native_job(self):
+        worker = InferenceWorker(Path("/unused"))
+        worker.process = SimpleNamespace(
+            returncode=None, stdin=SimpleNamespace(write=Mock(), drain=AsyncMock())
+        )
+        request = self.job().request
+        await worker.write_lock.acquire()
+        submission = asyncio.create_task(worker.submit(request))
+        await asyncio.sleep(0)
+        submission.cancel()
+        await asyncio.sleep(0)
+        completed = submission.done()
+        # Release the old implementation's stuck cleanup without a real worker.
+        worker.write_lock.release()
+        if not completed:
+            worker.jobs[request.id].result.set_result(None)
+        with self.assertRaises(asyncio.CancelledError):
+            await submission
+        self.assertTrue(completed)
+        worker.process.stdin.write.assert_not_called()
+        self.assertFalse(worker.jobs)
+
+    async def test_cancellation_after_write_waits_for_native_cleanup(self):
+        worker = InferenceWorker(Path("/unused"))
+        request = self.job().request
+        draining, cancelled = asyncio.Event(), asyncio.Event()
+        commands = []
+
+        def write(data):
+            commands.append(json.loads(data)["command"])
+            if commands[-1] == "cancel":
+                cancelled.set()
+
+        async def drain():
+            if commands == ["submit"]:
+                draining.set()
+                await asyncio.Future()
+
+        worker.process = SimpleNamespace(
+            returncode=None, stdin=SimpleNamespace(write=write, drain=drain)
+        )
+        submission = asyncio.create_task(worker.submit(request))
+        await draining.wait()
+        submission.cancel()
+        await cancelled.wait()
+        job = worker.jobs[request.id]
+        submission.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(submission.done())
+        self.assertIs(worker.jobs[request.id], job)
+        job.result.set_result(None)
+        with self.assertRaises(asyncio.CancelledError):
+            await submission
+        self.assertEqual(commands, ["submit", "cancel"])
+        self.assertFalse(worker.jobs)
+
+    async def test_failed_write_does_not_cancel_an_unsent_job(self):
+        worker = InferenceWorker(Path("/unused"))
+        worker.process = SimpleNamespace(
+            returncode=None,
+            stdin=SimpleNamespace(
+                write=Mock(side_effect=BrokenPipeError), drain=AsyncMock()
+            ),
+        )
+        with self.assertRaises(BrokenPipeError):
+            await worker.submit(self.job().request)
+        worker.process.stdin.write.assert_called_once()
+        self.assertFalse(worker.jobs)
 
     async def test_cancellation_only_sends_cancel_and_waits_for_worker(self):
         worker, job = InferenceWorker(Path("/unused")), self.job()
