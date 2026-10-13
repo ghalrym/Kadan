@@ -46,6 +46,20 @@ Empty history and unavailable errors are explicit; the server never fabricates
 media results. The API access page reads OpenAPI and does not create credentials.
 Hardware power and thermal policy belongs to the machine, not the application.
 
+## Chat API scope
+
+`POST /v1/chat/completions` accepts nonempty text messages with `system`, `user`
+or `assistant` roles. Each message uses either Kadan's `text` field or the
+OpenAI `content` string. JSON responses include `choices` and Kadan's `message`;
+SSE responses use content deltas, a `stop` or `length` terminal chunk and `[DONE]`.
+
+This is a text-only subset, not full OpenAI API compatibility. Tool calls,
+`developer`/`tool` roles, content-part arrays, reasoning controls, sampling controls
+and streaming usage options are unsupported. Unknown request and message fields
+are rejected instead of silently dropping their meaning. Before streaming starts,
+errors use FastAPI's HTTP status and `detail` body; stream failures use an `error`
+event followed by `[DONE]`, without a successful terminal choice.
+
 ## Docker Compose
 
 Use a Linux NVIDIA host with a compatible driver, Docker Compose and NVIDIA

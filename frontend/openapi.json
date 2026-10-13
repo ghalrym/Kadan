@@ -385,6 +385,7 @@
         "type": "object"
       },
       "CompletionMessage": {
+        "additionalProperties": false,
         "properties": {
           "meta": {
             "anyOf": [
