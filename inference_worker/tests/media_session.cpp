@@ -942,7 +942,7 @@ void retained_admission_inputs() {
         if (scenario == Scenario::shorter)
             m.tensors.front().bytes = 32;
         if (scenario == Scenario::duplicate)
-            m.retained_inputs.push_back("boundary");
+            m.retained_inputs.emplace_back("boundary");
         if (scenario == Scenario::absent)
             m.retained_inputs = {"absent"};
         if (scenario == Scenario::short_lifetime)
