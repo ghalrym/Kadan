@@ -39,16 +39,28 @@ public:
         HiddenBoundary,
         const std::atomic_bool&
     );
-    // Block 0 pre_attention admission includes actual ingress weights/workspaces.
-    // Validated host latent [images,channels] and condition [text,context] are
-    // uploaded once per selected device. Text RMS -> in_layer + GELU -> out_layer
-    // and img_in certify the text-first resident/hidden consumed by the block.
-    // Release all caller views before execution. No attention is executed here.
+    // Block 0 pre_qkv/pre_attention admission includes actual ingress
+    // weights/workspaces. Validated host latent [images,channels] and condition
+    // [text,context] are uploaded once per selected device. Text RMS -> in_layer + GELU
+    // -> out_layer and img_in certify the text-first resident/hidden consumed by the
+    // block. Release all caller views before execution. No attention is executed here.
     void execute_ingress(
         MediaSession&,
         std::span<const float> latent,
         std::span<const float> condition,
         std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
+    // pre_qkv admission: actual conditioning -> stage 0 norm/modulation ->
+    // loaded Q/K/V. Leaves certified attention/{q,k,v} in prepare for the next
+    // attention consumer. Release views first; no attention or FF executes here.
+    void execute_qkv(
+        MediaSession&,
+        std::size_t block,
+        std::size_t tokens,
+        std::size_t text,
+        std::optional<float> timestep,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
@@ -90,6 +102,16 @@ public:
     );
 
 private:
+    void execute_conditioning(
+        MediaSession&,
+        std::size_t block,
+        std::size_t tokens,
+        std::size_t text,
+        std::optional<float> timestep,
+        HiddenBoundary,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     void execute_final_output(
         MediaSession&,
         std::size_t tokens,

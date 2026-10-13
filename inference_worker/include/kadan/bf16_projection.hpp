@@ -436,6 +436,11 @@ inline Bf16ProjectionShape validate_image_attention_residual(
 // Projection inputs are [input,gate-weight,up-weight] or [input,down-weight];
 // outputs are [pair,rounded,workspace,gate-status,up-status,aggregate-status]
 // or [down,rounded,workspace,aggregate-status]. Pair is compact [2*rows,local-out].
+enum class ImageModulationStage {
+    qkv,
+    feed_forward
+};
+
 class ImageFeedForwardLauncher {
 public:
     virtual ~ImageFeedForwardLauncher() = default;
@@ -469,12 +474,14 @@ public:
         std::size_t text
     ) = 0;
     // Inputs [hidden,modulation]; outputs [normalized,gates,aggregate-status].
+    // Stage 0 prepares QKV; stage 1 prepares FF.
     // Complete both outputs before the FF consumer can bind them.
     virtual void prepare(
         void*,
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
-        std::size_t text
+        std::size_t text,
+        ImageModulationStage stage
     ) = 0;
     // Inputs [image-hidden,target-scale]; outputs [normalized,status].
     virtual void final_normalization(
@@ -539,7 +546,8 @@ public:
         void*,
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
-        std::size_t
+        std::size_t,
+        ImageModulationStage
     ) override;
     void final_normalization(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
