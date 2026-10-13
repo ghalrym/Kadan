@@ -106,40 +106,70 @@ inline ProjectionPlan projection_plan(
 
 struct VaeConvolutionPlan {
     ProjectionPlan projection;
+    std::size_t points;
     Bytes patch_bytes;
+    Bytes bytes;
 };
 
 inline std::optional<VaeConvolutionPlan> image_vae_convolution_plan(
-    image::VaeConvolution shape, std::size_t outputs, Bytes limit
+    image::VaeConvolution shape,
+    std::size_t outputs,
+    Bytes limit,
+    std::size_t maximum_points = 4096
 ) {
     shape.validate();
     if (!outputs || outputs > shape.outputs)
         throw std::invalid_argument("image_vae_conv_shape");
+    if (maximum_points < 256 || maximum_points > 4096
+        || (maximum_points & (maximum_points - 1)))
+        throw std::invalid_argument("image_vae_conv_group");
     if ((shape.kernel != 1 && shape.kernel != 3) || shape.columns() > 2147483647ULL
         || shape.outputs > 2147483647ULL || shape.points() > 2147483647ULL / 4)
         return {};
     const auto host_columns = (16 * 1024 * 1024) / (shape.columns() * 4);
     if (!host_columns)
         return {};
-    // Maximum scanline crossing and halo for the existing 256-point batch.
-    const auto band = std::min(
-        shape.height, 1 + (254 + shape.width) / shape.width + shape.kernel - 1
-    );
-    const Bytes raw = shape.channels * band * shape.width * 4;
-    const auto patch_bytes = (raw + 255) / 256 * 256;
+    auto aligned = [](Bytes n) {
+        return (n + 255) / 256 * 256;
+    };
+    auto patch = [&](std::size_t points) {
+        // Worst scanline crossing and halo, including non-divisible widths.
+        const auto band = std::min(
+            shape.height,
+            1 + (points - 2 + shape.width) / shape.width + shape.kernel - 1
+        );
+        return aligned(shape.channels * band * shape.width * 4);
+    };
+    const auto patch_bytes = patch(256);
     if (patch_bytes >= limit)
         return {};
     try {
+        // Keep the original projection geometry; added staging cannot change
+        // GEMM dimensions or retained weight partitions.
+        const auto projection = projection_plan(
+            shape.columns(),
+            std::min(outputs, host_columns),
+            4,
+            false,
+            1,
+            limit - patch_bytes
+        );
+        for (auto points = maximum_points; points > 256; points /= 2) {
+            if (points > shape.points())
+                continue;
+            const auto raw = patch(points);
+            const auto extra = aligned(points * shape.columns() * 4)
+                               - aligned(projection.rows * shape.columns() * 4)
+                               + aligned(points * projection.columns * 4)
+                               - aligned(projection.rows * projection.columns * 4);
+            const auto bytes = projection.bytes + raw + extra;
+            if (bytes <= limit)
+                return VaeConvolutionPlan{projection, points, raw, bytes};
+        }
+        // A group that does not fit retains the admitted 256-point GPU path,
+        // including its existing streamed-input behavior under tight budgets.
         return VaeConvolutionPlan{
-            projection_plan(
-                shape.columns(),
-                std::min(outputs, host_columns),
-                4,
-                false,
-                1,
-                limit - patch_bytes
-            ),
-            patch_bytes
+            projection, 256, patch_bytes, projection.bytes + patch_bytes
         };
     } catch (const std::invalid_argument& error) {
         if (std::string_view(error.what()) == "projection_scratch_limit")

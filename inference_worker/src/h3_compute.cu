@@ -108,11 +108,17 @@ __global__ void image_vae_gather_kernel(
 }
 
 __global__ void image_vae_scatter_kernel(
-    const float* matrix, float* planar, std::size_t rows, std::size_t columns
+    const float* matrix,
+    float* planar,
+    std::size_t rows,
+    std::size_t columns,
+    std::size_t first,
+    std::size_t stride
 ) {
     const auto index = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (index < rows * columns)
-        planar[image::vae_planar_tile_index(index, rows, columns)] = matrix[index];
+        planar[image::vae_planar_group_index(index, columns, first, stride)] =
+            matrix[index];
 }
 
 __global__ void image_vae_norm_kernel(
@@ -1003,6 +1009,14 @@ class Compute final : public H3Compute {
         if (convolution) {
             image::validate_vae_convolution(convolution->shape, x, bias, y);
             require(
+                convolution->count > 0
+                    && convolution->first < convolution->shape.points()
+                    && convolution->count
+                           <= convolution->shape.points() - convolution->first
+                    && convolution->count <= convolution->capacity,
+                "image_vae_conv_group"
+            );
+            require(
                 in == convolution->shape.columns() && out == convolution->shape.outputs
                     && !precise && std::is_same_v<Weight, float>,
                 "image_vae_conv_projection"
@@ -1084,11 +1098,14 @@ class Compute final : public H3Compute {
                                                   ? image_vae_convolution_plan(
                                                         convolution->shape,
                                                         last_output - first_output,
-                                                        arena.scratch_limit
+                                                        arena.scratch_limit,
+                                                        convolution->capacity
                                                     )
                                                   : std::optional<VaeConvolutionPlan>{};
                 require(
-                    !convolution || convolution_plan.has_value(),
+                    !convolution
+                        || (convolution_plan.has_value()
+                            && convolution_plan->points == convolution->capacity),
                     "image_vae_conv_scratch"
                 );
                 const auto patch_bytes =
@@ -1107,15 +1124,20 @@ class Compute final : public H3Compute {
                               arena.scratch_limit
                           );
                 const auto chunk_columns = plan.columns;
-                const auto input_rows = projection_input_rows(
-                    end - begin, in, plan, arena.scratch_limit - patch_bytes
-                );
+                const bool grouped = convolution && convolution->capacity > 256;
+                const auto input_rows =
+                    grouped
+                        ? convolution->capacity
+                        : projection_input_rows(
+                              end - begin, in, plan, arena.scratch_limit - patch_bytes
+                          );
                 const bool keep_input = input_rows >= end - begin;
                 // Reserve the largest layout before uploading. Later chunks must
                 // neither move the input at its fixed offset nor grow the workspace.
                 device_workspace.ensure(
-                    plan.bytes + patch_bytes
-                    + (input_rows - plan.rows) * in * sizeof(float)
+                    grouped ? convolution_plan->bytes
+                            : plan.bytes + patch_bytes
+                                  + (input_rows - plan.rows) * in * sizeof(float)
                 );
                 // The aligned status prefix stays fixed across every column chunk.
                 auto* nonfinite = validate_output ? arena.at<unsigned>(0) : nullptr;
@@ -1125,20 +1147,8 @@ class Compute final : public H3Compute {
                 input_layout.add(sizeof(unsigned));
                 const auto input = input_layout.add(input_rows * in * sizeof(float));
                 const auto raw_input = input_layout.add(patch_bytes);
-                auto upload_input = [&](float* target,
-                                        std::size_t start,
-                                        std::size_t rows) {
-                    if (!convolution) {
-                        checked(cudaMemcpy(
-                            target,
-                            x.data() + start * in,
-                            rows * in * sizeof(float),
-                            cudaMemcpyHostToDevice
-                        ));
-                        return;
-                    }
+                auto upload_patch = [&](std::size_t first, std::size_t rows) {
                     const auto& shape = convolution->shape;
-                    const auto first = convolution->first + start;
                     const auto region = image::vae_patch_region(shape, first, rows);
                     require(
                         shape.channels * region.points() * 4 <= patch_bytes,
@@ -1163,6 +1173,30 @@ class Compute final : public H3Compute {
                     );
                     copy.kind = cudaMemcpyHostToDevice;
                     checked(cudaMemcpy3D(&copy));
+                    return region;
+                };
+                std::optional<image::VaePatchRegion> group_region;
+                if (grouped) {
+                    stop(cancel, failed);
+                    group_region =
+                        upload_patch(convolution->first + begin, end - begin);
+                }
+                auto upload_input = [&](float* target,
+                                        std::size_t start,
+                                        std::size_t rows) {
+                    if (!convolution) {
+                        checked(cudaMemcpy(
+                            target,
+                            x.data() + start * in,
+                            rows * in * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        ));
+                        return;
+                    }
+                    const auto& shape = convolution->shape;
+                    const auto first = convolution->first + start;
+                    const auto region =
+                        group_region ? *group_region : upload_patch(first, rows);
                     image_vae_gather_kernel<<<unsigned((rows * in + 255) / 256), 256>>>(
                         arena.at<float>(raw_input),
                         target,
@@ -1248,7 +1282,7 @@ class Compute final : public H3Compute {
                                b = l.add(out * 4), s = l.add(out * 4),
                                rotated = l.add(tile * in * 4), codes = l.add(tile * in),
                                row_scales = l.add(tile * 4),
-                               sums = l.add(tile * out * 4),
+                               sums = l.add((grouped ? input_rows : tile) * out * 4),
                                output = l.add(tile * out * 4),
                                workspace = l.add(8 * 1024 * 1024),
                                wide_weights = l.add(precise ? weight_count * 8 : 0),
@@ -1446,13 +1480,15 @@ class Compute final : public H3Compute {
                                 arena.at<float>(output),
                                 arena.at<float>(sums),
                                 rows,
-                                out
+                                out,
+                                grouped ? start - begin : 0,
+                                grouped ? input_rows : rows
                             );
                             checked(cudaGetLastError());
                         }
                         checked(cudaStreamSynchronize(cudaStreamLegacy));
                         stop(cancel, failed);
-                        if (convolution)
+                        if (convolution && !grouped)
                             checked(cudaMemcpy2D(
                                 y.data() + first_column * convolution->shape.points()
                                     + convolution->first + start,
@@ -1463,7 +1499,7 @@ class Compute final : public H3Compute {
                                 out,
                                 cudaMemcpyDeviceToHost
                             ));
-                        else
+                        else if (!convolution)
                             checked(cudaMemcpy2D(
                                 y.data() + start * total_out + first_column,
                                 total_out * 4,
@@ -1473,6 +1509,19 @@ class Compute final : public H3Compute {
                                 rows,
                                 cudaMemcpyDeviceToHost
                             ));
+                    }
+                    if (grouped) {
+                        stop(cancel, failed);
+                        checked(cudaMemcpy2D(
+                            y.data() + first_column * convolution->shape.points()
+                                + convolution->first + begin,
+                            convolution->shape.points() * 4,
+                            arena.at<void>(sums),
+                            input_rows * 4,
+                            (end - begin) * 4,
+                            out,
+                            cudaMemcpyDeviceToHost
+                        ));
                     }
                 }
                 if (nonfinite) {
@@ -1945,13 +1994,17 @@ public:
             return false;
         // Every selected device must support the operation before any callback
         // or submission. Project owns the existing weight/staging/cleanup path.
-        for (auto limit : scratch_limits_)
-            if (!image_vae_convolution_plan(shape, shape.outputs, limit))
+        std::size_t points = 4096;
+        for (auto limit : scratch_limits_) {
+            const auto plan = image_vae_convolution_plan(shape, shape.outputs, limit);
+            if (!plan)
                 return false;
-        for (std::size_t first = 0; first < shape.points(); first += 256) {
+            points = std::min(points, plan->points);
+        }
+        for (std::size_t first = 0; first < shape.points(); first += points) {
             require(!cancel.load(), "h3_cuda_cancelled");
             const image::VaeConvolutionTile tile{
-                shape, first, std::min<std::size_t>(256, shape.points() - first)
+                shape, first, std::min(points, shape.points() - first), points
             };
             project<float>(
                 {},
