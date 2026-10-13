@@ -459,5 +459,55 @@ int main() {
     rejects_frequency();
     frequency[1].data = static_cast<std::byte*>(frequency[0].data) + 2044;
     rejects_frequency();
+    std::array text_norm{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::bf16, {8, 1}, {1, 1}, 16),
+        span(0x3000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    auto validate_text_norm = [&] {
+        return validate_image_text_normalization(
+            0, text_norm[0], text_norm[1], text_norm[2], text_norm[3]
+        );
+    };
+    check(validate_text_norm().in == 8);
+    text_norm[1].dtype = DeviceDType::f32;
+    text_norm[1].bytes = 32;
+    check(validate_text_norm().rows == 3);
+    const auto text_norm_original = text_norm;
+    auto rejects_text_norm = [&] {
+        bool rejected = false;
+        try {
+            validate_text_norm();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        text_norm = text_norm_original;
+    };
+    for (std::size_t i = 0; i < text_norm.size(); ++i) {
+        text_norm[i].device = 1;
+        rejects_text_norm();
+        text_norm[i].data = nullptr;
+        rejects_text_norm();
+        text_norm[i].dtype = DeviceDType::f64;
+        rejects_text_norm();
+        text_norm[i].strides.back() = 2;
+        rejects_text_norm();
+        text_norm[i].bytes -= 1;
+        rejects_text_norm();
+        text_norm[i].offset = SIZE_MAX;
+        rejects_text_norm();
+        text_norm[i].data = storage.data() + 0x1001;
+        rejects_text_norm();
+        for (std::size_t j = 0; j < i; ++j) {
+            text_norm[i].data = text_norm[j].data;
+            rejects_text_norm();
+        }
+    }
+    text_norm[1].dimensions = {1, 8};
+    rejects_text_norm();
+    text_norm[2].data = static_cast<std::byte*>(text_norm[0].data) + 4;
+    rejects_text_norm();
     std::cout << "BF16 projection layout validation passed\n";
 }

@@ -99,6 +99,8 @@ struct StageManifest {
     MediaSchedule schedule = MediaSchedule::full_block;
     // A consumed conditioning projection also needs conversion scratch in prepare.
     bool prepare_projection = false;
+    // Actual input projections may initialize hidden before attention/FF.
+    bool prepare_hidden = false;
 };
 
 struct MediaShape {

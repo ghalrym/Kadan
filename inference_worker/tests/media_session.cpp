@@ -853,6 +853,39 @@ void feed_forward_phase_isolation() {
     f.resources->released(library);
 }
 
+void ingress_hidden_certificate() {
+    Fixture f;
+    StageManifest m;
+    m.status_bytes = 4;
+    m.workspaces_complete = true;
+    m.schedule = MediaSchedule::feed_forward;
+    m.prepare_hidden = true;
+    check(!f.session.admit(m, MediaShape{4, 4, 0, 0, 0, 8}));
+    const int device = f.session.plan().devices.front().device;
+    auto hidden = tensor(f.session, device, "resident/hidden");
+    auto status = flag(f.session, device);
+    auto first = f.session.rows(hidden, 0, 2), second = f.session.rows(hidden, 2, 2);
+    produce(f.session, device, first, status);
+    check(!f.session.ready(hidden));
+    std::array<DeviceTensorView*, 2> write{&second, &status};
+    f.session.launch(device, {}, write, [](void*, auto, auto) {});
+    check(!f.session.ready(hidden));
+    check(
+        fails([&] { f.session.advance(MediaPhase::ff); })
+        == "media_session_unchecked_status"
+    );
+    f.session.complete(write, status);
+    check(f.session.ready(hidden));
+    hidden = {};
+    first = {};
+    second = {};
+    status = {};
+    f.session.advance(MediaPhase::ff);
+    f.session.advance(MediaPhase::complete);
+    f.session.finish();
+    check(f.activity->owners == 0 && f.trace->allocations.empty());
+}
+
 void kv_barrier_and_worker_idle() {
     Fixture f;
     StageManifest m;
@@ -901,6 +934,7 @@ int main() {
     repeated_admission_invalidates_kv();
     allocation_failure_drains_and_unchecked_overwrite();
     feed_forward_phase_isolation();
+    ingress_hidden_certificate();
     kv_barrier_and_worker_idle();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";

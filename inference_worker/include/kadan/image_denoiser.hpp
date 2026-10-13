@@ -39,6 +39,19 @@ public:
         HiddenBoundary,
         const std::atomic_bool&
     );
+    // Block 0 pre_attention admission includes actual ingress weights/workspaces.
+    // Validated host latent [images,channels] and condition [text,context] are
+    // uploaded once per selected device. Text RMS -> in_layer + GELU -> out_layer
+    // and img_in certify the text-first resident/hidden consumed by the block.
+    // Release all caller views before execution. No attention is executed here.
+    void execute_ingress(
+        MediaSession&,
+        std::span<const float> latent,
+        std::span<const float> condition,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
     // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
     // Caller supplies certified hidden and (pre_attention) attended on every device.

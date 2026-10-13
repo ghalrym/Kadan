@@ -295,12 +295,22 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     StageManifest manifest;
     manifest.prepare_projection = true;
     const bool final = block + 1 == m.blocks.size();
+    const bool ingress = block == 0 && boundary == HiddenBoundary::pre_attention;
+    manifest.prepare_hidden = ingress;
     for (const auto* name :
-         {"time_text_embed.timestep_embedder.linear_1.weight",
+         {"img_in.weight",
+          "txt_in.text_norm.weight",
+          "txt_in.in_layer.weight",
+          "txt_in.out_layer.weight",
+          "time_text_embed.timestep_embedder.linear_1.weight",
           "time_text_embed.timestep_embedder.linear_2.weight",
           "modulation.1.weight",
           "norm_out.linear.weight",
           "proj_out.weight"}) {
+        if (!ingress
+            && (std::string_view(name).starts_with("txt_in.")
+                || std::string_view(name) == "img_in.weight"))
+            continue;
         if (!final
             && (std::string_view(name) == "norm_out.linear.weight"
                 || std::string_view(name) == "proj_out.weight"))
@@ -311,12 +321,16 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         const auto tensor = shard.tensor(spec.name);
         // Preserve project_source's STANDARD native-BF16 branch; F32 needs its
         // own resident implementation rather than adopting the FF policy.
-        if (!compute_ || !compute_->supports_bf16_weights()
-            || tensor.dtype != checkpoint::Dtype::bf16)
+        const bool norm = spec.name == "txt_in.text_norm.weight";
+        if (!norm
+            && (!compute_ || !compute_->supports_bf16_weights()
+                || tensor.dtype != checkpoint::Dtype::bf16))
             return MediaPlanError{
                 PlanFailure::unsupported_layout,
-                (spec.name == "norm_out.linear.weight"
-                 || spec.name == "proj_out.weight")
+                (spec.name.starts_with("txt_in.") || spec.name == "img_in.weight")
+                    ? "image_ingress_standard_precision"
+                : (spec.name == "norm_out.linear.weight"
+                   || spec.name == "proj_out.weight")
                     ? "image_final_standard_precision"
                 : spec.name == "modulation.1.weight"
                     ? "image_modulation_standard_precision"
@@ -329,13 +343,35 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         manifest.weights.push_back(
             {spec.name,
              spec.identity,
-             TensorStorage::bf16_exact,
+             tensor.dtype == checkpoint::Dtype::bf16 ? TensorStorage::bf16_exact
+                                                     : TensorStorage::f32,
              std::size_t(tensor.shape[0]),
-             std::size_t(tensor.shape[1]),
+             norm ? 1 : std::size_t(tensor.shape[1]),
              WeightPartition::replicated,
              1,
              1,
-             ProjectionPrecision::bf16_f32}
+             norm ? ProjectionPrecision::f32 : ProjectionPrecision::bf16_f32}
+        );
+    }
+    if (ingress) {
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/latent",
+              tokens * m.d.channels * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/condition",
+              tokens * m.d.context * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/normalized",
+              tokens * m.d.context * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/projected",
+              tokens * m.d.block.state * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare}}
         );
     }
     manifest.tensors.push_back(
@@ -381,11 +417,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         return error;
     try {
         for (const auto& slice : session.plan().weights) {
-            if (slice.name != "time_text_embed.timestep_embedder.linear_1.weight"
-                && slice.name != "time_text_embed.timestep_embedder.linear_2.weight"
-                && slice.name != "modulation.1.weight"
-                && slice.name != "norm_out.linear.weight"
-                && slice.name != "proj_out.weight")
+            if (!m.names.contains(slice.name))
                 continue;
             const auto& spec = m.specs.at(m.names.at(slice.name));
             auto& shard = *m.shards[spec.shard];
@@ -401,9 +433,18 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
             stop(cancel);
             // The standard host source validates raw weights, even when finite
             // output cancellation could otherwise hide a nonfinite weight.
-            for (std::size_t i = 0; i < raw.size(); i += 2)
+            const auto dtype = shard.tensor(spec.name).dtype;
+            for (std::size_t i = 0; i < raw.size();
+                 i += dtype == checkpoint::Dtype::bf16 ? 2 : 4)
                 need(
-                    ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
+                    dtype == checkpoint::Dtype::fp32
+                        ? ((std::uint32_t(raw[i + 3]) << 24
+                            | std::uint32_t(raw[i + 2]) << 16
+                            | std::uint32_t(raw[i + 1]) << 8 | raw[i])
+                           & 0x7f800000)
+                              != 0x7f800000
+                        : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
+                              != 0x7f80,
                     "h3_cuda_nonfinite_weight"
                 );
             session.upload_weight(destination, std::as_bytes(std::span(raw)));
@@ -413,6 +454,222 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         throw;
     }
     return {};
+}
+
+void Denoiser::execute_ingress(
+    MediaSession& session,
+    std::span<const float> latent,
+    std::span<const float> condition,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto state = model_->d.block.state, context = model_->d.context,
+               channels = model_->d.channels;
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView latent, condition, norm_weight, normalized, projected,
+            text_weight, output_weight, image_weight, hidden, workspace, status;
+    };
+
+    try {
+        need(
+            text && text <= 2048 && !latent.empty() && latent.size() % channels == 0,
+            "image_ingress_shape"
+        );
+        const auto images = latent.size() / channels, tokens = text + images;
+        need(
+            images <= 65536 && tokens <= 32768 && condition.size() == text * context
+                && session.plan().schedule == MediaSchedule::feed_forward
+                && launchers.size() == session.plan().devices.size(),
+            "image_ingress_shape"
+        );
+        finite(latent);
+        finite(condition);
+
+        struct Projection {
+            DeviceTensorView *input, *weight, *output;
+            std::size_t first, rows;
+            bool gelu;
+        };
+
+        auto projections = [&](Device& d) {
+            return std::array{
+                Projection{&d.normalized, &d.text_weight, &d.projected, 0, text, true},
+                Projection{&d.projected, &d.output_weight, &d.hidden, 0, text, false},
+                Projection{&d.latent, &d.image_weight, &d.hidden, text, images, false}
+            };
+        };
+        std::vector<Device> devices;
+        for (const auto& planned : session.plan().devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_ingress_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_ingress_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_ingress_launcher");
+            const auto hidden_boundary = std::find_if(
+                session.plan().tensors.begin(),
+                session.plan().tensors.end(),
+                [&](const auto& t) {
+                    return t.device == planned.device && t.name == "resident/hidden";
+                }
+            );
+            need(
+                hidden_boundary != session.plan().tensors.end()
+                    && hidden_boundary->bytes == tokens * state * sizeof(float),
+                "image_ingress_shape"
+            );
+            auto matrix = [&](const char* name,
+                              std::size_t rows,
+                              std::size_t columns,
+                              DeviceDType dtype = DeviceDType::f32) {
+                return session.tensor(
+                    planned.device, name, dtype, {rows, columns}, {columns, 1}
+                );
+            };
+            auto weight = [&](const char* name, std::size_t rows, std::size_t columns) {
+                const auto& spec = model_->specs.at(model_->names.at(name));
+                const auto width = model_->shards[spec.shard]->tensor(spec.name).dtype
+                                           == checkpoint::Dtype::fp32
+                                       ? 4u
+                                       : 2u;
+                const auto found = std::find_if(
+                    session.plan().weights.begin(),
+                    session.plan().weights.end(),
+                    [&](const auto& w) {
+                        return w.device == planned.device && w.name == spec.name
+                               && w.identity == spec.identity && w.first_row == 0
+                               && w.rows == rows
+                               && w.stored_bytes == rows * columns * width;
+                    }
+                );
+                need(found != session.plan().weights.end(), "image_ingress_weight");
+                return session.weight(*found);
+            };
+            devices.push_back(
+                {launcher,
+                 matrix("ingress/latent", images, channels),
+                 matrix("ingress/condition", text, context),
+                 weight("txt_in.text_norm.weight", context, 1),
+                 matrix("ingress/normalized", text, context),
+                 matrix("ingress/projected", text, state),
+                 weight("txt_in.in_layer.weight", state, context),
+                 weight("txt_in.out_layer.weight", state, state),
+                 weight("img_in.weight", state, channels),
+                 matrix("resident/hidden", tokens, state),
+                 session.tensor(
+                     planned.device,
+                     "resident/blas",
+                     DeviceDType::u8,
+                     {video::bf16_projection_workspace_bytes},
+                     {1}
+                 ),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array ready{
+                &d.norm_weight, &d.text_weight, &d.output_weight, &d.image_weight
+            };
+            session.require_ready(ready);
+            video::validate_image_text_normalization(
+                planned.device,
+                d.condition.layout(),
+                d.norm_weight.layout(),
+                d.normalized.layout(),
+                d.status.layout()
+            );
+            const MediaDeviceSpan bias{
+                nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+            };
+            for (const auto& projection : projections(d)) {
+                auto input = session.rows(*projection.input, 0, 1);
+                auto output = session.rows(*projection.output, projection.first, 1);
+                auto rounded = matrix(
+                    "resident/projection-conversion",
+                    1,
+                    input.layout().dimensions[1],
+                    DeviceDType::bf16
+                );
+                video::validate_bf16_projection(
+                    planned.device,
+                    input.layout(),
+                    projection.weight->layout(),
+                    bias,
+                    rounded.layout(),
+                    output.layout(),
+                    d.workspace.layout(),
+                    d.status.layout()
+                );
+            }
+        }
+        // Validate every device before uploading input or submitting any producer.
+        for (auto& d : devices) {
+            stop(cancel);
+            session.upload_input(d.latent, std::as_bytes(latent));
+            session.upload_input(d.condition, std::as_bytes(condition));
+            stop(cancel);
+            const std::array read{&d.condition, &d.norm_weight};
+            const std::array write{&d.normalized, &d.status};
+            session.launch(
+                d.launcher->device(),
+                read,
+                write,
+                [&](void* stream, auto in, auto out) {
+                    d.launcher->text_normalization(stream, in, out);
+                }
+            );
+            session.complete(write, d.status);
+            // Serial rows reuse the smallest admitted conversion tile. Text/image
+            // hidden regions certify contiguous coverage under the same owner.
+            for (const auto& projection : projections(d)) {
+                for (std::size_t row = 0; row < projection.rows; ++row) {
+                    stop(cancel);
+                    auto input = session.rows(*projection.input, row, 1);
+                    auto output =
+                        session.rows(*projection.output, projection.first + row, 1);
+                    auto rounded = session.tensor(
+                        d.launcher->device(),
+                        "resident/projection-conversion",
+                        DeviceDType::bf16,
+                        {1, input.layout().dimensions[1]},
+                        {input.layout().dimensions[1], 1}
+                    );
+                    const std::array projection_read{&input, projection.weight};
+                    const std::array projection_write{
+                        &output, &rounded, &d.workspace, &d.status
+                    };
+                    session.launch(
+                        d.launcher->device(),
+                        projection_read,
+                        projection_write,
+                        [&](void* stream, auto in, auto out) {
+                            if (projection.gelu)
+                                d.launcher->text_projection(stream, in, out);
+                            else
+                                d.launcher->standard(stream, in, out);
+                        }
+                    );
+                    session.complete(projection_write, d.status);
+                }
+            }
+            stop(cancel);
+            const std::array hidden{&d.hidden};
+            session.require_ready(hidden);
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
 }
 
 void Denoiser::execute_feed_forward(
@@ -446,7 +703,9 @@ void Denoiser::execute_feed_forward(
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
                 && plan.weights.size()
-                       == ((attention ? 7 : 6) + (final ? 2 : 0)) * plan.devices.size(),
+                       == ((attention ? 7 : 6) + (final ? 2 : 0)
+                           + (block == 0 && attention ? 4 : 0))
+                              * plan.devices.size(),
             "image_ff_plan"
         );
         std::vector<Device> devices;
@@ -660,7 +919,7 @@ void Denoiser::execute_feed_forward(
             text,
             launchers,
             cancel,
-            (final ? 5 : 3) * plan.devices.size()
+            ((final ? 5 : 3) + (block == 0 && attention ? 4 : 0)) * plan.devices.size()
         );
         if (final)
             execute_final_output(session, tokens, text, launchers, cancel);
