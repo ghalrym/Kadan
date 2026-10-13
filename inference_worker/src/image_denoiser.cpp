@@ -1269,7 +1269,8 @@ void Denoiser::execute_scheduler(
 
     try {
         need(
-            text && text < tokens && tokens <= 32768
+            text && text <= 2048 && text < tokens && tokens <= 32768
+                && !session.plan().devices.empty()
                 && launchers.size() == session.plan().devices.size(),
             "image_scheduler_shape"
         );

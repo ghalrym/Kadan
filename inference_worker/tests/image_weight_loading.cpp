@@ -1952,6 +1952,30 @@ int main() {
              .channels = 32}
         );
         attention_denoiser.load(directory, files, attention_config, cancel);
+        if (scenario == AttentionScenario::next_step) {
+            auto empty_backend = std::make_unique<Device>();
+            auto& empty_metadata = *empty_backend;
+            kadan::MediaSession unadmitted(
+                resources,
+                activity,
+                std::move(empty_backend),
+                kadan::Workload::image,
+                {{0}},
+                cancel
+            );
+            const std::array<kadan::video::ImageFeedForwardLauncher*, 0> no_launchers{};
+            bool rejected = false;
+            try {
+                attention_denoiser.execute_scheduler(
+                    unadmitted, tokens, 3, .625f, .25f, no_launchers, cancel
+                );
+            } catch (const std::runtime_error& e) {
+                rejected = std::string_view(e.what()) == "image_scheduler_shape";
+            }
+            check(
+                rejected && empty_metadata.allocations.empty() && activity->owners == 0
+            );
+        }
         auto fake = std::make_unique<Device>();
         auto& metadata = *fake;
         metadata.available = two_devices ? budget : 32 * 1024 * 1024;
