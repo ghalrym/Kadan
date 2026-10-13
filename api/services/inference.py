@@ -44,8 +44,9 @@ class InferenceStream:
         }
 
     async def aclose(self):
-        if not self.completion.done():
-            self.completion.cancel()
+        await await_cleanup(
+            asyncio.create_task(self.service.cancel(self.job.request.id))
+        )
         with suppress(Exception, asyncio.CancelledError):
             await await_cleanup(self.completion)
 
@@ -279,7 +280,11 @@ class InferenceService:
             # Completion is reflected by the video metadata endpoint.
             task.add_done_callback(self._background_finished)
             return video_jobs.get(job.request.id)
-        return await task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            await await_cleanup(asyncio.create_task(self.cancel(job.request.id)))
+            raise
 
     @staticmethod
     def _background_finished(task):
@@ -329,11 +334,13 @@ class InferenceService:
         # A task cancelled before its first step never enters _complete's finally.
         job = self.worker.jobs.get(job_id)
         if job is not None:
-            if not job.result.done():
-                await await_cleanup(
-                    asyncio.create_task(self.worker.cancel_and_join(job))
-                )
-            self.worker.jobs.pop(job_id, None)
+            try:
+                if not job.result.done():
+                    await await_cleanup(
+                        asyncio.create_task(self.worker.cancel_and_join(job))
+                    )
+            finally:
+                self.worker.jobs.pop(job_id, None)
 
     async def unload(self):
         for job in tuple(self.worker.jobs.values()):
