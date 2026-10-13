@@ -5,6 +5,7 @@
 #include <span>
 #include <string_view>
 
+#include "kadan/image_convolution.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan {
@@ -101,6 +102,50 @@ inline ProjectionPlan projection_plan(
             return {tile, columns, fixed + columns * per_column};
     }
     throw std::invalid_argument("projection_scratch_limit");
+}
+
+struct VaeConvolutionPlan {
+    ProjectionPlan projection;
+    Bytes patch_bytes;
+};
+
+inline std::optional<VaeConvolutionPlan> image_vae_convolution_plan(
+    image::VaeConvolution shape, std::size_t outputs, Bytes limit
+) {
+    shape.validate();
+    if (!outputs || outputs > shape.outputs)
+        throw std::invalid_argument("image_vae_conv_shape");
+    if ((shape.kernel != 1 && shape.kernel != 3) || shape.columns() > 2147483647ULL
+        || shape.outputs > 2147483647ULL || shape.points() > 2147483647ULL / 4)
+        return {};
+    const auto host_columns = (16 * 1024 * 1024) / (shape.columns() * 4);
+    if (!host_columns)
+        return {};
+    // Maximum scanline crossing and halo for the existing 256-point batch.
+    const auto band = std::min(
+        shape.height, 1 + (254 + shape.width) / shape.width + shape.kernel - 1
+    );
+    const Bytes raw = shape.channels * band * shape.width * 4;
+    const auto patch_bytes = (raw + 255) / 256 * 256;
+    if (patch_bytes >= limit)
+        return {};
+    try {
+        return VaeConvolutionPlan{
+            projection_plan(
+                shape.columns(),
+                std::min(outputs, host_columns),
+                4,
+                false,
+                1,
+                limit - patch_bytes
+            ),
+            patch_bytes
+        };
+    } catch (const std::invalid_argument& error) {
+        if (std::string_view(error.what()) == "projection_scratch_limit")
+            return {};
+        throw;
+    }
 }
 
 // Keep a complete projection input only when the existing workspace can hold it.

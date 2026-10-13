@@ -78,6 +78,43 @@ struct Layout {
     }
 };
 
+__global__ void image_vae_gather_kernel(
+    const float* raw,
+    float* patches,
+    unsigned* status,
+    image::VaeConvolution shape,
+    image::VaePatchRegion region,
+    std::size_t first,
+    std::size_t rows
+) {
+    const auto index = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= rows * shape.columns())
+        return;
+    const auto column = index % shape.columns();
+    const auto source =
+        image::vae_patch_index(shape, first + index / shape.columns(), column);
+    float value = 0;
+    if (source != image::vae_patch_padding) {
+        const auto channel = column / (shape.kernel * shape.kernel);
+        const auto point = source - channel * shape.points();
+        value =
+            raw[channel * region.points()
+                + (point / shape.width - region.top) * region.width
+                + point % shape.width - region.left];
+    }
+    patches[index] = value;
+    if (!isfinite(value))
+        atomicOr(status, 1U);
+}
+
+__global__ void image_vae_scatter_kernel(
+    const float* matrix, float* planar, std::size_t rows, std::size_t columns
+) {
+    const auto index = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < rows * columns)
+        planar[image::vae_planar_tile_index(index, rows, columns)] = matrix[index];
+}
+
 __global__ void image_vae_norm_kernel(
     const float* input,
     const float* gamma,
@@ -959,10 +996,21 @@ class Compute final : public H3Compute {
         bool precise = false,
         const WeightIdentity* identity = nullptr,
         const std::function<void(std::size_t, std::span<Weight>)>* source = nullptr,
-        ProjectionPolicy policy = ProjectionPolicy::standard
+        ProjectionPolicy policy = ProjectionPolicy::standard,
+        const image::VaeConvolutionTile* convolution = nullptr
     ) {
         require(!cancel.load(), "h3_cuda_cancelled");
-        validate(x, bias, in, out, y);
+        if (convolution) {
+            image::validate_vae_convolution(convolution->shape, x, bias, y);
+            require(
+                in == convolution->shape.columns() && out == convolution->shape.outputs
+                    && !precise && std::is_same_v<Weight, float>,
+                "image_vae_conv_projection"
+            );
+            for (float value : bias)
+                require(std::isfinite(value), "h3_cuda_nonfinite_bias");
+        } else
+            validate(x, bias, in, out, y);
         require(
             !overlap(y.data(), y.size_bytes(), x.data(), x.size_bytes())
                 && !overlap(
@@ -995,16 +1043,17 @@ class Compute final : public H3Compute {
         const bool validate_output = workload_ == Workload::image && !quant && !precise;
         std::atomic_bool nonfinite_output = false;
         const auto total_out = out;
+        const auto total_rows = convolution ? convolution->count : x.size() / in;
         const bool columns =
             identity
             || (column_split_ && !quant
-                && projection_split_columns(x.size() / in, devices_.size()));
+                && projection_split_columns(total_rows, devices_.size()));
         const auto all_weights = weights;
         const auto all_bias = bias;
         const auto all_scales = scales;
         std::mutex source_mutex;
         split(
-            columns ? (quant ? out / 4 : out) : x.size() / in,
+            columns ? (quant ? out / 4 : out) : total_rows,
             cancel,
             [&](DeviceWorkspace& device_workspace,
                 std::size_t begin,
@@ -1020,7 +1069,7 @@ class Compute final : public H3Compute {
                            last_output = columns ? end : total_out;
                 if (columns) {
                     begin = 0;
-                    end = x.size() / in;
+                    end = total_rows;
                 }
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
@@ -1031,39 +1080,107 @@ class Compute final : public H3Compute {
                 const auto host_columns =
                     (source_bytes / (in * sizeof(Weight))) / alignment * alignment;
                 require(!source || host_columns > 0, "h3_source_staging_floor");
-                const auto plan = projection_plan(
-                    in,
-                    source ? std::min(last_output - first_output, host_columns)
-                           : last_output - first_output,
-                    sizeof(Weight),
-                    precise,
-                    alignment,
-                    arena.scratch_limit
+                const auto convolution_plan = convolution
+                                                  ? image_vae_convolution_plan(
+                                                        convolution->shape,
+                                                        last_output - first_output,
+                                                        arena.scratch_limit
+                                                    )
+                                                  : std::optional<VaeConvolutionPlan>{};
+                require(
+                    !convolution || convolution_plan.has_value(),
+                    "image_vae_conv_scratch"
                 );
+                const auto patch_bytes =
+                    convolution ? convolution_plan->patch_bytes : 0;
+                const auto plan =
+                    convolution
+                        ? convolution_plan->projection
+                        : projection_plan(
+                              in,
+                              source
+                                  ? std::min(last_output - first_output, host_columns)
+                                  : last_output - first_output,
+                              sizeof(Weight),
+                              precise,
+                              alignment,
+                              arena.scratch_limit
+                          );
                 const auto chunk_columns = plan.columns;
-                const auto input_rows =
-                    projection_input_rows(end - begin, in, plan, arena.scratch_limit);
+                const auto input_rows = projection_input_rows(
+                    end - begin, in, plan, arena.scratch_limit - patch_bytes
+                );
                 const bool keep_input = input_rows >= end - begin;
                 // Reserve the largest layout before uploading. Later chunks must
                 // neither move the input at its fixed offset nor grow the workspace.
                 device_workspace.ensure(
-                    plan.bytes + (input_rows - plan.rows) * in * sizeof(float)
+                    plan.bytes + patch_bytes
+                    + (input_rows - plan.rows) * in * sizeof(float)
                 );
                 // The aligned status prefix stays fixed across every column chunk.
                 auto* nonfinite = validate_output ? arena.at<unsigned>(0) : nullptr;
                 if (nonfinite)
                     checked(cudaMemset(nonfinite, 0, sizeof(unsigned)));
-                if (keep_input)
-                    for (auto start = begin; start < end; start += plan.rows) {
-                        stop(cancel, failed);
-                        const auto rows = std::min(plan.rows, end - start);
+                Layout input_layout;
+                input_layout.add(sizeof(unsigned));
+                const auto input = input_layout.add(input_rows * in * sizeof(float));
+                const auto raw_input = input_layout.add(patch_bytes);
+                auto upload_input = [&](float* target,
+                                        std::size_t start,
+                                        std::size_t rows) {
+                    if (!convolution) {
                         checked(cudaMemcpy(
-                            arena.at<float>(projection_status_bytes)
-                                + (start - begin) * in,
+                            target,
                             x.data() + start * in,
                             rows * in * sizeof(float),
                             cudaMemcpyHostToDevice
                         ));
+                        return;
+                    }
+                    const auto& shape = convolution->shape;
+                    const auto first = convolution->first + start;
+                    const auto region = image::vae_patch_region(shape, first, rows);
+                    require(
+                        shape.channels * region.points() * 4 <= patch_bytes,
+                        "image_vae_conv_patch_scratch"
+                    );
+                    cudaMemcpy3DParms copy{};
+                    copy.srcPtr = make_cudaPitchedPtr(
+                        const_cast<float*>(x.data()),
+                        shape.width * 4,
+                        shape.width * 4,
+                        shape.height
+                    );
+                    copy.srcPos = make_cudaPos(region.left * 4, region.top, 0);
+                    copy.dstPtr = make_cudaPitchedPtr(
+                        arena.at<void>(raw_input),
+                        region.width * 4,
+                        region.width * 4,
+                        region.height
+                    );
+                    copy.extent = make_cudaExtent(
+                        region.width * 4, region.height, shape.channels
+                    );
+                    copy.kind = cudaMemcpyHostToDevice;
+                    checked(cudaMemcpy3D(&copy));
+                    image_vae_gather_kernel<<<unsigned((rows * in + 255) / 256), 256>>>(
+                        arena.at<float>(raw_input),
+                        target,
+                        nonfinite,
+                        shape,
+                        region,
+                        first,
+                        rows
+                    );
+                    checked(cudaGetLastError());
+                };
+                if (keep_input)
+                    for (auto start = begin; start < end; start += plan.rows) {
+                        stop(cancel, failed);
+                        const auto rows = std::min(plan.rows, end - start);
+                        upload_input(
+                            arena.at<float>(input) + (start - begin) * in, start, rows
+                        );
                     }
                 for (auto first_column = first_output; first_column < last_output;
                      first_column += chunk_columns) {
@@ -1126,10 +1243,8 @@ class Compute final : public H3Compute {
                                 key, std::as_bytes(weights), cancel
                             );
                     }
-                    Layout l;
-                    l.add(sizeof(unsigned));
-                    const auto input = l.add(input_rows * in * sizeof(float)),
-                               w = l.add(retained ? 0 : weights.size_bytes()),
+                    Layout l = input_layout;
+                    const auto w = l.add(retained ? 0 : weights.size_bytes()),
                                b = l.add(out * 4), s = l.add(out * 4),
                                rotated = l.add(tile * in * 4), codes = l.add(tile * in),
                                row_scales = l.add(tile * 4),
@@ -1184,12 +1299,7 @@ class Compute final : public H3Compute {
                         auto* input_pointer = arena.at<float>(input)
                                               + (keep_input ? (start - begin) * in : 0);
                         if (!keep_input)
-                            checked(cudaMemcpy(
-                                input_pointer,
-                                x.data() + start * in,
-                                rows * in * sizeof(float),
-                                cudaMemcpyHostToDevice
-                            ));
+                            upload_input(input_pointer, start, rows);
                         if constexpr (quant) {
                             rotate_kernel<<<
                                 dim3(unsigned(rows), unsigned(in / group)),
@@ -1327,17 +1437,42 @@ class Compute final : public H3Compute {
                             );
                         }
                         checked(cudaGetLastError());
+                        if (convolution) {
+                            // The F32 path does not use INT8 sums: reuse that
+                            // admitted slice for the bit-preserving planar tile.
+                            image_vae_scatter_kernel<<<
+                                unsigned((rows * out + 255) / 256),
+                                256>>>(
+                                arena.at<float>(output),
+                                arena.at<float>(sums),
+                                rows,
+                                out
+                            );
+                            checked(cudaGetLastError());
+                        }
                         checked(cudaStreamSynchronize(cudaStreamLegacy));
                         stop(cancel, failed);
-                        checked(cudaMemcpy2D(
-                            y.data() + start * total_out + first_column,
-                            total_out * 4,
-                            arena.at<void>(output),
-                            out * 4,
-                            out * 4,
-                            rows,
-                            cudaMemcpyDeviceToHost
-                        ));
+                        if (convolution)
+                            checked(cudaMemcpy2D(
+                                y.data() + first_column * convolution->shape.points()
+                                    + convolution->first + start,
+                                convolution->shape.points() * 4,
+                                arena.at<void>(sums),
+                                rows * 4,
+                                rows * 4,
+                                out,
+                                cudaMemcpyDeviceToHost
+                            ));
+                        else
+                            checked(cudaMemcpy2D(
+                                y.data() + start * total_out + first_column,
+                                total_out * 4,
+                                arena.at<void>(output),
+                                out * 4,
+                                out * 4,
+                                rows,
+                                cudaMemcpyDeviceToHost
+                            ));
                     }
                 }
                 if (nonfinite) {
@@ -1795,6 +1930,50 @@ private:
     }
 
 public:
+    bool image_vae_convolution_source(
+        const WeightIdentity& identity,
+        const FloatWeightSource& source,
+        std::span<const float> bias,
+        std::span<const float> input,
+        image::VaeConvolution shape,
+        std::span<float> output,
+        const std::atomic_bool& cancel
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        image::validate_vae_convolution(shape, input, bias, output);
+        if (workload_ != Workload::image)
+            return false;
+        // Every selected device must support the operation before any callback
+        // or submission. Project owns the existing weight/staging/cleanup path.
+        for (auto limit : scratch_limits_)
+            if (!image_vae_convolution_plan(shape, shape.outputs, limit))
+                return false;
+        for (std::size_t first = 0; first < shape.points(); first += 256) {
+            require(!cancel.load(), "h3_cuda_cancelled");
+            const image::VaeConvolutionTile tile{
+                shape, first, std::min<std::size_t>(256, shape.points() - first)
+            };
+            project<float>(
+                {},
+                {},
+                bias,
+                input,
+                shape.columns(),
+                shape.outputs,
+                0,
+                output,
+                cancel,
+                false,
+                &identity,
+                &source,
+                ProjectionPolicy::standard,
+                &tile
+            );
+        }
+        require(!cancel.load(), "h3_cuda_cancelled");
+        return true;
+    }
+
     bool image_vae_normalize(
         std::span<const float> input,
         std::span<const float> gamma,

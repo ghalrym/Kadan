@@ -7,6 +7,7 @@
 #include <span>
 #include <vector>
 
+#include "kadan/image_convolution.hpp"
 #include "kadan/projection_math.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/weight_identity.hpp"
@@ -157,6 +158,20 @@ public:
     }
 
     using FloatWeightSource = std::function<void(std::size_t, std::span<float>)>;
+
+    // F32 VAE stride-one CHW convolution. False precedes source reads/output
+    // writes; execution errors throw and must never retry through CPU packing.
+    virtual bool image_vae_convolution_source(
+        const WeightIdentity&,
+        const FloatWeightSource&,
+        std::span<const float>,
+        std::span<const float>,
+        image::VaeConvolution,
+        std::span<float>,
+        const std::atomic_bool&
+    ) {
+        return false;
+    }
 
     virtual ProjectionResult dense_source(
         const WeightIdentity&,
