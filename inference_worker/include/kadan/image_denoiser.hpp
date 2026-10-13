@@ -77,6 +77,17 @@ public:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
+    // Consume certified rotated Q/K and original V, then feed attended rows
+    // directly through the existing output/residual/FF and final velocity slice.
+    // Uses the same pre_qkv admission and retained conditioning; returns complete.
+    void execute_attention(
+        MediaSession&,
+        std::size_t block,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
     // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
     // Caller supplies certified hidden and (pre_attention) attended on every device.

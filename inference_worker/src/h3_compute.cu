@@ -663,6 +663,45 @@ divide_attention(Real* output, const Real* total, unsigned rows, unsigned dim) {
         output[i] /= total[i / dim];
 }
 
+// Pack/unpack only on the owned stream; attention arithmetic is shared above.
+__global__ void pack_image_attention(
+    const float* input,
+    float* packed,
+    unsigned rows,
+    unsigned state,
+    unsigned dim,
+    unsigned first,
+    unsigned head,
+    unsigned* status
+) {
+    const auto i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * dim) {
+        const float value = input[(first + i / dim) * state + head * dim + i % dim];
+        if (!isfinite(value))
+            atomicOr(status, 2U);
+        packed[i] = value;
+    }
+}
+
+__global__ void scatter_image_attention(
+    const float* packed,
+    const float* total,
+    float* output,
+    unsigned rows,
+    unsigned state,
+    unsigned dim,
+    unsigned head,
+    unsigned* status
+) {
+    const auto i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * dim) {
+        const float value = packed[i];
+        if (!isfinite(value) || !(total[i / dim] > 0) || !isfinite(total[i / dim]))
+            atomicOr(status, 1U);
+        output[(i / dim) * state + head * dim + i % dim] = value;
+    }
+}
+
 struct HostAdmission {
     Resources& resources;
     Handle handle;
@@ -2306,6 +2345,192 @@ void CudaBf16Projection::rotary(
         status
     );
     checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::masked_attention(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t text,
+    std::size_t first,
+    const std::atomic_bool& cancel
+) {
+    require(inputs.size() == 3 && outputs.size() == 4, "image_attention_layout");
+    const auto shape = validate_image_masked_attention(
+        device_,
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        outputs[0],
+        outputs[1],
+        outputs[2],
+        outputs[3],
+        heads,
+        head_dim,
+        text,
+        first
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    require(!cancel.load(), "h3_cuda_cancelled");
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    checked(cublasSetStream(handle, owned_stream));
+    checked(cublasSetWorkspace(handle, outputs[2].data, outputs[2].bytes));
+    auto* status = static_cast<unsigned*>(outputs[3].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    const auto tokens = inputs[0].dimensions[0];
+    const ImageAttentionScratch layout(tokens, head_dim);
+    auto at = [&](Bytes offset) {
+        return reinterpret_cast<float*>(
+            static_cast<std::byte*>(outputs[1].data) + offset
+        );
+    };
+    const float scale = 1 / std::sqrt(float(head_dim)), zero = 0, one = 1;
+    // Match attend<float>'s PEDANTIC F32 GEMMs and tiled online softmax.
+    with_projection_math(
+        true,
+        CUBLAS_PEDANTIC_MATH,
+        [&] {
+            cublasMath_t mode;
+            checked(cublasGetMathMode(handle, &mode));
+            return mode;
+        },
+        [&](cublasMath_t mode) { checked(cublasSetMathMode(handle, mode)); },
+        [&] {
+            for (std::size_t head = 0; head < heads; ++head) {
+                require(!cancel.load(), "h3_cuda_cancelled");
+                pack_image_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    static_cast<const float*>(inputs[0].data),
+                    at(layout.q),
+                    unsigned(shape.rows),
+                    unsigned(shape.in),
+                    unsigned(head_dim),
+                    unsigned(first),
+                    unsigned(head),
+                    status
+                );
+                checked(cudaGetLastError());
+                checked(cudaMemsetAsync(
+                    at(layout.output),
+                    0,
+                    shape.rows * head_dim * sizeof(float),
+                    owned_stream
+                ));
+                initialize_attention<<<1, 128, 0, owned_stream>>>(
+                    at(layout.maximum), at(layout.total), unsigned(shape.rows)
+                );
+                checked(cudaGetLastError());
+                for (std::size_t key = 0; key < tokens; key += layout.keys) {
+                    require(!cancel.load(), "h3_cuda_cancelled");
+                    const auto keys = std::min(layout.keys, tokens - key);
+                    for (std::size_t i = 1; i < inputs.size(); ++i) {
+                        pack_image_attention<<<
+                            unsigned((keys * head_dim + 255) / 256),
+                            256,
+                            0,
+                            owned_stream>>>(
+                            static_cast<const float*>(inputs[i].data),
+                            at(i == 1 ? layout.k : layout.v),
+                            unsigned(keys),
+                            unsigned(shape.in),
+                            unsigned(head_dim),
+                            unsigned(key),
+                            unsigned(head),
+                            status
+                        );
+                        checked(cudaGetLastError());
+                    }
+                    checked(
+                        gemm<float>(
+                            handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            int(keys),
+                            int(shape.rows),
+                            int(head_dim),
+                            scale,
+                            at(layout.k),
+                            int(head_dim),
+                            at(layout.q),
+                            int(head_dim),
+                            zero,
+                            at(layout.scores),
+                            int(keys)
+                        )
+                    );
+                    online_softmax<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+                        at(layout.scores),
+                        at(layout.output),
+                        at(layout.maximum),
+                        at(layout.total),
+                        unsigned(keys),
+                        unsigned(head_dim),
+                        unsigned(first),
+                        unsigned(key),
+                        unsigned(text),
+                        0,
+                        0
+                    );
+                    checked(cudaGetLastError());
+                    checked(
+                        gemm<float>(
+                            handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            int(head_dim),
+                            int(shape.rows),
+                            int(keys),
+                            one,
+                            at(layout.v),
+                            int(head_dim),
+                            at(layout.scores),
+                            int(keys),
+                            one,
+                            at(layout.output),
+                            int(head_dim)
+                        )
+                    );
+                }
+                divide_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    at(layout.output),
+                    at(layout.total),
+                    unsigned(shape.rows),
+                    unsigned(head_dim)
+                );
+                checked(cudaGetLastError());
+                scatter_image_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    at(layout.output),
+                    at(layout.total),
+                    static_cast<float*>(outputs[0].data),
+                    unsigned(shape.rows),
+                    unsigned(shape.in),
+                    unsigned(head_dim),
+                    unsigned(head),
+                    status
+                );
+                checked(cudaGetLastError());
+            }
+        }
+    );
 }
 
 void CudaBf16Projection::text_projection(

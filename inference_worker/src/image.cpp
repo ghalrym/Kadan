@@ -442,7 +442,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     // FF normalization uses actual modulation; there is no affine norm weight.
     // QKV uses replicated full matrices/rows on each automatically selected
     // device. Attention and channel-partitioned FF remain separate consumers.
-    if (qkv)
+    if (qkv) {
         for (const auto* name : {"attention/q", "attention/k", "attention/v"})
             manifest.tensors.push_back(
                 {name,
@@ -450,6 +450,14 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
                  MediaPhase::prepare,
                  MediaPhase::prepare}
             );
+        manifest.tensors.push_back(
+            {"attention/scratch",
+             video::ImageAttentionScratch(tokens, m.d.head_dim).bytes,
+             MediaPhase::prepare,
+             MediaPhase::prepare,
+             AllocationKind::conversion}
+        );
+    }
     manifest.workspaces_complete = true;
     if (auto error = session.admit(
             manifest,
@@ -780,6 +788,126 @@ void TransformerBlock::execute_rotary(
                 );
                 session.complete(write, d.status);
             }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void TransformerBlock::execute_masked_attention(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto& config = model_->d;
+    const auto& plan = session.plan();
+    const video::ImageAttentionScratch layout(tokens, config.head_dim);
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        std::array<DeviceTensorView, 3> qkv;
+        DeviceTensorView attended, scratch, workspace, status;
+    };
+
+    try {
+        need(
+            plan.schedule == MediaSchedule::feed_forward && plan.rows
+                && launchers.size() == plan.devices.size(),
+            "image_attention_plan"
+        );
+        std::set<int> selected;
+        for (auto* launcher : launchers)
+            need(
+                launcher && selected.insert(launcher->device()).second,
+                "image_attention_launcher"
+            );
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            const auto found =
+                std::find_if(launchers.begin(), launchers.end(), [&](auto* launcher) {
+                    return launcher->device() == planned.device;
+                });
+            need(found != launchers.end(), "image_attention_launcher");
+            auto matrix = [&](const char* name) {
+                return session.tensor(
+                    planned.device,
+                    name,
+                    DeviceDType::f32,
+                    {tokens, config.state},
+                    {config.state, 1}
+                );
+            };
+            auto scratch = [&](const char* name, Bytes bytes) {
+                return session.tensor(
+                    planned.device, name, DeviceDType::u8, {bytes}, {1}
+                );
+            };
+            devices.push_back(
+                {*found,
+                 {matrix("attention/q"), matrix("attention/k"), matrix("attention/v")},
+                 matrix("resident/normalized"),
+                 scratch("attention/scratch", layout.bytes),
+                 scratch("resident/blas", video::bf16_projection_workspace_bytes),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array read{&d.qkv[0], &d.qkv[1], &d.qkv[2]};
+            session.require_ready(read);
+            auto tile = session.rows(d.attended, 0, layout.queries);
+            video::validate_image_masked_attention(
+                planned.device,
+                d.qkv[0].layout(),
+                d.qkv[1].layout(),
+                d.qkv[2].layout(),
+                tile.layout(),
+                d.scratch.layout(),
+                d.workspace.layout(),
+                d.status.layout(),
+                config.heads,
+                config.head_dim,
+                text,
+                0
+            );
+        }
+        // Every device's full Q/K/V certificate is checked before any output.
+        for (std::size_t first = 0; first < tokens; first += layout.queries)
+            for (auto& d : devices) {
+                stop(cancel);
+                auto tile = session.rows(
+                    d.attended, first, std::min(layout.queries, tokens - first)
+                );
+                const std::array read{&d.qkv[0], &d.qkv[1], &d.qkv[2]};
+                const std::array write{&tile, &d.scratch, &d.workspace, &d.status};
+                session.launch(
+                    d.launcher->device(),
+                    read,
+                    write,
+                    [&](void* stream, auto in, auto out) {
+                        d.launcher->masked_attention(
+                            stream,
+                            in,
+                            out,
+                            config.heads,
+                            config.head_dim,
+                            text,
+                            first,
+                            cancel
+                        );
+                    }
+                );
+                session.complete(write, d.status);
+            }
+        for (auto& d : devices) {
+            const std::array ready{&d.attended};
+            session.require_ready(ready);
+        }
     } catch (...) {
         session.abort(std::current_exception());
         throw;

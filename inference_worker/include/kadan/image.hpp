@@ -134,6 +134,13 @@ private:
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
+    void execute_masked_attention(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
     void execute_attention_output(
         MediaSession&,
         std::size_t tokens,
