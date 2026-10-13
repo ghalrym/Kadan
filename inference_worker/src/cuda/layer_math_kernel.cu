@@ -5,8 +5,8 @@
 
 #include <cuda_runtime.h>
 
-#include "kadan/cuda_layer_math.hpp"
 #include "../models/text/layer_math_validation.hpp"
+#include "kadan/cuda_layer_math.hpp"
 
 namespace kadan::cuda {
 namespace {

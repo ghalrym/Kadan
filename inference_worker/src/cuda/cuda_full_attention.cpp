@@ -9,10 +9,10 @@
 #include <stdexcept>
 #include <thread>
 
+#include "../models/text/layer_math_validation.hpp"
 #include "full_kernel.cuh"
 #include "kadan/cuda_projection.hpp"
 #include "kadan/cuda_state.hpp"
-#include "../models/text/layer_math_validation.hpp"
 
 namespace kadan::cuda {
 namespace {
