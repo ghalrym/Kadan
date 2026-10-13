@@ -84,6 +84,70 @@ int main() {
             rejects();
         }
     }
+    auto scheduler = std::array{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x3000, DeviceDType::u32, {1}, {1}, 4)
+    };
+    const auto scheduler_original = scheduler;
+    auto validate_scheduler = [&](float current = .625f, float next = .25f) {
+        return validate_image_scheduler(
+            0, scheduler[0], scheduler[1], scheduler[2], scheduler[3], current, next
+        );
+    };
+    check(validate_scheduler() == 24 && validate_scheduler(.02f, 0.f) == 24);
+    auto rejects_scheduler = [&](float current = .625f, float next = .25f) {
+        bool rejected = false;
+        try {
+            validate_scheduler(current, next);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        scheduler = scheduler_original;
+    };
+    for (std::size_t i = 0; i < scheduler.size(); ++i) {
+        scheduler[i].dtype = DeviceDType::bf16;
+        rejects_scheduler();
+        scheduler[i].device = 1;
+        rejects_scheduler();
+        scheduler[i].data = nullptr;
+        rejects_scheduler();
+        scheduler[i].bytes -= 1;
+        rejects_scheduler();
+        scheduler[i].strides.back() = 2;
+        rejects_scheduler();
+        scheduler[i].dimensions[0] += 1;
+        rejects_scheduler();
+        scheduler[i].offset = SIZE_MAX;
+        rejects_scheduler();
+    }
+    scheduler[2].generation += 1;
+    rejects_scheduler();
+    scheduler[2].data = storage.data() + 0x4000;
+    rejects_scheduler();
+    scheduler[1].data = scheduler[0].data;
+    rejects_scheduler();
+    scheduler[3].data = scheduler[1].data;
+    rejects_scheduler();
+    scheduler[0].data = storage.data() + 0x1001;
+    scheduler[2].data = scheduler[0].data;
+    rejects_scheduler();
+    for (float invalid :
+         {-.1f,
+          0.f,
+          1.1f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_scheduler(invalid);
+    for (float invalid :
+         {-.1f,
+          .625f,
+          1.f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_scheduler(.625f, invalid);
     // Attention contract and tile tails, without reading activations.
     alignas(256) static std::array<std::byte, 10 * 1024 * 1024> attention_storage;
     auto attention_span = [&](std::size_t offset,

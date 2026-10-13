@@ -234,6 +234,10 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     bool fail_frequency = false, fail_linear1 = false, fail_linear1_row1 = false;
     bool fail_final_projection = false, fail_final_normalization = false,
          fail_velocity = false;
+    bool fail_scheduler = false;
+    std::atomic_bool* cancel_scheduler = nullptr;
+    std::optional<float> scheduler_current, scheduler_next;
+    kadan::MediaDeviceSpan scheduler_latent;
     std::size_t channels = 64;
     std::atomic_bool *cancel_final_normalization = nullptr, *cancel_velocity = nullptr;
     void* output_weight = nullptr;
@@ -766,6 +770,29 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             calls.push_back('n');
             backend.status = fail_preparation ? 1 : 0;
         }
+    }
+
+    void scheduler(
+        void* stream,
+        std::span<const kadan::MediaDeviceSpan> in,
+        std::span<const kadan::MediaDeviceSpan> out,
+        float current,
+        float next
+    ) override {
+        check(!stream && in.size() == 2 && out.size() == 2);
+        check(
+            kadan::video::validate_image_scheduler(
+                selected, in[0], in[1], out[0], out[1], current, next
+            )
+            == (tokens - ingress_text) * channels
+        );
+        scheduler_current = current;
+        scheduler_next = next;
+        scheduler_latent = out[0];
+        calls.push_back('e');
+        backend.status = fail_scheduler ? 1 : 0;
+        if (cancel_scheduler)
+            cancel_scheduler->store(true);
     }
 
     void final_normalization(
@@ -1861,6 +1888,13 @@ int main() {
         query_tail,
         next_block,
         next_owner,
+        next_step,
+        final_step,
+        scheduler_failure,
+        scheduler_cancel,
+        scheduler_missing_velocity,
+        scheduler_retry,
+        scheduler_stale_timestep,
         failed_status,
         cancelled,
         missing_q,
@@ -1875,8 +1909,13 @@ int main() {
         shorter_sequence
     };
     auto attention_case = [&](AttentionScenario scenario, bool two_devices) {
-        const bool migrate = scenario == AttentionScenario::next_owner;
+        const bool scheduler =
+            scenario >= AttentionScenario::next_step
+            && scenario <= AttentionScenario::scheduler_stale_timestep;
+        const bool migrate = scenario == AttentionScenario::next_owner || scheduler;
         const bool next_block = scenario == AttentionScenario::next_block || migrate;
+        const auto resident_text =
+            scheduler ? std::optional<std::size_t>(3) : std::nullopt;
         const std::size_t tokens = scenario == AttentionScenario::query_tail ? 131 : 17;
         const auto budget = conditioning_budget + 40000 + (tokens - 17) * 3072
                             + kadan::video::ImageAttentionScratch(tokens, 32).bytes
@@ -1929,7 +1968,7 @@ int main() {
             cancel
         );
         if (const auto error = attention_denoiser.prepare_feed_forward(
-                resident, 0, tokens, HiddenBoundary::pre_qkv, cancel
+                resident, 0, tokens, HiddenBoundary::pre_qkv, cancel, resident_text
             ))
             throw std::runtime_error("attention_admission:" + error->detail);
         check(resident.plan().devices.size() == (two_devices ? 2 : 1));
@@ -2073,7 +2112,7 @@ int main() {
         } catch (const std::exception&) {
             rejected = true;
         }
-        const bool success = scenario <= AttentionScenario::next_owner;
+        const bool success = scenario <= AttentionScenario::scheduler_stale_timestep;
         check(rejected == !success);
         cancel.store(false);
         if (success) {
@@ -2129,12 +2168,15 @@ int main() {
                 if (migrate)
                     metadata.remaining[0] = metadata.available;
                 check(!attention_denoiser.prepare_feed_forward(
-                    resident, 1, tokens, HiddenBoundary::pre_qkv, cancel
+                    resident, 1, tokens, HiddenBoundary::pre_qkv, cancel, resident_text
                 ));
                 check(resident.plan().devices.front().device == 0);
                 check(
                     resident.transfers().peer_activation - peer_bytes
-                    == (migrate ? tokens * 64 * 4 + 2 * 64 * 4 + 2 * 256 * 4 : 0)
+                    == (migrate
+                            ? tokens * 64 * 4 + 2 * 64 * 4 + 2 * 256 * 4
+                                  + (scheduler ? (tokens - 3) * 32 * 4 + 3 * 96 * 4 : 0)
+                            : 0)
                 );
                 check(resident.plan().devices.size() == launchers.size());
                 Launcher next_first(metadata, 0), next_second(metadata, 1);
@@ -2237,7 +2279,167 @@ int main() {
                     );
                     check(resident.ready(velocity));
                 }
-                check(resident.transfers().weight_upload == weights);
+                if (scheduler) {
+                    const auto uploaded = resident.transfers().input_upload;
+                    next_first.fail_scheduler =
+                        scenario == AttentionScenario::scheduler_failure;
+                    next_first.cancel_scheduler =
+                        scenario == AttentionScenario::scheduler_cancel ? &cancel
+                                                                        : nullptr;
+                    if (scenario == AttentionScenario::scheduler_missing_velocity) {
+                        auto velocity = resident.tensor(
+                            0,
+                            "final/velocity",
+                            kadan::DeviceDType::f32,
+                            {tokens - 3, 32},
+                            {32, 1}
+                        );
+                        const std::array<kadan::DeviceTensorView*, 0> read{};
+                        const std::array write{&velocity};
+                        resident.launch(0, read, write, [](void*, auto, auto) {});
+                    }
+                    const float next =
+                        scenario == AttentionScenario::final_step ? 0.f : .25f;
+                    bool scheduler_rejected = false;
+                    try {
+                        attention_denoiser.execute_scheduler(
+                            resident, tokens, 3, .625f, next, next_launchers, cancel
+                        );
+                    } catch (const std::exception&) {
+                        scheduler_rejected = true;
+                    }
+                    const bool failure =
+                        scenario >= AttentionScenario::scheduler_failure
+                        && scenario <= AttentionScenario::scheduler_missing_velocity;
+                    check(scheduler_rejected == failure);
+                    cancel.store(false);
+                    if (failure) {
+                        check(metadata.allocations.empty() && activity->owners == 0);
+                        check(
+                            next_first.scheduler_current.has_value()
+                            == (scenario
+                                != AttentionScenario::scheduler_missing_velocity)
+                        );
+                        return;
+                    }
+                    check(
+                        next_first.scheduler_current == .625f
+                        && next_first.scheduler_next == next
+                    );
+                    {
+                        auto latent_view = resident.tensor(
+                            0,
+                            "ingress/latent",
+                            kadan::DeviceDType::f32,
+                            {tokens - 3, 32},
+                            {32, 1}
+                        );
+                        check(
+                            resident.ready(latent_view)
+                            && latent_view.layout().data
+                                   == next_first.scheduler_latent.data
+                            && latent_view.layout().generation
+                                   == next_first.scheduler_latent.generation
+                        );
+                    }
+                    if (next != 0) {
+                        const auto peer_before = resident.transfers().peer_activation;
+                        // Force the next timestep onto the other owner, retaining only
+                        // latent and text conditioning from the completed step.
+                        metadata.remaining[0] = 0;
+                        if (scenario == AttentionScenario::scheduler_retry) {
+                            metadata.remaining[1] = 0;
+                            check(attention_denoiser
+                                      .prepare_feed_forward(
+                                          resident,
+                                          0,
+                                          tokens,
+                                          HiddenBoundary::pre_qkv,
+                                          cancel,
+                                          resident_text
+                                      )
+                                      .has_value());
+                            auto retained = resident.tensor(
+                                0,
+                                "ingress/latent",
+                                kadan::DeviceDType::f32,
+                                {tokens - 3, 32},
+                                {32, 1}
+                            );
+                            check(
+                                resident.ready(retained)
+                                && retained.layout().data
+                                       == next_first.scheduler_latent.data
+                                && retained.layout().generation
+                                       == next_first.scheduler_latent.generation
+                            );
+                            metadata.remaining[1] = metadata.available;
+                        }
+                        check(!attention_denoiser.prepare_feed_forward(
+                            resident,
+                            0,
+                            tokens,
+                            HiddenBoundary::pre_qkv,
+                            cancel,
+                            resident_text
+                        ));
+                        check(
+                            resident.plan().devices.size() == 1
+                            && resident.plan().devices.front().device == 1
+                        );
+                        check(
+                            resident.transfers().peer_activation - peer_before
+                            == ((tokens - 3) * 32 + 3 * 96) * 4
+                        );
+                        Launcher refreshed(metadata, 1);
+                        refreshed.tokens = tokens;
+                        refreshed.channels = 32;
+                        refreshed.ingress = true;
+                        refreshed.ingress_context = 96;
+                        refreshed.expected_timestep = next;
+                        refreshed.expect_ingress_weights(resident);
+                        const std::array<kadan::video::ImageFeedForwardLauncher*, 1>
+                            refreshed_launchers{&refreshed};
+                        attention_denoiser.execute_ingress(
+                            resident, {}, {}, 3, refreshed_launchers, cancel
+                        );
+                        check(resident.transfers().input_upload == uploaded);
+                        refreshed.ingress = false;
+                        refreshed.qkv = true;
+                        refreshed.expect_qkv_weights(resident);
+                        bool stale_rejected = false;
+                        try {
+                            attention_denoiser.execute_qkv(
+                                resident,
+                                0,
+                                tokens,
+                                3,
+                                scenario == AttentionScenario::scheduler_stale_timestep
+                                    ? std::nullopt
+                                    : std::optional<float>(next),
+                                refreshed_launchers,
+                                cancel
+                            );
+                        } catch (const std::exception&) {
+                            stale_rejected = true;
+                        }
+                        check(
+                            stale_rejected
+                            == (scenario == AttentionScenario::scheduler_stale_timestep)
+                        );
+                        if (stale_rejected) {
+                            check(
+                                refreshed.calls.empty() && metadata.allocations.empty()
+                                && activity->owners == 0
+                            );
+                            return;
+                        }
+                        check(refreshed.supplied_timestep == next);
+                        for (char stage : {'q', 'k', 'v'})
+                            check(refreshed.qkv_rows.at(stage).size() == tokens);
+                    }
+                }
+                check(scheduler || resident.transfers().weight_upload == weights);
             }
             const auto after = resident.transfers();
             check(
@@ -2283,6 +2485,15 @@ int main() {
               AttentionScenario::shorter_sequence})
             attention_case(scenario, two_devices);
     attention_case(AttentionScenario::next_owner, false);
+    for (auto scenario :
+         {AttentionScenario::next_step,
+          AttentionScenario::final_step,
+          AttentionScenario::scheduler_failure,
+          AttentionScenario::scheduler_cancel,
+          AttentionScenario::scheduler_missing_velocity,
+          AttentionScenario::scheduler_retry,
+          AttentionScenario::scheduler_stale_timestep})
+        attention_case(scenario, false);
     // Restore the original loaded model's checkpoint before conditioning checks.
     denoiser.unload();
     write_weights(directory, false, 64, 512, {.denoiser = true});
