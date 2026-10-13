@@ -222,7 +222,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     void* qkv_normalized = nullptr;
     std::uint64_t qkv_normalized_generation = 0;
     std::map<char, kadan::MediaDeviceSpan> qkv_weights, qkv_outputs;
-    std::map<char, std::vector<std::size_t>> qkv_rows;
+    std::map<char, std::vector<std::size_t>> qkv_rows, qkv_tiles;
     std::map<char, kadan::MediaDeviceSpan> rotary_norms;
     char fail_rotary = 0, cancel_rotary_stage = 0;
     std::vector<char> rotary_calls;
@@ -520,7 +520,11 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             );
             const auto row = read[0].offset / 256;
             check(row == qkv_rows[stage].size() && write[0].offset == read[0].offset);
-            qkv_rows[stage].push_back(row);
+            const auto rows = read[0].dimensions[0];
+            check(rows <= tokens - row);
+            qkv_tiles[stage].push_back(rows);
+            for (std::size_t i = 0; i < rows; ++i)
+                qkv_rows[stage].push_back(row + i);
             if (row == 0)
                 qkv_outputs[stage] = write[0];
             else
@@ -529,7 +533,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
                         == qkv_outputs.at(stage).data
                     && write[0].generation == qkv_outputs.at(stage).generation
                 );
-            if (row + 1 == tokens)
+            if (row + rows == tokens)
                 ++qkv_projection;
             calls.push_back(stage);
             backend.status = fail_qkv == stage ? 1 : 0;
@@ -1589,6 +1593,7 @@ int main() {
                     for (auto* launcher : qkv_launchers) {
                         launcher->calls.clear();
                         launcher->qkv_rows.clear();
+                        launcher->qkv_tiles.clear();
                         launcher->qkv_projection = 0;
                     }
                     const auto input_uploads = resident.transfers().input_upload;
@@ -1960,6 +1965,7 @@ int main() {
     enum class AttentionScenario {
         complete,
         query_tail,
+        projection_tail,
         next_block,
         next_owner,
         failed_status,
@@ -2155,7 +2161,9 @@ int main() {
         const bool next_block = scenario == AttentionScenario::next_block || migrate;
         const auto resident_text =
             scheduler ? std::optional<std::size_t>(3) : std::nullopt;
-        const std::size_t tokens = scenario == AttentionScenario::query_tail ? 131 : 17;
+        const std::size_t tokens = scenario == AttentionScenario::projection_tail ? 259
+                                   : scenario == AttentionScenario::query_tail    ? 131
+                                                                                  : 17;
         const auto budget = conditioning_budget + 40000 + (tokens - 17) * 3072
                             + kadan::video::ImageAttentionScratch(tokens, 32).bytes
                             - kadan::video::ImageAttentionScratch(17, 32).bytes;
@@ -2273,6 +2281,13 @@ int main() {
                     launcher->qkv_rows.at(stage).size() == tokens
                     && launcher->qkv_rows.at(stage).back() == tokens - 1
                 );
+                const auto& tiles = launcher->qkv_tiles.at(stage);
+                const auto rows = resident.plan().rows;
+                check(tiles.size() == (tokens + rows - 1) / rows);
+                check(tiles.front() == rows);
+                check(tiles.back() == (tokens % rows ? tokens % rows : rows));
+                if (scenario == AttentionScenario::projection_tail)
+                    check(rows > 1 && tokens % rows == 3);
             }
         auto& target = two_devices ? second : first;
         for (auto* launcher : qkv_launchers)
@@ -2357,11 +2372,13 @@ int main() {
         if (success) {
             for (auto* launcher : qkv_launchers) {
                 const std::vector<std::size_t> expected_first =
-                    tokens == 131 ? std::vector<std::size_t>{0, 128}
-                                  : std::vector<std::size_t>{0};
+                    tokens == 259   ? std::vector<std::size_t>{0, 128, 256}
+                    : tokens == 131 ? std::vector<std::size_t>{0, 128}
+                                    : std::vector<std::size_t>{0};
                 const std::vector<std::size_t> expected_rows =
-                    tokens == 131 ? std::vector<std::size_t>{128, 3}
-                                  : std::vector<std::size_t>{17};
+                    tokens == 259   ? std::vector<std::size_t>{128, 128, 3}
+                    : tokens == 131 ? std::vector<std::size_t>{128, 3}
+                                    : std::vector<std::size_t>{17};
                 check(
                     launcher->attended_first == expected_first
                     && launcher->attended_rows == expected_rows
@@ -2574,6 +2591,7 @@ int main() {
               AttentionScenario::invalid_tokens,
               AttentionScenario::shorter_sequence})
             attention_case(scenario, two_devices);
+    attention_case(AttentionScenario::projection_tail, false);
     attention_case(AttentionScenario::next_owner, false);
     for (auto scenario :
          {SchedulerScenario::next_step,
