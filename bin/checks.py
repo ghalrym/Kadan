@@ -25,6 +25,7 @@ NATIVE_UNIT_TARGETS = [
     "projection-validation-tests",
     "image-weight-loading-tests",
     "image-activation-tests",
+    "image-decoder-input-tests",
     "cuda-plan-tests",
     "fp8-plan-tests",
     "placement-tests",
