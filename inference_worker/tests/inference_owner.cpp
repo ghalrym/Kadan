@@ -603,5 +603,5 @@ int main() {
     cleanup_failure_stops_owner();
     reused_model_prepares_each_request();
     terminal_delivery_never_replays();
-    std::cout << "Native owner fake-engine units passed\n";
+    std::cout << "Inference owner fake-engine units passed\n";
 }
