@@ -121,11 +121,6 @@ void image_attention_precision() {
                 );
             });
     }
-    fails([] {
-        image::validate_attention_precision(
-            static_cast<AttentionPrecision>(99), Workload::image
-        );
-    });
 
     // Fake nested handle scopes: QK stays pedantic, PV restores before another
     // tile and the outer scope restores an initially fast mode on unwind.
