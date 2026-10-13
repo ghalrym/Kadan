@@ -580,6 +580,67 @@ inline Bf16ProjectionShape validate_image_final_normalization(
     return {rows, state, state};
 }
 
+// Euler update preserves the owned F32 latent; velocity and status cannot alias it.
+inline std::size_t validate_image_scheduler(
+    int device,
+    const MediaDeviceSpan& latent,
+    const MediaDeviceSpan& velocity,
+    const MediaDeviceSpan& updated,
+    const MediaDeviceSpan& status,
+    float current,
+    float next
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_scheduler_layout");
+    };
+    require(
+        std::isfinite(current) && std::isfinite(next) && current > 0 && current <= 1
+        && next >= 0 && next < current
+    );
+    require(latent.dimensions.size() == 2);
+    const auto rows = latent.dimensions[0], channels = latent.dimensions[1];
+    require(
+        rows && rows <= 32768 && channels && channels <= 64
+        && rows <= SIZE_MAX / channels / 4
+    );
+    for (const auto* span : {&latent, &velocity, &updated})
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{rows, channels}
+            && span->strides == std::vector<std::size_t>{channels, 1}
+            && span->bytes == rows * channels * sizeof(float)
+        );
+    require(
+        updated.data == latent.data && updated.device == latent.device
+        && updated.generation == latent.generation && updated.offset == latent.offset
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&latent, &velocity, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& span = *spans[i];
+        const auto address = reinterpret_cast<std::uintptr_t>(span.data);
+        require(
+            span.device == device && address && address % 4 == 0
+            && address <= UINTPTR_MAX - span.bytes
+            && span.offset <= SIZE_MAX - span.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto other = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(
+                address <= other ? other - address >= span.bytes
+                                 : address - other >= spans[j]->bytes
+            );
+        }
+    }
+    return rows * channels;
+}
+
 // The hidden input/output must be the same full view, including its lifetime.
 inline Bf16ProjectionShape validate_image_attention_residual(
     int device,
@@ -680,6 +741,14 @@ public:
     virtual void final_normalization(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // Inputs [latent,velocity]; outputs [same-latent,status].
+    virtual void scheduler(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        float current,
+        float next
+    ) = 0;
     virtual void
     pair(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
     virtual void
@@ -765,6 +834,13 @@ public:
     ) override;
     void final_normalization(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void scheduler(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        float current,
+        float next
     ) override;
     void pair(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>

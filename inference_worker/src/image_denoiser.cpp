@@ -286,7 +286,8 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     std::size_t block,
     std::size_t tokens,
     HiddenBoundary boundary,
-    const std::atomic_bool& cancel
+    const std::atomic_bool& cancel,
+    std::optional<std::size_t> resident_text
 ) {
     Busy active(busy_);
     stop(cancel);
@@ -359,18 +360,34 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
              norm ? ProjectionPrecision::f32 : ProjectionPrecision::bf16_f32}
         );
     }
-    if (ingress) {
+    if (resident_text) {
+        need(
+            *resident_text && *resident_text <= 2048 && *resident_text < tokens
+                && tokens <= 32768,
+            "image_scheduler_shape"
+        );
         manifest.tensors.insert(
             manifest.tensors.end(),
             {{"ingress/latent",
-              tokens * m.d.channels * sizeof(float),
-              MediaPhase::prepare,
-              MediaPhase::prepare},
-             {"ingress/condition",
-              tokens * m.d.context * sizeof(float),
-              MediaPhase::prepare,
-              MediaPhase::prepare},
-             {"ingress/normalized",
+              (tokens - *resident_text) * m.d.channels * sizeof(float)},
+             {"ingress/condition", *resident_text * m.d.context * sizeof(float)}}
+        );
+        if (block
+            || std::any_of(
+                session.plan().tensors.begin(),
+                session.plan().tensors.end(),
+                [](const auto& t) {
+                    return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+                }
+            )) {
+            manifest.retained_inputs.emplace_back("ingress/latent");
+            manifest.retained_inputs.emplace_back("ingress/condition");
+        }
+    }
+    if (ingress) {
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/normalized",
               tokens * m.d.context * sizeof(float),
               MediaPhase::prepare,
               MediaPhase::prepare},
@@ -380,6 +397,18 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
               MediaPhase::prepare}}
         );
     }
+    if (ingress && !resident_text)
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/latent",
+              tokens * m.d.channels * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/condition",
+              tokens * m.d.context * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare}}
+        );
     manifest.tensors.push_back(
         {"conditioning/frequency",
          512 * sizeof(float),
@@ -483,13 +512,26 @@ void Denoiser::execute_ingress(
     };
 
     try {
+        const auto resident = std::find_if(
+            session.plan().tensors.begin(),
+            session.plan().tensors.end(),
+            [](const auto& t) {
+                return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+            }
+        );
+        const bool owned = resident != session.plan().tensors.end();
         need(
-            text && text <= 2048 && !latent.empty() && latent.size() % channels == 0,
+            text && text <= 2048 && (owned || !latent.empty())
+                && latent.size() % channels == 0,
             "image_ingress_shape"
         );
-        const auto images = latent.size() / channels, tokens = text + images;
+        const auto images = owned ? resident->bytes / sizeof(float) / channels
+                                  : latent.size() / channels;
+        const auto tokens = text + images;
         need(
-            images <= 65536 && tokens <= 32768 && condition.size() == text * context
+            images && images <= 65536 && tokens <= 32768
+                && (latent.size() == images * channels || (owned && latent.empty()))
+                && (condition.size() == text * context || (owned && condition.empty()))
                 && session.plan().schedule == MediaSchedule::feed_forward
                 && launchers.size() == session.plan().devices.size(),
             "image_ingress_shape"
@@ -587,6 +629,14 @@ void Denoiser::execute_ingress(
                 &d.norm_weight, &d.text_weight, &d.output_weight, &d.image_weight
             };
             session.require_ready(ready);
+            if (latent.empty()) {
+                const std::array retained{&d.latent};
+                session.require_ready(retained);
+            }
+            if (condition.empty()) {
+                const std::array retained{&d.condition};
+                session.require_ready(retained);
+            }
             video::validate_image_text_normalization(
                 planned.device,
                 d.condition.layout(),
@@ -621,8 +671,10 @@ void Denoiser::execute_ingress(
         // Validate every device before uploading input or submitting any producer.
         for (auto& d : devices) {
             stop(cancel);
-            session.upload_input(d.latent, std::as_bytes(latent));
-            session.upload_input(d.condition, std::as_bytes(condition));
+            if (!latent.empty())
+                session.upload_input(d.latent, std::as_bytes(latent));
+            if (!condition.empty())
+                session.upload_input(d.condition, std::as_bytes(condition));
             stop(cancel);
             const std::array read{&d.condition, &d.norm_weight};
             const std::array write{&d.normalized, &d.status};
@@ -819,6 +871,11 @@ void Denoiser::execute_conditioning(
     };
 
     try {
+        if (block == 0
+            && std::any_of(plan.tensors.begin(), plan.tensors.end(), [](const auto& t) {
+                   return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+               }))
+            need(timestep.has_value(), "image_scheduler_timestep");
         need(
             tokens && text <= tokens && (!final || text < tokens) && plan.rows
                 && (attention || boundary == HiddenBoundary::post_attention)
@@ -1189,6 +1246,110 @@ void Denoiser::execute_final_output(
         );
         session.complete(projection_output, d.status);
         stop(cancel);
+    }
+}
+
+void Denoiser::execute_scheduler(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    float current,
+    float next,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView latent, velocity, status;
+    };
+
+    try {
+        need(
+            text && text <= 2048 && text < tokens && tokens <= 32768
+                && !session.plan().devices.empty()
+                && launchers.size() == session.plan().devices.size(),
+            "image_scheduler_shape"
+        );
+        std::vector<Device> devices;
+        const auto images = tokens - text, channels = model_->d.channels;
+        for (const auto& planned : session.plan().devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_scheduler_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_scheduler_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_scheduler_launcher");
+            const auto latent = std::find_if(
+                session.plan().tensors.begin(),
+                session.plan().tensors.end(),
+                [&](const auto& t) {
+                    return t.device == planned.device && t.name == "ingress/latent";
+                }
+            );
+            need(
+                latent != session.plan().tensors.end()
+                    && latent->last == MediaPhase::complete
+                    && latent->bytes == images * channels * sizeof(float),
+                "image_scheduler_shape"
+            );
+            devices.push_back(
+                {launcher,
+                 session.tensor(
+                     planned.device,
+                     "ingress/latent",
+                     DeviceDType::f32,
+                     {images, channels},
+                     {channels, 1}
+                 ),
+                 session.tensor(
+                     planned.device,
+                     "final/velocity",
+                     DeviceDType::f32,
+                     {images, channels},
+                     {channels, 1}
+                 ),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array read{&d.latent, &d.velocity};
+            session.require_ready(read);
+            video::validate_image_scheduler(
+                planned.device,
+                d.latent.layout(),
+                d.velocity.layout(),
+                d.latent.layout(),
+                d.status.layout(),
+                current,
+                next
+            );
+        }
+        for (auto& d : devices) {
+            stop(cancel);
+            const std::array read{&d.latent, &d.velocity};
+            const std::array write{&d.latent, &d.status};
+            session.launch(
+                d.launcher->device(),
+                read,
+                write,
+                [&](void* stream, auto in, auto out) {
+                    d.launcher->scheduler(stream, in, out, current, next);
+                }
+            );
+            session.complete(write, d.status);
+        }
+        stop(cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
     }
 }
 

@@ -123,6 +123,24 @@ image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
     output[i] = activated;
 }
 
+__global__ void image_scheduler_kernel(
+    float* latent, const float* velocity, std::size_t count, float dt, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float previous = latent[i], change = velocity[i];
+    if (!isfinite(previous) || !isfinite(change)) {
+        atomicOr(status, 1U);
+        return;
+    }
+    // Match image_generation's F32 multiply then add; CUDA must not fuse them.
+    const float updated = __fadd_rn(previous, __fmul_rn(dt, change));
+    if (!isfinite(updated))
+        atomicOr(status, 2U);
+    latent[i] = updated;
+}
+
 __global__ void image_text_norm_kernel(
     const float* input,
     const void* weight,
@@ -2722,6 +2740,37 @@ void CudaBf16Projection::final_normalization(
         0,
         true,
         0,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::scheduler(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    float current,
+    float next
+) {
+    require(inputs.size() == 2 && outputs.size() == 2, "image_scheduler_layout");
+    const auto count = validate_image_scheduler(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1], current, next
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    const float dt = next - current;
+    image_scheduler_kernel<<<unsigned((count + 255) / 256), 256, 0, owned_stream>>>(
+        static_cast<float*>(outputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        count,
+        dt,
         status
     );
     checked(cudaGetLastError());

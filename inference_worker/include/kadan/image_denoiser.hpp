@@ -34,21 +34,26 @@ public:
     // only.
     // After a completed block, admit the next loaded block as pre_qkv. Its full
     // hidden and timestep conditioning must be certified and retained on every
-    // selected device; placement requiring new owners is rejected before retirement.
+    // selected device, migrating exact bytes to new owners over admitted direct peers.
     // Ordered blocks of the same loaded model/step are the caller contract. Reuse
     // conditioning with execute_qkv(nullopt), then rotary and attention as usual.
+    // resident_text opts into full-step latent/condition ownership. Supply the same
+    // text count on every block admission; both inputs survive owner migrations.
     std::optional<MediaPlanError> prepare_feed_forward(
         MediaSession&,
         std::size_t block,
         std::size_t tokens,
         HiddenBoundary,
-        const std::atomic_bool&
+        const std::atomic_bool&,
+        std::optional<std::size_t> resident_text = {}
     );
     // Block 0 pre_qkv/pre_attention admission includes actual ingress
     // weights/workspaces. Validated host latent [images,channels] and condition
     // [text,context] are uploaded once per selected device. Text RMS -> in_layer + GELU
     // -> out_layer and img_in certify the text-first resident/hidden consumed by the
-    // block. Release all caller views before execution. No attention is executed here.
+    // block. With resident_text admission, empty spans reuse certified inputs after
+    // the scheduler update; initial spans preserve the caller's seeded F32 bytes.
+    // Release all caller views before execution. No attention is executed here.
     void execute_ingress(
         MediaSession&,
         std::span<const float> latent,
@@ -113,6 +118,21 @@ public:
         std::size_t text,
         std::optional<float> timestep,
         HiddenBoundary,
+        std::span<video::ImageFeedForwardLauncher* const>,
+        const std::atomic_bool&
+    );
+    // Complete last-block velocity updates the owned latent in place using the
+    // existing F32 next-current delta and separate multiply/add. No host transfer.
+    // Caller executes this once per completed step, using that step's sigma as
+    // current and the following schedule sigma as next. Release caller views first.
+    // Admit block 0 with resident_text, reuse ingress, then execute_qkv with next;
+    // next == 0 leaves the final latent certified for the later decoder handoff.
+    void execute_scheduler(
+        MediaSession&,
+        std::size_t tokens,
+        std::size_t text,
+        float current,
+        float next,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&
     );
