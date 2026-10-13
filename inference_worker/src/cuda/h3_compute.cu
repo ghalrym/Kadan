@@ -3407,6 +3407,7 @@ __global__ void h3_normalize_kernel(
     std::size_t groups,
     std::size_t first,
     std::size_t shift,
+    std::size_t stride_rows,
     unsigned* status
 ) {
     __shared__ double partial[256];
@@ -3427,22 +3428,29 @@ __global__ void h3_normalize_kernel(
     }
     const double scale =
         __drcp_rn(sqrt(__dadd_rn(__ddiv_rn(partial[0], double(width)), 1e-5)));
-    const auto group = token_groups[first + row];
-    if (group >= groups) {
-        if (t == 0)
-            atomicOr(status, 4U);
-        return;
+    const float* base = nullptr;
+    if (modulation) {
+        const auto group = token_groups[first + row];
+        if (group >= groups) {
+            if (t == 0)
+                atomicOr(status, 4U);
+            return;
+        }
+        base = modulation + group * stride_rows * width;
     }
-    const float* base = modulation + group * h3_modulation_rows * width;
+    // A plain norm may run in place: each thread reads and writes only its own
+    // channels, after the reduction completes.
     float* y = normalized + row * width;
     for (std::size_t c = t; c < width; c += 256) {
         const float n = float(
             __dmul_rn(__dmul_rn(double(x[c]), scale), double(h3_bf16(weight[c])))
         );
-        const float result = __fadd_rn(
-            __fmul_rn(n, __fadd_rn(1.f, base[(shift + 1) * width + c])),
-            base[shift * width + c]
-        );
+        const float result =
+            base ? __fadd_rn(
+                       __fmul_rn(n, __fadd_rn(1.f, base[(shift + 1) * width + c])),
+                       base[shift * width + c]
+                   )
+                 : n;
         if (!isfinite(result))
             atomicOr(status, 1U);
         y[c] = result;
@@ -3478,6 +3486,13 @@ __global__ void h3_qk_rotary_kernel(
         float(__dmul_rn(__dmul_rn(double(v), scale), double(h3_bf16(weight[t]))));
     __syncthreads();
     float out[2] = {values[t], 0.f};
+    // Without a rotary table (refiner text attention) only the norm applies.
+    if (!rotary) {
+        if (!isfinite(out[0]))
+            atomicOr(status, 1U);
+        p[t] = out[0];
+        return;
+    }
     if (t < 48) {
         const double* angle = rotary + (first + row) * 96 + std::size_t(t) * 2;
         const double a = values[t], b = values[t + 48];
@@ -3492,6 +3507,70 @@ __global__ void h3_qk_rotary_kernel(
             atomicOr(status, 1U);
         p[t] = out[0];
     }
+}
+
+// h3_denoiser.cpp refiner: current[i] += projected[i] in F32.
+__global__ void h3_add_kernel(
+    float* hidden, const float* projected, std::size_t count, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float result = __fadd_rn(hidden[i], projected[i]);
+    if (!isfinite(result))
+        atomicOr(status, 1U);
+    hidden[i] = result;
+}
+
+// Exact BF16 or F32 weights widened to F64, one column tile at a time.
+__global__ void h3_widen_real_kernel(
+    const void* source,
+    bool bf16,
+    double* destination,
+    std::size_t count,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float value =
+        bf16 ? __uint_as_float(
+                   unsigned(static_cast<const std::uint16_t*>(source)[i]) << 16
+               )
+             : static_cast<const float*>(source)[i];
+    if (!isfinite(value))
+        atomicOr(status, 1U);
+    destination[i] = value;
+}
+
+// narrow_bias into a column tile of y: F32(F64 sum) + bias, the host's precise
+// projection, with a zero bias for bias-free layers.
+__global__ void h3_narrow_kernel(
+    const double* sums,
+    const void* bias,
+    bool bf16_bias,
+    float* y,
+    std::size_t rows,
+    std::size_t tile,
+    std::size_t out,
+    std::size_t first_column,
+    unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= rows * tile)
+        return;
+    const auto row = i / tile, column = first_column + i % tile;
+    const float b =
+        !bias ? 0.f
+        : bf16_bias
+            ? __uint_as_float(
+                  unsigned(static_cast<const std::uint16_t*>(bias)[column]) << 16
+              )
+            : static_cast<const float*>(bias)[column];
+    const float value = __fadd_rn(float(sums[i]), b);
+    if (!isfinite(value))
+        atomicOr(status, 2U);
+    y[row * out + column] = value;
 }
 
 __global__ void h3_attention_init_kernel(
@@ -3691,43 +3770,21 @@ void CudaH3Launcher::convrot(
     double* low = nullptr;
     const double* lora_b = nullptr;
     if (lora) {
-        const auto rank = shape.rank;
-        auto* widened = static_cast<double*>(write[3].data);
-        h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
-            static_cast<const std::uint16_t*>(read[3].data), widened, rank * in, status
-        );
-        checked(cudaGetLastError());
-        h3_widen_kernel<<<blocks(out * rank), 256, 0, s>>>(
-            static_cast<const std::uint16_t*>(read[4].data),
-            widened + rank * in,
-            out * rank,
+        this->lora(
+            stream,
+            read[0],
+            read[3],
+            read[4],
+            write[2],
+            write[3],
+            rows,
+            in,
+            out,
+            shape.rank,
             status
         );
-        checked(cudaGetLastError());
-        lora_b = widened + rank * in;
-        auto* wide_input = widened + rank * in + out * rank;
-        widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
-        checked(cudaGetLastError());
         low = static_cast<double*>(write[2].data);
-        const double one = 1, zero = 0;
-        checked(cublasDgemm(
-            handle,
-            CUBLAS_OP_T,
-            CUBLAS_OP_N,
-            int(rank),
-            int(rows),
-            int(in),
-            &one,
-            widened,
-            int(in),
-            wide_input,
-            int(in),
-            &zero,
-            low,
-            int(rank)
-        ));
-        h3_zero_bias_kernel<<<blocks(rows * rank), 256, 0, s>>>(low, rows * rank);
-        checked(cudaGetLastError());
+        lora_b = static_cast<const double*>(write[3].data) + shape.rank * in;
     }
     for (std::size_t first = 0; first < out; first += shape.tile) {
         const auto tile = std::min(shape.tile, out - first);
@@ -3801,6 +3858,170 @@ void CudaH3Launcher::convrot(
     }
 }
 
+void CudaH3Launcher::lora(
+    void* stream,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& a,
+    const MediaDeviceSpan& b,
+    const MediaDeviceSpan& low,
+    const MediaDeviceSpan& weights,
+    std::size_t rows,
+    std::size_t in,
+    std::size_t out,
+    std::size_t rank,
+    unsigned* status
+) {
+    const auto s = static_cast<cudaStream_t>(stream);
+    auto* widened = static_cast<double*>(weights.data);
+    h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
+        static_cast<const std::uint16_t*>(a.data), widened, rank * in, status
+    );
+    checked(cudaGetLastError());
+    h3_widen_kernel<<<blocks(out * rank), 256, 0, s>>>(
+        static_cast<const std::uint16_t*>(b.data),
+        widened + rank * in,
+        out * rank,
+        status
+    );
+    checked(cudaGetLastError());
+    auto* wide_input = widened + rank * in + out * rank;
+    widen<<<blocks(rows * in), 256, 0, s>>>(
+        static_cast<const float*>(input.data), wide_input, rows * in
+    );
+    checked(cudaGetLastError());
+    auto* result = static_cast<double*>(low.data);
+    const double one = 1, zero = 0;
+    checked(cublasDgemm(
+        static_cast<cublasHandle_t>(blas_),
+        CUBLAS_OP_T,
+        CUBLAS_OP_N,
+        int(rank),
+        int(rows),
+        int(in),
+        &one,
+        widened,
+        int(in),
+        wide_input,
+        int(in),
+        &zero,
+        result,
+        int(rank)
+    ));
+    h3_zero_bias_kernel<<<blocks(rows * rank), 256, 0, s>>>(result, rows * rank);
+    checked(cudaGetLastError());
+}
+
+// The host's precise dense projection over session buffers: F64 GEMM of the
+// widened input and one widened weight column tile at a time, narrowed to F32
+// with its bias, then the Turbo delta in the same order as convrot.
+void CudaH3Launcher::dense(
+    void* stream,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    float lora_scale
+) {
+    const auto shape = validate_h3_dense(device_, read, write);
+    const bool lora = shape.rank != 0;
+    bind(stream, write[write.size() - 2]);
+    const auto s = static_cast<cudaStream_t>(stream);
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    auto* status = static_cast<unsigned*>(write.back().data);
+    const auto rows = shape.rows, in = shape.in, out = shape.out;
+    const auto* input = static_cast<const float*>(read[0].data);
+    auto* output = static_cast<float*>(write[0].data);
+    auto* wide_input = static_cast<double*>(write[1].data);
+    auto* wide_weight = reinterpret_cast<double*>(
+        static_cast<std::byte*>(write[1].data)
+        + detail::h3_aligned(Bytes(rows) * in * 8)
+    );
+    auto* wide_output = wide_weight + shape.tile * in;
+    const bool bf16 = read[1].dtype == DeviceDType::bf16;
+    const auto* weight = static_cast<const std::byte*>(read[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    checked(cudaGetLastError());
+    widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
+    checked(cudaGetLastError());
+    const double* low = nullptr;
+    const double* lora_b = nullptr;
+    if (lora) {
+        this->lora(
+            stream,
+            read[0],
+            read[2],
+            read[3],
+            write[2],
+            write[3],
+            rows,
+            in,
+            out,
+            shape.rank,
+            status
+        );
+        low = static_cast<const double*>(write[2].data);
+        lora_b = static_cast<const double*>(write[3].data) + shape.rank * in;
+    }
+    for (std::size_t first = 0; first < out; first += shape.tile) {
+        const auto tile = std::min(shape.tile, out - first);
+        h3_widen_real_kernel<<<blocks(tile * in), 256, 0, s>>>(
+            weight + first * in * (bf16 ? 2 : 4), bf16, wide_weight, tile * in, status
+        );
+        checked(cudaGetLastError());
+        const double one = 1, zero = 0;
+        checked(cublasDgemm(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            int(tile),
+            int(rows),
+            int(in),
+            &one,
+            wide_weight,
+            int(in),
+            wide_input,
+            int(in),
+            &zero,
+            wide_output,
+            int(tile)
+        ));
+        h3_narrow_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+            wide_output,
+            shape.bias ? read[2].data : nullptr,
+            shape.bias && read[2].dtype == DeviceDType::bf16,
+            output,
+            rows,
+            tile,
+            out,
+            first,
+            status
+        );
+        checked(cudaGetLastError());
+        if (!lora)
+            continue;
+        // The narrowed tile is consumed; reuse its F64 buffer for the delta.
+        checked(cublasDgemm(
+            handle,
+            CUBLAS_OP_T,
+            CUBLAS_OP_N,
+            int(tile),
+            int(rows),
+            int(shape.rank),
+            &one,
+            lora_b + first * shape.rank,
+            int(shape.rank),
+            low,
+            int(shape.rank),
+            &zero,
+            wide_output,
+            int(tile)
+        ));
+        h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+            wide_output, output, rows, tile, out, first, lora_scale, status
+        );
+        checked(cudaGetLastError());
+    }
+}
+
 void CudaH3Launcher::silu_gate(
     void* stream,
     std::span<const MediaDeviceSpan> read,
@@ -3852,23 +4073,47 @@ void CudaH3Launcher::normalize(
     std::span<const MediaDeviceSpan> read,
     std::span<const MediaDeviceSpan> write,
     std::size_t first,
-    std::size_t shift
+    std::size_t shift,
+    std::size_t stride
 ) {
-    const auto rows = validate_h3_normalize(device_, read, write, first, shift);
+    const auto rows = validate_h3_normalize(device_, read, write, first, shift, stride);
     own(stream);
     const auto s = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(write[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    const bool modulated = read.size() == 4;
+    const auto width = read[0].dimensions[1];
     h3_normalize_kernel<<<unsigned(rows), 256, 0, s>>>(
         static_cast<const float*>(read[0].data),
         static_cast<const std::uint16_t*>(read[1].data),
-        static_cast<const float*>(read[2].data),
-        static_cast<const std::uint32_t*>(read[3].data),
+        modulated ? static_cast<const float*>(read[2].data) : nullptr,
+        modulated ? static_cast<const std::uint32_t*>(read[3].data) : nullptr,
         static_cast<float*>(write[0].data),
-        read[0].dimensions[1],
-        read[2].dimensions[0] * h3_modulation_tags,
+        width,
+        modulated ? h3_modulation(device_, read[2], read[3], width, first, rows, stride)
+                  : 0,
         first,
         shift,
+        stride,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaH3Launcher::add(
+    void* stream,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write
+) {
+    const auto count = validate_h3_add(device_, read, write);
+    own(stream);
+    const auto s = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(write[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    h3_add_kernel<<<blocks(count), 256, 0, s>>>(
+        static_cast<float*>(write[0].data),
+        static_cast<const float*>(read[1].data),
+        count,
         status
     );
     checked(cudaGetLastError());
@@ -3889,7 +4134,7 @@ void CudaH3Launcher::qk_rotary(
     h3_qk_rotary_kernel<<<dim3(unsigned(rows), unsigned(width / 128)), 128, 0, s>>>(
         static_cast<float*>(write[0].data),
         static_cast<const std::uint16_t*>(read[1].data),
-        static_cast<const double*>(read[2].data),
+        read.size() == 3 ? static_cast<const double*>(read[2].data) : nullptr,
         width,
         first,
         status

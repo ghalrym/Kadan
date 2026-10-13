@@ -7,6 +7,7 @@
 #include <map>
 #include <source_location>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "kadan/cleanup_error.hpp"
@@ -104,7 +105,8 @@ struct Device final : kadan::MediaDeviceOperations {
 };
 
 // Validates every launch with the shared layout checks; never reads tensor data.
-// Calls: c convrot, s SiLU gate, r residual, n normalize, q q/k rotary, a attention.
+// Calls: c convrot, m AdaLN convrot, d dense, s SiLU gate, r gated residual,
+// + plain residual, n normalize, q q/k norm (and rotary), a attention.
 struct Launcher final : kadan::video::H3ResidentLauncher {
     Device& backend;
     int selected;
@@ -112,7 +114,7 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
     std::size_t releases = 0;
     std::size_t key_tile = 0;
     std::string calls;
-    std::vector<std::size_t> residual_index, normalize_shift;
+    std::vector<std::size_t> residual_index, normalize_shift, normalize_stride;
 
     Launcher(Device& d, int id) : backend(d), selected(id) {
     }
@@ -174,10 +176,14 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
         std::span<const MediaDeviceSpan> read,
         std::span<const MediaDeviceSpan> write,
         std::size_t first,
-        std::size_t shift
+        std::size_t shift,
+        std::size_t stride
     ) override {
-        kadan::video::validate_h3_normalize(selected, read, write, first, shift);
-        normalize_shift.push_back(shift);
+        kadan::video::validate_h3_normalize(
+            selected, read, write, first, shift, stride
+        );
+        normalize_shift.push_back(read.size() == 4 ? shift : 9);
+        normalize_stride.push_back(read.size() == 4 ? stride : 0);
         calls.push_back('n');
         backend.status = 0;
     }
@@ -201,13 +207,39 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
     ) override {
         const auto shape =
             kadan::video::validate_h3_attention(selected, read, write, tile);
-        check(shape.keys == tokens && shape.heads >= 1);
+        check((shape.keys == tokens || shape.keys == text) && shape.heads >= 1);
         key_tile = tile;
         calls.push_back('a');
         backend.status = 0;
     }
 
-    static constexpr std::size_t tokens = 17;
+    // Refiner projections carry Turbo LoRA; final-layer ones carry a bias.
+    void dense(
+        void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write,
+        float scale
+    ) override {
+        check(stream == backend.stream(selected));
+        const auto shape = kadan::video::validate_h3_dense(selected, read, write);
+        check(shape.tile >= 1);
+        check(
+            shape.bias ? !shape.rank && scale == 0 : shape.rank == 8 && scale == 0.5f
+        );
+        calls.push_back('d');
+        backend.status = 0;
+    }
+
+    void
+    add(void*,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write) override {
+        kadan::video::validate_h3_add(selected, read, write);
+        calls.push_back('+');
+        backend.status = 0;
+    }
+
+    static constexpr std::size_t tokens = 17, text = 5;
 };
 
 constexpr std::size_t time_width = 64, hidden = 64, width = 128, rank = 8,
@@ -682,7 +714,9 @@ Run run(
     for (std::size_t t = 0; t < tokens; ++t)
         token_groups[t] = std::uint32_t(t % groups);
     if (full)
-        detail::upload_h3_block_inputs(session, b, state, time, token_groups, rotary);
+        detail::upload_h3_step_inputs(
+            session, hidden, time_width, state, time, token_groups, rotary
+        );
     else
         detail::upload_h3_feed_forward_inputs(
             session, b.ff, normalized, state, modulation, token_groups
@@ -805,6 +839,342 @@ void orchestration() {
     rejects([] { run(64 << 20, {0}, true, true); }, "media_session_nonfinite_output");
 }
 
+constexpr std::size_t text = Launcher::text, video_rows = 8, audio_rows = 4,
+                      video_width = 96, audio_width = 32;
+
+detail::H3Projection dense(
+    Identities& identity,
+    const std::string& prefix,
+    std::size_t rows,
+    std::size_t columns,
+    bool lora,
+    kadan::TensorStorage storage = kadan::TensorStorage::bf16_exact
+) {
+    detail::H3Projection p;
+    p.weight = prefix + ".weight";
+    p.storage = storage;
+    p.weight_id =
+        identity(rows * columns * (storage == kadan::TensorStorage::f32 ? 4 : 2));
+    if (lora) {
+        p.lora_a = "diffusion_model." + prefix + ".lora_A.weight";
+        p.lora_b = "diffusion_model." + prefix + ".lora_B.weight";
+        p.lora_a_id = identity(rank * columns * 2);
+        p.lora_b_id = identity(rows * rank * 2);
+        p.rank = rank;
+        p.lora_scale = 0.5f;
+    } else {
+        p.bias = prefix + ".bias";
+        p.bias_storage = storage;
+        p.bias_id = identity(rows * (storage == kadan::TensorStorage::f32 ? 4 : 2));
+    }
+    return p;
+}
+
+// Identities start past the block fixture's so every stage's weights differ.
+detail::H3Refiner refiner(std::size_t block) {
+    Identities identity{1000 + 100 * block};
+    detail::H3Refiner r;
+    r.hidden = hidden;
+    r.width = width;
+    r.heads = heads;
+    r.head_dim = head_dim;
+    r.time_width = time_width;
+    const auto p = "token_refiner.blocks." + std::to_string(block) + ".";
+    r.qkv = dense(identity, p + "attn.qkv_proj", 3 * inner, hidden, true);
+    r.out = dense(identity, p + "attn.out_proj", hidden, inner, true);
+    r.fc1 = dense(identity, p + "mlp.fc1", 2 * width, hidden, true);
+    r.fc2 = dense(identity, p + "mlp.fc2", hidden, width, true);
+    const std::array<const char*, 4> names{
+        "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight"
+    };
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        r.norm[i] = p + names[i];
+        r.norm_id[i] = identity((i < 2 ? hidden : head_dim) * 2);
+    }
+    if (block == 1) {
+        r.final_norm = "token_refiner.final_norm.weight";
+        r.final_norm_id = identity(hidden * 2);
+    }
+    return r;
+}
+
+detail::H3Final final_layer() {
+    Identities identity{2000};
+    detail::H3Final f;
+    f.hidden = hidden;
+    f.time_width = time_width;
+    f.adaln =
+        dense(identity, "final_layer.adaln_proj.linear", 2 * hidden, time_width, false);
+    f.video = dense(
+        identity,
+        "final_layer.video_out",
+        video_width,
+        hidden,
+        false,
+        kadan::TensorStorage::f32
+    );
+    f.audio = dense(
+        identity,
+        "final_layer.audio_out",
+        audio_width,
+        hidden,
+        false,
+        kadan::TensorStorage::f32
+    );
+    f.norm = "final_layer.norm.weight";
+    f.norm_id = identity(hidden * 2);
+    return f;
+}
+
+void edge_layouts() {
+    std::vector<std::byte> memory(8 << 20),
+        workspace(kadan::video::h3_resident_blas_bytes);
+    std::size_t used = 0;
+    auto span = [&](DeviceDType type,
+                    std::vector<std::size_t> dimensions,
+                    std::size_t element) {
+        std::size_t count = 1;
+        for (auto d : dimensions)
+            count *= d;
+        std::vector<std::size_t> strides(dimensions.size(), 1);
+        if (dimensions.size() == 2)
+            strides[0] = dimensions[1];
+        MediaDeviceSpan s{
+            memory.data() + used,
+            0,
+            type,
+            std::move(dimensions),
+            strides,
+            count * element
+        };
+        used += (count * element + 255) / 256 * 256;
+        return s;
+    };
+    const MediaDeviceSpan blas{
+        workspace.data(), 0, DeviceDType::u8, {workspace.size()}, {1}, workspace.size()
+    };
+    const std::size_t rows = 3, in = 64, out = 8;
+    auto status = span(DeviceDType::u32, {1}, 4);
+    auto input = span(DeviceDType::f32, {rows, in}, 4);
+    auto bf16 = span(DeviceDType::bf16, {out, in}, 2);
+    auto f32 = span(DeviceDType::f32, {out, in}, 4);
+    auto bias = span(DeviceDType::f32, {out, 1}, 4);
+    auto a = span(DeviceDType::bf16, {rank, in}, 2);
+    auto b = span(DeviceDType::bf16, {out, rank}, 2);
+    auto output = span(DeviceDType::f32, {rows, out}, 4);
+    const kadan::Bytes conversion_bytes = 8 * rows * in + 256 + 8 * (in + rows) * out;
+    auto conversion = span(DeviceDType::u8, {conversion_bytes}, 1);
+    auto low = span(DeviceDType::f64, {rows, rank}, 8);
+    auto widened = span(DeviceDType::f64, {rank * in + out * rank + rows * in}, 8);
+
+    // F64 dense scratch: aligned widened input, then per column a widened weight
+    // row and one widened output per input row.
+    check(kadan::video::h3_dense_tile(8 * rows * in, rows, in) == 0);
+    check(kadan::video::h3_dense_tile(conversion_bytes, rows, in) == out);
+    const std::vector plain_read{input, f32, bias};
+    const std::vector plain_write{output, conversion, blas, status};
+    auto shape = kadan::video::validate_h3_dense(0, plain_read, plain_write);
+    check(shape.bias && !shape.rank && shape.tile == out && shape.out == out);
+    const std::vector lora_read{input, bf16, a, b};
+    const std::vector lora_write{output, conversion, low, widened, blas, status};
+    shape = kadan::video::validate_h3_dense(0, lora_read, lora_write);
+    check(!shape.bias && shape.rank == rank);
+    auto i8 = span(DeviceDType::i8, {out, in}, 1);
+    rejects(
+        [&] {
+            const std::vector read{input, i8};
+            kadan::video::validate_h3_dense(0, read, plain_write);
+        },
+        "h3_dense_layout"
+    );
+    rejects(
+        [&] {
+            const std::vector read{input, f32, a};
+            kadan::video::validate_h3_dense(0, read, plain_write);
+        },
+        "h3_dense_layout"
+    );
+
+    // A plain norm may run in place; a modulated one never does.
+    auto rows_hidden = span(DeviceDType::f32, {rows, hidden}, 4);
+    auto norm = span(DeviceDType::bf16, {hidden, 1}, 2);
+    const std::vector plain_norm{rows_hidden, norm};
+    const std::vector in_place{rows_hidden, status};
+    check(kadan::video::validate_h3_normalize(0, plain_norm, in_place, 0, 0) == rows);
+    rejects(
+        [&] { kadan::video::validate_h3_normalize(0, plain_norm, in_place, 0, 3); },
+        "h3_normalize_layout"
+    );
+    // The final layer's [timesteps, 2 * hidden] table indexed by timestep.
+    auto final_table = span(DeviceDType::f32, {1, 2 * hidden}, 4);
+    auto time_ids = span(DeviceDType::u32, {tokens}, 4);
+    auto normalized = span(DeviceDType::f32, {rows, hidden}, 4);
+    const std::vector final_read{rows_hidden, norm, final_table, time_ids};
+    const std::vector final_write{normalized, status};
+    check(
+        kadan::video::validate_h3_normalize(0, final_read, final_write, 0, 0, 2) == rows
+    );
+    rejects(
+        [&] {
+            kadan::video::validate_h3_normalize(0, final_read, final_write, 0, 0, 6);
+        },
+        "h3_modulation_layout"
+    );
+    rejects(
+        [&] {
+            const std::vector read{rows_hidden, norm, final_table, time_ids};
+            const std::vector write{rows_hidden, status};
+            kadan::video::validate_h3_normalize(0, read, write, 0, 0, 2);
+        },
+        "h3_normalize_layout"
+    );
+
+    auto projected = span(DeviceDType::f32, {rows, hidden}, 4);
+    const std::vector add_read{rows_hidden, projected};
+    const std::vector add_write{rows_hidden, status};
+    check(kadan::video::validate_h3_add(0, add_read, add_write) == rows * hidden);
+    rejects(
+        [&] {
+            const std::vector write{projected, status};
+            kadan::video::validate_h3_add(0, add_read, write);
+        },
+        "h3_add_layout"
+    );
+
+    // Text q/k norm without rotary.
+    auto qk = span(DeviceDType::f32, {rows, inner}, 4);
+    auto head_norm = span(DeviceDType::bf16, {head_dim, 1}, 2);
+    const std::vector qk_read{qk, head_norm};
+    const std::vector qk_write{qk, status};
+    check(kadan::video::validate_h3_qk_rotary(0, qk_read, qk_write, 2) == rows * heads);
+}
+
+void edge_manifests() {
+    for (std::size_t block = 0; block < 2; ++block) {
+        const auto r = refiner(block);
+        const auto m = detail::h3_refiner_manifest(r, tokens, text, 1, block != 0);
+        check(m.schedule == kadan::MediaSchedule::feed_forward);
+        check(m.retained_inputs.size() == (block ? 4u : 0u));
+        // Four BF16 projections with LoRA, four norms, and the final norm last.
+        check(m.weights.size() == 4 + 4 * 3 + block);
+        for (const auto& w : m.weights)
+            check(w.partition == kadan::WeightPartition::replicated);
+        const auto qkv = std::find_if(m.weights.begin(), m.weights.end(), [&](auto& w) {
+            return w.name == r.qkv.weight;
+        });
+        check(
+            qkv != m.weights.end() && qkv->planes == 3
+            && qkv->precision == kadan::ProjectionPrecision::precise_f64
+        );
+        const auto plan = planned(m, detail::h3_refiner_shape(r, tokens), 64 << 20);
+        check(std::holds_alternative<kadan::MediaResidencyPlan>(plan));
+    }
+    const auto f = final_layer();
+    const auto m = detail::h3_final_manifest(f, tokens, video_rows, audio_rows, 1);
+    check(
+        m.retained_inputs == (std::vector<std::string>{"resident/hidden", "block/time"})
+    );
+    const auto video = std::find_if(m.weights.begin(), m.weights.end(), [&](auto& w) {
+        return w.name == f.video.weight;
+    });
+    check(
+        video != m.weights.end() && video->storage == kadan::TensorStorage::f32
+        && video->precision == kadan::ProjectionPrecision::precise_f64
+    );
+    const auto plan = planned(m, detail::h3_final_shape(f, tokens), 64 << 20);
+    check(std::holds_alternative<kadan::MediaResidencyPlan>(plan));
+    // Audio-free requests carry no audio weights or rows.
+    const auto silent = detail::h3_final_manifest(f, tokens, video_rows, 0, 1);
+    check(std::none_of(silent.weights.begin(), silent.weights.end(), [&](auto& w) {
+        return w.name == f.audio.weight;
+    }));
+}
+
+// A whole update in one session: refiner 0 uploads the step inputs, refiner 1
+// (with the final norm), a block and the final layer retain them, and only the
+// output rows are downloaded.
+void chain() {
+    std::atomic_bool cancel = false;
+    auto resources = std::make_shared<kadan::Resources>(
+        kadan::Footprint{1ULL << 30, 64ULL << 20, 64ULL << 20}
+    );
+    auto backend = std::make_unique<Device>();
+    auto& device = *backend;
+    kadan::MediaSession session(
+        resources,
+        std::make_shared<kadan::MediaSessionActivity>(),
+        std::move(backend),
+        kadan::Workload::video,
+        {{0}},
+        cancel
+    );
+    auto upload_weights = [&] {
+        for (const auto& slice : session.plan().weights) {
+            auto view = session.weight(slice);
+            std::vector<std::byte> raw(slice.stored_bytes);
+            session.upload_weight(view, raw);
+        }
+    };
+    Launcher launcher(device, 0);
+    const std::array<kadan::video::H3ResidentLauncher*, 1> launchers{&launcher};
+    std::vector<float> state(tokens * hidden, 1.f), time(time_width);
+    std::vector<double> rotary(tokens * 96);
+    std::vector<std::uint32_t> token_groups(tokens), time_ids(tokens);
+    for (std::size_t t = 0; t < tokens; ++t)
+        token_groups[t] = std::uint32_t(t % groups);
+    std::vector<std::string> stages;
+    for (std::size_t block = 0; block < 2; ++block) {
+        const auto r = refiner(block);
+        check(!session.admit(
+            detail::h3_refiner_manifest(r, tokens, text, 1, block != 0),
+            detail::h3_refiner_shape(r, tokens)
+        ));
+        upload_weights();
+        if (!block)
+            detail::upload_h3_step_inputs(
+                session, hidden, time_width, state, time, token_groups, rotary
+            );
+        detail::execute_h3_refiner(session, launchers, r, tokens, text, cancel);
+        stages.push_back(std::exchange(launcher.calls, {}));
+    }
+    const auto inputs = session.transfers().input_upload;
+    const auto b = block(true);
+    check(!session.admit(
+        detail::h3_block_manifest(b, tokens, groups, true),
+        detail::h3_block_shape(b, tokens)
+    ));
+    upload_weights();
+    detail::execute_h3_block(session, launchers, b, tokens, cancel);
+    stages.push_back(std::exchange(launcher.calls, {}));
+    check(session.transfers().input_upload == inputs);
+    const auto f = final_layer();
+    check(!session.admit(
+        detail::h3_final_manifest(f, tokens, video_rows, audio_rows, 1),
+        detail::h3_final_shape(f, tokens)
+    ));
+    upload_weights();
+    detail::upload_h3_final_inputs(session, time_ids);
+    std::vector<float> video(video_rows * video_width, 2.f),
+        audio(audio_rows * audio_width, 2.f);
+    detail::execute_h3_final(session, launchers, f, tokens, text, video, audio, cancel);
+    stages.push_back(std::exchange(launcher.calls, {}));
+    session.finish();
+    // Refiner: Q/K/V with q/k norms, attention, out_proj and add, then FF and add;
+    // the last block adds the in-place final norm. The final layer projects AdaLN,
+    // then normalizes and projects the video and audio rows.
+    check(
+        stages
+        == (std::vector<std::string>{
+            "ndqdqdad+nddsd+", "ndqdqdad+nddsd+n", "mncqcncqacrnccscr", "dndnd"
+        })
+    );
+    check(device.downloads == 2);
+    check(
+        launcher.normalize_stride
+        == (std::vector<std::size_t>{0, 0, 0, 0, 0, 6, 6, 6, 2, 2})
+    );
+}
+
 // Exercise the same cleanup boundary used by the denoiser, without inference.
 void cleanup() {
     for (bool full : {false, true})
@@ -869,4 +1239,7 @@ int main() {
     manifests();
     orchestration();
     cleanup();
+    edge_layouts();
+    edge_manifests();
+    chain();
 }

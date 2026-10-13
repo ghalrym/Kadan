@@ -120,6 +120,20 @@ const char* fallback_phase(PlanFailure reason) {
     throw std::invalid_argument("h3_resident_plan_failure");
 }
 
+const char* refiner_fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_refiner_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_refiner_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_refiner_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_refiner_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
+
 const char* attention_fallback_phase(PlanFailure reason) {
     switch (reason) {
     case PlanFailure::capacity:
@@ -564,7 +578,7 @@ void H3Generation::execute(
     if (compute_ && activity_ && !devices_.empty())
         resident.emplace(resources_, compute_, activity_, devices_, cancel);
     // The same shape is rejected on every update; stop admitting a rejected stage.
-    bool attention = true;
+    bool refiner = true, attention = true;
 #endif
     for (std::size_t step = 0; step < request.updates; ++step) {
         stop(cancel);
@@ -574,7 +588,9 @@ void H3Generation::execute(
             H3Denoiser::Resident state{
                 [&] { return resident->session(); },
                 resident->launchers,
+                refiner,
                 attention,
+                {},
                 {},
                 {}
             };
@@ -591,6 +607,11 @@ void H3Generation::execute(
                 rethrow_after_cleanup(std::current_exception(), [&] {
                     resident->close();
                 });
+            }
+            if (state.refiner_rejected) {
+                refiner = false;
+                if (hook)
+                    hook(refiner_fallback_phase(state.refiner_rejected->reason), 0);
             }
             if (state.attention_rejected) {
                 attention = false;
