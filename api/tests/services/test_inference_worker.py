@@ -17,6 +17,10 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
             b"ordinary diagnostic\nKAD",
             b'AN_IMAGE_TIMING {"step":',
             b'1}\nKADAN_IMAGE_TIMING {"step":2}\n',
+            b"KADAN_ATEN_IMAGE_",
+            b'TIMING {"phase":"load"}\nKADAN_ATEN_IMAGE_TIMING_EXTRA ignored\n',
+            b'KADAN_ATEN_IMAGE_TIMING {"phase":"generation"}\n',
+            b'KADAN_ATEN_IMAGE_TIMING {"phase":"unload"}\n',
         ]
         worker.process = SimpleNamespace(
             stderr=SimpleNamespace(read=AsyncMock(side_effect=[*chunks, b""]))
@@ -26,7 +30,10 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
             await worker._stderr()
         self.assertEqual(
             output.getvalue(),
-            'KADAN_IMAGE_TIMING {"step":1}\nKADAN_IMAGE_TIMING {"step":2}\n',
+            'KADAN_IMAGE_TIMING {"step":1}\nKADAN_IMAGE_TIMING {"step":2}\n'
+            'KADAN_ATEN_IMAGE_TIMING {"phase":"load"}\n'
+            'KADAN_ATEN_IMAGE_TIMING {"phase":"generation"}\n'
+            'KADAN_ATEN_IMAGE_TIMING {"phase":"unload"}\n',
         )
         self.assertEqual("".join(worker.diagnostics), b"".join(chunks).decode())
         callback.assert_not_called()
@@ -36,8 +43,9 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_and_incomplete_timing_lines_do_not_relay(self):
         worker = InferenceWorker(Path("/unused"))
         chunks = [
+            b"KADAN_ATEN_IMAGE_TIMING " + b"x" * 4100 + b"\n",
             b"KADAN_IMAGE_TIMING " + b"x" * 4000,
-            b"x" * 100 + b'\nKADAN_IMAGE_TIMING {"step":1}\nKADAN_IMAGE_',
+            b"x" * 100 + b'\nKADAN_IMAGE_TIMING {"step":1}\nKADAN_ATEN_IMAGE_',
             b"TIMING incomplete",
         ]
         worker.process = SimpleNamespace(

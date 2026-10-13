@@ -1,19 +1,39 @@
 # Build from the repository root; .dockerignore admits API/inference worker source only.
-FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS cuda-toolkit
+ARG CUDA_VERSION=12.6.3
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS cuda-toolkit
 
 FROM python:3.12-slim-bookworm AS worker-build
-COPY --from=cuda-toolkit /usr/local/cuda-12.6 /usr/local/cuda-12.6
-ENV PATH=/usr/local/cuda-12.6/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64
+COPY --from=cuda-toolkit /usr/local/cuda/ /usr/local/cuda/
+ENV PATH=/usr/local/cuda/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda/lib64
+ARG KADAN_ENABLE_ATEN_IMAGE=OFF
 RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev \
     && rm -rf /var/lib/apt/lists/*
 # Bookworm CMake predates CUDA 12 C++20 feature detection.
 RUN pip install --no-cache-dir cmake==3.31.6
+# Python is used to acquire the supported C++ library during the build only.
+# The worker calls ATen directly and never imports torch or launches Python.
+RUN if [ "$KADAN_ENABLE_ATEN_IMAGE" = ON ]; then \
+      pip install --no-cache-dir torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130; \
+    fi
+ENV CMAKE_PREFIX_PATH=/usr/local/lib/python3.12/site-packages/torch
 COPY inference_worker/ /src/inference_worker/
-RUN cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_TESTING=OFF -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_WHISPER_BLAS=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DKADAN_ENABLE_IMAGE_BLAS=ON \
+RUN set -eu; cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TESTING=OFF -DKADAN_ENABLE_ATEN_IMAGE=${KADAN_ENABLE_ATEN_IMAGE} -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_DECISIONS=ON -DKADAN_ENABLE_H3_GENERATION=ON -DKADAN_ENABLE_WHISPER_BLAS=ON -DKADAN_ENABLE_TTS_WORKER=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON -DKADAN_ENABLE_IMAGE_BLAS=ON \
     && cmake --build /build --target kadan-inference-worker --parallel 2 \
-    && cmake --install /build --prefix /out --component inference-runtime
+    && if [ "$KADAN_ENABLE_ATEN_IMAGE" = ON ]; then \
+         export LD_LIBRARY_PATH="$(python -c 'import pathlib; print(":".join(str(p) for p in pathlib.Path("/usr/local/lib/python3.12/site-packages/nvidia").glob("*/lib")))'):$LD_LIBRARY_PATH"; \
+       fi \
+    && cmake --install /build --prefix /out --component inference-runtime \
+    && if [ "$KADAN_ENABLE_ATEN_IMAGE" = ON ]; then \
+         cp -a /usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib/libcudnn*.so* /out/lib/; \
+         cp -a /usr/local/lib/python3.12/site-packages/nvidia/cu13/lib/libnvrtc*.so* /out/lib/; \
+         mkdir -p /out/share/kadan/licenses; \
+         cp -r /usr/local/lib/python3.12/site-packages/torch-*.dist-info/licenses /out/share/kadan/licenses/torch; \
+         for p in /usr/local/lib/python3.12/site-packages/nvidia*.dist-info; do \
+           if [ -d "$p/licenses" ]; then cp -r "$p/licenses" "/out/share/kadan/licenses/$(basename "$p")"; fi; \
+         done; \
+       fi
 
 FROM python:3.12-slim-bookworm
 WORKDIR /app

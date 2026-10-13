@@ -3,14 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <fstream>
-#include <random>
-
-#include <nlohmann/json.hpp>
 
 #include "kadan/bf16_projection.hpp"
 #include "kadan/cleanup_error.hpp"
+#include "kadan/image_checkpoint_config.hpp"
 #include "kadan/image_denoiser.hpp"
+#include "kadan/image_input.hpp"
+#ifdef KADAN_ATEN_IMAGE
+#include "kadan/image_aten.hpp"
+#endif
 #include "kadan/image_schedule.hpp"
 #include "kadan/image_text.hpp"
 #include "kadan/image_vae.hpp"
@@ -59,18 +60,6 @@ struct Busy {
         b = false;
     }
 };
-
-using Json = nlohmann::json;
-
-Json read(const std::string& path) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    need(bool(f) && f.tellg() > 0 && f.tellg() <= 65536, "image_config_size");
-    std::string s(std::size_t(f.tellg()), '\0');
-    f.seekg(0);
-    f.read(s.data(), s.size());
-    need(bool(f), "image_config_read");
-    return Json::parse(s);
-}
 
 #ifdef KADAN_WORKER_CUDA
 // All operations run on the existing request owner. The session is declared first
@@ -165,8 +154,6 @@ const char* fallback_phase(PlanFailure reason) {
 }
 #endif
 
-constexpr const char* prefix =
-    "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n";
 }  // namespace
 
 struct Generator::Impl {
@@ -193,6 +180,10 @@ Generator::Generator(
     : resources_(std::move(r)), compute_(std::move(compute)),
       media_activity_(std::move(activity)), devices_(std::move(devices)) {
     need(bool(resources_), "image_resources");
+#ifdef KADAN_ATEN_IMAGE
+    if (!devices_.empty())
+        aten_ = std::make_unique<AtenGenerator>(resources_, devices_);
+#endif
 }
 
 Generator::~Generator() {
@@ -204,68 +195,17 @@ void Generator::load(
 ) {
     Busy active(busy_);
     stop(cancel);
+#ifdef KADAN_ATEN_IMAGE
+    if (aten_) {
+        aten_->load(root, cancel, hook);
+        return;
+    }
+#endif
     need(!model_, "image_generator_loaded");
     auto m = std::make_unique<Impl>(resources_, compute_);
-    auto text = read(root + "/text_encoder/config.json").at("text_config");
-    need(
-        text.at("vocab_size") == 151936 && text.at("hidden_size") == 4096
-            && text.at("num_hidden_layers") == 36
-            && text.at("num_attention_heads") == 32
-            && text.at("num_key_value_heads") == 8 && text.at("head_dim") == 128
-            && text.at("intermediate_size") == 12288 && text.at("rope_theta") == 5000000
-            && text.at("rms_norm_eps") == 1e-6
-            && !text.at("attention_bias").get<bool>(),
-        "image_text_config_contract"
-    );
-    auto v = read(root + "/vae/config.json");
-    need(
-        v.at("decoder_base_dim") == 144 && v.at("z_dim") == 64
-            && v.at("dim_mult") == Json::array({1, 2, 4, 8, 8})
-            && v.at("num_res_blocks") == 2 && v.at("out_channels") == 4
-            && v.at("is_residual") == true && v.at("patch_size").is_null()
-            && v.at("temperal_downsample") == Json::array({false, true, true, true}),
-        "image_vae_config_contract"
-    );
-    need(
-        v.at("latents_mean").size() == 64 && v.at("latents_std").size() == 64,
-        "image_latent_normalization"
-    );
-    for (std::size_t i = 0; i < 64; ++i) {
-        m->mean[i] = v.at("latents_mean")[i];
-        m->stddev[i] = v.at("latents_std")[i];
-        need(
-            std::isfinite(m->mean[i]) && std::isfinite(m->stddev[i])
-                && m->stddev[i] > 0,
-            "image_latent_normalization"
-        );
-    }
-    auto s = read(root + "/scheduler/scheduler_config.json");
-    need(
-        s.at("_class_name") == "FlowMatchEulerDiscreteScheduler"
-            && s.at("base_image_seq_len") == 256 && s.at("max_image_seq_len") == 8192
-            && s.at("base_shift") == .5 && s.at("max_shift") == .9
-            && s.at("shift_terminal") == .02 && s.at("time_shift_type") == "exponential"
-            && s.at("use_dynamic_shifting") == true
-            && s.at("num_train_timesteps") == 1000,
-        "image_scheduler_contract"
-    );
-    for (auto key :
-         {"invert_sigmas",
-          "stochastic_sampling",
-          "use_beta_sigmas",
-          "use_exponential_sigmas",
-          "use_karras_sigmas"})
-        need(s.at(key) == false, "image_scheduler_contract");
-    auto t = read(root + "/transformer/config.json");
-    need(
-        t.at("num_layers") == 32 && t.at("num_attention_heads") == 32
-            && t.at("attention_head_dim") == 128 && t.at("in_channels") == 64
-            && t.at("context_in_dim") == 4096
-            && t.at("axes_dims_rope") == Json::array({16, 56, 56})
-            && t.at("patch_size") == 1 && t.at("mlp_ratio") == 3 && t.at("eps") == 1e-6
-            && t.at("causal_condition") == true && t.at("out_channels") == 64,
-        "image_transformer_contract"
-    );
+    const auto config = validate_checkpoint_config(root);
+    m->mean = config.mean;
+    m->stddev = config.stddev;
     if (compute_) {
         Lease parser(*resources_, 32 * 1024 * 1024);
         auto budget = std::make_shared<checkpoint::MemoryBudget>(32 * 1024 * 1024);
@@ -339,6 +279,10 @@ void Generator::load(
 
 void Generator::unload() {
     need(!busy_, "busy");
+#ifdef KADAN_ATEN_IMAGE
+    if (aten_)
+        aten_->unload();
+#endif
     model_.reset();
 }
 
@@ -352,6 +296,16 @@ void Generator::validate(const ImageRequest& request) {
     );
 }
 
+void Generator::prepare(const ImageRequest& request, const std::atomic_bool& cancel) {
+    Busy active(busy_);
+    stop(cancel);
+    validate(request);
+#ifdef KADAN_ATEN_IMAGE
+    if (aten_)
+        aten_->prepare(request, cancel);
+#endif
+}
+
 void Generator::generate(
     const ImageRequest& request,
     std::span<float> output,
@@ -361,23 +315,27 @@ void Generator::generate(
 ) {
     Busy active(busy_);
     stop(cancel);
+#ifdef KADAN_ATEN_IMAGE
+    if (aten_) {
+        aten_->generate(request, output, cancel, hook);
+        return;
+    }
+#endif
     need(bool(model_), "image_generator_not_loaded");
     validate(request);
     need(output.size() == request.width * request.height * 4, "image_output_shape");
     auto& m = *model_;
     auto h = request.height / 16, w = request.width / 16, points = h * w;
     Lease admitted(*resources_, 64 * 1024 * 1024);
-    std::array<std::uint32_t, 2048> tokens;
-    auto raw = std::string(prefix) + "<|im_start|>user\n" + request.prompt
-               + "<|im_end|>\n<|im_start|>assistant\n";
-    auto count = m.tokenizer.encode(raw, tokens, cancel);
-    std::array<std::uint32_t, 64> system;
-    auto drop = m.tokenizer.encode(prefix, system, cancel);
-    need(drop == 14 && count > drop, "image_prompt_prefix");
+    auto prompt = prepare_image_prompt(m.tokenizer, request.prompt, cancel);
+    auto count = prompt.count, drop = prompt.prefix;
     std::vector<float> features(count * 4096);
     try {
         m.text.execute(
-            std::span(tokens).first(count), features, cancel, [&](std::size_t i) {
+            std::span(prompt.tokens).first(count),
+            features,
+            cancel,
+            [&](std::size_t i) {
                 if (hook)
                     hook("text_layer", i);
             }
@@ -397,17 +355,7 @@ void Generator::generate(
     auto condition = std::span(features).subspan(drop * 4096);
     const auto text_count = count - drop;
     std::vector<float> latent(points * 64), decoded(64 * points);
-    std::mt19937_64 rng(request.seed);
-    auto uniform = [&]() {
-        return (double(rng() >> 11) + .5) / 9007199254740992.;
-    };
-    for (std::size_t i = 0; i < latent.size(); i += 2) {
-        double radius = std::sqrt(-2 * std::log(uniform())),
-               angle = 6.2831853071795864769 * uniform();
-        latent[i] = float(radius * std::cos(angle));
-        if (i + 1 < latent.size())
-            latent[i + 1] = float(radius * std::sin(angle));
-    }
+    seed_image_latent(latent, request.seed, cancel);
     auto times = schedule(points, request.steps);
     bool resident_complete = false;
 #ifdef KADAN_WORKER_CUDA
