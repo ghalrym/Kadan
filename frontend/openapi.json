@@ -420,6 +420,36 @@
         "title": "CompletionMessage",
         "type": "object"
       },
+      "CompletionOutputMessage": {
+        "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
+          "role": {
+            "const": "assistant",
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "CompletionOutputMessage",
+        "type": "object"
+      },
       "CompletionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -502,7 +532,7 @@
             "type": "string"
           },
           "message": {
-            "$ref": "#/components/schemas/ChatMessage"
+            "$ref": "#/components/schemas/CompletionOutputMessage"
           },
           "model": {
             "title": "Model",

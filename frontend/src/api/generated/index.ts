@@ -58,6 +58,7 @@ export type {
   ClientOptions,
   CompletionChoice,
   CompletionMessage,
+  CompletionOutputMessage,
   CompletionRequest,
   CompletionResponse,
   ConfigureContextV1ModelsModelIdContextPutData,
