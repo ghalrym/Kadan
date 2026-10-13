@@ -44,6 +44,16 @@ void validate(const Matrix& m) {
                 std::isfinite(value) && !std::signbit(value), "invalid_block_scale"
             );
         }
+    } else if (m.encoding == Encoding::mxfp4) {
+        require(m.columns % 32 == 0, "mxfp4_block_alignment");
+        require(m.weights.size() == product(m.rows, m.columns / 2), "weight_shape");
+        require(
+            m.block_scales.size() == product(m.rows, m.columns / 32),
+            "block_scale_shape"
+        );
+        require(m.multipliers.empty(), "unexpected_multipliers");
+        for (auto byte : m.block_scales)
+            require(byte != 255, "invalid_block_scale");
     } else if (m.encoding == Encoding::modelopt_fp8) {
         require(m.weights.size() == product(m.rows, m.columns), "weight_shape");
         require(m.block_scales.empty(), "unexpected_block_scales");
@@ -76,6 +86,14 @@ float weight(const Matrix& m, std::size_t row, std::size_t column) {
     }
     const auto packed = m.weights[row * (m.columns / 2) + column / 2];
     const auto code = static_cast<std::uint8_t>((packed >> (4 * (column % 2))) & 15);
+    if (m.encoding == Encoding::mxfp4) {
+        // OpenAI GPT-OSS stores 32 E2M1 values per block with a biased exponent,
+        // unlike NVFP4's 16-value E4M3 scales and tensor multiplier.
+        const int exponent = m.block_scales[row * (m.columns / 32) + column / 32];
+        return finite_float(
+            std::ldexp(static_cast<double>(e2m1(code)), exponent - 127)
+        );
+    }
     const auto scale = e4m3fn(m.block_scales[row * (m.columns / 16) + column / 16]);
     return finite_float(static_cast<double>(e2m1(code)) * scale * m.multipliers[0]);
 }

@@ -197,6 +197,75 @@ void fp8() {
         == std::vector<float>({2, -4, .00390625F, 224, -0.F, .25F})
     );
 }
+
+void mxfp4() {
+    // Official GPT-OSS blocks are low-nibble first with one exponent per 32
+    // values. Distinct blocks/rows catch accidental reuse of the NVFP4 layout.
+    std::array<std::uint8_t, 64> packed{};
+    packed.fill(0xA2);
+    packed[0] = 0x71;
+    const std::array<std::uint8_t, 4> scales{127, 128, 126, 129};
+    Matrix m{Encoding::mxfp4, 2, 64, packed, scales, {}};
+    std::vector<float> expected(128);
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const float factor = i < 32 ? 1.F : i < 64 ? 2.F : i < 96 ? .5F : 4.F;
+        expected[i] = i % 2 ? -factor : factor;
+    }
+    expected[0] = .5F;
+    expected[1] = 6;
+    check(decode_rows(m, 0, 2, 512) == expected);
+    check(
+        decode_rows(m, 1, 1, 256)
+        == std::vector<float>(expected.begin() + 64, expected.end())
+    );
+    check(decode_rows(m, 2, 0, 0).empty());
+    fails<std::length_error>([&] { decode_rows(m, 0, 2, 511); }, "output_budget");
+    fails([&] { decode_rows(m, 1, 2, 512); }, "row_range");
+    auto bad = m;
+    bad.columns = 48;
+    fails([&] { decode_rows(bad, 0, 1, 512); }, "mxfp4_block_alignment");
+    bad = m;
+    bad.weights = std::span(packed).first(63);
+    fails([&] { decode_rows(bad, 0, 1, 512); }, "weight_shape");
+    bad = m;
+    bad.block_scales = std::span(scales).first(3);
+    fails([&] { decode_rows(bad, 0, 1, 512); }, "block_scale_shape");
+    bad = m;
+    const std::array<float, 1> global{1};
+    bad.multipliers = global;
+    fails([&] { decode_rows(bad, 0, 1, 512); }, "unexpected_multipliers");
+    auto invalid = scales;
+    invalid[3] = 255;
+    bad = m;
+    bad.block_scales = invalid;
+    fails([&] { decode_rows(bad, 0, 1, 512); }, "invalid_block_scale");
+}
+
+void mxfp4_extremes() {
+    std::array<std::uint8_t, 16> packed{};
+    packed.fill(0xA2);
+    std::array<std::uint8_t, 1> scales{0};
+    Matrix m{Encoding::mxfp4, 1, 32, packed, scales, {}};
+    auto decoded = decode_rows(m, 0, 1, 128);
+    // E8M0 zero encodes 2^-127, not a zero scale.
+    check(decoded[0] == 0x1p-127F && decoded[1] == -0x1p-127F);
+    scales[0] = 254;
+    decoded = decode_rows(m, 0, 1, 128);
+    check(decoded[0] == 0x1p127F && decoded[1] == -0x1p127F);
+    packed[0] = 0x11;
+    scales[0] = 0;
+    check(decode_rows(m, 0, 1, 128)[0] == 0x1p-128F);
+    packed.fill(0x80);
+    for (auto scale : {0, 127, 254}) {
+        scales[0] = scale;
+        decoded = decode_rows(m, 0, 1, 128);
+        check(decoded[0] == 0 && !std::signbit(decoded[0]));
+        check(decoded[1] == 0 && std::signbit(decoded[1]));
+    }
+    packed[0] = 0x77;
+    scales[0] = 253;
+    fails<std::overflow_error>([&] { decode_rows(m, 0, 1, 128); }, "nonfinite_result");
+}
 }  // namespace
 
 int main() {
@@ -206,6 +275,8 @@ int main() {
         packed_byte_order();
         nvfp4();
         fp8();
+        mxfp4();
+        mxfp4_extremes();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

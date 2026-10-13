@@ -200,6 +200,167 @@ void fp8_rows() {
     check(q->used() == 0);
 }
 
+void mxfp4_fixture(Fixture& f, bool invalid_scale = false) {
+    std::vector<std::uint8_t> bytes(192, 0xA2);  // +1, -1, two experts/three rows.
+    bytes[128] = 0x71;                           // First selected pair: +.5, +6.
+    for (unsigned i = 0; i < 12; ++i)
+        bytes.push_back(invalid_scale && i == 8 ? 255 : 124 + i);
+    f.write(
+        "{" + tensor("p_blocks", "U8", "[2,3,2,16]", 0, 192) + ","
+            + tensor("p_scales", "U8", "[2,3,2]", 192, 204) + "}",
+        bytes
+    );
+}
+
+void mxfp4_expert_rows() {
+    Fixture f;
+    mxfp4_fixture(f);
+    auto metadata = budget(), payload = budget(68);
+    {
+        std::unique_ptr<Projection> retained;
+        {
+            Shard shard(f.root.c_str(), "model.safetensors", metadata);
+            const auto before = metadata->used();
+            unsigned reads = 0;
+            auto reader = [&](std::string_view name, std::size_t offset, auto out) {
+                check(reads < 2);
+                check(name == (reads == 0 ? "p_blocks" : "p_scales"));
+                check(offset == (reads == 0 ? 128 : 8));
+                check(out.size() == (reads == 0 ? 64 : 4));
+                ++reads;
+                shard.read_tensor(name, offset, out);
+            };
+            auto rows = shard.load_mxfp4_expert_rows("p", 1, 1, 2, 68, payload, reader);
+            check(reads == 2 && payload->used() == 68 && metadata->used() == before);
+            const auto view = rows.view();
+            check(view.encoding == kadan::quantization::Encoding::mxfp4);
+            check(view.rows == 2 && view.columns == 64 && view.multipliers.empty());
+            std::vector<float> expected(128);
+            const std::array<float, 4> factors{32, 64, 128, 256};
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                expected[i] = (i % 2 ? -1 : 1) * factors[i / 32];
+            expected[0] = 16;
+            expected[1] = 192;
+            check(kadan::quantization::decode_rows(view, 0, 2, 512) == expected);
+            retained = std::make_unique<Projection>(std::move(rows));
+            auto last = shard.load_mxfp4_expert_rows("p", 1, 2, 1, 34);
+            check(kadan::quantization::decode_rows(last.view(), 0, 1, 256)[0] == 128);
+            auto first = shard.load_mxfp4_expert_rows("p", 0, 0, 1, 34);
+            check(
+                kadan::quantization::decode_rows(first.view(), 0, 1, 256)[0] == .125F
+            );
+        }
+        check(metadata->used() == 0 && payload->used() == 68);
+        check(kadan::quantization::decode_rows(retained->view(), 0, 1, 256)[0] == 16);
+    }
+    check(payload->used() == 0);
+}
+
+void mxfp4_load_failures() {
+    Fixture f;
+    mxfp4_fixture(f);
+    auto metadata = budget(), payload = budget(68);
+    {
+        Shard shard(f.root.c_str(), "model.safetensors", metadata);
+        const auto before = metadata->used();
+        unsigned reads = 0;
+        auto reader = [&](auto, auto, auto) {
+            ++reads;
+        };
+        fails(
+            [&] { shard.load_mxfp4_expert_rows("p", 1, 1, 2, 67, payload, reader); },
+            "payload_budget"
+        );
+        for (auto expert : {std::size_t{2}, SIZE_MAX})
+            fails(
+                [&] {
+                    shard.load_mxfp4_expert_rows(
+                        "p", expert, 0, 1, 68, payload, reader
+                    );
+                },
+                "mxfp4_expert_shape"
+            );
+        for (auto first : {std::size_t{2}, SIZE_MAX})
+            fails(
+                [&] {
+                    shard.load_mxfp4_expert_rows("p", 0, first, 2, 68, payload, reader);
+                },
+                "mxfp4_expert_shape"
+            );
+        fails(
+            [&] { shard.load_mxfp4_expert_rows("p", 0, 0, 0, 68, payload, reader); },
+            "projection_range_or_name"
+        );
+        fails(
+            [&] { shard.load_mxfp4_expert_rows("", 0, 0, 1, 68, payload, reader); },
+            "projection_range_or_name"
+        );
+        fails(
+            [&] {
+                shard.load_mxfp4_expert_rows("absent", 0, 0, 1, 68, payload, reader);
+            },
+            "missing_tensor"
+        );
+        check(reads == 0 && metadata->used() == before && payload->used() == 0);
+        bool exhausted = false;
+        try {
+            shard.load_mxfp4_expert_rows("p", 0, 0, 2, 68, budget(67), reader);
+        } catch (const std::bad_alloc&) {
+            exhausted = true;
+        }
+        check(exhausted && reads == 0);
+        fails(
+            [&] {
+                shard.load_mxfp4_expert_rows(
+                    "p", 0, 0, 2, 68, payload, [&](auto, auto, auto) {
+                        if (++reads == 2)
+                            throw std::runtime_error("cancelled_read");
+                    }
+                );
+            },
+            "cancelled_read"
+        );
+        check(reads == 2 && payload->used() == 0 && metadata->used() == before);
+    }
+    mxfp4_fixture(f, true);
+    {
+        Shard shard(f.root.c_str(), "model.safetensors", metadata);
+        fails(
+            [&] { shard.load_mxfp4_expert_rows("p", 1, 1, 2, 68, payload); },
+            "invalid_block_scale"
+        );
+        check(payload->used() == 0);
+        // Invalid values outside the selected expert rows are not read.
+        auto valid = shard.load_mxfp4_expert_rows("p", 0, 0, 1, 34, payload);
+        check(valid.view().rows == 1);
+    }
+    check(metadata->used() == 0 && payload->used() == 0);
+}
+
+void mxfp4_layout_failures() {
+    Fixture f;
+    auto q = budget();
+    auto reject = [&](std::string blocks, std::string scales, std::string_view error) {
+        f.write("{" + blocks + "," + scales + "}", std::vector<std::uint8_t>(204));
+        {
+            Shard shard(f.root.c_str(), "model.safetensors", q);
+            const auto before = q->used();
+            fails([&] { shard.load_mxfp4_expert_rows("p", 0, 0, 1, 204); }, error);
+            check(q->used() == before);
+        }
+        check(q->used() == 0);
+    };
+    const auto blocks = tensor("p_blocks", "U8", "[2,3,2,16]", 0, 192);
+    const auto scales = tensor("p_scales", "U8", "[2,3,2]", 192, 204);
+    reject(tensor("p_blocks", "I8", "[2,3,2,16]", 0, 192), scales, "mxfp4_dtype");
+    reject(blocks, tensor("p_scales", "I8", "[2,3,2]", 192, 204), "mxfp4_dtype");
+    reject(tensor("p_blocks", "U8", "[2,3,32]", 0, 192), scales, "mxfp4_expert_shape");
+    reject(tensor("p_blocks", "U8", "[2,3,4,8]", 0, 192), scales, "mxfp4_expert_shape");
+    reject(blocks, tensor("p_scales", "U8", "[2,6]", 192, 204), "mxfp4_expert_shape");
+    reject(blocks, tensor("p_scales", "U8", "[2,2,3]", 192, 204), "mxfp4_expert_shape");
+    reject(blocks, tensor("p_scales", "U8", "[1,6,2]", 192, 204), "mxfp4_expert_shape");
+}
+
 void rejection_cases() {
     Fixture f;
     auto q = budget();
@@ -659,6 +820,9 @@ int main() {
         half_metadata_limits();
         loading_and_lifetime();
         fp8_rows();
+        mxfp4_expert_rows();
+        mxfp4_load_failures();
+        mxfp4_layout_failures();
         rejection_cases();
         binding_and_budget_failures();
         filesystem_cases();
