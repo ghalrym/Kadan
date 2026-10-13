@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../src/fp8_numeric.hpp"
+#include "../src/cuda/fp8_numeric.hpp"
 #include "kadan/cuda_plan.hpp"
 
 namespace {

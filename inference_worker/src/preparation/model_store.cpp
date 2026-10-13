@@ -16,7 +16,7 @@
 #include "kadan/gpt_oss_manifest.hpp"
 #include "kadan/model_manifest.hpp"
 #include "kadan/preparation.hpp"
-#include "metadata_json.hpp"
+#include "../weights/metadata_json.hpp"
 
 namespace kadan::serving {
 namespace {

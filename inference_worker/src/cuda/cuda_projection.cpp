@@ -10,7 +10,7 @@
 #include <thread>
 
 #include "fp8_kernel.cuh"
-#include "layer_math_validation.hpp"
+#include "../models/text/layer_math_validation.hpp"
 #include "nvfp4_kernel.cuh"
 
 namespace kadan::cuda {

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "../src/nvfp4_numeric.hpp"
+#include "../src/cuda/nvfp4_numeric.hpp"
 
 using namespace kadan::quantization;
 

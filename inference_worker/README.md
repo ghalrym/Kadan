@@ -5,19 +5,39 @@ video, transcription and speech. It owns the FIFO, checkpoint acquisition,
 input preparation, engine lifecycle, result packaging and workspace cleanup.
 The API submits serialized Pydantic tasks and relays events and results.
 
-`src/inference_request.cpp` decodes the transport envelope into named C++ requests;
+## Source layout
+
+`src/inference_worker.cpp` is the process entry point. Implementation files are
+grouped by responsibility:
+
+- `src/requests/`: request parsing, preparation and response formatting.
+- `src/inference/`: per-modality engine orchestration.
+- `src/preparation/`: checkpoint downloads, asset preparation and input loading.
+- `src/weights/`: checkpoint storage, manifests, metadata and quantization.
+- `src/models/`: model implementations in `text/`, `image/`, `video/`, `speech/`
+  and `decision/` subfolders.
+- `src/tokenization/`: shared text tokenization.
+- `src/media/`: shared media sessions and residency management.
+- `src/cuda/`: GPU implementations, kernels and their private headers.
+
+Private headers live beside their implementations. Public headers remain under
+`include/kadan/`; CMake lists source files explicitly in the existing targets.
+
+## Request handling
+
+`src/requests/inference_request.cpp` decodes the transport envelope into named C++ requests;
 `include/kadan/inference_owner.hpp` processes the queue head. Each modality's
-`src/inference_*_request.cpp` owns its preparation and response formatting alongside
+`src/requests/inference_*_request.cpp` owns its preparation and response formatting alongside
 its engine. Chat messages, transcription PCM and typed decision results pass directly
 in memory. Decision answers are formatted as JSON once for the response.
 `JobWorkspace` owns only workspace paths and cleanup.
 
-`src/model_store.cpp` is the single checkpoint downloader for both inference and
+`src/preparation/model_store.cpp` is the single checkpoint downloader for both inference and
 Settings download requests. It also owns checkpoint validation, context limits and
 model selection. The worker publishes status snapshots at startup and after tasks;
 the API serves those snapshots, observes download progress and forwards cancellation.
 Settings changes use typed queue tasks.
-`src/whisper_export.cpp` and `src/tokenizer_assets.cpp` convert checkpoint metadata
+`src/preparation/whisper_export.cpp` and `src/preparation/tokenizer_assets.cpp` convert checkpoint metadata
 in C++. The worker never starts a Python interpreter.
 Cancellation finishes owned work and releases the workspace before the next job.
 

@@ -13,7 +13,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
-#include "image_activation.hpp"
+#include "../models/image/image_activation.hpp"
 #include "kadan/bf16_projection.hpp"
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"

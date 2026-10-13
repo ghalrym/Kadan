@@ -13,7 +13,7 @@
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/weight_inventory.hpp"
-#include "metadata_json.hpp"
+#include "../../weights/metadata_json.hpp"
 
 namespace kadan::glm {
 namespace {

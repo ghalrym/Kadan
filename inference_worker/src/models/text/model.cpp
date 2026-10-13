@@ -7,7 +7,7 @@
 #include <numeric>
 #include <string>
 
-#include "metadata_json.hpp"
+#include "../../weights/metadata_json.hpp"
 
 namespace kadan::model {
 namespace {
