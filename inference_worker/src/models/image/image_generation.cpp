@@ -10,6 +10,7 @@
 
 #include "kadan/bf16_projection.hpp"
 #include "kadan/cleanup_error.hpp"
+#include "kadan/image_attention.hpp"
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_schedule.hpp"
 #include "kadan/image_text.hpp"
@@ -60,6 +61,12 @@ struct Busy {
     }
 };
 
+#ifdef KADAN_EXPERIMENTAL_IMAGE_PV_TF32
+constexpr auto attention_precision = AttentionPrecision::experimental_pv_tf32;
+#else
+constexpr auto attention_precision = AttentionPrecision::pedantic_fp32;
+#endif
+
 using Json = nlohmann::json;
 
 Json read(const std::string& path) {
@@ -93,7 +100,12 @@ struct ResidentDenoising {
             stop(cancel);
             owned_launchers.push_back(
                 std::make_unique<video::CudaBf16Projection>(
-                    compute, activity, resources, Workload::image, device
+                    compute,
+                    activity,
+                    resources,
+                    Workload::image,
+                    device,
+                    attention_precision
                 )
             );
             launchers.push_back(owned_launchers.back().get());
@@ -425,7 +437,8 @@ void Generator::generate(
                 text_count,
                 times.sigma[0],
                 times.sigma[1],
-                session.transfers()
+                session.transfers(),
+                attention_precision
             );
         }
         auto* timings = timing ? &*timing : nullptr;
@@ -466,7 +479,8 @@ void Generator::generate(
                             text_count,
                             times.sigma[step],
                             times.sigma[step + 1],
-                            session.transfers()
+                            session.transfers(),
+                            attention_precision
                         );
                     stop(cancel);
                     if (step) {
@@ -556,6 +570,10 @@ void Generator::generate(
         hook("denoiser_host_unsupported", 0);
 #endif
     if (!resident_complete) {
+        need(
+            attention_precision == AttentionPrecision::pedantic_fp32,
+            "image_pv_tf32_requires_resident_attention"
+        );
         std::vector<float> velocity(points * 64);
         for (std::size_t i = 0; i < request.steps; ++i) {
             stop(cancel);
