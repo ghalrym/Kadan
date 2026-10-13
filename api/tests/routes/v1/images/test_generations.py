@@ -2,6 +2,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
+from pydantic import ValidationError
+
+from api.pydantic_models.inference_task import InferenceTask
 from api.routes.v1.images import generations
 
 
@@ -31,3 +34,26 @@ class ImageRequestIdentityTests(unittest.IsolatedAsyncioTestCase):
             job_id="b2a9163e90bf4a7db68d887ddbd71a7e",
         )
         self.assertEqual(response, result)
+
+
+class ImageModelTests(unittest.TestCase):
+    def test_base_defaults_stay_unchanged(self):
+        request = generations.ImageRequest(prompt="test")
+        self.assertEqual(request.model_id, "qwen-image-2.1")
+        self.assertEqual(request.steps, 50)
+
+    def test_turbo_choice_survives_task_serialization(self):
+        request = generations.ImageRequest(
+            prompt="test", model_id="qwen-image-2.1-turbo"
+        )
+        task = InferenceTask(input={"feature": "image", **request.model_dump()})
+        restored = InferenceTask.model_validate_json(task.model_dump_json())
+        self.assertEqual(restored.input.model_id, "qwen-image-2.1-turbo")
+
+    def test_unknown_image_model_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            generations.ImageRequest(prompt="test", model_id="unknown")
+        with self.assertRaises(ValidationError):
+            InferenceTask(
+                input={"feature": "image", "prompt": "test", "model_id": "unknown"}
+            )

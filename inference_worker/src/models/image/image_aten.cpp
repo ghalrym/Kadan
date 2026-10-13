@@ -471,6 +471,7 @@ Tensor denoise(
     std::int64_t h,
     std::int64_t w,
     const ImageRequest& request,
+    const ImageCheckpointConfig& config,
     const std::atomic_bool& cancel,
     const Generator::Hook& hook
 ) {
@@ -491,9 +492,9 @@ Tensor denoise(
     auto all_rotary = image_rotary(text, h, w, options);
     Rotary image_only{all_rotary.cosine.slice(2, text), all_rotary.sine.slice(2, text)};
     std::array<Tensor, 32> prefix_k, prefix_v;
-    auto times = schedule(h * w, request.steps);
+    auto times = config.sampling_schedule(h * w, request.steps);
     auto frequency = at::exp(at::arange(128, options) * (-std::log(10000.) / 128));
-    for (std::size_t step = 0; step < request.steps; ++step) {
+    for (std::size_t step = 0; step < times.steps; ++step) {
         stop(cancel);
         // Match the reference BF16 rounding at the model timestep boundary.
         const auto sigma =
@@ -781,19 +782,13 @@ void AtenGenerator::load(
     auto model = std::make_unique<Impl>(resources_);
     model->config = validate_checkpoint_config(root);
     model->tokenizer.load(root + "/processor/tokenizer.json", cancel);
-    const std::array<std::string, 4> text_files{
-        "model-00001-of-00004.safetensors",
-        "model-00002-of-00004.safetensors",
-        "model-00003-of-00004.safetensors",
-        "model-00004-of-00004.safetensors"
-    };
     const std::array<std::string, 2> denoiser_files{
         "diffusion_pytorch_model-00001-of-00002.safetensors",
         "diffusion_pytorch_model-00002-of-00002.safetensors"
     };
     const std::array<std::string, 1> vae_files{"diffusion_pytorch_model.safetensors"};
     model->text = std::make_unique<Inventory>(
-        root + "/text_encoder", text_files, AtenImageStage::text, cancel
+        root + "/text_encoder", model->config.text_files, AtenImageStage::text, cancel
     );
     model->denoiser = std::make_unique<Inventory>(
         root + "/transformer", denoiser_files, AtenImageStage::denoiser, cancel
@@ -894,7 +889,8 @@ void AtenGenerator::generate(
         stage_timing("load", "denoiser", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
         started = Clock::now();
-        latent = denoise(stage, latent, condition, h, w, request, cancel, hook);
+        latent =
+            denoise(stage, latent, condition, h, w, request, m.config, cancel, hook);
         stage.sync();
         stage_timing("generation", "denoiser", stage.device, started);
         started = Clock::now();

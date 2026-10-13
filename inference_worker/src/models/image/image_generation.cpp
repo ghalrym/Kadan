@@ -163,7 +163,7 @@ struct Generator::Impl {
     TextEncoder text;
     Denoiser denoiser;
     VaeDecoder vae;
-    std::array<float, 64> mean, stddev;
+    ImageCheckpointConfig config;
 
     Impl(std::shared_ptr<Resources> r, std::shared_ptr<DenseCompute> c)
         : compute(c), metadata(*r, 32 * 1024 * 1024),
@@ -204,20 +204,19 @@ void Generator::load(
     need(!model_, "image_generator_loaded");
     auto m = std::make_unique<Impl>(resources_, compute_);
     const auto config = validate_checkpoint_config(root);
-    m->mean = config.mean;
-    m->stddev = config.stddev;
+    m->config = config;
     if (compute_) {
         Lease parser(*resources_, 32 * 1024 * 1024);
         auto budget = std::make_shared<checkpoint::MemoryBudget>(32 * 1024 * 1024);
         checkpoint::WeightInventory inventory;
-        for (const auto* relative :
-             {"text_encoder/model-00001-of-00004.safetensors",
-              "text_encoder/model-00002-of-00004.safetensors",
-              "text_encoder/model-00003-of-00004.safetensors",
-              "text_encoder/model-00004-of-00004.safetensors",
-              "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
-              "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
-              "vae/diffusion_pytorch_model.safetensors"}) {
+        std::vector<std::string> files{
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+            "vae/diffusion_pytorch_model.safetensors"
+        };
+        for (const auto& file : config.text_files)
+            files.push_back("text_encoder/" + file);
+        for (const auto& relative : files) {
             stop(cancel);
             const std::string path(relative);
             const auto slash = path.find_last_of('/');
@@ -239,14 +238,8 @@ void Generator::load(
     m->tokenizer.load(root + "/processor/tokenizer.json", cancel);
     if (hook)
         hook("tokenizer_loaded", 0);
-    const std::array<std::string, 4> text_files{
-        "model-00001-of-00004.safetensors",
-        "model-00002-of-00004.safetensors",
-        "model-00003-of-00004.safetensors",
-        "model-00004-of-00004.safetensors"
-    };
     auto tr = root + "/text_encoder";
-    m->text.load(tr.c_str(), text_files, {}, cancel, [&](std::size_t bytes) {
+    m->text.load(tr.c_str(), config.text_files, {}, cancel, [&](std::size_t bytes) {
         if (hook)
             hook("text_checkpoint_read_bytes", bytes);
     });
@@ -356,7 +349,7 @@ void Generator::generate(
     const auto text_count = count - drop;
     std::vector<float> latent(points * 64), decoded(64 * points);
     seed_image_latent(latent, request.seed, cancel);
-    auto times = schedule(points, request.steps);
+    auto times = m.config.sampling_schedule(points, request.steps);
     bool resident_complete = false;
 #ifdef KADAN_WORKER_CUDA
     if (compute_ && compute_->supports_bf16_weights() && !devices_.empty()) {
@@ -406,7 +399,7 @@ void Generator::generate(
                 if (hook)
                     hook("denoiser_resident_selected", 0);
                 const auto rows = points + text_count;
-                for (std::size_t step = 0; step < request.steps; ++step) {
+                for (std::size_t step = 0; step < times.steps; ++step) {
                     if (step && timings)
                         timings->reset(
                             step + 1,
@@ -467,7 +460,7 @@ void Generator::generate(
                         hook("step_completed", step + 1);
                 }
                 prepare_decoder_input(
-                    session, latent, m.mean, m.stddev, decoded, cancel
+                    session, latent, m.config.mean, m.config.stddev, decoded, cancel
                 );
                 if (hook) {
                     hook(
@@ -505,7 +498,7 @@ void Generator::generate(
 #endif
     if (!resident_complete) {
         std::vector<float> velocity(points * 64);
-        for (std::size_t i = 0; i < request.steps; ++i) {
+        for (std::size_t i = 0; i < times.steps; ++i) {
             stop(cancel);
             m.denoiser.execute(
                 latent,
@@ -529,7 +522,7 @@ void Generator::generate(
             if (hook)
                 hook("step_completed", i + 1);
         }
-        prepare_decoder_input(latent, m.mean, m.stddev, decoded, cancel);
+        prepare_decoder_input(latent, m.config.mean, m.config.stddev, decoded, cancel);
     }
     if (compute_)
         report_weight_placement(*compute_, hook);

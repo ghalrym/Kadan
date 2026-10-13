@@ -140,7 +140,7 @@ void pinned_catalog_units() {
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
 }
 
-void gpt_oss_catalog_units() {
+void checkpoint_catalog_units() {
     Directory tmp;
     unsigned transfers = 0;
     ModelStore store(
@@ -151,6 +151,30 @@ void gpt_oss_catalog_units() {
             ++transfers;
             throw RequestError("Unexpected checkpoint transfer");
         }
+    );
+    const auto& turbo = store.entry("qwen-image-2.1-turbo");
+    assert(turbo.kind == "image" && turbo.inference_available);
+    assert(turbo.repo_id == "Qwen/Qwen-Image-2.1-Turbo");
+    assert(turbo.revision == "fc13ba1986fcb905854dc8de2f52eee395f49b5b");
+    assert(turbo.license == "qwen-research" && turbo.license_notice);
+    assert(
+        turbo.license_notice->find("research and evaluation only") != std::string::npos
+    );
+    assert(
+        turbo.license_url
+        == "https://huggingface.co/" + turbo.repo_id + "/blob/" + turbo.revision
+               + "/LICENSE"
+    );
+    assert(store.allowed("text_encoder/model.safetensors", turbo));
+    assert(store.allowed("processor/processor_config.json", turbo));
+    assert(!store.allowed("processor/run.py", turbo));
+    assert(
+        std::find(
+            turbo.required_files.begin(),
+            turbo.required_files.end(),
+            "text_encoder/model.safetensors.index.json"
+        )
+        == turbo.required_files.end()
     );
     for (const auto* id : {"gpt-oss-20b", "medium"}) {
         const auto& model = store.entry(id);
@@ -983,7 +1007,12 @@ void job_units() {
         read_document(worker_data_directory() / "tests/fixtures/qwen_config.json")
             .dump();
     Json models = Json::array();
-    for (const auto* id : {"small", "qwen-image-2.1", "laya", "h3-fl2va-int8-turbo"}) {
+    for (const auto* id :
+         {"small",
+          "qwen-image-2.1",
+          "qwen-image-2.1-turbo",
+          "laya",
+          "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1036,6 +1065,7 @@ void job_units() {
     assert(
         image.model == "qwen-image-2.1"
         && std::get<ImageRequest>(image.input).width == 2048
+        && std::get<ImageRequest>(image.input).steps == 20
     );
     bytes(jobs / "image/one.png", "image-one");
     bytes(jobs / "image/two.png", "image-two");
@@ -1049,6 +1079,36 @@ void job_units() {
     rejects([&] { present_image(image, {"/outside.png", "/outside2.png"}); });
     files.cleanup("image");
     assert(!fs::exists(jobs / "image"));
+    for (unsigned steps : {2u, 50u, 100u}) {
+        auto turbo = request(
+            "turbo",
+            {{"feature", "image"},
+             {"model_id", "qwen-image-2.1-turbo"},
+             {"prompt", "mountain"},
+             {"count", 1},
+             {"steps", steps},
+             {"seed", 7}}
+        );
+        prepare_task(turbo, store, files, running);
+        const auto& input = std::get<ImageRequest>(turbo.input);
+        assert(turbo.model == "qwen-image-2.1-turbo" && input.steps == 8);
+        assert(input.width == 2048 && input.height == 2048 && input.seed == 7);
+        assert(
+            turbo.configuration.checkpoint == root / "qwen-image-2.1-turbo-revision"
+        );
+        bytes(jobs / "turbo/one.png", "image-one");
+        const auto meta = present_image(turbo, {jobs / "turbo/one.png"})
+                              .at("image")
+                              .at("meta")
+                              .get<std::string>();
+        assert(meta.find("8 steps") != std::string::npos);
+        files.cleanup("turbo");
+    }
+    auto unsupported = request(
+        "unsupported-image",
+        {{"feature", "image"}, {"model_id", "small"}, {"prompt", "mountain"}}
+    );
+    rejects([&] { prepare_task(unsupported, store, files, running); });
     auto chat = request(
         "chat",
         {{"feature", "llm"},
@@ -1255,7 +1315,7 @@ void tokenizer_asset_units() {
 int main() {
     manifest_model_units();
     pinned_catalog_units();
-    gpt_oss_catalog_units();
+    checkpoint_catalog_units();
     typed_request_units();
     codec_units();
     acquisition_units();

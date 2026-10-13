@@ -29,6 +29,37 @@ Json read(const std::string& path) {
 
 ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
     ImageCheckpointConfig result;
+    const auto pipeline = read(root + "/model_index.json");
+    need(
+        pipeline.at("_class_name") == "QwenImage21Pipeline", "image_pipeline_contract"
+    );
+    const auto sigmas = pipeline.value("sample_sigmas", Json());
+    const bool turbo = !sigmas.is_null();
+    if (turbo) {
+        need(sigmas.is_array() && sigmas.size() == 8, "image_sample_sigmas");
+        result.sample_schedule.steps = sigmas.size();
+        for (std::size_t i = 0; i < sigmas.size(); ++i) {
+            need(sigmas[i].is_number(), "image_sample_sigmas");
+            const float sigma = sigmas[i];
+            need(
+                std::isfinite(sigma) && sigma > 0 && sigma <= 1
+                    && (i == 0 ? sigma == 1
+                               : sigma < result.sample_schedule.sigma[i - 1]),
+                "image_sample_sigmas"
+            );
+            result.sample_schedule.sigma[i] = sigma;
+        }
+        // Euler's terminal zero is appended by Diffusers, not saved in the grid.
+        result.sample_schedule.sigma[sigmas.size()] = 0;
+        result.text_files = {"model.safetensors"};
+    } else {
+        result.text_files = {
+            "model-00001-of-00004.safetensors",
+            "model-00002-of-00004.safetensors",
+            "model-00003-of-00004.safetensors",
+            "model-00004-of-00004.safetensors"
+        };
+    }
     auto text = read(root + "/text_encoder/config.json").at("text_config");
     need(
         text.at("vocab_size") == 151936 && text.at("hidden_size") == 4096
@@ -66,9 +97,11 @@ ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
     need(
         s.at("_class_name") == "FlowMatchEulerDiscreteScheduler"
             && s.at("base_image_seq_len") == 256 && s.at("max_image_seq_len") == 8192
-            && s.at("base_shift") == .5 && s.at("max_shift") == .9
-            && s.at("shift_terminal") == .02 && s.at("time_shift_type") == "exponential"
-            && s.at("use_dynamic_shifting") == true
+            && s.at("base_shift") == .5 && s.at("max_shift") == .9 && s.at("shift") == 1
+            && s.at("time_shift_type") == "exponential"
+            && s.at("use_dynamic_shifting") == !turbo
+            && (turbo ? s.at("shift_terminal").is_null()
+                      : s.at("shift_terminal") == .02)
             && s.at("num_train_timesteps") == 1000,
         "image_scheduler_contract"
     );

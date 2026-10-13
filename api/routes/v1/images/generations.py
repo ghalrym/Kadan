@@ -17,7 +17,13 @@ class ImageRequest(BaseModel):
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
     seed: int | None = Field(default=None, ge=0, le=2**64 - 1)
-    steps: int = Field(default=50, ge=2, le=100)
+    model_id: Literal["qwen-image-2.1", "qwen-image-2.1-turbo"] = "qwen-image-2.1"
+    steps: int = Field(
+        default=50,
+        ge=2,
+        le=100,
+        description="Base model step count. Turbo always uses its saved eight-step schedule.",
+    )
 
 
 class ImageResponse(BaseModel):
