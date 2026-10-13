@@ -2,11 +2,14 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/h3_compute.hpp"
+#include "kadan/h3_resident.hpp"
+#include "kadan/media_session.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/text_tokenizer.hpp"
 
@@ -60,6 +63,16 @@ public:
         return bool(turbo_);
     }
 
+    // Device-resident execution. Each block's feed-forward runs in a fresh session
+    // that is finished before the next host-staged operation, so its memory is
+    // released between blocks. A rejected first block is recorded and that call
+    // keeps the host-staged path; later rejections fail the call.
+    struct Resident {
+        std::function<std::unique_ptr<MediaSession>()> session;
+        std::span<H3ResidentLauncher* const> launchers;
+        std::optional<MediaPlanError> rejected;
+    };
+
     // Computes both output heads and returns selected live video/audio rows.
     // All 2 refiner + 50 denoiser blocks execute; no skipped-block cache.
     void execute(
@@ -67,7 +80,8 @@ public:
         std::span<float> video_out,
         std::span<float> audio_out,
         const std::atomic_bool&,
-        const Hook& hook = {}
+        const Hook& hook = {},
+        Resident* resident = nullptr
     );
 
 private:

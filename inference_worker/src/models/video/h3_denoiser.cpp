@@ -6,9 +6,14 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
+#include "h3_feed_forward.hpp"
 #include "h3_quant_marker.hpp"
+#include "kadan/cleanup_error.hpp"
 
 namespace kadan::video {
 namespace {
@@ -416,20 +421,32 @@ void norm(
     rms(x, scratch, y);
 }
 
-void rope(
-    std::span<float> x,
+// Angles depend only on token and channel, so one [token,channel,{cos,sin}] table
+// serves every head, Q and K, and all blocks with unchanged values.
+void rope_table(
     std::span<const float> positions,
-    std::span<const float> frequencies
+    std::span<const float> frequencies,
+    std::span<double> table
 ) {
     for (std::size_t t = 0; t < positions.size() / 3; ++t)
+        for (std::size_t c = 0; c < 48; ++c) {
+            const double angle =
+                double(positions[t * 3 + c / 16]) * frequencies[c % 16];
+            table[(t * 48 + c) * 2] = std::cos(angle);
+            table[(t * 48 + c) * 2 + 1] = std::sin(angle);
+        }
+}
+
+void rope(std::span<float> x, std::span<const double> table) {
+    for (std::size_t t = 0; t < table.size() / 96; ++t)
         for (std::size_t h = 0; h < 56; ++h)
             for (std::size_t c = 0; c < 48; ++c) {
-                const double angle =
-                    double(positions[t * 3 + c / 16]) * frequencies[c % 16];
+                const double cos = table[(t * 48 + c) * 2],
+                             sin = table[(t * 48 + c) * 2 + 1];
                 auto* p = x.data() + (t * 56 + h) * 128;
                 const double a = p[c], b = p[c + 48];
-                p[c] = a * std::cos(angle) - b * std::sin(angle);
-                p[c + 48] = b * std::cos(angle) + a * std::sin(angle);
+                p[c] = a * cos - b * sin;
+                p[c + 48] = b * cos + a * sin;
             }
 }
 
@@ -468,7 +485,553 @@ void attention(
         }
     finite(y);
 }
+
+bool matrix(
+    const Shard& shard,
+    const std::string& name,
+    Dtype dtype,
+    std::uint64_t rows,
+    std::uint64_t columns
+) {
+    const auto t = shard.tensor(name);
+    return t.dtype == dtype && t.rank == 2 && t.shape[0] == rows
+           && t.shape[1] == columns;
+}
+
+// The released INT8 convrot block layout with optional Turbo adapters. Any other
+// layout keeps the host-staged path rather than adopting a different contract.
+std::variant<detail::H3FeedForward, MediaPlanError> describe_feed_forward(
+    Shard& shard, Shard* turbo, std::size_t block, const std::atomic_bool& cancel
+) {
+    detail::H3FeedForward ff;
+    for (std::size_t fc = 0; fc < 2; ++fc) {
+        const auto rows = fc ? ff.hidden : 2 * ff.width,
+                   columns = fc ? ff.width : ff.hidden;
+        const auto p =
+            "blocks." + std::to_string(block) + ".mlp.fc" + std::to_string(fc + 1);
+        ff.weight[fc] = p + ".weight";
+        ff.scale[fc] = p + ".weight_scale";
+        if (!matrix(shard, ff.weight[fc], Dtype::i8, rows, columns)
+            || !matrix(shard, ff.scale[fc], Dtype::fp32, rows, 1))
+            return MediaPlanError{
+                PlanFailure::unsupported_layout, "h3_ff_convrot_layout", {}
+            };
+        ff.weight_id[fc] = shard.tensor_identity(ff.weight[fc]);
+        ff.scale_id[fc] = shard.tensor_identity(ff.scale[fc]);
+        ff.group[fc] = quant_group(shard, p);
+        if (!turbo)
+            continue;
+        ff.lora_a[fc] = "diffusion_model." + p + ".lora_A.weight";
+        ff.lora_b[fc] = "diffusion_model." + p + ".lora_B.weight";
+        const auto rank = std::size_t(turbo->tensor(ff.lora_a[fc]).shape[0]);
+        if (!rank || rank > h3_lora_rank_limit
+            || !matrix(*turbo, ff.lora_a[fc], Dtype::bf16, rank, columns)
+            || !matrix(*turbo, ff.lora_b[fc], Dtype::bf16, rows, rank))
+            return MediaPlanError{
+                PlanFailure::unsupported_layout, "h3_ff_lora_layout", {}
+            };
+        ff.rank[fc] = rank;
+        ff.lora_a_id[fc] = turbo->tensor_identity(ff.lora_a[fc]);
+        ff.lora_b_id[fc] = turbo->tensor_identity(ff.lora_b[fc]);
+        const auto alpha_name = "diffusion_model." + p + ".alpha";
+        shape(*turbo, alpha_name, {});
+        float alpha;
+        read_dense(*turbo, alpha_name, {&alpha, 1}, cancel);
+        require(alpha >= 0, "h3_denoiser_lora_alpha");
+        ff.lora_scale[fc] = alpha / float(rank);
+    }
+    return ff;
+}
+
+// Admit one block's feed-forward and upload its exact checkpoint bytes.
+std::optional<MediaPlanError> prepare_feed_forward(
+    MediaSession& session,
+    Shard& shard,
+    Shard* turbo,
+    const detail::H3FeedForward& ff,
+    std::size_t tokens,
+    std::size_t groups,
+    Resources& resources,
+    const std::atomic_bool& cancel
+) {
+    if (auto error = session.admit(
+            detail::h3_feed_forward_manifest(ff, tokens, groups),
+            MediaShape{tokens, ff.hidden, 0, 0, 0, ff.width}
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            const bool adapter = slice.name.starts_with("diffusion_model.");
+            if (adapter && !turbo)
+                throw std::invalid_argument("h3_ff_missing_turbo");
+            Shard& source = adapter ? *turbo : shard;
+            const auto t = source.tensor(slice.name);
+            const std::size_t width = t.dtype == Dtype::i8     ? 1
+                                      : t.dtype == Dtype::bf16 ? 2
+                                                               : 4;
+            Admission staging(resources, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            const auto offset = slice.first_row * std::size_t(t.shape[1]) * width;
+            for (std::size_t at = 0; at < raw.size();) {
+                stop(cancel);
+                const auto count = std::min<std::size_t>(16 << 20, raw.size() - at);
+                source.read_tensor(slice.name, offset + at, {raw.data() + at, count});
+                at += count;
+            }
+            source.check_unchanged();
+            stop(cancel);
+            if (t.dtype == Dtype::bf16)
+                for (std::size_t i = 0; i < raw.size(); i += 2)
+                    require(
+                        ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
+                        "h3_cuda_nonfinite_weight"
+                    );
+            else if (t.dtype == Dtype::fp32)
+                for (std::size_t i = 0; i < raw.size(); i += 4) {
+                    float value;
+                    std::memcpy(&value, raw.data() + i, sizeof(value));
+                    require(std::isfinite(value) && value >= 0, "h3_cuda_scale");
+                }
+            auto destination = session.weight(slice);
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
+}
 }  // namespace
+
+namespace detail {
+void close_h3_feed_forward(
+    MediaSession& session, std::span<H3ResidentLauncher* const> launchers, bool abort
+) {
+    std::exception_ptr first;
+    for (auto* launcher : launchers)
+        try {
+            launcher->release_stream();
+        } catch (...) {
+            if (!first)
+                first = std::current_exception();
+        }
+    try {
+        if (abort || first)
+            session.abort();
+        else
+            session.finish();
+    } catch (...) {
+        if (first)
+            throw OperationCleanupError(first, std::current_exception());
+        throw;
+    }
+    if (first)
+        std::rethrow_exception(first);
+}
+
+StageManifest h3_feed_forward_manifest(
+    const H3FeedForward& ff, std::size_t tokens, std::size_t groups
+) {
+    StageManifest m;
+    m.stage = MediaStage::denoise;
+    m.schedule = MediaSchedule::feed_forward;
+    m.blas_bytes = h3_resident_blas_bytes;
+    m.status_bytes = sizeof(std::uint32_t);
+    const bool lora = ff.rank[0] != 0;
+    std::size_t lora_rank = 0, lora_elements = 0;
+    for (std::size_t fc = 0; fc < 2; ++fc) {
+        const auto rows = fc ? ff.hidden : 2 * ff.width,
+                   columns = fc ? ff.width : ff.hidden;
+        const std::size_t planes = fc ? 1 : 2;
+        m.weights.push_back(
+            {ff.weight[fc],
+             ff.weight_id[fc],
+             TensorStorage::i8_convrot,
+             rows,
+             columns,
+             WeightPartition::channels,
+             4,
+             planes,
+             ProjectionPrecision::convrot,
+             ff.group[fc]}
+        );
+        m.weights.push_back(
+            {ff.scale[fc],
+             ff.scale_id[fc],
+             TensorStorage::f32,
+             rows,
+             1,
+             WeightPartition::channels,
+             4,
+             planes,
+             ProjectionPrecision::f32}
+        );
+        if (!lora)
+            continue;
+        const auto rank = ff.rank[fc];
+        m.weights.push_back(
+            {ff.lora_a[fc],
+             ff.lora_a_id[fc],
+             TensorStorage::bf16_exact,
+             rank,
+             columns,
+             WeightPartition::replicated,
+             1,
+             1,
+             ProjectionPrecision::precise_f64}
+        );
+        m.weights.push_back(
+            {ff.lora_b[fc],
+             ff.lora_b_id[fc],
+             TensorStorage::bf16_exact,
+             rows,
+             rank,
+             WeightPartition::channels,
+             4,
+             planes,
+             ProjectionPrecision::precise_f64}
+        );
+        lora_rank = std::max(lora_rank, rank);
+        lora_elements = std::max(
+            lora_elements, rank * columns + rows / planes * rank + tokens * columns
+        );
+    }
+    m.tensors.push_back({"ff/residual-gates", groups * ff.hidden * sizeof(float)});
+    m.tensors.push_back({"ff/token-groups", tokens * sizeof(std::uint32_t)});
+    if (lora) {
+        m.tensors.push_back(
+            {"ff/lora-low",
+             tokens * lora_rank * sizeof(double),
+             MediaPhase::ff,
+             MediaPhase::ff,
+             AllocationKind::conversion}
+        );
+        m.tensors.push_back(
+            {"ff/lora-weights",
+             lora_elements * sizeof(double),
+             MediaPhase::ff,
+             MediaPhase::ff,
+             AllocationKind::conversion}
+        );
+    }
+    m.workspaces_complete = true;
+    return m;
+}
+
+void upload_h3_feed_forward_inputs(
+    MediaSession& session,
+    const H3FeedForward& ff,
+    std::span<const float> normalized,
+    std::span<const float> hidden,
+    std::span<const float> gates,
+    std::span<const std::uint32_t> token_groups
+) {
+    const auto tokens = token_groups.size(), groups = gates.size() / ff.hidden;
+    require(
+        tokens && groups && gates.size() == groups * ff.hidden
+            && normalized.size() == tokens * ff.hidden
+            && hidden.size() == tokens * ff.hidden,
+        "h3_ff_input_shape"
+    );
+    for (const auto& planned : session.plan().devices) {
+        auto matrix = [&](const char* name, std::size_t rows) {
+            return session.tensor(
+                planned.device,
+                name,
+                DeviceDType::f32,
+                {rows, ff.hidden},
+                {ff.hidden, 1}
+            );
+        };
+        auto n = matrix("resident/normalized", tokens);
+        session.upload_input(n, std::as_bytes(normalized));
+        auto h = matrix("resident/hidden", tokens);
+        session.upload_input(h, std::as_bytes(hidden));
+        auto g = matrix("ff/residual-gates", groups);
+        session.upload_input(g, std::as_bytes(gates));
+        auto t = session.tensor(
+            planned.device, "ff/token-groups", DeviceDType::u32, {tokens}, {1}
+        );
+        session.upload_input(t, std::as_bytes(token_groups));
+    }
+}
+
+// Each device holds a channel share of every projection and its own full hidden.
+void execute_h3_feed_forward(
+    MediaSession& session,
+    std::span<H3ResidentLauncher* const> launchers,
+    const H3FeedForward& ff,
+    std::size_t tokens,
+    std::size_t groups,
+    std::span<float> hidden,
+    const std::atomic_bool& cancel
+) {
+    const auto& plan = session.plan();
+    require(
+        plan.schedule == MediaSchedule::feed_forward && plan.rows && plan.rows <= tokens
+            && !plan.devices.empty() && hidden.size() == tokens * ff.hidden,
+        "h3_ff_plan"
+    );
+    const bool lora = ff.rank[0] != 0;
+
+    // Projection 0/1 are fc1's gate/value planes; projection 2 is fc2.
+    struct Device {
+        H3ResidentLauncher* launcher = nullptr;
+        int id = -1;
+        std::size_t fc1_first = 0, fc1_rows = 0, fc2_first = 0, fc2_rows = 0;
+        std::array<DeviceTensorView, 3> weight, scale, lora_b;
+        std::array<DeviceTensorView, 2> lora_a;
+        DeviceTensorView normalized, hidden, gates, groups, conversion, lora_weights,
+            blas, status;
+    };
+
+    std::vector<Device> devices;
+    devices.reserve(plan.devices.size());
+    for (const auto& planned : plan.devices) {
+        auto& d = devices.emplace_back();
+        d.id = planned.device;
+        for (auto* candidate : launchers) {
+            require(candidate, "h3_ff_launcher");
+            if (candidate->device() == d.id) {
+                require(!d.launcher, "h3_ff_launcher");
+                d.launcher = candidate;
+            }
+        }
+        require(d.launcher, "h3_ff_launcher");
+        auto slice = [&](const std::string& name, std::size_t j) -> const WeightSlice& {
+            for (const auto& w : plan.weights)
+                if (w.device == d.id && w.name == name
+                    && (j == 2 || (w.first_row >= ff.width) == (j == 1)))
+                    return w;
+            throw std::runtime_error("h3_ff_weight");
+        };
+        for (std::size_t j = 0; j < 3; ++j) {
+            const auto fc = j / 2;
+            const auto& w = slice(ff.weight[fc], j);
+            const auto& s = slice(ff.scale[fc], j);
+            require(s.first_row == w.first_row && s.rows == w.rows, "h3_ff_partition");
+            d.weight[j] = session.weight(w);
+            d.scale[j] = session.weight(s);
+            if (j == 0) {
+                d.fc1_first = w.first_row;
+                d.fc1_rows = w.rows;
+            } else if (j == 1) {
+                require(
+                    w.first_row == ff.width + d.fc1_first && w.rows == d.fc1_rows,
+                    "h3_ff_partition"
+                );
+            } else {
+                d.fc2_first = w.first_row;
+                d.fc2_rows = w.rows;
+            }
+            if (!lora)
+                continue;
+            const auto& b = slice(ff.lora_b[fc], j);
+            require(b.first_row == w.first_row && b.rows == w.rows, "h3_ff_partition");
+            d.lora_b[j] = session.weight(b);
+            if (j != 1)
+                d.lora_a[fc] = session.weight(slice(ff.lora_a[fc], j));
+        }
+        auto matrix = [&](const char* name, std::size_t rows) {
+            return session.tensor(
+                d.id, name, DeviceDType::f32, {rows, ff.hidden}, {ff.hidden, 1}
+            );
+        };
+        d.normalized = matrix("resident/normalized", tokens);
+        d.hidden = matrix("resident/hidden", tokens);
+        d.gates = matrix("ff/residual-gates", groups);
+        d.groups =
+            session.tensor(d.id, "ff/token-groups", DeviceDType::u32, {tokens}, {1});
+        std::vector<DeviceTensorView*> ready{
+            &d.normalized, &d.hidden, &d.gates, &d.groups
+        };
+        for (std::size_t j = 0; j < 3; ++j) {
+            ready.push_back(&d.weight[j]);
+            ready.push_back(&d.scale[j]);
+            if (lora)
+                ready.push_back(&d.lora_b[j]);
+        }
+        if (lora) {
+            ready.push_back(&d.lora_a[0]);
+            ready.push_back(&d.lora_a[1]);
+        }
+        session.require_ready(ready);
+    }
+    // fc1 gate/value and fc2 have independently partitioned output channels.
+    auto ordered = [&](bool down) {
+        std::vector<Device*> result;
+        result.reserve(devices.size());
+        for (auto& d : devices)
+            result.push_back(&d);
+        std::sort(result.begin(), result.end(), [&](auto* a, auto* b) {
+            return (down ? a->fc2_first : a->fc1_first)
+                   < (down ? b->fc2_first : b->fc1_first);
+        });
+        std::size_t column = 0;
+        for (auto* d : result) {
+            require(
+                (down ? d->fc2_first : d->fc1_first) == column
+                    && (down ? d->fc2_rows : d->fc1_rows),
+                "h3_ff_partition"
+            );
+            column += down ? d->fc2_rows : d->fc1_rows;
+        }
+        require(column == (down ? ff.hidden : ff.width), "h3_ff_partition");
+        return result;
+    };
+    const auto gate_order = ordered(false), down_order = ordered(true);
+    session.advance(MediaPhase::ff);
+    for (auto& d : devices) {
+        const auto conversion =
+            std::find_if(plan.tensors.begin(), plan.tensors.end(), [&](const auto& t) {
+                return t.device == d.id && t.name == "resident/projection-conversion";
+            });
+        require(conversion != plan.tensors.end(), "h3_ff_plan");
+        d.conversion = session.tensor(
+            d.id,
+            "resident/projection-conversion",
+            DeviceDType::u8,
+            {std::size_t(conversion->bytes)},
+            {1}
+        );
+        d.blas = session.tensor(
+            d.id, "resident/blas", DeviceDType::u8, {h3_resident_blas_bytes}, {1}
+        );
+        d.status = session.tensor(d.id, "resident/status", DeviceDType::u32, {1}, {1});
+        if (lora) {
+            const auto elements = std::max(
+                ff.rank[0] * ff.hidden + d.fc1_rows * ff.rank[0]
+                    + plan.rows * ff.hidden,
+                ff.rank[1] * ff.width + d.fc2_rows * ff.rank[1] + plan.rows * ff.width
+            );
+            d.lora_weights = session.tensor(
+                d.id, "ff/lora-weights", DeviceDType::f64, {elements}, {1}
+            );
+        }
+    }
+    auto project = [&](Device& d,
+                       std::size_t j,
+                       DeviceTensorView& input,
+                       DeviceTensorView& output,
+                       std::size_t rows) {
+        const auto fc = j / 2;
+        std::optional<DeviceTensorView> low;
+        std::vector<DeviceTensorView*> read{&input, &d.weight[j], &d.scale[j]};
+        std::vector<DeviceTensorView*> write{&output, &d.conversion};
+        if (lora) {
+            low = session.tensor(
+                d.id,
+                "ff/lora-low",
+                DeviceDType::f64,
+                {rows, ff.rank[fc]},
+                {ff.rank[fc], 1}
+            );
+            read.push_back(&d.lora_a[fc]);
+            read.push_back(&d.lora_b[j]);
+            write.push_back(&*low);
+            write.push_back(&d.lora_weights);
+        }
+        write.push_back(&d.blas);
+        write.push_back(&d.status);
+        session.launch(d.id, read, write, [&](void* stream, auto in, auto out) {
+            d.launcher->convrot(stream, in, out, ff.group[fc], ff.lora_scale[fc]);
+        });
+        session.complete(write, d.status);
+    };
+
+    struct Tile {
+        Device* device = nullptr;
+        DeviceTensorView input, pair, gate, value, ff_input, down, gathered, hidden;
+    };
+
+    for (std::size_t first = 0; first < tokens;) {
+        stop(cancel);
+        const auto rows = std::min(plan.rows, tokens - first);
+        std::vector<Tile> tiles(devices.size());
+        for (std::size_t i = 0; i < devices.size(); ++i) {
+            auto& d = devices[i];
+            auto& t = tiles[i];
+            t.device = &d;
+            t.input = session.rows(d.normalized, first, rows);
+            t.pair = session.tensor(
+                d.id,
+                "resident/ff-gate-up",
+                DeviceDType::f32,
+                {2 * rows, d.fc1_rows},
+                {d.fc1_rows, 1}
+            );
+            t.gate = session.rows(t.pair, 0, rows);
+            t.value = session.rows(t.pair, rows, rows);
+            project(d, 0, t.input, t.gate, rows);
+            project(d, 1, t.input, t.value, rows);
+            const std::array read{&t.gate, &t.value};
+            const std::array write{&t.gate, &d.status};
+            session.launch(d.id, read, write, [&](void* stream, auto in, auto out) {
+                d.launcher->silu_gate(stream, in, out);
+            });
+            session.complete(write, d.status);
+        }
+        auto tile = [&](const Device* d) -> Tile& {
+            return *std::find_if(tiles.begin(), tiles.end(), [&](const auto& t) {
+                return t.device == d;
+            });
+        };
+        for (auto& t : tiles) {
+            auto& d = *t.device;
+            auto* input = &t.gate;
+            if (tiles.size() > 1) {
+                t.ff_input = session.tensor(
+                    d.id,
+                    "resident/ff-input",
+                    DeviceDType::f32,
+                    {rows, ff.width},
+                    {ff.width, 1}
+                );
+                for (auto* source : gate_order)
+                    session.gather(tile(source).gate, t.ff_input, source->fc1_first);
+                input = &t.ff_input;
+            }
+            t.down = session.tensor(
+                d.id,
+                "resident/residual-tile",
+                DeviceDType::f32,
+                {rows, d.fc2_rows},
+                {d.fc2_rows, 1}
+            );
+            project(d, 2, *input, t.down, rows);
+        }
+        for (auto& t : tiles) {
+            auto& d = *t.device;
+            auto* projected = &t.down;
+            if (tiles.size() > 1) {
+                t.gathered = session.tensor(
+                    d.id,
+                    "resident/peer-tile",
+                    DeviceDType::f32,
+                    {rows, ff.hidden},
+                    {ff.hidden, 1}
+                );
+                for (auto* source : down_order)
+                    session.gather(tile(source).down, t.gathered, source->fc2_first);
+                projected = &t.gathered;
+            }
+            t.hidden = session.rows(d.hidden, first, rows);
+            const std::array read{&t.hidden, projected, &d.gates, &d.groups};
+            const std::array write{&t.hidden, &d.status};
+            session.launch(d.id, read, write, [&](void* stream, auto in, auto out) {
+                d.launcher->gated_residual(stream, in, out, first);
+            });
+            session.complete(write, d.status);
+        }
+        first += rows;
+    }
+    // Every device holds the same updated hidden; return the first copy.
+    auto result = std::move(devices.front().hidden);
+    devices.clear();
+    session.advance(MediaPhase::complete);
+    session.download_output(result, std::as_writable_bytes(hidden));
+}
+}  // namespace detail
 
 H3Denoiser::H3Denoiser(std::shared_ptr<Resources> r, std::shared_ptr<H3Compute> compute)
     : resources_(std::move(r)), compute_(std::move(compute)) {
@@ -563,7 +1126,8 @@ void H3Denoiser::execute(
     std::span<float> video_out,
     std::span<float> audio_out,
     const std::atomic_bool& cancel,
-    const Hook& hook
+    const Hook& hook,
+    Resident* resident
 ) {
     stop(cancel);
     require(loaded(), "h3_denoiser_not_loaded");
@@ -619,6 +1183,7 @@ void H3Denoiser::execute(
         *resources_,
         (n * per_token + fixed) * 4
             + max_tokens * (sizeof(double) + sizeof(std::size_t)) + 16384
+            + n * 96 * sizeof(double)
     );
     auto memory = std::make_unique<float[]>(n * per_token + fixed);
     std::size_t offset = 0;
@@ -638,6 +1203,8 @@ void H3Denoiser::execute(
     if (turbo_)
         turbo_->check_unchanged();
     read_dense(*shard_, "rope.inv_freq", frequencies, cancel);
+    auto rotary = std::make_unique<double[]>(n * 96);
+    rope_table(input.positions, frequencies, {rotary.get(), n * 96});
     auto linear = [&](const std::string& p,
                       std::span<const float> x,
                       std::size_t in,
@@ -699,8 +1266,8 @@ void H3Denoiser::execute(
             cancel
         );
         if (positional) {
-            rope(q.first(count * inner), input.positions, frequencies);
-            rope(k.first(count * inner), input.positions, frequencies);
+            rope(q.first(count * inner), {rotary.get(), n * 96});
+            rope(k.first(count * inner), {rotary.get(), n * 96});
         }
         if (compute_)
             compute_->attention(
@@ -873,6 +1440,72 @@ void H3Denoiser::execute(
         }
         finite(current);
     };
+    const auto groups = time_count * 3;
+    std::optional<Admission> resident_rows;
+    std::vector<std::uint32_t> token_groups;
+    std::vector<float> ff_gates;
+    if (resident) {
+        require(bool(resident->session), "h3_resident_session");
+        resident_rows.emplace(*resources_, n * 4 + groups * hidden * 4);
+        token_groups.resize(n);
+        for (std::size_t t = 0; t < n; ++t)
+            token_groups[t] = std::uint32_t(time_ids[t] * 3 + input.tags[t]);
+        ff_gates.resize(groups * hidden);
+    }
+    // One fresh session per block. It finishes before the next host-staged
+    // operation, so its device memory never competes with that operation.
+    auto resident_feed_forward = [&](std::size_t block) {
+        if (!resident || resident->rejected)
+            return false;
+        auto session = resident->session();
+        require(bool(session), "h3_resident_session");
+        try {
+            auto described =
+                describe_feed_forward(*shard_, turbo_.get(), block, cancel);
+            std::optional<MediaPlanError> error;
+            if (auto* rejected = std::get_if<MediaPlanError>(&described))
+                error = std::move(*rejected);
+            else
+                error = prepare_feed_forward(
+                    *session,
+                    *shard_,
+                    turbo_.get(),
+                    std::get<detail::H3FeedForward>(described),
+                    n,
+                    groups,
+                    *resources_,
+                    cancel
+                );
+            if (error) {
+                if (block)
+                    throw std::runtime_error("h3_resident_admission: " + error->detail);
+                resident->rejected = std::move(error);
+                session->finish();
+                return false;
+            }
+            const auto& ff = std::get<detail::H3FeedForward>(described);
+            for (std::size_t g = 0; g < groups; ++g)
+                std::copy_n(
+                    adaln.begin() + (g * 6 + 5) * hidden,
+                    hidden,
+                    ff_gates.begin() + g * hidden
+                );
+            detail::upload_h3_feed_forward_inputs(
+                *session, ff, normalized, current, ff_gates, token_groups
+            );
+            detail::execute_h3_feed_forward(
+                *session, resident->launchers, ff, n, groups, current, cancel
+            );
+            detail::close_h3_feed_forward(*session, resident->launchers);
+        } catch (...) {
+            auto error = std::current_exception();
+            rethrow_after_cleanup(error, [&] {
+                detail::close_h3_feed_forward(*session, resident->launchers, true);
+            });
+        }
+        finite(current);
+        return true;
+    };
     for (std::size_t b = 0; b < layers; ++b) {
         stop(cancel);
         auto p = "blocks." + std::to_string(b);
@@ -890,8 +1523,10 @@ void H3Denoiser::execute(
         residual(2);
         norm(*shard_, p + ".norm2.weight", current, normalized, norm_weight, cancel);
         modulate(3);
-        feed(p + ".mlp", n);
-        residual(5);
+        if (!resident_feed_forward(b)) {
+            feed(p + ".mlp", n);
+            residual(5);
+        }
         if (hook)
             hook("block_completed", b + 1);
     }

@@ -7,10 +7,12 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <unistd.h>
 
 #include "h3_codec.hpp"
+#include "kadan/cleanup_error.hpp"
 #include "kadan/h3_audio.hpp"
 #include "kadan/h3_denoiser.hpp"
 #include "kadan/h3_text.hpp"
@@ -41,6 +43,83 @@ struct Active {
         b = false;
     }
 };
+
+#ifdef KADAN_WORKER_CUDA
+// Launchers and their cuBLAS handles live for the whole request. Each denoiser
+// block gets a fresh session after host-staged scratch is released, so the
+// planner measures the memory that block can actually use.
+struct ResidentDenoising {
+    std::shared_ptr<Resources> resources;
+    std::shared_ptr<H3Compute> compute;
+    std::shared_ptr<MediaSessionActivity> activity;
+    std::vector<int> devices;
+    const std::atomic_bool& cancel;
+    std::vector<std::unique_ptr<CudaH3Launcher>> owned;
+    std::vector<H3ResidentLauncher*> launchers;
+
+    ResidentDenoising(
+        std::shared_ptr<Resources> ledger,
+        std::shared_ptr<H3Compute> owner,
+        std::shared_ptr<MediaSessionActivity> guard,
+        std::vector<int> selected,
+        const std::atomic_bool& flag
+    )
+        : resources(std::move(ledger)), compute(std::move(owner)),
+          activity(std::move(guard)), devices(std::move(selected)), cancel(flag) {
+        compute->release_scratch();
+        for (int device : devices) {
+            stop(cancel);
+            owned.push_back(
+                std::make_unique<CudaH3Launcher>(compute, activity, resources, device)
+            );
+            launchers.push_back(owned.back().get());
+        }
+    }
+
+    std::unique_ptr<MediaSession> session() {
+        compute->release_scratch();
+        std::vector<MediaDeviceLimit> limits;
+        for (int device : devices)
+            limits.push_back({device});
+        return std::make_unique<MediaSession>(
+            resources,
+            activity,
+            cuda_media_device_operations(compute, devices),
+            Workload::video,
+            std::move(limits),
+            cancel
+        );
+    }
+
+    void close() {
+        std::exception_ptr first;
+        // Close every handle even when one device cannot confirm cleanup.
+        for (auto& launcher : owned)
+            try {
+                launcher->close();
+            } catch (...) {
+                if (!first)
+                    first = std::current_exception();
+            }
+        if (first)
+            std::rethrow_exception(first);
+    }
+};
+
+const char* fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
+#endif
 
 struct Admission {
     std::shared_ptr<Resources> r;
@@ -323,10 +402,13 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(
 H3Generation::H3Generation(
     std::shared_ptr<Resources> resources,
     std::shared_ptr<H3Compute> compute,
-    std::shared_ptr<checkpoint::ReadCache> cache
+    std::shared_ptr<checkpoint::ReadCache> cache,
+    std::vector<int> devices,
+    std::shared_ptr<MediaSessionActivity> activity
 )
     : resources_(std::move(resources)), compute_(std::move(compute)),
-      cache_(std::move(cache)) {
+      cache_(std::move(cache)), devices_(std::move(devices)),
+      activity_(std::move(activity)) {
     check(bool(resources_), "h3_generation_resources");
 }
 
@@ -463,17 +545,56 @@ void H3Generation::execute(
     denoiser.load_turbo(
         adapter.parent_path().c_str(), adapter.filename().string(), cancel, cache_
     );
+#ifdef KADAN_WORKER_CUDA
+    std::optional<ResidentDenoising> resident;
+    if (compute_ && activity_ && !devices_.empty())
+        resident.emplace(resources_, compute_, activity_, devices_, cancel);
+#endif
     for (std::size_t step = 0; step < request.updates; ++step) {
         stop(cancel);
         h3::timesteps(times, nt, nv, video_sigmas[step], audio_sigmas[step]);
-        denoiser.execute(
-            {text, video, audio, positions, times, tags}, dv, da, cancel, hook
-        );
+#ifdef KADAN_WORKER_CUDA
+        if (resident) {
+            H3Denoiser::Resident state{
+                [&] { return resident->session(); }, resident->launchers, {}
+            };
+            try {
+                denoiser.execute(
+                    {text, video, audio, positions, times, tags},
+                    dv,
+                    da,
+                    cancel,
+                    hook,
+                    &state
+                );
+            } catch (...) {
+                rethrow_after_cleanup(std::current_exception(), [&] {
+                    resident->close();
+                });
+            }
+            if (state.rejected) {
+                // The same shape is rejected on every update; stop admitting it.
+                if (hook)
+                    hook(fallback_phase(state.rejected->reason), 0);
+                resident->close();
+                resident.reset();
+            }
+        } else
+#endif
+            denoiser.execute(
+                {text, video, audio, positions, times, tags}, dv, da, cancel, hook
+            );
         h3::advance(video, dv, video_sigmas[step], video_sigmas[step + 1]);
         h3::advance(audio, da, audio_sigmas[step], audio_sigmas[step + 1]);
         if (hook)
             hook("denoise_completed", step + 1);
     }
+#ifdef KADAN_WORKER_CUDA
+    if (resident) {
+        resident->close();
+        resident.reset();
+    }
+#endif
     denoiser.unload();
     if (!paths.audio_vae.empty()) {
         Admission audio_output(resources_, at * 800 * 2 * sizeof(float) + 8192);

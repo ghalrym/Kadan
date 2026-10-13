@@ -8,6 +8,7 @@
 
 #include "kadan/checkpoint_cache.hpp"
 #include "kadan/h3_compute.hpp"
+#include "kadan/media_session.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::video {
@@ -40,10 +41,14 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(
 class H3Generation {
 public:
     using Hook = std::function<void(const char*, std::size_t)>;
+    // With CUDA devices and an activity guard, denoiser feed-forward blocks run
+    // in device-resident sessions on those devices.
     explicit H3Generation(
         std::shared_ptr<Resources> resources,
         std::shared_ptr<H3Compute> compute = {},
-        std::shared_ptr<checkpoint::ReadCache> cache = {}
+        std::shared_ptr<checkpoint::ReadCache> cache = {},
+        std::vector<int> devices = {},
+        std::shared_ptr<MediaSessionActivity> activity = {}
     );
     void execute(
         const H3GenerationPaths&,
@@ -56,6 +61,8 @@ private:
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<H3Compute> compute_;
     std::shared_ptr<checkpoint::ReadCache> cache_;
+    std::vector<int> devices_;
+    std::shared_ptr<MediaSessionActivity> activity_;
     bool busy_ = false;
 };
 
