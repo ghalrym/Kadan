@@ -13,7 +13,7 @@ struct Schedule {
 };
 
 inline Schedule schedule(std::size_t tokens, std::size_t steps) {
-    if (tokens == 0 || tokens > 16384 || steps < 2 || steps > 100)
+    if (tokens == 0 || tokens > 18432 || steps < 2 || steps > 100)
         throw std::invalid_argument("image_schedule_bounds");
     Schedule s;
     s.steps = steps;
