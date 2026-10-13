@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import signal
+import sys
 from collections import deque
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -229,8 +230,28 @@ class InferenceWorker:
             await asyncio.shield(job.result)
 
     async def _stderr(self):
+        pending = bytearray()
+        oversized = False
         while data := await self.process.stderr.read(4096):
             self.diagnostics.append(data.decode("utf-8", errors="replace"))
+            parts = data.split(b"\n")
+            for index, part in enumerate(parts):
+                if not oversized:
+                    if len(pending) + len(part) > 4095:
+                        pending.clear()
+                        oversized = True
+                    else:
+                        pending.extend(part)
+                if index < len(parts) - 1:
+                    if not oversized and pending.startswith(b"KADAN_IMAGE_TIMING "):
+                        # Persist opted-in native timings without changing UI progress.
+                        with suppress(OSError, ValueError):
+                            sys.stderr.write(
+                                pending.decode("utf-8", errors="replace") + "\n"
+                            )
+                            sys.stderr.flush()
+                    pending.clear()
+                    oversized = False
 
     async def _read(self):
         protocol_error = None

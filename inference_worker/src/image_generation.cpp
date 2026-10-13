@@ -356,7 +356,8 @@ void Generator::generate(
     const ImageRequest& request,
     std::span<float> output,
     const std::atomic_bool& cancel,
-    const Hook& hook
+    const Hook& hook,
+    [[maybe_unused]] const DenoisingTimings::Sink& timing_sink
 ) {
     Busy active(busy_);
     stop(cancel);
@@ -415,9 +416,27 @@ void Generator::generate(
             resources_, compute_, media_activity_, devices_, cancel
         );
         auto& session = *resident.session;
+        std::optional<DenoisingTimings> timing;
+        if (timing_sink) {
+            timing.emplace(timing_sink);
+            timing->reset(
+                1,
+                points + text_count,
+                text_count,
+                times.sigma[0],
+                times.sigma[1],
+                session.transfers()
+            );
+        }
+        auto* timings = timing ? &*timing : nullptr;
         try {
-            auto error = m.denoiser.preflight(session, text_count, h, w, cancel);
-            if (!error)
+            std::optional<MediaPlanError> error;
+            {
+                DenoisingStageTimer timer(timings, DenoisingStage::preflight);
+                error = m.denoiser.preflight(session, text_count, h, w, cancel);
+            }
+            if (!error) {
+                DenoisingStageTimer timer(timings, DenoisingStage::preparation);
                 error = m.denoiser.prepare_feed_forward(
                     session,
                     0,
@@ -426,7 +445,12 @@ void Generator::generate(
                     cancel,
                     text_count
                 );
+            }
             if (error) {
+                if (timings)
+                    timings->publish(
+                        DenoisingOutcome::not_selected, session.transfers()
+                    );
                 resident.close();
                 if (hook)
                     hook(fallback_phase(error->reason), 0);
@@ -435,8 +459,18 @@ void Generator::generate(
                     hook("denoiser_resident_selected", 0);
                 const auto rows = points + text_count;
                 for (std::size_t step = 0; step < request.steps; ++step) {
+                    if (step && timings)
+                        timings->reset(
+                            step + 1,
+                            rows,
+                            text_count,
+                            times.sigma[step],
+                            times.sigma[step + 1],
+                            session.transfers()
+                        );
                     stop(cancel);
                     if (step) {
+                        DenoisingStageTimer timer(timings, DenoisingStage::preparation);
                         if (auto rejected = m.denoiser.prepare_feed_forward(
                                 session,
                                 0,
@@ -461,18 +495,26 @@ void Generator::generate(
                         times.sigma[step],
                         resident.launchers,
                         cancel,
-                        hook
+                        hook,
+                        timings
                     );
                     const auto selected = resident.selected_launchers();
-                    m.denoiser.execute_scheduler(
-                        session,
-                        rows,
-                        text_count,
-                        times.sigma[step],
-                        times.sigma[step + 1],
-                        selected,
-                        cancel
-                    );
+                    {
+                        DenoisingStageTimer timer(timings, DenoisingStage::scheduler);
+                        m.denoiser.execute_scheduler(
+                            session,
+                            rows,
+                            text_count,
+                            times.sigma[step],
+                            times.sigma[step + 1],
+                            selected,
+                            cancel
+                        );
+                    }
+                    if (timings)
+                        timings->publish(
+                            DenoisingOutcome::completed, session.transfers()
+                        );
                     if (hook)
                         hook("step_completed", step + 1);
                 }
@@ -496,6 +538,12 @@ void Generator::generate(
                 resident_complete = true;
             }
         } catch (...) {
+            if (timings)
+                timings->publish(
+                    cancel.load() ? DenoisingOutcome::cancelled
+                                  : DenoisingOutcome::failed,
+                    session.transfers()
+                );
             rethrow_after_cleanup(std::current_exception(), [&] {
                 resident.close(true);
             });

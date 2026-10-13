@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "kadan/image.hpp"
+#include "kadan/image_timing.hpp"
 
 namespace kadan::image {
 struct DenoiserConfig {
@@ -105,7 +106,8 @@ public:
         std::size_t tokens,
         std::size_t text,
         std::span<video::ImageFeedForwardLauncher* const>,
-        const std::atomic_bool&
+        const std::atomic_bool&,
+        DenoisingTimings* = nullptr
     );
     // Timestep in [0,1] constructs target/text-zero frequency rows, followed by
     // linear_1 + SiLU and linear_2 + SiLU, consumed directly by modulation.
@@ -160,7 +162,8 @@ public:
         float timestep,
         std::span<video::ImageFeedForwardLauncher* const>,
         const std::atomic_bool&,
-        const Hook& = {}
+        const Hook& = {},
+        DenoisingTimings* = nullptr
     );
     // F32 latent [height*width,channels], condition [text,context], velocity of
     // latent shape. All caller buffers are caller-admitted; timestep in [0,1].

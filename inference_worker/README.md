@@ -21,6 +21,44 @@ Settings changes use typed queue tasks.
 in C++. The worker never starts a Python interpreter.
 Cancellation finishes owned work and releases the workspace before the next job.
 
+## Resident image denoising timing
+
+`KADAN_IMAGE_TIMING=1` opts the native image engine into diagnostic timing. It is
+off by default and is not an API or UI setting. Disabled stage guards read no
+clock, allocate no timing storage on the heap and format no records. Enabled
+collection uses fixed per-step storage and steady-clock reads at existing
+operator boundaries; it adds no CUDA events, kernels, synchronization or tile
+changes.
+
+The worker emits one `KADAN_IMAGE_TIMING ` JSON line per attempted resident step.
+The API relays only these bounded lines to its existing stderr/server logs and
+keeps its normal diagnostic buffer. Neither progress nor request responses
+change. Lines contain request/image/step identifiers, geometry and selected
+devices, stage call counts and total/min/max/first/last nanoseconds, step wall
+time, unaccounted wall time and deltas of existing transfer-byte counters. Stage
+names are `preflight`, `preparation`, `ingress`, `qkv`, `rotary`, `attention`,
+`attention_output`, `feed_forward`, `final_output` and `scheduler`. First-step
+preflight is included; model loading, prompt encoding, VAE decode and PNG
+publication are outside this collector. The host fallback is not profiled.
+
+`completed`, `cancelled`, `failed` and `not_selected` outcomes distinguish full
+steps from partial work or rejected resident admission. A stage that throws
+includes time spent unwinding its own cleanup. These wall times include host
+submission, validation, waits and GPU execution; they are not pure kernel or
+DMA timings. Summary formatting/logging occurs after the recorded step wall
+interval. Verify the expected complete summary count before using a capture;
+diagnostic sink failures cannot replace inference errors, and oversized or
+incomplete log lines are dropped. Device lists are capped at 16 and explicitly
+mark truncation. A counter reset is flagged rather than reported as unsigned
+underflow.
+
+Enabled overhead has not been measured on a GPU. The next separately authorized
+measurement should use the existing cached two-step request and unchanged
+300-second wall, 88-degree GPU and 120-second API-progress guards. Compare HTTP
+and existing completed-block timings with clean #240, report observer/state
+variation, and verify explicit unload/cleanup. Do not infer a speedup or a
+40-step quality pass from the timing records.
+
 `catalog.json` is the worker’s pinned model metadata. `assets/` contains pinned,
 MIT-licensed Whisper tokenizer ranks and mel filters. The C++ conversion reader
 accepts only storage/tensor descriptors from verified Whisper archives and does
