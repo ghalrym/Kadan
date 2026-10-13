@@ -380,8 +380,8 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
                     return t.name == "ingress/latent" && t.last == MediaPhase::complete;
                 }
             )) {
-            manifest.retained_inputs.push_back("ingress/latent");
-            manifest.retained_inputs.push_back("ingress/condition");
+            manifest.retained_inputs.emplace_back("ingress/latent");
+            manifest.retained_inputs.emplace_back("ingress/condition");
         }
     }
     if (ingress) {
