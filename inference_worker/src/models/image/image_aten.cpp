@@ -584,8 +584,12 @@ Tensor denoise(
 Tensor vae_norm(Stage& stage, const std::string& p, const Tensor& x, bool activate) {
     auto denominator = x.square().sum(1, true).sqrt().clamp_min(1e-12);
     auto gamma = stage.weight(p + ".gamma").reshape({1, x.size(1), 1, 1});
-    auto y = (x / denominator) * std::sqrt(double(x.size(1))) * gamma;
-    return activate ? at::silu(y) : y;
+    // Division owns this output; reuse it without mutating the residual input.
+    auto y = x / denominator;
+    y.mul_(std::sqrt(double(x.size(1)))).mul_(gamma);
+    if (activate)
+        at::silu_(y);
+    return y;
 }
 
 Tensor convolution(Stage& stage, const std::string& p, const Tensor& x) {
@@ -606,8 +610,9 @@ Tensor residual(
     auto y = convolution(stage, p + ".conv1", vae_norm(stage, p + ".norm1", x, true));
     stop(cancel);
     y = convolution(stage, p + ".conv2", vae_norm(stage, p + ".norm2", y, true));
-    return y
-           + (x.size(1) == y.size(1) ? x : convolution(stage, p + ".conv_shortcut", x));
+    return y.add_(
+        x.size(1) == y.size(1) ? x : convolution(stage, p + ".conv_shortcut", x)
+    );
 }
 
 Tensor vae_attention(Stage& stage, const Tensor& x, const std::atomic_bool& cancel) {
@@ -662,7 +667,7 @@ Tensor decode(
     for (int i = 0; i < 5; ++i) {
         stop(cancel);
         const auto p = "decoder.up_blocks." + std::to_string(i);
-        auto original = x;
+        auto original = i < 4 ? x : Tensor{};
         for (int j = 0; j < 3; ++j)
             x = residual(stage, p + ".resnets." + std::to_string(j), x, cancel);
         if (i < 4) {
@@ -674,15 +679,17 @@ Tensor decode(
                 repeats > 0 && x.size(1) * factor * 4 % original.size(1) == 0,
                 "image_aten_vae_shortcut"
             );
-            auto shortcut =
-                original.repeat_interleave(repeats, 1)
-                    .reshape(
-                        {1, x.size(1), factor, 2, 2, original.size(2), original.size(3)}
-                    )
+            const auto original_h = original.size(2), original_w = original.size(3);
+            auto shortcut = original.repeat_interleave(repeats, 1);
+            // The reshape below copies a permuted view. Retire the source first
+            // so the peak is x + repeated shortcut + reshaped shortcut.
+            original = Tensor{};
+            shortcut =
+                shortcut.reshape({1, x.size(1), factor, 2, 2, original_h, original_w})
                     .select(2, factor - 1)
                     .permute({0, 1, 4, 2, 5, 3})
                     .reshape_as(x);
-            x = x + shortcut;
+            x.add_(shortcut);
         }
         if (hook)
             hook("vae_up_block", i);
