@@ -37,6 +37,7 @@ struct VaeConvolution {
 struct VaeConvolutionTile {
     VaeConvolution shape;
     std::size_t first, count;
+    std::size_t capacity = 256;
 };
 
 struct VaePatchRegion {
@@ -67,13 +68,17 @@ __host__ __device__
     return channel * shape.points() + (y - padding) * shape.width + x - padding;
 }
 
+// Callers supply nonzero columns and a sub-tile within the admitted planar stride.
 #ifdef __CUDACC__
 __host__ __device__
 #endif
-    inline std::size_t vae_planar_tile_index(
-        std::size_t matrix_index, std::size_t rows, std::size_t columns
+    inline std::size_t vae_planar_group_index(
+        std::size_t matrix_index,
+        std::size_t columns,
+        std::size_t first,
+        std::size_t stride
     ) {
-    return (matrix_index % columns) * rows + matrix_index / columns;
+    return (matrix_index % columns) * stride + first + matrix_index / columns;
 }
 
 // A bounded rectangle and halo, shared by every output-column partition. Tiles

@@ -470,8 +470,12 @@ void bounded_mailbox() {
 void joining_failed_devices() {
     // A fake resource task fails while another still owns caller storage.
     // Joining must release both lifetimes before propagating the first error.
+    const image::VaeConvolutionTile group{{1, 2, 4097, 3, 1}, 0, 4096, 4096};
+    const auto plan =
+        *image_vae_convolution_plan(group.shape, group.shape.outputs, 64 * 1024 * 1024);
+    check(plan.points == group.capacity && plan.projection.rows == 256);
     for (bool submission_failed : {false, true}) {
-        Resources resources({1024, 512, 512});
+        Resources resources({1024, plan.bytes, plan.bytes});
         auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
         DeviceThread first(resources, 0, Workload::image, fake(resources, a, 0)),
             second(resources, 1, Workload::image, fake(resources, b, 1));
@@ -481,17 +485,27 @@ void joining_failed_devices() {
         int callback_owned = 17;
         std::vector<std::future<void>> tasks;
         tasks.push_back(first.submit_work(
-            [](DeviceWorkspace& workspace) {
-                workspace.ensure(128);
+            [&](DeviceWorkspace& workspace) {
+                workspace.ensure(plan.bytes);
+                // Cancellation/error after an inner tile keeps the full group
+                // charged until owned cleanup, without another allocation.
+                workspace.ensure(256);
                 throw std::runtime_error("pair_cancelled_or_gemm_error");
             },
             &failed
         ));
         tasks.push_back(second.submit_work([&](DeviceWorkspace& workspace) {
-            workspace.ensure(256);
+            workspace.ensure(plan.bytes);
+            auto& ops = static_cast<FakeOperations&>(workspace.operations());
+            ops.reset_status();
             entered.set_value();
             completed.wait();
-            check(callback_owned == 17);
+            check(callback_owned == 17 && group.count == 4096);
+            for (std::size_t at = 0; at < group.count; at += plan.projection.rows) {
+                workspace.ensure(256);
+                ops.observe_status(at == 0 ? 0x7f800000U : 0x80000000U);
+            }
+            check(ops.read_status() == 1);
         }));
         entered.get_future().get();
         auto error =
@@ -501,7 +515,11 @@ void joining_failed_devices() {
         finish.set_value();
         join_device_tasks(tasks, error);
         check(!tasks[0].valid() && !tasks[1].valid());
-        check(error && failed.load() && !a->allocated && b->allocated == 256);
+        check(error && failed.load() && !a->allocated && b->allocated == plan.bytes);
+        check(
+            a->allocations == 1 && b->allocations == 1 && b->status_resets == 1
+            && b->status_reads == 1
+        );
         callback_owned = 0;
         try {
             std::rethrow_exception(error);
