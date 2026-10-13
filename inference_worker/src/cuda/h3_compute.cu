@@ -779,6 +779,30 @@ __global__ void pack_image_attention(
     }
 }
 
+// K and V use the same source coordinates and are consumed together on this stream.
+__global__ void pack_image_key_value(
+    const float* key,
+    const float* value,
+    float* packed_key,
+    float* packed_value,
+    unsigned rows,
+    unsigned state,
+    unsigned dim,
+    unsigned first,
+    unsigned head,
+    unsigned* status
+) {
+    const auto i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * dim) {
+        const auto source = (first + i / dim) * state + head * dim + i % dim;
+        const float k = key[source], v = value[source];
+        if (!isfinite(k) || !isfinite(v))
+            atomicOr(status, 2U);
+        packed_key[i] = k;
+        packed_value[i] = v;
+    }
+}
+
 __global__ void scatter_image_attention(
     const float* packed,
     const float* total,
@@ -2813,23 +2837,23 @@ void CudaBf16Projection::masked_attention(
                 for (std::size_t key = 0; key < tokens; key += layout.keys) {
                     require(!cancel.load(), "h3_cuda_cancelled");
                     const auto keys = std::min(layout.keys, tokens - key);
-                    for (std::size_t i = 1; i < inputs.size(); ++i) {
-                        pack_image_attention<<<
-                            unsigned((keys * head_dim + 255) / 256),
-                            256,
-                            0,
-                            owned_stream>>>(
-                            static_cast<const float*>(inputs[i].data),
-                            at(i == 1 ? layout.k : layout.v),
-                            unsigned(keys),
-                            unsigned(shape.in),
-                            unsigned(head_dim),
-                            unsigned(key),
-                            unsigned(head),
-                            status
-                        );
-                        checked(cudaGetLastError());
-                    }
+                    pack_image_key_value<<<
+                        unsigned((keys * head_dim + 255) / 256),
+                        256,
+                        0,
+                        owned_stream>>>(
+                        static_cast<const float*>(inputs[1].data),
+                        static_cast<const float*>(inputs[2].data),
+                        at(layout.k),
+                        at(layout.v),
+                        unsigned(keys),
+                        unsigned(shape.in),
+                        unsigned(head_dim),
+                        unsigned(key),
+                        unsigned(head),
+                        status
+                    );
+                    checked(cudaGetLastError());
                     checked(
                         gemm<float>(
                             handle,
