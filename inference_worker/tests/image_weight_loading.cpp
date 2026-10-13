@@ -1860,6 +1860,7 @@ int main() {
         complete,
         query_tail,
         next_block,
+        next_owner,
         failed_status,
         cancelled,
         missing_q,
@@ -1874,19 +1875,24 @@ int main() {
         shorter_sequence
     };
     auto attention_case = [&](AttentionScenario scenario, bool two_devices) {
+        const bool migrate = scenario == AttentionScenario::next_owner;
+        const bool next_block = scenario == AttentionScenario::next_block || migrate;
         const std::size_t tokens = scenario == AttentionScenario::query_tail ? 131 : 17;
         const auto budget = conditioning_budget + 40000 + (tokens - 17) * 3072
                             + kadan::video::ImageAttentionScratch(tokens, 32).bytes
                             - kadan::video::ImageAttentionScratch(17, 32).bytes;
         auto resources = std::make_shared<kadan::Resources>(
             two_devices ? kadan::Footprint{128 * 1024 * 1024, budget, budget}
-                        : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
+            : migrate
+                ? kadan::
+                      Footprint{128 * 1024 * 1024, 32 * 1024 * 1024, 32 * 1024 * 1024}
+                : kadan::Footprint{128 * 1024 * 1024, 32 * 1024 * 1024}
         );
         kadan::image::Denoiser attention_denoiser(
             resources, std::make_shared<Compute>()
         );
         auto attention_config = config;
-        attention_config.layers = scenario == AttentionScenario::next_block ? 2 : 1;
+        attention_config.layers = next_block ? 2 : 1;
         attention_config.context = 96;
         attention_config.channels = 32;
         attention_config.block.heads = 2;
@@ -1911,13 +1917,15 @@ int main() {
         auto& metadata = *fake;
         metadata.available = two_devices ? budget : 32 * 1024 * 1024;
         metadata.metadata_execution = true;
+        if (migrate)
+            metadata.remaining[0] = 0;
         kadan::MediaSession resident(
             resources,
             activity,
             std::move(fake),
             kadan::Workload::image,
-            two_devices ? std::vector<kadan::MediaDeviceLimit>{{0}, {1}}
-                        : std::vector<kadan::MediaDeviceLimit>{{0}},
+            two_devices || migrate ? std::vector<kadan::MediaDeviceLimit>{{0}, {1}}
+                                   : std::vector<kadan::MediaDeviceLimit>{{0}},
             cancel
         );
         if (const auto error = attention_denoiser.prepare_feed_forward(
@@ -1925,7 +1933,7 @@ int main() {
             ))
             throw std::runtime_error("attention_admission:" + error->detail);
         check(resident.plan().devices.size() == (two_devices ? 2 : 1));
-        Launcher first(metadata, 0), second(metadata, 1);
+        Launcher first(metadata, migrate ? 1 : 0), second(metadata, 1);
         std::vector<Launcher*> qkv_launchers{&first};
         std::vector<kadan::video::ImageFeedForwardLauncher*> launchers{&first};
         if (two_devices) {
@@ -2065,7 +2073,7 @@ int main() {
         } catch (const std::exception&) {
             rejected = true;
         }
-        const bool success = scenario <= AttentionScenario::next_block;
+        const bool success = scenario <= AttentionScenario::next_owner;
         check(rejected == !success);
         cancel.store(false);
         if (success) {
@@ -2096,7 +2104,7 @@ int main() {
                     check(resident.ready(velocity));
                 }
             }
-            if (scenario == AttentionScenario::next_block) {
+            if (next_block) {
                 std::map<std::pair<int, std::string>, kadan::MediaDeviceSpan> completed;
                 for (const auto& d : resident.plan().devices)
                     for (const auto* name :
@@ -2117,9 +2125,17 @@ int main() {
                         check(resident.ready(input));
                         completed[{d.device, name}] = input.layout();
                     }
+                const auto peer_bytes = resident.transfers().peer_activation;
+                if (migrate)
+                    metadata.remaining[0] = metadata.available;
                 check(!attention_denoiser.prepare_feed_forward(
                     resident, 1, tokens, HiddenBoundary::pre_qkv, cancel
                 ));
+                check(resident.plan().devices.front().device == 0);
+                check(
+                    resident.transfers().peer_activation - peer_bytes
+                    == (migrate ? tokens * 64 * 4 + 2 * 64 * 4 + 2 * 256 * 4 : 0)
+                );
                 check(resident.plan().devices.size() == launchers.size());
                 Launcher next_first(metadata, 0), next_second(metadata, 1);
                 std::vector<Launcher*> next_devices{&next_first};
@@ -2135,7 +2151,8 @@ int main() {
                          {"resident/hidden",
                           "conditioning/time-activated",
                           "ff/modulation"}) {
-                        const auto& previous = completed.at({launcher->device(), name});
+                        const auto& previous =
+                            completed.at({migrate ? 1 : launcher->device(), name});
                         auto input = resident.tensor(
                             launcher->device(),
                             name,
@@ -2145,9 +2162,18 @@ int main() {
                         );
                         check(
                             resident.ready(input)
-                            && input.layout().data == previous.data
-                            && input.layout().generation == previous.generation
+                            && input.layout().dtype == previous.dtype
+                            && input.layout().dimensions == previous.dimensions
+                            && input.layout().strides == previous.strides
+                            && input.layout().bytes == previous.bytes
+                            && (migrate
+                                    ? input.layout().generation != previous.generation
+                                    : input.layout().data == previous.data
+                                          && input.layout().generation
+                                                 == previous.generation)
                         );
+                        if (migrate)
+                            completed[{launcher->device(), name}] = input.layout();
                     }
                     const auto& hidden =
                         completed.at({launcher->device(), "resident/hidden"});
@@ -2216,8 +2242,7 @@ int main() {
             const auto after = resident.transfers();
             check(
                 after.input_upload == before.input_upload
-                && (scenario == AttentionScenario::next_block
-                    || after.weight_upload == before.weight_upload)
+                && (next_block || after.weight_upload == before.weight_upload)
                 && after.activation_upload == before.activation_upload
                 && after.activation_download == before.activation_download
                 && after.output_download == before.output_download
@@ -2236,7 +2261,7 @@ int main() {
         );
         check(metadata.allocations.empty() && activity->owners == 0);
         check(resources->snapshot().used[1] == 0);
-        if (two_devices)
+        if (two_devices || migrate)
             check(resources->snapshot().used[2] == 0);
     };
     for (bool two_devices : {false, true})
@@ -2257,6 +2282,7 @@ int main() {
               AttentionScenario::invalid_tokens,
               AttentionScenario::shorter_sequence})
             attention_case(scenario, two_devices);
+    attention_case(AttentionScenario::next_owner, false);
     // Restore the original loaded model's checkpoint before conditioning checks.
     denoiser.unload();
     write_weights(directory, false, 64, 512, {.denoiser = true});

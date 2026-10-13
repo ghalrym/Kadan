@@ -102,7 +102,7 @@ struct StageManifest {
     // Actual input projections may initialize hidden before attention/FF.
     bool prepare_hidden = false;
     // Certified complete-phase inputs must survive admission on every selected
-    // device. A placement requiring a new owner is rejected before retirement.
+    // device, reusing owners or copying exact bytes over admitted direct peers.
     std::vector<std::string> retained_inputs;
 };
 
