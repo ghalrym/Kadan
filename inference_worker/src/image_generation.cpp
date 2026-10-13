@@ -336,9 +336,7 @@ void Generator::generate(
     }
     if (compute_)
         report_weight_placement(*compute_, hook);
-    for (std::size_t p = 0; p < points; ++p)
-        for (std::size_t c = 0; c < 64; ++c)
-            decoded[c * points + p] = latent[p * 64 + c] * m.stddev[c] + m.mean[c];
+    prepare_decoder_input(latent, m.mean, m.stddev, decoded, cancel);
     m.vae.decode(decoded, h, w, output, cancel, [&](std::size_t i) {
         if (hook)
             hook("vae_up_block", i);

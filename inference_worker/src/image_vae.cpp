@@ -105,6 +105,37 @@ void finite(std::span<const float> x) {
         need(std::isfinite(v), "image_vae_nonfinite");
 }
 
+void disjoint(std::span<const float> a, std::span<const float> b) {
+    const std::less<const float*> before;
+    need(
+        !before(a.data(), b.data() + b.size())
+            || !before(b.data(), a.data() + a.size()),
+        "image_decoder_input_overlap"
+    );
+}
+
+void decoder_input_shape(
+    std::span<const float> latent,
+    std::span<const float> mean,
+    std::span<const float> stddev,
+    std::span<float> planar
+) {
+    need(
+        !latent.empty() && latent.size() % 64 == 0 && latent.size() / 64 <= 18432
+            && planar.size() == latent.size() && mean.size() == 64
+            && stddev.size() == 64,
+        "image_decoder_input_shape"
+    );
+    disjoint(latent, planar);
+    disjoint(mean, planar);
+    disjoint(stddev, planar);
+    for (std::size_t c = 0; c < 64; ++c)
+        need(
+            std::isfinite(mean[c]) && std::isfinite(stddev[c]) && stddev[c] > 0,
+            "image_latent_normalization"
+        );
+}
+
 float silu(float x) {
     double v = x;
     return float(v >= 0 ? v / (1 + std::exp(-v)) : v * std::exp(v) / (1 + std::exp(v)));
@@ -174,6 +205,73 @@ std::vector<Spec> layout(VaeConfig d) {
     return out;
 }
 }  // namespace
+
+void prepare_decoder_input(
+    std::span<const float> latent,
+    std::span<const float> mean,
+    std::span<const float> stddev,
+    std::span<float> planar,
+    const std::atomic_bool& cancel
+) {
+    stop(cancel);
+    decoder_input_shape(latent, mean, stddev, planar);
+    const auto points = latent.size() / 64;
+    for (std::size_t p = 0; p < points; ++p) {
+        stop(cancel);
+        for (std::size_t c = 0; c < 64; ++c) {
+            const float scaled = latent[p * 64 + c] * stddev[c];
+            const float value = scaled + mean[c];
+            need(std::isfinite(value), "image_vae_nonfinite");
+            planar[c * points + p] = value;
+        }
+    }
+    stop(cancel);
+}
+
+void prepare_decoder_input(
+    MediaSession& session,
+    std::span<float> latent_scratch,
+    std::span<const float> mean,
+    std::span<const float> stddev,
+    std::span<float> planar,
+    const std::atomic_bool& cancel
+) {
+    try {
+        stop(cancel);
+        decoder_input_shape(latent_scratch, mean, stddev, planar);
+        disjoint(latent_scratch, mean);
+        disjoint(latent_scratch, stddev);
+        need(!session.plan().devices.empty(), "image_decoder_input_owner");
+        const auto device = session.plan().devices.front().device;
+        const auto owned = std::find_if(
+            session.plan().tensors.begin(),
+            session.plan().tensors.end(),
+            [&](const auto& t) {
+                return t.device == device && t.name == "ingress/latent";
+            }
+        );
+        need(
+            owned != session.plan().tensors.end() && owned->last == MediaPhase::complete
+                && owned->bytes == latent_scratch.size_bytes(),
+            "image_decoder_input_shape"
+        );
+        {
+            auto latent = session.tensor(
+                device,
+                "ingress/latent",
+                DeviceDType::f32,
+                {latent_scratch.size() / 64, 64},
+                {64, 1}
+            );
+            session.download_output(latent, std::as_writable_bytes(latent_scratch));
+        }
+        stop(cancel);
+        prepare_decoder_input(latent_scratch, mean, stddev, planar, cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
 
 struct VaeDecoder::Impl {
     std::shared_ptr<DenseCompute> compute;
