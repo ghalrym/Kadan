@@ -138,6 +138,7 @@ public:
     DeviceTensorView weight(const WeightSlice&);
     DeviceTensorView rows(DeviceTensorView&, std::size_t first, std::size_t count);
     // Validate complete prepared boundaries without launching or transferring data.
+    bool ready(DeviceTensorView&);
     void require_ready(std::span<DeviceTensorView* const>);
     // Explicit host boundaries, synchronous for host-span lifetime. The ingress
     // caller supplies validated input; weight copies preserve original raw bytes.

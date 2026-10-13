@@ -373,10 +373,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
     manifest.status_bytes = sizeof(std::uint32_t);  // Aggregate certificate.
     manifest.tensors.insert(
         manifest.tensors.end(),
-        {{"ff/modulation",
-          8 * m.d.state * sizeof(float),
-          MediaPhase::prepare,
-          MediaPhase::prepare},
+        {{"ff/modulation", 8 * m.d.state * sizeof(float)},
          {"ff/residual-gates", 2 * m.d.state * sizeof(float)},
          {"ff/gate-status",
           sizeof(std::uint32_t),

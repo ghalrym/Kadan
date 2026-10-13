@@ -341,10 +341,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
          MediaPhase::prepare}
     );
     manifest.tensors.push_back(
-        {"conditioning/time-activated",
-         2 * m.d.block.state * sizeof(float),
-         MediaPhase::prepare,
-         MediaPhase::prepare}
+        {"conditioning/time-activated", 2 * m.d.block.state * sizeof(float)}
     );
     if (auto error = m.blocks[block]->prepare_feed_forward(
             session, tokens, boundary, cancel, std::move(manifest)
@@ -360,6 +357,9 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
             auto& shard = *m.shards[spec.shard];
             stop(cancel);
             shard.check_unchanged();
+            auto destination = session.weight(slice);
+            if (session.ready(destination))
+                continue;
             Lease staging(*resources_, slice.stored_bytes);
             std::vector<std::uint8_t> raw(slice.stored_bytes);
             shard.read_tensor(spec.name, 0, raw);
@@ -372,7 +372,6 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
                     ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
                     "h3_cuda_nonfinite_weight"
                 );
-            auto destination = session.weight(slice);
             session.upload_weight(destination, std::as_bytes(std::span(raw)));
         }
     } catch (...) {
@@ -387,7 +386,7 @@ void Denoiser::execute_feed_forward(
     std::size_t block,
     std::size_t tokens,
     std::size_t text,
-    float timestep,
+    std::optional<float> timestep,
     HiddenBoundary boundary,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
@@ -472,9 +471,14 @@ void Denoiser::execute_feed_forward(
                 &d.linear1_weight, &d.time_weight, &d.modulation_weight, &hidden
             };
             session.require_ready(ready);
-            video::validate_image_frequency(
-                planned.device, d.frequency.layout(), status.layout(), timestep
-            );
+            if (timestep)
+                video::validate_image_frequency(
+                    planned.device, d.frequency.layout(), status.layout(), *timestep
+                );
+            else {
+                const std::array conditioning{&d.time, &d.modulation};
+                session.require_ready(conditioning);
+            }
             const std::array inputs{&d.frequency, &d.linear1, &d.time};
             const std::array outputs{&d.linear1, &d.time, &d.modulation};
             const std::array weights{
@@ -538,6 +542,8 @@ void Denoiser::execute_feed_forward(
         }
         // All ingress and consumer layouts are checked before any producer runs.
         for (auto& d : devices) {
+            if (!timestep)
+                continue;
             stop(cancel);
             {
                 auto status = session.tensor(
@@ -550,7 +556,7 @@ void Denoiser::execute_feed_forward(
                     read,
                     write,
                     [&](void* stream, auto, auto out) {
-                        d.launcher->frequency(stream, out, timestep);
+                        d.launcher->frequency(stream, out, *timestep);
                     }
                 );
                 session.complete(write, status);
