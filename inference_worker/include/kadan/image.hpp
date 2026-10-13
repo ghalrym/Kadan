@@ -109,6 +109,9 @@ private:
         const std::atomic_bool&,
         StageManifest
     );
+    std::variant<StageManifest, MediaPlanError> feed_forward_manifest(
+        std::size_t, HiddenBoundary, const std::atomic_bool&, StageManifest
+    );
     // Denoiser validates its shared weights; the block validates its own slices.
     void execute_feed_forward(
         MediaSession&,

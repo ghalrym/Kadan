@@ -124,6 +124,9 @@ public:
     // The actual consumed manifest and implemented workspace layout are required.
     // Planner failures propagate as typed values, before allocation/submission.
     std::optional<MediaPlanError> admit(const StageManifest&, const MediaShape&);
+    // Empty-session metadata probe only: no allocations, uploads or certificates.
+    // Actual admission must still reprobe and validate retained inputs.
+    std::optional<MediaPlanError> preflight(const StageManifest&, const MediaShape&);
     const MediaResidencyPlan& plan() const;
     const MediaAdmissionEvidence& evidence() const;
     const MediaTransferCounters& transfers() const;
@@ -173,7 +176,7 @@ private:
 
 // Holds WorkerCompute::compute until all views and confirmed request cleanup end.
 // Construct only after WorkerCompute has established/reserved its contexts.
-// No runtime route selects residency in this prerequisite slice.
+// The image request owner uses the same contexts and activity guard as WorkerCompute.
 std::unique_ptr<MediaDeviceOperations> cuda_media_device_operations(
     std::shared_ptr<DenseCompute> context_owner, std::span<const int>
 );

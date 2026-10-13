@@ -281,6 +281,59 @@ void Denoiser::unload() {
     }
 }
 
+std::optional<MediaPlanError> Denoiser::preflight(
+    MediaSession& session,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    const std::atomic_bool& cancel
+) {
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto& d = model_->d;
+    if (!text || text > 2048 || !height || height > 256 || !width || width > 256
+        || height * width % 4 || text + height * width > 32768 || d.channels != 64)
+        return MediaPlanError{
+            PlanFailure::unsupported_layout, "image_resident_shape", {}
+        };
+    const auto tokens = text + height * width;
+    std::vector<StageManifest> manifests;
+    for (std::size_t block = 0; block < model_->blocks.size(); ++block) {
+        auto shared = feed_forward_manifest(
+            block, tokens, HiddenBoundary::pre_qkv, cancel, text, block != 0
+        );
+        if (auto* error = std::get_if<MediaPlanError>(&shared))
+            return *error;
+        auto built = model_->blocks[block]->feed_forward_manifest(
+            tokens,
+            HiddenBoundary::pre_qkv,
+            cancel,
+            std::get<StageManifest>(std::move(shared))
+        );
+        if (auto* error = std::get_if<MediaPlanError>(&built))
+            return *error;
+        manifests.push_back(std::get<StageManifest>(std::move(built)));
+    }
+    // Check all layouts before reporting a capacity rejection. A later unsupported
+    // block must not be disguised as a supported path that merely lacks memory.
+    std::optional<MediaPlanError> capacity;
+    for (const auto& manifest : manifests) {
+        stop(cancel);
+        if (auto error = session.preflight(
+                manifest,
+                MediaShape{
+                    tokens, d.block.state, d.block.state, 0, 0, d.block.intermediate
+                }
+            )) {
+            if (error->reason != PlanFailure::capacity)
+                return error;
+            if (!capacity)
+                capacity = std::move(error);
+        }
+    }
+    return capacity;
+}
+
 std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     MediaSession& session,
     std::size_t block,
@@ -288,6 +341,75 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     HiddenBoundary boundary,
     const std::atomic_bool& cancel,
     std::optional<std::size_t> resident_text
+) {
+    const bool retain_latent =
+        block
+        || std::any_of(
+            session.plan().tensors.begin(),
+            session.plan().tensors.end(),
+            [](const auto& t) {
+                return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+            }
+        );
+    auto built = feed_forward_manifest(
+        block, tokens, boundary, cancel, resident_text, retain_latent
+    );
+    if (auto* error = std::get_if<MediaPlanError>(&built))
+        return *error;
+    Busy active(busy_);
+    auto& m = *model_;
+    if (auto error = m.blocks[block]->prepare_feed_forward(
+            session, tokens, boundary, cancel, std::get<StageManifest>(std::move(built))
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            if (!m.names.contains(slice.name))
+                continue;
+            const auto& spec = m.specs.at(m.names.at(slice.name));
+            auto& shard = *m.shards[spec.shard];
+            stop(cancel);
+            shard.check_unchanged();
+            auto destination = session.weight(slice);
+            if (session.ready(destination))
+                continue;
+            Lease staging(*resources_, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            shard.read_tensor(spec.name, 0, raw);
+            shard.check_unchanged();
+            stop(cancel);
+            // The standard host source validates raw weights, even when finite
+            // output cancellation could otherwise hide a nonfinite weight.
+            const auto dtype = shard.tensor(spec.name).dtype;
+            for (std::size_t i = 0; i < raw.size();
+                 i += dtype == checkpoint::Dtype::bf16 ? 2 : 4)
+                need(
+                    dtype == checkpoint::Dtype::fp32
+                        ? ((std::uint32_t(raw[i + 3]) << 24
+                            | std::uint32_t(raw[i + 2]) << 16
+                            | std::uint32_t(raw[i + 1]) << 8 | raw[i])
+                           & 0x7f800000)
+                              != 0x7f800000
+                        : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
+                              != 0x7f80,
+                    "h3_cuda_nonfinite_weight"
+                );
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
+}
+
+std::variant<StageManifest, MediaPlanError> Denoiser::feed_forward_manifest(
+    std::size_t block,
+    std::size_t tokens,
+    HiddenBoundary boundary,
+    const std::atomic_bool& cancel,
+    std::optional<std::size_t> resident_text,
+    bool retain_latent
 ) {
     Busy active(busy_);
     stop(cancel);
@@ -372,14 +494,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
               (tokens - *resident_text) * m.d.channels * sizeof(float)},
              {"ingress/condition", *resident_text * m.d.context * sizeof(float)}}
         );
-        if (block
-            || std::any_of(
-                session.plan().tensors.begin(),
-                session.plan().tensors.end(),
-                [](const auto& t) {
-                    return t.name == "ingress/latent" && t.last == MediaPhase::complete;
-                }
-            )) {
+        if (retain_latent) {
             manifest.retained_inputs.emplace_back("ingress/latent");
             manifest.retained_inputs.emplace_back("ingress/condition");
         }
@@ -446,49 +561,7 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
               MediaPhase::complete}}
         );
     }
-    if (auto error = m.blocks[block]->prepare_feed_forward(
-            session, tokens, boundary, cancel, std::move(manifest)
-        ))
-        return error;
-    try {
-        for (const auto& slice : session.plan().weights) {
-            if (!m.names.contains(slice.name))
-                continue;
-            const auto& spec = m.specs.at(m.names.at(slice.name));
-            auto& shard = *m.shards[spec.shard];
-            stop(cancel);
-            shard.check_unchanged();
-            auto destination = session.weight(slice);
-            if (session.ready(destination))
-                continue;
-            Lease staging(*resources_, slice.stored_bytes);
-            std::vector<std::uint8_t> raw(slice.stored_bytes);
-            shard.read_tensor(spec.name, 0, raw);
-            shard.check_unchanged();
-            stop(cancel);
-            // The standard host source validates raw weights, even when finite
-            // output cancellation could otherwise hide a nonfinite weight.
-            const auto dtype = shard.tensor(spec.name).dtype;
-            for (std::size_t i = 0; i < raw.size();
-                 i += dtype == checkpoint::Dtype::bf16 ? 2 : 4)
-                need(
-                    dtype == checkpoint::Dtype::fp32
-                        ? ((std::uint32_t(raw[i + 3]) << 24
-                            | std::uint32_t(raw[i + 2]) << 16
-                            | std::uint32_t(raw[i + 1]) << 8 | raw[i])
-                           & 0x7f800000)
-                              != 0x7f800000
-                        : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
-                              != 0x7f80,
-                    "h3_cuda_nonfinite_weight"
-                );
-            session.upload_weight(destination, std::as_bytes(std::span(raw)));
-        }
-    } catch (...) {
-        session.abort(std::current_exception());
-        throw;
-    }
-    return {};
+    return manifest;
 }
 
 void Denoiser::execute_ingress(
@@ -1347,6 +1420,68 @@ void Denoiser::execute_scheduler(
             session.complete(write, d.status);
         }
         stop(cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute(
+    MediaSession& session,
+    std::span<const float> latent,
+    std::span<const float> condition,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    float timestep,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel,
+    const Hook& hook
+) {
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto rows = text + height * width;
+    try {
+        for (std::size_t block = 0; block < model_->blocks.size(); ++block) {
+            stop(cancel);
+            if (block) {
+                if (auto rejected = prepare_feed_forward(
+                        session, block, rows, HiddenBoundary::pre_qkv, cancel, text
+                    ))
+                    throw std::runtime_error(
+                        "image_resident_admission: " + rejected->detail
+                    );
+            }
+            std::vector<video::ImageFeedForwardLauncher*> selected;
+            for (const auto& planned : session.plan().devices) {
+                const auto launcher = std::find_if(
+                    launchers.begin(), launchers.end(), [&](const auto* candidate) {
+                        return candidate && candidate->device() == planned.device;
+                    }
+                );
+                need(launcher != launchers.end(), "image_resident_launcher");
+                selected.push_back(*launcher);
+            }
+            if (!block)
+                execute_ingress(session, latent, condition, text, selected, cancel);
+            if (hook)
+                hook("block_started", block);
+            execute_qkv(
+                session,
+                block,
+                rows,
+                text,
+                block ? std::optional<float>{} : timestep,
+                selected,
+                cancel
+            );
+            if (!block && hook)
+                hook("conditioning", 0);
+            execute_rotary(session, block, rows, text, height, width, selected, cancel);
+            execute_attention(session, block, rows, text, selected, cancel);
+            if (hook)
+                hook("block", block);
+        }
     } catch (...) {
         session.abort(std::current_exception());
         throw;

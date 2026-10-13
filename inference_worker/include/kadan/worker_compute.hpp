@@ -78,6 +78,7 @@ struct WorkerCompute {
     Footprint context;
     Handle context_handle = 0;
     Workload workload;
+    std::vector<int> devices;
 
     WorkerCompute(
         const ComputePlan& plan, Workload kind, std::shared_ptr<Resources> owner = {}
@@ -85,7 +86,7 @@ struct WorkerCompute {
         : resources(
               owner ? std::move(owner) : std::make_shared<Resources>(plan.capacity)
           ),
-          context(plan.capacity.size()), workload(kind) {
+          context(plan.capacity.size()), workload(kind), devices(plan.devices) {
 #ifdef KADAN_WORKER_CUDA
         if (!plan.devices.empty()) {
             for (int d : plan.devices)
