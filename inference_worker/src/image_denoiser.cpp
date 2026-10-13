@@ -893,26 +893,40 @@ void Denoiser::execute_attention(
     std::size_t tokens,
     std::size_t text,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
-    const std::atomic_bool& cancel
+    const std::atomic_bool& cancel,
+    DenoisingTimings* timings
 ) {
     Busy active(busy_);
     stop(cancel);
     need(model_ && block < model_->blocks.size(), "image_load_state");
     try {
         auto& transformer = *model_->blocks[block];
-        transformer.execute_masked_attention(session, tokens, text, launchers, cancel);
-        transformer.prepare_feed_forward_inputs(
-            session, tokens, text, HiddenBoundary::pre_attention, launchers, cancel
-        );
+        {
+            DenoisingStageTimer timer(timings, DenoisingStage::attention);
+            transformer.execute_masked_attention(
+                session, tokens, text, launchers, cancel
+            );
+        }
+        {
+            DenoisingStageTimer timer(timings, DenoisingStage::attention_output);
+            transformer.prepare_feed_forward_inputs(
+                session, tokens, text, HiddenBoundary::pre_attention, launchers, cancel
+            );
+        }
         const bool final = block + 1 == model_->blocks.size();
         // Five replicated Q/K/V/norm weights accompany the existing FF slice.
         const auto shared = ((final ? 5 : 3) + (block == 0 ? 4 : 0) + 5)
                             * session.plan().devices.size();
-        transformer.execute_feed_forward(
-            session, tokens, text, launchers, cancel, shared
-        );
-        if (final)
+        {
+            DenoisingStageTimer timer(timings, DenoisingStage::feed_forward);
+            transformer.execute_feed_forward(
+                session, tokens, text, launchers, cancel, shared
+            );
+        }
+        if (final) {
+            DenoisingStageTimer timer(timings, DenoisingStage::final_output);
             execute_final_output(session, tokens, text, launchers, cancel);
+        }
     } catch (...) {
         session.abort(std::current_exception());
         throw;
@@ -1436,7 +1450,8 @@ void Denoiser::execute(
     float timestep,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel,
-    const Hook& hook
+    const Hook& hook,
+    DenoisingTimings* timings
 ) {
     stop(cancel);
     need(bool(model_), "image_load_state");
@@ -1445,12 +1460,18 @@ void Denoiser::execute(
         for (std::size_t block = 0; block < model_->blocks.size(); ++block) {
             stop(cancel);
             if (block) {
+                DenoisingStageTimer timer(timings, DenoisingStage::preparation);
                 if (auto rejected = prepare_feed_forward(
                         session, block, rows, HiddenBoundary::pre_qkv, cancel, text
                     ))
                     throw std::runtime_error(
                         "image_resident_admission: " + rejected->detail
                     );
+            }
+            if (timings) {
+                timings->observe_rows(session.plan().rows);
+                for (const auto& device : session.plan().devices)
+                    timings->observe_device(device.device);
             }
             std::vector<video::ImageFeedForwardLauncher*> selected;
             for (const auto& planned : session.plan().devices) {
@@ -1462,23 +1483,35 @@ void Denoiser::execute(
                 need(launcher != launchers.end(), "image_resident_launcher");
                 selected.push_back(*launcher);
             }
-            if (!block)
+            if (!block) {
+                DenoisingStageTimer timer(timings, DenoisingStage::ingress);
                 execute_ingress(session, latent, condition, text, selected, cancel);
+            }
             if (hook)
                 hook("block_started", block);
-            execute_qkv(
-                session,
-                block,
-                rows,
-                text,
-                block ? std::optional<float>{} : timestep,
-                selected,
-                cancel
-            );
+            {
+                DenoisingStageTimer timer(timings, DenoisingStage::qkv);
+                execute_qkv(
+                    session,
+                    block,
+                    rows,
+                    text,
+                    block ? std::optional<float>{} : timestep,
+                    selected,
+                    cancel
+                );
+            }
             if (!block && hook)
                 hook("conditioning", 0);
-            execute_rotary(session, block, rows, text, height, width, selected, cancel);
-            execute_attention(session, block, rows, text, selected, cancel);
+            {
+                DenoisingStageTimer timer(timings, DenoisingStage::rotary);
+                execute_rotary(
+                    session, block, rows, text, height, width, selected, cancel
+                );
+            }
+            execute_attention(session, block, rows, text, selected, cancel, timings);
+            if (timings)
+                timings->completed_block();
             if (hook)
                 hook("block", block);
         }

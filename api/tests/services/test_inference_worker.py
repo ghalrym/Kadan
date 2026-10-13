@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import unittest
 from pathlib import Path
@@ -9,6 +10,55 @@ from api.services.inference_worker import InferenceJob, InferenceTask, Inference
 
 
 class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timing_lines_are_relayed_across_chunks_without_progress(self):
+        callback = Mock()
+        worker = InferenceWorker(Path("/unused"), callback)
+        chunks = [
+            b"ordinary diagnostic\nKAD",
+            b'AN_IMAGE_TIMING {"step":',
+            b'1}\nKADAN_IMAGE_TIMING {"step":2}\n',
+        ]
+        worker.process = SimpleNamespace(
+            stderr=SimpleNamespace(read=AsyncMock(side_effect=[*chunks, b""]))
+        )
+        output = io.StringIO()
+        with patch("sys.stderr", output):
+            await worker._stderr()
+        self.assertEqual(
+            output.getvalue(),
+            'KADAN_IMAGE_TIMING {"step":1}\nKADAN_IMAGE_TIMING {"step":2}\n',
+        )
+        self.assertEqual("".join(worker.diagnostics), b"".join(chunks).decode())
+        callback.assert_not_called()
+        self.assertIsNone(worker.memory)
+        self.assertFalse(worker.jobs)
+
+    async def test_oversized_and_incomplete_timing_lines_do_not_relay(self):
+        worker = InferenceWorker(Path("/unused"))
+        chunks = [
+            b"KADAN_IMAGE_TIMING " + b"x" * 4000,
+            b"x" * 100 + b'\nKADAN_IMAGE_TIMING {"step":1}\nKADAN_IMAGE_',
+            b"TIMING incomplete",
+        ]
+        worker.process = SimpleNamespace(
+            stderr=SimpleNamespace(read=AsyncMock(side_effect=[*chunks, b""]))
+        )
+        output = io.StringIO()
+        with patch("sys.stderr", output):
+            await worker._stderr()
+        self.assertEqual(output.getvalue(), 'KADAN_IMAGE_TIMING {"step":1}\n')
+        self.assertEqual("".join(worker.diagnostics), b"".join(chunks).decode())
+
+    async def test_timing_log_failure_keeps_native_diagnostics(self):
+        worker = InferenceWorker(Path("/unused"))
+        line = b'KADAN_IMAGE_TIMING {"step":1}\n'
+        worker.process = SimpleNamespace(
+            stderr=SimpleNamespace(read=AsyncMock(side_effect=[line, b""]))
+        )
+        with patch("sys.stderr.write", side_effect=OSError("log unavailable")):
+            await worker._stderr()
+        self.assertEqual("".join(worker.diagnostics), line.decode())
+
     def job(self):
         return InferenceJob(
             InferenceTask(input={"feature": "image", "prompt": "test"}), False

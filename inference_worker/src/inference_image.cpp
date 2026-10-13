@@ -1,4 +1,7 @@
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <string_view>
 
 #include "kadan/image_generation.hpp"
 #include "kadan/inference_engines.hpp"
@@ -62,6 +65,8 @@ public:
     execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
         if (request.operation == Operation::load)
             return Json::object();
+        const auto* timing = std::getenv("KADAN_IMAGE_TIMING");
+        const bool timing_enabled = timing && std::string_view(timing) == "1";
         std::vector<fs::path> paths;
         for (std::size_t i = 0; i < count_; ++i) {
             check_cancel(cancel);
@@ -69,7 +74,20 @@ public:
             std::vector<float> rgba(request_.height * request_.width * 4);
             auto current = request_;
             current.seed += i;
-            model_->generate(current, rgba, cancel, progress_);
+            image::DenoisingTimings::Sink timing_sink;
+            if (timing_enabled)
+                timing_sink = [&](const image::DenoisingStepTiming& value) {
+                    Json summary = value;
+                    summary["id"] = request.id;
+                    summary["image"] = i + 1;
+                    // A fixed-size diagnostic line, separate from task/progress output.
+                    const auto line = "KADAN_IMAGE_TIMING " + summary.dump() + '\n';
+                    if (line.size() <= 4096) {
+                        std::fwrite(line.data(), 1, line.size(), stderr);
+                        std::fflush(stderr);
+                    }
+                };
+            model_->generate(current, rgba, cancel, progress_, timing_sink);
             auto path = output_ + "/image-" + std::to_string(i) + ".png";
             image::publish_png(path, rgba, current.height, current.width, cancel);
             paths.emplace_back(path);

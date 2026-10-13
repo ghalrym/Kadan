@@ -6,6 +6,7 @@
 #include <string>
 
 #include "kadan/dense_compute.hpp"
+#include "kadan/image_timing.hpp"
 #include "kadan/media_session.hpp"
 
 namespace kadan::image {
@@ -32,7 +33,8 @@ public:
         const ImageRequest&,
         std::span<float> rgba_chw,
         const std::atomic_bool&,
-        const Hook& = {}
+        const Hook& = {},
+        const DenoisingTimings::Sink& = {}
     );
     void unload();
     static void validate(const ImageRequest&);
