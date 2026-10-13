@@ -394,7 +394,12 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
           "attn.to_out.0.weight",
           "attn.to_q.weight",
           "attn.to_k.weight",
-          "attn.to_v.weight"}) {
+          "attn.to_v.weight",
+          "attn.norm_q.weight",
+          "attn.norm_k.weight"}) {
+        const bool norm = std::string_view(name).starts_with("attn.norm_");
+        if (norm && !qkv)
+            continue;
         const bool qkv_weight = std::string_view(name) == "attn.to_q.weight"
                                 || std::string_view(name) == "attn.to_k.weight"
                                 || std::string_view(name) == "attn.to_v.weight";
@@ -407,7 +412,7 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         shard.check_unchanged();
         const auto qualified = m.prefix + spec.name;
         const auto tensor = shard.tensor(qualified);
-        if (tensor.dtype != checkpoint::Dtype::bf16)
+        if (!norm && tensor.dtype != checkpoint::Dtype::bf16)
             return MediaPlanError{
                 PlanFailure::unsupported_layout,
                 (qkv_weight || std::string_view(name) == "attn.to_out.0.weight")
@@ -421,13 +426,15 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
         manifest.weights.push_back(
             {qualified,
              spec.identity,
-             TensorStorage::bf16_exact,
+             tensor.dtype == checkpoint::Dtype::bf16 ? TensorStorage::bf16_exact
+                                                     : TensorStorage::f32,
              std::size_t(tensor.shape[0]),
-             std::size_t(tensor.shape[1]),
-             qkv_weight ? WeightPartition::replicated : WeightPartition::channels,
+             norm ? 1 : std::size_t(tensor.shape[1]),
+             (qkv_weight || norm) ? WeightPartition::replicated
+                                  : WeightPartition::channels,
              1,
              1,
-             ProjectionPrecision::bf16_f32}
+             norm ? ProjectionPrecision::f32 : ProjectionPrecision::bf16_f32}
         );
     }
     // Planner owns full hidden/normalized boundaries, combined gate/up output,
@@ -463,13 +470,25 @@ std::optional<MediaPlanError> TransformerBlock::prepare_feed_forward(
             shard.check_unchanged();
             Lease staging(*resources_, slice.stored_bytes);
             std::vector<std::uint8_t> raw(slice.stored_bytes);
-            shard.read_tensor(slice.name, slice.first_row * spec.shape[1] * 2, raw);
+            const auto dtype = shard.tensor(slice.name).dtype;
+            const auto element_bytes = dtype == checkpoint::Dtype::bf16 ? 2 : 4;
+            const auto columns = spec.shape.size() == 1 ? 1 : spec.shape[1];
+            shard.read_tensor(
+                slice.name, slice.first_row * columns * element_bytes, raw
+            );
             shard.check_unchanged();
             stop(cancel);
-            if (spec.name.starts_with("attn.to_"))
-                for (std::size_t i = 0; i < raw.size(); i += 2)
+            if (spec.name.starts_with("attn."))
+                for (std::size_t i = 0; i < raw.size(); i += element_bytes)
                     need(
-                        ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
+                        dtype == checkpoint::Dtype::fp32
+                            ? ((std::uint32_t(raw[i + 3]) << 24
+                                | std::uint32_t(raw[i + 2]) << 16
+                                | std::uint32_t(raw[i + 1]) << 8 | raw[i])
+                               & 0x7f800000)
+                                  != 0x7f800000
+                            : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
+                                  != 0x7f80,
                         "h3_cuda_nonfinite_weight"
                     );
             auto destination = session.weight(slice);
@@ -636,6 +655,131 @@ void TransformerBlock::execute_qkv(
                     session.complete(outputs, d.status);
                 }
         }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void TransformerBlock::execute_rotary(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto& config = model_->d;
+    const auto& plan = session.plan();
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        std::array<DeviceTensorView, 2> values, norms;
+        DeviceTensorView status;
+    };
+
+    try {
+        need(
+            plan.schedule == MediaSchedule::feed_forward && plan.rows
+                && launchers.size() == plan.devices.size(),
+            "image_rotary_plan"
+        );
+        std::set<int> selected;
+        for (auto* launcher : launchers)
+            need(
+                launcher && selected.insert(launcher->device()).second,
+                "image_rotary_launcher"
+            );
+        std::vector<Device> devices;
+        for (const auto& planned : plan.devices) {
+            const auto found =
+                std::find_if(launchers.begin(), launchers.end(), [&](auto* launcher) {
+                    return launcher->device() == planned.device;
+                });
+            need(found != launchers.end(), "image_rotary_launcher");
+            devices.push_back(
+                {*found,
+                 {},
+                 {},
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array names{"attn.norm_q.weight", "attn.norm_k.weight"};
+            const std::array values{"attention/q", "attention/k"};
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                const auto& spec = model_->specs.at(model_->names.at(names[i]));
+                const auto qualified = model_->prefix + spec.name;
+                const auto dtype = model_->shards[spec.shard]->tensor(qualified).dtype;
+                const auto stored_bytes =
+                    config.head_dim * (dtype == checkpoint::Dtype::bf16 ? 2 : 4);
+                const auto slice = std::find_if(
+                    plan.weights.begin(), plan.weights.end(), [&](const auto& weight) {
+                        return weight.device == planned.device
+                               && weight.name == qualified
+                               && weight.identity == spec.identity
+                               && weight.first_row == 0
+                               && weight.rows == config.head_dim
+                               && weight.stored_bytes == stored_bytes;
+                    }
+                );
+                need(slice != plan.weights.end(), "image_rotary_weight");
+                d.norms[i] = session.weight(*slice);
+                d.values[i] = session.tensor(
+                    planned.device,
+                    values[i],
+                    DeviceDType::f32,
+                    {tokens, config.state},
+                    {config.state, 1}
+                );
+                const std::array ready{&d.values[i], &d.norms[i]};
+                session.require_ready(ready);
+                video::validate_image_rotary(
+                    planned.device,
+                    d.values[i].layout(),
+                    d.norms[i].layout(),
+                    d.values[i].layout(),
+                    d.status.layout(),
+                    config.heads,
+                    config.head_dim,
+                    config.axes,
+                    text,
+                    height,
+                    width
+                );
+            }
+        }
+        // Bind every certified Q/K and loaded norm before any in-place write.
+        for (auto& d : devices)
+            for (std::size_t i = 0; i < d.values.size(); ++i) {
+                stop(cancel);
+                const std::array read{&d.values[i], &d.norms[i]};
+                const std::array write{&d.values[i], &d.status};
+                session.launch(
+                    d.launcher->device(),
+                    read,
+                    write,
+                    [&](void* stream, auto in, auto out) {
+                        d.launcher->rotary(
+                            stream,
+                            in,
+                            out,
+                            config.heads,
+                            config.head_dim,
+                            config.axes,
+                            text,
+                            height,
+                            width
+                        );
+                    }
+                );
+                session.complete(write, d.status);
+            }
     } catch (...) {
         session.abort(std::current_exception());
         throw;

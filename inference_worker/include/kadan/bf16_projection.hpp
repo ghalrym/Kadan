@@ -362,6 +362,79 @@ inline Bf16ProjectionShape validate_image_text_normalization(
     return {rows, context, context};
 }
 
+// Q/K are updated in place after their complete producer certificate.
+inline Bf16ProjectionShape validate_image_rotary(
+    int device,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& weight,
+    const MediaDeviceSpan& output,
+    const MediaDeviceSpan& status,
+    std::size_t heads,
+    std::size_t head_dim,
+    const std::array<std::size_t, 3>& axes,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_rotary_layout");
+    };
+    require(input.dimensions.size() == 2);
+    const auto rows = input.dimensions[0], state = input.dimensions[1];
+    require(heads && heads <= 32 && head_dim && head_dim <= 128 && head_dim % 2 == 0);
+    require(state == heads * head_dim);
+    std::size_t channels = 0;
+    for (auto axis : axes) {
+        require(axis <= head_dim && axis % 2 == 0);
+        channels += axis;
+    }
+    require(channels == head_dim);
+    require(rows && rows <= 32768 && rows <= SIZE_MAX / state / sizeof(float));
+    require(
+        text && text <= 2048 && text <= rows && height && height <= 256 && width
+        && width <= 256 && height * width == rows - text
+    );
+    require(
+        input.dtype == DeviceDType::f32
+        && input.strides == std::vector<std::size_t>{state, 1}
+        && input.bytes == rows * state * sizeof(float)
+    );
+    require(
+        output.data == input.data && output.device == input.device
+        && output.dtype == input.dtype && output.dimensions == input.dimensions
+        && output.strides == input.strides && output.bytes == input.bytes
+        && output.offset == input.offset && output.generation == input.generation
+    );
+    require(
+        (weight.dtype == DeviceDType::bf16 || weight.dtype == DeviceDType::f32)
+        && weight.dimensions == std::vector<std::size_t>{head_dim, 1}
+        && weight.strides == std::vector<std::size_t>{1, 1}
+        && weight.bytes == head_dim * (weight.dtype == DeviceDType::bf16 ? 2 : 4)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&input, &weight, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::bf16 ? 2u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
 // Final image rows exclude text; scale is the actual target norm_out projection.
 inline Bf16ProjectionShape validate_image_final_normalization(
     int device,
@@ -454,6 +527,18 @@ public:
     virtual void text_normalization(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // Inputs [Q-or-K,learned-norm]; outputs [same-Q-or-K,status].
+    virtual void rotary(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t heads,
+        std::size_t head_dim,
+        const std::array<std::size_t, 3>& axes,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width
+    ) = 0;
     // Same spans as standard; tanh-approximate GELU follows projection in place.
     virtual void text_projection(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
@@ -528,6 +613,17 @@ public:
     ) override;
     void text_normalization(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void rotary(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t,
+        const std::array<std::size_t, 3>&,
+        std::size_t,
+        std::size_t,
+        std::size_t
     ) override;
     void text_projection(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>

@@ -509,5 +509,94 @@ int main() {
     rejects_text_norm();
     text_norm[2].data = static_cast<std::byte*>(text_norm[0].data) + 4;
     rejects_text_norm();
+    std::array rotary{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::bf16, {4, 1}, {1, 1}, 8),
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    auto validate_rotary = [&](std::size_t heads = 2,
+                               std::size_t head_dim = 4,
+                               std::array<std::size_t, 3> axes = {0, 2, 2},
+                               std::size_t text = 2,
+                               std::size_t height = 1,
+                               std::size_t width = 1) {
+        return validate_image_rotary(
+            0,
+            rotary[0],
+            rotary[1],
+            rotary[2],
+            rotary[3],
+            heads,
+            head_dim,
+            axes,
+            text,
+            height,
+            width
+        );
+    };
+    check(validate_rotary().rows == 3 && validate_rotary().in == 8);
+    rotary[1].dtype = DeviceDType::f32;
+    rotary[1].bytes = 16;
+    check(validate_rotary().out == 8);
+    const auto rotary_original = rotary;
+    auto rejects_rotary = [&](std::size_t heads = 2,
+                              std::size_t head_dim = 4,
+                              std::array<std::size_t, 3> axes = {0, 2, 2},
+                              std::size_t text = 2,
+                              std::size_t height = 1,
+                              std::size_t width = 1) {
+        bool rejected = false;
+        try {
+            validate_rotary(heads, head_dim, axes, text, height, width);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        rotary = rotary_original;
+    };
+    for (std::size_t i = 0; i < rotary.size(); ++i) {
+        rotary[i].device = 1;
+        rejects_rotary();
+        rotary[i].data = nullptr;
+        rejects_rotary();
+        rotary[i].dtype = DeviceDType::f64;
+        rejects_rotary();
+        rotary[i].strides.back() = 2;
+        rejects_rotary();
+        rotary[i].bytes -= 1;
+        rejects_rotary();
+        rotary[i].offset = SIZE_MAX;
+        rejects_rotary();
+        rotary[i].data = storage.data() + 0x1001;
+        rejects_rotary();
+        rotary[i].dimensions[0] += 1;
+        rejects_rotary();
+    }
+    rotary[2].generation += 1;
+    rejects_rotary();
+    rotary[2].data = storage.data() + 0x3000;
+    rejects_rotary();
+    rotary[1].data = rotary[0].data;
+    rejects_rotary();
+    rotary[3].data = rotary[0].data;
+    rejects_rotary();
+    rotary[3].data = rotary[1].data;
+    rejects_rotary();
+    rejects_rotary(0);
+    rejects_rotary(33);
+    rejects_rotary(2, 0);
+    rejects_rotary(2, 129);
+    rejects_rotary(2, 3);
+    rejects_rotary(1);
+    rejects_rotary(2, 4, {0, 0, 2});
+    rejects_rotary(2, 4, {0, 1, 3});
+    rejects_rotary(2, 4, {0, 0, 6});
+    for (std::size_t text : {0u, 3u, 2049u})
+        rejects_rotary(2, 4, {0, 2, 2}, text);
+    for (std::size_t height : std::array<std::size_t, 4>{0, 2, 257, SIZE_MAX})
+        rejects_rotary(2, 4, {0, 2, 2}, 2, height);
+    for (std::size_t width : std::array<std::size_t, 4>{0, 2, 257, SIZE_MAX})
+        rejects_rotary(2, 4, {0, 2, 2}, 2, 1, width);
     std::cout << "BF16 projection layout validation passed\n";
 }

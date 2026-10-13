@@ -740,6 +740,24 @@ void Denoiser::execute_qkv(
     model_->blocks[block]->execute_qkv(session, tokens, text, launchers, cancel);
 }
 
+void Denoiser::execute_rotary(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
+    model_->blocks[block]->execute_rotary(
+        session, tokens, text, height, width, launchers, cancel
+    );
+}
+
 void Denoiser::execute_conditioning(
     MediaSession& session,
     std::size_t block,
@@ -771,7 +789,7 @@ void Denoiser::execute_conditioning(
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
                 && plan.weights.size()
-                       == ((qkv         ? 10
+                       == ((qkv         ? 12
                             : attention ? 7
                                         : 6)
                            + (final ? 2 : 0) + (block == 0 && attention ? 4 : 0))

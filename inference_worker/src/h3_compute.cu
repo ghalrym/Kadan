@@ -157,6 +157,68 @@ __global__ void image_text_norm_kernel(
     }
 }
 
+__global__ void image_rotary_kernel(
+    float* values,
+    const void* weight,
+    bool bf16,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t axis0,
+    std::size_t axis1,
+    std::size_t axis2,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    unsigned* status
+) {
+    __shared__ float scale;
+    const auto token = std::size_t(blockIdx.x);
+    const auto base = (token * heads + blockIdx.y) * head_dim;
+    if (threadIdx.x == 0) {
+        double sum = 0;
+        for (std::size_t c = 0; c < head_dim; ++c) {
+            const double value = double(values[base + c]);
+            sum = __dadd_rn(sum, __dmul_rn(value, value));
+        }
+        scale = __double2float_rn(
+            __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(sum, double(head_dim)), 1e-6)))
+        );
+    }
+    __syncthreads();
+    const auto c = std::size_t(threadIdx.x) * 2;
+    if (c >= head_dim)
+        return;
+    const std::size_t axes[]{axis0, axis1, axis2};
+    long positions[]{long(token), long(token), long(token)};
+    if (token >= text) {
+        positions[0] = long(text);
+        positions[1] = long((token - text) / width) - long(height - height / 2);
+        positions[2] = long((token - text) % width) - long(width - width / 2);
+    }
+    std::size_t axis = 0, offset = 0;
+    while (c >= offset + axes[axis])
+        offset += axes[axis++];
+    const float exponent = __fdiv_rn(-float(c - offset), float(axes[axis]));
+    const float angle = __fmul_rn(float(positions[axis]), powf(10000.f, exponent));
+    const float co = cosf(angle), si = sinf(angle);
+    const float norm_a =
+        bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c])
+             : static_cast<const float*>(weight)[c];
+    const float norm_b =
+        bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c + 1])
+             : static_cast<const float*>(weight)[c + 1];
+    const float original_a = values[base + c], original_b = values[base + c + 1];
+    const float a = __fmul_rn(original_a, __fmul_rn(scale, norm_a));
+    const float b = __fmul_rn(original_b, __fmul_rn(scale, norm_b));
+    const float rotated_a = __fsub_rn(__fmul_rn(a, co), __fmul_rn(b, si));
+    const float rotated_b = __fadd_rn(__fmul_rn(b, co), __fmul_rn(a, si));
+    if (!isfinite(original_a) || !isfinite(original_b) || !isfinite(norm_a)
+        || !isfinite(norm_b) || !isfinite(rotated_a) || !isfinite(rotated_b))
+        atomicOr(status, 1U);
+    values[base + c] = rotated_a;
+    values[base + c + 1] = rotated_b;
+}
+
 __global__ void
 image_text_gelu_kernel(float* output, std::size_t count, unsigned* status) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -2186,6 +2248,61 @@ void CudaBf16Projection::text_normalization(
         inputs[1].dtype == DeviceDType::bf16,
         static_cast<float*>(outputs[0].data),
         shape.in,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::rotary(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t heads,
+    std::size_t head_dim,
+    const std::array<std::size_t, 3>& axes,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width
+) {
+    require(inputs.size() == 2 && outputs.size() == 2, "image_rotary_layout");
+    const auto shape = validate_image_rotary(
+        device_,
+        inputs[0],
+        inputs[1],
+        outputs[0],
+        outputs[1],
+        heads,
+        head_dim,
+        axes,
+        text,
+        height,
+        width
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_rotary_kernel<<<
+        dim3(unsigned(shape.rows), unsigned(heads)),
+        64,
+        0,
+        owned_stream>>>(
+        static_cast<float*>(outputs[0].data),
+        inputs[1].data,
+        inputs[1].dtype == DeviceDType::bf16,
+        heads,
+        head_dim,
+        axes[0],
+        axes[1],
+        axes[2],
+        text,
+        height,
+        width,
         status
     );
     checked(cudaGetLastError());
