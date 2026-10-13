@@ -94,6 +94,95 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.cancelled())
         self.assertNotIn(job.request.id, service.worker.jobs)
 
+    async def test_request_cancel_before_completion_starts_releases_native_job(self):
+        service = InferenceService()
+
+        async def submit(request, **kwargs):
+            job = InferenceJob(request, False)
+            service.worker.jobs[request.id] = job
+            asyncio.current_task().cancel()
+            return job
+
+        async def join(job):
+            job.result.set_result(None)
+
+        with (
+            patch.object(service.worker, "submit", side_effect=submit),
+            patch.object(
+                service.worker, "cancel_and_join", side_effect=join
+            ) as cleanup,
+        ):
+            request = asyncio.create_task(
+                service.submit(ImageRequest(prompt="test"), feature="image")
+            )
+            with self.assertRaises(asyncio.CancelledError):
+                await request
+        cleanup.assert_awaited_once()
+        self.assertFalse(service.worker.jobs)
+        self.assertFalse(service.tasks)
+
+    async def test_stream_close_before_completion_starts_releases_native_job(self):
+        service = InferenceService()
+
+        async def submit(request, **kwargs):
+            job = InferenceJob(request, True)
+            service.worker.jobs[request.id] = job
+            job.model = "small"
+            job.identified.set()
+            return job
+
+        async def join(job):
+            job.result.set_result(None)
+
+        with (
+            patch.object(service.worker, "submit", side_effect=submit),
+            patch.object(
+                service.worker, "cancel_and_join", side_effect=join
+            ) as cleanup,
+        ):
+            stream, _ = await service.open_chat_stream(
+                CompletionRequest(messages=[{"role": "user", "text": "Hello"}])
+            )
+            await stream.aclose()
+            await stream.aclose()
+        cleanup.assert_awaited_once()
+        self.assertFalse(service.worker.jobs)
+        self.assertFalse(service.tasks)
+
+    async def test_repeated_cancel_waits_for_prestart_cleanup_and_removes_job(self):
+        service = InferenceService()
+        job = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "test"}), False
+        )
+        service.worker.jobs[job.request.id] = job
+        service.tasks[job.request.id] = asyncio.create_task(service._complete(job))
+        service.tasks[job.request.id].cancel()
+        entered, released = asyncio.Event(), asyncio.Event()
+
+        async def join(_):
+            entered.set()
+            await released.wait()
+            job.result.set_result(None)
+
+        with patch.object(
+            service.worker, "cancel_and_join", side_effect=join
+        ) as cleanup:
+            cancellation = asyncio.create_task(service.cancel(job.request.id))
+            await entered.wait()
+            for _ in range(2):
+                cancellation.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(cancellation.done())
+                self.assertIs(service.worker.jobs[job.request.id], job)
+                self.assertFalse(job.result.done())
+            released.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await cancellation
+            self.assertNotIn(job.request.id, service.worker.jobs)
+            await service.cancel(job.request.id)
+        cleanup.assert_awaited_once_with(job)
+        self.assertNotIn(job.request.id, service.worker.jobs)
+
     async def test_close_tolerates_job_completing_during_another_cancellation(self):
         service = InferenceService()
         head = InferenceJob(
