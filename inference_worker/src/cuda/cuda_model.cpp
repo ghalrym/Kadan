@@ -520,7 +520,9 @@ struct Model::Impl final : model::Sink {
                     "context_has_other_device_owner"
                 );
                 current();
+#ifndef KADAN_ATEN_RUNTIME
                 check(cudaDeviceReset());
+#endif
             }
             resources->released(handle);
             handle = 0;

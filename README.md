@@ -245,3 +245,70 @@ python bin/kadan.py check frontend-build
 Manual end-to-end testing uses the playground. Check generation, cancellation and
 model switching there; a successful compile or unit test does not establish
 model accuracy, throughput or target-machine memory fit.
+
+### C++ ATen image execution (draft)
+
+`KADAN_ENABLE_ATEN_IMAGE=ON` selects the complete C++ ATen implementation for
+CUDA image requests in the existing serial worker. The default `OFF` retains the
+existing implementation. API, queue, cancellation, image count, prompt validation,
+seed progression, PNG publication and frontend remain unchanged. There is no
+Python inference executor or secondary service. This draft is for architecture
+review; it has not passed the owner’s image-quality or performance gate.
+
+The supported dependency pair is PyTorch/LibTorch **2.14.1+cu130** and CUDA
+**13.0**. The ATen operator calls are linked through the official Torch CMake
+package. Build the existing API image with:
+
+```sh
+docker build -f api/Dockerfile \
+  --build-arg CUDA_VERSION=13.0.3 \
+  --build-arg KADAN_ENABLE_ATEN_IMAGE=ON \
+  -t kadan-aten:review .
+```
+
+For an existing LibTorch installation, use `-DCMAKE_PREFIX_PATH=<torch-prefix>`
+and `-DKADAN_ENABLE_ATEN_IMAGE=ON` alongside the existing full-worker CUDA build
+options. CMake rejects a mismatched toolkit and fixes the architecture to SM86.
+The build does not probe a GPU. The optional dependency is substantial; distribute
+its accompanying license notices with the binary. The Docker build retains the
+PyTorch and NVIDIA dependency notices under `/opt/kadan/share/kadan/licenses`.
+Kadan’s license is unchanged; no ComfyUI GPL source is copied. The operator reuse
+is PyTorch’s BSD-style library, including its distributed dependency notices.
+
+Each image component is preloaded completely on the admitted GPU with the most
+available memory. Text stores BF16 weights and performs FP32 forward operations;
+denoising keeps BF16 weights/hidden states and uses library SDPA, normalization,
+SwiGLU and linear operations; VAE uses FP32 convolution and normalization. Text
+prefix K/V is cached for the current sampling request only. The FP32 Euler latent
+and Kadan noise/seed contract are retained. The 1152-channel VAE attention uses
+256-query SDPA slices to bound fallback scratch. All component capacities are preflighted before the queue commits to running.
+Stage workspace admission caps ATen’s allocator, and cancellation is checked at weight-read chunks, layers,
+blocks and VAE attention slices. Insufficient whole-component capacity fails
+admission instead of silently falling back to a different arithmetic path.
+
+ATen caches CUDA handles for the process lifetime. In this opt-in build **all
+workloads** synchronize and free their owned allocations on retirement without
+`cudaDeviceReset`, so switching workloads cannot invalidate ATen handle pools.
+Those library/context pools survive until worker exit. Fresh physical memory
+probes account for that baseline before the next engine is admitted. Component
+weights, activations, cuBLAS workspaces and allocator blocks are released before
+ledger acknowledgment; failed cleanup retains admission and blocks worker idle.
+Owner review must cover this lifecycle change and repeated model switching.
+
+`KADAN_ATEN_IMAGE_TIMING` lines on stderr report synchronized `load`, `generation`
+and `unload` seconds per component and the automatically chosen device. Sum only
+the three `generation` records for the loading-free comparison. Transfers,
+operator setup and conversion to owned CPU outputs are included; tokenizer/noise
+preparation and PNG/API publication are outside these timers. The existing
+`KADAN_IMAGE_TIMING` resident-backend counters describe the old path only.
+
+After separately approving deployment, benchmark through the existing API with
+cached Qwen-Image2.1 weights, one worker, 2048×2048, two Euler steps, the saved
+prompt and seed. Compare against the synchronized 20.424118 s Comfy generation
+reference (text 0.649512 s, denoiser 10.504174 s, VAE 9.270431 s), excluding
+load/unload and publication on both sides. Record component placement, dependency
+versions, arithmetic, peak memory, cancellation and output quality. Equal seed
+does not match Comfy’s PyTorch CPU CHW noise: Kadan retains point-major
+MT19937_64/Box–Muller noise. Use an explicitly shared replay tensor for numerical
+parity work. Compile/unit/CI success does not establish speed or output quality.
+No generation, live deployment or default adoption is part of this draft.

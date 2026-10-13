@@ -59,6 +59,7 @@ public:
             throw AdmissionWait("image_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::image, bytes);
+        model_->prepare(request_, cancel);
     }
 
     Json

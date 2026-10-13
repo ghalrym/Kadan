@@ -10,6 +10,8 @@
 #include "kadan/media_session.hpp"
 
 namespace kadan::image {
+class AtenGenerator;
+
 struct ImageRequest {
     std::string prompt;
     std::size_t width = 2048, height = 2048, steps = 50;
@@ -29,6 +31,7 @@ public:
     );
     ~Generator();
     void load(const std::string& root, const std::atomic_bool&, const Hook& = {});
+    void prepare(const ImageRequest&, const std::atomic_bool&);
     void generate(
         const ImageRequest&,
         std::span<float> rgba_chw,
@@ -46,6 +49,9 @@ private:
     std::shared_ptr<MediaSessionActivity> media_activity_;
     std::vector<int> devices_;
     std::unique_ptr<Impl> model_;
+#ifdef KADAN_ATEN_IMAGE
+    std::unique_ptr<AtenGenerator> aten_;
+#endif
     bool busy_ = false;
 };
 
