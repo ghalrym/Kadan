@@ -65,7 +65,8 @@ public:
         const std::string&,
         const std::function<void(std::string_view)>&,
         const std::atomic_bool&,
-        bool
+        bool,
+        std::uint64_t
     )>;
     using DownloadProgress =
         std::function<void(const std::string&, std::uint64_t, std::uint64_t)>;
