@@ -5,8 +5,8 @@
 
 #include <thread>
 
+#include "../models/text/layer_math_validation.hpp"
 #include "decoder_producer.hpp"
-#include "layer_math_validation.hpp"
 
 namespace kadan::cuda {
 namespace {

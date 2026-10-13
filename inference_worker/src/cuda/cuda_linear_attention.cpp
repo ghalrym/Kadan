@@ -1,7 +1,7 @@
 #ifdef CUDA_API_PER_THREAD_DEFAULT_STREAM
-#error "Full attention requires legacy default stream"
+#error "Linear sublayer requires legacy default stream"
 #endif
-#include "kadan/cuda_full_attention.hpp"
+#include "kadan/cuda_linear_attention.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,10 +9,10 @@
 #include <stdexcept>
 #include <thread>
 
-#include "full_kernel.cuh"
+#include "../models/text/layer_math_validation.hpp"
 #include "kadan/cuda_projection.hpp"
 #include "kadan/cuda_state.hpp"
-#include "layer_math_validation.hpp"
+#include "linear_kernel.cuh"
 
 namespace kadan::cuda {
 namespace {
@@ -27,9 +27,9 @@ void require(bool ok, const char* e) {
 }
 }  // namespace
 
-struct FullAttention::Impl {
-    full::Config c;
-    full::Plan p;
+struct LinearAttention::Impl {
+    linear::Config c;
+    linear::Plan p;
     std::shared_ptr<Resources> resources;
     int device;
     std::thread::id owner = std::this_thread::get_id();
@@ -37,45 +37,45 @@ struct FullAttention::Impl {
     void* storage = nullptr;
     bool loaded = false, pinned = false, invalid = false, poisoned = false,
          cleanup_failed = false;
-    std::unique_ptr<Fp8Projection> qg, key, value, out;
+    std::unique_ptr<Fp8Projection> qkv, z, out;
     std::unique_ptr<SequenceState> state;
-    detail::FullBuffers b{};
+    detail::LinearBuffers b{};
 
     Impl(
-        full::Config config,
-        const full::Weights& w,
+        linear::Config config,
+        const linear::Weights& w,
         int ordinal,
         std::shared_ptr<Resources> manager
     )
-        : c(config), p(full::plan(c)), resources(std::move(manager)), device(ordinal) {
+        : c(config), p(linear::plan(c)), resources(std::move(manager)),
+          device(ordinal) {
         require(!c.bf16_weights, "checkpoint_mode_requires_model_or_decoder");
-        full::validate_weights(c, w);
-        require(resources && device >= 0, "full_owner");
+        linear::validate_weights(c, w);
+        require(resources && device >= 0, "linear_owner");
         auto request = resources->snapshot().capacity;
-        require(std::size_t(device) + 1 < request.size(), "full_unbudgeted_device");
-        const auto aux_bytes = (p.norm_weights * 2 + 255) & ~std::size_t{255};
-        const auto frequency_bytes =
-            (w.frequencies.size_bytes() + 255) & ~std::size_t{255};
-        const auto scratch_offset = aux_bytes + frequency_bytes;
+        require(std::size_t(device) + 1 < request.size(), "linear_unbudgeted_device");
+        const auto aux_bytes = (p.aux_elements * 2 + 255) & ~std::size_t{255};
         const auto status_offset =
-            (scratch_offset + p.scratch_floats * 4 + 255) & ~std::size_t{255};
+            (aux_bytes + p.scratch_floats * 4 + 255) & ~std::size_t{255};
         std::fill(request.begin(), request.end(), 0);
         request[device + 1] = status_offset + 256;
         handle = resources->reserve(Workload::llm, request);
         try {
             current();
-            qg = std::make_unique<Fp8Projection>(w.q_gate, device, resources);
-            key = std::make_unique<Fp8Projection>(w.key, device, resources);
-            value = std::make_unique<Fp8Projection>(w.value, device, resources);
+            qkv = std::make_unique<Fp8Projection>(w.qkv, device, resources);
+            z = std::make_unique<Fp8Projection>(w.z, device, resources);
             out = std::make_unique<Fp8Projection>(w.out, device, resources);
             checkpoint::TextArchitecture a{};
             a.layers = 1;
             a.max_context = c.capacity;
-            a.attention_heads = c.heads;
-            a.kv_heads = c.kv_heads;
-            a.head_dim = c.head_dim;
-            a.key_heads = a.value_heads = a.key_dim = a.value_dim = a.conv_kernel = 1;
-            a.layer_types[0] = checkpoint::LayerKind::full_attention;
+            a.attention_heads = a.kv_heads = 1;
+            a.head_dim = c.key_dim;
+            a.key_heads = c.key_heads;
+            a.value_heads = c.value_heads;
+            a.key_dim = c.key_dim;
+            a.value_dim = c.value_dim;
+            a.conv_kernel = c.conv_kernel;
+            a.layer_types[0] = checkpoint::LayerKind::linear_attention;
             state = std::make_unique<SequenceState>(a, c.capacity, device, resources);
             void* allocation = nullptr;
             check(cudaMalloc(&allocation, request[device + 1]));
@@ -102,34 +102,27 @@ struct FullAttention::Impl {
                 return at;
             };
             b.input_norm = upload(w.input_norm);
-            b.query_norm = upload(w.query_norm);
-            b.key_norm = upload(w.key_norm);
+            b.conv_weight = upload(w.conv);
+            b.a_weight = upload(w.a);
+            b.b_weight = upload(w.b);
+            b.a_log = upload(w.a_log);
+            b.dt_bias = upload(w.dt_bias);
+            b.output_norm = upload(w.output_norm);
             require(
                 std::size_t(packed - static_cast<std::uint16_t*>(storage))
-                    == p.norm_weights,
-                "full_aux_layout"
+                    == p.aux_elements,
+                "linear_aux_layout"
             );
-            b.frequencies = reinterpret_cast<float*>(
+            auto* next = reinterpret_cast<float*>(
                 static_cast<std::uint8_t*>(storage) + aux_bytes
             );
-            check(cudaMemcpy(
-                const_cast<float*>(b.frequencies),
-                w.frequencies.data(),
-                w.frequencies.size_bytes(),
-                cudaMemcpyHostToDevice
-            ));
-            auto* next = reinterpret_cast<float*>(
-                static_cast<std::uint8_t*>(storage) + scratch_offset
-            );
             b.normalized = next + p.norm_offset;
-            b.qg = next + p.qg_offset;
-            b.key = next + p.k_offset;
-            b.value = next + p.v_offset;
-            b.query = next + p.q_offset;
-            b.gate = next + p.gate_offset;
-            b.probabilities = next + p.prob_offset;
+            b.qkv = next + p.qkv_offset;
+            b.z = next + p.z_offset;
+            b.a = next + p.a_offset;
+            b.b = next + p.b_offset;
             b.core = next + p.core_offset;
-            b.gated = next + p.gated_offset;
+            b.gated = next + p.gate_offset;
             b.projected = next + p.out_offset;
             b.status = reinterpret_cast<unsigned*>(
                 static_cast<std::uint8_t*>(storage) + status_offset
@@ -144,14 +137,14 @@ struct FullAttention::Impl {
     }
 
     void current() {
-        require(std::this_thread::get_id() == owner, "full_thread_changed");
+        require(std::this_thread::get_id() == owner, "linear_thread_changed");
         int actual = -1;
         check(cudaGetDevice(&actual));
-        require(actual == device, "full_device_changed");
+        require(actual == device, "linear_device_changed");
     }
 
     void available() {
-        require(handle && !poisoned, "full_unavailable");
+        require(handle && !poisoned, "linear_unavailable");
         try {
             current();
         } catch (const std::runtime_error&) {
@@ -165,7 +158,7 @@ struct FullAttention::Impl {
         unsigned flags = 0;
         check(cudaMemcpy(&flags, b.status, sizeof(flags), cudaMemcpyDeviceToHost));
         if (flags)
-            throw std::overflow_error("full_numeric_failure");
+            throw std::overflow_error("linear_numeric_failure");
     }
 
     bool invalidate(StateStep token) noexcept {
@@ -185,7 +178,7 @@ struct FullAttention::Impl {
 
     void step(std::span<const float> input, std::span<float> output) {
         available();
-        require(!invalid, "full_reset_required");
+        require(!invalid, "linear_reset_required");
         StateStep token;
         try {
             token = state->begin();
@@ -196,30 +189,29 @@ struct FullAttention::Impl {
         try {
             require(
                 input.size() == c.hidden && output.size() == c.hidden,
-                "full_input_shape"
+                "linear_input_shape"
             );
             math::detail::output_alias(input, output, true);
             require(
                 reinterpret_cast<std::uintptr_t>(input.data()) % alignof(float) == 0
                     && reinterpret_cast<std::uintptr_t>(output.data()) % alignof(float)
                            == 0,
-                "full_alignment"
+                "linear_alignment"
             );
             resources->pin(handle);
             pinned = true;
             const auto view = state->layer(token, 0);
-            b.keys = static_cast<std::uint16_t*>(view.key_history);
-            b.values = static_cast<std::uint16_t*>(view.value_history);
+            b.convolution = static_cast<std::uint16_t*>(view.convolution);
+            b.recurrent = static_cast<float*>(view.recurrent);
             check(cudaMemsetAsync(b.status, 0, sizeof(unsigned), cudaStreamLegacy));
-            check(detail::full_normalize(c, b, input.data()));
+            check(detail::linear_normalize(c, b, input.data()));
             status();
-            qg->matvec_device({b.normalized, c.hidden}, {b.qg, 2 * p.queries});
-            key->matvec_device({b.normalized, c.hidden}, {b.key, p.kv});
-            value->matvec_device({b.normalized, c.hidden}, {b.value, p.kv});
-            check(detail::full_core(c, b, state->committed_tokens()));
+            qkv->matvec_device({b.normalized, c.hidden}, {b.qkv, p.channels});
+            z->matvec_device({b.normalized, c.hidden}, {b.z, p.values});
+            check(detail::linear_core(c, b));
             status();
-            out->matvec_device({b.gated, p.queries}, {b.projected, c.hidden});
-            check(detail::full_residual(c, b, input.data(), output.data()));
+            out->matvec_device({b.gated, p.values}, {b.projected, c.hidden});
+            check(detail::linear_residual(c, b, input.data(), output.data()));
             status();
             state->written(token, 0);
             state->commit(token);
@@ -227,17 +219,17 @@ struct FullAttention::Impl {
             pinned = false;
         } catch (const std::invalid_argument&) {
             if (!invalidate(token))
-                throw DeviceBufferQuarantine("full_borrowed_buffers_quarantined");
+                throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
             throw;
         } catch (const std::overflow_error&) {
             if (!invalidate(token))
-                throw DeviceBufferQuarantine("full_borrowed_buffers_quarantined");
+                throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
             throw;
         } catch (...) {
             const bool quiet = invalidate(token);
             poisoned = true;
             if (!quiet)
-                throw DeviceBufferQuarantine("full_borrowed_buffers_quarantined");
+                throw DeviceBufferQuarantine("linear_borrowed_buffers_quarantined");
             throw;
         }
     }
@@ -248,18 +240,16 @@ struct FullAttention::Impl {
         if (cleanup_failed)
             return false;
         try {
-            if (storage || state || qg || key || value || out)
+            if (storage || state || qkv || z || out)
                 current();
             if (storage)
                 check(cudaStreamSynchronize(cudaStreamLegacy));
             if (state)
                 state->close();
-            if (qg)
-                qg->close();
-            if (key)
-                key->close();
-            if (value)
-                value->close();
+            if (qkv)
+                qkv->close();
+            if (z)
+                z->close();
             if (out)
                 out->close();
             if (pinned) {
@@ -286,21 +276,21 @@ struct FullAttention::Impl {
     }
 };
 
-FullAttention::FullAttention(
-    full::Config c, const full::Weights& w, int d, std::shared_ptr<Resources> r
+LinearAttention::LinearAttention(
+    linear::Config c, const linear::Weights& w, int d, std::shared_ptr<Resources> r
 )
     : impl_(std::make_unique<Impl>(c, w, d, std::move(r))) {
 }
 
-FullAttention::~FullAttention() {
+LinearAttention::~LinearAttention() {
     impl_->cleanup();
 }
 
-void FullAttention::step_device(std::span<const float> x, std::span<float> y) {
+void LinearAttention::step_device(std::span<const float> x, std::span<float> y) {
     impl_->step(x, y);
 }
 
-void FullAttention::reset() {
+void LinearAttention::reset() {
     auto& i = *impl_;
     i.available();
     try {
@@ -312,34 +302,34 @@ void FullAttention::reset() {
     }
 }
 
-bool FullAttention::valid() const {
+bool LinearAttention::valid() const {
     return impl_->handle && !impl_->invalid && !impl_->poisoned && impl_->state
            && impl_->state->valid();
 }
 
-std::size_t FullAttention::tokens() const {
+std::size_t LinearAttention::tokens() const {
     return impl_->state->committed_tokens();
 }
 
-void FullAttention::read_state(
-    std::span<std::uint16_t> keys, std::span<std::uint16_t> values
+void LinearAttention::read_state(
+    std::span<std::uint16_t> conv, std::span<float> recurrent
 ) {
     auto& i = *impl_;
     i.available();
     require(
-        valid() && keys.size() == i.p.history_elements
-            && values.size() == i.p.history_elements,
-        "full_state_read"
+        !i.invalid && conv.size() == i.p.conv_elements
+            && recurrent.size() == i.p.recurrent_elements,
+        "linear_state_read"
     );
     const auto& l = i.state->plan().layer[0];
     try {
         i.state->read_bytes(
-            l.key_offset,
-            {reinterpret_cast<std::uint8_t*>(keys.data()), keys.size_bytes()}
+            l.conv_offset,
+            {reinterpret_cast<std::uint8_t*>(conv.data()), conv.size_bytes()}
         );
         i.state->read_bytes(
-            l.value_offset,
-            {reinterpret_cast<std::uint8_t*>(values.data()), values.size_bytes()}
+            l.recurrent_offset,
+            {reinterpret_cast<std::uint8_t*>(recurrent.data()), recurrent.size_bytes()}
         );
     } catch (const std::runtime_error&) {
         i.poisoned = true;
@@ -347,23 +337,17 @@ void FullAttention::read_state(
     }
 }
 
-void FullAttention::read_intermediates(
-    std::span<float> probabilities, std::span<float> core, std::span<float> gated
+void LinearAttention::read_intermediates(
+    std::span<float> core, std::span<float> gated
 ) {
     auto& i = *impl_;
     i.available();
     require(
-        valid() && tokens() > 0 && probabilities.size() == i.c.heads * i.c.capacity
-            && core.size() == i.p.queries && gated.size() == i.p.queries,
-        "full_intermediate_read"
+        valid() && tokens() > 0 && core.size() == i.p.values
+            && gated.size() == i.p.values,
+        "linear_intermediate_read"
     );
     try {
-        check(cudaMemcpy(
-            probabilities.data(),
-            i.b.probabilities,
-            probabilities.size_bytes(),
-            cudaMemcpyDeviceToHost
-        ));
         check(
             cudaMemcpy(core.data(), i.b.core, core.size_bytes(), cudaMemcpyDeviceToHost)
         );
@@ -376,8 +360,8 @@ void FullAttention::read_intermediates(
     }
 }
 
-void FullAttention::close() {
+void LinearAttention::close() {
     if (!impl_->cleanup())
-        throw std::runtime_error("full_cleanup_failed_reservation_retained");
+        throw std::runtime_error("linear_cleanup_failed_reservation_retained");
 }
 }  // namespace kadan::cuda

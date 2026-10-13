@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <thread>
 
-#include "layer_math_validation.hpp"
+#include "../models/text/layer_math_validation.hpp"
 #include "moe_kernel.cuh"
 #include "nvfp4_kernel.cuh"
 

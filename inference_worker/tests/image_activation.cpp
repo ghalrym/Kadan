@@ -1,5 +1,5 @@
 // Scalar arithmetic only: no model, forward pass, checkpoint or device.
-#include "../src/image_activation.hpp"
+#include "../src/models/image/image_activation.hpp"
 
 #include <array>
 #include <bit>
