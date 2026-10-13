@@ -257,6 +257,24 @@ export type CompletionMessage = {
 }
 
 /**
+ * CompletionOutputMessage
+ */
+export type CompletionOutputMessage = {
+  /**
+   * Meta
+   */
+  meta?: string | null
+  /**
+   * Role
+   */
+  role: 'assistant'
+  /**
+   * Text
+   */
+  text: string
+}
+
+/**
  * CompletionRequest
  */
 export type CompletionRequest = {
@@ -303,7 +321,7 @@ export type CompletionResponse = {
    * Id
    */
   id: string
-  message: ChatMessage
+  message: CompletionOutputMessage
   /**
    * Model
    */
