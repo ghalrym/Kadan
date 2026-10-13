@@ -139,6 +139,58 @@ void pinned_catalog_units() {
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
 }
 
+void gpt_oss_catalog_units() {
+    Directory tmp;
+    unsigned transfers = 0;
+    ModelStore store(
+        tmp.path,
+        worker_data_directory(),
+        [&](const auto&, const auto&, const auto&, bool) -> std::int64_t {
+            ++transfers;
+            throw RequestError("Unexpected checkpoint transfer");
+        }
+    );
+    for (const auto* id : {"gpt-oss-20b", "medium"}) {
+        const auto& model = store.entry(id);
+        assert(model.kind == "llm" && model.layout == "root");
+        assert(!model.inference_available);
+        assert(model.license == "apache-2.0");
+        assert(
+            model.license_url
+            == "https://huggingface.co/" + model.repo_id + "/blob/" + model.revision
+                   + "/LICENSE"
+        );
+        assert(!store.allowed("original/model.safetensors", model));
+        assert(!store.allowed("model.gguf", model));
+        const bool small = model.id == "gpt-oss-20b";
+        assert(store.allowed(
+            small ? "model-00000-of-00002.safetensors"
+                  : "model-00000-of-00014.safetensors",
+            model
+        ));
+        assert(store.allowed("chat_template.jinja", model));
+        assert(store.allowed("tokenizer.json", model));
+        // Download-only entries must fail before acquisition for load and chat.
+        for (const auto operation : {Operation::load, Operation::generate}) {
+            InferenceRequest task;
+            task.operation = operation;
+            ChatRequest input;
+            input.model = model.id;
+            try {
+                prepare_input(input, task, store, running);
+                assert(false);
+            } catch (const RequestError& error) {
+                assert(
+                    std::string(error.what())
+                    == "This checkpoint has no supported inference engine."
+                );
+            }
+        }
+    }
+    assert(transfers == 0);
+    assert(store.status().at("selected_model_id").is_null());
+}
+
 void manifest_model_units() {
     const Json source = {
         {"name", "config.json"},
@@ -696,6 +748,7 @@ void tokenizer_asset_units() {
 int main() {
     manifest_model_units();
     pinned_catalog_units();
+    gpt_oss_catalog_units();
     typed_request_units();
     codec_units();
     acquisition_units();
