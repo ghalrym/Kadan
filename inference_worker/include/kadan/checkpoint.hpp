@@ -147,6 +147,19 @@ public:
         std::shared_ptr<MemoryBudget> payload_memory = {},
         const TensorReader& reader = {}
     ) const;
+    // GPT-OSS Hugging Face expert tensors in this shard: prefix_blocks is U8
+    // [experts, rows, groups, 16], prefix_scales is U8 [experts, rows, groups].
+    // Loads only the selected rows of one expert, still packed. The budget and
+    // optional reader have the same ownership contract as load_modelopt_rows.
+    Projection load_mxfp4_expert_rows(
+        std::string_view prefix,
+        std::size_t expert,
+        std::size_t first,
+        std::size_t count,
+        std::size_t payload_budget,
+        std::shared_ptr<MemoryBudget> payload_memory = {},
+        const TensorReader& reader = {}
+    ) const;
 
 private:
     Projection load_quantized_rows(

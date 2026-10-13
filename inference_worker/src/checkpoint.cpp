@@ -664,6 +664,69 @@ Projection Shard::load_compressed_nvfp4_rows(
     );
 }
 
+Projection Shard::load_mxfp4_expert_rows(
+    std::string_view prefix,
+    std::size_t expert,
+    std::size_t first,
+    std::size_t count,
+    std::size_t payload_budget,
+    std::shared_ptr<MemoryBudget> payload_memory,
+    const TensorReader& reader
+) const {
+    require(
+        !prefix.empty() && prefix.size() <= 480 && count != 0,
+        "projection_range_or_name"
+    );
+    auto name = [&](std::string_view suffix) {
+        std::pmr::string n(prefix, impl_->budget.get());
+        n += suffix;
+        return n;
+    };
+    const auto& blocks = impl_->find(name("_blocks"));
+    const auto& scales = impl_->find(name("_scales"));
+    require(blocks.dtype == Dtype::u8 && scales.dtype == Dtype::u8, "mxfp4_dtype");
+    require(
+        blocks.rank == 4 && scales.rank == 3 && blocks.shape[3] == 16
+            && blocks.shape[2] > 0 && expert < blocks.shape[0]
+            && first <= blocks.shape[1] && count <= blocks.shape[1] - first
+            && std::equal(
+                scales.shape.begin(), scales.shape.begin() + 3, blocks.shape.begin()
+            ),
+        "mxfp4_expert_shape"
+    );
+    const auto groups = blocks.shape[2];
+    const auto scale_bytes = mul(count, groups);
+    const auto weight_bytes = mul(scale_bytes, 16);
+    const auto columns = mul(groups, 32);
+    const auto total = add(weight_bytes, scale_bytes);
+    const auto scale_offset = mul(add(mul(expert, blocks.shape[1]), first), groups);
+    const auto weight_offset = mul(scale_offset, 16);
+    require(
+        total <= payload_budget && total <= SIZE_MAX && columns <= SIZE_MAX
+            && weight_offset <= SIZE_MAX && scale_offset <= SIZE_MAX,
+        "payload_budget"
+    );
+    Projection result(payload_memory ? std::move(payload_memory) : impl_->budget);
+    result.encoding_ = quantization::Encoding::mxfp4;
+    result.rows_ = count;
+    result.columns_ = columns;
+    result.weights_.resize(weight_bytes);
+    result.blocks_.resize(scale_bytes);
+    impl_->unchanged();
+    auto read =
+        [&](const Tensor& tensor, std::size_t offset, std::span<std::uint8_t> out) {
+            if (reader)
+                reader(tensor.name, offset, out);
+            else
+                impl_->read(tensor, offset, out);
+        };
+    read(blocks, weight_offset, result.weights_);
+    read(scales, scale_offset, result.blocks_);
+    impl_->unchanged();
+    quantization::decode_rows(result.view(), 0, 0, 0);
+    return result;
+}
+
 Projection Shard::load_quantized_rows(
     std::string_view prefix,
     std::size_t first,
