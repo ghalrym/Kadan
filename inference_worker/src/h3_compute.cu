@@ -96,6 +96,18 @@ __global__ void image_silu_pair_kernel(
 }
 
 __global__ void
+image_frequency_kernel(float* frequency, float timestep, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= 512)
+        return;
+    const float value =
+        image::detail::timestep_frequency(i < 256 ? timestep : 0.f, i % 256);
+    if (!isfinite(value))
+        atomicOr(status, 1U);
+    frequency[i] = value;
+}
+
+__global__ void
 image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
@@ -2096,6 +2108,26 @@ void CudaBf16Projection::standard(
         outputs[2],
         outputs[3]
     );
+}
+
+void CudaBf16Projection::frequency(
+    void* stream, std::span<const MediaDeviceSpan> outputs, float timestep
+) {
+    require(outputs.size() == 2, "image_frequency_layout");
+    validate_image_frequency(device_, outputs[0], outputs[1], timestep);
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_frequency_kernel<<<2, 256, 0, owned_stream>>>(
+        static_cast<float*>(outputs[0].data), timestep, status
+    );
+    checked(cudaGetLastError());
 }
 
 void CudaBf16Projection::timestep(

@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <source_location>
 #include <sstream>
@@ -96,7 +97,8 @@ void write_weights(
     bool attention_f32 = false,
     bool denoiser = false,
     bool modulation_f32 = false,
-    bool timestep_f32 = false
+    bool timestep_f32 = false,
+    bool linear1_f32 = false
 ) {
     std::ostringstream header;
     header << '{';
@@ -134,7 +136,10 @@ void write_weights(
                 (modulation_f32 && std::string_view(name) == "modulation.1")
                 || (timestep_f32
                     && std::string_view(name)
-                           == "time_text_embed.timestep_embedder.linear_2");
+                           == "time_text_embed.timestep_embedder.linear_2")
+                || (linear1_f32
+                    && std::string_view(name)
+                           == "time_text_embed.timestep_embedder.linear_1");
             const auto size = rows * (columns ? columns : 1) * (fp32 ? 4 : 2);
             header << ",\"" << name << ".weight\":{\"dtype\":\""
                    << (fp32 ? "F32" : "BF16") << "\",\"shape\":[" << rows;
@@ -174,6 +179,14 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
     bool fail_pair = false, fail_preparation = false, fail_attention = false,
          fail_projection = false, fail_modulation = false;
     bool fail_timestep = false, fail_timestep_row1 = false;
+    bool fail_frequency = false, fail_linear1 = false, fail_linear1_row1 = false;
+    std::atomic_bool* cancel_frequency = nullptr;
+    std::atomic_bool* cancel_linear1 = nullptr;
+    void* frequencies = nullptr;
+    std::uint64_t frequency_generation = 0;
+    void* linear1 = nullptr;
+    std::uint64_t linear1_generation = 0;
+    std::vector<std::size_t> linear1_rows;
     std::atomic_bool* cancel_timestep = nullptr;
     void* activated = nullptr;
     std::uint64_t activated_generation = 0;
@@ -194,6 +207,20 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         return selected;
     }
 
+    void frequency(
+        void*, std::span<const kadan::MediaDeviceSpan> write, float timestep
+    ) override {
+        check(write.size() == 2 && calls.empty());
+        kadan::video::validate_image_frequency(selected, write[0], write[1], timestep);
+        check(timestep == .625f);
+        frequencies = write[0].data;
+        frequency_generation = write[0].generation;
+        calls.push_back('f');
+        backend.status = fail_frequency ? 1 : 0;
+        if (cancel_frequency)
+            cancel_frequency->store(true);
+    }
+
     void timestep(
         void*,
         std::span<const kadan::MediaDeviceSpan> read,
@@ -206,10 +233,39 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
         kadan::video::validate_bf16_projection(
             selected, read[0], read[1], bias, write[1], write[0], write[2], write[3]
         );
+        if (read[0].dimensions[1] == 256) {
+            check(read[0].dimensions == std::vector<std::size_t>{1, 256});
+            check(read[1].dimensions == std::vector<std::size_t>{64, 256});
+            check(write[0].dimensions == std::vector<std::size_t>{1, 64});
+            check(
+                calls == std::vector<char>{'f'} || calls == std::vector<char>{'f', 'l'}
+            );
+            check(
+                static_cast<std::byte*>(read[0].data) - read[0].offset == frequencies
+                && read[0].generation == frequency_generation
+            );
+            linear1 = static_cast<std::byte*>(write[0].data) - write[0].offset;
+            linear1_generation = write[0].generation;
+            linear1_rows.push_back(read[0].offset / 1024);
+            calls.push_back('l');
+            backend.status =
+                fail_linear1 || (fail_linear1_row1 && linear1_rows.size() == 2) ? 1 : 0;
+            if (cancel_linear1)
+                cancel_linear1->store(true);
+            return;
+        }
         check(read[0].dimensions == std::vector<std::size_t>{1, 64});
         check(read[1].dimensions == std::vector<std::size_t>{64, 64});
         check(write[0].dimensions == std::vector<std::size_t>{1, 64});
-        check(std::all_of(calls.begin(), calls.end(), [](char c) { return c == 't'; }));
+        check(
+            calls == std::vector<char>{'f', 'l', 'l'}
+            || calls == std::vector<char>{'f', 'l', 'l', 't'}
+        );
+        check(linear1_rows == std::vector<std::size_t>{0, 1});
+        check(
+            static_cast<std::byte*>(read[0].data) - read[0].offset == linear1
+            && read[0].generation == linear1_generation
+        );
         activated = static_cast<std::byte*>(write[0].data) - write[0].offset;
         activated_generation = write[0].generation;
         timestep_rows.push_back(read[0].offset / 256);
@@ -236,7 +292,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             check(read[0].dimensions == std::vector<std::size_t>{1, 64});
             check(write[0].dimensions == std::vector<std::size_t>{1, 256});
             check(std::all_of(calls.begin(), calls.end(), [](char c) {
-                return c == 't' || c == 'm';
+                return c == 'f' || c == 'l' || c == 't' || c == 'm';
             }));
             check(timestep_rows == std::vector<std::size_t>{0, 1});
             check(
@@ -251,7 +307,7 @@ struct Launcher final : kadan::video::ImageFeedForwardLauncher {
             return;
         }
         check(std::all_of(calls.begin(), calls.end(), [](char c) {
-            return c == 'o' || c == 't' || c == 'm';
+            return c == 'o' || c == 'f' || c == 'l' || c == 't' || c == 'm';
         }));
         attended = static_cast<std::byte*>(read[0].data) - read[0].offset;
         attended_generation = read[0].generation;
@@ -719,7 +775,7 @@ int main() {
     tiled_block.unload();
     write_weights(directory, false, 64, 128, false, true);
     auto conditioning_resources = std::make_shared<kadan::Resources>(
-        kadan::Footprint{128 * 1024 * 1024, budget + 41728, budget + 41728}
+        kadan::Footprint{128 * 1024 * 1024, budget + 78592, budget + 78592}
     );
     kadan::image::Denoiser denoiser(
         conditioning_resources, std::make_shared<Compute>()
@@ -729,14 +785,24 @@ int main() {
     denoiser.load(directory, files, config, cancel);
     enum class ConditioningScenario {
         complete,
-        missing_time,
+        failed_frequency,
+        failed_second_frequency,
+        cancelled_frequency,
+        failed_linear1,
+        failed_second_linear1,
+        failed_linear1_row1,
+        cancelled_linear1,
+        invalid_negative,
+        invalid_overshoot,
+        invalid_nan,
+        invalid_infinity,
         missing_hidden,
         missing_attended,
         failed_modulation,
         failed_timestep,
         failed_second_timestep,
         failed_timestep_row1,
-        supplied_output_only,
+        supplied_output,
         cancelled_timestep,
         wrong_boundary,
         missing_launcher
@@ -745,7 +811,7 @@ int main() {
                                  ConditioningScenario scenario) {
         auto fake = std::make_unique<Device>();
         auto& metadata = *fake;
-        metadata.available = budget + 41728;
+        metadata.available = budget + 78592;
         metadata.metadata_execution = true;
         kadan::MediaSession resident(
             conditioning_resources,
@@ -781,47 +847,63 @@ int main() {
             )
             == 2
         );
+        check(
+            std::count_if(
+                resident.plan().weights.begin(),
+                resident.plan().weights.end(),
+                [](const auto& w) {
+                    return w.name == "time_text_embed.timestep_embedder.linear_1.weight"
+                           && w.first_row == 0 && w.rows == 64
+                           && w.stored_bytes == 32768 && w.identity.inode != 0;
+                }
+            )
+            == 2
+        );
         for (const auto& d : resident.plan().devices) {
-            for (const auto* name :
-                 {"conditioning/time-linear1",
-                  "resident/hidden",
-                  "resident/normalized"}) {
-                const bool time = std::string_view(name) == "conditioning/time-linear1";
+            for (const auto* name : {"resident/hidden", "resident/normalized"}) {
                 const bool hidden = std::string_view(name) == "resident/hidden";
                 if ((d.device == 1
-                     && ((time
-                          && (scenario == ConditioningScenario::missing_time
-                              || scenario
-                                     == ConditioningScenario::supplied_output_only))
-                         || (hidden && scenario == ConditioningScenario::missing_hidden)
-                         || (!time && !hidden
+                     && ((hidden && scenario == ConditioningScenario::missing_hidden)
+                         || (!hidden
                              && scenario == ConditioningScenario::missing_attended)))
-                    || (!time && !hidden && boundary == HiddenBoundary::post_attention))
+                    || (!hidden && boundary == HiddenBoundary::post_attention))
                     continue;
                 auto view = resident.tensor(
-                    d.device,
-                    name,
-                    kadan::DeviceDType::f32,
-                    {time ? 2U : 17U, 64},
-                    {64, 1}
+                    d.device, name, kadan::DeviceDType::f32, {17, 64}, {64, 1}
                 );
                 std::vector<std::byte> ingress(view.layout().bytes);
                 resident.upload_input(view, ingress);
             }
-            if (d.device == 1
-                && scenario == ConditioningScenario::supplied_output_only) {
-                auto activated = resident.tensor(
-                    d.device,
-                    "conditioning/time-activated",
-                    kadan::DeviceDType::f32,
-                    {2, 64},
-                    {64, 1}
-                );
-                std::vector<std::byte> ingress(activated.layout().bytes);
-                resident.upload_input(activated, ingress);
+            if (d.device == 1 && scenario == ConditioningScenario::supplied_output) {
+                for (const char* name :
+                     {"conditioning/frequency",
+                      "conditioning/time-linear1",
+                      "conditioning/time-activated"}) {
+                    const std::size_t columns =
+                        std::string_view(name) == "conditioning/frequency" ? 256 : 64;
+                    auto output = resident.tensor(
+                        d.device,
+                        name,
+                        kadan::DeviceDType::f32,
+                        {2, columns},
+                        {columns, 1}
+                    );
+                    std::vector<std::byte> ingress(output.layout().bytes);
+                    resident.upload_input(output, ingress);
+                }
             }
         }
         Launcher first(metadata, 0), second(metadata, 1);
+        first.fail_frequency = scenario == ConditioningScenario::failed_frequency;
+        second.fail_frequency =
+            scenario == ConditioningScenario::failed_second_frequency;
+        first.cancel_frequency =
+            scenario == ConditioningScenario::cancelled_frequency ? &cancel : nullptr;
+        first.fail_linear1 = scenario == ConditioningScenario::failed_linear1;
+        second.fail_linear1 = scenario == ConditioningScenario::failed_second_linear1;
+        first.fail_linear1_row1 = scenario == ConditioningScenario::failed_linear1_row1;
+        first.cancel_linear1 =
+            scenario == ConditioningScenario::cancelled_linear1 ? &cancel : nullptr;
         first.fail_timestep_row1 =
             scenario == ConditioningScenario::failed_timestep_row1;
         first.fail_modulation = scenario == ConditioningScenario::failed_modulation;
@@ -833,6 +915,15 @@ int main() {
             &first,
             scenario == ConditioningScenario::missing_launcher ? &first : &second
         };
+        float timestep = .625f;
+        if (scenario == ConditioningScenario::invalid_negative)
+            timestep = -.01f;
+        if (scenario == ConditioningScenario::invalid_overshoot)
+            timestep = 1.01f;
+        if (scenario == ConditioningScenario::invalid_nan)
+            timestep = std::numeric_limits<float>::quiet_NaN();
+        if (scenario == ConditioningScenario::invalid_infinity)
+            timestep = std::numeric_limits<float>::infinity();
         bool rejected = false;
         try {
             denoiser.execute_feed_forward(
@@ -840,6 +931,7 @@ int main() {
                 0,
                 17,
                 3,
+                timestep,
                 scenario == ConditioningScenario::wrong_boundary
                     ? HiddenBoundary::pre_attention
                     : boundary,
@@ -854,15 +946,23 @@ int main() {
                 || error == "media_session_unready_input"
                 || error == "image_ff_launcher" || error == "image_ff_plan"
                 || error == "image_cancelled" || error == "media_session_cancelled"
+                || error == "image_frequency_layout"
             );
         }
         cancel.store(false);
-        check(rejected == (scenario != ConditioningScenario::complete));
-        if (scenario == ConditioningScenario::complete) {
+        const bool complete = scenario == ConditioningScenario::complete
+                              || scenario == ConditioningScenario::supplied_output;
+        check(rejected != complete);
+        if (complete) {
             check(
-                first.calls == second.calls && first.calls[0] == 't'
-                && first.calls[1] == 't' && first.calls[2] == 'm'
-                && first.calls[3] == 'm'
+                first.calls == second.calls && first.calls[0] == 'f'
+                && first.calls[1] == 'l' && first.calls[2] == 'l'
+                && first.calls[3] == 't' && first.calls[4] == 't'
+                && first.calls[5] == 'm' && first.calls[6] == 'm'
+            );
+            check(
+                first.linear1_rows == std::vector<std::size_t>{0, 1}
+                && first.linear1_rows == second.linear1_rows
             );
             check(
                 first.timestep_rows == std::vector<std::size_t>{0, 1}
@@ -892,19 +992,51 @@ int main() {
             resident.finish();
         } else if (scenario == ConditioningScenario::failed_modulation) {
             check(
-                first.calls == std::vector<char>{'t', 't', 'm'} && second.calls.empty()
+                first.calls == std::vector<char>{'f', 'l', 'l', 't', 't', 'm'}
+                && second.calls.empty()
             );
         } else if (
             scenario == ConditioningScenario::failed_timestep
             || scenario == ConditioningScenario::cancelled_timestep
         ) {
-            check(first.calls == std::vector<char>{'t'} && second.calls.empty());
+            check(
+                first.calls == std::vector<char>{'f', 'l', 'l', 't'}
+                && second.calls.empty()
+            );
         } else if (scenario == ConditioningScenario::failed_timestep_row1) {
-            check(first.calls == std::vector<char>{'t', 't'} && second.calls.empty());
+            check(
+                first.calls == std::vector<char>{'f', 'l', 'l', 't', 't'}
+                && second.calls.empty()
+            );
         } else if (scenario == ConditioningScenario::failed_second_timestep) {
             check(
-                first.calls == std::vector<char>{'t', 't', 'm', 'm'}
-                && second.calls == std::vector<char>{'t'}
+                first.calls == std::vector<char>{'f', 'l', 'l', 't', 't', 'm', 'm'}
+                && second.calls == std::vector<char>{'f', 'l', 'l', 't'}
+            );
+        } else if (
+            scenario == ConditioningScenario::failed_frequency
+            || scenario == ConditioningScenario::cancelled_frequency
+        ) {
+            check(first.calls == std::vector<char>{'f'} && second.calls.empty());
+        } else if (
+            scenario == ConditioningScenario::failed_linear1
+            || scenario == ConditioningScenario::cancelled_linear1
+        ) {
+            check(first.calls == std::vector<char>{'f', 'l'} && second.calls.empty());
+        } else if (scenario == ConditioningScenario::failed_linear1_row1) {
+            check(
+                first.calls == std::vector<char>{'f', 'l', 'l'} && second.calls.empty()
+            );
+        } else if (
+            scenario == ConditioningScenario::failed_second_frequency
+            || scenario == ConditioningScenario::failed_second_linear1
+        ) {
+            check(first.calls == std::vector<char>{'f', 'l', 'l', 't', 't', 'm', 'm'});
+            check(
+                second.calls
+                == (scenario == ConditioningScenario::failed_second_frequency
+                        ? std::vector<char>{'f'}
+                        : std::vector<char>{'f', 'l'})
             );
         } else {
             check(first.calls.empty() && second.calls.empty());
@@ -917,26 +1049,46 @@ int main() {
     };
     conditioning_case(HiddenBoundary::post_attention, ConditioningScenario::complete);
     for (const auto scenario :
-         {ConditioningScenario::missing_time,
+         {ConditioningScenario::failed_frequency,
+          ConditioningScenario::failed_second_frequency,
+          ConditioningScenario::cancelled_frequency,
+          ConditioningScenario::failed_linear1,
+          ConditioningScenario::failed_second_linear1,
+          ConditioningScenario::failed_linear1_row1,
+          ConditioningScenario::cancelled_linear1,
+          ConditioningScenario::invalid_negative,
+          ConditioningScenario::invalid_overshoot,
+          ConditioningScenario::invalid_nan,
+          ConditioningScenario::invalid_infinity,
           ConditioningScenario::missing_hidden,
           ConditioningScenario::failed_modulation,
           ConditioningScenario::failed_timestep,
           ConditioningScenario::failed_second_timestep,
           ConditioningScenario::failed_timestep_row1,
-          ConditioningScenario::supplied_output_only,
+          ConditioningScenario::supplied_output,
           ConditioningScenario::cancelled_timestep,
           ConditioningScenario::missing_launcher})
         conditioning_case(HiddenBoundary::post_attention, scenario);
     conditioning_case(HiddenBoundary::pre_attention, ConditioningScenario::complete);
     for (const auto scenario :
-         {ConditioningScenario::missing_time,
+         {ConditioningScenario::failed_frequency,
+          ConditioningScenario::failed_second_frequency,
+          ConditioningScenario::cancelled_frequency,
+          ConditioningScenario::failed_linear1,
+          ConditioningScenario::failed_second_linear1,
+          ConditioningScenario::failed_linear1_row1,
+          ConditioningScenario::cancelled_linear1,
+          ConditioningScenario::invalid_negative,
+          ConditioningScenario::invalid_overshoot,
+          ConditioningScenario::invalid_nan,
+          ConditioningScenario::invalid_infinity,
           ConditioningScenario::missing_hidden,
           ConditioningScenario::missing_attended,
           ConditioningScenario::failed_modulation,
           ConditioningScenario::failed_timestep,
           ConditioningScenario::failed_second_timestep,
           ConditioningScenario::failed_timestep_row1,
-          ConditioningScenario::supplied_output_only,
+          ConditioningScenario::supplied_output,
           ConditioningScenario::cancelled_timestep,
           ConditioningScenario::missing_launcher})
         conditioning_case(HiddenBoundary::pre_attention, scenario);
@@ -944,10 +1096,18 @@ int main() {
         HiddenBoundary::post_attention, ConditioningScenario::wrong_boundary
     );
     denoiser.unload();
-    for (const int unsupported : {0, 1, 2}) {
+    for (const int unsupported : {0, 1, 2, 3}) {
         const bool native = unsupported != 0;
         write_weights(
-            directory, false, 64, 128, false, true, unsupported == 1, unsupported == 2
+            directory,
+            false,
+            64,
+            128,
+            false,
+            true,
+            unsupported == 1,
+            unsupported == 2,
+            unsupported == 3
         );
         kadan::image::Denoiser unsupported_denoiser(
             conditioning_resources, native ? std::make_shared<Compute>() : nullptr
@@ -975,7 +1135,7 @@ int main() {
         );
         resident.finish();
     }
-    for (const bool timestep : {false, true}) {
+    for (const int timestep : {0, 1, 2}) {
         write_weights(directory, false, 64, 128, false, true);
         {
             // Corrupt an actual shared raw weight before loading; no arithmetic runs.
@@ -984,7 +1144,13 @@ int main() {
                 std::ios::in | std::ios::out | std::ios::binary
             );
             file.seekp(
-                -std::streamoff(32768 + 2 * 8192 + (timestep ? 8192 : 0)), std::ios::end
+                -std::streamoff(
+                    32768 + 2 * 8192
+                    + (timestep == 2   ? 8192 + 32768
+                       : timestep == 1 ? 8192
+                                       : 0)
+                ),
+                std::ios::end
             );
             file.put(char(0x80));
             file.put(char(0x7f));

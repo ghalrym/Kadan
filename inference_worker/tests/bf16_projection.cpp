@@ -3,6 +3,7 @@
 
 #include <array>
 #include <iostream>
+#include <limits>
 
 using namespace kadan;
 using namespace kadan::video;
@@ -359,5 +360,52 @@ int main() {
     // The shared layout must fit the attention residual's one-dimensional grid.
     preparation[0].dimensions = {INT_MAX, 512};
     rejects_preparation();
+    std::array frequency{
+        span(0x1000, DeviceDType::f32, {2, 256}, {256, 1}, 2048), original[6]
+    };
+    const auto frequency_original = frequency;
+    auto validate_frequency = [&](float timestep) {
+        validate_image_frequency(0, frequency[0], frequency[1], timestep);
+    };
+    auto rejects_frequency = [&](float timestep = .625f) {
+        bool rejected = false;
+        try {
+            validate_frequency(timestep);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        frequency = frequency_original;
+    };
+    for (const float timestep : {0.f, -0.f, .625f, 1.f})
+        validate_frequency(timestep);
+    for (const float timestep :
+         {-1.f,
+          1.01f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_frequency(timestep);
+    for (std::size_t i = 0; i < frequency.size(); ++i) {
+        frequency[i].device = 1;
+        rejects_frequency();
+        frequency[i].data = nullptr;
+        rejects_frequency();
+        frequency[i].bytes -= 1;
+        rejects_frequency();
+        frequency[i].strides.back() = 2;
+        rejects_frequency();
+        frequency[i].dimensions[0] += 1;
+        rejects_frequency();
+        frequency[i].dtype = DeviceDType::bf16;
+        rejects_frequency();
+        frequency[i].offset = SIZE_MAX;
+        rejects_frequency();
+        frequency[i].data = static_cast<std::byte*>(frequency[i].data) + 1;
+        rejects_frequency();
+    }
+    frequency[1].data = frequency[0].data;
+    rejects_frequency();
+    frequency[1].data = static_cast<std::byte*>(frequency[0].data) + 2044;
+    rejects_frequency();
     std::cout << "BF16 projection layout validation passed\n";
 }
