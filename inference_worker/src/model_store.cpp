@@ -56,7 +56,8 @@ curl_off_t transfer(
     const std::string& url,
     Transfer& target,
     const std::atomic_bool& cancel,
-    bool head = false
+    bool head = false,
+    std::uint64_t offset = 0
 ) {
     preparation_cancel(cancel);
     static const auto initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -82,8 +83,15 @@ curl_off_t transfer(
     curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, interrupted);
     curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &cancel);
     curl_easy_setopt(curl.get(), CURLOPT_NOBODY, head ? 1L : 0L);
+    preparation_check(offset <= INT64_MAX, "Checkpoint resume offset exceeds limit");
+    curl_easy_setopt(curl.get(), CURLOPT_RESUME_FROM_LARGE, curl_off_t(offset));
     const auto status = curl_easy_perform(curl.get());
     preparation_cancel(cancel);
+    preparation_check(
+        status != CURLE_RANGE_ERROR,
+        "Checkpoint server cannot resume; partial retained",
+        503
+    );
     preparation_check(
         status == CURLE_OK,
         "Checkpoint download failed; check network and storage.",
@@ -99,10 +107,11 @@ std::int64_t fetch(
     const std::string& url,
     Transfer& target,
     const std::atomic_bool& cancel,
-    bool head = false
+    bool head = false,
+    std::uint64_t offset = 0
 ) {
     if (!source)
-        return transfer(url, target, cancel, head);
+        return transfer(url, target, cancel, head, offset);
     preparation_cancel(cancel);
     const auto result = source(
         url,
@@ -115,7 +124,8 @@ std::int64_t fetch(
             );
         },
         cancel,
-        head
+        head,
+        offset
     );
     preparation_cancel(cancel);
     return result;
@@ -198,14 +208,36 @@ void download(
         );
     }
     fs::create_directories(path.parent_path());
-    std::ofstream output(path, std::ios::binary);
+    const auto offset = fs::exists(path) ? fs::file_size(path) : 0;
+    preparation_check(offset <= size, "Checkpoint partial exceeds expected size");
+    if (offset) {
+        std::ifstream input(path, std::ios::binary);
+        std::array<char, 1024 * 1024> buffer{};
+        std::uint64_t remaining = offset;
+        while (remaining) {
+            preparation_cancel(cancel);
+            const auto count = std::min<std::uint64_t>(remaining, buffer.size());
+            input.read(buffer.data(), count);
+            preparation_check(bool(input), "Cannot read checkpoint partial", 503);
+            preparation_check(
+                EVP_DigestUpdate(digest.get(), buffer.data(), count) == 1,
+                "Digest update failed"
+            );
+            remaining -= count;
+        }
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::app);
     preparation_check(bool(output), "Cannot write checkpoint", 503);
     Transfer target;
     target.output = &output;
     target.progress = progress;
     target.digest = digest.get();
     target.maximum = size;
-    fetch(source, url, target, cancel);
+    target.received = offset;
+    // Report saved bytes only after reading them into the verification digest.
+    progress(offset);
+    if (offset < size)
+        fetch(source, url, target, cancel, false, offset);
     output.close();
     preparation_check(
         !output.fail() && target.received == size, "Checkpoint size mismatch"
@@ -222,10 +254,13 @@ void download(
         actual += hex[bytes[i] >> 4];
         actual += hex[bytes[i] & 15];
     }
-    preparation_check(
-        actual == item.digest,
-        "Checkpoint integrity verification failed: " + path.filename().string()
-    );
+    if (actual != item.digest) {
+        // Only the corrupt staged artifact is discarded; verified siblings survive.
+        fs::remove(path);
+        throw RequestError(
+            "Checkpoint integrity verification failed: " + path.filename().string()
+        );
+    }
 }
 
 void atomic_document(const fs::path& destination, const Json& value) {
@@ -391,7 +426,8 @@ void ModelStore::validate_files(
     for (const auto& file : files) {
         const auto name = file.name;
         preparation_check(
-            allowed(name, model) && names.insert(name).second,
+            allowed(name, model) && name != "resume.json" && name != "complete.json"
+                && names.insert(name).second,
             "Invalid or duplicate checkpoint filename"
         );
         file.validate();
@@ -436,6 +472,10 @@ bool ModelStore::complete(const CatalogEntry& model) const {
         const auto files = parse_manifest(marker.at("files"));
         validate_files(model, files);
         if (model.layout == "composite" && files != model.manifest)
+            return false;
+        if (model.layout == "single_file"
+            && (files.size() != 1 || files.front().algorithm != "sha256"
+                || files.front().digest != model.revision))
             return false;
         for (const auto& file : files) {
             const auto path = directory / file.name;
@@ -517,81 +557,131 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
         503
     );
     const auto stage = root_ / ("." + model + ".partial");
-    fs::remove_all(stage);
-    fs::create_directory(stage);
-    try {
-        const auto files = manifest(catalog, cancel);
-        auto ordered = files;
-        // Validate all index metadata before transferring any tensor payloads.
-        std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
-            return file.name.ends_with(".safetensors.index.json");
-        });
-        std::set<std::string> names;
-        std::uint64_t total = 1024ULL * 1024 * 1024;
-        for (const auto& file : files) {
-            names.insert(file.name);
-            const auto size = file.size;
-            preparation_check(
-                !file.name.ends_with(".safetensors.index.json")
-                    || size <= 32 * 1024 * 1024,
-                "Checkpoint weight index exceeds size limit"
-            );
-            preparation_check(size <= UINT64_MAX - total, "Checkpoint size overflow");
-            total += size;
-        }
+    preparation_check(
+        !fs::is_symlink(stage), "Checkpoint staging directory is a symlink"
+    );
+    preparation_check(
+        !fs::is_symlink(stage / "complete.json"),
+        "Checkpoint completion marker is a symlink"
+    );
+    const auto files = manifest(catalog, cancel);
+    auto ordered = files;
+    // Validate all index metadata before transferring any tensor payloads.
+    std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
+        return file.name.ends_with(".safetensors.index.json");
+    });
+    std::set<std::string> names;
+    for (const auto& file : files) {
+        names.insert(file.name);
         preparation_check(
-            fs::space(root_).available >= total,
-            "Insufficient space for checkpoint",
+            !file.name.ends_with(".safetensors.index.json")
+                || file.size <= 32 * 1024 * 1024,
+            "Checkpoint weight index exceeds size limit"
+        );
+    }
+    auto identity_files = files;
+    std::sort(
+        identity_files.begin(),
+        identity_files.end(),
+        [](const auto& left, const auto& right) { return left.name < right.name; }
+    );
+    const Json identity = {
+        {"id", catalog.id},
+        {"repo_id", catalog.repo_id},
+        {"revision", revision},
+        {"layout", catalog.layout},
+        {"asset_url", catalog.asset_url},
+        {"files", identity_files}
+    };
+    if (fs::exists(stage / "resume.json")) {
+        preparation_check(
+            read_document(stage / "resume.json") == identity,
+            "Checkpoint partial identity changed; inspect model storage.",
             503
         );
-        total -= 1024ULL * 1024 * 1024;
-        std::uint64_t downloaded = 0, reported = 0;
-        if (progress_)
-            progress_(model, 0, total);
-        auto progress = [&](std::size_t bytes) {
-            downloaded += bytes;
-            if (progress_
-                && (downloaded == total || downloaded - reported >= 4 * 1024 * 1024)) {
-                progress_(model, downloaded, total);
-                reported = downloaded;
-            }
-        };
-        for (const auto& file : ordered) {
-            preparation_cancel(cancel);
-            const auto name = file.name;
-            const auto url = catalog.layout == "composite" ? file.url
-                             : catalog.layout == "single_file"
-                                 ? catalog.asset_url
-                                 : "https://huggingface.co/" + catalog.repo_id
-                                       + "/resolve/" + revision + "/" + name;
-            download(url, stage / name, file, cancel, fetch_, progress);
-            if (!name.ends_with(".safetensors.index.json"))
-                continue;
-            const auto index = read_document(stage / name);
+    } else {
+        fs::create_directory(stage);
+        // A process can stop between creating the stage and publishing its identity.
+        // Only an otherwise empty stage is safe to initialize without an identity.
+        for (const auto& item : fs::directory_iterator(stage))
             preparation_check(
-                index.at("weight_map").is_object() && !index.at("weight_map").empty(),
-                "Invalid checkpoint weight index"
+                item.path().filename() == "resume.json.worker.tmp" && !item.is_symlink()
+                    && item.is_regular_file(),
+                "Checkpoint partial has no identity; inspect model storage.",
+                503
             );
-            for (const auto& shard : index.at("weight_map")) {
-                const auto relative =
-                    (fs::path(name).parent_path() / shard.get<std::string>())
-                        .generic_string();
-                preparation_check(
-                    safe_name(relative) && relative.ends_with(".safetensors")
-                        && names.contains(relative),
-                    "Weight index references missing or unsupported shard"
-                );
-            }
-        }
-        preparation_cancel(cancel);
-        write_document(
-            stage / "complete.json", {{"revision", revision}, {"files", files}}
-        );
-        fs::rename(stage, destination);
-    } catch (...) {
-        fs::remove_all(stage);
-        throw;
+        atomic_document(stage / "resume.json", identity);
     }
+    std::uint64_t total = 1024ULL * 1024 * 1024, saved = 0;
+    for (const auto& file : files) {
+        const auto path = stage / file.name;
+        for (auto parent = path; parent != root_ && !parent.empty();
+             parent = parent.parent_path())
+            preparation_check(
+                !fs::is_symlink(parent), "Checkpoint partial is a symlink"
+            );
+        if (fs::exists(path)) {
+            preparation_check(
+                fs::is_regular_file(path), "Checkpoint partial is not a file"
+            );
+            const auto size = fs::file_size(path);
+            preparation_check(
+                size <= file.size, "Checkpoint partial exceeds expected size"
+            );
+            preparation_check(size <= UINT64_MAX - saved, "Checkpoint size overflow");
+            saved += size;
+        }
+        const auto size = file.size;
+        preparation_check(size <= UINT64_MAX - total, "Checkpoint size overflow");
+        total += size;
+    }
+    preparation_check(
+        fs::space(root_).available >= total - saved,
+        "Insufficient space for checkpoint",
+        503
+    );
+    total -= 1024ULL * 1024 * 1024;
+    std::uint64_t downloaded = 0, reported = 0;
+    if (progress_)
+        progress_(model, 0, total);
+    auto progress = [&](std::size_t bytes) {
+        downloaded += bytes;
+        if (progress_
+            && (downloaded == total || downloaded - reported >= 4 * 1024 * 1024)) {
+            progress_(model, downloaded, total);
+            reported = downloaded;
+        }
+    };
+    for (const auto& file : ordered) {
+        preparation_cancel(cancel);
+        const auto name = file.name;
+        const auto url = catalog.layout == "composite" ? file.url
+                         : catalog.layout == "single_file"
+                             ? catalog.asset_url
+                             : "https://huggingface.co/" + catalog.repo_id + "/resolve/"
+                                   + revision + "/" + name;
+        download(url, stage / name, file, cancel, fetch_, progress);
+        if (!name.ends_with(".safetensors.index.json"))
+            continue;
+        const auto index = read_document(stage / name);
+        preparation_check(
+            index.at("weight_map").is_object() && !index.at("weight_map").empty(),
+            "Invalid checkpoint weight index"
+        );
+        for (const auto& shard : index.at("weight_map")) {
+            const auto relative =
+                (fs::path(name).parent_path() / shard.get<std::string>())
+                    .generic_string();
+            preparation_check(
+                safe_name(relative) && relative.ends_with(".safetensors")
+                    && names.contains(relative),
+                "Weight index references missing or unsupported shard"
+            );
+        }
+    }
+    preparation_cancel(cancel);
+    write_document(stage / "complete.json", {{"revision", revision}, {"files", files}});
+    fs::rename(stage, destination);
     return destination;
 }
 

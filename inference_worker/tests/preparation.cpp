@@ -318,7 +318,7 @@ void acquisition_units() {
     ModelStore store(
         root,
         data,
-        [&](const auto&, const auto& write, const auto&, bool head) {
+        [&](const auto&, const auto& write, const auto&, bool head, std::uint64_t) {
             assert(!head);
             ++calls;
             write("verified-bytes");
@@ -340,23 +340,27 @@ void acquisition_units() {
     assert(!store.allowed("../weights.safetensors", store.entry("test")));
     fs::remove_all(checkpoint);
     ModelStore corrupt(
-        root, data, [](const auto&, const auto& write, const auto&, bool) {
+        root,
+        data,
+        [](const auto&, const auto& write, const auto&, bool, std::uint64_t) {
             write("corrupt--bytes");
             return 14;
         }
     );
     rejects([&] { corrupt.acquire("test", running); });
-    assert(!fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
+    assert(fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
     std::atomic_bool cancel{false};
     ModelStore cancelled(
-        root, data, [&](const auto&, const auto& write, const auto&, bool) {
+        root,
+        data,
+        [&](const auto&, const auto& write, const auto&, bool, std::uint64_t) {
             write("verified-bytes");
             cancel = true;
             return 14;
         }
     );
     rejects([&] { cancelled.acquire("test", cancel); });
-    assert(!fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
+    assert(fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
     cancel = false;
     assert(store.acquire("test", cancel) == checkpoint);  // writer lock was released
     fs::remove(checkpoint / "weights.safetensors");
@@ -364,6 +368,259 @@ void acquisition_units() {
         tmp.path / "source/weights.safetensors", checkpoint / "weights.safetensors"
     );
     assert(!store.complete(store.entry("test")));
+}
+
+void recovery_units() {
+    for (const bool cancellation : {false, true}) {
+        Directory tmp;
+        const auto data = tmp.path / "data", root = tmp.path / "models";
+        const std::map<std::string, std::string> contents{
+            {"a.safetensors", "verified"}, {"b.safetensors", "remaining"}
+        };
+        const auto files = local_manifest(tmp.path / "source", contents);
+        catalog(data, Json::array({entry("test", files)}));
+        std::atomic_bool cancel{false};
+        ModelStore interrupted(
+            root,
+            data,
+            [&](const std::string& url,
+                const auto& write,
+                const auto&,
+                bool head,
+                std::uint64_t offset) {
+                assert(!head && offset == 0);
+                const auto name = fs::path(url).filename().string();
+                if (name == "a.safetensors") {
+                    write(contents.at(name));
+                    return 0;
+                }
+                write("rema");
+                if (cancellation) {
+                    cancel = true;
+                    return 0;
+                }
+                throw RequestError("Unit connection interrupted", 503);
+            }
+        );
+        rejects([&] { interrupted.acquire("test", cancel); });
+        const auto stage = root / ".test.partial";
+        assert(read_bytes(stage / "a.safetensors", 32) == "verified");
+        assert(read_bytes(stage / "b.safetensors", 32) == "rema");
+        assert(!fs::exists(stage / "complete.json"));
+        assert(!interrupted.complete(interrupted.entry("test")));
+        unsigned calls = 0;
+        std::uint64_t progress = 0;
+        // Metadata ordering is not part of artifact identity.
+        auto reordered = files;
+        std::reverse(reordered.begin(), reordered.end());
+        catalog(data, Json::array({entry("test", reordered)}));
+        // A new store simulates retry after a worker restart.
+        ModelStore resumed(
+            root,
+            data,
+            [&](const std::string& url,
+                const auto& write,
+                const auto&,
+                bool head,
+                std::uint64_t offset) {
+                ++calls;
+                assert(
+                    !head && fs::path(url).filename() == "b.safetensors" && offset == 4
+                );
+                write("ining");
+                return 5;
+            },
+            [&](const auto&, auto value, auto total) {
+                assert(value <= total && value >= progress);
+                progress = value;
+            }
+        );
+        cancel = false;
+        const auto path = resumed.acquire("test", cancel);
+        assert(calls == 1 && progress == 17);
+        assert(read_bytes(path / "b.safetensors", 32) == "remaining");
+        assert(resumed.complete(resumed.entry("test")));
+    }
+}
+
+struct PartialDownload {
+    Directory tmp;
+    fs::path data = tmp.path / "data", root = tmp.path / "models";
+    fs::path stage = root / ".test.partial", artifact = stage / "weights.safetensors";
+    Json model;
+
+    PartialDownload() {
+        const auto files =
+            local_manifest(tmp.path / "source", {{"weights.safetensors", "verified"}});
+        model = entry("test", files);
+        catalog(data, Json::array({model}));
+        ModelStore interrupted(
+            root,
+            data,
+            [](const auto&, const auto& write, const auto&, bool, std::uint64_t)
+                -> std::int64_t {
+                write("veri");
+                throw RequestError("Unit interruption", 503);
+            }
+        );
+        rejects([&] { interrupted.acquire("test", running); });
+        assert(read_bytes(artifact, 32) == "veri");
+    }
+};
+
+void partial_identity_units() {
+    for (const auto* field : {"revision", "repo_id", "digest", "size", "url"}) {
+        PartialDownload partial;
+        auto changed = partial.model;
+        if (std::string(field) == "digest")
+            changed["manifest"][0][field] = std::string(64, 'a');
+        else if (std::string(field) == "size")
+            changed["manifest"][0][field] = std::uint64_t(10);
+        else if (std::string(field) == "url")
+            changed["manifest"][0][field] = "https://unit.invalid/changed";
+        else
+            changed[field] = "changed";
+        catalog(partial.data, Json::array({changed}));
+        unsigned calls = 0;
+        ModelStore mismatch(
+            partial.root,
+            partial.data,
+            [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+                -> std::int64_t {
+                ++calls;
+                return 0;
+            }
+        );
+        rejects([&] { mismatch.acquire("test", running); });
+        assert(calls == 0 && read_bytes(partial.artifact, 32) == "veri");
+    }
+}
+
+void partial_path_units() {
+    for (const bool symlink : {false, true}) {
+        PartialDownload partial;
+        fs::remove(partial.artifact);
+        if (symlink)
+            fs::create_symlink(
+                partial.tmp.path / "source/weights.safetensors", partial.artifact
+            );
+        else
+            bytes(partial.artifact, "oversized");
+        unsigned calls = 0;
+        ModelStore store(
+            partial.root,
+            partial.data,
+            [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+                -> std::int64_t {
+                ++calls;
+                return 0;
+            }
+        );
+        rejects([&] { store.acquire("test", running); });
+        assert(calls == 0);
+        assert(
+            read_bytes(partial.tmp.path / "source/weights.safetensors", 32)
+            == "verified"
+        );
+    }
+}
+
+void partial_marker_units() {
+    PartialDownload partial;
+    const auto outside = partial.tmp.path / "unrelated.json";
+    bytes(outside, "untouched");
+    fs::create_symlink(outside, partial.stage / "complete.json");
+    unsigned calls = 0;
+    ModelStore store(
+        partial.root,
+        partial.data,
+        [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+            -> std::int64_t {
+            ++calls;
+            return 0;
+        }
+    );
+    rejects([&] { store.acquire("test", running); });
+    assert(calls == 0 && read_bytes(outside, 32) == "untouched");
+}
+
+void partial_integrity_units() {
+    for (const bool complete : {false, true}) {
+        PartialDownload partial;
+        bytes(partial.artifact, complete ? "tampered" : "xxxx");
+        unsigned calls = 0;
+        ModelStore store(
+            partial.root,
+            partial.data,
+            [&](
+                const auto&, const auto& write, const auto&, bool, std::uint64_t offset
+            ) {
+                ++calls;
+                assert(offset == 4);
+                write("fied");
+                return 4;
+            }
+        );
+        rejects([&] { store.acquire("test", running); });
+        assert(calls == (complete ? 0U : 1U) && !fs::exists(partial.artifact));
+        assert(!store.complete(store.entry("test")));
+    }
+}
+
+void partial_range_units() {
+    for (const bool ignored : {false, true}) {
+        PartialDownload partial;
+        ModelStore store(
+            partial.root,
+            partial.data,
+            [&](
+                const auto&, const auto& write, const auto&, bool, std::uint64_t offset
+            ) {
+                assert(offset == 4);
+                if (!ignored)
+                    throw RequestError("Range unavailable", 503);
+                write("verified");
+                return 8;
+            }
+        );
+        rejects([&] { store.acquire("test", running); });
+        assert(read_bytes(partial.artifact, 32) == "veri");
+        assert(!store.complete(store.entry("test")));
+    }
+}
+
+void partial_initialization_units() {
+    for (const auto* leftover : {"", "resume.json.worker.tmp", "weights.safetensors"}) {
+        Directory tmp;
+        const auto data = tmp.path / "data", root = tmp.path / "models";
+        const auto stage = root / ".test.partial";
+        const auto files =
+            local_manifest(tmp.path / "source", {{"weights.safetensors", "verified"}});
+        catalog(data, Json::array({entry("test", files)}));
+        fs::create_directories(stage);
+        if (*leftover)
+            bytes(stage / leftover, "unfinished");
+        unsigned calls = 0;
+        ModelStore store(
+            root,
+            data,
+            [&](
+                const auto&, const auto& write, const auto&, bool, std::uint64_t offset
+            ) {
+                ++calls;
+                assert(offset == 0);
+                write("verified");
+                return 8;
+            }
+        );
+        if (std::string(leftover) == "weights.safetensors") {
+            rejects([&] { store.acquire("test", running); });
+            assert(calls == 0 && read_bytes(stage / leftover, 32) == "unfinished");
+        } else {
+            assert(fs::exists(store.acquire("test", running) / "complete.json"));
+            assert(calls == 1);
+        }
+    }
 }
 
 void single_file_acquisition_units() {
@@ -380,7 +637,9 @@ void single_file_acquisition_units() {
     unsigned bodies = 0, heads = 0;
     bool missing_size = true, corrupt = false;
     ModelStore store(
-        root, data, [&](const auto&, const auto& write, const auto&, bool head) {
+        root,
+        data,
+        [&](const auto&, const auto& write, const auto&, bool head, std::uint64_t) {
             if (head) {
                 ++heads;
                 return missing_size ? -1 : 13;
@@ -395,13 +654,17 @@ void single_file_acquisition_units() {
     missing_size = false;
     corrupt = true;
     rejects([&] { store.acquire("whisper-test", running); });
-    assert(!fs::exists(root / ".whisper-test.partial"));
+    assert(fs::exists(root / ".whisper-test.partial"));
     corrupt = false;
     const auto checkpoint = store.acquire("whisper-test", running);
     assert(
         store.complete(CatalogEntry::parse(model))
         && read_bytes(checkpoint / "test.pt", 32) == "metadata-only"
     );
+    auto marker = read_document(checkpoint / "complete.json");
+    marker["files"][0]["digest"] = std::string(64, 'a');
+    write_document(checkpoint / "complete.json", marker);
+    assert(!store.complete(CatalogEntry::parse(model)));
 }
 
 void upstream_manifest_units() {
@@ -436,17 +699,28 @@ void upstream_manifest_units() {
     Json upstream{{"sha", "wrong-revision"}, {"siblings", siblings}};
     unsigned bodies = 0;
     std::vector<std::string> fetched;
+    bool interrupt_config = true;
     ModelStore store(
         root,
         data,
-        [&](const std::string& url, const auto& write, const auto&, bool head) {
+        [&](const std::string& url,
+            const auto& write,
+            const auto&,
+            bool head,
+            std::uint64_t offset) {
             assert(!head);
             if (url.find("/api/models/") != std::string::npos)
                 write(upstream.dump());
             else {
                 ++bodies;
                 fetched.push_back(fs::path(url).filename().string());
-                write(contents.at(fetched.back()));
+                const auto name = fetched.back();
+                if (name == "config.json" && interrupt_config) {
+                    interrupt_config = false;
+                    write("{");
+                    throw RequestError("Unit connection interrupted", 503);
+                }
+                write(contents.at(name).substr(offset));
             }
             return 0;
         }
@@ -458,10 +732,12 @@ void upstream_manifest_units() {
     rejects([&] { store.acquire("test", running); });
     assert(bodies == 0);
     upstream["siblings"] = siblings;
+    rejects([&] { store.acquire("test", running); });
+    assert(read_bytes(root / ".test.partial/config.json", 32) == "{");
     const auto checkpoint = store.acquire("test", running);
-    assert(bodies == 4 && store.complete(CatalogEntry::parse(model)));
+    assert(bodies == 5 && store.complete(CatalogEntry::parse(model)));
     assert(fetched.front() == "model.safetensors.index.json");
-    assert(store.acquire("test", running) == checkpoint && bodies == 4);
+    assert(store.acquire("test", running) == checkpoint && bodies == 5);
     fs::remove_all(checkpoint);
     // Authenticate and validate index metadata before any tensor transfer.
     for (const Json& map :
@@ -483,7 +759,9 @@ void upstream_manifest_units() {
         fetched.clear();
         rejects([&] { store.acquire("test", running); });
         assert(fetched == std::vector<std::string>{"model.safetensors.index.json"});
-        assert(!fs::exists(checkpoint) && !fs::exists(root / ".test.partial"));
+        assert(!fs::exists(checkpoint) && fs::exists(root / ".test.partial"));
+        // Each changed upstream index is an independent fixture.
+        fs::remove_all(root / ".test.partial");
     }
     for (auto& item : upstream["siblings"])
         if (item["rfilename"] == "model.safetensors.index.json")
@@ -513,7 +791,11 @@ void upstream_manifest_units() {
         ModelStore components(
             root,
             data,
-            [&](const std::string& url, const auto& write, const auto&, bool head) {
+            [&](const std::string& url,
+                const auto& write,
+                const auto&,
+                bool head,
+                std::uint64_t) {
                 assert(!head);
                 const auto name =
                     url.substr(std::string("https://unit.invalid/").size());
@@ -534,7 +816,8 @@ void upstream_manifest_units() {
         } else {
             rejects([&] { components.acquire("components", running); });
             assert(fetched.size() == 2);
-            assert(!fs::exists(root / ".components.partial"));
+            assert(fs::exists(root / ".components.partial"));
+            fs::remove_all(root / ".components.partial");
         }
         assert(fetched[0] == "transformer/model.safetensors.index.json");
         assert(fetched[1] == "text_encoder/model.safetensors.index.json");
@@ -561,7 +844,9 @@ void job_units() {
     write_document(root / "context.json", {{"small", 4096}});
     JobWorkspace files(jobs);
     ModelStore store(
-        root, data, [](const auto&, const auto&, const auto&, bool) -> std::int64_t {
+        root,
+        data,
+        [](const auto&, const auto&, const auto&, bool, std::uint64_t) -> std::int64_t {
             throw RequestError("Unexpected network access in preparation unit");
         }
     );
@@ -822,6 +1107,13 @@ int main() {
     typed_request_units();
     codec_units();
     acquisition_units();
+    recovery_units();
+    partial_identity_units();
+    partial_path_units();
+    partial_marker_units();
+    partial_integrity_units();
+    partial_range_units();
+    partial_initialization_units();
     single_file_acquisition_units();
     upstream_manifest_units();
     job_units();
