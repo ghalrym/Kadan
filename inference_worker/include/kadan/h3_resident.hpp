@@ -164,30 +164,56 @@ inline std::size_t validate_h3_silu_gate(
     return rows * columns;
 }
 
-// Inputs [hidden rows, projected, gates [groups,hidden], token-groups [tokens]];
-// outputs [same hidden rows, status]. `first` is the token of hidden row zero.
+// H3 AdaLN rows: each token group (timestep, modality tag) owns six [hidden]
+// vectors: shift/scale/gate before attention, then shift/scale/gate before FF.
+inline constexpr std::size_t h3_modulation_rows = 6;
+
+// Modulation [groups*6, hidden] F32 and token-groups [tokens] U32 shared by the
+// normalization and residual checks. Returns the group count.
+inline std::size_t h3_modulation(
+    int device,
+    const MediaDeviceSpan& modulation,
+    const MediaDeviceSpan& groups,
+    std::size_t width,
+    std::size_t first,
+    std::size_t rows
+) {
+    using namespace detail;
+    h3_need(modulation.dimensions.size() == 2, "h3_modulation_layout");
+    const auto count = modulation.dimensions[0] / h3_modulation_rows;
+    h3_need(
+        count && count <= 9 && modulation.dimensions[0] % h3_modulation_rows == 0
+            && h3_matrix(
+                modulation, device, DeviceDType::f32, count * h3_modulation_rows, width
+            )
+            && h3_buffer(groups, device, DeviceDType::u32)
+            && first <= groups.dimensions[0] && rows <= groups.dimensions[0] - first,
+        "h3_modulation_layout"
+    );
+    return count;
+}
+
+// Inputs [hidden rows, projected, modulation, token-groups]; outputs [same hidden
+// rows, status]. hidden += projected * modulation[group * 6 + index].
 inline std::size_t validate_h3_gated_residual(
     int device,
     std::span<const MediaDeviceSpan> read,
     std::span<const MediaDeviceSpan> write,
-    std::size_t first
+    std::size_t first,
+    std::size_t index
 ) {
     using namespace detail;
     h3_need(read.size() == 4 && write.size() == 2, "h3_residual_arity");
     const auto& hidden = read[0];
     h3_need(
-        hidden.dimensions.size() == 2 && read[2].dimensions.size() == 2,
+        hidden.dimensions.size() == 2 && index < h3_modulation_rows,
         "h3_residual_layout"
     );
-    const auto rows = hidden.dimensions[0], width = hidden.dimensions[1],
-               groups = read[2].dimensions[0];
+    const auto rows = hidden.dimensions[0], width = hidden.dimensions[1];
+    h3_modulation(device, read[2], read[3], width, first, rows);
     h3_need(
         h3_matrix(hidden, device, DeviceDType::f32, rows, width)
-            && h3_matrix(read[1], device, DeviceDType::f32, rows, width) && groups
-            && groups <= 9
-            && h3_matrix(read[2], device, DeviceDType::f32, groups, width)
-            && h3_buffer(read[3], device, DeviceDType::u32)
-            && first <= read[3].dimensions[0] && rows <= read[3].dimensions[0] - first
+            && h3_matrix(read[1], device, DeviceDType::f32, rows, width)
             && write[0].data == hidden.data && write[0].dimensions == hidden.dimensions
             && write[0].strides == hidden.strides && write[0].dtype == hidden.dtype
             && write[0].device == device
@@ -197,6 +223,135 @@ inline std::size_t validate_h3_gated_residual(
         "h3_residual_layout"
     );
     return rows * width;
+}
+
+// Inputs [hidden rows, norm-weight [hidden,1] BF16, modulation, token-groups];
+// outputs [normalized [rows,hidden], status]. RMS norm (epsilon 1e-5), then
+// normalized * (1 + modulation[group*6 + shift + 1]) + modulation[group*6 + shift].
+inline std::size_t validate_h3_normalize(
+    int device,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    std::size_t first,
+    std::size_t shift
+) {
+    using namespace detail;
+    h3_need(read.size() == 4 && write.size() == 2, "h3_normalize_arity");
+    const auto& hidden = read[0];
+    h3_need(
+        hidden.dimensions.size() == 2 && (shift == 0 || shift == 3),
+        "h3_normalize_layout"
+    );
+    const auto rows = hidden.dimensions[0], width = hidden.dimensions[1];
+    h3_modulation(device, read[2], read[3], width, first, rows);
+    h3_need(
+        h3_matrix(hidden, device, DeviceDType::f32, rows, width)
+            && h3_matrix(read[1], device, DeviceDType::bf16, width, 1)
+            && h3_matrix(write[0], device, DeviceDType::f32, rows, width)
+            && h3_buffer(write[1], device, DeviceDType::u32) && write[1].bytes == 4
+            && h3_disjoint(write[0], hidden) && h3_disjoint(write[0], read[1])
+            && h3_disjoint(write[0], read[2]) && h3_disjoint(write[0], read[3]),
+        "h3_normalize_layout"
+    );
+    return rows;
+}
+
+// Inputs [Q-or-K rows [rows,heads*128], norm-weight [128,1] BF16, rotary
+// [tokens,96] F64 cos/sin pairs]; outputs [same rows, status]. Per-head RMS norm
+// (epsilon 1e-5), then rotation of channels c and c+48 for c < 48.
+inline std::size_t validate_h3_qk_rotary(
+    int device,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    std::size_t first
+) {
+    using namespace detail;
+    h3_need(read.size() == 3 && write.size() == 2, "h3_rotary_arity");
+    const auto& x = read[0];
+    h3_need(
+        x.dimensions.size() == 2 && read[2].dimensions.size() == 2, "h3_rotary_layout"
+    );
+    const auto rows = x.dimensions[0], width = x.dimensions[1],
+               tokens = read[2].dimensions[0];
+    h3_need(
+        width && width % 128 == 0 && h3_matrix(x, device, DeviceDType::f32, rows, width)
+            && h3_matrix(read[1], device, DeviceDType::bf16, 128, 1)
+            && h3_matrix(read[2], device, DeviceDType::f64, tokens, 96)
+            && first <= tokens && rows <= tokens - first && write[0].data == x.data
+            && write[0].dimensions == x.dimensions && write[0].strides == x.strides
+            && write[0].dtype == x.dtype && write[0].device == device
+            && h3_buffer(write[1], device, DeviceDType::u32) && write[1].bytes == 4
+            && h3_disjoint(x, read[1]) && h3_disjoint(x, read[2]),
+        "h3_rotary_layout"
+    );
+    return rows * (width / 128);
+}
+
+struct H3AttentionShape {
+    std::size_t queries = 0, keys = 0, heads = 0, key_tile = 0;
+};
+
+// Scores for every local head of one query tile against one key tile, plus the
+// running maximum and total for each (head, query).
+inline Bytes h3_attention_scores_bytes(
+    std::size_t heads, std::size_t queries, std::size_t key_tile
+) {
+    return Bytes(heads) * queries * key_tile * sizeof(double);
+}
+
+// Widened query, accumulated output, and one widened key/value tile.
+inline Bytes
+h3_attention_wide_bytes(std::size_t heads, std::size_t queries, std::size_t key_tile) {
+    return Bytes(heads) * 128 * (2 * queries + 2 * key_tile) * sizeof(double);
+}
+
+// Inputs [query [queries,heads*128], key [tokens,heads*128], value]; outputs
+// [attended [queries,heads*128], scores F64, state F64 [2*heads*queries], wide F64,
+// blas, status]. Non-causal softmax(QK^T / sqrt(128)) V with key tiles of key_tile.
+inline H3AttentionShape validate_h3_attention(
+    int device,
+    std::span<const MediaDeviceSpan> read,
+    std::span<const MediaDeviceSpan> write,
+    std::size_t key_tile
+) {
+    using namespace detail;
+    h3_need(read.size() == 3 && write.size() == 6, "h3_attention_arity");
+    h3_need(
+        read[0].dimensions.size() == 2 && read[1].dimensions.size() == 2,
+        "h3_attention_layout"
+    );
+    H3AttentionShape shape{
+        read[0].dimensions[0],
+        read[1].dimensions[0],
+        read[0].dimensions[1] / 128,
+        key_tile
+    };
+    const auto width = read[0].dimensions[1];
+    h3_need(
+        shape.queries && shape.queries <= std::size_t(INT_MAX) && shape.keys
+            && shape.keys <= std::size_t(INT_MAX) && width % 128 == 0 && shape.heads
+            && key_tile && key_tile <= shape.keys
+            && h3_matrix(read[0], device, DeviceDType::f32, shape.queries, width)
+            && h3_matrix(read[1], device, DeviceDType::f32, shape.keys, width)
+            && h3_matrix(read[2], device, DeviceDType::f32, shape.keys, width)
+            && h3_matrix(write[0], device, DeviceDType::f32, shape.queries, width)
+            && h3_buffer(write[1], device, DeviceDType::f64)
+            && write[1].bytes
+                   >= h3_attention_scores_bytes(shape.heads, shape.queries, key_tile)
+            && h3_buffer(write[2], device, DeviceDType::f64)
+            && write[2].dimensions[0] >= 2 * shape.heads * shape.queries
+            && h3_buffer(write[3], device, DeviceDType::f64)
+            && write[3].bytes
+                   >= h3_attention_wide_bytes(shape.heads, shape.queries, key_tile)
+            && h3_buffer(write[4], device, DeviceDType::u8)
+            && write[4].bytes >= h3_resident_blas_bytes
+            && h3_buffer(write[5], device, DeviceDType::u32) && write[5].bytes == 4,
+        "h3_attention_layout"
+    );
+    for (const auto& w : write)
+        for (const auto& r : read)
+            h3_need(h3_disjoint(w, r), "h3_attention_alias");
+    return shape;
 }
 
 // Device-resident H3 operations on MediaSession views. Each call enqueues on the
@@ -225,7 +380,27 @@ public:
         void* stream,
         std::span<const MediaDeviceSpan> read,
         std::span<const MediaDeviceSpan> write,
+        std::size_t first,
+        std::size_t index
+    ) = 0;
+    virtual void normalize(
+        void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write,
+        std::size_t first,
+        std::size_t shift
+    ) = 0;
+    virtual void qk_rotary(
+        void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write,
         std::size_t first
+    ) = 0;
+    virtual void attention(
+        void* stream,
+        std::span<const MediaDeviceSpan> read,
+        std::span<const MediaDeviceSpan> write,
+        std::size_t key_tile
     ) = 0;
 };
 
@@ -263,6 +438,26 @@ public:
         void*,
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t
+    ) override;
+    void normalize(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t
+    ) override;
+    void qk_rotary(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t
+    ) override;
+    void attention(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
         std::size_t
     ) override;
 
@@ -275,6 +470,7 @@ private:
     void* stream_ = nullptr;
     void* blas_ = nullptr;
     bool quarantined_ = false;
+    void own(void* stream);
     void bind(void* stream, const MediaDeviceSpan& workspace);
 };
 }  // namespace kadan::video

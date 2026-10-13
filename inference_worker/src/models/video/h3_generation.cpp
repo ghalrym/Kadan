@@ -119,6 +119,20 @@ const char* fallback_phase(PlanFailure reason) {
     }
     throw std::invalid_argument("h3_resident_plan_failure");
 }
+
+const char* attention_fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_attention_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_attention_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_attention_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_attention_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
 #endif
 
 struct Admission {
@@ -549,6 +563,8 @@ void H3Generation::execute(
     std::optional<ResidentDenoising> resident;
     if (compute_ && activity_ && !devices_.empty())
         resident.emplace(resources_, compute_, activity_, devices_, cancel);
+    // The same shape is rejected on every update; stop admitting a rejected stage.
+    bool attention = true;
 #endif
     for (std::size_t step = 0; step < request.updates; ++step) {
         stop(cancel);
@@ -556,7 +572,11 @@ void H3Generation::execute(
 #ifdef KADAN_WORKER_CUDA
         if (resident) {
             H3Denoiser::Resident state{
-                [&] { return resident->session(); }, resident->launchers, {}
+                [&] { return resident->session(); },
+                resident->launchers,
+                attention,
+                {},
+                {}
             };
             try {
                 denoiser.execute(
@@ -572,8 +592,12 @@ void H3Generation::execute(
                     resident->close();
                 });
             }
+            if (state.attention_rejected) {
+                attention = false;
+                if (hook)
+                    hook(attention_fallback_phase(state.attention_rejected->reason), 0);
+            }
             if (state.rejected) {
-                // The same shape is rejected on every update; stop admitting it.
                 if (hook)
                     hook(fallback_phase(state.rejected->reason), 0);
                 resident->close();

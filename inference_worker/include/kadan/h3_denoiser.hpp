@@ -63,14 +63,17 @@ public:
         return bool(turbo_);
     }
 
-    // Device-resident execution. Each block's feed-forward runs in a fresh session
-    // that is finished before the next host-staged operation, so its memory is
-    // released between blocks. A rejected first block is recorded and that call
-    // keeps the host-staged path; later rejections fail the call.
+    // Device-resident execution. Each block runs in a fresh session that is
+    // finished before the next host-staged operation, so its memory is released
+    // between blocks. With `attention`, the whole block (norms, attention and
+    // feed-forward) is tried first; otherwise, or when that is rejected, only the
+    // feed-forward. A rejected first block is recorded and that call falls back;
+    // later rejections fail the call.
     struct Resident {
         std::function<std::unique_ptr<MediaSession>()> session;
         std::span<H3ResidentLauncher* const> launchers;
-        std::optional<MediaPlanError> rejected;
+        bool attention = true;
+        std::optional<MediaPlanError> attention_rejected, rejected;
     };
 
     // Computes both output heads and returns selected live video/audio rows.
