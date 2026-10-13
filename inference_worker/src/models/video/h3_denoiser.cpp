@@ -561,7 +561,10 @@ std::optional<MediaPlanError> prepare_feed_forward(
         return error;
     try {
         for (const auto& slice : session.plan().weights) {
-            Shard& source = slice.name.starts_with("diffusion_model.") ? *turbo : shard;
+            const bool adapter = slice.name.starts_with("diffusion_model.");
+            if (adapter && !turbo)
+                throw std::invalid_argument("h3_ff_missing_turbo");
+            Shard& source = adapter ? *turbo : shard;
             const auto t = source.tensor(slice.name);
             const std::size_t width = t.dtype == Dtype::i8     ? 1
                                       : t.dtype == Dtype::bf16 ? 2
@@ -857,6 +860,7 @@ void execute_h3_feed_forward(
     // fc1 gate/value and fc2 have independently partitioned output channels.
     auto ordered = [&](bool down) {
         std::vector<Device*> result;
+        result.reserve(devices.size());
         for (auto& d : devices)
             result.push_back(&d);
         std::sort(result.begin(), result.end(), [&](auto* a, auto* b) {

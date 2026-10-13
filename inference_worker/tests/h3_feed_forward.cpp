@@ -33,6 +33,7 @@ struct Device final : kadan::MediaDeviceOperations {
     kadan::Bytes available = 64 * 1024 * 1024;
     std::map<void*, kadan::Bytes> allocations;
     std::map<int, kadan::Bytes> remaining;
+    std::map<int, int> streams;
     std::size_t next_event = 1, peers = 0, downloads = 0;
     std::uint32_t status = 0;
     std::size_t synchronizations = 0;
@@ -42,7 +43,7 @@ struct Device final : kadan::MediaDeviceOperations {
     }
 
     void* stream(int d) override {
-        return reinterpret_cast<void*>(std::uintptr_t(d + 1));
+        return &streams[d];
     }
 
     kadan::Bytes free_memory(int d) override {
@@ -396,6 +397,7 @@ Run run(kadan::Bytes budget, std::vector<int> ids, bool fail = false) {
     auto& device = *backend;
     device.available = budget;
     std::vector<kadan::MediaDeviceLimit> limits;
+    limits.reserve(ids.size());
     for (int id : ids)
         limits.push_back({id});
     kadan::MediaSession session(
