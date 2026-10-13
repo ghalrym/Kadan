@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "kadan/cleanup_error.hpp"
+
 namespace kadan::video::detail {
 namespace {
 void require(bool value, const char* why) {
@@ -23,6 +25,7 @@ void add_projection(
     std::size_t columns,
     WeightPartition partition,
     std::size_t planes,
+    std::size_t tokens,
     std::size_t& rank,
     std::size_t& elements
 ) {
@@ -60,7 +63,7 @@ void add_projection(
          WeightPartition::replicated,
          1,
          1,
-         ProjectionPrecision::f32}
+         ProjectionPrecision::precise_f64}
     );
     m.weights.push_back(
         {p.lora_b,
@@ -71,10 +74,14 @@ void add_projection(
          partition,
          4,
          planes,
-         ProjectionPrecision::f32}
+         ProjectionPrecision::precise_f64}
     );
     rank = std::max(rank, p.rank);
-    elements = std::max(elements, p.rank * columns + rows / planes * p.rank);
+    elements = std::max(
+        elements,
+        p.rank * columns + rows / planes * p.rank
+            + std::min(tokens, h3_tile_rows) * columns
+    );
 }
 
 // Modulation and token groups live through the stage; LoRA scratch is used by
@@ -98,14 +105,14 @@ void add_shared_tensors(
         return;
     m.tensors.push_back(
         {"lora/low",
-         std::min(tokens, h3_tile_rows) * rank * sizeof(float),
+         std::min(tokens, h3_tile_rows) * rank * sizeof(double),
          first,
          MediaPhase::ff,
          AllocationKind::conversion}
     );
     m.tensors.push_back(
         {"lora/weights",
-         elements * sizeof(float),
+         elements * sizeof(double),
          first,
          MediaPhase::ff,
          AllocationKind::conversion}
@@ -271,11 +278,13 @@ void bind_scratch(MediaSession& session, Lane& lane) {
     for (const auto* p : {&lane.qkv, &lane.out, &lane.fc1, &lane.fc2})
         if (p->spec && p->spec->rank)
             elements = std::max(
-                elements, p->spec->rank * p->columns + p->planes[0].rows * p->spec->rank
+                elements,
+                p->spec->rank * p->columns + p->planes[0].rows * p->spec->rank
+                    + session.plan().rows * p->columns
             );
     if (elements)
         lane.lora_weights =
-            session.tensor(lane.id, "lora/weights", DeviceDType::f32, {elements}, {1});
+            session.tensor(lane.id, "lora/weights", DeviceDType::f64, {elements}, {1});
 }
 
 // Launch on the lane's stream and certify every output with its status word,
@@ -305,7 +314,7 @@ void project(
     std::vector<DeviceTensorView*> read{&input, &part.weight, &part.scale};
     std::vector<DeviceTensorView*> write{&output, &lane.conversion};
     if (spec.rank) {
-        low = matrix(session, lane.id, "lora/low", rows, spec.rank);
+        low = matrix(session, lane.id, "lora/low", rows, spec.rank, DeviceDType::f64);
         read.push_back(&p.lora_a);
         read.push_back(&part.lora_b);
         write.push_back(&*low);
@@ -489,12 +498,32 @@ void download(MediaSession& session, std::vector<Lane>& all, std::span<float> hi
     session.download_output(result, std::as_writable_bytes(hidden));
 }
 
-void upload(
-    MediaSession& session, DeviceTensorView view, std::span<const std::byte> bytes
-) {
-    session.upload_input(view, bytes);
-}
 }  // namespace
+
+void close_h3_resident(
+    MediaSession& session, std::span<H3ResidentLauncher* const> launchers, bool abort
+) {
+    std::exception_ptr first;
+    for (auto* launcher : launchers)
+        try {
+            launcher->release_stream();
+        } catch (...) {
+            if (!first)
+                first = std::current_exception();
+        }
+    try {
+        if (abort || first)
+            session.abort();
+        else
+            session.finish();
+    } catch (...) {
+        if (first)
+            throw OperationCleanupError(first, std::current_exception());
+        throw;
+    }
+    if (first)
+        std::rethrow_exception(first);
+}
 
 StageManifest h3_feed_forward_manifest(
     const H3FeedForward& ff, std::size_t tokens, std::size_t groups
@@ -510,11 +539,20 @@ StageManifest h3_feed_forward_manifest(
         ff.hidden,
         WeightPartition::channels,
         2,
+        tokens,
         rank,
         elements
     );
     add_projection(
-        m, ff.fc[1], ff.hidden, ff.width, WeightPartition::channels, 1, rank, elements
+        m,
+        ff.fc[1],
+        ff.hidden,
+        ff.width,
+        WeightPartition::channels,
+        1,
+        tokens,
+        rank,
+        elements
     );
     add_shared_tensors(m, ff.hidden, tokens, groups, rank, elements, MediaPhase::ff);
     m.workspaces_complete = true;
@@ -545,10 +583,10 @@ h3_block_manifest(const H3Block& b, std::size_t tokens, std::size_t groups) {
         );
     std::size_t rank = 0, elements = 0;
     add_projection(
-        m, b.qkv, 3 * inner, hidden, WeightPartition::heads, 3, rank, elements
+        m, b.qkv, 3 * inner, hidden, WeightPartition::heads, 3, tokens, rank, elements
     );
     add_projection(
-        m, b.out, hidden, inner, WeightPartition::channels, 1, rank, elements
+        m, b.out, hidden, inner, WeightPartition::channels, 1, tokens, rank, elements
     );
     add_projection(
         m,
@@ -557,11 +595,20 @@ h3_block_manifest(const H3Block& b, std::size_t tokens, std::size_t groups) {
         hidden,
         WeightPartition::channels,
         2,
+        tokens,
         rank,
         elements
     );
     add_projection(
-        m, b.ff.fc[1], hidden, b.ff.width, WeightPartition::channels, 1, rank, elements
+        m,
+        b.ff.fc[1],
+        hidden,
+        b.ff.width,
+        WeightPartition::channels,
+        1,
+        tokens,
+        rank,
+        elements
     );
     add_shared_tensors(m, hidden, tokens, groups, rank, elements, MediaPhase::kv);
     m.tensors.push_back({"block/rotary", tokens * 96 * sizeof(double)});
@@ -576,7 +623,14 @@ h3_block_manifest(const H3Block& b, std::size_t tokens, std::size_t groups) {
     );
     m.tensors.push_back(
         {"attention/state",
-         2 * b.heads * queries * sizeof(float),
+         2 * b.heads * queries * sizeof(double),
+         MediaPhase::attention,
+         MediaPhase::attention,
+         AllocationKind::conversion}
+    );
+    m.tensors.push_back(
+        {"attention/wide",
+         h3_attention_wide_bytes(b.heads, queries, keys),
          MediaPhase::attention,
          MediaPhase::attention,
          AllocationKind::conversion}
@@ -608,26 +662,16 @@ void upload_h3_feed_forward_inputs(
     );
     for (const auto& planned : session.plan().devices) {
         const auto d = planned.device;
-        upload(
-            session,
-            matrix(session, d, "resident/normalized", tokens, ff.hidden),
-            std::as_bytes(normalized)
-        );
-        upload(
-            session,
-            matrix(session, d, "resident/hidden", tokens, ff.hidden),
-            std::as_bytes(hidden)
-        );
-        upload(
-            session,
-            matrix(session, d, "block/modulation", rows, ff.hidden),
-            std::as_bytes(modulation)
-        );
-        upload(
-            session,
-            session.tensor(d, "block/token-groups", DeviceDType::u32, {tokens}, {1}),
-            std::as_bytes(token_groups)
-        );
+        auto normalized_view =
+            matrix(session, d, "resident/normalized", tokens, ff.hidden);
+        session.upload_input(normalized_view, std::as_bytes(normalized));
+        auto hidden_view = matrix(session, d, "resident/hidden", tokens, ff.hidden);
+        session.upload_input(hidden_view, std::as_bytes(hidden));
+        auto modulation_view = matrix(session, d, "block/modulation", rows, ff.hidden);
+        session.upload_input(modulation_view, std::as_bytes(modulation));
+        auto groups_view =
+            session.tensor(d, "block/token-groups", DeviceDType::u32, {tokens}, {1});
+        session.upload_input(groups_view, std::as_bytes(token_groups));
     }
 }
 
@@ -649,26 +693,16 @@ void upload_h3_block_inputs(
     );
     for (const auto& planned : session.plan().devices) {
         const auto d = planned.device;
-        upload(
-            session,
-            matrix(session, d, "resident/hidden", tokens, width),
-            std::as_bytes(hidden)
-        );
-        upload(
-            session,
-            matrix(session, d, "block/modulation", rows, width),
-            std::as_bytes(modulation)
-        );
-        upload(
-            session,
-            session.tensor(d, "block/token-groups", DeviceDType::u32, {tokens}, {1}),
-            std::as_bytes(token_groups)
-        );
-        upload(
-            session,
-            matrix(session, d, "block/rotary", tokens, 96, DeviceDType::f64),
-            std::as_bytes(rotary)
-        );
+        auto hidden_view = matrix(session, d, "resident/hidden", tokens, width);
+        session.upload_input(hidden_view, std::as_bytes(hidden));
+        auto modulation_view = matrix(session, d, "block/modulation", rows, width);
+        session.upload_input(modulation_view, std::as_bytes(modulation));
+        auto groups_view =
+            session.tensor(d, "block/token-groups", DeviceDType::u32, {tokens}, {1});
+        session.upload_input(groups_view, std::as_bytes(token_groups));
+        auto rotary_view =
+            matrix(session, d, "block/rotary", tokens, 96, DeviceDType::f64);
+        session.upload_input(rotary_view, std::as_bytes(rotary));
     }
 }
 
@@ -827,16 +861,25 @@ void execute_h3_block(
             auto scores = session.tensor(
                 lane.id,
                 "attention/scores",
-                DeviceDType::f32,
+                DeviceDType::f64,
                 {heads * rows * plan.keys},
                 {1}
             );
             auto state = session.tensor(
-                lane.id, "attention/state", DeviceDType::f32, {2 * heads * rows}, {1}
+                lane.id, "attention/state", DeviceDType::f64, {2 * heads * rows}, {1}
+            );
+            auto wide = session.tensor(
+                lane.id,
+                "attention/wide",
+                DeviceDType::f64,
+                {std::size_t(
+                    h3_attention_wide_bytes(heads, rows, plan.keys) / sizeof(double)
+                )},
+                {1}
             );
             const std::array read{&query, &lane.key, &lane.value};
             const std::array write{
-                &attended[i], &scores, &state, &lane.blas, &lane.status
+                &attended[i], &scores, &state, &wide, &lane.blas, &lane.status
             };
             run(session, lane, read, write, [&](void* stream, auto in, auto out) {
                 lane.launcher->attention(stream, in, out, plan.keys);

@@ -36,6 +36,11 @@ struct H3Block {
 // Upper bound on resident projection rows per tile, matching the planner.
 inline constexpr std::size_t h3_tile_rows = 256;
 
+// Detach all launchers and end the session, retaining cleanup failures.
+void close_h3_resident(
+    MediaSession&, std::span<H3ResidentLauncher* const>, bool abort = false
+);
+
 // FF-only schedule: the caller uploads the normalized FF input for every token.
 StageManifest
 h3_feed_forward_manifest(const H3FeedForward&, std::size_t tokens, std::size_t groups);

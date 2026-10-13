@@ -685,6 +685,55 @@ void launch_bf16_projection(
 }
 
 template <class Real>
+__device__ void online_softmax_row(
+    Real* scores,
+    Real* output,
+    Real* maximum,
+    Real* total_sum,
+    unsigned keys,
+    unsigned dim,
+    Real* reduction
+) {
+    const unsigned t = threadIdx.x;
+    Real m = -INFINITY;
+    for (unsigned k = t; k < keys; k += 256) {
+        Real v = scores[k];
+        m = fmax(m, v);
+    }
+    reduction[t] = m;
+    __syncthreads();
+    for (unsigned stride = 128; stride; stride /= 2) {
+        if (t < stride)
+            reduction[t] = fmax(reduction[t], reduction[t + stride]);
+        __syncthreads();
+    }
+    const Real next = fmax(*maximum, reduction[0]);
+    const Real alpha = isfinite(*maximum) ? exp(*maximum - next) : 0;
+    Real total = 0;
+    // All warps must consume the maximum before shared storage becomes sums.
+    __syncthreads();
+    for (unsigned k = t; k < keys; k += 256) {
+        const Real v = scores[k];
+        const Real p = isfinite(v) ? exp(v - next) : 0;
+        scores[k] = p;
+        total += p;
+    }
+    reduction[t] = total;
+    __syncthreads();
+    for (unsigned stride = 128; stride; stride /= 2) {
+        if (t < stride)
+            reduction[t] += reduction[t + stride];
+        __syncthreads();
+    }
+    for (unsigned c = t; c < dim; c += 256)
+        output[c] *= alpha;
+    if (t == 0) {
+        *maximum = next;
+        *total_sum = *total_sum * alpha + reduction[0];
+    }
+}
+
+template <class Real>
 __global__ void online_softmax(
     Real* scores,
     Real* output,
@@ -700,47 +749,20 @@ __global__ void online_softmax(
 ) {
     __shared__ Real reduction[256];
     const unsigned q = blockIdx.x, t = threadIdx.x;
-    Real m = -INFINITY;
-    for (unsigned k = t; k < keys; k += 256) {
-        Real v = scores[q * keys + k];
+    for (unsigned k = t; k < keys; k += 256)
         if (!attention_visible(
                 first_query + q, first_key + k, causal_queries, window, offset
             ))
-            v = -INFINITY;
-        scores[q * keys + k] = v;
-        m = fmax(m, v);
-    }
-    reduction[t] = m;
-    __syncthreads();
-    for (unsigned stride = 128; stride; stride /= 2) {
-        if (t < stride)
-            reduction[t] = fmax(reduction[t], reduction[t + stride]);
-        __syncthreads();
-    }
-    const Real next = fmax(maxima[q], reduction[0]);
-    const Real alpha = isfinite(maxima[q]) ? exp(maxima[q] - next) : 0;
-    Real total = 0;
-    // All warps must consume the maximum before shared storage becomes sums.
-    __syncthreads();
-    for (unsigned k = t; k < keys; k += 256) {
-        const Real v = scores[q * keys + k];
-        const Real p = isfinite(v) ? exp(v - next) : 0;
-        scores[q * keys + k] = p;
-        total += p;
-    }
-    reduction[t] = total;
-    __syncthreads();
-    for (unsigned stride = 128; stride; stride /= 2) {
-        if (t < stride)
-            reduction[t] += reduction[t + stride];
-        __syncthreads();
-    }
-    for (unsigned c = t; c < dim; c += 256)
-        output[q * dim + c] *= alpha;
-    if (t == 0) {
-        maxima[q] = next;
-        totals[q] = totals[q] * alpha + reduction[0];
-    }
+            scores[q * keys + k] = -INFINITY;
+    online_softmax_row(
+        scores + q * keys,
+        output + q * dim,
+        maxima + q,
+        totals + q,
+        keys,
+        dim,
+        reduction
+    );
 }
 
 template <class Real>
@@ -3252,7 +3274,10 @@ __global__ void h3_finite_kernel(const float* x, std::size_t count, unsigned* st
 }
 
 __global__ void h3_widen_kernel(
-    const std::uint16_t* source, float* destination, std::size_t count, unsigned* status
+    const std::uint16_t* source,
+    double* destination,
+    std::size_t count,
+    unsigned* status
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
@@ -3263,11 +3288,11 @@ __global__ void h3_widen_kernel(
     destination[i] = value;
 }
 
-// Matches the host projection's bias-free post-GEMM +0, including -0.
-__global__ void h3_zero_bias_kernel(float* x, std::size_t count) {
+// Preserve the host projection's F32 rounding and bias-free +0 between GEMMs.
+__global__ void h3_zero_bias_kernel(double* x, std::size_t count) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count)
-        x[i] = __fadd_rn(x[i], 0.f);
+        x[i] = __fadd_rn(float(x[i]), 0.f);
 }
 
 // Same arithmetic as finish_int8 with a zero bias, into a column tile of y.
@@ -3300,7 +3325,7 @@ __global__ void h3_finish_int8_kernel(
 
 // Host Turbo order: delta gets the projection's +0, then y += delta * scale.
 __global__ void h3_lora_add_kernel(
-    const float* delta,
+    const double* delta,
     float* y,
     std::size_t rows,
     std::size_t tile,
@@ -3313,7 +3338,8 @@ __global__ void h3_lora_add_kernel(
     if (i >= rows * tile)
         return;
     const auto at = (i / tile) * out + first_column + i % tile;
-    const float value = __fadd_rn(y[at], __fmul_rn(__fadd_rn(delta[i], 0.f), scale));
+    const float value =
+        __fadd_rn(y[at], __fmul_rn(__fadd_rn(float(delta[i]), 0.f), scale));
     if (!isfinite(value))
         atomicOr(status, 2U);
     y[at] = value;
@@ -3468,10 +3494,10 @@ __global__ void h3_qk_rotary_kernel(
 
 __global__ void h3_attention_init_kernel(
     const float* query,
-    float* output,
+    double* output,
     std::size_t ld,
-    float* maxima,
-    float* totals,
+    double* maxima,
+    double* totals,
     unsigned queries,
     unsigned* status
 ) {
@@ -3486,60 +3512,35 @@ __global__ void h3_attention_init_kernel(
     }
 }
 
-// online_softmax<float> with every local head batched and a strided output row.
+// The row arithmetic is shared; resident heads keep their explicit strided layout.
 __global__ void h3_online_softmax_kernel(
-    float* scores,
-    float* output,
+    double* scores,
+    double* output,
     std::size_t ld,
-    float* maxima,
-    float* totals,
+    double* maxima,
+    double* totals,
     unsigned keys,
     unsigned queries
 ) {
-    __shared__ float reduction[256];
-    const unsigned q = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
-    float* row = scores + (std::size_t(h) * queries + q) * keys;
-    const auto state = h * queries + q;
-    float m = -INFINITY;
-    for (unsigned k = t; k < keys; k += 256)
-        m = fmax(m, row[k]);
-    reduction[t] = m;
-    __syncthreads();
-    for (unsigned stride = 128; stride; stride /= 2) {
-        if (t < stride)
-            reduction[t] = fmax(reduction[t], reduction[t + stride]);
-        __syncthreads();
-    }
-    const float next = fmax(maxima[state], reduction[0]);
-    const float alpha = isfinite(maxima[state]) ? exp(maxima[state] - next) : 0;
-    float total = 0;
-    // All warps must consume the maximum before shared storage becomes sums.
-    __syncthreads();
-    for (unsigned k = t; k < keys; k += 256) {
-        const float v = row[k];
-        const float p = isfinite(v) ? exp(v - next) : 0;
-        row[k] = p;
-        total += p;
-    }
-    reduction[t] = total;
-    __syncthreads();
-    for (unsigned stride = 128; stride; stride /= 2) {
-        if (t < stride)
-            reduction[t] += reduction[t + stride];
-        __syncthreads();
-    }
-    for (unsigned c = t; c < 128; c += 256)
-        output[std::size_t(q) * ld + std::size_t(h) * 128 + c] *= alpha;
-    if (t == 0) {
-        maxima[state] = next;
-        totals[state] = totals[state] * alpha + reduction[0];
-    }
+    __shared__ double reduction[256];
+    const unsigned q = blockIdx.x, h = blockIdx.y;
+    const auto state = std::size_t(h) * queries + q;
+    online_softmax_row(
+        scores + state * keys,
+        output + std::size_t(q) * ld + std::size_t(h) * 128,
+        maxima + state,
+        totals + state,
+        keys,
+        128,
+        reduction
+    );
 }
 
 __global__ void h3_attention_divide_kernel(
+    const double* accumulated,
     float* output,
     std::size_t ld,
-    const float* totals,
+    const double* totals,
     unsigned queries,
     unsigned heads,
     unsigned* status
@@ -3548,8 +3549,9 @@ __global__ void h3_attention_divide_kernel(
     if (i >= std::size_t(queries) * heads * 128)
         return;
     const auto q = i / (std::size_t(heads) * 128), h = i / 128 % heads, c = i % 128;
-    auto& value = output[q * ld + h * 128 + c];
-    value /= totals[h * queries + q];
+    const auto at = q * ld + h * 128 + c;
+    const float value = float(accumulated[at] / totals[h * queries + q]);
+    output[at] = value;
     if (!isfinite(value))
         atomicOr(status, 2U);
 }
@@ -3684,11 +3686,11 @@ void CudaH3Launcher::convrot(
     checked(cudaGetLastError());
     quantize_kernel<<<unsigned(rows), 256, 0, s>>>(rotated, codes, row_scales, in);
     checked(cudaGetLastError());
-    float* low = nullptr;
-    const float* lora_b = nullptr;
+    double* low = nullptr;
+    const double* lora_b = nullptr;
     if (lora) {
         const auto rank = shape.rank;
-        auto* widened = static_cast<float*>(write[3].data);
+        auto* widened = static_cast<double*>(write[3].data);
         h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
             static_cast<const std::uint16_t*>(read[3].data), widened, rank * in, status
         );
@@ -3701,9 +3703,12 @@ void CudaH3Launcher::convrot(
         );
         checked(cudaGetLastError());
         lora_b = widened + rank * in;
-        low = static_cast<float*>(write[2].data);
-        const float one = 1, zero = 0;
-        checked(cublasSgemm(
+        auto* wide_input = widened + rank * in + out * rank;
+        widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
+        checked(cudaGetLastError());
+        low = static_cast<double*>(write[2].data);
+        const double one = 1, zero = 0;
+        checked(cublasDgemm(
             handle,
             CUBLAS_OP_T,
             CUBLAS_OP_N,
@@ -3713,7 +3718,7 @@ void CudaH3Launcher::convrot(
             &one,
             widened,
             int(in),
-            input,
+            wide_input,
             int(in),
             &zero,
             low,
@@ -3760,9 +3765,9 @@ void CudaH3Launcher::convrot(
         checked(cudaGetLastError());
         if (!lora)
             continue;
-        // The INT32 tile is consumed; reuse it for this tile's F32 LoRA delta.
-        const float unit = 1, none = 0;
-        checked(cublasSgemm(
+        // The INT32 tile is consumed; reuse it for this tile's F64 LoRA delta.
+        const double unit = 1, none = 0;
+        checked(cublasDgemm(
             handle,
             CUBLAS_OP_T,
             CUBLAS_OP_N,
@@ -3775,11 +3780,11 @@ void CudaH3Launcher::convrot(
             low,
             int(shape.rank),
             &none,
-            reinterpret_cast<float*>(sums),
+            reinterpret_cast<double*>(sums),
             int(tile)
         ));
         h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            reinterpret_cast<const float*>(sums),
+            reinterpret_cast<const double*>(sums),
             output,
             rows,
             tile,
@@ -3888,7 +3893,7 @@ void CudaH3Launcher::qk_rotary(
     checked(cudaGetLastError());
 }
 
-// attention_impl<float>'s tile loop over resident Q/K/V: per key tile, scaled
+// attention_impl<double>'s tile loop over resident Q/K/V: per key tile, scaled
 // QK^T into scores, online softmax rescaling the output, then accumulate PV.
 // Heads are batched with stride 128 inside the [tokens, heads * 128] rows.
 void CudaH3Launcher::attention(
@@ -3898,27 +3903,39 @@ void CudaH3Launcher::attention(
     std::size_t key_tile
 ) {
     const auto shape = validate_h3_attention(device_, read, write, key_tile);
-    bind(stream, write[3]);
+    bind(stream, write[4]);
     const auto s = static_cast<cudaStream_t>(stream);
     const auto handle = static_cast<cublasHandle_t>(blas_);
-    auto* status = static_cast<unsigned*>(write[4].data);
+    auto* status = static_cast<unsigned*>(write[5].data);
     const auto queries = shape.queries, heads = shape.heads, ld = heads * 128;
     const auto* query = static_cast<const float*>(read[0].data);
     const auto* key = static_cast<const float*>(read[1].data);
     const auto* value = static_cast<const float*>(read[2].data);
-    auto* output = static_cast<float*>(write[0].data);
-    auto* scores = static_cast<float*>(write[1].data);
-    auto* maxima = static_cast<float*>(write[2].data);
+    auto* destination = static_cast<float*>(write[0].data);
+    auto* scores = static_cast<double*>(write[1].data);
+    auto* maxima = static_cast<double*>(write[2].data);
     auto* totals = maxima + heads * queries;
+    auto* wide_query = static_cast<double*>(write[3].data);
+    auto* output = wide_query + queries * ld;
+    auto* wide_key = output + queries * ld;
+    auto* wide_value = wide_key + key_tile * ld;
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
+    widen<<<blocks(queries * ld), 256, 0, s>>>(query, wide_query, queries * ld);
+    checked(cudaGetLastError());
     h3_attention_init_kernel<<<dim3(unsigned(queries), unsigned(heads)), 128, 0, s>>>(
         query, output, ld, maxima, totals, unsigned(queries), status
     );
     checked(cudaGetLastError());
-    const float scale = 1 / std::sqrt(128.f), zero = 0, one = 1;
+    const double scale = 1 / std::sqrt(128.0), zero = 0, one = 1;
     for (std::size_t first = 0; first < shape.keys; first += key_tile) {
         const auto keys = std::min(key_tile, shape.keys - first);
-        checked(cublasSgemmStridedBatched(
+        widen<<<blocks(keys * ld), 256, 0, s>>>(key + first * ld, wide_key, keys * ld);
+        checked(cudaGetLastError());
+        widen<<<blocks(keys * ld), 256, 0, s>>>(
+            value + first * ld, wide_value, keys * ld
+        );
+        checked(cudaGetLastError());
+        checked(cublasDgemmStridedBatched(
             handle,
             CUBLAS_OP_T,
             CUBLAS_OP_N,
@@ -3926,10 +3943,10 @@ void CudaH3Launcher::attention(
             int(queries),
             128,
             &scale,
-            key + first * ld,
+            wide_key,
             int(ld),
             128,
-            query,
+            wide_query,
             int(ld),
             128,
             &zero,
@@ -3944,7 +3961,7 @@ void CudaH3Launcher::attention(
             0,
             s>>>(scores, output, ld, maxima, totals, unsigned(keys), unsigned(queries));
         checked(cudaGetLastError());
-        checked(cublasSgemmStridedBatched(
+        checked(cublasDgemmStridedBatched(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
@@ -3952,7 +3969,7 @@ void CudaH3Launcher::attention(
             int(queries),
             int(keys),
             &one,
-            value + first * ld,
+            wide_value,
             int(ld),
             128,
             scores,
@@ -3966,7 +3983,7 @@ void CudaH3Launcher::attention(
         ));
     }
     h3_attention_divide_kernel<<<blocks(queries * heads * 128), 256, 0, s>>>(
-        output, ld, totals, unsigned(queries), unsigned(heads), status
+        output, destination, ld, totals, unsigned(queries), unsigned(heads), status
     );
     checked(cudaGetLastError());
 }

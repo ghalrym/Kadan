@@ -284,7 +284,8 @@ void project_base(
                    in,
                    out,
                    output,
-                   cancel
+                   cancel,
+                   true
                ) != ProjectionResult::unsupported)
             return;
         if (compute) {
@@ -299,7 +300,8 @@ void project_base(
                 in,
                 out,
                 output,
-                cancel
+                cancel,
+                true
             );
             return;
         }
@@ -602,7 +604,10 @@ std::optional<MediaPlanError> prepare(
         return error;
     try {
         for (const auto& slice : session.plan().weights) {
-            Shard& source = slice.name.starts_with("diffusion_model.") ? *turbo : shard;
+            const bool adapter = slice.name.starts_with("diffusion_model.");
+            if (adapter && !turbo)
+                throw std::invalid_argument("h3_ff_missing_turbo");
+            Shard& source = adapter ? *turbo : shard;
             const auto t = source.tensor(slice.name);
             const std::size_t width = t.dtype == Dtype::i8     ? 1
                                       : t.dtype == Dtype::bf16 ? 2
@@ -889,7 +894,8 @@ void H3Denoiser::execute(
                 128,
                 false,
                 attended.first(count * inner),
-                cancel
+                cancel,
+                true
             );
         else
             attention(
@@ -1067,10 +1073,6 @@ void H3Denoiser::execute(
             return false;
         auto session = resident->session();
         require(bool(session), "h3_resident_session");
-        auto release = [&] {
-            for (auto* launcher : resident->launchers)
-                launcher->release_stream();
-        };
         const auto modulation = adaln.first(groups * 6 * hidden);
         try {
             std::optional<MediaPlanError> error;
@@ -1140,13 +1142,11 @@ void H3Denoiser::execute(
                     *session, resident->launchers, layout, n, current, cancel
                 );
             }
-            release();
-            session->finish();
+            detail::close_h3_resident(*session, resident->launchers);
         } catch (...) {
             auto error = std::current_exception();
             rethrow_after_cleanup(error, [&] {
-                release();
-                session->abort();
+                detail::close_h3_resident(*session, resident->launchers, true);
             });
         }
         finite(current);
