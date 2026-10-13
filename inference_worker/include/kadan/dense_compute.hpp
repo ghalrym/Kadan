@@ -112,6 +112,20 @@ public:
 
     using Bf16WeightSource = std::function<void(std::size_t, std::span<std::uint16_t>)>;
 
+    // Synchronous planar [channel,point] image VAE normalization and optional SiLU.
+    // False means unsupported before changing output. Failures throw; callers
+    // must not retry a partially completed operation through the CPU fallback.
+    virtual bool image_vae_normalize(
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::span<float>,
+        bool,
+        const std::atomic_bool&
+    ) {
+        return false;
+    }
+
     // Synchronous bias-free image gate/up pair. False means unsupported before
     // reading either source or changing output. Execution failures throw; callers
     // must never retry a partially completed operation through the fallback.

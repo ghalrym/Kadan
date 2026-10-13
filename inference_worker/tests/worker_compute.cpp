@@ -204,6 +204,45 @@ void projection_math() {
     }
 }
 
+void vae_normalization_planning() {
+    constexpr Bytes limit = 2ULL * 1024 * 1024 * 1024;
+    const auto small = image_vae_normalization_plan(3, 5, 1024);
+    check(small && small->points == 5 && small->bytes == 1024);
+    check(!image_vae_normalization_plan(3, 5, 1023));
+    const auto largest = image_vae_normalization_plan(1152, 2048 * 2048, limit);
+    check(largest && largest->points == 65536 && largest->bytes == 603984640);
+    for (std::size_t channels : {1u, 144u, 1152u})
+        for (std::size_t points : {1u, 17u, 65535u, 65537u, 2048u * 2048u})
+            for (Bytes budget : std::array<Bytes, 4>{1024, 8192, 1024 * 1024, limit}) {
+                const auto plan =
+                    image_vae_normalization_plan(channels, points, budget);
+                if (!plan)
+                    continue;
+                check(
+                    plan->points > 0 && plan->points <= points && plan->points <= 65536
+                    && plan->bytes <= budget
+                );
+                check(
+                    image_vae_normalization_plan(channels, points, plan->bytes)->points
+                    == plan->points
+                );
+                std::size_t covered = 0;
+                for (std::size_t first = 0; first < points; first += plan->points)
+                    covered += std::min(plan->points, points - first);
+                check(covered == points);
+            }
+    check(!image_vae_normalization_plan(SIZE_MAX, 1, SIZE_MAX));
+    check(!image_vae_normalization_plan(1, SIZE_MAX, SIZE_MAX));
+    check(!image_vae_normalization_plan(1, 2147483647ULL / 4 + 1, SIZE_MAX));
+    fails([] { image_vae_normalization_plan(0, 1, limit); });
+    fails([] { image_vae_normalization_plan(1, 0, limit); });
+    FakeContext unsupported;
+    std::atomic_bool cancel = false;
+    std::array<float, 1> input{1}, gamma{1}, output{17};
+    check(!unsupported.image_vae_normalize(input, gamma, 1, output, false, cancel));
+    check(output[0] == 17);
+}
+
 void image_pair_planning() {
     constexpr Bytes limit = 2ULL * 1024 * 1024 * 1024;
     auto aligned = [](Bytes n) {
@@ -261,6 +300,7 @@ void image_pair_planning() {
 int main() {
     projection_output_classification();
     image_pair_planning();
+    vae_normalization_planning();
     projection_math();
     // Exercise only progress events, without a model, tensor or inference call.
     std::vector<std::pair<std::string, std::size_t>> updates;

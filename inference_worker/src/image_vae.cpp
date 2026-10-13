@@ -6,6 +6,7 @@
 #include <cmath>
 #include <map>
 
+#include "image_activation.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/checkpoint_floats.hpp"
 #include "kadan/float_weights.hpp"
@@ -136,11 +137,6 @@ void decoder_input_shape(
         );
 }
 
-float silu(float x) {
-    double v = x;
-    return float(v >= 0 ? v / (1 + std::exp(-v)) : v * std::exp(v) / (1 + std::exp(v)));
-}
-
 struct Spec {
     std::string name;
     std::vector<std::uint64_t> shape;
@@ -205,6 +201,42 @@ std::vector<Spec> layout(VaeConfig d) {
     return out;
 }
 }  // namespace
+
+void normalize_vae_features(
+    std::span<const float> input,
+    std::span<const float> gamma,
+    std::size_t points,
+    std::span<float> output,
+    bool activate,
+    const std::atomic_bool& cancel,
+    DenseCompute* compute
+) {
+    stop(cancel);
+    validate_vae_normalization(input, gamma, points, output);
+    if (compute
+        && compute->image_vae_normalize(
+            input, gamma, points, output, activate, cancel
+        )) {
+        stop(cancel);
+        return;
+    }
+    for (std::size_t point = 0; point < points; ++point) {
+        if (point % 64 == 0)
+            stop(cancel);
+        double sum = 0;
+        for (std::size_t c = 0; c < gamma.size(); ++c) {
+            const double value = input[c * points + point];
+            sum += value * value;
+        }
+        const auto scale = detail::vae_norm_scale(sum, gamma.size());
+        for (std::size_t c = 0; c < gamma.size(); ++c)
+            output[c * points + point] = detail::vae_norm_value(
+                input[c * points + point], scale, gamma[c], activate
+            );
+    }
+    stop(cancel);
+    finite(output);
+}
 
 void prepare_decoder_input(
     std::span<const float> latent,
@@ -360,21 +392,9 @@ struct VaeDecoder::Impl {
         auto g = weight(p + ".gamma", cancel);
         need(g.size() == x.c, "image_vae_norm_shape");
         auto y = make(x.c, x.h, x.w);
-        auto points = x.h * x.w;
-        for (std::size_t t = 0; t < points; ++t) {
-            if (t % 64 == 0)
-                stop(cancel);
-            double sum = 0;
-            for (std::size_t c = 0; c < x.c; ++c)
-                sum += double(x.values.data[c * points + t])
-                       * x.values.data[c * points + t];
-            float scale =
-                float(std::sqrt(double(x.c)) / std::max(std::sqrt(sum), 1e-12));
-            for (std::size_t c = 0; c < x.c; ++c) {
-                float v = x.values.data[c * points + t] * scale * g[c];
-                y->values.data[c * points + t] = activate ? silu(v) : v;
-            }
-        }
+        normalize_vae_features(
+            x.span(), g, x.h * x.w, y->span(), activate, cancel, compute.get()
+        );
         return y;
     }
 
