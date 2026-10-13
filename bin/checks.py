@@ -27,6 +27,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "h3-resident-block-tests",
     "image-activation-tests",
     "image-schedule-tests",
+    "image-checkpoint-config-tests",
     "image-aten-plan-tests",
     "image-timing-tests",
     "image-decoder-input-tests",

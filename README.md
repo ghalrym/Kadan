@@ -246,6 +246,25 @@ Manual end-to-end testing uses the playground. Check generation, cancellation an
 model switching there; a successful compile or unit test does not establish
 model accuracy, throughput or target-machine memory fit.
 
+### Qwen-Image-2.1-Turbo (draft)
+
+`POST /v1/images/generations` accepts `model_id: "qwen-image-2.1-turbo"`.
+Omitting it retains Qwen-Image-2.1 and its existing step count. Download the
+chosen checkpoint through the model catalog before submitting generation.
+Turbo always uses the eight sigmas saved in its `model_index.json`, followed by
+Euler's terminal zero; the request's `steps` does not replace that grid. Its
+scheduler uses shift 1 without dynamic shifting or terminal stretching. The
+ATen implementation reuses CFG=1 and per-image prefix KV caching, automatic
+component placement, and the existing queue and cancellation path.
+
+The pinned [official checkpoint](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/tree/fc13ba1986fcb905854dc8de2f52eee395f49b5b)
+uses one text-encoder safetensors file and the same transformer/VAE architecture.
+Its [Qwen Research License](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/fc13ba1986fcb905854dc8de2f52eee395f49b5b/LICENSE)
+permits research and evaluation only; commercial use requires a separate license.
+The catalog retains the existing explicit license acknowledgment before download.
+This change adds text-to-image code support; owner review and manual image-quality
+validation remain outstanding.
+
 ### C++ ATen image execution (draft)
 
 `KADAN_ENABLE_ATEN_IMAGE=ON` selects the complete C++ ATen implementation for

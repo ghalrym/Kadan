@@ -36,7 +36,7 @@ struct ChatRequest {
 };
 
 struct ImageRequest {
-    std::string prompt, aspect = "1:1";
+    std::string prompt, aspect = "1:1", model = "qwen-image-2.1";
     std::optional<std::uint64_t> seed;
     unsigned count = 4, steps = 50, width = 0, height = 0;
 };
