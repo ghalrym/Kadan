@@ -67,8 +67,9 @@ struct H3ConvrotShape {
     std::size_t rows = 0, in = 0, out = 0, rank = 0, tile = 0;
 };
 
-// Inputs [input [rows,in] F32, weight [out,in] I8, scale [out,1] F32] and, with
-// Turbo LoRA, [lora-a [rank,in] BF16, lora-b [out,rank] BF16]. Outputs
+// Inputs [input [rows,in] F32, weight [out,in] I8, scale [out,1] F32], then either
+// [bias [out,1] BF16] or, with Turbo LoRA, [lora-a [rank,in] BF16, lora-b [out,rank]
+// BF16]. Outputs
 // [output [rows,out] F32, conversion, blas, status] or, with LoRA,
 // [output, conversion, lora-low [rows,rank] F64, lora-weights/input F64, blas, status].
 inline H3ConvrotShape validate_h3_convrot(
@@ -78,9 +79,10 @@ inline H3ConvrotShape validate_h3_convrot(
     std::size_t group
 ) {
     using namespace detail;
-    const bool lora = read.size() == 5;
+    const bool lora = read.size() == 5, bias = read.size() == 4;
     h3_need(
-        (read.size() == 3 && write.size() == 4) || (lora && write.size() == 6),
+        ((read.size() == 3 || bias) && write.size() == 4)
+            || (lora && write.size() == 6),
         "h3_convrot_arity"
     );
     const auto& input = read[0];
@@ -103,7 +105,8 @@ inline H3ConvrotShape validate_h3_convrot(
         h3_matrix(input, device, DeviceDType::f32, shape.rows, shape.in)
             && h3_matrix(read[1], device, DeviceDType::i8, shape.out, shape.in)
             && h3_matrix(read[2], device, DeviceDType::f32, shape.out, 1)
-            && h3_matrix(output, device, DeviceDType::f32, shape.rows, shape.out),
+            && h3_matrix(output, device, DeviceDType::f32, shape.rows, shape.out)
+            && (!bias || h3_matrix(read[3], device, DeviceDType::bf16, shape.out, 1)),
         "h3_convrot_layout"
     );
     const auto& conversion = write[1];
@@ -166,10 +169,12 @@ inline std::size_t validate_h3_silu_gate(
 
 // H3 AdaLN rows: each token group (timestep, modality tag) owns six [hidden]
 // vectors: shift/scale/gate before attention, then shift/scale/gate before FF.
-inline constexpr std::size_t h3_modulation_rows = 6;
+// The table is the AdaLN output [timesteps, 3 tags * 6 * hidden], so group
+// g = timestep * 3 + tag starts at row-major offset g * 6 * hidden.
+inline constexpr std::size_t h3_modulation_rows = 6, h3_modulation_tags = 3;
 
-// Modulation [groups*6, hidden] F32 and token-groups [tokens] U32 shared by the
-// normalization and residual checks. Returns the group count.
+// Modulation [timesteps, 18 * hidden] F32 and token-groups [tokens] U32 shared by
+// the normalization and residual checks. Returns the group count.
 inline std::size_t h3_modulation(
     int device,
     const MediaDeviceSpan& modulation,
@@ -180,17 +185,21 @@ inline std::size_t h3_modulation(
 ) {
     using namespace detail;
     h3_need(modulation.dimensions.size() == 2, "h3_modulation_layout");
-    const auto count = modulation.dimensions[0] / h3_modulation_rows;
+    const auto timesteps = modulation.dimensions[0];
     h3_need(
-        count && count <= 9 && modulation.dimensions[0] % h3_modulation_rows == 0
+        timesteps && timesteps <= 3
             && h3_matrix(
-                modulation, device, DeviceDType::f32, count * h3_modulation_rows, width
+                modulation,
+                device,
+                DeviceDType::f32,
+                timesteps,
+                h3_modulation_tags * h3_modulation_rows * width
             )
             && h3_buffer(groups, device, DeviceDType::u32)
             && first <= groups.dimensions[0] && rows <= groups.dimensions[0] - first,
         "h3_modulation_layout"
     );
-    return count;
+    return timesteps * h3_modulation_tags;
 }
 
 // Inputs [hidden rows, projected, modulation, token-groups]; outputs [same hidden

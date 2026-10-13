@@ -576,6 +576,23 @@ std::variant<detail::H3Block, MediaPlanError> describe_block(
             shard, turbo, p + "attn.out_proj", b.ff.hidden, inner, b.out, cancel
         ))
         return *error;
+    // AdaLN carries a BF16 bias and no Turbo adapter.
+    const auto modulation = 18 * b.ff.hidden;
+    if (auto error = describe_projection(
+            shard,
+            nullptr,
+            p + "adaln_proj.linear",
+            modulation,
+            b.time_width,
+            b.adaln,
+            cancel
+        ))
+        return *error;
+    b.adaln.bias = p + "adaln_proj.linear.bias";
+    const auto bias = shard.tensor(b.adaln.bias);
+    if (bias.dtype != Dtype::bf16 || bias.rank != 1 || bias.shape[0] != modulation)
+        return unsupported("h3_resident_adaln_layout");
+    b.adaln.bias_id = shard.tensor_identity(b.adaln.bias);
     const std::array<const char*, 4> norms{
         "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight"
     };
@@ -1064,122 +1081,155 @@ void H3Denoiser::execute(
         for (std::size_t t = 0; t < n; ++t)
             token_groups[t] = std::uint32_t(time_ids[t] * 3 + input.tags[t]);
     }
-    // One fresh session per block stage. It finishes before the next host-staged
-    // operation, so its device memory never competes with that operation. The
-    // block's AdaLN rows are already [group * 6 + index, hidden].
-    auto resident_stage = [&](std::size_t block, bool attention) {
-        auto& rejected = attention ? resident->attention_rejected : resident->rejected;
-        if (rejected || (attention && !resident->attention))
+    // Full blocks share one session for the whole update. Hidden, token groups,
+    // rotary and the time embedding stay resident across block admissions, AdaLN
+    // runs on the device, and hidden is downloaded once after the last block, so
+    // nothing host-staged runs between those blocks.
+    std::unique_ptr<MediaSession> held;
+    auto close_held = [&](bool abort) {
+        if (!held)
+            return;
+        auto session = std::move(held);
+        detail::close_h3_resident(*session, resident->launchers, abort);
+    };
+
+    auto resident_block = [&](std::size_t block) {
+        if (resident->attention_rejected || !resident->attention)
+            return false;
+        const bool retained = bool(held);
+        if (!held)
+            held = resident->session();
+        require(bool(held), "h3_resident_session");
+        auto described = describe_block(*shard_, turbo_.get(), block, cancel);
+        std::optional<MediaPlanError> error;
+        if (auto* rejected = std::get_if<MediaPlanError>(&described))
+            error = std::move(*rejected);
+        else {
+            const auto& layout = std::get<detail::H3Block>(described);
+            error = prepare(
+                *held,
+                *shard_,
+                turbo_.get(),
+                detail::h3_block_manifest(layout, n, groups, retained),
+                detail::h3_block_shape(layout, n),
+                *resources_,
+                cancel
+            );
+        }
+        if (error) {
+            if (block)
+                throw std::runtime_error("h3_resident_admission: " + error->detail);
+            resident->attention_rejected = std::move(error);
+            close_held(false);
+            return false;
+        }
+        const auto& layout = std::get<detail::H3Block>(described);
+        if (!retained)
+            detail::upload_h3_block_inputs(
+                *held,
+                layout,
+                current,
+                t_embed.first(time_count * layout.time_width),
+                token_groups,
+                {rotary.get(), n * 96}
+            );
+        detail::execute_h3_block(*held, resident->launchers, layout, n, cancel);
+        if (block + 1 == layers) {
+            detail::download_h3_hidden(*held, hidden, current);
+            close_held(false);
+            finite(current);
+        }
+        return true;
+    };
+    // FF-only fallback: one fresh session per block, finished before the next
+    // host-staged operation. The block's AdaLN rows come from the host.
+    auto resident_feed_forward = [&](std::size_t block) {
+        if (resident->rejected)
             return false;
         auto session = resident->session();
         require(bool(session), "h3_resident_session");
-        const auto modulation = adaln.first(groups * 6 * hidden);
         try {
+            auto described =
+                describe_feed_forward(*shard_, turbo_.get(), block, cancel);
             std::optional<MediaPlanError> error;
-            std::variant<detail::H3Block, detail::H3FeedForward, MediaPlanError>
-                described = MediaPlanError{};
-            if (attention) {
-                auto b = describe_block(*shard_, turbo_.get(), block, cancel);
-                if (auto* block_error = std::get_if<MediaPlanError>(&b))
-                    error = std::move(*block_error);
-                else {
-                    described = std::get<detail::H3Block>(std::move(b));
-                    const auto& layout = std::get<detail::H3Block>(described);
-                    error = prepare(
-                        *session,
-                        *shard_,
-                        turbo_.get(),
-                        detail::h3_block_manifest(layout, n, groups),
-                        detail::h3_block_shape(layout, n),
-                        *resources_,
-                        cancel
-                    );
-                }
-            } else {
-                auto ff = describe_feed_forward(*shard_, turbo_.get(), block, cancel);
-                if (auto* ff_error = std::get_if<MediaPlanError>(&ff))
-                    error = std::move(*ff_error);
-                else {
-                    described = std::get<detail::H3FeedForward>(std::move(ff));
-                    const auto& layout = std::get<detail::H3FeedForward>(described);
-                    error = prepare(
-                        *session,
-                        *shard_,
-                        turbo_.get(),
-                        detail::h3_feed_forward_manifest(layout, n, groups),
-                        detail::h3_feed_forward_shape(layout, n),
-                        *resources_,
-                        cancel
-                    );
-                }
+            if (auto* rejected = std::get_if<MediaPlanError>(&described))
+                error = std::move(*rejected);
+            else {
+                const auto& layout = std::get<detail::H3FeedForward>(described);
+                error = prepare(
+                    *session,
+                    *shard_,
+                    turbo_.get(),
+                    detail::h3_feed_forward_manifest(layout, n, groups),
+                    detail::h3_feed_forward_shape(layout, n),
+                    *resources_,
+                    cancel
+                );
             }
             if (error) {
                 if (block)
                     throw std::runtime_error("h3_resident_admission: " + error->detail);
-                rejected = std::move(error);
+                resident->rejected = std::move(error);
                 session->finish();
                 return false;
             }
-            if (attention) {
-                const auto& layout = std::get<detail::H3Block>(described);
-                detail::upload_h3_block_inputs(
-                    *session,
-                    layout,
-                    current,
-                    modulation,
-                    token_groups,
-                    {rotary.get(), n * 96}
-                );
-                detail::execute_h3_block(
-                    *session, resident->launchers, layout, n, current, cancel
-                );
-            } else {
-                const auto& layout = std::get<detail::H3FeedForward>(described);
-                detail::upload_h3_feed_forward_inputs(
-                    *session, layout, normalized, current, modulation, token_groups
-                );
-                detail::execute_h3_feed_forward(
-                    *session, resident->launchers, layout, n, current, cancel
-                );
-            }
+            const auto& layout = std::get<detail::H3FeedForward>(described);
+            detail::upload_h3_feed_forward_inputs(
+                *session,
+                layout,
+                normalized,
+                current,
+                adaln.first(groups * 6 * hidden),
+                token_groups
+            );
+            detail::execute_h3_feed_forward(
+                *session, resident->launchers, layout, n, current, cancel
+            );
             detail::close_h3_resident(*session, resident->launchers);
         } catch (...) {
-            auto error = std::current_exception();
-            rethrow_after_cleanup(error, [&] {
+            rethrow_after_cleanup(std::current_exception(), [&] {
                 detail::close_h3_resident(*session, resident->launchers, true);
             });
         }
         finite(current);
         return true;
     };
-    for (std::size_t b = 0; b < layers; ++b) {
-        stop(cancel);
-        auto p = "blocks." + std::to_string(b);
-        linear(
-            p + ".adaln_proj.linear",
-            t_embed.first(time_count * 2688),
-            2688,
-            96768,
-            adaln.first(time_count * 96768),
-            true
-        );
-        if (resident && resident_stage(b, true)) {
+    try {
+        for (std::size_t b = 0; b < layers; ++b) {
+            stop(cancel);
+            auto p = "blocks." + std::to_string(b);
+            if (resident && resident_block(b)) {
+                if (hook)
+                    hook("block_completed", b + 1);
+                continue;
+            }
+            linear(
+                p + ".adaln_proj.linear",
+                t_embed.first(time_count * 2688),
+                2688,
+                96768,
+                adaln.first(time_count * 96768),
+                true
+            );
+            norm(
+                *shard_, p + ".norm1.weight", current, normalized, norm_weight, cancel
+            );
+            modulate(0);
+            attn(p + ".attn", n, true);
+            residual(2);
+            norm(
+                *shard_, p + ".norm2.weight", current, normalized, norm_weight, cancel
+            );
+            modulate(3);
+            if (!resident || !resident_feed_forward(b)) {
+                feed(p + ".mlp", n);
+                residual(5);
+            }
             if (hook)
                 hook("block_completed", b + 1);
-            continue;
         }
-        norm(*shard_, p + ".norm1.weight", current, normalized, norm_weight, cancel);
-        modulate(0);
-        attn(p + ".attn", n, true);
-        residual(2);
-        norm(*shard_, p + ".norm2.weight", current, normalized, norm_weight, cancel);
-        modulate(3);
-        if (!resident || !resident_stage(b, false)) {
-            feed(p + ".mlp", n);
-            residual(5);
-        }
-        if (hook)
-            hook("block_completed", b + 1);
+    } catch (...) {
+        rethrow_after_cleanup(std::current_exception(), [&] { close_held(true); });
     }
     linear(
         "final_layer.adaln_proj.linear",

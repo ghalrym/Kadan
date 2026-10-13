@@ -3305,18 +3305,20 @@ __global__ void h3_finish_int8_kernel(
     std::size_t tile,
     std::size_t out,
     std::size_t first_column,
+    const std::uint16_t* bias,
     unsigned* status
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= rows * tile)
         return;
     const auto row = i / tile, column = i % tile;
+    // finish_int8 adds the exact BF16 bias, or zero for a bias-free projection.
     const float value = __fadd_rn(
         __fmul_rn(
             __fmul_rn(float(sums[i]), row_scale[row]),
             weight_scale[first_column + column]
         ),
-        0.f
+        bias ? __uint_as_float(unsigned(bias[first_column + column]) << 16) : 0.f
     );
     if (!isfinite(value))
         atomicOr(status, 2U);
@@ -3760,6 +3762,8 @@ void CudaH3Launcher::convrot(
             tile,
             out,
             first,
+            read.size() == 4 ? static_cast<const std::uint16_t*>(read[3].data)
+                             : nullptr,
             status
         );
         checked(cudaGetLastError());
@@ -3835,7 +3839,7 @@ void CudaH3Launcher::gated_residual(
         static_cast<const std::uint32_t*>(read[3].data),
         count,
         read[0].dimensions[1],
-        read[2].dimensions[0] / h3_modulation_rows,
+        read[2].dimensions[0] * h3_modulation_tags,
         first,
         index,
         status
@@ -3862,7 +3866,7 @@ void CudaH3Launcher::normalize(
         static_cast<const std::uint32_t*>(read[3].data),
         static_cast<float*>(write[0].data),
         read[0].dimensions[1],
-        read[2].dimensions[0] / h3_modulation_rows,
+        read[2].dimensions[0] * h3_modulation_tags,
         first,
         shift,
         status
