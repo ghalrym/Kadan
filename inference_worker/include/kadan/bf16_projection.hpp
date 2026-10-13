@@ -1,6 +1,8 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <climits>
+#include <cmath>
 #include <stdexcept>
 
 #include "kadan/media_session.hpp"
@@ -89,6 +91,43 @@ inline Bf16ProjectionShape validate_bf16_projection(
         }
     }
     return {rows, in, out};
+}
+
+// Fixed target/text-zero conditioning rows, produced before the first projection.
+inline void validate_image_frequency(
+    int device,
+    const MediaDeviceSpan& frequency,
+    const MediaDeviceSpan& status,
+    float timestep
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_frequency_layout");
+    };
+    require(std::isfinite(timestep) && timestep >= 0 && timestep <= 1);
+    require(
+        frequency.dtype == DeviceDType::f32
+        && frequency.dimensions == std::vector<std::size_t>{2, 256}
+        && frequency.strides == std::vector<std::size_t>{256, 1}
+        && frequency.bytes == 512 * sizeof(float)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    for (const auto* span : {&frequency, &status}) {
+        const auto pointer = reinterpret_cast<std::uintptr_t>(span->data);
+        require(
+            span->device == device && pointer && pointer % 4 == 0
+            && pointer <= UINTPTR_MAX - span->bytes
+            && span->offset <= SIZE_MAX - span->bytes
+        );
+    }
+    const auto x = reinterpret_cast<std::uintptr_t>(frequency.data),
+               y = reinterpret_cast<std::uintptr_t>(status.data);
+    require(x <= y ? y - x >= frequency.bytes : x - y >= status.bytes);
 }
 
 // Bias-free image FF pair. Scratch is reused serially by the two projections;
@@ -273,6 +312,335 @@ inline Bf16ProjectionShape validate_image_modulation(
     return {rows, state, state};
 }
 
+// Text RMS uses a learned (1 + weight) vector, preserving checkpoint storage.
+inline Bf16ProjectionShape validate_image_text_normalization(
+    int device,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& weight,
+    const MediaDeviceSpan& output,
+    const MediaDeviceSpan& status
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_text_normalization_layout");
+    };
+    require(input.dimensions.size() == 2);
+    const auto rows = input.dimensions[0], context = input.dimensions[1];
+    require(rows && context && rows <= INT_MAX && rows <= SIZE_MAX / context / 4);
+    for (const auto* span : {&input, &output})
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{rows, context}
+            && span->strides == std::vector<std::size_t>{context, 1}
+            && span->bytes == rows * context * sizeof(float)
+        );
+    require(
+        (weight.dtype == DeviceDType::bf16 || weight.dtype == DeviceDType::f32)
+        && weight.dimensions == std::vector<std::size_t>{context, 1}
+        && weight.strides == std::vector<std::size_t>{1, 1}
+        && weight.bytes == context * (weight.dtype == DeviceDType::bf16 ? 2 : 4)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&input, &weight, &output, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::bf16 ? 2u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, context, context};
+}
+
+// Q/K are updated in place after their complete producer certificate.
+inline Bf16ProjectionShape validate_image_rotary(
+    int device,
+    const MediaDeviceSpan& input,
+    const MediaDeviceSpan& weight,
+    const MediaDeviceSpan& output,
+    const MediaDeviceSpan& status,
+    std::size_t heads,
+    std::size_t head_dim,
+    const std::array<std::size_t, 3>& axes,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_rotary_layout");
+    };
+    require(input.dimensions.size() == 2);
+    const auto rows = input.dimensions[0], state = input.dimensions[1];
+    require(heads && heads <= 32 && head_dim && head_dim <= 128 && head_dim % 2 == 0);
+    require(state == heads * head_dim);
+    std::size_t channels = 0;
+    for (auto axis : axes) {
+        require(axis <= head_dim && axis % 2 == 0);
+        channels += axis;
+    }
+    require(channels == head_dim);
+    require(rows && rows <= 32768 && rows <= SIZE_MAX / state / sizeof(float));
+    require(
+        text && text <= 2048 && text <= rows && height && height <= 256 && width
+        && width <= 256 && height * width == rows - text
+    );
+    require(
+        input.dtype == DeviceDType::f32
+        && input.strides == std::vector<std::size_t>{state, 1}
+        && input.bytes == rows * state * sizeof(float)
+    );
+    require(
+        output.data == input.data && output.device == input.device
+        && output.dtype == input.dtype && output.dimensions == input.dimensions
+        && output.strides == input.strides && output.bytes == input.bytes
+        && output.offset == input.offset && output.generation == input.generation
+    );
+    require(
+        (weight.dtype == DeviceDType::bf16 || weight.dtype == DeviceDType::f32)
+        && weight.dimensions == std::vector<std::size_t>{head_dim, 1}
+        && weight.strides == std::vector<std::size_t>{1, 1}
+        && weight.bytes == head_dim * (weight.dtype == DeviceDType::bf16 ? 2 : 4)
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&input, &weight, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::bf16 ? 2u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
+// One head at a time, using the existing attention query/key tile sizes.
+// F32 packed Q/K/V, accumulated rows, scores, maxima and totals share one
+// admitted allocation; cuBLAS uses the existing resident workspace separately.
+struct ImageAttentionScratch {
+    std::size_t queries, keys;
+    Bytes q, k, v, output, scores, maximum, total, bytes;
+
+    ImageAttentionScratch(std::size_t tokens, std::size_t dim) {
+        if (!tokens || tokens > 32768 || !dim || dim > 128)
+            throw std::invalid_argument("image_attention_layout");
+        queries = std::min<std::size_t>(128, tokens);
+        keys = std::min<std::size_t>(4096, tokens);
+        bytes = 0;
+        auto add = [&](std::size_t values) {
+            const auto offset = bytes;
+            bytes += (values * sizeof(float) + 255) / 256 * 256;
+            return offset;
+        };
+        q = add(queries * dim);
+        k = add(keys * dim);
+        v = add(keys * dim);
+        output = add(queries * dim);
+        scores = add(queries * keys);
+        maximum = add(queries);
+        total = add(queries);
+    }
+};
+
+// Full certified Q/K/V feed a disjoint attended query tile.
+inline Bf16ProjectionShape validate_image_masked_attention(
+    int device,
+    const MediaDeviceSpan& q,
+    const MediaDeviceSpan& k,
+    const MediaDeviceSpan& v,
+    const MediaDeviceSpan& attended,
+    const MediaDeviceSpan& scratch,
+    const MediaDeviceSpan& workspace,
+    const MediaDeviceSpan& status,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t text,
+    std::size_t first
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_attention_layout");
+    };
+    require(q.dimensions.size() == 2 && attended.dimensions.size() == 2);
+    const auto tokens = q.dimensions[0], state = q.dimensions[1];
+    require(heads && heads <= 32 && head_dim && head_dim <= 128);
+    require(state == heads * head_dim && tokens && tokens <= 32768);
+    require(text && text <= 2048 && text <= tokens && first < tokens);
+    const ImageAttentionScratch layout(tokens, head_dim);
+    const auto rows = attended.dimensions[0];
+    require(rows && rows <= layout.queries && rows <= tokens - first);
+    for (const auto* span : {&q, &k, &v, &attended}) {
+        const auto count = span == &attended ? rows : tokens;
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{count, state}
+            && span->strides == std::vector<std::size_t>{state, 1}
+            && span->bytes == count * state * sizeof(float)
+        );
+    }
+    for (const auto* span : {&scratch, &workspace}) {
+        const auto bytes =
+            span == &scratch ? layout.bytes : bf16_projection_workspace_bytes;
+        require(
+            span->dtype == DeviceDType::u8
+            && span->dimensions == std::vector<std::size_t>{bytes}
+            && span->strides == std::vector<std::size_t>{1} && span->bytes == bytes
+        );
+    }
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&q, &k, &v, &attended, &scratch, &workspace, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        const auto alignment = a.dtype == DeviceDType::u8 ? 256u : 4u;
+        require(
+            a.device == device && x && x % alignment == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
+// Final image rows exclude text; scale is the actual target norm_out projection.
+inline Bf16ProjectionShape validate_image_final_normalization(
+    int device,
+    const MediaDeviceSpan& hidden,
+    const MediaDeviceSpan& scale,
+    const MediaDeviceSpan& normalized,
+    const MediaDeviceSpan& status
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_final_normalization_layout");
+    };
+    require(hidden.dimensions.size() == 2);
+    const auto rows = hidden.dimensions[0], state = hidden.dimensions[1];
+    require(rows && state && rows <= INT_MAX && rows <= SIZE_MAX / state / 4);
+    auto matrix = [&](const MediaDeviceSpan& span, std::size_t r, std::size_t c) {
+        require(
+            span.dtype == DeviceDType::f32
+            && span.dimensions == std::vector<std::size_t>{r, c}
+            && span.strides == std::vector<std::size_t>{c, 1}
+            && span.bytes == r * c * sizeof(float)
+        );
+    };
+    matrix(hidden, rows, state);
+    matrix(scale, 1, state);
+    matrix(normalized, rows, state);
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&hidden, &scale, &normalized, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& a = *spans[i];
+        const auto x = reinterpret_cast<std::uintptr_t>(a.data);
+        require(
+            a.device == device && x && x % 4 == 0 && x <= UINTPTR_MAX - a.bytes
+            && a.offset <= SIZE_MAX - a.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto y = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(x <= y ? y - x >= a.bytes : x - y >= spans[j]->bytes);
+        }
+    }
+    return {rows, state, state};
+}
+
+// Euler update preserves the owned F32 latent; velocity and status cannot alias it.
+inline std::size_t validate_image_scheduler(
+    int device,
+    const MediaDeviceSpan& latent,
+    const MediaDeviceSpan& velocity,
+    const MediaDeviceSpan& updated,
+    const MediaDeviceSpan& status,
+    float current,
+    float next
+) {
+    auto require = [](bool valid) {
+        if (!valid)
+            throw std::invalid_argument("image_scheduler_layout");
+    };
+    require(
+        std::isfinite(current) && std::isfinite(next) && current > 0 && current <= 1
+        && next >= 0 && next < current
+    );
+    require(latent.dimensions.size() == 2);
+    const auto rows = latent.dimensions[0], channels = latent.dimensions[1];
+    require(
+        rows && rows <= 32768 && channels && channels <= 64
+        && rows <= SIZE_MAX / channels / 4
+    );
+    for (const auto* span : {&latent, &velocity, &updated})
+        require(
+            span->dtype == DeviceDType::f32
+            && span->dimensions == std::vector<std::size_t>{rows, channels}
+            && span->strides == std::vector<std::size_t>{channels, 1}
+            && span->bytes == rows * channels * sizeof(float)
+        );
+    require(
+        updated.data == latent.data && updated.device == latent.device
+        && updated.generation == latent.generation && updated.offset == latent.offset
+    );
+    require(
+        status.dtype == DeviceDType::u32
+        && status.dimensions == std::vector<std::size_t>{1}
+        && status.strides == std::vector<std::size_t>{1}
+        && status.bytes == sizeof(std::uint32_t)
+    );
+    const std::array spans{&latent, &velocity, &status};
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+        const auto& span = *spans[i];
+        const auto address = reinterpret_cast<std::uintptr_t>(span.data);
+        require(
+            span.device == device && address && address % 4 == 0
+            && address <= UINTPTR_MAX - span.bytes
+            && span.offset <= SIZE_MAX - span.bytes
+        );
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto other = reinterpret_cast<std::uintptr_t>(spans[j]->data);
+            require(
+                address <= other ? other - address >= span.bytes
+                                 : address - other >= spans[j]->bytes
+            );
+        }
+    }
+    return rows * channels;
+}
+
 // The hidden input/output must be the same full view, including its lifetime.
 inline Bf16ProjectionShape validate_image_attention_residual(
     int device,
@@ -299,6 +667,11 @@ inline Bf16ProjectionShape validate_image_attention_residual(
 // Projection inputs are [input,gate-weight,up-weight] or [input,down-weight];
 // outputs are [pair,rounded,workspace,gate-status,up-status,aggregate-status]
 // or [down,rounded,workspace,aggregate-status]. Pair is compact [2*rows,local-out].
+enum class ImageModulationStage {
+    qkv,
+    feed_forward
+};
+
 class ImageFeedForwardLauncher {
 public:
     virtual ~ImageFeedForwardLauncher() = default;
@@ -308,6 +681,39 @@ public:
     virtual void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) = 0;
+    // Inputs [condition,learned-norm]; outputs [normalized,status].
+    virtual void text_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
+    // Inputs [Q-or-K,learned-norm]; outputs [same-Q-or-K,status].
+    virtual void rotary(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t heads,
+        std::size_t head_dim,
+        const std::array<std::size_t, 3>& axes,
+        std::size_t text,
+        std::size_t height,
+        std::size_t width
+    ) = 0;
+    // Inputs [full-Q,full-K,full-V]; outputs [attended-tile,scratch,BLAS,status].
+    virtual void masked_attention(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t heads,
+        std::size_t head_dim,
+        std::size_t text,
+        std::size_t first,
+        const std::atomic_bool& cancel
+    ) = 0;
+    // Same spans as standard; tanh-approximate GELU follows projection in place.
+    virtual void text_projection(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
+    // No inputs; outputs [frequency [2,256],status]. Target row then text t=0.
+    virtual void frequency(void*, std::span<const MediaDeviceSpan>, float timestep) = 0;
     // Same spans as standard; exact timestep SiLU follows projection in place.
     // One aggregate status certifies both operations, without another buffer.
     virtual void timestep(
@@ -322,12 +728,26 @@ public:
         std::size_t text
     ) = 0;
     // Inputs [hidden,modulation]; outputs [normalized,gates,aggregate-status].
+    // Stage 0 prepares QKV; stage 1 prepares FF.
     // Complete both outputs before the FF consumer can bind them.
     virtual void prepare(
         void*,
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
-        std::size_t text
+        std::size_t text,
+        ImageModulationStage stage
+    ) = 0;
+    // Inputs [image-hidden,target-scale]; outputs [normalized,status].
+    virtual void final_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) = 0;
+    // Inputs [latent,velocity]; outputs [same-latent,status].
+    virtual void scheduler(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        float current,
+        float next
     ) = 0;
     virtual void
     pair(void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>) = 0;
@@ -368,6 +788,34 @@ public:
     void standard(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
+    void text_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void rotary(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t,
+        const std::array<std::size_t, 3>&,
+        std::size_t,
+        std::size_t,
+        std::size_t
+    ) override;
+    void masked_attention(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        const std::atomic_bool&
+    ) override;
+    void text_projection(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void frequency(void*, std::span<const MediaDeviceSpan>, float) override;
     void timestep(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
     ) override;
@@ -381,7 +829,18 @@ public:
         void*,
         std::span<const MediaDeviceSpan>,
         std::span<const MediaDeviceSpan>,
-        std::size_t
+        std::size_t,
+        ImageModulationStage
+    ) override;
+    void final_normalization(
+        void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>
+    ) override;
+    void scheduler(
+        void*,
+        std::span<const MediaDeviceSpan>,
+        std::span<const MediaDeviceSpan>,
+        float current,
+        float next
     ) override;
     void pair(
         void*, std::span<const MediaDeviceSpan>, std::span<const MediaDeviceSpan>

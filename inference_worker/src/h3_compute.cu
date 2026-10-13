@@ -96,6 +96,18 @@ __global__ void image_silu_pair_kernel(
 }
 
 __global__ void
+image_frequency_kernel(float* frequency, float timestep, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= 512)
+        return;
+    const float value =
+        image::detail::timestep_frequency(i < 256 ? timestep : 0.f, i % 256);
+    if (!isfinite(value))
+        atomicOr(status, 1U);
+    frequency[i] = value;
+}
+
+__global__ void
 image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
@@ -109,6 +121,134 @@ image_timestep_silu_kernel(float* output, std::size_t count, unsigned* status) {
     if (!isfinite(activated))
         atomicOr(status, 2U);
     output[i] = activated;
+}
+
+__global__ void image_scheduler_kernel(
+    float* latent, const float* velocity, std::size_t count, float dt, unsigned* status
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float previous = latent[i], change = velocity[i];
+    if (!isfinite(previous) || !isfinite(change)) {
+        atomicOr(status, 1U);
+        return;
+    }
+    // Match image_generation's F32 multiply then add; CUDA must not fuse them.
+    const float updated = __fadd_rn(previous, __fmul_rn(dt, change));
+    if (!isfinite(updated))
+        atomicOr(status, 2U);
+    latent[i] = updated;
+}
+
+__global__ void image_text_norm_kernel(
+    const float* input,
+    const void* weight,
+    bool bf16,
+    float* output,
+    std::size_t context,
+    unsigned* status
+) {
+    __shared__ float scale;
+    const auto base = std::size_t(blockIdx.x) * context;
+    if (threadIdx.x == 0) {
+        double sum = 0;
+        for (std::size_t c = 0; c < context; ++c) {
+            const double value = double(input[base + c]);
+            sum = __dadd_rn(sum, __dmul_rn(value, value));
+        }
+        // Match the host's ordered F64 sum and F32 reciprocal RMS cast.
+        scale = __double2float_rn(
+            __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(sum, double(context)), 1e-6)))
+        );
+    }
+    __syncthreads();
+    for (std::size_t c = threadIdx.x; c < context; c += blockDim.x) {
+        const float w =
+            bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c])
+                 : static_cast<const float*>(weight)[c];
+        const float value =
+            __fmul_rn(__fmul_rn(input[base + c], scale), __fadd_rn(1.f, w));
+        if (!isfinite(input[base + c]) || !isfinite(w) || !isfinite(value))
+            atomicOr(status, 1U);
+        output[base + c] = value;
+    }
+}
+
+__global__ void image_rotary_kernel(
+    float* values,
+    const void* weight,
+    bool bf16,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t axis0,
+    std::size_t axis1,
+    std::size_t axis2,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    unsigned* status
+) {
+    __shared__ float scale;
+    const auto token = std::size_t(blockIdx.x);
+    const auto base = (token * heads + blockIdx.y) * head_dim;
+    if (threadIdx.x == 0) {
+        double sum = 0;
+        for (std::size_t c = 0; c < head_dim; ++c) {
+            const double value = double(values[base + c]);
+            sum = __dadd_rn(sum, __dmul_rn(value, value));
+        }
+        scale = __double2float_rn(
+            __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(sum, double(head_dim)), 1e-6)))
+        );
+    }
+    __syncthreads();
+    const auto c = std::size_t(threadIdx.x) * 2;
+    if (c >= head_dim)
+        return;
+    const std::size_t axes[]{axis0, axis1, axis2};
+    long positions[]{long(token), long(token), long(token)};
+    if (token >= text) {
+        positions[0] = long(text);
+        positions[1] = long((token - text) / width) - long(height - height / 2);
+        positions[2] = long((token - text) % width) - long(width - width / 2);
+    }
+    std::size_t axis = 0, offset = 0;
+    while (c >= offset + axes[axis])
+        offset += axes[axis++];
+    const float exponent = __fdiv_rn(-float(c - offset), float(axes[axis]));
+    const float angle = __fmul_rn(float(positions[axis]), powf(10000.f, exponent));
+    const float co = cosf(angle), si = sinf(angle);
+    const float norm_a =
+        bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c])
+             : static_cast<const float*>(weight)[c];
+    const float norm_b =
+        bf16 ? __bfloat162float(static_cast<const __nv_bfloat16*>(weight)[c + 1])
+             : static_cast<const float*>(weight)[c + 1];
+    const float original_a = values[base + c], original_b = values[base + c + 1];
+    const float a = __fmul_rn(original_a, __fmul_rn(scale, norm_a));
+    const float b = __fmul_rn(original_b, __fmul_rn(scale, norm_b));
+    const float rotated_a = __fsub_rn(__fmul_rn(a, co), __fmul_rn(b, si));
+    const float rotated_b = __fadd_rn(__fmul_rn(b, co), __fmul_rn(a, si));
+    if (!isfinite(original_a) || !isfinite(original_b) || !isfinite(norm_a)
+        || !isfinite(norm_b) || !isfinite(rotated_a) || !isfinite(rotated_b))
+        atomicOr(status, 1U);
+    values[base + c] = rotated_a;
+    values[base + c + 1] = rotated_b;
+}
+
+__global__ void
+image_text_gelu_kernel(float* output, std::size_t count, unsigned* status) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const float v = output[i];
+    // Preserve host F32 expression order; this target disables contraction/FTZ.
+    const float value =
+        .5f * v * (1 + tanhf(.7978845608028654f * (v + .044715f * v * v * v)));
+    if (!isfinite(v) || !isfinite(value))
+        atomicOr(status, 1U);
+    output[i] = value;
 }
 
 __global__ void
@@ -158,12 +298,14 @@ __global__ void image_gates_kernel(
     }
 }
 
-__global__ void image_ff_norm_kernel(
+__global__ void image_norm_kernel(
     const float* hidden,
     const float* modulation,
     float* normalized,
     std::size_t state,
     std::size_t text,
+    bool final,
+    std::size_t stage,
     unsigned* status
 ) {
     __shared__ double mean;
@@ -184,20 +326,20 @@ __global__ void image_ff_norm_kernel(
             const double v = __dsub_rn(double(hidden[base + c]), mean);
             variance = __dadd_rn(variance, __dmul_rn(v, v));
         }
-        // Ordered double reductions and casts match image.cpp norm_mod exactly.
+        // Ordered double reductions/casts match norm_mod and final image norm.
         scale = __double2float_rn(
             __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(variance, double(state)), 1e-6)))
         );
     }
     __syncthreads();
-    const auto offset = (row < text ? 4 * state : 0) + 2 * state;
+    const auto offset = final ? 0 : (row < text ? 4 * state : 0) + stage * 2 * state;
     for (std::size_t c = threadIdx.x; c < state; c += blockDim.x) {
         const float centered =
             __double2float_rn(__dsub_rn(double(hidden[base + c]), mean));
         const float value = __fmul_rn(
             __fmul_rn(centered, scale), __fadd_rn(1.f, modulation[offset + c])
         );
-        if (!isfinite(value))
+        if ((final && !isfinite(modulation[c])) || !isfinite(value))
             atomicOr(status, 1U);
         normalized[base + c] = value;
     }
@@ -537,6 +679,45 @@ divide_attention(Real* output, const Real* total, unsigned rows, unsigned dim) {
     const auto i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < rows * dim)
         output[i] /= total[i / dim];
+}
+
+// Pack/unpack only on the owned stream; attention arithmetic is shared above.
+__global__ void pack_image_attention(
+    const float* input,
+    float* packed,
+    unsigned rows,
+    unsigned state,
+    unsigned dim,
+    unsigned first,
+    unsigned head,
+    unsigned* status
+) {
+    const auto i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * dim) {
+        const float value = input[(first + i / dim) * state + head * dim + i % dim];
+        if (!isfinite(value))
+            atomicOr(status, 2U);
+        packed[i] = value;
+    }
+}
+
+__global__ void scatter_image_attention(
+    const float* packed,
+    const float* total,
+    float* output,
+    unsigned rows,
+    unsigned state,
+    unsigned dim,
+    unsigned head,
+    unsigned* status
+) {
+    const auto i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * dim) {
+        const float value = packed[i];
+        if (!isfinite(value) || !(total[i / dim] > 0) || !isfinite(total[i / dim]))
+            atomicOr(status, 1U);
+        output[(i / dim) * state + head * dim + i % dim] = value;
+    }
 }
 
 struct HostAdmission {
@@ -2098,6 +2279,318 @@ void CudaBf16Projection::standard(
     );
 }
 
+void CudaBf16Projection::text_normalization(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(
+        inputs.size() == 2 && outputs.size() == 2, "image_text_normalization_layout"
+    );
+    const auto shape = validate_image_text_normalization(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1]
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_text_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[0].data),
+        inputs[1].data,
+        inputs[1].dtype == DeviceDType::bf16,
+        static_cast<float*>(outputs[0].data),
+        shape.in,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::rotary(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t heads,
+    std::size_t head_dim,
+    const std::array<std::size_t, 3>& axes,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width
+) {
+    require(inputs.size() == 2 && outputs.size() == 2, "image_rotary_layout");
+    const auto shape = validate_image_rotary(
+        device_,
+        inputs[0],
+        inputs[1],
+        outputs[0],
+        outputs[1],
+        heads,
+        head_dim,
+        axes,
+        text,
+        height,
+        width
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_rotary_kernel<<<
+        dim3(unsigned(shape.rows), unsigned(heads)),
+        64,
+        0,
+        owned_stream>>>(
+        static_cast<float*>(outputs[0].data),
+        inputs[1].data,
+        inputs[1].dtype == DeviceDType::bf16,
+        heads,
+        head_dim,
+        axes[0],
+        axes[1],
+        axes[2],
+        text,
+        height,
+        width,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::masked_attention(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    std::size_t heads,
+    std::size_t head_dim,
+    std::size_t text,
+    std::size_t first,
+    const std::atomic_bool& cancel
+) {
+    require(inputs.size() == 3 && outputs.size() == 4, "image_attention_layout");
+    const auto shape = validate_image_masked_attention(
+        device_,
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        outputs[0],
+        outputs[1],
+        outputs[2],
+        outputs[3],
+        heads,
+        head_dim,
+        text,
+        first
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    require(!cancel.load(), "h3_cuda_cancelled");
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    const auto handle = static_cast<cublasHandle_t>(blas_);
+    checked(cublasSetStream(handle, owned_stream));
+    checked(cublasSetWorkspace(handle, outputs[2].data, outputs[2].bytes));
+    auto* status = static_cast<unsigned*>(outputs[3].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    const auto tokens = inputs[0].dimensions[0];
+    const ImageAttentionScratch layout(tokens, head_dim);
+    auto at = [&](Bytes offset) {
+        return reinterpret_cast<float*>(
+            static_cast<std::byte*>(outputs[1].data) + offset
+        );
+    };
+    const float scale = 1 / std::sqrt(float(head_dim)), zero = 0, one = 1;
+    // Match attend<float>'s PEDANTIC F32 GEMMs and tiled online softmax.
+    with_projection_math(
+        true,
+        CUBLAS_PEDANTIC_MATH,
+        [&] {
+            cublasMath_t mode;
+            checked(cublasGetMathMode(handle, &mode));
+            return mode;
+        },
+        [&](cublasMath_t mode) { checked(cublasSetMathMode(handle, mode)); },
+        [&] {
+            for (std::size_t head = 0; head < heads; ++head) {
+                require(!cancel.load(), "h3_cuda_cancelled");
+                pack_image_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    static_cast<const float*>(inputs[0].data),
+                    at(layout.q),
+                    unsigned(shape.rows),
+                    unsigned(shape.in),
+                    unsigned(head_dim),
+                    unsigned(first),
+                    unsigned(head),
+                    status
+                );
+                checked(cudaGetLastError());
+                checked(cudaMemsetAsync(
+                    at(layout.output),
+                    0,
+                    shape.rows * head_dim * sizeof(float),
+                    owned_stream
+                ));
+                initialize_attention<<<1, 128, 0, owned_stream>>>(
+                    at(layout.maximum), at(layout.total), unsigned(shape.rows)
+                );
+                checked(cudaGetLastError());
+                for (std::size_t key = 0; key < tokens; key += layout.keys) {
+                    require(!cancel.load(), "h3_cuda_cancelled");
+                    const auto keys = std::min(layout.keys, tokens - key);
+                    for (std::size_t i = 1; i < inputs.size(); ++i) {
+                        pack_image_attention<<<
+                            unsigned((keys * head_dim + 255) / 256),
+                            256,
+                            0,
+                            owned_stream>>>(
+                            static_cast<const float*>(inputs[i].data),
+                            at(i == 1 ? layout.k : layout.v),
+                            unsigned(keys),
+                            unsigned(shape.in),
+                            unsigned(head_dim),
+                            unsigned(key),
+                            unsigned(head),
+                            status
+                        );
+                        checked(cudaGetLastError());
+                    }
+                    checked(
+                        gemm<float>(
+                            handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            int(keys),
+                            int(shape.rows),
+                            int(head_dim),
+                            scale,
+                            at(layout.k),
+                            int(head_dim),
+                            at(layout.q),
+                            int(head_dim),
+                            zero,
+                            at(layout.scores),
+                            int(keys)
+                        )
+                    );
+                    online_softmax<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+                        at(layout.scores),
+                        at(layout.output),
+                        at(layout.maximum),
+                        at(layout.total),
+                        unsigned(keys),
+                        unsigned(head_dim),
+                        unsigned(first),
+                        unsigned(key),
+                        unsigned(text),
+                        0,
+                        0
+                    );
+                    checked(cudaGetLastError());
+                    checked(
+                        gemm<float>(
+                            handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            int(head_dim),
+                            int(shape.rows),
+                            int(keys),
+                            one,
+                            at(layout.v),
+                            int(head_dim),
+                            at(layout.scores),
+                            int(keys),
+                            one,
+                            at(layout.output),
+                            int(head_dim)
+                        )
+                    );
+                }
+                divide_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    at(layout.output),
+                    at(layout.total),
+                    unsigned(shape.rows),
+                    unsigned(head_dim)
+                );
+                checked(cudaGetLastError());
+                scatter_image_attention<<<
+                    unsigned((shape.rows * head_dim + 255) / 256),
+                    256,
+                    0,
+                    owned_stream>>>(
+                    at(layout.output),
+                    at(layout.total),
+                    static_cast<float*>(outputs[0].data),
+                    unsigned(shape.rows),
+                    unsigned(shape.in),
+                    unsigned(head_dim),
+                    unsigned(head),
+                    status
+                );
+                checked(cudaGetLastError());
+            }
+        }
+    );
+}
+
+void CudaBf16Projection::text_projection(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    standard(stream, inputs, outputs);
+    const auto count = outputs[0].bytes / sizeof(float);
+    // Keep the projection status so activation cannot conceal a bad producer.
+    image_text_gelu_kernel<<<
+        unsigned((count + 255) / 256),
+        256,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(
+        static_cast<float*>(outputs[0].data),
+        count,
+        static_cast<unsigned*>(outputs[3].data)
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::frequency(
+    void* stream, std::span<const MediaDeviceSpan> outputs, float timestep
+) {
+    require(outputs.size() == 2, "image_frequency_layout");
+    validate_image_frequency(device_, outputs[0], outputs[1], timestep);
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_frequency_kernel<<<2, 256, 0, owned_stream>>>(
+        static_cast<float*>(outputs[0].data), timestep, status
+    );
+    checked(cudaGetLastError());
+}
+
 void CudaBf16Projection::timestep(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,
@@ -2177,9 +2670,15 @@ void CudaBf16Projection::prepare(
     void* stream,
     std::span<const MediaDeviceSpan> inputs,
     std::span<const MediaDeviceSpan> outputs,
-    std::size_t text
+    std::size_t text,
+    ImageModulationStage stage
 ) {
     require(inputs.size() == 2 && outputs.size() == 3, "image_ff_preparation_layout");
+    require(
+        stage == ImageModulationStage::qkv
+            || stage == ImageModulationStage::feed_forward,
+        "image_modulation_stage"
+    );
     const auto shape = validate_image_modulation(
         device_, inputs[0], inputs[1], outputs[0], outputs[1], outputs[2], text
     );
@@ -2196,16 +2695,82 @@ void CudaBf16Projection::prepare(
         static_cast<const float*>(inputs[1].data),
         static_cast<float*>(outputs[1].data),
         shape.in,
-        1,
+        std::size_t(stage),
         status
     );
     checked(cudaGetLastError());
-    image_ff_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
         static_cast<const float*>(inputs[0].data),
         static_cast<const float*>(inputs[1].data),
         static_cast<float*>(outputs[0].data),
         shape.in,
         text,
+        false,
+        std::size_t(stage),
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::final_normalization(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(
+        inputs.size() == 2 && outputs.size() == 2, "image_final_normalization_layout"
+    );
+    const auto shape = validate_image_final_normalization(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1]
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        static_cast<float*>(outputs[0].data),
+        shape.in,
+        0,
+        true,
+        0,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::scheduler(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs,
+    float current,
+    float next
+) {
+    require(inputs.size() == 2 && outputs.size() == 2, "image_scheduler_layout");
+    const auto count = validate_image_scheduler(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1], current, next
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    const float dt = next - current;
+    image_scheduler_kernel<<<unsigned((count + 255) / 256), 256, 0, owned_stream>>>(
+        static_cast<float*>(outputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        count,
+        dt,
         status
     );
     checked(cudaGetLastError());

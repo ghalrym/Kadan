@@ -13,7 +13,7 @@ from bin.process import ROOT, run
 
 app = typer.Typer(no_args_is_help=True)
 
-NATIVE_UNIT_TARGETS = [
+INFERENCE_WORKER_UNIT_TARGETS = [
     "bf16-projection-tests",
     "media-session-tests",
     "media-residency-tests",
@@ -25,10 +25,12 @@ NATIVE_UNIT_TARGETS = [
     "projection-validation-tests",
     "image-weight-loading-tests",
     "image-activation-tests",
+    "image-decoder-input-tests",
     "cuda-plan-tests",
     "fp8-plan-tests",
     "placement-tests",
     "gpt-oss-manifest-tests",
+    "gpt-oss-expert-tests",
     "sequence-state-tests",
     "h3-profile-tests",
     "worker-compute-tests",
@@ -37,7 +39,7 @@ NATIVE_UNIT_TARGETS = [
     "kadan_auto_placement_test",
     "inference-owner-tests",
     "preparation-tests",
-    "native-text-tests",
+    "inference-worker-text-tests",
 ]
 
 CPP_SUFFIXES = {".cpp", ".hpp", ".h", ".cu", ".cuh"}
@@ -163,7 +165,7 @@ def frontend_unit() -> None:
 
 
 @app.command()
-def native(
+def inference_worker(
     build_dir: Path = ROOT / "build/inference-worker-unit", sanitize: bool = False
 ) -> None:
     """Build and run only CPU unit targets; never run inference."""
@@ -195,7 +197,7 @@ def native(
             "--build",
             build_dir,
             "--target",
-            *NATIVE_UNIT_TARGETS,
+            *INFERENCE_WORKER_UNIT_TARGETS,
             "--parallel",
             "2",
         ]

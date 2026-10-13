@@ -99,6 +99,11 @@ struct StageManifest {
     MediaSchedule schedule = MediaSchedule::full_block;
     // A consumed conditioning projection also needs conversion scratch in prepare.
     bool prepare_projection = false;
+    // Actual input projections may initialize hidden before attention/FF.
+    bool prepare_hidden = false;
+    // Certified complete-phase inputs must survive admission on every selected
+    // device, reusing owners or copying exact bytes over admitted direct peers.
+    std::vector<std::string> retained_inputs;
 };
 
 struct MediaShape {

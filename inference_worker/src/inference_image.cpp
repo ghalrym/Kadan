@@ -30,7 +30,9 @@ public:
         compute_ = std::make_unique<WorkerCompute>(
             media_plan(available), Workload::image, resources_
         );
-        model_ = std::make_unique<image::Generator>(resources_, compute_->compute);
+        model_ = std::make_unique<image::Generator>(
+            resources_, compute_->compute, compute_->media_activity, compute_->devices
+        );
         model_->load(request.configuration.checkpoint.string(), cancel, progress_);
     }
 

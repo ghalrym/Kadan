@@ -1,4 +1,4 @@
-"""Submit inference to the live API and its existing native worker queue."""
+"""Submit inference to the live API and its existing inference worker queue."""
 
 from dataclasses import dataclass
 import json

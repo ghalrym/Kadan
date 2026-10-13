@@ -34,9 +34,12 @@ struct Trace {
     std::vector<int> memory_probes;
     std::vector<std::pair<int, int>> peer_probes;
     std::size_t allocations_started = 0, releases = 0;
+    std::size_t make_device0_free_at_probe = 0;
     bool peer01 = true, peer10 = true;
     int fail_allocate = -1, fail_drain = -1, fail_free = -1;
     bool fail_record = false;
+    std::function<void(int)> on_probe;
+    std::function<void()> on_peer;
     std::uint32_t status = 0;
 };
 
@@ -60,6 +63,10 @@ struct Fake final : MediaDeviceOperations {
 
     Bytes free_memory(int d) override {
         trace->memory_probes.push_back(d);
+        if (trace->on_probe)
+            trace->on_probe(d);
+        if (trace->make_device0_free_at_probe == trace->memory_probes.size())
+            trace->free[0] = 1000000;
         return trace->free.at(d);
     }
 
@@ -128,6 +135,8 @@ struct Fake final : MediaDeviceOperations {
     void peer(int, const void* a, int, void* b, Bytes bytes) override {
         trace->peer_bytes.push_back(bytes);
         std::memcpy(b, a, bytes);
+        if (trace->on_peer)
+            trace->on_peer();
     }
 
     std::uint32_t read_status(int, const void*) override {
@@ -563,7 +572,9 @@ void owner_reuse_retirement() {
         && v.layout().dimensions == std::vector<std::size_t>({4, 4})
     );
     std::array<std::byte, 32> bytes{};
+    check(!f.session.ready(v));
     f.session.upload_weight(v, bytes);
+    check(f.session.ready(v));
     const auto pointer = v.layout().data;
     const auto generation = v.layout().generation;
     v = {};
@@ -573,12 +584,16 @@ void owner_reuse_retirement() {
     check(f.trace->allocations_started == before && !f.session.plan().reuse.empty());
     v = f.session.weight(f.session.plan().weights.front());
     check(v.layout().data == pointer && v.layout().generation == generation);
+    check(f.session.ready(v));
     v = {};
     f.session.advance(MediaPhase::complete);
     m.weights[0].identity.inode = 4;
     check(!f.session.admit(m, shape()));
     check(f.trace->releases >= 1);
     check(f.trace->allocations_started == before + 1);
+    v = f.session.weight(f.session.plan().weights.front());
+    check(!f.session.ready(v));
+    v = {};
     f.session.finish();
     check(f.resources->snapshot().residents == 0);
 }
@@ -847,6 +862,448 @@ void feed_forward_phase_isolation() {
     f.resources->released(library);
 }
 
+void ingress_hidden_certificate() {
+    Fixture f;
+    StageManifest m;
+    m.status_bytes = 4;
+    m.workspaces_complete = true;
+    m.schedule = MediaSchedule::feed_forward;
+    m.prepare_hidden = true;
+    check(!f.session.admit(m, MediaShape{4, 4, 0, 0, 0, 8}));
+    const int device = f.session.plan().devices.front().device;
+    auto hidden = tensor(f.session, device, "resident/hidden");
+    auto status = flag(f.session, device);
+    auto first = f.session.rows(hidden, 0, 2), second = f.session.rows(hidden, 2, 2);
+    produce(f.session, device, first, status);
+    check(!f.session.ready(hidden));
+    std::array<DeviceTensorView*, 2> write{&second, &status};
+    f.session.launch(device, {}, write, [](void*, auto, auto) {});
+    check(!f.session.ready(hidden));
+    check(
+        fails([&] { f.session.advance(MediaPhase::ff); })
+        == "media_session_unchecked_status"
+    );
+    f.session.complete(write, status);
+    check(f.session.ready(hidden));
+    hidden = {};
+    first = {};
+    second = {};
+    status = {};
+    f.session.advance(MediaPhase::ff);
+    f.session.advance(MediaPhase::complete);
+    f.session.finish();
+    check(f.activity->owners == 0 && f.trace->allocations.empty());
+}
+
+void retained_admission_inputs() {
+    enum class Scenario {
+        complete,
+        partial,
+        missing,
+        shorter,
+        duplicate,
+        absent,
+        short_lifetime,
+        cancelled,
+        live_view
+    };
+
+    struct Case {
+        Scenario scenario;
+        bool rejected, ready;
+    };
+
+    for (const auto& test :
+         {Case{Scenario::complete, false, true},
+          Case{Scenario::partial, true, false},
+          Case{Scenario::missing, true, false},
+          Case{Scenario::shorter, true, true},
+          Case{Scenario::duplicate, true, true},
+          Case{Scenario::absent, true, true},
+          Case{Scenario::short_lifetime, true, true},
+          Case{Scenario::cancelled, false, true},
+          Case{Scenario::live_view, false, true}}) {
+        const auto scenario = test.scenario;
+        Fixture f;
+        auto m = decoder();
+        check(!f.session.admit(m, shape()));
+        auto boundary = tensor(f.session, 0, "boundary");
+        auto status = flag(f.session, 0);
+        const auto original = boundary.layout();
+        if (scenario == Scenario::partial) {
+            auto half = f.session.rows(boundary, 0, 2);
+            produce(f.session, 0, half, status);
+        } else if (scenario != Scenario::missing) {
+            produce(f.session, 0, boundary, status);
+        }
+        boundary = {};
+        status = {};
+        f.session.advance(MediaPhase::complete);
+        const auto allocations = f.trace->allocations_started;
+        const auto releases = f.trace->releases;
+        const auto charge = f.resources->snapshot().used;
+        m.retained_inputs = {"boundary"};
+        if (scenario == Scenario::shorter)
+            m.tensors.front().bytes = 32;
+        if (scenario == Scenario::duplicate)
+            m.retained_inputs.emplace_back("boundary");
+        if (scenario == Scenario::absent)
+            m.retained_inputs = {"absent"};
+        if (scenario == Scenario::short_lifetime)
+            m.tensors.front().last = MediaPhase::prepare;
+        if (scenario == Scenario::cancelled) {
+            f.cancel = true;
+            check(
+                fails([&] { f.session.admit(m, shape()); }) == "media_session_cancelled"
+            );
+            check(f.trace->allocations.empty() && f.activity->owners == 0);
+            continue;
+        }
+        if (scenario == Scenario::live_view) {
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                fails([&] { f.session.admit(m, shape()); }) == "media_session_live_view"
+            );
+            check(boundary.layout().data == original.data && f.session.ready(boundary));
+            boundary = {};
+        }
+        auto error = f.session.admit(m, shape());
+        check(bool(error) == test.rejected);
+        if (error) {
+            check(error->reason == PlanFailure::unsupported_layout);
+            check(
+                f.trace->releases == releases
+                && f.trace->allocations_started == allocations
+            );
+            check(f.resources->snapshot().used == charge);
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                boundary.layout().data == original.data
+                && boundary.layout().generation == original.generation
+            );
+            check(f.session.ready(boundary) == test.ready);
+            boundary = {};
+            // A rejected request does not consume the previous admission.
+            m = decoder();
+            if (test.ready) {
+                m.retained_inputs = {"boundary"};
+                check(!f.session.admit(m, shape()));
+            }
+        } else {
+            boundary = tensor(f.session, 0, "boundary");
+            check(
+                f.session.ready(boundary) && boundary.layout().data == original.data
+                && boundary.layout().generation == original.generation
+            );
+            boundary = {};
+        }
+        check(
+            !f.session.transfers().activation_upload
+            && !f.session.transfers().activation_download
+            && !f.session.transfers().peer_activation
+        );
+        f.session.finish();
+        check(
+            f.trace->allocations.empty() && f.activity->owners == 0
+            && f.resources->snapshot().used == Footprint({0, 0, 0})
+        );
+    }
+}
+
+void retained_reprobe_selection() {
+    Fixture f;
+    f.trace->free[0] = 0;
+    auto m = decoder();
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.front().device == 1);
+    auto boundary = tensor(f.session, 1, "boundary");
+    auto status = flag(f.session, 1);
+    produce(f.session, 1, boundary, status);
+    const auto original = boundary.layout();
+    boundary = {};
+    status = {};
+    f.session.advance(MediaPhase::complete);
+    // Device 0 becomes free only at the second probe. It must not displace the
+    // device whose certified owners were accepted before retirement.
+    f.trace->make_device0_free_at_probe = f.trace->memory_probes.size() + 3;
+    m.retained_inputs = {"boundary"};
+    m.tensors.resize(1);  // Retire obsolete scratch at this boundary too.
+    check(!f.session.admit(m, shape()));
+    check(
+        f.session.plan().devices.size() == 1
+        && f.session.plan().devices.front().device == 1
+    );
+    check(f.trace->free[0] == 1000000);
+    boundary = tensor(f.session, 1, "boundary");
+    check(
+        f.session.ready(boundary) && boundary.layout().data == original.data
+        && boundary.layout().generation == original.generation
+    );
+    boundary = {};
+    f.session.finish();
+    check(
+        f.trace->allocations.empty() && f.activity->owners == 0
+        && f.resources->snapshot().used == Footprint({0, 0, 0})
+    );
+}
+
+void retained_owner_migration() {
+    enum class Scenario {
+        complete,
+        missing_peer,
+        missing_reverse_peer,
+        capacity,
+        ledger_capacity,
+        reprobe_capacity,
+        reprobe_peer,
+        allocate_failure,
+        copy_failure,
+        record_failure,
+        cancelled,
+        drain_failure
+    };
+
+    struct Case {
+        Scenario scenario;
+        const char* failure;
+        bool rejected;
+    };
+
+    for (const auto& test :
+         {Case{Scenario::complete, "", false},
+          Case{Scenario::missing_peer, "", true},
+          Case{Scenario::missing_reverse_peer, "", true},
+          Case{Scenario::capacity, "", true},
+          Case{Scenario::ledger_capacity, "", true},
+          Case{Scenario::reprobe_capacity, "", true},
+          Case{Scenario::reprobe_peer, "", true},
+          Case{Scenario::allocate_failure, "allocate", false},
+          Case{Scenario::copy_failure, "peer", false},
+          Case{Scenario::record_failure, "record", false},
+          Case{Scenario::cancelled, "media_session_cancelled", false},
+          Case{Scenario::drain_failure, "operation: drain; cleanup: drain", false}}) {
+        const auto scenario = test.scenario;
+        Fixture f;
+        StageManifest m;
+        m.schedule = MediaSchedule::feed_forward;
+        m.prepare_hidden = true;
+        m.status_bytes = 4;
+        m.workspaces_complete = true;
+        // Nonaligned logical sizes distinguish the certified extent from padding.
+        m.tensors = {{"conditioning/time-activated", 20}, {"ff/modulation", 36}};
+        check(!f.session.admit(m, shape()));
+        const std::array<std::string, 3> names{
+            "resident/hidden", "conditioning/time-activated", "ff/modulation"
+        };
+        const std::array<std::size_t, 3> columns{4, 5, 9};
+        std::array<MediaDeviceSpan, 3> original;
+        auto status = flag(f.session, 0);
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            auto input = tensor(f.session, 0, names[i], i ? 1 : 4, columns[i]);
+            original[i] = input.layout();
+            std::memset(input.layout().data, 0x21 + i, input.layout().bytes);
+            produce(f.session, 0, input, status);
+        }
+        status = {};
+        f.session.advance(MediaPhase::complete);
+        m.prepare_hidden = false;
+        m.retained_inputs.assign(names.begin(), names.end());
+        m.tensors.push_back({"next/scratch", 4096});
+        f.trace->free[0] = 0;
+        if (scenario == Scenario::missing_peer)
+            f.trace->peer01 = false;
+        if (scenario == Scenario::missing_reverse_peer)
+            f.trace->peer10 = false;
+        if (scenario == Scenario::capacity)
+            f.trace->free[1] = 0;
+        const auto competing =
+            scenario == Scenario::ledger_capacity
+                ? f.resources->reserve(Workload::image, {0, 0, 999744})
+                : 0;
+        const auto second_probe = f.trace->memory_probes.size() + 3;
+        f.trace->on_probe = [&](int) {
+            if (f.trace->memory_probes.size() == second_probe) {
+                if (scenario == Scenario::reprobe_capacity)
+                    f.trace->free[1] = 0;
+                if (scenario == Scenario::reprobe_peer)
+                    f.trace->peer01 = false;
+            }
+        };
+        const auto source_charge = f.resources->snapshot().used[1];
+        f.trace->on_peer = [&] {
+            for (const auto& span : original)
+                check(f.trace->allocations.contains(span.data));
+            const auto charge = f.resources->snapshot().used;
+            check(charge[1] >= 3 * 256 && charge[1] <= source_charge && charge[2] > 0);
+            if (scenario == Scenario::copy_failure)
+                throw std::runtime_error("peer");
+            if (scenario == Scenario::record_failure)
+                f.trace->fail_record = true;
+            if (scenario == Scenario::cancelled)
+                f.cancel = true;
+            if (scenario == Scenario::drain_failure)
+                f.trace->fail_drain = 1;
+        };
+        if (scenario == Scenario::allocate_failure)
+            f.trace->fail_allocate = 1;
+        if (*test.failure) {
+            check(fails([&] { f.session.admit(m, shape()); }) == test.failure);
+            check(f.trace->drains[f.trace->drains.size() - 2] == 0);
+            check(f.trace->drains.back() == 1);
+            if (scenario == Scenario::drain_failure) {
+                check(
+                    f.activity->owners == 1 && f.resources->snapshot().used[1] > 0
+                    && f.resources->snapshot().used[2] > 0
+                );
+                for (const auto& span : original)
+                    check(f.trace->allocations.contains(span.data));
+                for (const auto& [pointer, allocation] : f.trace->allocations)
+                    ::operator delete(pointer);
+                f.trace->allocations.clear();
+            } else {
+                check(
+                    f.trace->allocations.empty() && f.activity->owners == 0
+                    && f.resources->snapshot().used == Footprint({0, 0, 0})
+                );
+            }
+            continue;
+        }
+        auto error = f.session.admit(m, shape());
+        check(bool(error) == test.rejected);
+        if (error) {
+            check(
+                error->reason == PlanFailure::capacity
+                || error->reason == PlanFailure::topology
+            );
+            check(f.trace->peer_bytes.empty());
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                auto input = tensor(f.session, 0, names[i], i ? 1 : 4, columns[i]);
+                check(
+                    f.session.ready(input) && input.layout().data == original[i].data
+                    && input.layout().generation == original[i].generation
+                );
+            }
+            if (competing)
+                f.resources->released(competing);
+            f.trace->on_probe = {};
+            f.trace->peer01 = f.trace->peer10 = true;
+            f.trace->free[1] = 1000000;
+            check(!f.session.admit(m, shape()));
+        }
+        check(
+            f.session.plan().devices.size() == 1
+            && f.session.plan().devices[0].device == 1
+        );
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            auto input = tensor(f.session, 1, names[i], i ? 1 : 4, columns[i]);
+            const auto& span = input.layout();
+            check(
+                f.session.ready(input) && span.generation != original[i].generation
+                && span.dtype == original[i].dtype
+                && span.dimensions == original[i].dimensions
+                && span.strides == original[i].strides
+                && span.bytes == original[i].bytes
+            );
+            check(!f.trace->allocations.contains(original[i].data));
+            const auto* bytes = static_cast<const unsigned char*>(span.data);
+            check(std::all_of(bytes, bytes + span.bytes, [&](auto byte) {
+                return byte == 0x21 + i;
+            }));
+        }
+        check(f.trace->peer_bytes == std::vector<Bytes>({64, 20, 36}));
+        check(f.session.transfers().peer_activation == 120);
+        check(
+            !f.session.transfers().input_upload
+            && !f.session.transfers().activation_upload
+            && !f.session.transfers().activation_download
+            && !f.session.transfers().output_download
+        );
+        f.session.finish();
+        check(
+            f.trace->allocations.empty() && f.activity->owners == 0
+            && f.resources->snapshot().used == Footprint({0, 0, 0})
+        );
+    }
+}
+
+void retained_partition_migration() {
+    Fixture f;
+    StageManifest m;
+    m.workspaces_complete = true;
+    m.schedule = MediaSchedule::feed_forward;
+    m.status_bytes = 4;
+    check(!f.session.admit(m, shape()));
+    {
+        auto hidden = tensor(f.session, 0, "resident/hidden");
+        const std::array<std::byte, 64> input{};
+        f.session.upload_input(hidden, input);
+    }
+    f.session.advance(MediaPhase::complete);
+    m.retained_inputs = {"resident/hidden"};
+    m.weights = {
+        {"channels",
+         {1, 2, 400000, 0, 0, 0, 0, 0, 400000},
+         TensorStorage::f32,
+         100000,
+         1,
+         WeightPartition::channels}
+    };
+    f.trace->free[0] = f.trace->free[1] = 250000;
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.size() == 2);
+    for (int device : {0, 1}) {
+        auto hidden = tensor(f.session, device, "resident/hidden");
+        check(f.session.ready(hidden));
+    }
+    check(f.session.transfers().peer_activation == 64);
+    f.session.advance(MediaPhase::complete);
+    m.weights.clear();
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.size() == 1);
+    auto hidden =
+        tensor(f.session, f.session.plan().devices[0].device, "resident/hidden");
+    check(f.session.ready(hidden) && f.session.transfers().peer_activation == 64);
+    hidden = {};
+    f.session.finish();
+    check(f.trace->allocations.empty() && f.activity->owners == 0);
+}
+
+void retained_hidden_shape() {
+    Fixture f;
+    StageManifest m;
+    m.schedule = MediaSchedule::feed_forward;
+    m.prepare_hidden = true;
+    m.status_bytes = 4;
+    m.workspaces_complete = true;
+    check(!f.session.admit(m, shape()));
+    auto hidden = tensor(f.session, 0, "resident/hidden");
+    auto status = flag(f.session, 0);
+    produce(f.session, 0, hidden, status);
+    const auto original = hidden.layout();
+    hidden = {};
+    status = {};
+    f.session.advance(MediaPhase::complete);
+    m.prepare_hidden = false;
+    m.retained_inputs = {"resident/hidden"};
+    auto shorter = shape();
+    --shorter.tokens;
+    const auto releases = f.trace->releases;
+    const auto error = f.session.admit(m, shorter);
+    check(
+        error && error->detail == "media_session_retained_shape"
+        && f.trace->releases == releases
+    );
+    hidden = tensor(f.session, 0, "resident/hidden");
+    check(
+        f.session.ready(hidden) && hidden.layout().data == original.data
+        && hidden.layout().generation == original.generation
+    );
+    hidden = {};
+    check(!f.session.admit(m, shape()));
+    f.session.finish();
+    check(f.trace->allocations.empty() && f.activity->owners == 0);
+}
+
 void kv_barrier_and_worker_idle() {
     Fixture f;
     StageManifest m;
@@ -895,6 +1352,12 @@ int main() {
     repeated_admission_invalidates_kv();
     allocation_failure_drains_and_unchecked_overwrite();
     feed_forward_phase_isolation();
+    ingress_hidden_certificate();
+    retained_admission_inputs();
+    retained_reprobe_selection();
+    retained_hidden_shape();
+    retained_owner_migration();
+    retained_partition_migration();
     kv_barrier_and_worker_idle();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";

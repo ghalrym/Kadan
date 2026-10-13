@@ -150,12 +150,37 @@ matvec(const Matrix& m, std::span<const float> input, std::size_t max_output_byt
         require(std::isfinite(value), "nonfinite_input");
     output_budget(m.rows, max_output_bytes);
     std::vector<float> output(m.rows);
+    matvec(m, input, std::span(output));
+    return output;
+}
+
+void matvec(const Matrix& m, std::span<const float> input, std::span<float> output) {
+    validate(m);
+    require(input.size() == m.columns, "input_shape");
+    require(output.size() == m.rows, "output_shape");
+    const auto out = reinterpret_cast<std::uintptr_t>(output.data());
+    auto disjoint = [&](auto values) {
+        if (values.empty())
+            return;
+        const auto at = reinterpret_cast<std::uintptr_t>(values.data());
+        require(
+            out <= UINTPTR_MAX - output.size_bytes()
+                && at <= UINTPTR_MAX - values.size_bytes()
+                && (out + output.size_bytes() <= at || at + values.size_bytes() <= out),
+            "output_overlap"
+        );
+    };
+    disjoint(input);
+    disjoint(m.weights);
+    disjoint(m.block_scales);
+    disjoint(m.multipliers);
+    for (auto value : input)
+        require(std::isfinite(value), "nonfinite_input");
     for (std::size_t row = 0; row < m.rows; ++row) {
         double sum = 0;
         for (std::size_t column = 0; column < m.columns; ++column)
             sum += static_cast<double>(weight(m, row, column)) * input[column];
         output[row] = finite_float(sum);
     }
-    return output;
 }
 }  // namespace kadan::quantization

@@ -17,6 +17,7 @@ router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 
 
 class CompletionMessage(ChatMessage):
+    model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, validation_alias=AliasChoices("text", "content"))
 
 
@@ -58,9 +59,15 @@ class CacheUsage(BaseModel):
     limit_bytes: int = 0
 
 
+class CompletionOutputMessage(BaseModel):
+    role: Literal["assistant"]
+    text: str
+    meta: str | None = None
+
+
 class CompletionResponse(BaseModel):
     # Preserve the original Kadan response while adding the standard envelope.
-    message: ChatMessage
+    message: CompletionOutputMessage
     id: str
     object: Literal["chat.completion"] = "chat.completion"
     created: int
@@ -210,7 +217,7 @@ async def create_completion(body: CompletionRequest, request: Request):
     text = result["text"]
     return CompletionResponse(
         **identity,
-        message=ChatMessage(role="assistant", text=text),
+        message=CompletionOutputMessage(role="assistant", text=text),
         choices=[
             CompletionChoice(
                 message=AssistantMessage(content=text),

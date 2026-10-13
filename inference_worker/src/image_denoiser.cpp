@@ -281,12 +281,135 @@ void Denoiser::unload() {
     }
 }
 
+std::optional<MediaPlanError> Denoiser::preflight(
+    MediaSession& session,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    const std::atomic_bool& cancel
+) {
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto& d = model_->d;
+    if (!text || text > 2048 || !height || height > 256 || !width || width > 256
+        || height * width % 4 || text + height * width > 32768 || d.channels != 64)
+        return MediaPlanError{
+            PlanFailure::unsupported_layout, "image_resident_shape", {}
+        };
+    const auto tokens = text + height * width;
+    std::vector<StageManifest> manifests;
+    for (std::size_t block = 0; block < model_->blocks.size(); ++block) {
+        auto shared = feed_forward_manifest(
+            block, tokens, HiddenBoundary::pre_qkv, cancel, text, block != 0
+        );
+        if (auto* error = std::get_if<MediaPlanError>(&shared))
+            return *error;
+        auto built = model_->blocks[block]->feed_forward_manifest(
+            tokens,
+            HiddenBoundary::pre_qkv,
+            cancel,
+            std::get<StageManifest>(std::move(shared))
+        );
+        if (auto* error = std::get_if<MediaPlanError>(&built))
+            return *error;
+        manifests.push_back(std::get<StageManifest>(std::move(built)));
+    }
+    // Check all layouts before reporting a capacity rejection. A later unsupported
+    // block must not be disguised as a supported path that merely lacks memory.
+    std::optional<MediaPlanError> capacity;
+    for (const auto& manifest : manifests) {
+        stop(cancel);
+        if (auto error = session.preflight(
+                manifest,
+                MediaShape{
+                    tokens, d.block.state, d.block.state, 0, 0, d.block.intermediate
+                }
+            )) {
+            if (error->reason != PlanFailure::capacity)
+                return error;
+            if (!capacity)
+                capacity = std::move(error);
+        }
+    }
+    return capacity;
+}
+
 std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     MediaSession& session,
     std::size_t block,
     std::size_t tokens,
     HiddenBoundary boundary,
-    const std::atomic_bool& cancel
+    const std::atomic_bool& cancel,
+    std::optional<std::size_t> resident_text
+) {
+    const bool retain_latent =
+        block
+        || std::any_of(
+            session.plan().tensors.begin(),
+            session.plan().tensors.end(),
+            [](const auto& t) {
+                return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+            }
+        );
+    auto built = feed_forward_manifest(
+        block, tokens, boundary, cancel, resident_text, retain_latent
+    );
+    if (auto* error = std::get_if<MediaPlanError>(&built))
+        return *error;
+    Busy active(busy_);
+    auto& m = *model_;
+    if (auto error = m.blocks[block]->prepare_feed_forward(
+            session, tokens, boundary, cancel, std::get<StageManifest>(std::move(built))
+        ))
+        return error;
+    try {
+        for (const auto& slice : session.plan().weights) {
+            if (!m.names.contains(slice.name))
+                continue;
+            const auto& spec = m.specs.at(m.names.at(slice.name));
+            auto& shard = *m.shards[spec.shard];
+            stop(cancel);
+            shard.check_unchanged();
+            auto destination = session.weight(slice);
+            if (session.ready(destination))
+                continue;
+            Lease staging(*resources_, slice.stored_bytes);
+            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            shard.read_tensor(spec.name, 0, raw);
+            shard.check_unchanged();
+            stop(cancel);
+            // The standard host source validates raw weights, even when finite
+            // output cancellation could otherwise hide a nonfinite weight.
+            const auto dtype = shard.tensor(spec.name).dtype;
+            for (std::size_t i = 0; i < raw.size();
+                 i += dtype == checkpoint::Dtype::bf16 ? 2 : 4)
+                need(
+                    dtype == checkpoint::Dtype::fp32
+                        ? ((std::uint32_t(raw[i + 3]) << 24
+                            | std::uint32_t(raw[i + 2]) << 16
+                            | std::uint32_t(raw[i + 1]) << 8 | raw[i])
+                           & 0x7f800000)
+                              != 0x7f800000
+                        : ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80)
+                              != 0x7f80,
+                    "h3_cuda_nonfinite_weight"
+                );
+            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+        }
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+    return {};
+}
+
+std::variant<StageManifest, MediaPlanError> Denoiser::feed_forward_manifest(
+    std::size_t block,
+    std::size_t tokens,
+    HiddenBoundary boundary,
+    const std::atomic_bool& cancel,
+    std::optional<std::size_t> resident_text,
+    bool retain_latent
 ) {
     Busy active(busy_);
     stop(cancel);
@@ -294,19 +417,51 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
     auto& m = *model_;
     StageManifest manifest;
     manifest.prepare_projection = true;
+    const bool final = block + 1 == m.blocks.size();
+    const bool ingress = block == 0
+                         && (boundary == HiddenBoundary::pre_attention
+                             || boundary == HiddenBoundary::pre_qkv);
+    manifest.prepare_hidden = ingress;
+    if (block && boundary == HiddenBoundary::pre_qkv)
+        manifest.retained_inputs = {
+            "resident/hidden", "conditioning/time-activated", "ff/modulation"
+        };
     for (const auto* name :
-         {"time_text_embed.timestep_embedder.linear_2.weight", "modulation.1.weight"}) {
+         {"img_in.weight",
+          "txt_in.text_norm.weight",
+          "txt_in.in_layer.weight",
+          "txt_in.out_layer.weight",
+          "time_text_embed.timestep_embedder.linear_1.weight",
+          "time_text_embed.timestep_embedder.linear_2.weight",
+          "modulation.1.weight",
+          "norm_out.linear.weight",
+          "proj_out.weight"}) {
+        if (!ingress
+            && (std::string_view(name).starts_with("txt_in.")
+                || std::string_view(name) == "img_in.weight"))
+            continue;
+        if (!final
+            && (std::string_view(name) == "norm_out.linear.weight"
+                || std::string_view(name) == "proj_out.weight"))
+            continue;
         const auto& spec = m.specs.at(m.names.at(name));
         auto& shard = *m.shards[spec.shard];
         shard.check_unchanged();
         const auto tensor = shard.tensor(spec.name);
         // Preserve project_source's STANDARD native-BF16 branch; F32 needs its
         // own resident implementation rather than adopting the FF policy.
-        if (!compute_ || !compute_->supports_bf16_weights()
-            || tensor.dtype != checkpoint::Dtype::bf16)
+        const bool norm = spec.name == "txt_in.text_norm.weight";
+        if (!norm
+            && (!compute_ || !compute_->supports_bf16_weights()
+                || tensor.dtype != checkpoint::Dtype::bf16))
             return MediaPlanError{
                 PlanFailure::unsupported_layout,
-                spec.name == "modulation.1.weight"
+                (spec.name.starts_with("txt_in.") || spec.name == "img_in.weight")
+                    ? "image_ingress_standard_precision"
+                : (spec.name == "norm_out.linear.weight"
+                   || spec.name == "proj_out.weight")
+                    ? "image_final_standard_precision"
+                : spec.name == "modulation.1.weight"
                     ? "image_modulation_standard_precision"
                     : "image_timestep_standard_precision",
                 {}
@@ -317,15 +472,64 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
         manifest.weights.push_back(
             {spec.name,
              spec.identity,
-             TensorStorage::bf16_exact,
+             tensor.dtype == checkpoint::Dtype::bf16 ? TensorStorage::bf16_exact
+                                                     : TensorStorage::f32,
              std::size_t(tensor.shape[0]),
-             m.d.block.state,
+             norm ? 1 : std::size_t(tensor.shape[1]),
              WeightPartition::replicated,
              1,
              1,
-             ProjectionPrecision::bf16_f32}
+             norm ? ProjectionPrecision::f32 : ProjectionPrecision::bf16_f32}
         );
     }
+    if (resident_text) {
+        need(
+            *resident_text && *resident_text <= 2048 && *resident_text < tokens
+                && tokens <= 32768,
+            "image_scheduler_shape"
+        );
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/latent",
+              (tokens - *resident_text) * m.d.channels * sizeof(float)},
+             {"ingress/condition", *resident_text * m.d.context * sizeof(float)}}
+        );
+        if (retain_latent) {
+            manifest.retained_inputs.emplace_back("ingress/latent");
+            manifest.retained_inputs.emplace_back("ingress/condition");
+        }
+    }
+    if (ingress) {
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/normalized",
+              tokens * m.d.context * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/projected",
+              tokens * m.d.block.state * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare}}
+        );
+    }
+    if (ingress && !resident_text)
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"ingress/latent",
+              tokens * m.d.channels * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare},
+             {"ingress/condition",
+              tokens * m.d.context * sizeof(float),
+              MediaPhase::prepare,
+              MediaPhase::prepare}}
+        );
+    manifest.tensors.push_back(
+        {"conditioning/frequency",
+         512 * sizeof(float),
+         MediaPhase::prepare,
+         MediaPhase::prepare}
+    );
     manifest.tensors.push_back(
         {"conditioning/time-linear1",
          2 * m.d.block.state * sizeof(float),
@@ -333,44 +537,270 @@ std::optional<MediaPlanError> Denoiser::prepare_feed_forward(
          MediaPhase::prepare}
     );
     manifest.tensors.push_back(
-        {"conditioning/time-activated",
-         2 * m.d.block.state * sizeof(float),
-         MediaPhase::prepare,
-         MediaPhase::prepare}
+        {"conditioning/time-activated", 2 * m.d.block.state * sizeof(float)}
     );
-    if (auto error = m.blocks[block]->prepare_feed_forward(
-            session, tokens, boundary, cancel, std::move(manifest)
-        ))
-        return error;
+    if (final) {
+        manifest.tensors.insert(
+            manifest.tensors.end(),
+            {{"final/scale",
+              m.d.block.state * sizeof(float),
+              MediaPhase::complete,
+              MediaPhase::complete},
+             {"final/normalized",
+              tokens * m.d.block.state * sizeof(float),
+              MediaPhase::complete,
+              MediaPhase::complete},
+             {"final/projection-conversion",
+              tokens * m.d.block.state * sizeof(std::uint16_t),
+              MediaPhase::complete,
+              MediaPhase::complete,
+              AllocationKind::conversion},
+             {"final/velocity",
+              tokens * m.d.channels * sizeof(float),
+              MediaPhase::complete,
+              MediaPhase::complete}}
+        );
+    }
+    return manifest;
+}
+
+void Denoiser::execute_ingress(
+    MediaSession& session,
+    std::span<const float> latent,
+    std::span<const float> condition,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto state = model_->d.block.state, context = model_->d.context,
+               channels = model_->d.channels;
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView latent, condition, norm_weight, normalized, projected,
+            text_weight, output_weight, image_weight, hidden, workspace, status;
+    };
+
     try {
-        for (const auto& slice : session.plan().weights) {
-            if (slice.name != "time_text_embed.timestep_embedder.linear_2.weight"
-                && slice.name != "modulation.1.weight")
-                continue;
-            const auto& spec = m.specs.at(m.names.at(slice.name));
-            auto& shard = *m.shards[spec.shard];
-            stop(cancel);
-            shard.check_unchanged();
-            Lease staging(*resources_, slice.stored_bytes);
-            std::vector<std::uint8_t> raw(slice.stored_bytes);
-            shard.read_tensor(spec.name, 0, raw);
-            shard.check_unchanged();
-            stop(cancel);
-            // The standard host source validates raw weights, even when finite
-            // output cancellation could otherwise hide a nonfinite weight.
-            for (std::size_t i = 0; i < raw.size(); i += 2)
-                need(
-                    ((std::uint16_t(raw[i + 1]) << 8 | raw[i]) & 0x7f80) != 0x7f80,
-                    "h3_cuda_nonfinite_weight"
+        const auto resident = std::find_if(
+            session.plan().tensors.begin(),
+            session.plan().tensors.end(),
+            [](const auto& t) {
+                return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+            }
+        );
+        const bool owned = resident != session.plan().tensors.end();
+        need(
+            text && text <= 2048 && (owned || !latent.empty())
+                && latent.size() % channels == 0,
+            "image_ingress_shape"
+        );
+        const auto images = owned ? resident->bytes / sizeof(float) / channels
+                                  : latent.size() / channels;
+        const auto tokens = text + images;
+        need(
+            images && images <= 65536 && tokens <= 32768
+                && (latent.size() == images * channels || (owned && latent.empty()))
+                && (condition.size() == text * context || (owned && condition.empty()))
+                && session.plan().schedule == MediaSchedule::feed_forward
+                && launchers.size() == session.plan().devices.size(),
+            "image_ingress_shape"
+        );
+        finite(latent);
+        finite(condition);
+
+        struct Projection {
+            DeviceTensorView *input, *weight, *output;
+            std::size_t first, rows;
+            bool gelu;
+        };
+
+        auto projections = [&](Device& d) {
+            return std::array{
+                Projection{&d.normalized, &d.text_weight, &d.projected, 0, text, true},
+                Projection{&d.projected, &d.output_weight, &d.hidden, 0, text, false},
+                Projection{&d.latent, &d.image_weight, &d.hidden, text, images, false}
+            };
+        };
+        std::vector<Device> devices;
+        for (const auto& planned : session.plan().devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_ingress_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_ingress_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_ingress_launcher");
+            const auto hidden_boundary = std::find_if(
+                session.plan().tensors.begin(),
+                session.plan().tensors.end(),
+                [&](const auto& t) {
+                    return t.device == planned.device && t.name == "resident/hidden";
+                }
+            );
+            need(
+                hidden_boundary != session.plan().tensors.end()
+                    && hidden_boundary->bytes == tokens * state * sizeof(float),
+                "image_ingress_shape"
+            );
+            auto matrix = [&](const char* name,
+                              std::size_t rows,
+                              std::size_t columns,
+                              DeviceDType dtype = DeviceDType::f32) {
+                return session.tensor(
+                    planned.device, name, dtype, {rows, columns}, {columns, 1}
                 );
-            auto destination = session.weight(slice);
-            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+            };
+            auto weight = [&](const char* name, std::size_t rows, std::size_t columns) {
+                const auto& spec = model_->specs.at(model_->names.at(name));
+                const auto width = model_->shards[spec.shard]->tensor(spec.name).dtype
+                                           == checkpoint::Dtype::fp32
+                                       ? 4u
+                                       : 2u;
+                const auto found = std::find_if(
+                    session.plan().weights.begin(),
+                    session.plan().weights.end(),
+                    [&](const auto& w) {
+                        return w.device == planned.device && w.name == spec.name
+                               && w.identity == spec.identity && w.first_row == 0
+                               && w.rows == rows
+                               && w.stored_bytes == rows * columns * width;
+                    }
+                );
+                need(found != session.plan().weights.end(), "image_ingress_weight");
+                return session.weight(*found);
+            };
+            devices.push_back(
+                {launcher,
+                 matrix("ingress/latent", images, channels),
+                 matrix("ingress/condition", text, context),
+                 weight("txt_in.text_norm.weight", context, 1),
+                 matrix("ingress/normalized", text, context),
+                 matrix("ingress/projected", text, state),
+                 weight("txt_in.in_layer.weight", state, context),
+                 weight("txt_in.out_layer.weight", state, state),
+                 weight("img_in.weight", state, channels),
+                 matrix("resident/hidden", tokens, state),
+                 session.tensor(
+                     planned.device,
+                     "resident/blas",
+                     DeviceDType::u8,
+                     {video::bf16_projection_workspace_bytes},
+                     {1}
+                 ),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array ready{
+                &d.norm_weight, &d.text_weight, &d.output_weight, &d.image_weight
+            };
+            session.require_ready(ready);
+            if (latent.empty()) {
+                const std::array retained{&d.latent};
+                session.require_ready(retained);
+            }
+            if (condition.empty()) {
+                const std::array retained{&d.condition};
+                session.require_ready(retained);
+            }
+            video::validate_image_text_normalization(
+                planned.device,
+                d.condition.layout(),
+                d.norm_weight.layout(),
+                d.normalized.layout(),
+                d.status.layout()
+            );
+            const MediaDeviceSpan bias{
+                nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+            };
+            for (const auto& projection : projections(d)) {
+                auto input = session.rows(*projection.input, 0, 1);
+                auto output = session.rows(*projection.output, projection.first, 1);
+                auto rounded = matrix(
+                    "resident/projection-conversion",
+                    1,
+                    input.layout().dimensions[1],
+                    DeviceDType::bf16
+                );
+                video::validate_bf16_projection(
+                    planned.device,
+                    input.layout(),
+                    projection.weight->layout(),
+                    bias,
+                    rounded.layout(),
+                    output.layout(),
+                    d.workspace.layout(),
+                    d.status.layout()
+                );
+            }
+        }
+        // Validate every device before uploading input or submitting any producer.
+        for (auto& d : devices) {
+            stop(cancel);
+            if (!latent.empty())
+                session.upload_input(d.latent, std::as_bytes(latent));
+            if (!condition.empty())
+                session.upload_input(d.condition, std::as_bytes(condition));
+            stop(cancel);
+            const std::array read{&d.condition, &d.norm_weight};
+            const std::array write{&d.normalized, &d.status};
+            session.launch(
+                d.launcher->device(),
+                read,
+                write,
+                [&](void* stream, auto in, auto out) {
+                    d.launcher->text_normalization(stream, in, out);
+                }
+            );
+            session.complete(write, d.status);
+            // Serial rows reuse the smallest admitted conversion tile. Text/image
+            // hidden regions certify contiguous coverage under the same owner.
+            for (const auto& projection : projections(d)) {
+                for (std::size_t row = 0; row < projection.rows; ++row) {
+                    stop(cancel);
+                    auto input = session.rows(*projection.input, row, 1);
+                    auto output =
+                        session.rows(*projection.output, projection.first + row, 1);
+                    auto rounded = session.tensor(
+                        d.launcher->device(),
+                        "resident/projection-conversion",
+                        DeviceDType::bf16,
+                        {1, input.layout().dimensions[1]},
+                        {input.layout().dimensions[1], 1}
+                    );
+                    const std::array projection_read{&input, projection.weight};
+                    const std::array projection_write{
+                        &output, &rounded, &d.workspace, &d.status
+                    };
+                    session.launch(
+                        d.launcher->device(),
+                        projection_read,
+                        projection_write,
+                        [&](void* stream, auto in, auto out) {
+                            if (projection.gelu)
+                                d.launcher->text_projection(stream, in, out);
+                            else
+                                d.launcher->standard(stream, in, out);
+                        }
+                    );
+                    session.complete(projection_write, d.status);
+                }
+            }
+            stop(cancel);
+            const std::array hidden{&d.hidden};
+            session.require_ready(hidden);
         }
     } catch (...) {
         session.abort(std::current_exception());
         throw;
     }
-    return {};
 }
 
 void Denoiser::execute_feed_forward(
@@ -378,29 +808,158 @@ void Denoiser::execute_feed_forward(
     std::size_t block,
     std::size_t tokens,
     std::size_t text,
+    std::optional<float> timestep,
     HiddenBoundary boundary,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    need(
+        boundary == HiddenBoundary::pre_attention
+            || boundary == HiddenBoundary::post_attention,
+        "image_ff_plan"
+    );
+    execute_conditioning(
+        session, block, tokens, text, timestep, boundary, launchers, cancel
+    );
+    const bool attention = boundary == HiddenBoundary::pre_attention;
+    const bool final = block + 1 == model_->blocks.size();
+    const auto& plan = session.plan();
+    try {
+        auto& transformer = *model_->blocks[block];
+        transformer.prepare_feed_forward_inputs(
+            session, tokens, text, boundary, launchers, cancel
+        );
+        transformer.execute_feed_forward(
+            session,
+            tokens,
+            text,
+            launchers,
+            cancel,
+            ((final ? 5 : 3) + (block == 0 && attention ? 4 : 0)) * plan.devices.size()
+        );
+        if (final)
+            execute_final_output(session, tokens, text, launchers, cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute_qkv(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::optional<float> timestep,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    execute_conditioning(
+        session,
+        block,
+        tokens,
+        text,
+        timestep,
+        HiddenBoundary::pre_qkv,
+        launchers,
+        cancel
+    );
+    model_->blocks[block]->execute_qkv(session, tokens, text, launchers, cancel);
+}
+
+void Denoiser::execute_rotary(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
     std::span<video::ImageFeedForwardLauncher* const> launchers,
     const std::atomic_bool& cancel
 ) {
     Busy active(busy_);
     stop(cancel);
     need(model_ && block < model_->blocks.size(), "image_load_state");
+    model_->blocks[block]->execute_rotary(
+        session, tokens, text, height, width, launchers, cancel
+    );
+}
+
+void Denoiser::execute_attention(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
+    try {
+        auto& transformer = *model_->blocks[block];
+        transformer.execute_masked_attention(session, tokens, text, launchers, cancel);
+        transformer.prepare_feed_forward_inputs(
+            session, tokens, text, HiddenBoundary::pre_attention, launchers, cancel
+        );
+        const bool final = block + 1 == model_->blocks.size();
+        // Five replicated Q/K/V/norm weights accompany the existing FF slice.
+        const auto shared = ((final ? 5 : 3) + (block == 0 ? 4 : 0) + 5)
+                            * session.plan().devices.size();
+        transformer.execute_feed_forward(
+            session, tokens, text, launchers, cancel, shared
+        );
+        if (final)
+            execute_final_output(session, tokens, text, launchers, cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute_conditioning(
+    MediaSession& session,
+    std::size_t block,
+    std::size_t tokens,
+    std::size_t text,
+    std::optional<float> timestep,
+    HiddenBoundary boundary,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    stop(cancel);
+    need(model_ && block < model_->blocks.size(), "image_load_state");
     const auto state = model_->d.block.state;
     const auto& plan = session.plan();
-    const bool attention = boundary == HiddenBoundary::pre_attention;
+    const bool qkv = boundary == HiddenBoundary::pre_qkv;
+    const bool attention = qkv || boundary == HiddenBoundary::pre_attention;
+    const bool final = block + 1 == model_->blocks.size();
 
     struct Device {
         video::ImageFeedForwardLauncher* launcher;
-        DeviceTensorView linear1, time, modulation, time_weight, modulation_weight;
+        DeviceTensorView frequency, linear1, time, modulation, linear1_weight,
+            time_weight, modulation_weight;
     };
 
     try {
+        if (block == 0
+            && std::any_of(plan.tensors.begin(), plan.tensors.end(), [](const auto& t) {
+                   return t.name == "ingress/latent" && t.last == MediaPhase::complete;
+               }))
+            need(timestep.has_value(), "image_scheduler_timestep");
         need(
-            tokens && text <= tokens && plan.rows
+            tokens && text <= tokens && (!final || text < tokens) && plan.rows
                 && (attention || boundary == HiddenBoundary::post_attention)
                 && plan.schedule == MediaSchedule::feed_forward
                 && launchers.size() == plan.devices.size()
-                && plan.weights.size() == (attention ? 6 : 5) * plan.devices.size(),
+                && plan.weights.size()
+                       == ((qkv         ? 12
+                            : attention ? 7
+                                        : 6)
+                           + (final ? 2 : 0) + (block == 0 && attention ? 4 : 0))
+                              * plan.devices.size(),
             "image_ff_plan"
         );
         std::vector<Device> devices;
@@ -414,13 +973,14 @@ void Denoiser::execute_feed_forward(
                 }
             }
             need(launcher, "image_ff_launcher");
-            auto weight = [&](const char* name, std::size_t rows) {
+            auto weight = [&](const char* name, std::size_t rows, std::size_t columns) {
                 const auto& spec = model_->specs.at(model_->names.at(name));
                 const auto slice = std::find_if(
                     plan.weights.begin(), plan.weights.end(), [&](const auto& w) {
                         return w.device == planned.device && w.name == spec.name
                                && w.identity == spec.identity && w.first_row == 0
-                               && w.rows == rows && w.stored_bytes == rows * state * 2;
+                               && w.rows == rows
+                               && w.stored_bytes == rows * columns * 2;
                     }
                 );
                 need(slice != plan.weights.end(), "image_conditioning_weight");
@@ -437,11 +997,17 @@ void Denoiser::execute_feed_forward(
             };
             devices.push_back(
                 {launcher,
+                 matrix("conditioning/frequency", 2, 256),
                  matrix("conditioning/time-linear1", 2, state),
                  matrix("conditioning/time-activated", 2, state),
                  matrix("ff/modulation", 2, 4 * state),
-                 weight("time_text_embed.timestep_embedder.linear_2.weight", state),
-                 weight("modulation.1.weight", 4 * state)}
+                 weight(
+                     "time_text_embed.timestep_embedder.linear_1.weight", state, 256
+                 ),
+                 weight(
+                     "time_text_embed.timestep_embedder.linear_2.weight", state, state
+                 ),
+                 weight("modulation.1.weight", 4 * state, state)}
             );
             auto& d = devices.back();
             auto hidden = matrix("resident/hidden", tokens, state);
@@ -451,10 +1017,62 @@ void Denoiser::execute_feed_forward(
                 planned.device, "resident/status", DeviceDType::u32, {1}, {1}
             );
             const std::array ready{
-                &d.linear1, &d.time_weight, &d.modulation_weight, &hidden
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight, &hidden
             };
             session.require_ready(ready);
-            if (attention) {
+            if (final) {
+                auto final_weight = weight("norm_out.linear.weight", state, state);
+                auto output_weight =
+                    weight("proj_out.weight", model_->d.channels, state);
+                const std::array final_ready{&final_weight, &output_weight};
+                session.require_ready(final_ready);
+            }
+            if (timestep)
+                video::validate_image_frequency(
+                    planned.device, d.frequency.layout(), status.layout(), *timestep
+                );
+            else {
+                const std::array conditioning{&d.time, &d.modulation};
+                session.require_ready(conditioning);
+            }
+            const std::array inputs{&d.frequency, &d.linear1, &d.time};
+            const std::array outputs{&d.linear1, &d.time, &d.modulation};
+            const std::array weights{
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight
+            };
+            auto workspace = session.tensor(
+                planned.device,
+                "resident/blas",
+                DeviceDType::u8,
+                {video::bf16_projection_workspace_bytes},
+                {1}
+            );
+            const MediaDeviceSpan bias{
+                nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+            };
+            for (std::size_t stage = 0; stage < weights.size(); ++stage) {
+                const auto columns = stage == 0 ? 256 : state;
+                auto input = session.rows(*inputs[stage], 0, 1);
+                auto output = session.rows(*outputs[stage], 0, 1);
+                auto rounded = session.tensor(
+                    planned.device,
+                    "resident/projection-conversion",
+                    DeviceDType::bf16,
+                    {1, columns},
+                    {columns, 1}
+                );
+                video::validate_bf16_projection(
+                    planned.device,
+                    input.layout(),
+                    weights[stage]->layout(),
+                    bias,
+                    rounded.layout(),
+                    output.layout(),
+                    workspace.layout(),
+                    status.layout()
+                );
+            }
+            if (attention && !qkv) {
                 const std::array attended{&normalized};
                 session.require_ready(attended);
                 video::validate_image_attention_residual(
@@ -480,21 +1098,45 @@ void Denoiser::execute_feed_forward(
         }
         // All ingress and consumer layouts are checked before any producer runs.
         for (auto& d : devices) {
-            // Complete linear_2 + SiLU before modulation reads its output.
-            // One row at a time also fits the smallest admitted projection tile.
-            for (const bool timestep : {true, false}) {
+            if (!timestep)
+                continue;
+            stop(cancel);
+            {
+                auto status = session.tensor(
+                    d.launcher->device(), "resident/status", DeviceDType::u32, {1}, {1}
+                );
+                const std::array<DeviceTensorView*, 0> read{};
+                const std::array write{&d.frequency, &status};
+                session.launch(
+                    d.launcher->device(),
+                    read,
+                    write,
+                    [&](void* stream, auto, auto out) {
+                        d.launcher->frequency(stream, out, *timestep);
+                    }
+                );
+                session.complete(write, status);
+            }
+            // Complete each producer before its consumer. One row at a time fits
+            // the smallest admitted projection tile, reusing conversion/BLAS scratch.
+            const std::array inputs{&d.frequency, &d.linear1, &d.time};
+            const std::array outputs{&d.linear1, &d.time, &d.modulation};
+            const std::array weights{
+                &d.linear1_weight, &d.time_weight, &d.modulation_weight
+            };
+            for (std::size_t stage = 0; stage < weights.size(); ++stage) {
                 for (std::size_t row = 0; row < 2; ++row) {
                     stop(cancel);
                     const auto device = d.launcher->device();
-                    auto input = session.rows(timestep ? d.linear1 : d.time, row, 1);
-                    auto output =
-                        session.rows(timestep ? d.time : d.modulation, row, 1);
+                    auto input = session.rows(*inputs[stage], row, 1);
+                    auto output = session.rows(*outputs[stage], row, 1);
+                    const auto columns = stage == 0 ? 256 : state;
                     auto rounded = session.tensor(
                         device,
                         "resident/projection-conversion",
                         DeviceDType::bf16,
-                        {1, state},
-                        {state, 1}
+                        {1, columns},
+                        {columns, 1}
                     );
                     auto workspace = session.tensor(
                         device,
@@ -506,13 +1148,11 @@ void Denoiser::execute_feed_forward(
                     auto status = session.tensor(
                         device, "resident/status", DeviceDType::u32, {1}, {1}
                     );
-                    const std::array read{
-                        &input, timestep ? &d.time_weight : &d.modulation_weight
-                    };
+                    const std::array read{&input, weights[stage]};
                     const std::array write{&output, &rounded, &workspace, &status};
                     session.launch(
                         device, read, write, [&](void* stream, auto in, auto out) {
-                            if (timestep)
+                            if (stage < 2)
                                 d.launcher->timestep(stream, in, out);
                             else
                                 d.launcher->standard(stream, in, out);
@@ -523,13 +1163,325 @@ void Denoiser::execute_feed_forward(
             }
         }
         devices.clear();
-        auto& transformer = *model_->blocks[block];
-        transformer.prepare_feed_forward_inputs(
-            session, tokens, text, boundary, launchers, cancel
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute_final_output(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    const auto state = model_->d.block.state, channels = model_->d.channels;
+    const auto& spec = model_->specs.at(model_->names.at("norm_out.linear.weight"));
+    const auto& output_spec = model_->specs.at(model_->names.at("proj_out.weight"));
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView time, weight, output_weight, hidden, scale, normalized,
+            rounded, velocity, workspace, status;
+    };
+
+    std::vector<Device> devices;
+    for (const auto& planned : session.plan().devices) {
+        auto* launcher =
+            *std::find_if(launchers.begin(), launchers.end(), [&](auto* candidate) {
+                return candidate->device() == planned.device;
+            });
+        const auto slice = std::find_if(
+            session.plan().weights.begin(),
+            session.plan().weights.end(),
+            [&](const auto& w) {
+                return w.device == planned.device && w.name == spec.name
+                       && w.identity == spec.identity && w.first_row == 0
+                       && w.rows == state && w.stored_bytes == state * state * 2;
+            }
         );
-        transformer.execute_feed_forward(
-            session, tokens, text, launchers, cancel, 2 * plan.devices.size()
+        need(slice != session.plan().weights.end(), "image_final_weight");
+        const auto output_slice = std::find_if(
+            session.plan().weights.begin(),
+            session.plan().weights.end(),
+            [&](const auto& w) {
+                return w.device == planned.device && w.name == output_spec.name
+                       && w.identity == output_spec.identity && w.first_row == 0
+                       && w.rows == channels && w.stored_bytes == channels * state * 2;
+            }
         );
+        need(output_slice != session.plan().weights.end(), "image_final_weight");
+        auto matrix = [&](const char* name,
+                          std::size_t rows,
+                          DeviceDType dtype = DeviceDType::f32) {
+            return session.tensor(
+                planned.device, name, dtype, {rows, state}, {state, 1}
+            );
+        };
+        auto time = matrix("conditioning/time-activated", 2);
+        auto hidden = matrix("resident/hidden", tokens);
+        devices.push_back(
+            {launcher,
+             session.rows(time, 0, 1),
+             session.weight(*slice),
+             session.weight(*output_slice),
+             session.rows(hidden, text, tokens - text),
+             matrix("final/scale", 1),
+             matrix("final/normalized", tokens - text),
+             matrix("final/projection-conversion", tokens - text, DeviceDType::bf16),
+             session.tensor(
+                 planned.device,
+                 "final/velocity",
+                 DeviceDType::f32,
+                 {tokens - text, channels},
+                 {channels, 1}
+             ),
+             session.tensor(
+                 planned.device,
+                 "resident/blas",
+                 DeviceDType::u8,
+                 {video::bf16_projection_workspace_bytes},
+                 {1}
+             ),
+             session.tensor(
+                 planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+             )}
+        );
+        auto& d = devices.back();
+        const std::array ready{&d.time, &d.weight, &d.output_weight, &d.hidden};
+        auto rounded = session.rows(d.rounded, 0, 1);
+        session.require_ready(ready);
+        const MediaDeviceSpan bias{
+            nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
+        };
+        video::validate_bf16_projection(
+            planned.device,
+            d.time.layout(),
+            d.weight.layout(),
+            bias,
+            rounded.layout(),
+            d.scale.layout(),
+            d.workspace.layout(),
+            d.status.layout()
+        );
+        video::validate_image_final_normalization(
+            planned.device,
+            d.hidden.layout(),
+            d.scale.layout(),
+            d.normalized.layout(),
+            d.status.layout()
+        );
+        video::validate_bf16_projection(
+            planned.device,
+            d.normalized.layout(),
+            d.output_weight.layout(),
+            bias,
+            d.rounded.layout(),
+            d.velocity.layout(),
+            d.workspace.layout(),
+            d.status.layout()
+        );
+    }
+    // All final ingress/layouts precede the first norm_out submission.
+    for (auto& d : devices) {
+        stop(cancel);
+        const std::array read{&d.time, &d.weight};
+        auto rounded = session.rows(d.rounded, 0, 1);
+        const std::array write{&d.scale, &rounded, &d.workspace, &d.status};
+        session.launch(
+            d.launcher->device(), read, write, [&](void* stream, auto in, auto out) {
+                d.launcher->standard(stream, in, out);
+            }
+        );
+        session.complete(write, d.status);
+        stop(cancel);
+        const std::array input{&d.hidden, &d.scale};
+        const std::array output{&d.normalized, &d.status};
+        session.launch(
+            d.launcher->device(), input, output, [&](void* stream, auto in, auto out) {
+                d.launcher->final_normalization(stream, in, out);
+            }
+        );
+        session.complete(output, d.status);
+        stop(cancel);
+        const std::array projection_input{&d.normalized, &d.output_weight};
+        const std::array projection_output{
+            &d.velocity, &d.rounded, &d.workspace, &d.status
+        };
+        session.launch(
+            d.launcher->device(),
+            projection_input,
+            projection_output,
+            [&](void* stream, auto in, auto out) {
+                d.launcher->standard(stream, in, out);
+            }
+        );
+        session.complete(projection_output, d.status);
+        stop(cancel);
+    }
+}
+
+void Denoiser::execute_scheduler(
+    MediaSession& session,
+    std::size_t tokens,
+    std::size_t text,
+    float current,
+    float next,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+
+    struct Device {
+        video::ImageFeedForwardLauncher* launcher;
+        DeviceTensorView latent, velocity, status;
+    };
+
+    try {
+        need(
+            text && text <= 2048 && text < tokens && tokens <= 32768
+                && !session.plan().devices.empty()
+                && launchers.size() == session.plan().devices.size(),
+            "image_scheduler_shape"
+        );
+        std::vector<Device> devices;
+        const auto images = tokens - text, channels = model_->d.channels;
+        for (const auto& planned : session.plan().devices) {
+            video::ImageFeedForwardLauncher* launcher = nullptr;
+            for (auto* candidate : launchers) {
+                need(candidate, "image_scheduler_launcher");
+                if (candidate->device() == planned.device) {
+                    need(!launcher, "image_scheduler_launcher");
+                    launcher = candidate;
+                }
+            }
+            need(launcher, "image_scheduler_launcher");
+            const auto latent = std::find_if(
+                session.plan().tensors.begin(),
+                session.plan().tensors.end(),
+                [&](const auto& t) {
+                    return t.device == planned.device && t.name == "ingress/latent";
+                }
+            );
+            need(
+                latent != session.plan().tensors.end()
+                    && latent->last == MediaPhase::complete
+                    && latent->bytes == images * channels * sizeof(float),
+                "image_scheduler_shape"
+            );
+            devices.push_back(
+                {launcher,
+                 session.tensor(
+                     planned.device,
+                     "ingress/latent",
+                     DeviceDType::f32,
+                     {images, channels},
+                     {channels, 1}
+                 ),
+                 session.tensor(
+                     planned.device,
+                     "final/velocity",
+                     DeviceDType::f32,
+                     {images, channels},
+                     {channels, 1}
+                 ),
+                 session.tensor(
+                     planned.device, "resident/status", DeviceDType::u32, {1}, {1}
+                 )}
+            );
+            auto& d = devices.back();
+            const std::array read{&d.latent, &d.velocity};
+            session.require_ready(read);
+            video::validate_image_scheduler(
+                planned.device,
+                d.latent.layout(),
+                d.velocity.layout(),
+                d.latent.layout(),
+                d.status.layout(),
+                current,
+                next
+            );
+        }
+        for (auto& d : devices) {
+            stop(cancel);
+            const std::array read{&d.latent, &d.velocity};
+            const std::array write{&d.latent, &d.status};
+            session.launch(
+                d.launcher->device(),
+                read,
+                write,
+                [&](void* stream, auto in, auto out) {
+                    d.launcher->scheduler(stream, in, out, current, next);
+                }
+            );
+            session.complete(write, d.status);
+        }
+        stop(cancel);
+    } catch (...) {
+        session.abort(std::current_exception());
+        throw;
+    }
+}
+
+void Denoiser::execute(
+    MediaSession& session,
+    std::span<const float> latent,
+    std::span<const float> condition,
+    std::size_t text,
+    std::size_t height,
+    std::size_t width,
+    float timestep,
+    std::span<video::ImageFeedForwardLauncher* const> launchers,
+    const std::atomic_bool& cancel,
+    const Hook& hook
+) {
+    stop(cancel);
+    need(bool(model_), "image_load_state");
+    const auto rows = text + height * width;
+    try {
+        for (std::size_t block = 0; block < model_->blocks.size(); ++block) {
+            stop(cancel);
+            if (block) {
+                if (auto rejected = prepare_feed_forward(
+                        session, block, rows, HiddenBoundary::pre_qkv, cancel, text
+                    ))
+                    throw std::runtime_error(
+                        "image_resident_admission: " + rejected->detail
+                    );
+            }
+            std::vector<video::ImageFeedForwardLauncher*> selected;
+            for (const auto& planned : session.plan().devices) {
+                const auto launcher = std::find_if(
+                    launchers.begin(), launchers.end(), [&](const auto* candidate) {
+                        return candidate && candidate->device() == planned.device;
+                    }
+                );
+                need(launcher != launchers.end(), "image_resident_launcher");
+                selected.push_back(*launcher);
+            }
+            if (!block)
+                execute_ingress(session, latent, condition, text, selected, cancel);
+            if (hook)
+                hook("block_started", block);
+            execute_qkv(
+                session,
+                block,
+                rows,
+                text,
+                block ? std::optional<float>{} : timestep,
+                selected,
+                cancel
+            );
+            if (!block && hook)
+                hook("conditioning", 0);
+            execute_rotary(session, block, rows, text, height, width, selected, cancel);
+            execute_attention(session, block, rows, text, selected, cancel);
+            if (hook)
+                hook("block", block);
+        }
     } catch (...) {
         session.abort(std::current_exception());
         throw;
@@ -615,12 +1567,9 @@ void Denoiser::execute(
         cancel
     );
     for (std::size_t row = 0; row < 2; ++row)
-        for (std::size_t c = 0; c < 128; ++c) {
-            float angle = (row ? 0.f : timestep * 1000.f)
-                          * std::exp(-std::log(10000.f) * float(c) / 128.f);
-            frequency.data[row * 256 + c] = std::cos(angle);
-            frequency.data[row * 256 + 128 + c] = std::sin(angle);
-        }
+        for (std::size_t c = 0; c < 256; ++c)
+            frequency.data[row * 256 + c] =
+                detail::timestep_frequency(row ? 0.f : timestep, c);
     m.linear(
         "time_text_embed.timestep_embedder.linear_1",
         frequency.span(),

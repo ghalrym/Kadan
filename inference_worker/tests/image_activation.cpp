@@ -66,6 +66,28 @@ void preserves_previous_rounding() {
             }
 }
 
+void frequency_rounding_and_order() {
+    using kadan::image::detail::timestep_frequency;
+    for (float timestep :
+         {0.f, -0.f, std::numeric_limits<float>::denorm_min(), .001f, .1f, .625f, 1.f})
+        for (std::size_t column = 0; column < 128; ++column) {
+            const float angle = timestep * 1000.f
+                                * std::exp(-std::log(10000.f) * float(column) / 128.f);
+            check(
+                std::bit_cast<std::uint32_t>(timestep_frequency(timestep, column))
+                == std::bit_cast<std::uint32_t>(std::cos(angle))
+            );
+            check(
+                std::bit_cast<std::uint32_t>(timestep_frequency(timestep, 128 + column))
+                == std::bit_cast<std::uint32_t>(std::sin(angle))
+            );
+            check(timestep_frequency(0.f, column) == 1.f);
+            check(
+                std::bit_cast<std::uint32_t>(timestep_frequency(0.f, 128 + column)) == 0
+            );
+        }
+}
+
 void nonfinite_values() {
     // The primitive preserves IEEE results; the existing projection boundary
     // rejects nonfinite activations before this function is used by the block.
@@ -113,6 +135,7 @@ int main() {
     values_and_signed_zero();
     preserves_previous_rounding();
     nonfinite_values();
+    frequency_rounding_and_order();
     product_rounding();
     std::cout << "image SiLU scalar arithmetic passed (no inference)\n";
 }

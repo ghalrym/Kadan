@@ -3,6 +3,9 @@
 
 #include <array>
 #include <iostream>
+#include <limits>
+
+#include "kadan/dense_compute.hpp"
 
 using namespace kadan;
 using namespace kadan::video;
@@ -81,6 +84,190 @@ int main() {
             rejects();
         }
     }
+    auto scheduler = std::array{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x3000, DeviceDType::u32, {1}, {1}, 4)
+    };
+    const auto scheduler_original = scheduler;
+    auto validate_scheduler = [&](float current = .625f, float next = .25f) {
+        return validate_image_scheduler(
+            0, scheduler[0], scheduler[1], scheduler[2], scheduler[3], current, next
+        );
+    };
+    check(validate_scheduler() == 24 && validate_scheduler(.02f, 0.f) == 24);
+    auto rejects_scheduler = [&](float current = .625f, float next = .25f) {
+        bool rejected = false;
+        try {
+            validate_scheduler(current, next);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        scheduler = scheduler_original;
+    };
+    for (std::size_t i = 0; i < scheduler.size(); ++i) {
+        scheduler[i].dtype = DeviceDType::bf16;
+        rejects_scheduler();
+        scheduler[i].device = 1;
+        rejects_scheduler();
+        scheduler[i].data = nullptr;
+        rejects_scheduler();
+        scheduler[i].bytes -= 1;
+        rejects_scheduler();
+        scheduler[i].strides.back() = 2;
+        rejects_scheduler();
+        scheduler[i].dimensions[0] += 1;
+        rejects_scheduler();
+        scheduler[i].offset = SIZE_MAX;
+        rejects_scheduler();
+    }
+    scheduler[2].generation += 1;
+    rejects_scheduler();
+    scheduler[2].data = storage.data() + 0x4000;
+    rejects_scheduler();
+    scheduler[1].data = scheduler[0].data;
+    rejects_scheduler();
+    scheduler[3].data = scheduler[1].data;
+    rejects_scheduler();
+    scheduler[0].data = storage.data() + 0x1001;
+    scheduler[2].data = scheduler[0].data;
+    rejects_scheduler();
+    for (float invalid :
+         {-.1f,
+          0.f,
+          1.1f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_scheduler(invalid);
+    for (float invalid :
+         {-.1f,
+          .625f,
+          1.f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_scheduler(.625f, invalid);
+    // Attention contract and tile tails, without reading activations.
+    alignas(256) static std::array<std::byte, 10 * 1024 * 1024> attention_storage;
+    auto attention_span = [&](std::size_t offset,
+                              DeviceDType type,
+                              std::vector<std::size_t> dimensions,
+                              std::vector<std::size_t> strides,
+                              Bytes bytes) {
+        return MediaDeviceSpan{
+            attention_storage.data() + offset, 0, type, dimensions, strides, bytes, 1, 0
+        };
+    };
+    const ImageAttentionScratch attention_layout(131, 32);
+    check(attention_layout.queries == 128 && attention_layout.keys == 131);
+    check(ImageAttentionScratch(32768, 128).keys == 4096);
+    auto attention = std::array{
+        attention_span(0x10000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x20000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x30000, DeviceDType::f32, {131, 64}, {64, 1}, 131 * 64 * 4),
+        attention_span(0x40000, DeviceDType::f32, {3, 64}, {64, 1}, 3 * 64 * 4),
+        attention_span(
+            0x50000,
+            DeviceDType::u8,
+            {attention_layout.bytes},
+            {1},
+            attention_layout.bytes
+        ),
+        attention_span(
+            0x100000,
+            DeviceDType::u8,
+            {bf16_projection_workspace_bytes},
+            {1},
+            bf16_projection_workspace_bytes
+        ),
+        attention_span(0x900000, DeviceDType::u32, {1}, {1}, 4)
+    };
+    auto attention_heads = std::size_t(2), attention_dim = std::size_t(32),
+         attention_text = std::size_t(3), attention_first = std::size_t(128);
+    auto validate_masked_attention = [&] {
+        return validate_image_masked_attention(
+            0,
+            attention[0],
+            attention[1],
+            attention[2],
+            attention[3],
+            attention[4],
+            attention[5],
+            attention[6],
+            attention_heads,
+            attention_dim,
+            attention_text,
+            attention_first
+        );
+    };
+    check(validate_masked_attention().rows == 3);
+    const auto masked_original = attention;
+    auto rejects_attention = [&] {
+        bool rejected = false;
+        try {
+            validate_masked_attention();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        attention = masked_original;
+        attention_heads = 2;
+        attention_dim = 32;
+        attention_text = 3;
+        attention_first = 128;
+    };
+    for (std::size_t i = 0; i < attention.size(); ++i) {
+        attention[i].device = 1;
+        rejects_attention();
+        attention[i].data = nullptr;
+        rejects_attention();
+        --attention[i].bytes;
+        rejects_attention();
+        attention[i].dtype = DeviceDType::f64;
+        rejects_attention();
+        attention[i].strides.back() = 2;
+        rejects_attention();
+        attention[i].offset = SIZE_MAX;
+        rejects_attention();
+        attention[i].data = attention_storage.data() + 1;
+        rejects_attention();
+        for (std::size_t j = 0; j < i; ++j) {
+            attention[i].data = attention[j].data;
+            rejects_attention();
+        }
+    }
+    attention[2].dimensions[0] = 130;
+    rejects_attention();
+    attention[3].dimensions[0] = 4;
+    attention[3].bytes = 4 * 64 * 4;
+    rejects_attention();
+    attention[3].data = static_cast<std::byte*>(attention[0].data) + 4;
+    rejects_attention();
+    attention_heads = 0;
+    rejects_attention();
+    attention_heads = 33;
+    rejects_attention();
+    attention_dim = 0;
+    rejects_attention();
+    attention_dim = 129;
+    rejects_attention();
+    attention_text = 0;
+    rejects_attention();
+    attention_text = 132;
+    rejects_attention();
+    attention_first = 131;
+    rejects_attention();
+    attention_first = 0;
+    attention[3].dimensions[0] = 129;
+    attention[3].bytes = 129 * 64 * 4;
+    rejects_attention();
+    // Shared visibility rule used by both CUDA attention paths.
+    for (std::size_t query = 0; query < 131; ++query)
+        for (std::size_t key = 0; key < 131; ++key)
+            check(
+                attention_visible(query, key, 3, 0, 0) == (query >= 3 || key <= query)
+            );
     // Partially overlapping, naturally aligned output must also be rejected.
     spans[4].data = storage.data() + 0x1004;
     rejects();
@@ -96,6 +283,58 @@ int main() {
     validate();
     spans[2].bytes = 4;
     rejects();
+
+    std::array final_spans{
+        original[0],
+        span(0x3000, DeviceDType::f32, {1, 8}, {8, 1}, 32),
+        span(0x5000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    const auto final_original = final_spans;
+    auto validate_final = [&] {
+        return validate_image_final_normalization(
+            0, final_spans[0], final_spans[1], final_spans[2], final_spans[3]
+        );
+    };
+    check(validate_final().rows == 3 && validate_final().in == 8);
+    auto rejects_final = [&] {
+        bool rejected = false;
+        try {
+            validate_final();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        final_spans = final_original;
+    };
+    for (std::size_t i = 0; i < final_spans.size(); ++i) {
+        final_spans[i].device = 1;
+        rejects_final();
+        final_spans[i].data = nullptr;
+        rejects_final();
+        final_spans[i].bytes -= 1;
+        rejects_final();
+        final_spans[i].strides.back() = 2;
+        rejects_final();
+        final_spans[i].dtype = DeviceDType::f64;
+        rejects_final();
+        final_spans[i].offset = SIZE_MAX;
+        rejects_final();
+        final_spans[i].data = storage.data() + 0x1001;
+        rejects_final();
+        for (std::size_t j = 0; j < i; ++j) {
+            final_spans[i].data = final_spans[j].data;
+            rejects_final();
+        }
+    }
+    final_spans[2].data = storage.data() + 0x1004;
+    rejects_final();
+    final_spans[0].dimensions[0] = 0;
+    rejects_final();
+    final_spans[0].dimensions[0] = std::size_t(INT_MAX) + 1;
+    rejects_final();
+    final_spans[1].dimensions[0] = 2;
+    rejects_final();
 
     std::array pair{
         original[0],
@@ -359,5 +598,191 @@ int main() {
     // The shared layout must fit the attention residual's one-dimensional grid.
     preparation[0].dimensions = {INT_MAX, 512};
     rejects_preparation();
+    std::array frequency{
+        span(0x1000, DeviceDType::f32, {2, 256}, {256, 1}, 2048), original[6]
+    };
+    const auto frequency_original = frequency;
+    auto validate_frequency = [&](float timestep) {
+        validate_image_frequency(0, frequency[0], frequency[1], timestep);
+    };
+    auto rejects_frequency = [&](float timestep = .625f) {
+        bool rejected = false;
+        try {
+            validate_frequency(timestep);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        frequency = frequency_original;
+    };
+    for (const float timestep : {0.f, -0.f, .625f, 1.f})
+        validate_frequency(timestep);
+    for (const float timestep :
+         {-1.f,
+          1.01f,
+          std::numeric_limits<float>::infinity(),
+          std::numeric_limits<float>::quiet_NaN()})
+        rejects_frequency(timestep);
+    for (std::size_t i = 0; i < frequency.size(); ++i) {
+        frequency[i].device = 1;
+        rejects_frequency();
+        frequency[i].data = nullptr;
+        rejects_frequency();
+        frequency[i].bytes -= 1;
+        rejects_frequency();
+        frequency[i].strides.back() = 2;
+        rejects_frequency();
+        frequency[i].dimensions[0] += 1;
+        rejects_frequency();
+        frequency[i].dtype = DeviceDType::bf16;
+        rejects_frequency();
+        frequency[i].offset = SIZE_MAX;
+        rejects_frequency();
+        frequency[i].data = static_cast<std::byte*>(frequency[i].data) + 1;
+        rejects_frequency();
+    }
+    frequency[1].data = frequency[0].data;
+    rejects_frequency();
+    frequency[1].data = static_cast<std::byte*>(frequency[0].data) + 2044;
+    rejects_frequency();
+    std::array text_norm{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::bf16, {8, 1}, {1, 1}, 16),
+        span(0x3000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    auto validate_text_norm = [&] {
+        return validate_image_text_normalization(
+            0, text_norm[0], text_norm[1], text_norm[2], text_norm[3]
+        );
+    };
+    check(validate_text_norm().in == 8);
+    text_norm[1].dtype = DeviceDType::f32;
+    text_norm[1].bytes = 32;
+    check(validate_text_norm().rows == 3);
+    const auto text_norm_original = text_norm;
+    auto rejects_text_norm = [&] {
+        bool rejected = false;
+        try {
+            validate_text_norm();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        text_norm = text_norm_original;
+    };
+    for (std::size_t i = 0; i < text_norm.size(); ++i) {
+        text_norm[i].device = 1;
+        rejects_text_norm();
+        text_norm[i].data = nullptr;
+        rejects_text_norm();
+        text_norm[i].dtype = DeviceDType::f64;
+        rejects_text_norm();
+        text_norm[i].strides.back() = 2;
+        rejects_text_norm();
+        text_norm[i].bytes -= 1;
+        rejects_text_norm();
+        text_norm[i].offset = SIZE_MAX;
+        rejects_text_norm();
+        text_norm[i].data = storage.data() + 0x1001;
+        rejects_text_norm();
+        for (std::size_t j = 0; j < i; ++j) {
+            text_norm[i].data = text_norm[j].data;
+            rejects_text_norm();
+        }
+    }
+    text_norm[1].dimensions = {1, 8};
+    rejects_text_norm();
+    text_norm[2].data = static_cast<std::byte*>(text_norm[0].data) + 4;
+    rejects_text_norm();
+    std::array rotary{
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        span(0x2000, DeviceDType::bf16, {4, 1}, {1, 1}, 8),
+        span(0x1000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    auto validate_rotary = [&](std::size_t heads = 2,
+                               std::size_t head_dim = 4,
+                               std::array<std::size_t, 3> axes = {0, 2, 2},
+                               std::size_t text = 2,
+                               std::size_t height = 1,
+                               std::size_t width = 1) {
+        return validate_image_rotary(
+            0,
+            rotary[0],
+            rotary[1],
+            rotary[2],
+            rotary[3],
+            heads,
+            head_dim,
+            axes,
+            text,
+            height,
+            width
+        );
+    };
+    check(validate_rotary().rows == 3 && validate_rotary().in == 8);
+    rotary[1].dtype = DeviceDType::f32;
+    rotary[1].bytes = 16;
+    check(validate_rotary().out == 8);
+    const auto rotary_original = rotary;
+    auto rejects_rotary = [&](std::size_t heads = 2,
+                              std::size_t head_dim = 4,
+                              std::array<std::size_t, 3> axes = {0, 2, 2},
+                              std::size_t text = 2,
+                              std::size_t height = 1,
+                              std::size_t width = 1) {
+        bool rejected = false;
+        try {
+            validate_rotary(heads, head_dim, axes, text, height, width);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        rotary = rotary_original;
+    };
+    for (std::size_t i = 0; i < rotary.size(); ++i) {
+        rotary[i].device = 1;
+        rejects_rotary();
+        rotary[i].data = nullptr;
+        rejects_rotary();
+        rotary[i].dtype = DeviceDType::f64;
+        rejects_rotary();
+        rotary[i].strides.back() = 2;
+        rejects_rotary();
+        rotary[i].bytes -= 1;
+        rejects_rotary();
+        rotary[i].offset = SIZE_MAX;
+        rejects_rotary();
+        rotary[i].data = storage.data() + 0x1001;
+        rejects_rotary();
+        rotary[i].dimensions[0] += 1;
+        rejects_rotary();
+    }
+    rotary[2].generation += 1;
+    rejects_rotary();
+    rotary[2].data = storage.data() + 0x3000;
+    rejects_rotary();
+    rotary[1].data = rotary[0].data;
+    rejects_rotary();
+    rotary[3].data = rotary[0].data;
+    rejects_rotary();
+    rotary[3].data = rotary[1].data;
+    rejects_rotary();
+    rejects_rotary(0);
+    rejects_rotary(33);
+    rejects_rotary(2, 0);
+    rejects_rotary(2, 129);
+    rejects_rotary(2, 3);
+    rejects_rotary(1);
+    rejects_rotary(2, 4, {0, 0, 2});
+    rejects_rotary(2, 4, {0, 1, 3});
+    rejects_rotary(2, 4, {0, 0, 6});
+    for (std::size_t text : {0u, 3u, 2049u})
+        rejects_rotary(2, 4, {0, 2, 2}, text);
+    for (std::size_t height : std::array<std::size_t, 4>{0, 2, 257, SIZE_MAX})
+        rejects_rotary(2, 4, {0, 2, 2}, 2, height);
+    for (std::size_t width : std::array<std::size_t, 4>{0, 2, 257, SIZE_MAX})
+        rejects_rotary(2, 4, {0, 2, 2}, 2, 1, width);
     std::cout << "BF16 projection layout validation passed\n";
 }

@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kadan/gpt_oss_expert.hpp"
+
 using namespace kadan::gpt_oss;
 using Json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -390,6 +392,62 @@ void multiple_shards() {
     }
     check(budget->used() == 0);
 }
+
+void expert_admission() {
+    Fixture f;
+    f.build(24, 32);
+    auto metadata = memory(), workspace = memory();
+    Manifest m(f.root.c_str(), metadata);
+    std::array<float, Config::hidden> input{}, output{};
+    std::atomic_bool cancel{false};
+    unsigned reads = 0;
+    kadan::checkpoint::TensorReader read = [&](auto, auto, auto) {
+        ++reads;
+    };
+    // Admission/cancellation only. Never evaluate an expert or layer forward.
+    fails(
+        [&] { expert(m, 24, 0, input, output, workspace, cancel, read); },
+        "gpt_oss_layer"
+    );
+    fails(
+        [&] { expert(m, 0, 32, input, output, workspace, cancel, read); },
+        "gpt_oss_expert"
+    );
+    fails(
+        [&] { expert(m, 0, 0, {}, output, workspace, cancel, read); },
+        "gpt_oss_expert_shape"
+    );
+    fails(
+        [&] { expert(m, 0, 0, input, output, {}, cancel, read); },
+        "gpt_oss_payload_budget"
+    );
+    fails(
+        [&] { expert(m, 0, 0, input, input, workspace, cancel, read); }, "math_overlap"
+    );
+    input.back() = 1.001F;
+    fails(
+        [&] { expert(m, 0, 0, input, output, workspace, cancel, read); },
+        "gpt_oss_input_bf16"
+    );
+    input.back() = 0;
+    cancel = true;
+    fails(
+        [&] { expert(m, 0, 0, input, output, workspace, cancel, read); },
+        "gpt_oss_expert_cancelled"
+    );
+    check(!reads && workspace->used() == 0);
+    cancel = false;
+    for (auto bytes : {std::size_t{0}, Config::intermediate * sizeof(float)}) {
+        auto small = std::make_shared<kadan::checkpoint::MemoryBudget>(bytes);
+        bool exhausted = false;
+        try {
+            expert(m, 0, 0, input, output, small, cancel, read);
+        } catch (const std::bad_alloc&) {
+            exhausted = true;
+        }
+        check(exhausted && small->used() == 0 && !reads);
+    }
+}
 }  // namespace
 
 int main() {
@@ -399,6 +457,7 @@ int main() {
         complete_manifest(36, 128, 65248815744ULL);
         manifest_rejections();
         multiple_shards();
+        expert_admission();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

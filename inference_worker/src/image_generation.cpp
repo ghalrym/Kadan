@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kadan/bf16_projection.hpp"
 #include "kadan/cleanup_error.hpp"
 #include "kadan/image_denoiser.hpp"
 #include "kadan/image_schedule.hpp"
@@ -71,6 +72,99 @@ Json read(const std::string& path) {
     return Json::parse(s);
 }
 
+#ifdef KADAN_WORKER_CUDA
+// All operations run on the existing request owner. The session is declared first
+// so its streams outlive every launcher, including constructor/error unwinding.
+struct ResidentDenoising {
+    std::unique_ptr<MediaSession> session;
+    std::vector<std::unique_ptr<video::CudaBf16Projection>> owned_launchers;
+    std::vector<video::ImageFeedForwardLauncher*> launchers;
+
+    ResidentDenoising(
+        const std::shared_ptr<Resources>& resources,
+        const std::shared_ptr<DenseCompute>& compute,
+        const std::shared_ptr<MediaSessionActivity>& activity,
+        const std::vector<int>& devices,
+        const std::atomic_bool& cancel
+    ) {
+        compute->release_scratch();
+        std::vector<MediaDeviceLimit> limits;
+        for (int device : devices) {
+            stop(cancel);
+            owned_launchers.push_back(
+                std::make_unique<video::CudaBf16Projection>(
+                    compute, activity, resources, Workload::image, device
+                )
+            );
+            launchers.push_back(owned_launchers.back().get());
+            limits.push_back({device});
+        }
+        session = std::make_unique<MediaSession>(
+            resources,
+            activity,
+            cuda_media_device_operations(compute, devices),
+            Workload::image,
+            std::move(limits),
+            cancel
+        );
+    }
+
+    std::vector<video::ImageFeedForwardLauncher*> selected_launchers() const {
+        std::vector<video::ImageFeedForwardLauncher*> selected;
+        for (const auto& device : session->plan().devices) {
+            const auto owner = std::find_if(
+                owned_launchers.begin(),
+                owned_launchers.end(),
+                [&](const auto& launcher) {
+                    return launcher->device() == device.device;
+                }
+            );
+            need(owner != owned_launchers.end(), "image_resident_launcher");
+            selected.push_back(owner->get());
+        }
+        return selected;
+    }
+
+    void close(bool failed = false) {
+        std::exception_ptr first;
+        // Close every handle even when one device cannot confirm cleanup.
+        for (auto& launcher : owned_launchers) {
+            try {
+                launcher->close();
+            } catch (...) {
+                if (!first)
+                    first = std::current_exception();
+            }
+        }
+        try {
+            if (failed)
+                session->abort();
+            else
+                session->finish();
+        } catch (...) {
+            if (!first)
+                first = std::current_exception();
+        }
+        if (first)
+            std::rethrow_exception(first);
+    }
+};
+
+const char* fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_host_invalid_shape";
+    }
+    throw std::invalid_argument("image_resident_plan_failure");
+}
+#endif
+
 constexpr const char* prefix =
     "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n";
 }  // namespace
@@ -91,9 +185,13 @@ struct Generator::Impl {
 };
 
 Generator::Generator(
-    std::shared_ptr<Resources> r, std::shared_ptr<DenseCompute> compute
+    std::shared_ptr<Resources> r,
+    std::shared_ptr<DenseCompute> compute,
+    std::shared_ptr<MediaSessionActivity> activity,
+    std::vector<int> devices
 )
-    : resources_(std::move(r)), compute_(std::move(compute)) {
+    : resources_(std::move(r)), compute_(std::move(compute)),
+      media_activity_(std::move(activity)), devices_(std::move(devices)) {
     need(bool(resources_), "image_resources");
 }
 
@@ -297,7 +395,7 @@ void Generator::generate(
         report_weight_placement(*compute_, hook);
     auto condition = std::span(features).subspan(drop * 4096);
     const auto text_count = count - drop;
-    std::vector<float> latent(points * 64), velocity(points * 64), decoded(64 * points);
+    std::vector<float> latent(points * 64), decoded(64 * points);
     std::mt19937_64 rng(request.seed);
     auto uniform = [&]() {
         return (double(rng() >> 11) + .5) / 9007199254740992.;
@@ -310,35 +408,135 @@ void Generator::generate(
             latent[i + 1] = float(radius * std::sin(angle));
     }
     auto times = schedule(points, request.steps);
-    for (std::size_t i = 0; i < request.steps; ++i) {
-        stop(cancel);
-        m.denoiser.execute(
-            latent,
-            condition,
-            text_count,
-            h,
-            w,
-            times.sigma[i],
-            velocity,
-            cancel,
-            [&](const char* phase, std::size_t j) {
-                if (hook)
-                    hook(phase, j);
-            }
+    bool resident_complete = false;
+#ifdef KADAN_WORKER_CUDA
+    if (compute_ && compute_->supports_bf16_weights() && !devices_.empty()) {
+        ResidentDenoising resident(
+            resources_, compute_, media_activity_, devices_, cancel
         );
-        const float dt = times.sigma[i + 1] - times.sigma[i];
-        for (std::size_t j = 0; j < latent.size(); ++j) {
-            latent[j] += dt * velocity[j];
-            need(std::isfinite(latent[j]), "image_nonfinite_latent");
+        auto& session = *resident.session;
+        try {
+            auto error = m.denoiser.preflight(session, text_count, h, w, cancel);
+            if (!error)
+                error = m.denoiser.prepare_feed_forward(
+                    session,
+                    0,
+                    points + text_count,
+                    HiddenBoundary::pre_qkv,
+                    cancel,
+                    text_count
+                );
+            if (error) {
+                resident.close();
+                if (hook)
+                    hook(fallback_phase(error->reason), 0);
+            } else {
+                if (hook)
+                    hook("denoiser_resident_selected", 0);
+                const auto rows = points + text_count;
+                for (std::size_t step = 0; step < request.steps; ++step) {
+                    stop(cancel);
+                    if (step) {
+                        if (auto rejected = m.denoiser.prepare_feed_forward(
+                                session,
+                                0,
+                                rows,
+                                HiddenBoundary::pre_qkv,
+                                cancel,
+                                text_count
+                            ))
+                            throw std::runtime_error(
+                                "image_resident_admission: " + rejected->detail
+                            );
+                    }
+                    m.denoiser.execute(
+                        session,
+                        step ? std::span<const float>{}
+                             : std::span<const float>(latent),
+                        step ? std::span<const float>{}
+                             : std::span<const float>(condition),
+                        text_count,
+                        h,
+                        w,
+                        times.sigma[step],
+                        resident.launchers,
+                        cancel,
+                        hook
+                    );
+                    const auto selected = resident.selected_launchers();
+                    m.denoiser.execute_scheduler(
+                        session,
+                        rows,
+                        text_count,
+                        times.sigma[step],
+                        times.sigma[step + 1],
+                        selected,
+                        cancel
+                    );
+                    if (hook)
+                        hook("step_completed", step + 1);
+                }
+                prepare_decoder_input(
+                    session, latent, m.mean, m.stddev, decoded, cancel
+                );
+                if (hook) {
+                    hook(
+                        "denoiser_input_upload_bytes", session.transfers().input_upload
+                    );
+                    hook(
+                        "denoiser_output_download_bytes",
+                        session.transfers().output_download
+                    );
+                    hook(
+                        "denoiser_peer_activation_bytes",
+                        session.transfers().peer_activation
+                    );
+                }
+                resident.close();
+                resident_complete = true;
+            }
+        } catch (...) {
+            rethrow_after_cleanup(std::current_exception(), [&] {
+                resident.close(true);
+            });
         }
-        if (hook)
-            hook("step_completed", i + 1);
+    } else if (hook) {
+        hook("denoiser_host_unsupported", 0);
+    }
+#else
+    if (hook)
+        hook("denoiser_host_unsupported", 0);
+#endif
+    if (!resident_complete) {
+        std::vector<float> velocity(points * 64);
+        for (std::size_t i = 0; i < request.steps; ++i) {
+            stop(cancel);
+            m.denoiser.execute(
+                latent,
+                condition,
+                text_count,
+                h,
+                w,
+                times.sigma[i],
+                velocity,
+                cancel,
+                [&](const char* phase, std::size_t j) {
+                    if (hook)
+                        hook(phase, j);
+                }
+            );
+            const float dt = times.sigma[i + 1] - times.sigma[i];
+            for (std::size_t j = 0; j < latent.size(); ++j) {
+                latent[j] += dt * velocity[j];
+                need(std::isfinite(latent[j]), "image_nonfinite_latent");
+            }
+            if (hook)
+                hook("step_completed", i + 1);
+        }
+        prepare_decoder_input(latent, m.mean, m.stddev, decoded, cancel);
     }
     if (compute_)
         report_weight_placement(*compute_, hook);
-    for (std::size_t p = 0; p < points; ++p)
-        for (std::size_t c = 0; c < 64; ++c)
-            decoded[c * points + p] = latent[p * 64 + c] * m.stddev[c] + m.mean[c];
     m.vae.decode(decoded, h, w, output, cancel, [&](std::size_t i) {
         if (hook)
             hook("vae_up_block", i);

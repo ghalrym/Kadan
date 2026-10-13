@@ -383,6 +383,25 @@ MediaSession& MediaSession::operator=(MediaSession&& other) noexcept {
 }
 
 std::optional<MediaPlanError>
+MediaSession::preflight(const StageManifest& manifest, const MediaShape& shape) {
+    auto& s = *state_;
+    s.healthy();
+    s.no_views();
+    if (s.admitted)
+        throw std::runtime_error("media_session_preflight_after_admission");
+    if (manifest.allocation_alignment > s.operations->allocation_alignment())
+        return MediaPlanError{
+            PlanFailure::unsupported_layout, "media_session_allocation_alignment", {}
+        };
+    s.probe();
+    auto result =
+        plan_media_stage(manifest, shape, s.evidence.budgets, s.evidence.peers);
+    if (auto* error = std::get_if<MediaPlanError>(&result))
+        return *error;
+    return {};
+}
+
+std::optional<MediaPlanError>
 MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
     auto& s = *state_;
     s.healthy();
@@ -395,9 +414,149 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         return MediaPlanError{
             PlanFailure::unsupported_layout, "media_session_allocation_alignment", {}
         };
+
+    // Validate certificates before retiring any owner. Sources stay charged until
+    // every selected destination has completed its exact-byte copy.
+    struct RetainedInput {
+        std::size_t slot;
+        Bytes bytes;
+    };
+
+    std::map<std::pair<int, std::string>, RetainedInput> retained;
+    auto retention_error = [](const char* detail) {
+        return MediaPlanError{PlanFailure::unsupported_layout, detail, {}};
+    };
+    std::set<std::string> names;
+    for (const auto& name : m.retained_inputs) {
+        if (!names.insert(name).second || !s.admitted || s.phase != MediaPhase::complete
+            || m.stage != s.manifest.stage)
+            return retention_error("media_session_retained_boundary");
+        if (name == "resident/hidden"
+            && (shape.tokens != s.shape.tokens || shape.hidden != s.shape.hidden
+                || m.prepare_hidden))
+            return retention_error("media_session_retained_shape");
+        for (const auto& device : s.plan.devices) {
+            const auto live = std::find_if(
+                s.plan.tensors.begin(), s.plan.tensors.end(), [&](const auto& t) {
+                    return t.device == device.device && t.name == name;
+                }
+            );
+            if (live == s.plan.tensors.end() || live->first != MediaPhase::prepare
+                || live->last != MediaPhase::complete)
+                return retention_error("media_session_retained_lifetime");
+            const auto& slot = s.slots[s.mapping.at({device.device, live->allocation})];
+            if (!slot.pointer || slot.logical_name != name
+                || !slot.contains(0, live->bytes))
+                return retention_error("media_session_retained_not_ready");
+            retained.emplace(
+                std::pair{device.device, name},
+                RetainedInput{
+                    s.mapping.at({device.device, live->allocation}), live->bytes
+                }
+            );
+        }
+    }
+    auto source = [&](int device, const std::string& name) {
+        auto found = retained.find({device, name});
+        if (found != retained.end())
+            return found;
+        return std::find_if(retained.begin(), retained.end(), [&](const auto& input) {
+            if (input.first.second != name)
+                return false;
+            const auto direct = [&](int from, int to) {
+                return std::any_of(
+                    s.evidence.peers.begin(),
+                    s.evidence.peers.end(),
+                    [&](const auto& edge) {
+                        return edge.from == from && edge.to == to && edge.direct;
+                    }
+                );
+            };
+            return direct(input.first.first, device)
+                   && direct(device, input.first.first);
+        });
+    };
+    std::set<int> retained_devices;
+    auto plan = [&] {
+        auto budgets = s.evidence.budgets;
+        std::erase_if(budgets, [&](const auto& budget) {
+            return (!retained_devices.empty()
+                    && !retained_devices.contains(budget.device))
+                   || std::any_of(
+                       m.retained_inputs.begin(),
+                       m.retained_inputs.end(),
+                       [&](const auto& name) {
+                           return source(budget.device, name) == retained.end();
+                       }
+                   );
+        });
+        auto selected = [&](int device) {
+            return std::any_of(budgets.begin(), budgets.end(), [&](const auto& budget) {
+                return budget.device == device;
+            });
+        };
+        auto peers = s.evidence.peers;
+        std::erase_if(peers, [&](const auto& edge) {
+            return !selected(edge.from) || !selected(edge.to);
+        });
+        auto owned = s.owned();
+        std::erase_if(owned, [&](const auto& owner) {
+            return !selected(owner.device);
+        });
+        if (budgets.empty())
+            return MediaPlanResult{
+                MediaPlanError{PlanFailure::topology, "media_session_retained_peer", {}}
+            };
+        return plan_media_stage(m, shape, budgets, peers, owned);
+    };
+
+    struct Migration {
+        std::size_t source;
+        int device;
+        std::size_t allocation;
+        Bytes bytes;
+    };
+
+    std::vector<Migration> migrations;
+    auto prepare_migrations =
+        [&](const MediaResidencyPlan& next) -> std::optional<MediaPlanError> {
+        migrations.clear();
+        for (const auto& name : m.retained_inputs) {
+            for (const auto& device : next.devices) {
+                const auto live = std::find_if(
+                    next.tensors.begin(), next.tensors.end(), [&](const auto& t) {
+                        return t.device == device.device && t.name == name;
+                    }
+                );
+                const auto previous = source(device.device, name);
+                if (live == next.tensors.end() || previous == retained.end()
+                    || live->bytes != previous->second.bytes
+                    || live->first != MediaPhase::prepare
+                    || live->last != MediaPhase::complete)
+                    return retention_error("media_session_retained_placement");
+                const auto& slot = s.slots[previous->second.slot];
+                const auto reused = std::find_if(
+                    next.reuse.begin(), next.reuse.end(), [&](const auto& r) {
+                        return r.device == device.device
+                               && r.allocation == live->allocation;
+                    }
+                );
+                if (reused != next.reuse.end() && reused->owner == slot.owned.owner)
+                    continue;
+                if (reused != next.reuse.end() || slot.owned.device == device.device)
+                    return retention_error("media_session_retained_owner");
+                migrations.push_back(
+                    {previous->second.slot,
+                     device.device,
+                     live->allocation,
+                     live->bytes}
+                );
+            }
+        }
+        return {};
+    };
     s.probe();
-    auto result =
-        plan_media_stage(m, shape, s.evidence.budgets, s.evidence.peers, s.owned());
+    auto result = plan();
     auto candidate = std::get_if<MediaResidencyPlan>(&result);
     if (!candidate) {
         const auto& error = std::get<MediaPlanError>(result);
@@ -405,6 +564,11 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             return error;
         candidate = &*std::get<MediaPlanError>(result).rejected;
     }
+    if (auto error = prepare_migrations(*candidate))
+        return error;
+    if (!m.retained_inputs.empty())
+        for (const auto& device : candidate->devices)
+            retained_devices.insert(device.device);
     try {
         s.drain();
         // Reuse exactly once. Unmatched dormant activations and obsolete weight
@@ -419,6 +583,8 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         for (const auto& owner : retirement)
             if (reuse.contains(owner))
                 throw std::runtime_error("media_session_retire_reused_owner");
+        for (const auto& [key, input] : retained)
+            reuse.insert(s.slots[input.slot].owned.owner);
         for (auto& slot : s.slots) {
             if (!slot.pointer || reuse.contains(slot.owned.owner))
                 continue;
@@ -430,7 +596,6 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             }
             slot.pointer = nullptr;
         }
-        std::erase_if(s.slots, [](const auto& slot) { return !slot.pointer; });
         for (const auto& limit : s.limits)
             s.operations->release_events(limit.device);
         for (auto& slot : s.slots) {
@@ -445,15 +610,17 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
                     add(s.charge[slot.owned.device + 1], slot.owned.ledger_bytes);
         if (s.reservation)
             s.resources->resize_loading(s.reservation, s.charge);
-        s.admitted = false;
+        if (retained.empty())
+            s.admitted = false;
         // Never allocate on the retirement credit: confirmed frees, fresh device
         // memory and ledger evidence determine the final plan.
         s.probe();
-        result =
-            plan_media_stage(m, shape, s.evidence.budgets, s.evidence.peers, s.owned());
+        result = plan();
         candidate = std::get_if<MediaResidencyPlan>(&result);
         if (!candidate)
             return std::get<MediaPlanError>(result);
+        if (auto error = prepare_migrations(*candidate))
+            return error;
         s.plan = *candidate;
         s.manifest = m;
         s.shape = shape;
@@ -522,6 +689,63 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
                 s.mapping.emplace(std::pair{d.device, index}, slot_index);
             }
         }
+        for (const auto& migration : migrations) {
+            s.healthy();
+            auto& source_slot = s.slots[migration.source];
+            auto& destination =
+                s.slots[s.mapping.at({migration.device, migration.allocation})];
+            s.dependencies(migration.device, source_slot);
+            source_slot.consumers.reserve(source_slot.consumers.size() + 1);
+            s.operations->peer(
+                source_slot.owned.device,
+                source_slot.pointer,
+                migration.device,
+                destination.pointer,
+                migration.bytes
+            );
+            destination.ready = s.operations->record(migration.device);
+            source_slot.consumers.push_back(destination.ready);
+            s.operations->synchronize(migration.device);
+            s.healthy();
+            destination.logical_name = source_slot.logical_name;
+            destination.dtype = source_slot.dtype;
+            destination.dimensions = source_slot.dimensions;
+            destination.strides = source_slot.strides;
+            destination.certify(0, migration.bytes);
+            s.transfers.peer_activation =
+                add(s.transfers.peer_activation, migration.bytes);
+        }
+        s.healthy();
+        // Copies are certified before source retirement. Keep stable slot indices
+        // throughout admission, including a rejected fresh probe, then compact.
+        std::set<std::size_t> selected_slots;
+        for (const auto& [key, index] : s.mapping)
+            selected_slots.insert(index);
+        for (std::size_t index = 0; index < s.slots.size(); ++index) {
+            auto& slot = s.slots[index];
+            if (!slot.pointer || selected_slots.contains(index))
+                continue;
+            try {
+                s.operations->free(slot.owned.device, slot.pointer);
+            } catch (...) {
+                s.lifecycle = MediaSessionState::Lifecycle::quarantined;
+                throw;
+            }
+            slot.pointer = nullptr;
+            s.charge[slot.owned.device + 1] -= slot.owned.ledger_bytes;
+        }
+        std::vector<std::size_t> compacted(s.slots.size());
+        std::size_t next_slot = 0;
+        for (std::size_t index = 0; index < s.slots.size(); ++index) {
+            const auto& slot = s.slots[index];
+            if (slot.pointer) {
+                compacted[index] = next_slot++;
+            }
+        }
+        std::erase_if(s.slots, [](const auto& slot) { return !slot.pointer; });
+        for (auto& [key, index] : s.mapping)
+            index = compacted[index];
+        s.resources->resize_loading(s.reservation, s.charge);
         s.phase = MediaPhase::prepare;
         s.admitted = true;
         return {};
@@ -669,6 +893,8 @@ DeviceTensorView MediaSession::tensor(
         throw std::invalid_argument("media_session_tensor_extent");
     const auto index = s.mapping.at({device, allocation});
     auto& slot = s.slots[index];
+    if (!slot.pointer)
+        throw std::runtime_error("media_session_missing_owner");
     if (slot.views)
         throw std::runtime_error("media_session_slot_in_use");
     if (slot.owned.allocation.weight) {
@@ -764,13 +990,19 @@ DeviceTensorView MediaSession::weight(const WeightSlice& slice) {
     );
 }
 
+bool MediaSession::ready(DeviceTensorView& view) {
+    auto& s = *state_;
+    s.healthy();
+    return s.view(view).contains(view.layout_.offset, view.layout_.bytes);
+}
+
 void MediaSession::require_ready(std::span<DeviceTensorView* const> views) {
     auto& s = *state_;
     s.healthy();
     for (auto* v : views) {
         if (!v)
             throw std::invalid_argument("media_session_null_view");
-        if (!s.view(*v).contains(v->layout_.offset, v->layout_.bytes))
+        if (!ready(*v))
             throw std::invalid_argument("media_session_unready_input");
     }
 }
@@ -956,8 +1188,7 @@ void MediaSession::launch(
         read.push_back(v->layout_);
     }
     // FF preparation can apply the attention residual to its certified baseline.
-    // Require the very same hidden view as an input; other prepare overwrites stay
-    // forbidden.
+    // Require the same hidden input unless admission declares an ingress producer.
     for (auto* v : outputs) {
         if (!v)
             throw std::invalid_argument("media_session_null_view");
@@ -971,8 +1202,9 @@ void MediaSession::launch(
                         ? s.phase != MediaPhase::ff
                               && !(
                                   s.phase == MediaPhase::prepare
-                                  && std::find(inputs.begin(), inputs.end(), v)
-                                         != inputs.end()
+                                  && (s.manifest.prepare_hidden
+                                      || std::find(inputs.begin(), inputs.end(), v)
+                                             != inputs.end())
                               )
                         : s.plan.kv_complete_before_hidden_write
                               && s.phase <= *s.plan.kv_complete_before_hidden_write)))
