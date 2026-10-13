@@ -201,6 +201,120 @@ void produce(
     s.complete(outputs, status);
 }
 
+std::size_t completed_launch_waits(std::size_t count) {
+    Fixture f;
+    auto m = decoder();
+    m.tensors.push_back({"second-input", 64});
+    m.tensors.push_back({"output", 64});
+    check(!f.session.admit(m, shape()));
+    const int device = f.session.plan().devices.front().device;
+    auto input = tensor(f.session, device, "boundary");
+    auto second = tensor(f.session, device, "second-input");
+    auto output = tensor(f.session, device, "output");
+    auto status = flag(f.session, device);
+    produce(f.session, device, input, status);
+    produce(f.session, device, second, status);
+    f.trace->waits.clear();
+    const std::array read{&input, &second};
+    const std::array write{&output, &status};
+    for (std::size_t i = 0; i < count; ++i) {
+        f.session.launch(device, read, write, [](void*, auto, auto) {});
+        f.session.complete(write, status);
+    }
+    const auto waits = f.trace->waits.size();
+    input = {};
+    second = {};
+    output = {};
+    status = {};
+    f.session.finish();
+    return waits;
+}
+
+void completed_consumer_dependencies() {
+    const auto short_run = completed_launch_waits(32);
+    const auto long_run = completed_launch_waits(64);
+    check(long_run <= 2 * short_run + 4);
+}
+
+void pending_consumer_dependency() {
+    Fixture f;
+    auto m = decoder();
+    m.tensors.push_back({"output", 64});
+    check(!f.session.admit(m, shape()));
+    const int device = f.session.plan().devices.front().device;
+    auto input = tensor(f.session, device, "boundary");
+    auto output = tensor(f.session, device, "output");
+    auto status = flag(f.session, device);
+    produce(f.session, device, input, status);
+    const std::array read{&input};
+    const std::array write{&output, &status};
+    f.session.launch(device, read, write, [](void*, auto, auto) {});
+    const auto consumer = status.readiness();
+    f.trace->waits.clear();
+    const std::array overwrite{&input};
+    f.session.launch(device, {}, overwrite, [](void*, auto, auto) {});
+    check(
+        std::find(
+            f.trace->waits.begin(), f.trace->waits.end(), std::pair{device, consumer}
+        )
+        != f.trace->waits.end()
+    );
+    check(fails([&] { f.session.finish(); }) == "media_session_unchecked_status");
+    input = {};
+    output = {};
+    status = {};
+    check(f.resources->snapshot().residents == 0);
+}
+
+void other_device_consumer_dependency() {
+    Fixture f;
+    f.trace->free[0] = f.trace->free[1] = 250000;
+    StageManifest m;
+    m.workspaces_complete = true;
+    m.status_bytes = 4;
+    m.tensors = {{"source", 64}, {"other", 64}};
+    m.weights = {
+        {"channels",
+         {1, 2, 400000, 0, 0, 0, 0, 0, 400000},
+         TensorStorage::f32,
+         100000,
+         1,
+         WeightPartition::channels}
+    };
+    check(!f.session.admit(m, shape()));
+    check(f.session.plan().devices.size() == 2);
+    auto source = tensor(f.session, 0, "source");
+    auto destination = tensor(f.session, 1, "source");
+    auto other0 = tensor(f.session, 0, "other");
+    auto other1 = tensor(f.session, 1, "other");
+    auto status0 = flag(f.session, 0), status1 = flag(f.session, 1);
+    produce(f.session, 0, source, status0);
+    f.session.gather(source, destination, 0);
+    const auto consumer = destination.readiness();
+    produce(f.session, 0, other0, status0);
+    f.trace->waits.clear();
+    produce(f.session, 0, source, status0);
+    check(
+        std::find(f.trace->waits.begin(), f.trace->waits.end(), std::pair{0, consumer})
+        != f.trace->waits.end()
+    );
+    produce(f.session, 1, other1, status1);
+    f.trace->waits.clear();
+    produce(f.session, 0, source, status0);
+    check(
+        std::find(f.trace->waits.begin(), f.trace->waits.end(), std::pair{0, consumer})
+        == f.trace->waits.end()
+    );
+    source = {};
+    destination = {};
+    other0 = {};
+    other1 = {};
+    status0 = {};
+    status1 = {};
+    f.session.finish();
+    check(f.resources->snapshot().residents == 0);
+}
+
 void admission_and_cleanup() {
     Fixture f;
     auto m = decoder();
@@ -1336,6 +1450,9 @@ void kv_barrier_and_worker_idle() {
 }  // namespace
 
 int main() {
+    completed_consumer_dependencies();
+    pending_consumer_dependency();
+    other_device_consumer_dependency();
     admission_and_cleanup();
     weight_prefix_identity();
     reacquired_output_certificate();

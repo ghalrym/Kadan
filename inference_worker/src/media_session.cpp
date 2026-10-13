@@ -1261,6 +1261,13 @@ void MediaSession::complete(
             s.view(*v).certify(v->layout_.offset, v->layout_.bytes);
         flag.certify(status.layout_.offset, status.layout_.bytes);
         s.unchecked.erase(flag.ready);
+        // Synchronization completed all earlier readers on this owned stream.
+        // Readers on other devices still protect their source allocations.
+        const int completed_device = flag.ready.device;
+        for (auto& slot : s.slots)
+            std::erase_if(slot.consumers, [completed_device](MediaEvent event) {
+                return event.device == completed_device;
+            });
     } catch (...) {
         abort(std::current_exception());
     }
