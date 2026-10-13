@@ -29,6 +29,7 @@ NATIVE_UNIT_TARGETS = [
     "cuda-plan-tests",
     "fp8-plan-tests",
     "placement-tests",
+    "gpt-oss-manifest-tests",
     "sequence-state-tests",
     "h3-profile-tests",
     "worker-compute-tests",
