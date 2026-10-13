@@ -98,6 +98,58 @@ int main() {
     spans[2].bytes = 4;
     rejects();
 
+    std::array final_spans{
+        original[0],
+        span(0x3000, DeviceDType::f32, {1, 8}, {8, 1}, 32),
+        span(0x5000, DeviceDType::f32, {3, 8}, {8, 1}, 96),
+        original[6]
+    };
+    const auto final_original = final_spans;
+    auto validate_final = [&] {
+        return validate_image_final_normalization(
+            0, final_spans[0], final_spans[1], final_spans[2], final_spans[3]
+        );
+    };
+    check(validate_final().rows == 3 && validate_final().in == 8);
+    auto rejects_final = [&] {
+        bool rejected = false;
+        try {
+            validate_final();
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected);
+        final_spans = final_original;
+    };
+    for (std::size_t i = 0; i < final_spans.size(); ++i) {
+        final_spans[i].device = 1;
+        rejects_final();
+        final_spans[i].data = nullptr;
+        rejects_final();
+        final_spans[i].bytes -= 1;
+        rejects_final();
+        final_spans[i].strides.back() = 2;
+        rejects_final();
+        final_spans[i].dtype = DeviceDType::f64;
+        rejects_final();
+        final_spans[i].offset = SIZE_MAX;
+        rejects_final();
+        final_spans[i].data = storage.data() + 0x1001;
+        rejects_final();
+        for (std::size_t j = 0; j < i; ++j) {
+            final_spans[i].data = final_spans[j].data;
+            rejects_final();
+        }
+    }
+    final_spans[2].data = storage.data() + 0x1004;
+    rejects_final();
+    final_spans[0].dimensions[0] = 0;
+    rejects_final();
+    final_spans[0].dimensions[0] = std::size_t(INT_MAX) + 1;
+    rejects_final();
+    final_spans[1].dimensions[0] = 2;
+    rejects_final();
+
     std::array pair{
         original[0],
         original[1],

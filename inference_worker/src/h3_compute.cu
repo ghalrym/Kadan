@@ -170,12 +170,13 @@ __global__ void image_gates_kernel(
     }
 }
 
-__global__ void image_ff_norm_kernel(
+__global__ void image_norm_kernel(
     const float* hidden,
     const float* modulation,
     float* normalized,
     std::size_t state,
     std::size_t text,
+    bool final,
     unsigned* status
 ) {
     __shared__ double mean;
@@ -196,20 +197,20 @@ __global__ void image_ff_norm_kernel(
             const double v = __dsub_rn(double(hidden[base + c]), mean);
             variance = __dadd_rn(variance, __dmul_rn(v, v));
         }
-        // Ordered double reductions and casts match image.cpp norm_mod exactly.
+        // Ordered double reductions/casts match norm_mod and final image norm.
         scale = __double2float_rn(
             __ddiv_rn(1.0, sqrt(__dadd_rn(__ddiv_rn(variance, double(state)), 1e-6)))
         );
     }
     __syncthreads();
-    const auto offset = (row < text ? 4 * state : 0) + 2 * state;
+    const auto offset = final ? 0 : (row < text ? 4 * state : 0) + 2 * state;
     for (std::size_t c = threadIdx.x; c < state; c += blockDim.x) {
         const float centered =
             __double2float_rn(__dsub_rn(double(hidden[base + c]), mean));
         const float value = __fmul_rn(
             __fmul_rn(centered, scale), __fadd_rn(1.f, modulation[offset + c])
         );
-        if (!isfinite(value))
+        if ((final && !isfinite(modulation[c])) || !isfinite(value))
             atomicOr(status, 1U);
         normalized[base + c] = value;
     }
@@ -2232,12 +2233,45 @@ void CudaBf16Projection::prepare(
         status
     );
     checked(cudaGetLastError());
-    image_ff_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
         static_cast<const float*>(inputs[0].data),
         static_cast<const float*>(inputs[1].data),
         static_cast<float*>(outputs[0].data),
         shape.in,
         text,
+        false,
+        status
+    );
+    checked(cudaGetLastError());
+}
+
+void CudaBf16Projection::final_normalization(
+    void* stream,
+    std::span<const MediaDeviceSpan> inputs,
+    std::span<const MediaDeviceSpan> outputs
+) {
+    require(
+        inputs.size() == 2 && outputs.size() == 2, "image_final_normalization_layout"
+    );
+    const auto shape = validate_image_final_normalization(
+        device_, inputs[0], inputs[1], outputs[0], outputs[1]
+    );
+    require(
+        blas_ && !quarantined_ && stream && (!stream_ || stream_ == stream),
+        "bf16_projection_owned_stream"
+    );
+    stream_ = stream;
+    checked(cudaSetDevice(device_));
+    const auto owned_stream = static_cast<cudaStream_t>(stream);
+    auto* status = static_cast<unsigned*>(outputs[1].data);
+    checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
+    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+        static_cast<const float*>(inputs[0].data),
+        static_cast<const float*>(inputs[1].data),
+        static_cast<float*>(outputs[0].data),
+        shape.in,
+        0,
+        true,
         status
     );
     checked(cudaGetLastError());
