@@ -552,6 +552,7 @@ void TransformerBlock::execute_qkv(
                 && launchers.size() == plan.devices.size(),
             "image_qkv_plan"
         );
+        const auto tile_rows = std::min(plan.rows, tokens);
         std::vector<Device> devices;
         for (const auto& planned : plan.devices) {
             auto* launcher =
@@ -580,7 +581,7 @@ void TransformerBlock::execute_qkv(
                      planned.device,
                      "resident/projection-conversion",
                      DeviceDType::bf16,
-                     {1, state},
+                     {tile_rows, state},
                      {state, 1}
                  ),
                  session.tensor(
@@ -625,8 +626,8 @@ void TransformerBlock::execute_qkv(
                 d.outputs[i] = matrix(outputs[i], tokens, state);
                 const std::array weight_ready{&d.weights[i]};
                 session.require_ready(weight_ready);
-                auto input = session.rows(d.normalized, 0, 1);
-                auto output = session.rows(d.outputs[i], 0, 1);
+                auto input = session.rows(d.normalized, 0, tile_rows);
+                auto output = session.rows(d.outputs[i], 0, tile_rows);
                 const MediaDeviceSpan bias{
                     nullptr, planned.device, DeviceDType::f32, {}, {}, 0, 0, 0
                 };
@@ -658,15 +659,17 @@ void TransformerBlock::execute_qkv(
                 }
             );
             session.complete(write, d.status);
-            // One row fits the smallest admitted conversion tile, as in conditioning.
+            // Reuse the admitted conversion tile, certifying each result before reuse.
             for (std::size_t i = 0; i < d.weights.size(); ++i)
-                for (std::size_t row = 0; row < tokens; ++row) {
+                for (std::size_t row = 0; row < tokens;) {
                     stop(cancel);
-                    auto input = session.rows(d.normalized, row, 1);
-                    auto output = session.rows(d.outputs[i], row, 1);
+                    const auto rows = std::min(tile_rows, tokens - row);
+                    auto input = session.rows(d.normalized, row, rows);
+                    auto output = session.rows(d.outputs[i], row, rows);
+                    auto rounded = session.rows(d.rounded, 0, rows);
                     const std::array inputs{&input, &d.weights[i]};
                     const std::array outputs{
-                        &output, &d.rounded, &d.workspace, &d.status
+                        &output, &rounded, &d.workspace, &d.status
                     };
                     session.launch(
                         d.launcher->device(),
@@ -677,6 +680,7 @@ void TransformerBlock::execute_qkv(
                         }
                     );
                     session.complete(outputs, d.status);
+                    row += rows;
                 }
         }
     } catch (...) {
