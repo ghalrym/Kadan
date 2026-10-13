@@ -284,7 +284,8 @@ void project_base(
                    in,
                    out,
                    output,
-                   cancel
+                   cancel,
+                   true
                ) != ProjectionResult::unsupported)
             return;
         if (compute) {
@@ -299,7 +300,8 @@ void project_base(
                 in,
                 out,
                 output,
-                cancel
+                cancel,
+                true
             );
             return;
         }
@@ -599,6 +601,31 @@ std::optional<MediaPlanError> prepare_feed_forward(
 }  // namespace
 
 namespace detail {
+void close_h3_feed_forward(
+    MediaSession& session, std::span<H3ResidentLauncher* const> launchers, bool abort
+) {
+    std::exception_ptr first;
+    for (auto* launcher : launchers)
+        try {
+            launcher->release_stream();
+        } catch (...) {
+            if (!first)
+                first = std::current_exception();
+        }
+    try {
+        if (abort || first)
+            session.abort();
+        else
+            session.finish();
+    } catch (...) {
+        if (first)
+            throw OperationCleanupError(first, std::current_exception());
+        throw;
+    }
+    if (first)
+        std::rethrow_exception(first);
+}
+
 StageManifest h3_feed_forward_manifest(
     const H3FeedForward& ff, std::size_t tokens, std::size_t groups
 ) {
@@ -648,7 +675,7 @@ StageManifest h3_feed_forward_manifest(
              WeightPartition::replicated,
              1,
              1,
-             ProjectionPrecision::f32}
+             ProjectionPrecision::precise_f64}
         );
         m.weights.push_back(
             {ff.lora_b[fc],
@@ -659,24 +686,26 @@ StageManifest h3_feed_forward_manifest(
              WeightPartition::channels,
              4,
              planes,
-             ProjectionPrecision::f32}
+             ProjectionPrecision::precise_f64}
         );
         lora_rank = std::max(lora_rank, rank);
-        lora_elements = std::max(lora_elements, rank * columns + rows / planes * rank);
+        lora_elements = std::max(
+            lora_elements, rank * columns + rows / planes * rank + tokens * columns
+        );
     }
     m.tensors.push_back({"ff/residual-gates", groups * ff.hidden * sizeof(float)});
     m.tensors.push_back({"ff/token-groups", tokens * sizeof(std::uint32_t)});
     if (lora) {
         m.tensors.push_back(
             {"ff/lora-low",
-             tokens * lora_rank * sizeof(float),
+             tokens * lora_rank * sizeof(double),
              MediaPhase::ff,
              MediaPhase::ff,
              AllocationKind::conversion}
         );
         m.tensors.push_back(
             {"ff/lora-weights",
-             lora_elements * sizeof(float),
+             lora_elements * sizeof(double),
              MediaPhase::ff,
              MediaPhase::ff,
              AllocationKind::conversion}
@@ -867,11 +896,12 @@ void execute_h3_feed_forward(
         d.status = session.tensor(d.id, "resident/status", DeviceDType::u32, {1}, {1});
         if (lora) {
             const auto elements = std::max(
-                ff.rank[0] * ff.hidden + d.fc1_rows * ff.rank[0],
-                ff.rank[1] * ff.width + d.fc2_rows * ff.rank[1]
+                ff.rank[0] * ff.hidden + d.fc1_rows * ff.rank[0]
+                    + plan.rows * ff.hidden,
+                ff.rank[1] * ff.width + d.fc2_rows * ff.rank[1] + plan.rows * ff.width
             );
             d.lora_weights = session.tensor(
-                d.id, "ff/lora-weights", DeviceDType::f32, {elements}, {1}
+                d.id, "ff/lora-weights", DeviceDType::f64, {elements}, {1}
             );
         }
     }
@@ -888,7 +918,7 @@ void execute_h3_feed_forward(
             low = session.tensor(
                 d.id,
                 "ff/lora-low",
-                DeviceDType::f32,
+                DeviceDType::f64,
                 {rows, ff.rank[fc]},
                 {ff.rank[fc], 1}
             );
@@ -1246,7 +1276,8 @@ void H3Denoiser::execute(
                 128,
                 false,
                 attended.first(count * inner),
-                cancel
+                cancel,
+                true
             );
         else
             attention(
@@ -1424,10 +1455,6 @@ void H3Denoiser::execute(
             return false;
         auto session = resident->session();
         require(bool(session), "h3_resident_session");
-        auto release = [&] {
-            for (auto* launcher : resident->launchers)
-                launcher->release_stream();
-        };
         try {
             auto described =
                 describe_feed_forward(*shard_, turbo_.get(), block, cancel);
@@ -1465,13 +1492,11 @@ void H3Denoiser::execute(
             detail::execute_h3_feed_forward(
                 *session, resident->launchers, ff, n, groups, current, cancel
             );
-            release();
-            session->finish();
+            detail::close_h3_feed_forward(*session, resident->launchers);
         } catch (...) {
             auto error = std::current_exception();
             rethrow_after_cleanup(error, [&] {
-                release();
-                session->abort();
+                detail::close_h3_feed_forward(*session, resident->launchers, true);
             });
         }
         finite(current);

@@ -18,6 +18,11 @@ struct H3FeedForward {
     std::array<float, 2> lora_scale{};
 };
 
+// Detach every launcher before ending the session, even if a release fails.
+void close_h3_feed_forward(
+    MediaSession&, std::span<H3ResidentLauncher* const>, bool abort = false
+);
+
 // INT8 convrot weights with per-row scales, channel-partitioned in units of four;
 // LoRA A is replicated and LoRA B follows its projection's partition.
 StageManifest

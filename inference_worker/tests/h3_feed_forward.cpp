@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "kadan/cleanup_error.hpp"
+
 void check(bool b, std::source_location at = std::source_location::current()) {
     if (!b)
         throw std::runtime_error("test_failed:" + std::to_string(at.line()));
@@ -33,6 +35,7 @@ struct Device final : kadan::MediaDeviceOperations {
     std::map<int, kadan::Bytes> remaining;
     std::size_t next_event = 1, peers = 0, downloads = 0;
     std::uint32_t status = 0;
+    std::size_t synchronizations = 0;
 
     std::size_t allocation_alignment() const override {
         return 256;
@@ -71,6 +74,7 @@ struct Device final : kadan::MediaDeviceOperations {
     }
 
     void synchronize(int) override {
+        ++synchronizations;
     }
 
     void release_events(int) override {
@@ -98,7 +102,7 @@ struct Device final : kadan::MediaDeviceOperations {
 struct Launcher final : kadan::video::H3ResidentLauncher {
     Device& backend;
     int selected;
-    bool fail_silu = false;
+    bool fail_silu = false, fail_release = false;
     std::string calls;
     std::vector<std::size_t> residual_first, released;
 
@@ -111,6 +115,8 @@ struct Launcher final : kadan::video::H3ResidentLauncher {
 
     void release_stream() override {
         released.push_back(calls.size());
+        if (fail_release)
+            throw std::runtime_error("release_failed");
     }
 
     void convrot(
@@ -213,8 +219,8 @@ void layouts() {
     auto b = span(DeviceDType::bf16, {out, rank}, 2);
     auto output = span(DeviceDType::f32, {rows, out}, 4);
     auto conversion = span(DeviceDType::u8, {conversion_bytes}, 1);
-    auto low = span(DeviceDType::f32, {rows, rank}, 4);
-    auto widened = span(DeviceDType::f32, {rank * in + out * rank}, 4);
+    auto low = span(DeviceDType::f64, {rows, rank}, 8);
+    auto widened = span(DeviceDType::f64, {rank * in + out * rank + rows * in}, 8);
     auto blas = span(DeviceDType::u8, {1}, 1);
     blas.bytes = kadan::video::h3_resident_blas_bytes;
     blas.dimensions = {kadan::video::h3_resident_blas_bytes};
@@ -234,6 +240,18 @@ void layouts() {
     const std::vector lora_write{output, conversion, low, widened, blas, status};
     shape = kadan::video::validate_h3_convrot(0, lora_read, lora_write, 64);
     check(shape.rank == rank);
+    check(kadan::video::h3_convrot_tile(3 * 256 + 64, 1, 64, true) == 8);
+    auto narrow_low = low;
+    narrow_low.dtype = DeviceDType::f32;
+    rejects(
+        [&] {
+            const std::vector write{
+                output, conversion, narrow_low, widened, blas, status
+            };
+            kadan::video::validate_h3_convrot(0, lora_read, write, 64);
+        },
+        "h3_convrot_lora"
+    );
     rejects(
         [&] { kadan::video::validate_h3_convrot(0, plain_read, plain_write, 32); },
         "h3_convrot_shape"
@@ -340,6 +358,14 @@ void manifest() {
             && fc1.precision == kadan::ProjectionPrecision::convrot
             && fc1.rotation_group == 64
         );
+        if (lora) {
+            for (const auto& weight : m.weights)
+                if (weight.storage == kadan::TensorStorage::bf16_exact)
+                    check(weight.precision == kadan::ProjectionPrecision::precise_f64);
+            for (const auto& tensor : m.tensors)
+                if (tensor.name == "ff/lora-low")
+                    check(tensor.bytes == tokens * rank * sizeof(double));
+        }
         std::size_t lora_tensors = 0;
         for (const auto& t : m.tensors)
             lora_tensors += t.name.starts_with("ff/lora-");
@@ -465,8 +491,64 @@ void orchestration() {
     rejects([] { run(64 * 1024 * 1024, {0}, true); }, "media_session_nonfinite_output");
 }
 
+// Exercise the same cleanup boundary used by the denoiser, without inference.
+void cleanup() {
+    for (bool abort : {false, true}) {
+        std::atomic_bool cancel = false;
+        auto resources = std::make_shared<kadan::Resources>(
+            kadan::Footprint{1ULL << 30, 64ULL << 20, 64ULL << 20}
+        );
+        auto activity = std::make_shared<kadan::MediaSessionActivity>();
+        auto backend = std::make_unique<Device>();
+        auto& device = *backend;
+        kadan::MediaSession session(
+            resources,
+            activity,
+            std::move(backend),
+            kadan::Workload::video,
+            {{0}, {1}},
+            cancel
+        );
+        check(!session.admit(
+            kadan::video::detail::h3_feed_forward_manifest(
+                contract(true), tokens, groups
+            ),
+            {tokens, hidden, 0, 0, 0, width}
+        ));
+        check(!device.allocations.empty());
+        Launcher first(device, 0), second(device, 1);
+        first.fail_release = true;
+        const std::vector<kadan::video::H3ResidentLauncher*> launchers{&first, &second};
+        if (abort) {
+            const auto original =
+                std::make_exception_ptr(std::runtime_error("operation_failed"));
+            try {
+                kadan::rethrow_after_cleanup(original, [&] {
+                    kadan::video::detail::close_h3_feed_forward(
+                        session, launchers, true
+                    );
+                });
+            } catch (const kadan::OperationCleanupError& error) {
+                check(error.operation == original);
+                check(kadan::exception_message(error.cleanup) == "release_failed");
+            }
+        } else {
+            rejects(
+                [&] {
+                    kadan::video::detail::close_h3_feed_forward(session, launchers);
+                },
+                "release_failed"
+            );
+        }
+        check(first.released.size() == 1 && second.released.size() == 1);
+        check(device.synchronizations > 0 && device.allocations.empty());
+        check(activity->owners.load() == 0);
+    }
+}
+
 int main() {
     layouts();
     manifest();
     orchestration();
+    cleanup();
 }

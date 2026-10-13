@@ -3252,7 +3252,10 @@ __global__ void h3_finite_kernel(const float* x, std::size_t count, unsigned* st
 }
 
 __global__ void h3_widen_kernel(
-    const std::uint16_t* source, float* destination, std::size_t count, unsigned* status
+    const std::uint16_t* source,
+    double* destination,
+    std::size_t count,
+    unsigned* status
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
@@ -3263,11 +3266,11 @@ __global__ void h3_widen_kernel(
     destination[i] = value;
 }
 
-// Matches the host projection's bias-free post-GEMM +0, including -0.
-__global__ void h3_zero_bias_kernel(float* x, std::size_t count) {
+// Preserve the host projection's F32 rounding and bias-free +0 between GEMMs.
+__global__ void h3_zero_bias_kernel(double* x, std::size_t count) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count)
-        x[i] = __fadd_rn(x[i], 0.f);
+        x[i] = __fadd_rn(float(x[i]), 0.f);
 }
 
 // Same arithmetic as finish_int8 with a zero bias, into a column tile of y.
@@ -3300,7 +3303,7 @@ __global__ void h3_finish_int8_kernel(
 
 // Host Turbo order: delta gets the projection's +0, then y += delta * scale.
 __global__ void h3_lora_add_kernel(
-    const float* delta,
+    const double* delta,
     float* y,
     std::size_t rows,
     std::size_t tile,
@@ -3313,7 +3316,8 @@ __global__ void h3_lora_add_kernel(
     if (i >= rows * tile)
         return;
     const auto at = (i / tile) * out + first_column + i % tile;
-    const float value = __fadd_rn(y[at], __fmul_rn(__fadd_rn(delta[i], 0.f), scale));
+    const float value =
+        __fadd_rn(y[at], __fmul_rn(__fadd_rn(float(delta[i]), 0.f), scale));
     if (!isfinite(value))
         atomicOr(status, 2U);
     y[at] = value;
@@ -3486,11 +3490,11 @@ void CudaH3Launcher::convrot(
     checked(cudaGetLastError());
     quantize_kernel<<<unsigned(rows), 256, 0, s>>>(rotated, codes, row_scales, in);
     checked(cudaGetLastError());
-    float* low = nullptr;
-    const float* lora_b = nullptr;
+    double* low = nullptr;
+    const double* lora_b = nullptr;
     if (lora) {
         const auto rank = shape.rank;
-        auto* widened = static_cast<float*>(write[3].data);
+        auto* widened = static_cast<double*>(write[3].data);
         h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
             static_cast<const std::uint16_t*>(read[3].data), widened, rank * in, status
         );
@@ -3503,9 +3507,12 @@ void CudaH3Launcher::convrot(
         );
         checked(cudaGetLastError());
         lora_b = widened + rank * in;
-        low = static_cast<float*>(write[2].data);
-        const float one = 1, zero = 0;
-        checked(cublasSgemm(
+        auto* wide_input = widened + rank * in + out * rank;
+        widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
+        checked(cudaGetLastError());
+        low = static_cast<double*>(write[2].data);
+        const double one = 1, zero = 0;
+        checked(cublasDgemm(
             handle,
             CUBLAS_OP_T,
             CUBLAS_OP_N,
@@ -3515,7 +3522,7 @@ void CudaH3Launcher::convrot(
             &one,
             widened,
             int(in),
-            input,
+            wide_input,
             int(in),
             &zero,
             low,
@@ -3562,9 +3569,9 @@ void CudaH3Launcher::convrot(
         checked(cudaGetLastError());
         if (!lora)
             continue;
-        // The INT32 tile is consumed; reuse it for this tile's F32 LoRA delta.
-        const float unit = 1, none = 0;
-        checked(cublasSgemm(
+        // The INT32 tile is consumed; reuse it for this tile's F64 LoRA delta.
+        const double unit = 1, none = 0;
+        checked(cublasDgemm(
             handle,
             CUBLAS_OP_T,
             CUBLAS_OP_N,
@@ -3577,11 +3584,11 @@ void CudaH3Launcher::convrot(
             low,
             int(shape.rank),
             &none,
-            reinterpret_cast<float*>(sums),
+            reinterpret_cast<double*>(sums),
             int(tile)
         ));
         h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            reinterpret_cast<const float*>(sums),
+            reinterpret_cast<const double*>(sums),
             output,
             rows,
             tile,

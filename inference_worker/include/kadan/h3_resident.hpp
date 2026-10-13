@@ -51,15 +51,16 @@ inline bool h3_disjoint(const MediaDeviceSpan& a, const MediaDeviceSpan& b) {
 }  // namespace detail
 
 // Convrot scratch for `rows` inputs of width `in`: rotated F32 input, INT8 codes
-// and per-row scales, then one INT32 (or LoRA F32) column tile in the remainder.
+// and per-row scales, then one INT32 (or LoRA F64) column tile in the remainder.
 // Returns the widest tile in multiples of four columns, or zero if none fits.
-inline std::size_t h3_convrot_tile(Bytes scratch, std::size_t rows, std::size_t in) {
+inline std::size_t
+h3_convrot_tile(Bytes scratch, std::size_t rows, std::size_t in, bool lora = false) {
     using detail::h3_aligned;
     const auto fixed = h3_aligned(Bytes(rows) * in * 4) + h3_aligned(Bytes(rows) * in)
                        + h3_aligned(Bytes(rows) * 4);
     if (!rows || scratch <= fixed)
         return 0;
-    return std::size_t((scratch - fixed) / (Bytes(rows) * 4) / 4 * 4);
+    return std::size_t((scratch - fixed) / (Bytes(rows) * (lora ? 8 : 4)) / 4 * 4);
 }
 
 struct H3ConvrotShape {
@@ -69,7 +70,7 @@ struct H3ConvrotShape {
 // Inputs [input [rows,in] F32, weight [out,in] I8, scale [out,1] F32] and, with
 // Turbo LoRA, [lora-a [rank,in] BF16, lora-b [out,rank] BF16]. Outputs
 // [output [rows,out] F32, conversion, blas, status] or, with LoRA,
-// [output, conversion, lora-low [rows,rank] F32, lora-weights F32, blas, status].
+// [output, conversion, lora-low [rows,rank] F64, lora-weights/input F64, blas, status].
 inline H3ConvrotShape validate_h3_convrot(
     int device,
     std::span<const MediaDeviceSpan> read,
@@ -115,8 +116,9 @@ inline H3ConvrotShape validate_h3_convrot(
             && h3_buffer(status, device, DeviceDType::u32) && status.bytes == 4,
         "h3_convrot_workspace"
     );
-    shape.tile =
-        std::min(shape.out, h3_convrot_tile(conversion.bytes, shape.rows, shape.in));
+    shape.tile = std::min(
+        shape.out, h3_convrot_tile(conversion.bytes, shape.rows, shape.in, lora)
+    );
     h3_need(shape.tile >= 4, "h3_convrot_workspace");
     if (lora) {
         h3_need(read[3].dimensions.size() == 2, "h3_convrot_lora");
@@ -125,10 +127,11 @@ inline H3ConvrotShape validate_h3_convrot(
             shape.rank && shape.rank <= h3_lora_rank_limit
                 && h3_matrix(read[3], device, DeviceDType::bf16, shape.rank, shape.in)
                 && h3_matrix(read[4], device, DeviceDType::bf16, shape.out, shape.rank)
-                && h3_matrix(write[2], device, DeviceDType::f32, shape.rows, shape.rank)
-                && h3_buffer(write[3], device, DeviceDType::f32)
-                && write[3].dimensions[0]
-                       >= shape.rank * shape.in + shape.out * shape.rank,
+                && h3_matrix(write[2], device, DeviceDType::f64, shape.rows, shape.rank)
+                && h3_buffer(write[3], device, DeviceDType::f64)
+                && write[3].dimensions[0] >= shape.rank * shape.in
+                                                 + shape.out * shape.rank
+                                                 + shape.rows * shape.in,
             "h3_convrot_lora"
         );
     }
