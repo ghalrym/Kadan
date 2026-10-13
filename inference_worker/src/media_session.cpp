@@ -405,6 +405,78 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             return error;
         candidate = &*std::get<MediaPlanError>(result).rejected;
     }
+
+    // Capture certificates before retirement changes slot indices or the admitted
+    // state. Both plans must retain the exact certified owners, not just capacity.
+    struct RetainedInput {
+        std::string owner;
+        Bytes bytes;
+    };
+
+    std::map<std::pair<int, std::string>, RetainedInput> retained;
+    auto retention_error = [](const char* detail) {
+        return MediaPlanError{PlanFailure::unsupported_layout, detail, {}};
+    };
+    std::set<std::string> names;
+    for (const auto& name : m.retained_inputs) {
+        if (!names.insert(name).second || !s.admitted || s.phase != MediaPhase::complete
+            || m.stage != s.manifest.stage)
+            return retention_error("media_session_retained_boundary");
+        if (name == "resident/hidden"
+            && (shape.tokens != s.shape.tokens || shape.hidden != s.shape.hidden
+                || m.prepare_hidden))
+            return retention_error("media_session_retained_shape");
+        for (const auto& device : s.plan.devices) {
+            const auto live = std::find_if(
+                s.plan.tensors.begin(), s.plan.tensors.end(), [&](const auto& t) {
+                    return t.device == device.device && t.name == name;
+                }
+            );
+            if (live == s.plan.tensors.end() || live->first != MediaPhase::prepare
+                || live->last != MediaPhase::complete)
+                return retention_error("media_session_retained_lifetime");
+            const auto& slot = s.slots[s.mapping.at({device.device, live->allocation})];
+            if (slot.logical_name != name || !slot.contains(0, live->bytes))
+                return retention_error("media_session_retained_not_ready");
+            retained.emplace(
+                std::pair{device.device, name},
+                RetainedInput{slot.owned.owner, live->bytes}
+            );
+        }
+    }
+    auto retained_error =
+        [&](const MediaResidencyPlan& next) -> std::optional<MediaPlanError> {
+        for (const auto& name : m.retained_inputs) {
+            for (const auto& device : next.devices) {
+                const auto live = std::find_if(
+                    next.tensors.begin(), next.tensors.end(), [&](const auto& t) {
+                        return t.device == device.device && t.name == name;
+                    }
+                );
+                const auto previous = retained.find({device.device, name});
+                if (live == next.tensors.end() || previous == retained.end()
+                    || live->bytes != previous->second.bytes
+                    || live->first != MediaPhase::prepare
+                    || live->last != MediaPhase::complete)
+                    return retention_error("media_session_retained_placement");
+                if (!std::any_of(
+                        next.reuse.begin(), next.reuse.end(), [&](const auto& r) {
+                            return r.device == device.device
+                                   && r.allocation == live->allocation
+                                   && r.owner == previous->second.owner;
+                        }
+                    ))
+                    return retention_error("media_session_retained_owner");
+            }
+        }
+        return {};
+    };
+    if (auto error = retained_error(*candidate))
+        return error;
+    std::set<int> retained_devices;
+    if (!m.retained_inputs.empty())
+        for (const auto& device : candidate->devices)
+            retained_devices.insert(device.device);
     try {
         s.drain();
         // Reuse exactly once. Unmatched dormant activations and obsolete weight
@@ -449,11 +521,25 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
         // Never allocate on the retirement credit: confirmed frees, fresh device
         // memory and ledger evidence determine the final plan.
         s.probe();
-        result =
-            plan_media_stage(m, shape, s.evidence.budgets, s.evidence.peers, s.owned());
+        auto budgets = s.evidence.budgets;
+        auto peers = s.evidence.peers;
+        if (!retained_devices.empty()) {
+            // Retirement can make an unselected device fit. Its input owners
+            // have already been freed, so keep the certified first selection.
+            std::erase_if(budgets, [&](const auto& b) {
+                return !retained_devices.contains(b.device);
+            });
+            std::erase_if(peers, [&](const auto& p) {
+                return !retained_devices.contains(p.from)
+                       || !retained_devices.contains(p.to);
+            });
+        }
+        result = plan_media_stage(m, shape, budgets, peers, s.owned());
         candidate = std::get_if<MediaResidencyPlan>(&result);
         if (!candidate)
             return std::get<MediaPlanError>(result);
+        if (auto error = retained_error(*candidate))
+            return error;
         s.plan = *candidate;
         s.manifest = m;
         s.shape = shape;

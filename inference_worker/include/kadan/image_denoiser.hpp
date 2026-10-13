@@ -32,6 +32,11 @@ public:
     // Explicit resident block slice, using actual timestep conditioning and modulation.
     // Initialize per-device launchers before admission. Native BF16 standard precision
     // only.
+    // After a completed block, admit the next loaded block as pre_qkv. Its full
+    // hidden and timestep conditioning must be certified and retained on every
+    // selected device; placement requiring new owners is rejected before retirement.
+    // Ordered blocks of the same loaded model/step are the caller contract. Reuse
+    // conditioning with execute_qkv(nullopt), then rotary and attention as usual.
     std::optional<MediaPlanError> prepare_feed_forward(
         MediaSession&,
         std::size_t block,

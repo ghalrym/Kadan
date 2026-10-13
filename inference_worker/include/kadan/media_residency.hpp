@@ -101,6 +101,9 @@ struct StageManifest {
     bool prepare_projection = false;
     // Actual input projections may initialize hidden before attention/FF.
     bool prepare_hidden = false;
+    // Certified complete-phase inputs must survive admission on every selected
+    // device. A placement requiring a new owner is rejected before retirement.
+    std::vector<std::string> retained_inputs;
 };
 
 struct MediaShape {
