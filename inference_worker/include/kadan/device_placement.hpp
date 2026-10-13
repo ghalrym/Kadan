@@ -161,12 +161,6 @@ inline std::size_t image_silu_pair_input_rows(
     return rows - plan.rows <= (limit - plan.bytes) / (in * 6) ? rows : plan.rows;
 }
 
-struct AttentionPlan {
-    std::size_t queries, keys;
-    bool full_heads;
-    Bytes bytes;
-};
-
 struct VaeNormalizationPlan {
     std::size_t points;
     Bytes bytes;
@@ -192,6 +186,12 @@ image_vae_normalization_plan(std::size_t channels, std::size_t points, Bytes lim
     }
     return {};
 }
+
+struct AttentionPlan {
+    std::size_t queries, keys;
+    bool full_heads;
+    Bytes bytes;
+};
 
 inline AttentionPlan attention_plan(
     std::size_t queries,
