@@ -233,8 +233,6 @@ std::size_t completed_launch_waits(std::size_t count) {
 void completed_consumer_dependencies() {
     const auto short_run = completed_launch_waits(32);
     const auto long_run = completed_launch_waits(64);
-    std::cout << "Completed-launch waits (32/64): " << short_run << "/" << long_run
-              << std::endl;
     check(long_run <= 2 * short_run + 4);
 }
 
