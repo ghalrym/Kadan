@@ -41,6 +41,47 @@ Settings changes use typed queue tasks.
 in C++. The worker never starts a Python interpreter.
 Cancellation finishes owned work and releases the workspace before the next job.
 
+## Experimental resident image PV TF32
+
+`KADAN_EXPERIMENTAL_IMAGE_PV_TF32` is a default-off, native build experiment.
+To opt in, add these options to the existing CMake configuration for
+`inference_worker/` and rebuild the worker:
+
+```sh
+cmake -S inference_worker -B build/inference-worker \
+  -DKADAN_ENABLE_CUDA=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON \
+  -DKADAN_EXPERIMENTAL_IMAGE_PV_TF32=ON -DKADAN_ENABLE_ATEN_IMAGE=OFF
+```
+
+The image generator passes `image::AttentionPrecision::experimental_pv_tf32`
+explicitly to its resident CUDA launchers. Only the PV (probability/value)
+SGEMM requests `CUBLAS_TF32_TENSOR_OP_MATH`; the existing scoped restoration
+returns the handle to PEDANTIC before the next QK. Operand storage, accumulation,
+running numerator and output remain F32, with alpha=1 and beta=1. QK remains
+PEDANTIC. Q/K normalization and rotary, softmax, online rescaling, totals,
+division, projections and VAE arithmetic are unchanged. Tiles, strides, mixed
+text/image masking, full K/V finite scans, status checks, cancellation and
+readiness certificates are unchanged. With the option off, both SGEMMs retain
+their existing calls and PEDANTIC mode.
+
+Configuration rejects the option without CUDA and image generation, or alongside
+ATen image execution, which uses a separate attention backend. If resident
+denoising is unavailable or initial admission is rejected, an opted-in request fails
+with `image_pv_tf32_requires_resident_attention` before synchronous denoising;
+it cannot silently fall back to a different attention policy.
+
+When `KADAN_IMAGE_TIMING=1` is enabled, step records include
+`attention_precision_requested`: `pedantic_fp32` or `experimental_pv_tf32`.
+This describes the request, including rejected attempts, rather than the
+effective kernel. cuBLAS chooses the kernel; `NVIDIA_TF32_OVERRIDE=0` can
+suppress TF32 despite the request. Record that override and verify actual PV
+kernel selection during separately authorized manual GPU validation.
+
+This experiment has no demonstrated speedup or image-quality acceptance.
+PV differences can propagate into later blocks. Default-path exact regression,
+opt-in numerical screening, owner visual acceptance and repeated performance
+measurements remain separate validation work; unit tests do not establish them.
+
 ## Resident image denoising timing
 
 `KADAN_IMAGE_TIMING=1` opts the native image engine into diagnostic timing. It is

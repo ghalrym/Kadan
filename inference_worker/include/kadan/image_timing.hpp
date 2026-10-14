@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kadan/image_attention.hpp"
 #include "kadan/media_session.hpp"
 
 namespace kadan::image {
@@ -52,6 +53,8 @@ enum class DenoisingOutcome {
 };
 
 struct DenoisingStepTiming {
+    AttentionPrecision attention_precision_requested =
+        AttentionPrecision::pedantic_fp32;
     std::size_t step = 0, tokens = 0, text = 0, completed_blocks = 0, rows_min = 0,
                 rows_max = 0, device_count = 0;
     float sigma = 0, next_sigma = 0;
@@ -85,6 +88,8 @@ inline void to_json(nlohmann::json& summary, const DenoisingStepTiming& value) {
         {"type", "image_denoising_step"},
         {"version", 1},
         {"backend", "resident_bf16"},
+        {"attention_precision_requested",
+         attention_precision_name(value.attention_precision_requested)},
         {"outcome", outcomes.at(std::size_t(value.outcome))},
         {"step", value.step},
         {"tokens", value.tokens},
@@ -135,9 +140,11 @@ public:
         std::size_t text,
         float sigma,
         float next,
-        const MediaTransferCounters& transfers
+        const MediaTransferCounters& transfers,
+        AttentionPrecision precision = AttentionPrecision::pedantic_fp32
     ) noexcept {
         data_ = {};
+        data_.attention_precision_requested = precision;
         data_.step = step;
         data_.tokens = tokens;
         data_.text = text;

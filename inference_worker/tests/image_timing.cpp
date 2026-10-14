@@ -71,17 +71,22 @@ void aggregation_and_reset() {
     check(!first.transfer_counters_reset);
     nlohmann::json json = first;
     check(json["stages"]["qkv"]["total_ns"] == 35);
+    check(json["attention_precision_requested"] == "pedantic_fp32");
     check(
         json["outcome"] == "completed" && json["transfer_bytes"]["weight_upload"] == 400
     );
 
     tick = 100;
-    timing.reset(2, 16390, 6, .02f, 0.f, finish);
+    timing.reset(
+        2, 16390, 6, .02f, 0.f, finish, AttentionPrecision::experimental_pv_tf32
+    );
     tick = 110;
     timing.publish(DenoisingOutcome::cancelled, finish);
     check(records.size() == 2);
     const auto& second = records[1];
     check(second.step == 2 && second.started_ns == 100 && second.wall_ns == 10);
+    json = second;
+    check(json["attention_precision_requested"] == "experimental_pv_tf32");
     check(second.outcome == DenoisingOutcome::cancelled && second.next_sigma == 0.f);
     check(
         second.device_count == 0 && second.rows_min == 0 && second.completed_blocks == 0
@@ -91,6 +96,12 @@ void aggregation_and_reset() {
     );
     for (const auto& stage : second.stages)
         check(stage.calls == 0 && stage.total_ns == 0 && stage.first_ns == 0);
+
+    timing.reset(1, 100, 4, 1.f, .02f, finish);
+    timing.publish(DenoisingOutcome::not_selected, finish);
+    check(records.size() == 3);
+    json = records.back();
+    check(json["attention_precision_requested"] == "pedantic_fp32");
 }
 
 void cancelled_scope_and_nonfatal_sink() {
@@ -154,6 +165,7 @@ void bounded_devices_counters_and_record() {
     check(result.outcome == DenoisingOutcome::failed);
 
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    result.attention_precision_requested = AttentionPrecision::experimental_pv_tf32;
     result.started_ns = result.wall_ns = result.unaccounted_ns = maximum;
     result.step = result.tokens = result.text = result.completed_blocks = maximum;
     result.rows_min = result.rows_max = maximum;

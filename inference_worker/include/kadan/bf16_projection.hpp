@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "kadan/image_attention.hpp"
 #include "kadan/media_session.hpp"
 
 namespace kadan::video {
@@ -774,7 +775,8 @@ public:
         std::shared_ptr<MediaSessionActivity> activity,
         std::shared_ptr<Resources> resources,
         Workload workload,
-        int device
+        int device,
+        image::AttentionPrecision attention_precision
     );
     ~CudaBf16Projection() override;
     void close();
@@ -895,6 +897,7 @@ private:
     std::shared_ptr<Resources> resources_;
     Handle library_charge_ = 0;
     int device_;
+    image::AttentionPrecision attention_precision_;
     void* stream_ = nullptr;
     void* blas_ = nullptr;
     bool quarantined_ = false;

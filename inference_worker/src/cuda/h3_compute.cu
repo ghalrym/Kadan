@@ -2502,10 +2502,13 @@ CudaBf16Projection::CudaBf16Projection(
     std::shared_ptr<MediaSessionActivity> activity,
     std::shared_ptr<Resources> resources,
     Workload workload,
-    int device
+    int device,
+    image::AttentionPrecision attention_precision
 )
     : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
-      resources_(std::move(resources)), device_(device) {
+      resources_(std::move(resources)), device_(device),
+      attention_precision_(attention_precision) {
+    image::validate_attention_precision(attention_precision_, workload);
     require(
         context_owner_ && activity_ && resources_ && device >= 0
             && std::size_t(device) + 1 < resources_->snapshot().capacity.size(),
@@ -2814,7 +2817,7 @@ void CudaBf16Projection::masked_attention(
         );
     };
     const float scale = 1 / std::sqrt(float(head_dim)), zero = 0, one = 1;
-    // Match attend<float>'s PEDANTIC F32 GEMMs and tiled online softmax.
+    // Keep QK and the default PV in attend<float>'s PEDANTIC F32 mode.
     with_projection_math(
         true,
         CUBLAS_PEDANTIC_MATH,
@@ -2888,23 +2891,41 @@ void CudaBf16Projection::masked_attention(
                         0
                     );
                     checked(cudaGetLastError());
-                    checked(
-                        gemm<float>(
-                            handle,
-                            CUBLAS_OP_N,
-                            CUBLAS_OP_N,
-                            int(head_dim),
-                            int(shape.rows),
-                            int(keys),
-                            one,
-                            value_source + source,
-                            int(shape.in),
-                            at(layout.scores),
-                            int(keys),
-                            one,
-                            at(layout.output),
-                            int(head_dim)
-                        )
+                    // Request TF32 only for PV products, restoring PEDANTIC before
+                    // the next QK. Keep F32 accumulation and beta=1 for the
+                    // rescaled numerator; cuBLAS still selects the actual kernel.
+                    with_projection_math(
+                        attention_precision_
+                            == image::AttentionPrecision::experimental_pv_tf32,
+                        CUBLAS_TF32_TENSOR_OP_MATH,
+                        [&] {
+                            cublasMath_t mode;
+                            checked(cublasGetMathMode(handle, &mode));
+                            return mode;
+                        },
+                        [&](cublasMath_t mode) {
+                            checked(cublasSetMathMode(handle, mode));
+                        },
+                        [&] {
+                            checked(
+                                gemm<float>(
+                                    handle,
+                                    CUBLAS_OP_N,
+                                    CUBLAS_OP_N,
+                                    int(head_dim),
+                                    int(shape.rows),
+                                    int(keys),
+                                    one,
+                                    value_source + source,
+                                    int(shape.in),
+                                    at(layout.scores),
+                                    int(keys),
+                                    one,
+                                    at(layout.output),
+                                    int(head_dim)
+                                )
+                            );
+                        }
                     );
                 }
                 divide_attention<<<

@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 
+#include "kadan/image_attention.hpp"
 #include "kadan/video_progress.hpp"
 #include "kadan/weight_progress.hpp"
 using namespace kadan;
@@ -90,6 +91,73 @@ void projection_output_classification() {
             projection_output_finite(bits) == std::isfinite(std::bit_cast<float>(bits))
         );
     }
+}
+
+void image_attention_precision() {
+    using image::AttentionPrecision;
+    check(image::attention_precision_name(AttentionPrecision{}) == "pedantic_fp32");
+    check(
+        image::attention_precision_name(AttentionPrecision::experimental_pv_tf32)
+        == "experimental_pv_tf32"
+    );
+    for (auto workload :
+         {Workload::llm,
+          Workload::image,
+          Workload::video,
+          Workload::speech,
+          Workload::tts,
+          Workload::decision}) {
+        image::validate_attention_precision(
+            AttentionPrecision::pedantic_fp32, workload
+        );
+        if (workload == Workload::image)
+            image::validate_attention_precision(
+                AttentionPrecision::experimental_pv_tf32, workload
+            );
+        else
+            fails([&] {
+                image::validate_attention_precision(
+                    AttentionPrecision::experimental_pv_tf32, workload
+                );
+            });
+    }
+
+    // Fake nested handle scopes: QK stays pedantic, PV restores before another
+    // tile and the outer scope restores an initially fast mode on unwind.
+    for (bool enabled : {false, true})
+        for (bool interrupted : {false, true}) {
+            int mode = 23;
+            try {
+                with_projection_math(
+                    true,
+                    17,
+                    [&] { return mode; },
+                    [&](int next) { mode = next; },
+                    [&] {
+                        check(mode == 17);
+                        with_projection_math(
+                            enabled,
+                            23,
+                            [&] { return mode; },
+                            [&](int next) { mode = next; },
+                            [&] {
+                                check(mode == (enabled ? 23 : 17));
+                                if (interrupted)
+                                    throw std::runtime_error("cancelled_or_gemm_error");
+                            }
+                        );
+                        check(mode == 17);
+                    }
+                );
+                check(!interrupted);
+            } catch (const std::runtime_error& error) {
+                check(
+                    interrupted
+                    && std::string_view(error.what()) == "cancelled_or_gemm_error"
+                );
+            }
+            check(mode == 23);
+        }
 }
 
 void projection_math() {
@@ -301,6 +369,7 @@ int main() {
     projection_output_classification();
     image_pair_planning();
     vae_normalization_planning();
+    image_attention_precision();
     projection_math();
     // Exercise only progress events, without a model, tensor or inference call.
     std::vector<std::pair<std::string, std::size_t>> updates;
