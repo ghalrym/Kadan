@@ -297,6 +297,25 @@ PyTorch and NVIDIA dependency notices under `/opt/kadan/share/kadan/licenses`.
 Kadan’s license is unchanged; no ComfyUI GPL source is copied. The operator reuse
 is PyTorch’s BSD-style library, including its distributed dependency notices.
 
+The execution comparison uses official ComfyUI commit
+[`8010b48d2c1be986613f8e8c761527d205bd756f`](https://github.com/Comfy-Org/ComfyUI/tree/8010b48d2c1be986613f8e8c761527d205bd756f),
+specifically `comfy/text_encoders/qwen_image21.py` and
+`comfy/ldm/qwen_image21/model.py`. This is an independently composed ATen model
+implementation, not a direct ComfyUI source port. Its modulation keeps
+normalization and `(1 + scale)` in FP32 until the final BF16 cast, following the
+arithmetic boundary in Apache-2.0 Comfy Kitchen
+[`be003b7c23c5b01328657955b8bc5d3f073d868e`, `comfy_kitchen/backends/cuda/ops/adaln.cu`](https://github.com/Comfy-Org/comfy-kitchen/blob/be003b7c23c5b01328657955b8bc5d3f073d868e/comfy_kitchen/backends/cuda/ops/adaln.cu)
+(Copyright 2025 Comfy Org). Shared scales and tanh gates are prepared once per
+step; residuals use ATen `addcmul_` with one output rounding. CPU arithmetic unit
+fixtures verify these boundaries without a model or CUDA execution.
+
+This composition does not reproduce Comfy Kitchen’s CUDA reduction tree or
+kernel fusion. ComfyUI also fuses gate/up projections and forms rotary tables in
+FP64 before casting; Kadan retains separate projections and FP32 rotary tables.
+Matching those kernels, equal-seed noise, or full numerical output is not
+established by this correction. No GPL source or upstream kernel source is
+copied, and no license is added to Kadan.
+
 Each image component is preloaded completely on the admitted GPU with the most
 available memory. Text stores BF16 weights and performs FP32 forward operations;
 denoising keeps BF16 weights/hidden states and uses library SDPA, normalization,
