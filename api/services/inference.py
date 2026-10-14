@@ -14,7 +14,11 @@ from api.pydantic_models.inference import (
     InferenceProgress,
     Operation,
 )
-from api.pydantic_models.inference_task import DownloadTask
+from api.pydantic_models.inference_task import (
+    DownloadTask,
+    LlmModel,
+    ModelSelectionTask,
+)
 from api.pydantic_models.model_store import DownloadObservation, ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
@@ -344,9 +348,23 @@ class InferenceService:
             finally:
                 self.worker.jobs.pop(job_id, None)
 
-    async def unload(self):
+    async def select_model(self, model_id: LlmModel) -> None:
+        """Save selection, then unload a different resident model after earlier chats."""
+        await self.submit(
+            ModelSelectionTask(model_id=model_id),
+            feature="model_selection",
+            operation="configure",
+        )
+        if (
+            self.state in ("loading", "ready", "offloaded")
+            and self.model_id != model_id
+        ):
+            await self.unload(cancel_llm=False)
+
+    async def unload(self, cancel_llm: bool = True):
+        """Unload through the FIFO; cancel_llm=False lets earlier chats finish first."""
         for job in tuple(self.worker.jobs.values()):
-            if job.request.feature == "llm":
+            if cancel_llm and job.request.feature == "llm":
                 await self.cancel(job.request.id)
         job = await self.worker.submit(
             InferenceTask(operation="unload", input={"feature": "llm"})

@@ -599,7 +599,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Persist LLM and image selections in the worker model store. Selection requires a completed download. Other modalities are not configured.
+ * Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Other modalities are not configured.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

@@ -20,8 +20,8 @@ Preparation starts only when a task reaches the FIFO head. Checkpoint conversion
 in the C++ worker. It never invokes Python. Video encoding uses FFmpeg as a codec.
 
 The API starts the inference worker without loading a model or running inference.
-Settings can save a model and context and explicitly load or unload it. Chat can
-also load the selected model on its first request. Checkpoint selection persists;
+Settings saves a model and context; requests load the selected model on demand.
+Selecting a different language model unloads the resident one. Checkpoint selection persists;
 chat conversations stay in the browser. Native prefix reuse is currently unavailable.
 HTTP request observations and native reservations are distinct from measured
 system memory.
@@ -75,7 +75,7 @@ docker compose logs -f api
 
 Open [the playground](http://localhost:5173) or
 [API documentation](http://localhost:8000/docs). Download/select a supported
-checkpoint in Settings, then load it or submit a request. No startup generation
+checkpoint in Settings, then submit a request. No startup generation
 or automatic model load occurs.
 
 ```sh

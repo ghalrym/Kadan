@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference import ImageProgress
+from api.pydantic_models.inference_task import ModelSelectionTask
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.images.generations import ImageRequest
 from api.services.inference import InferenceService
@@ -375,3 +376,66 @@ class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
             await service.submit(
                 ImageRequest(prompt="test"), feature="image", job_id="a" * 32
             )
+
+
+class UnloadTests(unittest.IsolatedAsyncioTestCase):
+    def chat_job(self, service):
+        job = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
+        service.worker.jobs[job.request.id] = job
+        return job
+
+    async def unload(self, service, **kwargs):
+        async def submit(request, **_):
+            job = InferenceJob(request, False)
+            job.result.set_result({})
+            return job
+
+        with (
+            patch.object(service.worker, "submit", side_effect=submit) as worker_submit,
+            patch.object(service, "cancel", new=AsyncMock()) as cancel,
+        ):
+            await service.unload(**kwargs)
+        self.assertEqual(worker_submit.call_args.args[0].operation, "unload")
+        return cancel
+
+    async def test_unload_cancels_running_chats_by_default(self):
+        service = InferenceService()
+        job = self.chat_job(service)
+        cancel = await self.unload(service)
+        cancel.assert_awaited_once_with(job.request.id)
+
+    async def test_unload_can_queue_behind_running_chats(self):
+        service = InferenceService()
+        self.chat_job(service)
+        cancel = await self.unload(service, cancel_llm=False)
+        cancel.assert_not_awaited()
+
+
+class ModelSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selection_unloads_only_a_different_resident_model(self):
+        for state, model_id, unloads in (
+            ("ready", "small", True),
+            ("offloaded", "small", True),
+            ("loading", "small", True),
+            ("ready", "gpt-oss-20b", False),
+            ("unloaded", None, False),
+            ("error", "small", False),
+        ):
+            service = InferenceService()
+            service.state = state
+            service.model_id = model_id
+            with (
+                self.subTest(state=state, model_id=model_id),
+                patch.object(service, "submit", new=AsyncMock()) as submit,
+                patch.object(service, "unload", new=AsyncMock()) as unload,
+            ):
+                await service.select_model("gpt-oss-20b")
+                submit.assert_awaited_once_with(
+                    ModelSelectionTask(model_id="gpt-oss-20b"),
+                    feature="model_selection",
+                    operation="configure",
+                )
+                if unloads:
+                    unload.assert_awaited_once_with(cancel_llm=False)
+                else:
+                    unload.assert_not_awaited()
