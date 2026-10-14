@@ -9,7 +9,6 @@ from api.pydantic_models.inference_task import (
     ImageModel,
     ImageSelectionTask,
     LlmModel,
-    ModelSelectionTask,
 )
 
 router = APIRouter(prefix="/v1/settings", tags=["Settings"])
@@ -72,14 +71,17 @@ def get_settings() -> SettingsResponse:
 
 @router.put(
     "",
-    description="Persist LLM and image selections in the worker model store. Selection requires a completed download. Other modalities are not configured.",
+    description="Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Other modalities are not configured.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
     """Persist completed LLM and image selections and return the refreshed settings.
 
     The worker validates and persists selection at the queue head. An omitted
-    modality leaves its selection unchanged. Selection alone does not load inference."""
+    modality leaves its selection unchanged. Selection alone does not load
+    inference; requests load the selected model on demand. A language model
+    resident for a different checkpoint is unloaded after earlier chats finish,
+    so status never reports it. Context changes never unload."""
     if body.whisper_formatting is not None:
         raise HTTPException(
             503,
@@ -87,11 +89,7 @@ async def update_settings(body: SettingsRequest) -> SettingsResponse:
         )
     try:
         if body.models.LLM is not None:
-            await inference.submit(
-                ModelSelectionTask(model_id=body.models.LLM),
-                feature="model_selection",
-                operation="configure",
-            )
+            await inference.select_model(body.models.LLM)
         if body.models.Image is not None:
             await inference.submit(
                 ImageSelectionTask(model_id=body.models.Image),

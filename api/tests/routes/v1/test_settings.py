@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import ImageSelectionTask, ModelSelectionTask
+from api.pydantic_models.inference_task import ImageSelectionTask
 from api.routes.v1 import settings
 
 
@@ -58,13 +58,21 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     settings.inference, "models_status", return_value=snapshot()
                 ),
-                patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
+                patch.object(
+                    settings.inference, "select_model", new=AsyncMock()
+                ) as select,
             ):
                 await settings.update_settings(body)
-            submit.assert_awaited_once_with(
-                ModelSelectionTask(model_id=model_id),
-                feature="model_selection",
-                operation="configure",
-            )
+            select.assert_awaited_once_with(model_id)
         with self.assertRaises(ValidationError):
             settings.SettingsRequest(models={"LLM": "gpt-oss-7b"})
+
+    async def test_image_selection_leaves_language_model_resident(self):
+        body = settings.SettingsRequest(models={"Image": "qwen-image-2.1"})
+        with (
+            patch.object(settings.inference, "models_status", return_value=snapshot()),
+            patch.object(settings.inference, "submit", new=AsyncMock()),
+            patch.object(settings.inference, "unload", new=AsyncMock()) as unload,
+        ):
+            await settings.update_settings(body)
+        unload.assert_not_awaited()

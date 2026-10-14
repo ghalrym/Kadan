@@ -12,7 +12,6 @@
 .model-runtime--error .model-runtime-dot { background: var(--error); }
 @keyframes model-runtime-pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .model-runtime--busy .model-runtime-dot { animation: none; } }
-.model-load { flex: none; min-width: 84px; padding: 8px 16px; font-weight: 600; }
 
 .model-llm-fields { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 12px; padding-left: 21px; }
 .model-llm-fields .field { gap: 6px; }
