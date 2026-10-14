@@ -728,7 +728,7 @@ export type ModelLoadRequest = {
   /**
    * Model Id
    */
-  model_id?: 'small' | 'medium' | 'large' | null
+  model_id?: 'small' | 'gpt-oss-20b' | 'medium' | 'large' | null
 }
 
 /**
@@ -1064,7 +1064,7 @@ export type SelectionRequest = {
   /**
    * Model Id
    */
-  model_id: 'small' | 'medium' | 'large'
+  model_id: 'small' | 'gpt-oss-20b' | 'medium' | 'large'
 }
 
 /**
@@ -1080,7 +1080,7 @@ export type SettingsModels = {
   /**
    * Llm
    */
-  LLM?: 'small' | 'medium' | 'large' | null
+  LLM?: 'small' | 'gpt-oss-20b' | 'medium' | 'large' | null
 }
 
 /**

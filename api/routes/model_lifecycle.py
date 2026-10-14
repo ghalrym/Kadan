@@ -3,6 +3,7 @@
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from api.pydantic_models.inference_task import LlmModel
 from api.services.inference_errors import InferenceFailure
 from api.services.inference import inference
 from api.services.inference_http import infer
@@ -23,7 +24,7 @@ class ModelLifecycleStatus(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model_id: Literal["small", "medium", "large"] | None = None
+    model_id: LlmModel | None = None
     context_limit: StrictInt | None = Field(
         default=None,
         ge=1,

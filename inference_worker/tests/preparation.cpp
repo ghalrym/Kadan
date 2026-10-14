@@ -179,7 +179,7 @@ void checkpoint_catalog_units() {
     for (const auto* id : {"gpt-oss-20b", "medium"}) {
         const auto& model = store.entry(id);
         assert(model.kind == "llm" && model.layout == "root");
-        assert(!model.inference_available);
+        assert(model.inference_available);
         assert(model.license == "apache-2.0");
         assert(
             model.license_url
@@ -196,22 +196,6 @@ void checkpoint_catalog_units() {
         ));
         assert(store.allowed("chat_template.jinja", model));
         assert(store.allowed("tokenizer.json", model));
-        // Download-only entries must fail before acquisition for load and chat.
-        for (const auto operation : {Operation::load, Operation::generate}) {
-            InferenceRequest task;
-            task.operation = operation;
-            ChatRequest input;
-            input.model = model.id;
-            try {
-                prepare_input(input, task, store, running);
-                assert(false);
-            } catch (const RequestError& error) {
-                assert(
-                    std::string(error.what())
-                    == "This checkpoint has no supported inference engine."
-                );
-            }
-        }
     }
     assert(transfers == 0);
     assert(store.status().at("selected_model_id").is_null());
