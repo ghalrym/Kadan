@@ -208,6 +208,47 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepared_image_uses_worker_step_total(self):
+        for model, requested_steps, prepared_steps in (
+            (None, 50, 8),
+            ("qwen-image-2.1-turbo", 20, 8),
+            ("qwen-image-2.1", 20, 20),
+        ):
+            with self.subTest(model=model):
+                service = InferenceService()
+                job = InferenceJob(
+                    InferenceTask(
+                        input={
+                            "feature": "image",
+                            "prompt": "test",
+                            "model_id": model,
+                            "steps": requested_steps,
+                        }
+                    ),
+                    False,
+                )
+                service._observe(
+                    job,
+                    WorkerEvent(
+                        id=job.request.id,
+                        state="progress",
+                        phase="prepared",
+                        total=prepared_steps,
+                    ),
+                )
+                self.assertEqual(service.progress.image.steps_total, prepared_steps)
+                service._observe(
+                    job,
+                    WorkerEvent(
+                        id=job.request.id,
+                        state="progress",
+                        phase="step_completed",
+                        value=1,
+                    ),
+                )
+                self.assertEqual(service.progress.image.steps_total, prepared_steps)
+                self.assertEqual(service.progress.image.steps_completed, 1)
+
     async def test_steps_survive_block_events_and_reset_for_next_image(self):
         service = InferenceService()
         job = InferenceJob(
