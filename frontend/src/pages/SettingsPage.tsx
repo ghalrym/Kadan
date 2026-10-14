@@ -159,57 +159,42 @@ export default function SettingsPage() {
     return () => { controller.abort(); clearTimeout(timer) }
   }, [refresh])
 
-  /**
-   * Serialize a model mutation, update status on success, and retain its error
-   * independently from polling. Version changes invalidate polls spanning it;
-   * the controller also suppresses state updates after unmount cancellation.
-   */
-  async function submitModelChange(path: string, method: 'POST' | 'DELETE', body?: { license_acknowledged: boolean }) {
-    if (actionController.current) return false
+  /** Mutation versions prevent older polls from overwriting an action's result. */
+  async function mutateModel(action: (signal: AbortSignal) => Promise<void>, reportError = setActionError) {
+    if (actionController.current) return
     const controller = new AbortController()
     actionController.current = controller
     mutationVersion.current += 1
     setPending(true)
-    setActionError('')
+    reportError('')
     try {
-      const next = await requestCheckpointStatus(path, method, body, controller.signal)
-      if (!controller.signal.aborted) { setCheckpointStatus(next); setError(''); return true }
-      return false
+      await action(controller.signal)
     } catch (failure) {
-      if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'Request failed')
-      return false
+      if (!controller.signal.aborted) reportError(failure instanceof Error ? failure.message : 'Model request failed')
     } finally {
       mutationVersion.current += 1
       actionController.current = null
       if (!controller.signal.aborted) setPending(false)
     }
   }
-  /**
-   * Persist the Settings image model through /v1/settings, then refresh the
-   * catalog. Image generation requests that omit model_id use this selection.
-   */
-  async function selectImageModel(model: CheckpointStatus) {
-    if (actionController.current) return
-    const controller = new AbortController()
-    actionController.current = controller
-    mutationVersion.current += 1
-    setPending(true)
-    setImageError('')
-    try {
-      const result = await updateSettings({ body: { models: { Image: model.id as SettingsModels['Image'] } }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]) })
+
+  function submitModelChange(path: string, method: 'POST' | 'DELETE', body?: { license_acknowledged: boolean }) {
+    return mutateModel(async signal => {
+      const next = await requestCheckpointStatus(path, method, body, signal)
+      if (!signal.aborted) { setCheckpointStatus(next); setError('') }
+    })
+  }
+
+  function selectImageModel(model: CheckpointStatus) {
+    return mutateModel(async signal => {
+      const result = await updateSettings({ body: { models: { Image: model.id as SettingsModels['Image'] } }, signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) })
       if (!result.response?.ok) {
         const detail: unknown = (result.error as { detail?: unknown } | undefined)?.detail
         throw new Error(typeof detail === 'string' ? detail : result.response ? `Image model selection failed (HTTP ${result.response.status})` : 'Could not reach model service')
       }
-      const next = await requestCheckpointStatus('', 'GET', undefined, controller.signal)
-      if (!controller.signal.aborted) { setCheckpointStatus(next); setError('') }
-    } catch (failure) {
-      if (!controller.signal.aborted) setImageError(failure instanceof Error ? failure.message : 'Image model selection failed')
-    } finally {
-      mutationVersion.current += 1
-      actionController.current = null
-      if (!controller.signal.aborted) setPending(false)
-    }
+      const next = await requestCheckpointStatus('', 'GET', undefined, signal)
+      if (!signal.aborted) { setCheckpointStatus(next); setError('') }
+    }, setImageError)
   }
   /** Require a fresh explicit acknowledgement for each licensed download or retry. */
   function downloadModel(model: CheckpointStatus) {
@@ -218,31 +203,23 @@ export default function SettingsPage() {
     else void submitModelChange(`/${model.id}/download`, 'POST')
   }
   /** Save selection/context and request actual loading as one guarded server action. */
-  async function loadModel(model: CheckpointStatus, limit: number | null) {
-    if (actionController.current) return
-    const controller = new AbortController()
-    actionController.current = controller
-    mutationVersion.current += 1
-    setPending(true)
-    setLoadPending(true)
-    setActionError('')
-    try {
-      const accepted = await requestLifecycle(controller.signal, { model_id: model.id, context_limit: limit })
-      if (!controller.signal.aborted) setLifecycle(accepted)
-      const [catalog, runtime] = await Promise.all([requestCheckpointStatus('', 'GET', undefined, controller.signal), requestLifecycle(controller.signal)])
-      if (!controller.signal.aborted) {
-        setCheckpointStatus(catalog)
-        setLifecycle(runtime)
-        if (catalog.selected_model_id === model.id) { setChosenId(null); setContextDraft(null) }
-        setError('')
+  function loadModel(model: CheckpointStatus, limit: number | null) {
+    return mutateModel(async signal => {
+      setLoadPending(true)
+      try {
+        const accepted = await requestLifecycle(signal, { model_id: model.id, context_limit: limit })
+        if (!signal.aborted) setLifecycle(accepted)
+        const [catalog, runtime] = await Promise.all([requestCheckpointStatus('', 'GET', undefined, signal), requestLifecycle(signal)])
+        if (!signal.aborted) {
+          setCheckpointStatus(catalog)
+          setLifecycle(runtime)
+          if (catalog.selected_model_id === model.id) { setChosenId(null); setContextDraft(null) }
+          setError('')
+        }
+      } finally {
+        if (!signal.aborted) setLoadPending(false)
       }
-    } catch (failure) {
-      if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'Model load failed')
-    } finally {
-      mutationVersion.current += 1
-      if (actionController.current === controller) actionController.current = null
-      if (!controller.signal.aborted) { setPending(false); setLoadPending(false) }
-    }
+    })
   }
   const models = modelStatus?.models ?? []
   const imageModels = models.filter(model => model.kind === 'image')
