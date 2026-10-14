@@ -5,6 +5,7 @@
 #include <math_constants.h>
 
 #include "gpt_oss_kernel.cuh"
+#include "kadan/gpt_oss_routing.hpp"
 
 namespace kadan::cuda::detail::gpt_oss {
 namespace {
@@ -229,14 +230,10 @@ __global__ void route_kernel(
         chosen[rank] = best;
         values[rank] = logits[best];
     }
-    float total = 0;
-    for (unsigned rank = 0; rank < top_k; ++rank) {
-        values[rank] = expf(values[rank] - values[0]);
-        total += values[rank];
-    }
+    kadan::gpt_oss::routing_weights(values);
     for (unsigned rank = 0; rank < top_k; ++rank) {
         indices[rank] = chosen[rank];
-        weights[rank] = values[rank] / total;
+        weights[rank] = values[rank];
     }
 }
 

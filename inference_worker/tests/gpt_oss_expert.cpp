@@ -6,6 +6,8 @@
 #include <limits>
 #include <source_location>
 
+#include "kadan/gpt_oss_routing.hpp"
+
 namespace {
 void check(bool value, std::source_location at = std::source_location::current()) {
     if (!value)
@@ -62,6 +64,28 @@ void swiglu_rejects() {
     fails([&] { kadan::gpt_oss::swiglu(input, output); }, "linear_nonfinite");
     input.back() = std::numeric_limits<float>::quiet_NaN();
     fails([&] { kadan::gpt_oss::swiglu(input, output); }, "linear_nonfinite");
+}
+
+void cuda_routing_weights() {
+    // Exercise the CUDA router's shared scalar arithmetic without any model
+    // forward or GPU execution. Offsets must not change the selected weights.
+    constexpr std::array<float, 4> expected{
+        0.6439142599F, 0.2368828181F, 0.08714431874F, 0.03205860328F
+    };
+    for (float offset : {0.F, 100.F, -100.F}) {
+        float values[4]{4 + offset, 3 + offset, 2 + offset, 1 + offset};
+        kadan::gpt_oss::routing_weights(values);
+        float total = 0;
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            check(std::abs(values[i] - expected[i]) < 1e-6F);
+            total += values[i];
+        }
+        check(std::abs(total - 1.F) < 1e-6F);
+    }
+    float equal[4]{2, 2, 2, 2};
+    kadan::gpt_oss::routing_weights(equal);
+    for (float weight : equal)
+        check(weight == 0.25F);
 }
 
 void routing() {
@@ -160,6 +184,7 @@ int main() {
     try {
         swiglu_values();
         swiglu_rejects();
+        cuda_routing_weights();
         routing();
         summation();
     } catch (const std::exception& e) {
