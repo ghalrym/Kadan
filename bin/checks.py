@@ -37,6 +37,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "placement-tests",
     "gpt-oss-manifest-tests",
     "gpt-oss-expert-tests",
+    "gpt-oss-plan-tests",
+    "harmony-tests",
     "sequence-state-tests",
     "h3-profile-tests",
     "worker-compute-tests",

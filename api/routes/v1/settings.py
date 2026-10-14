@@ -1,6 +1,5 @@
 """Settings view of the worker-owned model store."""
 
-from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.settings import ModelSetting
@@ -9,6 +8,7 @@ from api.services.inference_errors import InferenceFailure
 from api.pydantic_models.inference_task import (
     ImageModel,
     ImageSelectionTask,
+    LlmModel,
     ModelSelectionTask,
 )
 
@@ -28,7 +28,7 @@ class SettingsModels(BaseModel):
     """Per-modality selections; an omitted modality is left unchanged."""
 
     model_config = ConfigDict(extra="forbid")
-    LLM: Literal["small", "medium", "large"] | None = None
+    LLM: LlmModel | None = None
     Image: ImageModel | None = None
 
 

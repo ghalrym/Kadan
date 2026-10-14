@@ -1301,6 +1301,7 @@
               {
                 "enum": [
                   "small",
+                  "gpt-oss-20b",
                   "medium",
                   "large"
                 ],
@@ -1912,6 +1913,7 @@
           "model_id": {
             "enum": [
               "small",
+              "gpt-oss-20b",
               "medium",
               "large"
             ],
@@ -1949,6 +1951,7 @@
               {
                 "enum": [
                   "small",
+                  "gpt-oss-20b",
                   "medium",
                   "large"
                 ],

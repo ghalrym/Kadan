@@ -7,8 +7,10 @@ import json
 from statistics import median
 import threading
 import time
+from typing import get_args
 from uuid import uuid4
 
+from api.pydantic_models.inference_task import LlmModel
 from api.pydantic_models.requests import RequestRecord
 
 GENERATION_PATHS = {
@@ -125,7 +127,7 @@ def summarize(body, size, complete):
             parts.append(f"{key}: {len(value[key])} characters")
     # Model IDs can also contain user text. Keep only the curated public IDs.
     model = value.get("model")
-    if not isinstance(model, str) or model not in ("small", "medium", "large"):
+    if not isinstance(model, str) or model not in get_args(LlmModel):
         model = None
     return "; ".join(parts), model
 

@@ -85,13 +85,11 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
-## GPT-OSS checkpoint choices
+## GPT-OSS
 
 The catalog includes the official OpenAI Transformers-layout checkpoints below.
-Both are **download only** until the native worker supports GPT-OSS. Adding these
-entries does not select a model or download weights. The existing `medium` ID
-continues to identify 120B so its cached checkpoint and saved settings retain
-their identity.
+The existing `medium` ID continues to identify 120B so its cached checkpoint and
+saved settings retain their identity.
 
 | Catalog ID | Checkpoint | Published total / active parameters | Download bytes |
 | --- | --- | --- | --- |
@@ -102,31 +100,38 @@ Both are Apache-2.0 licensed; each catalog entry links the license at its pinned
 revision. Byte counts sum the Hub's file sizes for root files accepted by
 `ModelStore::allowed`, including weights, tokenizer, configuration and license
 files. They exclude `.gitattributes` and the separate `original/` checkpoint.
-They describe downloads, not resident memory, KV cache, workspace or dual-3090
-fit. No Kadan speed or memory-fit claim has been measured for either model.
+BF16 dequantization, GGUF and third-party requantizations are not registered
+choices; choosing a different quantization requires a separate loader/quality
+discussion.
 
-The pinned [20B configuration](https://huggingface.co/openai/gpt-oss-20b/blob/6cee5e81ee83917806bbde320786a8fb61efebee/config.json)
-and [120B configuration](https://huggingface.co/openai/gpt-oss-120b/blob/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/config.json)
-declare `gpt_oss` / `GptOssForCausalLM` with MXFP4 expert weights. This is a
-mixed-precision checkpoint, not every tensor stored at four bits, and MXFP4 is
-not NVFP4. These are the only GPT-OSS weight variants offered here. BF16
-dequantization, GGUF and third-party requantizations are not registered choices;
-choosing a different quantization requires a separate loader/quality discussion.
+`src/cuda/gpt_oss_model.cpp` executes both sizes (`gpt_oss` /
+`GptOssForCausalLM`) in the existing chat engine with batch-one CUDA kernels in
+`src/cuda/gpt_oss_kernel.cu`: RMSNorm, fused BF16 QKV with biases, half-split
+YaRN rotary, grouped-query attention with per-head sinks over a BF16 K/V cache
+(128-slot ring on sliding layers), and top-4 routed experts that read the
+checkpoint's packed MXFP4 blocks directly with the clamped SwiGLU. Activations
+and accumulation are FP32; selection is greedy.
 
-Kadan's root downloader accepts these zero-indexed safetensor shards, but its
-current Qwen/GLM engines do not execute them. Enabling inference requires native
-GPT-OSS architecture and MXFP4 support, its tokenizer and
-[Harmony prompt/output protocol](https://github.com/openai/harmony), reasoning
-channel and tool-turn handling, and explicit API model-ID support for 20B.
-Keep `inference_available` false until those capabilities are implemented.
-Execution must remain in the existing single worker with automatic placement.
+`src/models/text/gpt_oss_plan.cpp` places complete layers in contiguous ranges
+that end, with the LM head, on the largest device. It prefers one device, then
+several, and otherwise keeps each layer's attention and context state on the
+GPU while experts that do not fit stay in mapped pinned host memory, which the
+same kernels read across the bus. The embedding table is always host-mapped.
+These host bytes are admitted before loading.
 
-After runtime support and an owner-approved weight choice, manually test each
-size through the existing API queue: loading and automatic placement across the
-two 3090s (including memory admission/offload), basic and streamed chat, multi-turn
-history, reasoning levels/channel separation, tool-call round trips, cancellation
-and unload. Test context limits and record actual memory and latency. Neither
-generation nor GPU testing is part of this catalog change.
+`include/kadan/harmony.hpp` renders prompts like OpenAI's `openai-harmony`
+encoder (system messages become developer instructions; earlier reasoning is
+dropped) with low reasoning effort, and converts generated channels to text:
+analysis streams inside `<think>…</think>`, final and preamble commentary stay
+visible, and tool-call bodies are never emitted. Reasoning has a 2,048-token
+budget beside the normal answer limit. `<|return|>`, `<|call|>` and
+`<|endoftext|>` stop generation. Tools are not part of the chat request model.
+
+No Kadan speed or memory-fit figure has been measured. Manually test each size
+through the existing API queue: loading and automatic placement (including host
+experts for 120B), basic and streamed chat, multi-turn history, reasoning
+separation, cancellation, unload and context limits, recording actual memory and
+latency.
 
 Build and install the `inference-runtime` component using the options in
 [`api/Dockerfile`](../api/Dockerfile). The former standalone worker executables

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import ImageSelectionTask
+from api.pydantic_models.inference_task import ImageSelectionTask, ModelSelectionTask
 from api.routes.v1 import settings
 
 
@@ -50,3 +50,21 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             settings.SettingsRequest(models={"Image": "small"})
         with self.assertRaises(ValidationError):
             settings.SettingsRequest(models={"Video": "anything"})
+
+    async def test_gpt_oss_language_models_are_selectable(self):
+        for model_id in ("gpt-oss-20b", "medium"):
+            body = settings.SettingsRequest(models={"LLM": model_id})
+            with (
+                patch.object(
+                    settings.inference, "models_status", return_value=snapshot()
+                ),
+                patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
+            ):
+                await settings.update_settings(body)
+            submit.assert_awaited_once_with(
+                ModelSelectionTask(model_id=model_id),
+                feature="model_selection",
+                operation="configure",
+            )
+        with self.assertRaises(ValidationError):
+            settings.SettingsRequest(models={"LLM": "gpt-oss-7b"})

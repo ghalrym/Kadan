@@ -28,10 +28,11 @@ system memory.
 
 ## Supported native capabilities
 
-- Chat: pinned Qwen3.5 small and GLM5-next large checkpoints, text messages,
-  JSON or streaming SSE responses. The medium checkpoint remains downloadable
-  but has no enabled native chat engine. Context admission uses the configured
-  token capacity; it never silently truncates history.
+- Chat: pinned Qwen3.5 small, GPT-OSS 20B and 120B (`medium`) and GLM5-next
+  large checkpoints, text messages, JSON or streaming SSE responses. GPT-OSS
+  reasoning streams inside `<think>…</think>` before the answer. Context
+  admission uses the configured token capacity; it never silently truncates
+  history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
 - Images: Qwen Image generation. Editing is unavailable.
 - Video: H3 FL2VA INT8 + Turbo, 480p/768p, 16:9/9:16/1:1,

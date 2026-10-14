@@ -78,7 +78,7 @@ Json read_json(const std::string& path, const std::atomic_bool& cancel) {
     return Json::parse(text, [&](int depth, Json::parse_event_t event, Json& value) {
         stop(cancel);
         check(
-            ++events < 2000000 && depth >= 0 && depth < 16, "text_tokenizer_json_limit"
+            ++events < 4000000 && depth >= 0 && depth < 16, "text_tokenizer_json_limit"
         );
         if (event == Json::parse_event_t::object_start)
             keys[depth + 1].clear();
@@ -185,9 +185,10 @@ struct Tokenizer::Impl {
     }
 
     std::vector<bool> load_vocabulary(const Json& m, const std::atomic_bool& cancel) {
+        // GPT-OSS o200k_harmony: 199,998 tokens and 446,189 merges.
         check(
             m.at("vocab").size() >= 256 && m.at("vocab").size() <= 262144
-                && m.at("merges").size() <= 300000,
+                && m.at("merges").size() <= 500000,
             "text_tokenizer_vocab_size"
         );
         if (fixed_vocabulary)

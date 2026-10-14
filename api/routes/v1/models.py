@@ -1,8 +1,7 @@
-from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 from api.pydantic_models.model_store import CheckpointStatus
-from api.pydantic_models.inference_task import ModelContextTask
+from api.pydantic_models.inference_task import LlmModel, ModelContextTask
 
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
@@ -18,7 +17,7 @@ class ModelsResponse(BaseModel):
 
 class SelectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model_id: Literal["small", "medium", "large"]
+    model_id: LlmModel
 
 
 class DownloadRequest(BaseModel):
