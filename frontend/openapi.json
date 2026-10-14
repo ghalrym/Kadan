@@ -2597,6 +2597,15 @@
             "title": "Count",
             "type": "integer"
           },
+          "model_id": {
+            "default": "qwen-image-2.1",
+            "enum": [
+              "qwen-image-2.1",
+              "qwen-image-2.1-turbo"
+            ],
+            "title": "Model Id",
+            "type": "string"
+          },
           "prompt": {
             "maxLength": 8000,
             "minLength": 1,
@@ -2619,6 +2628,7 @@
           },
           "steps": {
             "default": 50,
+            "description": "Base model step count. Turbo always uses its saved eight-step schedule.",
             "maximum": 100.0,
             "minimum": 2.0,
             "title": "Steps",

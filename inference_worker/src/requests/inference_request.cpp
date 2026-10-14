@@ -53,6 +53,7 @@ InferenceRequest parse_request(const Json& envelope) {
     } else if (feature == "image") {
         ImageRequest input;
         input.prompt = body.at("prompt");
+        input.model = body.value("model_id", input.model);
         input.aspect = body.value("aspect", "1:1");
         input.count = body.value("count", 4u);
         input.steps = body.value("steps", 50u);

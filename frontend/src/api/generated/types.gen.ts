@@ -1466,6 +1466,10 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    */
   count?: 1 | 2 | 4
   /**
+   * Model Id
+   */
+  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo'
+  /**
    * Prompt
    */
   prompt: string
@@ -1475,6 +1479,8 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
   seed?: number | null
   /**
    * Steps
+   *
+   * Base model step count. Turbo always uses its saved eight-step schedule.
    */
   steps?: number
 }

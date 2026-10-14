@@ -50,7 +50,7 @@ To opt in, add these options to the existing CMake configuration for
 ```sh
 cmake -S inference_worker -B build/inference-worker \
   -DKADAN_ENABLE_CUDA=ON -DKADAN_ENABLE_IMAGE_GENERATION=ON \
-  -DKADAN_EXPERIMENTAL_IMAGE_PV_TF32=ON
+  -DKADAN_EXPERIMENTAL_IMAGE_PV_TF32=ON -DKADAN_ENABLE_ATEN_IMAGE=OFF
 ```
 
 The image generator passes `image::AttentionPrecision::experimental_pv_tf32`
@@ -64,7 +64,8 @@ text/image masking, full K/V finite scans, status checks, cancellation and
 readiness certificates are unchanged. With the option off, both SGEMMs retain
 their existing calls and PEDANTIC mode.
 
-Configuration rejects the option without CUDA and image generation. If resident
+Configuration rejects the option without CUDA and image generation, or alongside
+ATen image execution, which uses a separate attention backend. If resident
 denoising is unavailable or initial admission is rejected, an opted-in request fails
 with `image_pv_tf32_requires_resident_attention` before synchronous denoising;
 it cannot silently fall back to a different attention policy.

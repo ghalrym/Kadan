@@ -27,6 +27,7 @@ class ChatTask(TaskInput):
 
 class ImageTask(TaskInput):
     feature: Literal["image"] = "image"
+    model_id: Literal["qwen-image-2.1", "qwen-image-2.1-turbo"] = "qwen-image-2.1"
     prompt: str
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4

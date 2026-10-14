@@ -458,7 +458,9 @@ struct AutoModel::Impl final : model::Sink {
                     "context_has_other_device_owner"
                 );
                 current(d);
+#ifndef KADAN_ATEN_RUNTIME
                 check(cudaDeviceReset());
+#endif
             }
             release(host, host_loaded);
             return true;

@@ -243,7 +243,9 @@ class InferenceWorker:
                     else:
                         pending.extend(part)
                 if index < len(parts) - 1:
-                    if not oversized and pending.startswith(b"KADAN_IMAGE_TIMING "):
+                    if not oversized and pending.startswith(
+                        (b"KADAN_IMAGE_TIMING ", b"KADAN_ATEN_IMAGE_TIMING ")
+                    ):
                         # Persist opted-in native timings without changing UI progress.
                         with suppress(OSError, ValueError):
                             sys.stderr.write(
