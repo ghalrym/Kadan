@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
 import type { ModelsResponse, CheckpointStatus, ModelLifecycleStatus, SettingsModels } from '../api/generated'
-import { updateSettings } from '../api/generated/sdk.gen'
+import { configureContextV1ModelsModelIdContextPut, updateSettings } from '../api/generated/sdk.gen'
 import './SettingsPage.css'
 import { WhisperSelector } from '../components/WhisperSelector'
 import { ModelPicker } from '../components/ModelPicker'
@@ -12,7 +12,7 @@ import { ModelPicker } from '../components/ModelPicker'
  * Combines caller cancellation with the timeout; throws backend detail when
  * available, or an HTTP error for non-JSON proxy failures. Returns typed status.
  */
-async function requestCheckpointStatus(path = '', method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean } | { context_limit: number | null }, signal?: AbortSignal): Promise<ModelsResponse> {
+async function requestCheckpointStatus(path = '', method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: { license_acknowledged: boolean }, signal?: AbortSignal): Promise<ModelsResponse> {
   const response = await fetch(`/v1/models${path}`, {
     method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -126,7 +126,6 @@ export default function SettingsPage() {
   const licenseAction = useRef(false)
   const [videoId, setVideoId] = useState<string | null>(null)
   const [imageError, setImageError] = useState('')
-  const [chosenId, setChosenId] = useState<string | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
   useEffect(() => {
     const controller = new AbortController()
@@ -172,10 +171,25 @@ export default function SettingsPage() {
     }
   }
 
-  function submitModelChange(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: { license_acknowledged: boolean } | { context_limit: number | null }) {
+  function submitModelChange(path: string, method: 'POST' | 'DELETE', body?: { license_acknowledged: boolean }) {
     return mutateModel(async signal => {
       const next = await requestCheckpointStatus(path, method, body, signal)
       if (!signal.aborted) { setCheckpointStatus(next); setError('') }
+    })
+  }
+
+  function saveContext(modelId: string, contextLimit: number | null) {
+    return mutateModel(async signal => {
+      const result = await configureContextV1ModelsModelIdContextPut({
+        path: { model_id: modelId },
+        body: { context_limit: contextLimit },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+      })
+      if (!result.response?.ok || !result.data) {
+        const detail: unknown = (result.error as { detail?: unknown } | undefined)?.detail
+        throw new Error(typeof detail === 'string' ? detail : result.response ? `Context save failed (HTTP ${result.response.status})` : 'Could not reach model service')
+      }
+      if (!signal.aborted) { setCheckpointStatus(result.data); setError('') }
     })
   }
 
@@ -195,7 +209,6 @@ export default function SettingsPage() {
       if (!signal.aborted) {
         setCheckpointStatus(next)
         setLifecycle(runtime)
-        if (type === 'LLM') setChosenId(null)
         setError('')
       }
     }, reportError)
@@ -219,7 +232,7 @@ export default function SettingsPage() {
 
   const languageModels = models.filter(model => !model.kind || model.kind === 'llm')
   const downloading = models.some(model => model.status === 'downloading' || model.status === 'cancelling')
-  const chosen = languageModels.find(model => model.id === (chosenId ?? modelStatus?.selected_model_id))
+  const chosen = languageModels.find(model => model.id === modelStatus?.selected_model_id)
   const runtimeModel = models.find(model => model.id === lifecycle?.model_id)?.repo_id.split('/')[1] ?? lifecycle?.model_id
   const runtimeContext = lifecycle?.effective_context_limit ?? lifecycle?.configured_context_limit
   const runtime: { tone: string; text: string } =
@@ -230,7 +243,7 @@ export default function SettingsPage() {
     : lifecycle.state === 'error' ? { tone: 'error', text: 'Load failed' }
     : { tone: 'idle', text: 'No model loaded' }
   const downloadStatus = languageModels.find(model => model.status === 'downloading' || model.status === 'cancelling')
-    ?? (chosen && ['cancelled', 'failed'].includes(chosen.status) ? chosen : undefined)
+    ?? languageModels.find(model => ['cancelled', 'failed'].includes(model.status))
 
   return (
     <div className="scroll-page">
@@ -256,10 +269,10 @@ export default function SettingsPage() {
                 <span className="field-label" aria-hidden="true">Model</span>
                 <ModelPicker models={languageModels} current={chosen} selectedId={chosen?.id ?? null} pending={pending} downloading={downloading}
                   choose={model => void selectModel('LLM', model, setActionError)}
-                  download={model => { setChosenId(model.id); downloadModel(model) }} />
+                  download={downloadModel} />
               </div>
               {chosen
-                ? <ContextControl model={chosen} pending={pending} change={limit => void submitModelChange(`/${chosen.id}/context`, 'PUT', { context_limit: limit })} />
+                ? <ContextControl model={chosen} pending={pending} change={limit => void saveContext(chosen.id, limit)} />
                 : <div className="field model-context"><label htmlFor="context-unselected">Max context length (tokens)</label><select id="context-unselected" className="input" disabled><option>Choose a language model</option></select></div>}
             </div>
             <div className="model-llm-details stack compact">
@@ -271,7 +284,7 @@ export default function SettingsPage() {
                 return <div className="model-download-status" key={model.id}>
                   <div className="model-download-heading">
                     <p role="status"><span>{(model.display_name ?? model.repo_id.split('/')[1])}</span> · <span className="muted">{model.status}</span></p>
-                    <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { setChosenId(model.id); if (active) void submitModelChange(`/${model.id}/download`, 'DELETE'); else downloadModel(model) }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
+                    <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (!active && downloading)} onClick={() => { if (active) void submitModelChange(`/${model.id}/download`, 'DELETE'); else downloadModel(model) }}>{active ? model.status === 'cancelling' ? 'Cancelling…' : 'Cancel download' : 'Retry download'}</button>
                   </div>
                   {active && <><progress className="progress" aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span></>}
                   {model.error && <p role="alert" className="error">{model.error}</p>}
