@@ -13,6 +13,7 @@ router = APIRouter(prefix="/v1/models", tags=["models"])
 class ModelsResponse(BaseModel):
     models: list[CheckpointStatus]
     selected_model_id: str | None
+    selected_image: str | None
 
 
 class SelectionRequest(BaseModel):
@@ -53,7 +54,9 @@ def list_models() -> ModelsResponse:
     try:
         snapshot = inference.models_status()
         return ModelsResponse(
-            models=snapshot.models, selected_model_id=snapshot.selected_model_id
+            models=snapshot.models,
+            selected_model_id=snapshot.selected_model_id,
+            selected_image=snapshot.selected_image,
         )
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc

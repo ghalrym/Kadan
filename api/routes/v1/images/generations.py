@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.pydantic_models.inference_task import ImageModel
 from api.pydantic_models.media import ImageSet
 from api.services.inference import inference
 from api.services.inference_http import infer
@@ -17,7 +18,9 @@ class ImageRequest(BaseModel):
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
     seed: int | None = Field(default=None, ge=0, le=2**64 - 1)
-    model_id: Literal["qwen-image-2.1", "qwen-image-2.1-turbo"] = "qwen-image-2.1"
+    model_id: ImageModel | None = Field(
+        default=None, description="Omit to use the image model selected in Settings."
+    )
     steps: int = Field(
         default=50,
         ge=2,

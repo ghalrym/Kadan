@@ -82,6 +82,8 @@ public:
     void select(const std::string& model);
     void set_context(const std::string& model, const Json& value);
     void select_whisper(const std::string& model);
+    std::string image_selected() const;
+    void select_image(const std::string& model);
     Json status() const;
     Json architecture_context(const std::string& model) const;
 
@@ -181,6 +183,9 @@ void prepare_input(
 );
 void prepare_input(
     WhisperSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
+    ImageSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);

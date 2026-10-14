@@ -203,6 +203,7 @@ export type {
   SelectWhisperModelErrors,
   SelectWhisperModelResponse,
   SelectWhisperModelResponses,
+  SettingsModels,
   SettingsRequest,
   SettingsResponse,
   SpeechHistoryResponse,

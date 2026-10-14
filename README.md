@@ -249,8 +249,10 @@ model accuracy, throughput or target-machine memory fit.
 ### Qwen-Image-2.1-Turbo (draft)
 
 `POST /v1/images/generations` accepts `model_id: "qwen-image-2.1-turbo"`.
-Omitting it retains Qwen-Image-2.1 and its existing step count. Download the
-chosen checkpoint through the model catalog before submitting generation.
+Omitting it uses the image model selected on the Settings page (stored by the
+worker in `image-selection.json`), which defaults to Turbo. Selecting a model
+in Settings requires a completed download; download the chosen checkpoint
+through the model catalog before submitting generation.
 Turbo always uses the eight sigmas saved in its `model_index.json`, followed by
 Euler's terminal zero; the request's `steps` does not replace that grid. Its
 scheduler uses shift 1 without dynamic shifting or terminal stretching. The

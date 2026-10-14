@@ -37,10 +37,14 @@ class ImageRequestIdentityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ImageModelTests(unittest.TestCase):
-    def test_base_defaults_stay_unchanged(self):
+    def test_omitted_model_defers_to_settings_selection(self):
         request = generations.ImageRequest(prompt="test")
-        self.assertEqual(request.model_id, "qwen-image-2.1")
+        self.assertIsNone(request.model_id)
         self.assertEqual(request.steps, 50)
+        task = InferenceTask(
+            input={"feature": "image", **request.model_dump(exclude_unset=True)}
+        )
+        self.assertNotIn("model_id", task.model_dump(mode="json")["input"])
 
     def test_turbo_choice_survives_task_serialization(self):
         request = generations.ImageRequest(

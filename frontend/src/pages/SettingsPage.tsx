@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel, SectionHeading } from '../components/Controls'
 import { modelSettings } from '../data/playground'
-import type { ModelsResponse, CheckpointStatus, ModelLifecycleStatus } from '../api/generated'
+import type { ModelsResponse, CheckpointStatus, ModelLifecycleStatus, SettingsModels } from '../api/generated'
+import { updateSettings } from '../api/generated/sdk.gen'
 import './SettingsPage.css'
 import { WhisperSelector } from '../components/WhisperSelector'
 import { ModelPicker } from '../components/ModelPicker'
@@ -67,6 +68,27 @@ function ContextControl({ model, pending, value, change }: { model: CheckpointSt
   </div>
 }
 
+function ModelDownloadStatus({ model, pending, downloading, cancel, retry }: {
+  model: CheckpointStatus; pending: boolean; downloading: boolean;
+  cancel: (model: CheckpointStatus) => void; retry: (model: CheckpointStatus) => void;
+}) {
+  const active = model.status === 'downloading' || model.status === 'cancelling'
+  return <div className="model-download-status model-video-progress">
+    <div className="model-download-heading">
+      <p role="status">{model.display_name} · {model.status}</p>
+      <button type="button" className="button" disabled={pending || model.status === 'cancelling' || (downloading && model.status !== 'downloading')} onClick={() => {
+        if (model.status === 'downloading') cancel(model)
+        else retry(model)
+      }}>{model.status === 'cancelling' ? 'Cancelling…' : model.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
+    </div>
+    {active && <>
+      <progress className="progress" aria-label={`${model.id} download progress`} max={model.total_bytes || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} />
+      <span className="mono faint">{formatGigabytes(model.downloaded_bytes)} / {model.total_bytes ? formatGigabytes(model.total_bytes) : 'checking checkpoint size'}</span>
+    </>}
+    {model.error && <p role="alert" className="error">{model.error}</p>}
+  </div>
+}
+
 /** Format a token count with the preset label when one matches, else a grouped number. */
 const formatContext = (limit: number) => contextPresets.find(([, preset]) => preset === limit)?.[0] ?? limit.toLocaleString()
 
@@ -107,6 +129,7 @@ export default function SettingsPage() {
   const [licenseModel, setLicenseModel] = useState<CheckpointStatus | null>(null)
   const licenseAction = useRef(false)
   const [videoId, setVideoId] = useState<string | null>(null)
+  const [imageError, setImageError] = useState('')
   const [chosenId, setChosenId] = useState<string | null>(null)
   const [contextDraft, setContextDraft] = useState<{ modelId: string; limit: number | null } | null>(null)
   const [lifecycle, setLifecycle] = useState<ModelLifecycleStatus | null>(null)
@@ -161,6 +184,33 @@ export default function SettingsPage() {
       if (!controller.signal.aborted) setPending(false)
     }
   }
+  /**
+   * Persist the Settings image model through /v1/settings, then refresh the
+   * catalog. Image generation requests that omit model_id use this selection.
+   */
+  async function selectImageModel(model: CheckpointStatus) {
+    if (actionController.current) return
+    const controller = new AbortController()
+    actionController.current = controller
+    mutationVersion.current += 1
+    setPending(true)
+    setImageError('')
+    try {
+      const result = await updateSettings({ body: { models: { Image: model.id as SettingsModels['Image'] } }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]) })
+      if (!result.response?.ok) {
+        const detail: unknown = (result.error as { detail?: unknown } | undefined)?.detail
+        throw new Error(typeof detail === 'string' ? detail : result.response ? `Image model selection failed (HTTP ${result.response.status})` : 'Could not reach model service')
+      }
+      const next = await requestCheckpointStatus('', 'GET', undefined, controller.signal)
+      if (!controller.signal.aborted) { setCheckpointStatus(next); setError('') }
+    } catch (failure) {
+      if (!controller.signal.aborted) setImageError(failure instanceof Error ? failure.message : 'Image model selection failed')
+    } finally {
+      mutationVersion.current += 1
+      actionController.current = null
+      if (!controller.signal.aborted) setPending(false)
+    }
+  }
   /** Require a fresh explicit acknowledgement for each licensed download or retry. */
   function downloadModel(model: CheckpointStatus) {
     if (actionController.current) return
@@ -195,6 +245,9 @@ export default function SettingsPage() {
     }
   }
   const models = modelStatus?.models ?? []
+  const imageModels = models.filter(model => model.kind === 'image')
+  const image = imageModels.find(model => model.id === modelStatus?.selected_image)
+  const imageDownload = imageModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
@@ -225,7 +278,7 @@ export default function SettingsPage() {
 
   return (
     <div className="scroll-page">
-      {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : 'LLM'}`)?.focus() }} proceed={() => {
+      {licenseModel && <LicenseNotice model={licenseModel} close={() => { setLicenseModel(null); document.getElementById(`model-${licenseModel.kind === 'video' ? 'Video' : licenseModel.kind === 'image' ? 'Image' : 'LLM'}`)?.focus() }} proceed={() => {
         if (licenseAction.current) return
         licenseAction.current = true
         const model = licenseModel
@@ -275,30 +328,21 @@ export default function SettingsPage() {
             <label htmlFor="model-TTS"><ModelIcon type="TTS" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
             {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
-            {speechDownload && <div className="model-download-status model-video-progress">
-              <div className="model-download-heading"><p role="status">{speechDownload.display_name} · {speechDownload.status}</p>
-                <button type="button" className="button" disabled={pending || speechDownload.status === 'cancelling' || (downloading && speechDownload.status !== 'downloading')} onClick={() => {
-                  if (speechDownload.status === 'downloading') void submitModelChange(`/${speechDownload.id}/download`, 'DELETE')
-                  else downloadModel(speechDownload)
-                }}>{speechDownload.status === 'cancelling' ? 'Cancelling…' : speechDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
-              </div>
-              {['downloading', 'cancelling'].includes(speechDownload.status) && <><progress className="progress" aria-label={`${speechDownload.id} download progress`} max={speechDownload.total_bytes || 1} value={speechDownload.total_bytes ? speechDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(speechDownload.downloaded_bytes)} / {speechDownload.total_bytes ? formatGigabytes(speechDownload.total_bytes) : 'checking checkpoint size'}</span></>}
-              {speechDownload.error && <p role="alert" className="error">{speechDownload.error}</p>}
-            </div>}
+            {speechDownload && <ModelDownloadStatus model={speechDownload} pending={pending} downloading={downloading}
+              cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} retry={downloadModel} />}
+          </div> : model.type === 'Image' ? <div className="model-row model-row--video" key={model.type}>
+            <label htmlFor="model-Image"><ModelIcon type="Image" />{model.label}</label>
+            <div className="field"><ModelPicker pickerId="Image" label="Image model" models={imageModels} current={image} selectedId={image?.id ?? null} pending={pending} downloading={downloading} choose={model => void selectImageModel(model)} download={downloadModel} /></div>
+            {image && image.status !== 'complete' && <span className="muted model-video-note">Not downloaded</span>}
+            {imageError && <p role="alert" className="error-panel model-video-progress">{imageError}</p>}
+            {imageDownload && <ModelDownloadStatus model={imageDownload} pending={pending} downloading={downloading}
+              cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} retry={downloadModel} />}
           </div> : model.type === 'Video' ? <div className="model-row model-row--video" key={model.type}>
             <label htmlFor="model-Video"><ModelIcon type="Video" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="Video" label="Video model" models={videoModels} current={video} selectedId={videoId} pending={pending} downloading={downloading} choose={model => setVideoId(model.id)} download={model => { setVideoId(model.id); downloadModel(model) }} /></div>
             {video && !video.inference_available && <span className="muted model-video-note">Download only</span>}
-            {videoDownload && <div className="model-download-status model-video-progress">
-              <div className="model-download-heading"><p role="status">{videoDownload.display_name} · {videoDownload.status}</p>
-                <button type="button" className="button" disabled={pending || videoDownload.status === 'cancelling' || (downloading && videoDownload.status !== 'downloading')} onClick={() => {
-                  if (videoDownload.status === 'downloading') void submitModelChange(`/${videoDownload.id}/download`, 'DELETE')
-                  else downloadModel(videoDownload)
-                }}>{videoDownload.status === 'cancelling' ? 'Cancelling…' : videoDownload.status === 'downloading' ? 'Cancel download' : 'Retry download'}</button>
-              </div>
-              {['downloading', 'cancelling'].includes(videoDownload.status) && <><progress className="progress" aria-label={`${videoDownload.id} download progress`} max={videoDownload.total_bytes || 1} value={videoDownload.total_bytes ? videoDownload.downloaded_bytes : undefined} /><span className="mono faint">{formatGigabytes(videoDownload.downloaded_bytes)} / {videoDownload.total_bytes ? formatGigabytes(videoDownload.total_bytes) : 'checking checkpoint size'}</span></>}
-              {videoDownload.error && <p role="alert" className="error">{videoDownload.error}</p>}
-            </div>}
+            {videoDownload && <ModelDownloadStatus model={videoDownload} pending={pending} downloading={downloading}
+              cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} retry={downloadModel} />}
           </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
             {model.type === 'STT' ? <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>

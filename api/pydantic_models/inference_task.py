@@ -25,9 +25,12 @@ class ChatTask(TaskInput):
     reuse_prefix: bool = True
 
 
+ImageModel = Literal["qwen-image-2.1", "qwen-image-2.1-turbo"]
+
+
 class ImageTask(TaskInput):
     feature: Literal["image"] = "image"
-    model_id: Literal["qwen-image-2.1", "qwen-image-2.1-turbo"] = "qwen-image-2.1"
+    model_id: ImageModel | None = None
     prompt: str
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
@@ -97,6 +100,11 @@ class WhisperSelectionTask(TaskInput):
     model: str
 
 
+class ImageSelectionTask(TaskInput):
+    feature: Literal["image_selection"] = "image_selection"
+    model_id: ImageModel
+
+
 InferenceInput = Annotated[
     ChatTask
     | ImageTask
@@ -107,7 +115,8 @@ InferenceInput = Annotated[
     | DownloadTask
     | ModelSelectionTask
     | ModelContextTask
-    | WhisperSelectionTask,
+    | WhisperSelectionTask
+    | ImageSelectionTask,
     Field(discriminator="feature"),
 ]
 
@@ -136,6 +145,7 @@ class InferenceTask(BaseModel):
             "model_selection",
             "model_context",
             "whisper_selection",
+            "image_selection",
         )
         if settings != (self.operation == "configure"):
             raise ValueError("Model settings require the configure operation")
