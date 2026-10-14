@@ -764,6 +764,10 @@ export type ModelsResponse = {
    */
   models: Array<CheckpointStatus>
   /**
+   * Selected Image
+   */
+  selected_image: string | null
+  /**
    * Selected Model Id
    */
   selected_model_id: string | null
@@ -1064,17 +1068,28 @@ export type SelectionRequest = {
 }
 
 /**
+ * SettingsModels
+ *
+ * Per-modality selections; an omitted modality is left unchanged.
+ */
+export type SettingsModels = {
+  /**
+   * Image
+   */
+  Image?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
+  /**
+   * Llm
+   */
+  LLM?: 'small' | 'medium' | 'large' | null
+}
+
+/**
  * SettingsRequest
  *
- * Accept only the supported LLM selection; reject unknown top-level fields.
+ * Accept only the supported LLM and image selections; reject unknown fields.
  */
 export type SettingsRequest = {
-  /**
-   * Models
-   */
-  models: {
-    [key: string]: 'small' | 'medium' | 'large'
-  }
+  models: SettingsModels
   /**
    * Whisper Formatting
    */
@@ -1467,8 +1482,10 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
   count?: 1 | 2 | 4
   /**
    * Model Id
+   *
+   * Omit to use the image model selected in Settings.
    */
-  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo'
+  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
   /**
    * Prompt
    */

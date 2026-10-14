@@ -107,4 +107,14 @@ void prepare_input(
     request.model = input.model;
     store.select_whisper(input.model);
 }
+
+void prepare_input(
+    ImageSelectionRequest& input,
+    InferenceRequest& request,
+    ModelStore& store,
+    const std::atomic_bool&
+) {
+    request.model = input.model;
+    store.select_image(input.model);
+}
 }  // namespace kadan::serving

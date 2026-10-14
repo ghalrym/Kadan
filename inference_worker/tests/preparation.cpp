@@ -1033,6 +1033,7 @@ void job_units() {
     );
     const auto initial = store.status();
     assert(initial.at("selected_model_id") == "small");
+    assert(initial.at("selected_image") == "qwen-image-2.1-turbo");
     auto context = request(
         "context",
         {{"feature", "model_context"},
@@ -1053,6 +1054,24 @@ void job_units() {
     prepare_task(selection, store, files, running);
     assert(store.status().at("selected_model_id") == "small");
     files.cleanup(selection.id);
+    auto defaulted = request(
+        "defaulted-image", {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
+    );
+    prepare_task(defaulted, store, files, running);
+    assert(
+        defaulted.model == "qwen-image-2.1-turbo"
+        && std::get<ImageRequest>(defaulted.input).steps == 8
+    );
+    files.cleanup(defaulted.id);
+    rejects([&] { store.select_image("small"); });
+    auto image_selection = request(
+        "image-selection",
+        {{"feature", "image_selection"}, {"model_id", "qwen-image-2.1"}},
+        "configure"
+    );
+    prepare_task(image_selection, store, files, running);
+    assert(store.status().at("selected_image") == "qwen-image-2.1");
+    files.cleanup(image_selection.id);
     auto image = request(
         "image",
         {{"feature", "image"},

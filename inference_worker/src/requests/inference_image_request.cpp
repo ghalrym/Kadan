@@ -9,11 +9,11 @@ void prepare_input(
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    if (input.model != "qwen-image-2.1" && input.model != "qwen-image-2.1-turbo")
+    request.model = input.model ? *input.model : store.image_selected();
+    if (request.model != "qwen-image-2.1" && request.model != "qwen-image-2.1-turbo")
         throw RequestError("Unsupported image model", 422);
-    request.model = input.model;
     // The pinned Turbo grid determines updates, even when steps was supplied.
-    if (input.model == "qwen-image-2.1-turbo")
+    if (request.model == "qwen-image-2.1-turbo")
         input.steps = 8;
     request.configuration.checkpoint = store.acquire(request.model, cancel);
     if (input.aspect == "1:1") {

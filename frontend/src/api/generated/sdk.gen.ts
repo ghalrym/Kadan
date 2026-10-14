@@ -599,7 +599,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.
+ * Persist LLM and image selections in the worker model store. Selection requires a completed download. Other modalities are not configured.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

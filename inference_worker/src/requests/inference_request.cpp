@@ -53,7 +53,7 @@ InferenceRequest parse_request(const Json& envelope) {
     } else if (feature == "image") {
         ImageRequest input;
         input.prompt = body.at("prompt");
-        input.model = body.value("model_id", input.model);
+        input.model = optional<std::string>(body, "model_id");
         input.aspect = body.value("aspect", "1:1");
         input.count = body.value("count", 4u);
         input.steps = body.value("steps", 50u);
@@ -124,6 +124,8 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else if (feature == "whisper_selection") {
         request.input = WhisperSelectionRequest{body.at("model")};
+    } else if (feature == "image_selection") {
+        request.input = ImageSelectionRequest{body.at("model_id")};
     } else if (feature == "models") {
         request.input = DownloadRequest{
             body.at("model_id"), body.value("license_acknowledged", false)
@@ -131,7 +133,8 @@ InferenceRequest parse_request(const Json& envelope) {
     } else
         throw RequestError("Invalid task feature", 422);
     const bool settings = feature == "model_selection" || feature == "model_context"
-                          || feature == "whisper_selection";
+                          || feature == "whisper_selection"
+                          || feature == "image_selection";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",

@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.settings import ModelSetting
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
-from api.pydantic_models.inference_task import ModelSelectionTask
+from api.pydantic_models.inference_task import (
+    ImageModel,
+    ImageSelectionTask,
+    ModelSelectionTask,
+)
 
 router = APIRouter(prefix="/v1/settings", tags=["Settings"])
 
@@ -20,11 +24,19 @@ class SettingsResponse(BaseModel):
     )
 
 
-class SettingsRequest(BaseModel):
-    """Accept only the supported LLM selection; reject unknown top-level fields."""
+class SettingsModels(BaseModel):
+    """Per-modality selections; an omitted modality is left unchanged."""
 
     model_config = ConfigDict(extra="forbid")
-    models: dict[Literal["LLM"], Literal["small", "medium", "large"]]
+    LLM: Literal["small", "medium", "large"] | None = None
+    Image: ImageModel | None = None
+
+
+class SettingsRequest(BaseModel):
+    """Accept only the supported LLM and image selections; reject unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
+    models: SettingsModels
     whisper_formatting: bool | None = None
 
 
@@ -39,6 +51,7 @@ def get_settings() -> SettingsResponse:
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     llm_options = [model.id for model in status.models if model.kind == "llm"]
+    image_options = [model.id for model in status.models if model.kind == "image"]
     return SettingsResponse(
         models=[
             ModelSetting(
@@ -46,31 +59,43 @@ def get_settings() -> SettingsResponse:
                 type="LLM",
                 selected=status.selected_model_id,
                 options=llm_options,
-            )
+            ),
+            ModelSetting(
+                label="Image generation",
+                type="Image",
+                selected=status.selected_image,
+                options=image_options,
+            ),
         ]
     )
 
 
 @router.put(
     "",
-    description="Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.",
+    description="Persist LLM and image selections in the worker model store. Selection requires a completed download. Other modalities are not configured.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
-    """Persist a completed LLM selection and return the refreshed settings.
+    """Persist completed LLM and image selections and return the refreshed settings.
 
-    The worker validates and persists selection at the queue head. An empty models
-    mapping leaves selection unchanged. Selection alone does not load inference."""
+    The worker validates and persists selection at the queue head. An omitted
+    modality leaves its selection unchanged. Selection alone does not load inference."""
     if body.whisper_formatting is not None:
         raise HTTPException(
             503,
             "Transcription settings are unavailable: no transcription provider is configured.",
         )
     try:
-        if "LLM" in body.models:
+        if body.models.LLM is not None:
             await inference.submit(
-                ModelSelectionTask(model_id=body.models["LLM"]),
+                ModelSelectionTask(model_id=body.models.LLM),
                 feature="model_selection",
+                operation="configure",
+            )
+        if body.models.Image is not None:
+            await inference.submit(
+                ImageSelectionTask(model_id=body.models.Image),
+                feature="image_selection",
                 operation="configure",
             )
         return get_settings()

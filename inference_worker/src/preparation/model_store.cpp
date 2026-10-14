@@ -777,6 +777,23 @@ std::string ModelStore::whisper_selected() const {
     return *names.begin();
 }
 
+std::string ModelStore::image_selected() const {
+    if (fs::is_regular_file(root_ / "image-selection.json")) {
+        const auto model = read_document(root_ / "image-selection.json")
+                               .at("model_id")
+                               .get<std::string>();
+        preparation_check(entry(model).kind == "image", "Invalid image model", 422);
+        return model;
+    }
+    // Turbo is the default until Settings stores another image checkpoint.
+    preparation_check(
+        entry("qwen-image-2.1-turbo").kind == "image",
+        "No image checkpoint registered",
+        422
+    );
+    return "qwen-image-2.1-turbo";
+}
+
 Json ModelStore::context(const std::string& model) const {
     if (!fs::exists(root_ / "context.json"))
         return 65536;
@@ -820,6 +837,16 @@ void ModelStore::select_whisper(const std::string& name) {
     const auto model = whisper_model(name);
     fs::create_directories(root_);
     atomic_document(root_ / "whisper-selection.json", {{"model", model}});
+}
+
+void ModelStore::select_image(const std::string& model) {
+    preparation_check(
+        entry(model).kind == "image" && complete(entry(model)),
+        "Cannot select incomplete image model",
+        422
+    );
+    fs::create_directories(root_);
+    atomic_document(root_ / "image-selection.json", {{"model_id", model}});
 }
 
 Json ModelStore::architecture_context(const std::string& model) const {
@@ -867,7 +894,7 @@ Json ModelStore::status() const {
         }
         models.push_back(std::move(model));
     }
-    Json selection = nullptr, whisper = nullptr;
+    Json selection = nullptr, whisper = nullptr, image = nullptr;
     try {
         selection = selected();
     } catch (const RequestError&) {
@@ -876,10 +903,15 @@ Json ModelStore::status() const {
         whisper = whisper_selected();
     } catch (const RequestError&) {
     }
+    try {
+        image = image_selected();
+    } catch (const RequestError&) {
+    }
     return {
         {"models", models},
         {"selected_model_id", selection},
-        {"selected_whisper", whisper}
+        {"selected_whisper", whisper},
+        {"selected_image", image}
     };
 }
 }  // namespace kadan::serving

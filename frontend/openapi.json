@@ -1371,6 +1371,17 @@
             "title": "Models",
             "type": "array"
           },
+          "selected_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Image"
+          },
           "selected_model_id": {
             "anyOf": [
               {
@@ -1385,7 +1396,8 @@
         },
         "required": [
           "models",
-          "selected_model_id"
+          "selected_model_id",
+          "selected_image"
         ],
         "title": "ModelsResponse",
         "type": "object"
@@ -1913,24 +1925,51 @@
         "title": "SelectionRequest",
         "type": "object"
       },
+      "SettingsModels": {
+        "additionalProperties": false,
+        "description": "Per-modality selections; an omitted modality is left unchanged.",
+        "properties": {
+          "Image": {
+            "anyOf": [
+              {
+                "enum": [
+                  "qwen-image-2.1",
+                  "qwen-image-2.1-turbo"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "LLM": {
+            "anyOf": [
+              {
+                "enum": [
+                  "small",
+                  "medium",
+                  "large"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm"
+          }
+        },
+        "title": "SettingsModels",
+        "type": "object"
+      },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Accept only the supported LLM selection; reject unknown top-level fields.",
+        "description": "Accept only the supported LLM and image selections; reject unknown fields.",
         "properties": {
           "models": {
-            "additionalProperties": {
-              "enum": [
-                "small",
-                "medium",
-                "large"
-              ],
-              "type": "string"
-            },
-            "propertyNames": {
-              "const": "LLM"
-            },
-            "title": "Models",
-            "type": "object"
+            "$ref": "#/components/schemas/SettingsModels"
           },
           "whisper_formatting": {
             "anyOf": [
@@ -2598,13 +2637,20 @@
             "type": "integer"
           },
           "model_id": {
-            "default": "qwen-image-2.1",
-            "enum": [
-              "qwen-image-2.1",
-              "qwen-image-2.1-turbo"
+            "anyOf": [
+              {
+                "enum": [
+                  "qwen-image-2.1",
+                  "qwen-image-2.1-turbo"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Model Id",
-            "type": "string"
+            "description": "Omit to use the image model selected in Settings.",
+            "title": "Model Id"
           },
           "prompt": {
             "maxLength": 8000,
@@ -3678,7 +3724,7 @@
         ]
       },
       "put": {
-        "description": "Persist LLM selection through the same store as /v1/models/selection. Selection requires a completed download. Other modalities are not configured.",
+        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download. Other modalities are not configured.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

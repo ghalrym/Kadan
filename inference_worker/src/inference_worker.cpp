@@ -316,13 +316,16 @@ int serve(const char* lock_path) {
                 {"supported", limits.supported}
             };
         }
-        output.send(
-            {{"id", request.id},
-             {"state", "progress"},
-             {"phase", "prepared"},
-             {"model", request.model},
-             {"context", context}}
-        );
+        Json prepared = {
+            {"id", request.id},
+            {"state", "progress"},
+            {"phase", "prepared"},
+            {"model", request.model},
+            {"context", context}
+        };
+        if (const auto* image = std::get_if<ImageRequest>(&request.input))
+            prepared["total"] = image->steps;
+        output.send(prepared);
     };
     InferenceOwner owner(
         capacity, factory, [&] { return memory.probe(); }, publish, 32, prepare

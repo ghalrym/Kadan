@@ -169,7 +169,9 @@ class InferenceService:
             elif event.state == "running":
                 image.phase = "prompt"
             elif event.state == "progress":
-                if event.phase == "image_started":
+                if event.phase == "prepared":
+                    image.steps_total = event.total
+                elif event.phase == "image_started":
                     image.phase = "prompt"
                     image.image_index = event.value
                     image.steps_completed = 0

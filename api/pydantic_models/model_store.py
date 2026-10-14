@@ -40,3 +40,4 @@ class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     selected_model_id: str | None = None
     selected_whisper: str | None = None
+    selected_image: str | None = None
