@@ -172,11 +172,19 @@ sparse files with unread payload holes. Separate units check quantized block
 decoding, tokenizer metadata, prompt rendering, recipient streams and
 pre-download rejection. No unit test executes the model.
 
-No Muse inference, numerical parity, quantization-quality comparison or speed
-measurement has been performed. Disk reads, CPU decoding and PCIe transfers
-can dominate cache misses; the bounded working set does not establish usable
-latency. Prefill currently proceeds token by token. Obtain approval before the
-large download or manual GPU testing, then use the existing API queue to test
+An authorized October 15 manual trial on a Threadripper PRO 5955WX with two
+24 GiB RTX 3090s verified all ten checkpoint files and loaded the model in
+6.6 seconds. Both the original and batched readers reached a 120-second
+first-prefill guard without completing one token of the 154-token prompt or
+producing output. Cancellation, unload and worker exit completed cleanly.
+These trials do not establish usable latency, decode speed, numerical parity
+or quantization quality. The CUDA 12.0 trial used the matching host NVIDIA
+610.57.04 driver library after an initial mixed-driver initialization failure.
+
+CPU decoding and expanded F32 weight transfers remain costs of this path;
+prefill currently proceeds token by token. The bounded working set does not
+establish interactive usability. Obtain approval before a large download or
+manual GPU testing, then use the existing API queue to test
 load, short and streamed chat, history, reasoning, cancellation, unload and
 context admission. Record actual memory and loading/prefill/decode times.
 

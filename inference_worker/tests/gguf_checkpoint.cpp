@@ -239,6 +239,51 @@ void reader_rows() {
     fails([&] { checkpoint.check_unchanged(); }, "gguf_checkpoint_changed");
 }
 
+void reader_batched_rows() {
+    Fixture f;
+    Bytes dense, quantized;
+    for (unsigned expert = 0; expert < 2; ++expert) {
+        for (unsigned row = 0; row < 260; ++row)
+            for (unsigned column = 0; column < 1024; ++column)
+                append(
+                    dense,
+                    std::bit_cast<std::uint32_t>(
+                        float(expert * 1000 + row + column % 16)
+                    ),
+                    4
+                );
+        for (unsigned row = 0; row < 600; ++row) {
+            Bytes block(110, 0);
+            const auto scale = (expert + row) % 2 ? 0x4000 : 0x3c00;
+            block[108] = scale & 255;
+            block[109] = scale >> 8;
+            for (unsigned i = 0; i < 16; ++i)
+                quantized.insert(quantized.end(), block.begin(), block.end());
+        }
+    }
+    f.write(0, {}, 2);
+    f.write(
+        1,
+        {{"dense", 0, {1024, 260, 2}, dense},
+         {"quantized", 11, {4096, 600, 2}, quantized}},
+        2
+    );
+    const std::atomic_bool cancel{false};
+    GgufCheckpoint checkpoint(f.root, cancel);
+    // Both selections cross a 1 MiB packed-read boundary and leave a partial
+    // final batch. Values also distinguish the selected expert and first row.
+    std::vector<float> dense_output(258 * 1024);
+    checkpoint.read_rows("dense", 1, 1, dense_output, cancel);
+    for (unsigned row = 0; row < 258; ++row)
+        for (unsigned column = 0; column < 1024; ++column)
+            check(dense_output[row * 1024 + column] == 1001.f + row + column % 16);
+    std::vector<float> quantized_output(598 * 4096);
+    checkpoint.read_rows("quantized", 1, 1, quantized_output, cancel);
+    for (unsigned row = 0; row < 598; ++row)
+        for (unsigned column = 0; column < 4096; ++column)
+            check(quantized_output[row * 4096 + column] == (row % 2 ? 256.f : 128.f));
+}
+
 void metadata_failures() {
     Fixture f;
     const std::atomic_bool cancel{false};
@@ -281,6 +326,7 @@ void metadata_failures() {
 int main() {
     try {
         reader_rows();
+        reader_batched_rows();
         metadata_failures();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
