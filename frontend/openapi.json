@@ -1303,7 +1303,8 @@
                   "small",
                   "gpt-oss-20b",
                   "medium",
-                  "large"
+                  "large",
+                  "muse-spark-open-q3-xl"
                 ],
                 "type": "string"
               },
@@ -1915,7 +1916,8 @@
               "small",
               "gpt-oss-20b",
               "medium",
-              "large"
+              "large",
+              "muse-spark-open-q3-xl"
             ],
             "title": "Model Id",
             "type": "string"
@@ -1953,7 +1955,8 @@
                   "small",
                   "gpt-oss-20b",
                   "medium",
-                  "large"
+                  "large",
+                  "muse-spark-open-q3-xl"
                 ],
                 "type": "string"
               },

@@ -76,3 +76,19 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         ):
             await settings.update_settings(body)
         unload.assert_not_awaited()
+
+    async def test_muse_selection_uses_existing_settings_and_catalog(self):
+        model_id = "muse-spark-open-q3-xl"
+        status = snapshot()
+        status.selected_model_id = model_id
+        status.models.append(SimpleNamespace(id=model_id, kind="llm"))
+        body = settings.SettingsRequest(models={"LLM": model_id})
+        with (
+            patch.object(settings.inference, "models_status", return_value=status),
+            patch.object(settings.inference, "select_model", new=AsyncMock()) as select,
+        ):
+            result = await settings.update_settings(body)
+        select.assert_awaited_once_with(model_id)
+        language_model = next(model for model in result.models if model.type == "LLM")
+        self.assertEqual(language_model.selected, model_id)
+        self.assertEqual(language_model.options, ["small", model_id])
