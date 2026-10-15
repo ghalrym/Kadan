@@ -21,6 +21,7 @@
 #include "kadan/h3_compute.hpp"
 #include "kadan/h3_resident.hpp"
 #include "kadan/image_vae.hpp"
+#include "kadan/quantization.hpp"
 
 namespace kadan::video {
 namespace {
@@ -1302,10 +1303,10 @@ class Compute final : public H3Compute {
                                     "h3_cuda_nonfinite_weight"
                                 );
                         } else if constexpr (!quant)
-                            for (float value : weights)
-                                require(
-                                    std::isfinite(value), "h3_cuda_nonfinite_weight"
-                                );
+                            require(
+                                quantization::all_finite(weights),
+                                "h3_cuda_nonfinite_weight"
+                            );
                         if (identity)
                             retained = arena.weights.retain(
                                 key, std::as_bytes(weights), cancel

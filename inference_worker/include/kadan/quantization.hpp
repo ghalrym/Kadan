@@ -1,11 +1,24 @@
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
 namespace kadan::quantization {
+// Reduce integer classifications so large weight spans can be vectorized without
+// relaxed floating-point rules. Values, including signed zero, remain untouched.
+inline bool all_finite(std::span<const float> values) {
+    static_assert(sizeof(float) == sizeof(std::uint32_t));
+    static_assert(std::numeric_limits<float>::is_iec559);
+    std::uint32_t nonfinite = 0;
+    for (float value : values)
+        nonfinite |= (std::bit_cast<std::uint32_t>(value) & 0x7f800000u) == 0x7f800000u;
+    return nonfinite == 0;
+}
+
 // Format primitives, independent of any checkpoint or inference implementation.
 float e2m1(std::uint8_t nibble);  // Reject codes above 15; preserve signed zero.
 float e4m3fn(std::uint8_t byte);  // Includes subnormals and both NaN encodings.
