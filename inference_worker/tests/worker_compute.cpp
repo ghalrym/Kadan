@@ -618,6 +618,8 @@ int main() {
         });
     }
     fails([] {
+        // Deliberately malformed caller value exercises preflight rejection.
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
         gguf_projection_plan(256, 1, static_cast<gguf::Encoding>(99), false, SIZE_MAX);
     });
     // Smallest admitted plan: the aligned scalar still fits at the exact limit.
