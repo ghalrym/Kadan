@@ -668,11 +668,36 @@ struct Store {
             identity.payload_begin += expert * expert_bytes;
             identity.payload_end = identity.payload_begin + expert_bytes;
         }
-        const auto reader = [&](std::size_t first, std::span<float> destination) {
-            source(descriptor, expert, first, destination);
-        };
-        need(
-            compute.dense_source(
+        ProjectionResult projected;
+        if (gguf && gguf->tensor(descriptor.gguf_name).type != 0) {
+            const auto type = gguf->tensor(descriptor.gguf_name).type;
+            need(type == 8 || type == 11 || type == 12, "muse_spark_gguf_type");
+            const auto encoding = type == 8    ? gguf::Encoding::q8_0
+                                  : type == 11 ? gguf::Encoding::q3_k
+                                               : gguf::Encoding::q4_k;
+            const auto packed_reader = [&](std::size_t first,
+                                           std::span<std::byte> destination) {
+                gguf->read_packed_rows(
+                    descriptor.gguf_name, expert, first, destination, *cancel
+                );
+            };
+            projected = compute.dense_gguf_source(
+                identity,
+                encoding,
+                packed_reader,
+                {},
+                input,
+                descriptor.columns,
+                descriptor.rows,
+                result,
+                *cancel,
+                !rounded
+            );
+        } else {
+            const auto reader = [&](std::size_t first, std::span<float> destination) {
+                source(descriptor, expert, first, destination);
+            };
+            projected = compute.dense_source(
                 identity,
                 reader,
                 {},
@@ -682,7 +707,10 @@ struct Store {
                 result,
                 *cancel,
                 !rounded
-            ) != ProjectionResult::unsupported,
+            );
+        }
+        need(
+            projected != ProjectionResult::unsupported,
             "muse_spark_cuda_source_required"
         );
         // Resident decoded rows still depend on both immutable scale tensors.

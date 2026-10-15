@@ -42,6 +42,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "muse-spark-prompt-tests",
     "mlx-quantization-tests",
     "muse-spark-tests",
+    "gguf-quantization-tests",
     "gguf-checkpoint-tests",
     "sequence-state-tests",
     "h3-profile-tests",

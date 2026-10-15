@@ -82,13 +82,19 @@ struct File {
         );
     }
 
-    void read(std::uint64_t at, std::span<std::uint8_t> output) const {
+    void read(
+        std::uint64_t at,
+        std::span<std::uint8_t> output,
+        const std::atomic_bool* cancel = nullptr
+    ) const {
         require(
             at <= std::uint64_t(initial.st_size)
                 && output.size() <= std::uint64_t(initial.st_size) - at,
             "gguf_read_bounds"
         );
         while (!output.empty()) {
+            if (cancel)
+                stop(*cancel);
             const auto n =
                 ::pread(fd, output.data(), output.size(), static_cast<off_t>(at));
             if (n < 0 && errno == EINTR)
@@ -555,6 +561,38 @@ void GgufCheckpoint::read_rows(
                 ggml_get_type_traits(type)->to_float(source, row.data(), t.shape[0]);
             require(quantization::all_finite(row), "gguf_nonfinite_weight");
         }
+    }
+    file.unchanged();
+    stop(cancel);
+}
+
+void GgufCheckpoint::read_packed_rows(
+    std::string_view name,
+    std::size_t expert,
+    std::size_t first_row,
+    std::span<std::byte> output,
+    const std::atomic_bool& cancel
+) const {
+    stop(cancel);
+    const auto& entry = impl_->find(name);
+    const auto& t = entry.tensor;
+    const auto row_bytes = ggml_row_size(static_cast<ggml_type>(t.type), t.shape[0]);
+    require(
+        t.rank >= 2 && expert < t.shape[2] && output.size() % row_bytes == 0
+            && first_row <= t.shape[1]
+            && output.size() / row_bytes <= t.shape[1] - first_row,
+        "gguf_row_range"
+    );
+    const auto& file = impl_->files[entry.file];
+    file.unchanged();
+    const auto first = add(mul(expert, t.shape[1]), first_row);
+    const auto offset = add(entry.begin, mul(first, row_bytes));
+    auto raw = std::span(reinterpret_cast<std::uint8_t*>(output.data()), output.size());
+    for (std::size_t at = 0; at < raw.size();) {
+        stop(cancel);
+        const auto count = std::min<std::size_t>(1024 * 1024, raw.size() - at);
+        file.read(add(offset, at), raw.subspan(at, count), &cancel);
+        at += count;
     }
     file.unchanged();
     stop(cancel);
