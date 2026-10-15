@@ -126,6 +126,28 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
+## Muse Spark Open preparation
+
+`include/kadan/muse_spark_prompt.hpp` renders text-only chat prompts from the
+public template at checkpoint revision
+`0fb02478b02565b2ce7fc57e6051c91172774ac9`. Its unit fixtures contain outputs
+rendered independently with Jinja2 from that complete template. The renderer
+uses the existing system/user/assistant message shape and preserves the
+template's default reasoning strength, literal control-token escaping and
+generation prefix.
+
+This is preparation for a native backend. Muse checkpoints remain unsupported
+by acquisition and dispatch. Tokenizer loading, generated recipient parsing,
+model execution, tools and multimodal inputs are not implemented. No model
+choice or setting is added.
+
+The [official NVFP4 checkpoint](https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B-NVFP4/tree/4239e4db19376904f2e82c167e78f70abb5455fe)
+has 533,011,023,472 bytes of weight shards (496.405 GiB), including its
+unquantized components. A text-only tensor inventory and memory plan are still
+needed; this total does not establish the footprint of a text-only backend.
+The existing SM86 software NVFP4 kernels do not establish compatibility with
+this checkpoint. No Muse inference or performance validation has been run.
+
 ## GPT-OSS
 
 The catalog includes the official OpenAI Transformers-layout checkpoints below.

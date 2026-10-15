@@ -39,6 +39,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "gpt-oss-expert-tests",
     "gpt-oss-plan-tests",
     "harmony-tests",
+    "muse-spark-prompt-tests",
     "sequence-state-tests",
     "h3-profile-tests",
     "worker-compute-tests",
