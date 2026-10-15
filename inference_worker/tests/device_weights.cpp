@@ -89,6 +89,66 @@ int main() {
     auto bytes = std::as_bytes(std::span(values));
     DeviceWeights::Key key{{.device = 1}, 0, 8, 4};
     {
+        Resources r({host, 2048});
+        Fake gpu(r);
+        DeviceWeights bank(r, 0, Workload::llm, 1024, gpu);
+        std::array<std::byte, 288> packed{};
+        // Identical block ranges distinguish all packed encodings from F32.
+        // The callback boundary is a fake: a bank hit must skip source reads.
+        unsigned reads = 0;
+        auto fetch = [&](const DeviceWeights::Key& tile) {
+            if (auto retained = bank.find(tile))
+                return retained;
+            ++reads;
+            return bank.retain(
+                tile, std::span(packed).first(tile.count * tile.width), cancel
+            );
+        };
+        std::array<void*, 4> retained{};
+        std::size_t i = 0;
+        auto tile = key;
+        tile.count = 2;
+        for (std::size_t width : {110U, 144U, 34U, 4U}) {
+            tile.width = width;
+            check(!bank.find(tile));
+            retained[i] = fetch(tile);
+            check(retained[i]);
+            for (std::size_t previous = 0; previous < i; ++previous)
+                check(retained[previous] != retained[i]);
+            check(fetch(tile) == retained[i]);
+            ++i;
+        }
+        check(reads == 4 && gpu.copies == 4 && bank.allocated() == 584);
+        auto expert = tile;
+        expert.width = 110;
+        expert.source.payload_begin = 220;
+        expert.source.payload_end = 440;
+        check(!bank.find(expert) && fetch(expert));
+        check(reads == 5 && gpu.copies == 5 && bank.allocated() == 804);
+        auto next_rows = expert;
+        next_rows.first = 2;
+        check(!bank.find(next_rows) && fetch(next_rows));
+        check(bank.allocated() == 1024);
+        next_rows.first = 4;
+        check(!fetch(next_rows) && gpu.copies == 6 && bank.allocated() == 1024);
+        // Cleanup remains available after cancellation and retires exact experts.
+        cancel = true;
+        check(bank.release_sources(std::span(&expert.source, 1)) == 440);
+        fails([&] { bank.retain(tile, std::span(packed).first(8), cancel); });
+        cancel = false;
+        check(bank.find(tile) == retained.back());
+        auto invalid = tile;
+        invalid.count = std::numeric_limits<std::size_t>::max();
+        invalid.width = 144;
+        fails([&] { bank.retain(invalid, packed, cancel); });
+        invalid = tile;
+        invalid.width = 110;
+        fails([&] { bank.retain(invalid, std::span(packed).first(219), cancel); });
+        check(bank.allocated() == 584 && gpu.copies == 6);
+        bank.release();
+        check(gpu.frees == 6 && gpu.pointers.empty() && r.snapshot().residents == 0);
+    }
+    {
         Resources r({host, 1024});
         Fake gpu(r);
         DeviceWeights bank(r, 0, Workload::image, 64, gpu);

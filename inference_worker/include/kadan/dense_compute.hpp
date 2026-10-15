@@ -7,6 +7,7 @@
 #include <span>
 #include <vector>
 
+#include "kadan/gguf_quantization.hpp"
 #include "kadan/image_convolution.hpp"
 #include "kadan/projection_math.hpp"
 #include "kadan/resources.hpp"
@@ -153,6 +154,28 @@ public:
         std::size_t,
         std::span<float>,
         const std::atomic_bool&
+    ) {
+        return ProjectionResult::unsupported;
+    }
+
+    // Whole packed rows; first is a matrix row, not an element offset. Each
+    // device may invoke this concurrently with an independently admitted buffer.
+    using GgufWeightSource = std::function<void(std::size_t, std::span<std::byte>)>;
+
+    // Unsupported precedes source reads or output writes. Packed weights retain
+    // their serialized identity; implementations validate decoded values and
+    // synchronize before return. Execution failures throw and must not retry.
+    virtual ProjectionResult dense_gguf_source(
+        const WeightIdentity&,
+        gguf::Encoding,
+        const GgufWeightSource&,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&,
+        bool = false
     ) {
         return ProjectionResult::unsupported;
     }

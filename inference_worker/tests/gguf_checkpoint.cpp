@@ -4,11 +4,14 @@
 #include <bit>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <unistd.h>
+#include <utility>
 
 using namespace kadan::checkpoint;
 
@@ -221,6 +224,43 @@ void reader_rows() {
     checkpoint.read_rows("q8", 0, 1, output, cancel);
     for (std::size_t i = 0; i < output.size(); ++i)
         check(output[i] == 2.f * (int(i % 32) - 16));
+    for (const auto& [name, bytes] :
+         std::array<std::pair<std::string_view, const Bytes*>, 3>{
+             {{"q3", &q3}, {"q4", &q4}, {"q8", &q8}}
+         }) {
+        const auto row_bytes = bytes->size() / 4;
+        std::vector<std::byte> packed(row_bytes * 2);
+        checkpoint.read_packed_rows(name, 1, 0, packed, cancel);
+        for (std::size_t i = 0; i < packed.size(); ++i)
+            check(
+                std::to_integer<std::uint8_t>(packed[i]) == (*bytes)[2 * row_bytes + i]
+            );
+        packed.resize(row_bytes);
+        checkpoint.read_packed_rows(name, 0, 1, packed, cancel);
+        for (std::size_t i = 0; i < packed.size(); ++i)
+            check(std::to_integer<std::uint8_t>(packed[i]) == (*bytes)[row_bytes + i]);
+        checkpoint.read_packed_rows(name, 0, 2, {}, cancel);
+        fails(
+            [&] { checkpoint.read_packed_rows(name, 2, 0, packed, cancel); },
+            "gguf_row_range"
+        );
+        fails(
+            [&] { checkpoint.read_packed_rows(name, 0, 2, packed, cancel); },
+            "gguf_row_range"
+        );
+        fails(
+            [&] { checkpoint.read_packed_rows(name, 0, SIZE_MAX, {}, cancel); },
+            "gguf_row_range"
+        );
+        fails(
+            [&] {
+                checkpoint.read_packed_rows(
+                    name, 0, 0, std::span(packed).first(row_bytes - 1), cancel
+                );
+            },
+            "gguf_row_range"
+        );
+    }
     std::array<float, 4> vector{};
     checkpoint.read_vector("vector", vector, cancel);
     check(vector == std::array<float, 4>{1, -2, 3, -4});
@@ -231,12 +271,25 @@ void reader_rows() {
         "gguf_row_range"
     );
     const std::atomic_bool cancelled{true};
+    std::array<std::byte, 110> packed{};
+    fails(
+        [&] { checkpoint.read_packed_rows("q3", 0, 0, packed, cancelled); },
+        "gguf_cancelled"
+    );
+    fails(
+        [&] { checkpoint.read_packed_rows("vector", 0, 0, {}, cancel); },
+        "gguf_row_range"
+    );
     fails(
         [&] { checkpoint.read_rows("q3", 0, 0, output, cancelled); }, "gguf_cancelled"
     );
     fails([&] { GgufCheckpoint bad(f.root, cancelled); }, "gguf_cancelled");
     std::ofstream(f.file(1), std::ios::app).put(0);
     fails([&] { checkpoint.check_unchanged(); }, "gguf_checkpoint_changed");
+    fails(
+        [&] { checkpoint.read_packed_rows("q3", 0, 0, packed, cancel); },
+        "gguf_checkpoint_changed"
+    );
 }
 
 void reader_batched_rows() {
@@ -282,6 +335,30 @@ void reader_batched_rows() {
     for (unsigned row = 0; row < 598; ++row)
         for (unsigned column = 0; column < 4096; ++column)
             check(quantized_output[row * 4096 + column] == (row % 2 ? 256.f : 128.f));
+    for (const auto& [name, bytes, row_bytes, rows] : std::array<
+             std::tuple<std::string_view, const Bytes*, std::size_t, std::size_t>,
+             2>{{{"dense", &dense, 4096, 260}, {"quantized", &quantized, 1760, 600}}}) {
+        std::vector<std::byte> packed((rows - 2) * row_bytes);
+        checkpoint.read_packed_rows(name, 1, 1, packed, cancel);
+        const auto begin = (rows + 1) * row_bytes;
+        for (std::size_t i = 0; i < packed.size(); ++i)
+            check(std::to_integer<std::uint8_t>(packed[i]) == (*bytes)[begin + i]);
+    }
+    std::array<std::vector<std::byte>, 2> concurrent{
+        std::vector<std::byte>(dense.size() / 2),
+        std::vector<std::byte>(dense.size() / 2)
+    };
+    auto first = std::async(std::launch::async, [&] {
+        checkpoint.read_packed_rows("dense", 0, 0, concurrent[0], cancel);
+    });
+    checkpoint.read_packed_rows("dense", 1, 0, concurrent[1], cancel);
+    first.get();
+    for (std::size_t expert = 0; expert < concurrent.size(); ++expert)
+        for (std::size_t i = 0; i < concurrent[expert].size(); ++i)
+            check(
+                std::to_integer<std::uint8_t>(concurrent[expert][i])
+                == dense[expert * concurrent[expert].size() + i]
+            );
 }
 
 void metadata_failures() {
@@ -321,12 +398,31 @@ void metadata_failures() {
     }
     fails([&] { GgufMetadata bad(f.file(0), cancel); }, "gguf_header_count");
 }
+
+void packed_f32_payload() {
+    Fixture f;
+    const auto bytes = f32({1, -2, std::numeric_limits<float>::infinity(), 4});
+    f.write(0, {}, 1);
+    f.write(1, {{"dense", 0, {2, 2}, bytes}}, 1);
+    const std::atomic_bool cancel{false};
+    GgufCheckpoint checkpoint(f.root, cancel);
+    std::array<std::byte, 16> packed{};
+    checkpoint.read_packed_rows("dense", 0, 0, packed, cancel);
+    for (std::size_t i = 0; i < packed.size(); ++i)
+        check(std::to_integer<std::uint8_t>(packed[i]) == bytes[i]);
+    std::array<float, 4> decoded{};
+    fails(
+        [&] { checkpoint.read_rows("dense", 0, 0, decoded, cancel); },
+        "gguf_nonfinite_weight"
+    );
+}
 }  // namespace
 
 int main() {
     try {
         reader_rows();
         reader_batched_rows();
+        packed_f32_payload();
         metadata_failures();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

@@ -5,6 +5,7 @@
 #include <span>
 #include <string_view>
 
+#include "kadan/gguf_quantization.hpp"
 #include "kadan/image_convolution.hpp"
 #include "kadan/resources.hpp"
 
@@ -102,6 +103,43 @@ inline ProjectionPlan projection_plan(
             return {tile, columns, fixed + columns * per_column};
     }
     throw std::invalid_argument("projection_scratch_limit");
+}
+
+// Packed source staging and its separate decode status stay bounded even when
+// compressed tiles are retained. The existing projection accounts for decoded
+// F32 weights, optional F64 conversion, GEMM workspace and input/output slices.
+inline constexpr Bytes gguf_projection_staging_bytes = 16 * 1024 * 1024;
+inline constexpr Bytes gguf_projection_reserve_bytes =
+    gguf_projection_staging_bytes + projection_status_bytes;
+
+inline std::size_t gguf_projection_row_bytes(std::size_t in, gguf::Encoding encoding) {
+    if (encoding != gguf::Encoding::q3_k && encoding != gguf::Encoding::q4_k
+        && encoding != gguf::Encoding::q8_0)
+        throw std::invalid_argument("gguf_projection_encoding");
+    const auto values = gguf::block_values(encoding),
+               bytes = gguf::block_bytes(encoding);
+    if (!in || in > 2147483647ULL || in % values
+        || in / values > gguf_projection_staging_bytes / bytes)
+        throw std::invalid_argument("gguf_projection_layout");
+    return in / values * bytes;
+}
+
+inline ProjectionPlan gguf_projection_plan(
+    std::size_t in, std::size_t out, gguf::Encoding encoding, bool precise, Bytes limit
+) {
+    const auto row_bytes = gguf_projection_row_bytes(in, encoding);
+    if (!out || out > 2147483647ULL || limit <= gguf_projection_reserve_bytes)
+        throw std::invalid_argument("gguf_projection_layout");
+    auto plan = projection_plan(
+        in,
+        std::min<Bytes>(out, gguf_projection_staging_bytes / row_bytes),
+        sizeof(float),
+        precise,
+        1,
+        limit - gguf_projection_reserve_bytes
+    );
+    plan.bytes += gguf_projection_reserve_bytes;
+    return plan;
 }
 
 struct VaeConvolutionPlan {

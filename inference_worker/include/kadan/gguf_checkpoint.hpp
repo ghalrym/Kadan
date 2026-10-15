@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -44,7 +45,7 @@ private:
 };
 
 // GGUF v3 split checkpoint. Construction reads bounded metadata only. Payload
-// access uses immutable file descriptors and at most one packed row of scratch.
+// access uses immutable file descriptors and bounded packed scratch.
 // Supports F32, Q8_0, Q3_K, Q4_K; no ggml graph or inference runtime is created.
 class GgufCheckpoint {
 public:
@@ -64,6 +65,16 @@ public:
         std::size_t expert,
         std::size_t first_row,
         std::span<float> output,
+        const std::atomic_bool& cancel
+    ) const;
+    // Copies encoded whole rows without decoding or finite validation. Caller
+    // admits output storage and validates decoded values. Concurrent calls use
+    // independent caller buffers and pread; discard partial output on failure.
+    void read_packed_rows(
+        std::string_view name,
+        std::size_t expert,
+        std::size_t first_row,
+        std::span<std::byte> output,
         const std::atomic_bool& cancel
     ) const;
     void read_vector(

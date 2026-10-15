@@ -129,8 +129,9 @@ and libarchive reads checkpoint containers.
 ## Muse Spark Open (experimental text support)
 
 The native Muse engine uses the existing worker, resource ledger and bounded
-CUDA projection banks. Weights remain on disk; selected rows are decoded into
-bounded staging buffers. It does not start llama.cpp, MLX or a Python runtime.
+CUDA projection banks. GGUF projections read bounded packed rows, retain their
+compressed bytes in the existing GPU banks and decode bounded F32 tiles on the
+GPU for the existing GEMM path. F32 tensors and MLX use their existing sources. It does not start llama.cpp, MLX or a Python runtime.
 The current model selection, saved context limits and GPU settings remain
 unchanged.
 
@@ -160,7 +161,10 @@ not registered as a selected model. Original BF16, ModelOpt NVFP4, other GGUF
 presets and multimodal execution are not admitted by this implementation.
 
 The pinned `ggml-base` dependency supplies GGUF metadata parsing and quantized
-row decoding only. Kadan owns model execution, attention state, placement,
+CPU row decoding only; original Q3_K, Q4_K and Q8_0 CUDA decoders serve packed
+projections. CPU unit tests compare the shared decoder arithmetic against the
+pinned reference, including FP16 patterns and randomized blocks. Kadan owns
+model execution, attention state, placement,
 cancellation and sampling. Its MIT notice is installed with the worker.
 Reference equations and conversion semantics were checked against
 [Transformers PR 49644](https://github.com/huggingface/transformers/pull/49644),
@@ -181,8 +185,11 @@ These trials do not establish usable latency, decode speed, numerical parity
 or quantization quality. The CUDA 12.0 trial used the matching host NVIDIA
 610.57.04 driver library after an initial mixed-driver initialization failure.
 
-CPU decoding and expanded F32 weight transfers remain costs of this path;
-prefill currently proceeds token by token. The bounded working set does not
+Those trials preceded packed GPU execution. The packed path avoids CPU weight
+expansion and expanded F32 host-to-device weight copies for GGUF projections.
+It still decodes retained weights into bounded device scratch; prefill proceeds
+token by token. Representation savings do not establish a latency benefit.
+The bounded working set does not
 establish interactive usability. Obtain approval before a large download or
 manual GPU testing, then use the existing API queue to test
 load, short and streamed chat, history, reasoning, cancellation, unload and

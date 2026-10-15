@@ -560,6 +560,66 @@ int main() {
         }
         check(columns_seen == 96769 && tail_plan.columns < 96769);
     }
+    // Packed GGUF retains compressed blocks but always admits a decoded tile.
+    for (auto encoding :
+         {gguf::Encoding::q3_k, gguf::Encoding::q4_k, gguf::Encoding::q8_0}) {
+        const auto block = gguf::block_values(encoding);
+        const auto width = gguf::block_bytes(encoding);
+        check(gguf_projection_row_bytes(block * 3, encoding) == width * 3);
+        for (bool precise : {false, true}) {
+            constexpr Bytes limit = 64ULL * 1024 * 1024;
+            constexpr std::size_t in = 8192;
+            const auto plan = gguf_projection_plan(in, 96768, encoding, precise, limit);
+            check(plan.bytes <= limit);
+            check(plan.columns * (in / block) * width <= 16ULL * 1024 * 1024);
+            const Bytes t = plan.rows, o = plan.columns, w = in * o;
+            const auto bytes = aligned(
+                {sizeof(unsigned),
+                 t * in * 4,
+                 0,
+                 sizeof(unsigned),
+                 16 * 1024 * 1024,
+                 w * 4,
+                 o * 4,
+                 o * 4,
+                 t * in * 4,
+                 t * in,
+                 t * 4,
+                 t * o * 4,
+                 t * o * 4,
+                 8 * 1024 * 1024,
+                 precise ? w * 8 : 0,
+                 precise ? t * in * 8 : 0,
+                 precise ? t * o * 8 : 0}
+            );
+            check(bytes <= plan.bytes);
+            const auto rows = plan.rows + 5;
+            const auto needed = plan.bytes + 5 * in * sizeof(float);
+            check(projection_input_rows(rows, in, plan, needed) == rows);
+            check(projection_input_rows(rows, in, plan, needed - 1) == plan.rows);
+        }
+        fails([&] { gguf_projection_plan(0, 1, encoding, false, SIZE_MAX); });
+        fails([&] { gguf_projection_plan(block - 1, 1, encoding, false, SIZE_MAX); });
+        fails([&] { gguf_projection_plan(SIZE_MAX, 1, encoding, true, SIZE_MAX); });
+        // Valid block alignment cannot admit a packed row above 16 MiB.
+        const auto too_wide = (16 * 1024 * 1024 / width + 1) * block;
+        fails([&] { gguf_projection_plan(too_wide, 1, encoding, false, SIZE_MAX); });
+        fails([&] { gguf_projection_plan(block, 0, encoding, false, SIZE_MAX); });
+        fails([&] {
+            gguf_projection_plan(block, SIZE_MAX, encoding, false, SIZE_MAX);
+        });
+        fails([&] {
+            gguf_projection_plan(
+                block, 1, encoding, false, gguf_projection_reserve_bytes
+            );
+        });
+        fails([&] {
+            gguf_projection_plan(block, 1, encoding, false, 24 * 1024 * 1024);
+        });
+    }
+    fails([] {
+        gguf_projection_plan(256, 1, static_cast<gguf::Encoding>(99), false, SIZE_MAX);
+    });
     // Smallest admitted plan: the aligned scalar still fits at the exact limit.
     const auto minimum = projection_plan(1, 1, 4, false, 1, 8 * 1024 * 1024 + 8192);
     check(projection_plan(1, 1, 4, false, 1, minimum.bytes).bytes == minimum.bytes);
