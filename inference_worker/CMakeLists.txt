@@ -15,7 +15,14 @@ FetchContent_Declare(kadan_ggml
   URL https://codeload.github.com/ggml-org/llama.cpp/tar.gz/443fc4f6d733d5cd52d151e102390c61f25547eb
   URL_HASH SHA256=ef88afda9da1665ca066956bd326c9d9461dc7ddc027a7a4a3aa92880a12a3dc
   SOURCE_SUBDIR ggml)
+# ggml otherwise forces an unspecified parent build type to Release, disabling
+# assertion-based unit checks during lint. Preserve Kadan's caller-owned value.
+set(kadan_build_type "${CMAKE_BUILD_TYPE}")
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug)
+endif()
 FetchContent_MakeAvailable(kadan_ggml)
+set(CMAKE_BUILD_TYPE "${kadan_build_type}")
 option(KADAN_ENABLE_CUDA "Build original SM86 NVFP4/FP8 projections" OFF)
 if(KADAN_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
