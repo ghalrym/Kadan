@@ -26,6 +26,9 @@ template <class F> void fails(F function) {
 struct Counters {
     Bytes allocated = 0, peak = 0;
     unsigned allocations = 0, frees = 0, creates = 0, destroys = 0, resets = 0;
+    std::vector<std::byte> host_storage;
+    unsigned host_allocations = 0, host_frees = 0;
+    bool null_host = false;
     bool handle = false;
     unsigned status = 0, status_resets = 0, status_reads = 0;
     std::string fail, cleanup_fail;
@@ -68,6 +71,28 @@ struct FakeOperations final : DeviceOperations {
         event("free");
         counts->allocated = 0;
         ++counts->frees;
+    }
+
+    void* allocate_host(Bytes bytes) override {
+        check(counts->host_storage.empty() && resources.snapshot().used[0] >= bytes);
+        event("allocate_host");
+        if (counts->null_host)
+            return nullptr;
+        counts->host_storage.resize(bytes);
+        ++counts->host_allocations;
+        return counts->host_storage.data();
+    }
+
+    void free_host(void* pointer) override {
+        check(
+            pointer == counts->host_storage.data() && !counts->host_storage.empty()
+            && resources.snapshot().used[0] >= counts->host_storage.size()
+            && (counts->events.back() == "synchronize"
+                || counts->events.back() == "destroy")
+        );
+        event("free_host");
+        counts->host_storage.clear();
+        ++counts->host_frees;
     }
 
     // Fake status operations only: no tensor arithmetic or inference.
@@ -114,7 +139,7 @@ struct FakeOperations final : DeviceOperations {
     }
 
     void reset() override {
-        check(!counts->allocated && !counts->handle);
+        check(!counts->allocated && !counts->handle && counts->host_storage.empty());
         event("reset");
         ++counts->resets;
     }
@@ -241,6 +266,121 @@ void accounting_and_construction_failures() {
     check(r.snapshot().residents == 0);
     fails([&] { w.ensure(513); });
     check(r.snapshot().residents == 0);
+}
+
+void host_staging_reuse_and_growth() {
+    constexpr auto capacity = DeviceWorkspace::host_staging_capacity;
+    Resources r({capacity, 512});
+    auto c = std::make_shared<Counters>();
+    DeviceWorkspace w(r, 0, Workload::llm, fake(r, c));
+    w.ensure(128);
+    check(c->host_allocations == 0 && r.snapshot().used[0] == 0);
+    auto staging = w.host_staging(110);
+    check(staging.size() == 110 && staging.data() == c->host_storage.data());
+    staging.front() = std::byte{42};
+    check(r.snapshot().used == Footprint({capacity, 128}));
+    check(w.host_staging(capacity).data() == staging.data());
+    w.ensure(512);
+    check(
+        w.host_staging(34).data() == staging.data()
+        && w.host_staging(34).front() == std::byte{42} && c->host_allocations == 1
+        && c->host_frees == 0 && r.snapshot().used == Footprint({capacity, 512})
+    );
+    w.release();
+    check(
+        c->host_storage.empty() && c->host_frees == 1 && c->frees == 2
+        && r.snapshot().residents == 0
+    );
+    w.release();
+    check(c->host_frees == 1);
+}
+
+void host_staging_admission_and_allocation_failures() {
+    constexpr auto capacity = DeviceWorkspace::host_staging_capacity;
+    Resources r({capacity, 512});
+    auto c = std::make_shared<Counters>();
+    DeviceWorkspace w(r, 0, Workload::llm, fake(r, c));
+    fails([&] { w.host_staging(0); });
+    fails([&] { w.host_staging(capacity + 1); });
+    check(c->events.empty() && r.snapshot().residents == 0);
+    auto other = r.reserve(Workload::image, {1, 0});
+    fails([&] { w.host_staging(1); });
+    check(c->host_allocations == 0 && r.snapshot().used == Footprint({1, 0}));
+    r.released(other);
+    for (bool null_result : {false, true}) {
+        c->fail = null_result ? "" : "allocate_host";
+        c->null_host = null_result;
+        fails([&] { w.host_staging(144); });
+        check(
+            !w.quarantined() && c->host_storage.empty() && r.snapshot().residents == 0
+        );
+    }
+    c->fail.clear();
+    c->null_host = false;
+    check(w.host_staging(144).size() == 144);
+    w.release();
+    check(c->host_allocations == 1 && c->host_frees == 1);
+}
+
+void host_staging_uncertain_cleanup_stays_charged() {
+    constexpr auto capacity = DeviceWorkspace::host_staging_capacity;
+    for (const auto* fault : {"synchronize", "free_host"}) {
+        Resources r({capacity, 512});
+        auto c = std::make_shared<Counters>();
+        DeviceWorkspace w(r, 0, Workload::llm, fake(r, c));
+        auto pointer = w.host_staging(110).data();
+        w.ensure(128);
+        c->fail = fault;
+        fails([&] { w.release(); });
+        check(
+            w.quarantined() && c->host_storage.data() == pointer
+            && c->host_storage.size() == capacity && c->host_frees == 0
+            && c->allocated == 128 && r.snapshot().used == Footprint({capacity, 128})
+            && r.snapshot().residents == 2
+        );
+        const auto events = c->events.size();
+        c->fail.clear();
+        fails([&] { w.host_staging(34); });
+        fails([&] { w.reset(); });
+        check(c->events.size() == events && r.snapshot().used[0] == capacity);
+    }
+}
+
+void host_staging_owned_threads_and_cancel() {
+    constexpr auto capacity = DeviceWorkspace::host_staging_capacity;
+    Resources r({2 * capacity, 512, 512});
+    auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
+    {
+        DeviceThread first(r, 0, Workload::llm, fake(r, a, 0)),
+            second(r, 1, Workload::llm, fake(r, b, 1));
+        auto x = first.submit_work([](DeviceWorkspace& w) { w.host_staging(110); });
+        auto y = second.submit_work([](DeviceWorkspace& w) { w.host_staging(144); });
+        x.get();
+        y.get();
+        check(
+            a->host_storage.data() != b->host_storage.data()
+            && r.snapshot().used == Footprint({2 * capacity, 0, 0})
+        );
+        auto pointer = b->host_storage.data();
+        std::atomic_bool failed = false;
+        auto cancelled = first.submit_work(
+            [](DeviceWorkspace& w) {
+                w.host_staging(34);
+                throw std::runtime_error("cancelled");
+            },
+            &failed
+        );
+        fails([&] { cancelled.get(); });
+        check(
+            failed.load() && a->host_storage.empty() && a->host_frees == 1
+            && b->host_storage.data() == pointer && b->host_frees == 0
+            && r.snapshot().used == Footprint({capacity, 0, 0})
+        );
+    }
+    check(
+        r.snapshot().residents == 0 && b->host_frees == 1 && a->threads.size() == 1
+        && b->threads.size() == 1 && *a->threads.begin() != *b->threads.begin()
+    );
 }
 
 void uncertain_cleanup_stays_charged() {
@@ -540,6 +680,10 @@ int main() {
     operation_and_cleanup_errors();
     reuse_growth_and_release();
     accounting_and_construction_failures();
+    host_staging_reuse_and_growth();
+    host_staging_admission_and_allocation_failures();
+    host_staging_uncertain_cleanup_stays_charged();
+    host_staging_owned_threads_and_cancel();
     uncertain_cleanup_stays_charged();
     reset_failure_keeps_context_accounting();
     persistent_threads_and_cancel();

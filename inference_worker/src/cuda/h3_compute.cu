@@ -501,6 +501,16 @@ public:
         checked(cudaFree(pointer));
     }
 
+    void* allocate_host(Bytes bytes) override {
+        void* pointer = nullptr;
+        checked(cudaHostAlloc(&pointer, bytes, cudaHostAllocPortable));
+        return pointer;
+    }
+
+    void free_host(void* pointer) override {
+        checked(cudaFreeHost(pointer));
+    }
+
     void synchronize_weights() override {
         checked(cudaStreamSynchronize(cudaStreamLegacy));
     }
@@ -1333,18 +1343,16 @@ class Compute final : public H3Compute {
                     void* retained = identity ? arena.weights.find(key) : nullptr;
                     std::unique_ptr<HostAdmission> host_admission;
                     std::unique_ptr<Weight[]> host_weights;
-                    std::unique_ptr<std::byte[]> host_packed;
+                    std::span<std::byte> host_packed;
                     const auto packed_bytes = product(out, packed_row_bytes);
                     if (!retained && packed_source) {
-                        host_admission = std::make_unique<HostAdmission>(
-                            *resources_, packed_bytes + 4096, workload_
+                        static_assert(
+                            DeviceWorkspace::host_staging_capacity
+                            == gguf_projection_staging_bytes
                         );
-                        host_packed =
-                            std::make_unique_for_overwrite<std::byte[]>(packed_bytes);
+                        host_packed = device_workspace.host_staging(packed_bytes);
                         stop(cancel, failed);
-                        (*packed_source)(
-                            first_column, {host_packed.get(), packed_bytes}
-                        );
+                        (*packed_source)(first_column, host_packed);
                         stop(cancel, failed);
                     }
                     if (!retained && !packed_source) {
@@ -1416,7 +1424,7 @@ class Compute final : public H3Compute {
                         if (!retained)
                             checked(cudaMemcpy(
                                 packed_pointer,
-                                host_packed.get(),
+                                host_packed.data(),
                                 packed_bytes,
                                 cudaMemcpyHostToDevice
                             ));
@@ -1446,9 +1454,7 @@ class Compute final : public H3Compute {
                         // bytes never become a reusable bank entry. Existing bank
                         // ownership and cleanup cover the retained packed allocation.
                         if (!retained)
-                            arena.weights.retain(
-                                key, {host_packed.get(), packed_bytes}, cancel
-                            );
+                            arena.weights.retain(key, host_packed, cancel);
                     } else if (!retained)
                         checked(cudaMemcpy(
                             weight_pointer,
