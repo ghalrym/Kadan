@@ -1,5 +1,21 @@
 cmake_minimum_required(VERSION 3.24)
 project(kadan_inference_worker LANGUAGES CXX)
+# GGUF metadata and row dequantization only. Kadan retains execution, placement,
+# request state and sampling; no llama.cpp model graph or backend is linked.
+include(FetchContent)
+set(BUILD_SHARED_LIBS OFF)
+set(GGML_CPU OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(kadan_ggml
+  URL https://codeload.github.com/ggml-org/llama.cpp/tar.gz/443fc4f6d733d5cd52d151e102390c61f25547eb
+  URL_HASH SHA256=ef88afda9da1665ca066956bd326c9d9461dc7ddc027a7a4a3aa92880a12a3dc
+  SOURCE_SUBDIR ggml)
+FetchContent_MakeAvailable(kadan_ggml)
 option(KADAN_ENABLE_CUDA "Build original SM86 NVFP4/FP8 projections" OFF)
 if(KADAN_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
@@ -26,13 +42,14 @@ find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(LibArchive REQUIRED)
 add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation/model_store.cpp
+  src/preparation/muse_spark_assets.cpp
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp
   src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
   src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE kadan_manifest kadan_glm CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive)
+  PRIVATE kadan_manifest kadan_glm kadan_muse_spark CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
@@ -58,6 +75,9 @@ add_library(kadan_checkpoint src/weights/checkpoint.cpp)
 target_include_directories(kadan_checkpoint PUBLIC include)
 target_compile_features(kadan_checkpoint PUBLIC cxx_std_20)
 target_link_libraries(kadan_checkpoint PUBLIC kadan_quantization Threads::Threads)
+add_library(kadan_gguf_checkpoint src/weights/gguf_checkpoint.cpp)
+target_link_libraries(kadan_gguf_checkpoint PUBLIC kadan_checkpoint PRIVATE ggml-base)
+target_compile_options(kadan_gguf_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_library(kadan_weight_backing src/weights/weight_backing.cpp)
 target_link_libraries(kadan_weight_backing PUBLIC kadan_checkpoint kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -113,8 +133,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_library(kadan_glm src/models/text/glm.cpp)
 target_link_libraries(kadan_glm PUBLIC kadan_manifest kadan_resources)
+add_library(kadan_muse_spark src/models/text/muse_spark.cpp)
+target_link_libraries(kadan_muse_spark PUBLIC kadan_manifest kadan_resources kadan_gguf_checkpoint)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_glm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(kadan_muse_spark PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -202,6 +225,8 @@ if(KADAN_ENABLE_CUDA)
   add_library(kadan_h3_cuda src/cuda/h3_compute.cu)
   target_compile_definitions(kadan_glm PRIVATE KADAN_WORKER_CUDA=1)
   target_link_libraries(kadan_glm PUBLIC kadan_h3_cuda)
+  target_compile_definitions(kadan_muse_spark PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan_muse_spark PUBLIC kadan_h3_cuda)
 
   target_link_libraries(kadan_h3_cuda PUBLIC kadan_resources kadan_checkpoint CUDA::cudart CUDA::cublas)
   set_target_properties(kadan_h3_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES 86)
@@ -471,6 +496,18 @@ if(BUILD_TESTING)
   target_link_libraries(muse-spark-prompt-tests PRIVATE kadan_resources)
   target_compile_options(muse-spark-prompt-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME muse_spark_prompt COMMAND muse-spark-prompt-tests)
+  add_executable(mlx-quantization-tests tests/mlx_quantization.cpp)
+  target_link_libraries(mlx-quantization-tests PRIVATE kadan_quantization)
+  target_compile_options(mlx-quantization-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME mlx_quantization COMMAND mlx-quantization-tests)
+  add_executable(muse-spark-tests tests/muse_spark.cpp)
+  target_link_libraries(muse-spark-tests PRIVATE kadan_muse_spark ggml-base)
+  target_compile_options(muse-spark-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME muse_spark COMMAND muse-spark-tests)
+  add_executable(gguf-checkpoint-tests tests/gguf_checkpoint.cpp)
+  target_link_libraries(gguf-checkpoint-tests PRIVATE kadan_gguf_checkpoint ggml-base)
+  target_compile_options(gguf-checkpoint-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME gguf_checkpoint COMMAND gguf-checkpoint-tests)
   add_executable(inference-owner-tests tests/inference_owner.cpp)
   target_link_libraries(inference-owner-tests PRIVATE kadan_resources)
   add_test(NAME inference-owner COMMAND inference-owner-tests)
@@ -486,7 +523,7 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
     src/inference/inference_decision.cpp src/inference/inference_image.cpp src/inference/inference_video.cpp
     src/inference/inference_whisper.cpp src/inference/inference_speech.cpp)
   target_compile_definitions(kadan-inference-worker PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-inference-worker PRIVATE kadan_gpu kadan_glm
+  target_link_libraries(kadan-inference-worker PRIVATE kadan_gpu kadan_glm kadan_muse_spark
     kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
     kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
     kadan_text_tokenizer kadan_preparation nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
@@ -497,6 +534,8 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
     RUNTIME DESTINATION libexec COMPONENT inference-runtime
     LIBRARY DESTINATION lib COMPONENT inference-runtime)
   install(FILES catalog.json DESTINATION share/kadan COMPONENT inference-runtime)
+  install(FILES "${kadan_ggml_SOURCE_DIR}/LICENSE"
+    DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT inference-runtime)
   install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT inference-runtime)
   install(PROGRAMS packaging/run_inference_worker.sh DESTINATION bin
     RENAME kadan-inference-worker COMPONENT inference-runtime)

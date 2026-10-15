@@ -32,6 +32,11 @@ std::string base64_encode(std::string_view bytes);
 std::string base64_decode(std::string_view encoded);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
+// Derive the native text assets from the tensor-free first GGUF split before
+// downloading any remaining split. The existing model selection is unchanged.
+void prepare_muse_gguf_assets(
+    const fs::path&, const std::string& first_split, const std::atomic_bool& cancel
+);
 
 struct ManifestFile {
     std::string name;

@@ -3,10 +3,145 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <tuple>
+#include <utility>
 
 using namespace kadan::serving;
 
 namespace {
+namespace m = muse_spark;
+using Piece = std::pair<unsigned, std::string>;
+
+Piece text(std::string value) {
+    return {1000, std::move(value)};
+}
+
+Piece special(unsigned id) {
+    // The parser must hide control tokens even if the decoder returns text.
+    return {id, "<|control|>"};
+}
+
+std::pair<std::string, std::size_t> run(const std::vector<Piece>& tokens) {
+    m::Stream stream;
+    std::string output;
+    std::size_t visible = 0;
+    for (const auto& [id, decoded] : tokens) {
+        output += stream.push(id, decoded);
+        visible += stream.visible();
+    }
+    output += stream.finish();
+    assert(!stream.visible());
+    assert(stream.finish().empty());
+    assert(stream.push(m::start, "").empty());
+    return {output, visible};
+}
+
+void stream_units() {
+    static_assert(m::is_stop(m::end_of_text) && m::is_stop(m::eot));
+    static_assert(!m::is_stop(m::eom) && !m::is_stop(m::message));
+
+    // Generation resumes inside the partial assistant header. Each ordinary
+    // token may contain only part of the recipient; boundaries are irrelevant.
+    auto [output, visible] = run(
+        {text(" to="),
+         text("se"),
+         text("lf"),
+         special(m::message),
+         text("Think"),
+         text(" first."),
+         special(m::eom),
+         special(m::start),
+         text("assistant to=commentary"),
+         special(m::message),
+         text("Checking. "),
+         special(m::eom),
+         special(m::start),
+         text("assistant to=user"),
+         special(m::message),
+         text("Four"),
+         text("."),
+         special(m::eot),
+         text("stray"),
+         special(m::start),
+         text("assistant to=user"),
+         special(m::message),
+         text("after stop")}
+    );
+    assert(output == "<think>Think first.</think>Checking. Four." && visible == 3);
+
+    // New message boundaries and length truncation both close reasoning.
+    std::tie(output, visible) = run(
+        {text(" to=self"),
+         special(m::message),
+         text("Reason"),
+         special(m::start),
+         text("assistant to=user"),
+         special(m::message),
+         text("Answer")}
+    );
+    assert(output == "<think>Reason</think>Answer" && visible == 1);
+    std::tie(output, visible) =
+        run({text(" to=self"), special(m::message), text("Unfinished")});
+    assert(output == "<think>Unfinished</think>" && visible == 0);
+
+    for (const auto stop : {m::eot, m::end_of_text}) {
+        std::tie(output, visible) =
+            run({text(" to=self"), special(m::message), text("Reason"), special(stop)});
+        assert(output == "<think>Reason</think>" && visible == 0);
+    }
+
+    // Tool recipients and role impersonations cannot become visible answers.
+    for (const auto header :
+         {"assistant to=functions.lookup",
+          "user to=user",
+          "assistant to=user extra",
+          "assistant to=unknown",
+          "assistant",
+          "assistant to=self extra"}) {
+        std::tie(output, visible) = run(
+            {special(m::start),
+             text(header),
+             special(m::message),
+             text("hidden"),
+             special(m::eom),
+             text("also hidden"),
+             special(m::start),
+             text("assistant to=user"),
+             special(m::message),
+             text("Answer"),
+             special(m::end_of_text)}
+        );
+        assert(output == "Answer" && visible == 1);
+    }
+
+    // Both a single large decoded token and split overflow fail closed.
+    for (const auto& pieces : std::vector<std::vector<Piece>>{
+             {text(std::string(1024, 'x')), special(m::message), text("hidden")},
+             {text(" to=user"),
+              text(std::string(512, ' ')),
+              special(m::message),
+              text("hidden")},
+             {text(" to=se")}
+         }) {
+        std::tie(output, visible) = run(pieces);
+        assert(output.empty() && visible == 0);
+    }
+
+    // Empty decoder fragments and structural tokens do not consume answer
+    // budget or expose their spellings.
+    std::tie(output, visible) = run(
+        {text(" to=user"),
+         special(m::message),
+         text(""),
+         special(m::begin_of_text),
+         special(m::pad),
+         special(m::message),
+         text("Answer"),
+         special(m::eot)}
+    );
+    assert(output == "Answer" && visible == 1);
+}
+
 bool rejects(const std::vector<ChatMessage>& messages, std::size_t limit = 16384) {
     try {
         muse_spark::prompt(messages, "2026-10-15", limit);
@@ -61,5 +196,6 @@ int main() {
     assert(rejects({{"tool", "{}"}, {"user", "Hi"}}));
     assert(rejects({{"user", std::string(16385, 'x')}}));
     assert(rejects({{"user", std::string(10000, '<')}}, 1000));
-    std::cout << "Muse Spark text prompt units passed\n";
+    stream_units();
+    std::cout << "Muse Spark text prompt and recipient stream units passed\n";
 }

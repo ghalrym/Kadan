@@ -7,6 +7,27 @@
 #include "kadan/inference_request.hpp"
 
 namespace kadan::serving::muse_spark {
+// Public mlx-community/Muse-Spark-Open-816B-A42B-3bit tokenizer.json,
+// revision b7521af78bddb86c0de111e48fe93ff549711de9. Its generation_config
+// terminates on end_of_text or eot; eom continues the assistant's turn.
+enum Token : unsigned {
+    begin_of_text = 200000,
+    end_of_text = 200001,
+    eom = 200007,
+    eot = 200008,
+    pad = 200018,
+    start = 200022,
+    message = 200023
+};
+
+constexpr bool is_stop(unsigned token) {
+    return token == end_of_text || token == eot;
+}
+
+// Worker generation allowance beyond the visible answer limit, matching its
+// existing reasoning policy. Template strength 512 is not a token count.
+constexpr std::size_t reasoning_tokens = 2048;
+
 // Text-only generation prompt from the public Hub API's chat_template_jinja:
 // meta-models/Muse-Spark-Open-816B-A42B, revision
 // 0fb02478b02565b2ce7fc57e6051c91172774ac9. Preserve its xhigh default (512).
@@ -127,4 +148,98 @@ inline std::string prompt(
     append(result, "<|start|>assistant");
     return result;
 }
+
+// Consume the recipient messages specified by tokenizer_config.response_template.
+// Text for self becomes a think block; only user/commentary count as answer
+// tokens. Unknown recipients (including tools) and malformed headers stay hidden.
+class Stream {
+public:
+    // decoded is one token's text; structural tokens are identified by id.
+    std::string push(unsigned token, std::string_view decoded) {
+        visible_ = false;
+        if (state_ == State::done)
+            return {};
+        if (is_stop(token)) {
+            state_ = State::done;
+            return close();
+        }
+        if (token == start) {
+            state_ = State::header;
+            header_.clear();
+            return close();
+        }
+        if (token == eom) {
+            state_ = State::between;
+            return close();
+        }
+        if (token == begin_of_text || token == pad)
+            return {};
+        if (state_ == State::header) {
+            if (token == message)
+                return open();
+            // Do not accept a truncated valid recipient followed by overflow.
+            if (decoded.size() > 512 - header_.size()) {
+                header_.clear();
+                state_ = State::between;
+            } else
+                header_ += decoded;
+            return {};
+        }
+        if (state_ != State::content || token == message
+            || recipient_ == Recipient::hidden)
+            return {};
+        visible_ = recipient_ == Recipient::visible && !decoded.empty();
+        return std::string(decoded);
+    }
+
+    // Close reasoning even when generation stops at its token/context limit.
+    std::string finish() {
+        visible_ = false;
+        state_ = State::done;
+        return close();
+    }
+
+    bool visible() const {
+        return visible_;
+    }
+
+private:
+    enum class State {
+        header,
+        content,
+        between,
+        done
+    };
+    enum class Recipient {
+        hidden,
+        reasoning,
+        visible
+    };
+
+    // The generation prompt has already emitted <|start|>assistant.
+    State state_ = State::header;
+    Recipient recipient_ = Recipient::hidden;
+    std::string header_ = "assistant";
+    bool thinking_ = false, visible_ = false;
+
+    std::string close() {
+        if (!thinking_)
+            return {};
+        thinking_ = false;
+        return "</think>";
+    }
+
+    std::string open() {
+        state_ = State::content;
+        recipient_ = Recipient::hidden;
+        if (header_ == "assistant to=self") {
+            recipient_ = Recipient::reasoning;
+            thinking_ = true;
+            return "<think>";
+        }
+        if (header_ == "assistant to=user" || header_ == "assistant to=commentary")
+            recipient_ = Recipient::visible;
+        return {};
+    }
+};
 }  // namespace kadan::serving::muse_spark

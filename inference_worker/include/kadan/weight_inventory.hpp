@@ -27,6 +27,7 @@ inline std::size_t storage_width(Dtype dtype) {
     case Dtype::fp16:
         return 2;
     case Dtype::fp32:
+    case Dtype::u32:
         return 4;
     }
     throw std::invalid_argument("weight_inventory_dtype");
@@ -36,6 +37,8 @@ inline std::string_view storage_name(Dtype dtype) {
     switch (dtype) {
     case Dtype::u8:
         return "U8";
+    case Dtype::u32:
+        return "U32";
     case Dtype::i8:
         return "I8";
     case Dtype::fp8:

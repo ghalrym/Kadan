@@ -128,6 +128,68 @@ float fp32_le(std::span<const std::uint8_t> bytes) {
     return std::bit_cast<float>(bits);
 }
 
+void decode_mlx_affine_rows(
+    const MlxAffineMatrix& m, std::size_t first, std::span<float> output
+) {
+    require(m.rows != 0 && m.columns != 0, "empty_matrix");
+    require(m.bits == 3 || m.bits == 4, "mlx_affine_bits");
+    require(
+        m.group_size == 64 && m.columns % m.group_size == 0,
+        "mlx_affine_group_alignment"
+    );
+    product(m.rows, m.columns);
+    const auto row_bytes = product(m.columns / 8, m.bits);
+    require(m.weights.size() == product(m.rows, row_bytes), "weight_shape");
+    const auto groups = m.columns / m.group_size;
+    require(
+        m.scales.size() == product(m.rows, groups)
+            && m.biases.size() == m.scales.size(),
+        "mlx_affine_scale_shape"
+    );
+    require(
+        output.size() % m.columns == 0 && first <= m.rows
+            && output.size() / m.columns <= m.rows - first,
+        "row_range"
+    );
+    const auto out = reinterpret_cast<std::uintptr_t>(output.data());
+    auto disjoint = [&](auto values) {
+        if (output.empty() || values.empty())
+            return;
+        const auto at = reinterpret_cast<std::uintptr_t>(values.data());
+        require(
+            out <= UINTPTR_MAX - output.size_bytes()
+                && at <= UINTPTR_MAX - values.size_bytes()
+                && (out + output.size_bytes() <= at || at + values.size_bytes() <= out),
+            "output_overlap"
+        );
+    };
+    disjoint(m.weights);
+    disjoint(m.scales);
+    disjoint(m.biases);
+    for (auto value : m.scales)
+        require(std::isfinite(value), "mlx_affine_nonfinite_scale");
+    for (auto value : m.biases)
+        require(std::isfinite(value), "mlx_affine_nonfinite_bias");
+    // MLX backend/cpu/quantized.cpp extract_bits: consecutive low-first bits,
+    // including codes split between bytes (and therefore packed U32 words).
+    const auto mask = (1U << m.bits) - 1U;
+    for (std::size_t row = 0; row < output.size() / m.columns; ++row) {
+        const auto packed = m.weights.subspan((first + row) * row_bytes, row_bytes);
+        for (std::size_t column = 0; column < m.columns; ++column) {
+            const auto bit = (column % 8) * m.bits;
+            const auto byte = (column / 8) * m.bits + bit / 8;
+            unsigned code = packed[byte] >> (bit % 8);
+            if (bit % 8 + m.bits > 8)
+                code |= unsigned(packed[byte + 1]) << (8 - bit % 8);
+            code &= mask;
+            const auto group = (first + row) * groups + column / m.group_size;
+            output[row * m.columns + column] = finite_float(
+                static_cast<double>(m.scales[group]) * code + m.biases[group]
+            );
+        }
+    }
+}
+
 std::vector<float> decode_rows(
     const Matrix& m, std::size_t first, std::size_t count, std::size_t max_output_bytes
 ) {

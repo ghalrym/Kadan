@@ -16,6 +16,7 @@
 #include "kadan/glm.hpp"
 #include "kadan/gpt_oss_manifest.hpp"
 #include "kadan/model_manifest.hpp"
+#include "kadan/muse_spark.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -37,6 +38,8 @@ void validate_text_checkpoint(const fs::path& checkpoint) {
             glm::validate_config(root.c_str(), budget);
         else if (architecture == "gpt_oss")
             gpt_oss::read_config(root.c_str(), budget);
+        else if (architecture == "muse_spark")
+            kadan::muse_spark::validate_config(root.c_str(), budget);
         else
             throw std::invalid_argument("unsupported_model_type");
     } catch (const std::exception& error) {
@@ -354,7 +357,8 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     entry.layout = value.at("layout");
     preparation_check(
         entry.layout == "root" || entry.layout == "components"
-            || entry.layout == "composite" || entry.layout == "single_file",
+            || entry.layout == "composite" || entry.layout == "single_file"
+            || entry.layout == "gguf",
         "Invalid checkpoint layout"
     );
     preparation_check(
@@ -380,6 +384,13 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     entry.component_paths = value.value("component_paths", std::vector<std::string>());
     entry.weight_paths = value.value("weight_paths", std::vector<std::string>());
     entry.manifest = parse_manifest(value.at("manifest"));
+    if (entry.layout == "gguf")
+        preparation_check(
+            entry.kind == "llm" && !entry.manifest.empty()
+                && !fs::path(entry.asset_name).has_parent_path()
+                && entry.asset_name.ends_with("-00001-of-00010.gguf"),
+            "Invalid Muse GGUF catalog metadata"
+        );
     return entry;
 }
 
@@ -416,7 +427,7 @@ bool ModelStore::allowed(const std::string& name, const CatalogEntry& model) con
                              const std::string& value) {
         return std::find(values.begin(), values.end(), value) != values.end();
     };
-    if (layout == "composite")
+    if (layout == "composite" || layout == "gguf")
         return contains(required, name);
     if (layout == "single_file")
         return model.asset_name == name && fs::path(name).parent_path().empty();
@@ -472,11 +483,26 @@ void ModelStore::validate_files(
         preparation_check(
             names.contains(name), "Checkpoint is missing required assets"
         );
-    if (layout == "composite" || layout == "single_file") {
+    if (layout == "composite" || layout == "single_file" || layout == "gguf") {
         preparation_check(
             names.size() == required.size(),
             "Checkpoint manifest differs from pinned assets"
         );
+        if (layout == "gguf") {
+            preparation_check(
+                names.contains(model.asset_name) && files.size() == 10,
+                "Invalid Muse GGUF split manifest"
+            );
+            for (const auto& file : files)
+                preparation_check(
+                    file.name.ends_with(".gguf")
+                        && !fs::path(file.name).has_parent_path()
+                        && file.url.starts_with("https://")
+                        && (file.name != model.asset_name
+                            || file.size <= 32 * 1024 * 1024),
+                    "Invalid Muse GGUF split asset"
+                );
+        }
         return;
     }
     const auto paths =
@@ -501,7 +527,8 @@ bool ModelStore::complete(const CatalogEntry& model) const {
             return false;
         const auto files = parse_manifest(marker.at("files"));
         validate_files(model, files);
-        if (model.layout == "composite" && files != model.manifest)
+        if ((model.layout == "composite" || model.layout == "gguf")
+            && files != model.manifest)
             return false;
         if (model.layout == "single_file"
             && (files.size() != 1 || files.front().algorithm != "sha256"
@@ -524,7 +551,7 @@ bool ModelStore::complete(const CatalogEntry& model) const {
 
 std::vector<ManifestFile>
 ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) const {
-    if (model.layout == "composite") {
+    if (model.layout == "composite" || model.layout == "gguf") {
         validate_files(model, model.manifest);
         return model.manifest;
     }
@@ -576,6 +603,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     const auto destination = root_ / (model + "-" + revision);
     preparation_cancel(cancel);
     if (complete(catalog)) {
+        if (catalog.layout == "gguf")
+            prepare_muse_gguf_assets(destination, catalog.asset_name, cancel);
         if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
@@ -583,6 +612,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     fs::create_directories(root_);
     StoreLock lock(root_ / ".download.lock", cancel);
     if (complete(catalog)) {
+        if (catalog.layout == "gguf")
+            prepare_muse_gguf_assets(destination, catalog.asset_name, cancel);
         if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
@@ -610,6 +641,10 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
         std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
             return file.name == "config.json";
         });
+    if (catalog.layout == "gguf")
+        std::stable_partition(ordered.begin(), ordered.end(), [&](const auto& file) {
+            return file.name == catalog.asset_name;
+        });
     std::set<std::string> names;
     for (const auto& file : files) {
         names.insert(file.name);
@@ -626,7 +661,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
         );
     }
     preparation_check(
-        catalog.kind != "llm" || names.contains("config.json"),
+        catalog.kind != "llm" || names.contains("config.json")
+            || (catalog.layout == "gguf" && names.contains(catalog.asset_name)),
         "Text checkpoint is missing config.json",
         422
     );
@@ -706,12 +742,15 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     for (const auto& file : ordered) {
         preparation_cancel(cancel);
         const auto name = file.name;
-        const auto url = catalog.layout == "composite" ? file.url
+        const auto url = (catalog.layout == "composite" || catalog.layout == "gguf")
+                             ? file.url
                          : catalog.layout == "single_file"
                              ? catalog.asset_url
                              : "https://huggingface.co/" + catalog.repo_id + "/resolve/"
                                    + revision + "/" + name;
         download(url, stage / name, file, cancel, fetch_, progress);
+        if (catalog.layout == "gguf" && name == catalog.asset_name)
+            prepare_muse_gguf_assets(stage, name, cancel);
         if (catalog.kind == "llm" && name == "config.json")
             validate_text_checkpoint(stage);
         if (!name.ends_with(".safetensors.index.json"))
