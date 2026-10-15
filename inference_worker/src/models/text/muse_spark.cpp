@@ -14,6 +14,7 @@
 
 #include "../../weights/metadata_json.hpp"
 #include "kadan/gguf_checkpoint.hpp"
+#include "kadan/muse_spark_batch.hpp"
 #include "kadan/quantization.hpp"
 #include "kadan/weight_inventory.hpp"
 
@@ -643,7 +644,8 @@ struct Store {
     ) {
         const auto& descriptor = matrices.at(name);
         need(
-            input.size() == descriptor.columns && expert < descriptor.count,
+            !input.empty() && input.size() % descriptor.columns == 0
+                && expert < descriptor.count,
             "muse_spark_projection_shape"
         );
         const auto unchanged = [&] {
@@ -658,7 +660,7 @@ struct Store {
             }
         };
         unchanged();
-        Vec result(descriptor.rows);
+        Vec result(input.size() / descriptor.columns * descriptor.rows);
         auto identity = gguf ? gguf->identity(descriptor.gguf_name, expert)
                              : descriptor.weight->shard->tensor_identity(
                                    descriptor.weight->info.name
@@ -921,43 +923,6 @@ struct Engine::Impl {
         return weights->project(*execution.compute, name, input, expert, rounded);
     }
 
-    Vec learned_norm(const std::string& name, Vec input, bool input_scaled = false) {
-        const auto weight = weights->read(name);
-        norm(
-            input,
-            weight,
-            input_scaled ? post_epsilon : epsilon,
-            !weights->gguf,
-            input_scaled,
-            !weights->gguf
-        );
-        return input;
-    }
-
-    Vec residual(const std::string& name, const Vec& input, const Vec& branch) {
-        if (weights->gguf) {
-            const auto alpha = weights->read(name + ".alpha");
-            const auto beta = weights->read(name + ".beta");
-            Vec result(hidden);
-            for (std::size_t i = 0; i < hidden; ++i) {
-                result[i] = alpha[i] * input[i] + beta[i] * branch[i];
-                need(std::isfinite(result[i]), "muse_spark_residual_nonfinite");
-            }
-            return result;
-        }
-        const auto gate = weights->read(name);
-        Vec result(hidden);
-        for (std::size_t i = 0; i < hidden; ++i) {
-            // The MLX reference computes gate coefficients and the residual
-            // blend in FP32, then rounds only their sum to the activation dtype.
-            const auto w = gate[i] / 0.3f;
-            const auto beta = sigmoid(w);
-            const auto alpha = std::sqrt(std::max(1e-3f, sigmoid(-w) * (1 + beta)));
-            result[i] = bf(alpha * input[i] + beta * branch[i]);
-        }
-        return result;
-    }
-
     float round(float value) const {
         need(std::isfinite(value), "muse_spark_nonfinite");
         return weights->gguf ? value : bf(value);
@@ -978,11 +943,11 @@ struct Engine::Impl {
         }
     }
 
-    void rotate(Vec& values) {
+    void rotate(Vec& values, std::size_t position) {
         for (std::size_t h = 0; h < values.size() / dim; ++h)
             for (std::size_t i = 0; i < dim / 2; ++i) {
                 const auto angle =
-                    float(tokens) / std::pow(500000.f, 2 * float(i) / float(dim));
+                    float(position) / std::pow(500000.f, 2 * float(i) / float(dim));
                 const auto cosine = std::cos(angle), sine = std::sin(angle);
                 const auto a = values[h * dim + i], b = values[h * dim + dim / 2 + i];
                 values[h * dim + i] = round(a * cosine - b * sine);
@@ -990,10 +955,14 @@ struct Engine::Impl {
             }
     }
 
-    Vec attention(const std::string& prefix, std::size_t layer, const Vec& input) {
-        auto query = project(prefix + "q_proj", input);
-        auto key = project(prefix + "k_proj", input);
-        auto value = project(prefix + "v_proj", input);
+    Vec attend_position(
+        const std::string& prefix,
+        std::size_t layer,
+        Vec query,
+        Vec key,
+        const Vec& value,
+        std::size_t position
+    ) {
         if (weights->gguf) {
             // GGUF conversion interleaves Q/K projection rows on every layer,
             // including NoPE layers. Restore the shared split-half convention.
@@ -1013,15 +982,16 @@ struct Engine::Impl {
             normalize_heads(key);
         }
         if (!full_attention(layer)) {
-            rotate(query);
-            rotate(key);
+            rotate(query, position);
+            rotate(key, position);
         }
         auto& state = states[layer];
-        const auto slot = tokens % state.capacity;
+        const auto ring = batch::ring(position, state.capacity);
+        const auto slot = ring.slot;
         std::copy(key.begin(), key.end(), state.key.begin() + slot * kv_width);
         std::copy(value.begin(), value.end(), state.value.begin() + slot * kv_width);
-        const auto count = std::min(tokens + 1, state.capacity);
-        const auto first = tokens + 1 - count;
+        const auto count = ring.count;
+        const auto first = ring.first;
         Vec output(hidden), scores(count);
         for (std::size_t head = 0; head < heads; ++head) {
             weights->check_cancel();
@@ -1055,82 +1025,208 @@ struct Engine::Impl {
         }
         round(output);
         normalize_heads(output);
+        return output;
+    }
+
+    Vec attention(
+        const std::string& prefix,
+        std::size_t layer,
+        const Vec& input,
+        std::size_t first_position
+    ) {
+        const auto count = input.size() / hidden;
+        Vec output(input.size());
+        {
+            auto query = project(prefix + "q_proj", input);
+            auto key = project(prefix + "k_proj", input);
+            auto value = project(prefix + "v_proj", input);
+            // Write and consume each position before the next ring overwrite.
+            // Full-layer K/V prepopulation would expose future positions or erase
+            // still-visible sliding keys when the chunk crosses the ring boundary.
+            for (std::size_t row = 0; row < count; ++row) {
+                weights->check_cancel();
+                const auto q = batch::row(std::span(query), hidden, row);
+                const auto k = batch::row(std::span(key), kv_width, row);
+                const auto v = batch::row(std::span(value), kv_width, row);
+                const auto attended = attend_position(
+                    prefix,
+                    layer,
+                    Vec(q.begin(), q.end()),
+                    Vec(k.begin(), k.end()),
+                    Vec(v.begin(), v.end()),
+                    batch::position(first_position, row)
+                );
+                std::copy(
+                    attended.begin(),
+                    attended.end(),
+                    batch::row(std::span(output), hidden, row).begin()
+                );
+            }
+        }
         auto gate = project(prefix + "gate_proj", input);
-        for (std::size_t j = 0; j < hidden; ++j)
+        for (std::size_t j = 0; j < output.size(); ++j)
             output[j] = round(output[j] * round(sigmoid(gate[j])));
         return project(prefix + "o_proj", output);
     }
 
+    Vec learned_norm_rows(const std::string& name, Vec input, bool scaled = false) {
+        const auto weight = weights->read(name);
+        for (std::size_t row = 0; row < input.size() / hidden; ++row) {
+            weights->check_cancel();
+            auto target = batch::row(std::span(input), hidden, row);
+            Vec values(target.begin(), target.end());
+            norm(
+                values,
+                weight,
+                scaled ? post_epsilon : epsilon,
+                !weights->gguf,
+                scaled,
+                !weights->gguf
+            );
+            std::copy(values.begin(), values.end(), target.begin());
+        }
+        return input;
+    }
+
+    void post_norm_rows(Vec& values) {
+        for (std::size_t row = 0; row < values.size() / hidden; ++row) {
+            auto target = batch::row(std::span(values), hidden, row);
+            Vec normalized(target.begin(), target.end());
+            norm(normalized, {}, post_epsilon, false, false, !weights->gguf);
+            std::copy(normalized.begin(), normalized.end(), target.begin());
+        }
+    }
+
+    Vec residual_rows(const std::string& name, const Vec& input, const Vec& branch) {
+        need(input.size() == branch.size(), "muse_spark_residual_shape");
+        Vec result(input.size());
+        if (weights->gguf) {
+            const auto alpha = weights->read(name + ".alpha");
+            const auto beta = weights->read(name + ".beta");
+            for (std::size_t i = 0; i < input.size(); ++i) {
+                if (i % hidden == 0)
+                    weights->check_cancel();
+                result[i] = alpha[i % hidden] * input[i] + beta[i % hidden] * branch[i];
+                need(std::isfinite(result[i]), "muse_spark_residual_nonfinite");
+            }
+        } else {
+            const auto gate = weights->read(name);
+            for (std::size_t i = 0; i < input.size(); ++i) {
+                if (i % hidden == 0)
+                    weights->check_cancel();
+                // Preserve FP32 coefficient/blend evaluation and round the sum.
+                const auto w = gate[i % hidden] / 0.3f;
+                const auto beta = sigmoid(w);
+                const auto alpha = std::sqrt(std::max(1e-3f, sigmoid(-w) * (1 + beta)));
+                result[i] = bf(alpha * input[i] + beta * branch[i]);
+            }
+        }
+        return result;
+    }
+
     Vec moe(const std::string& prefix, const Vec& input) {
+        const auto count = input.size() / hidden;
         auto scores = project(prefix + "gate", input, 0, false);
         const auto bias = weights->read(prefix + "gate.e_score_correction_bias");
+        need(bias.size() == experts, "muse_spark_router_shape");
         for (auto& score : scores)
             score = sigmoid(score * (weights->gguf ? 1 : output_multiplier));
-        std::array<std::size_t, experts> order;
-        std::iota(order.begin(), order.end(), 0);
-        std::partial_sort(
-            order.begin(), order.begin() + top_k, order.end(), [&](auto a, auto b) {
-                const auto sa = scores[a] + bias[a], sb = scores[b] + bias[b];
-                return sa == sb ? a < b : sa > sb;
-            }
-        );
-        float sum = 1e-15f;
-        for (std::size_t i = 0; i < top_k; ++i)
-            sum += scores[order[i]];
-        need(std::isfinite(sum) && sum > 0, "muse_spark_router_nonfinite");
-        auto pooled = learned_norm(
-            prefix + "pre_expert_norm.weight",
-            project(prefix + "pre_expert_proj", input)
-        );
-        Vec output(expert_width);
-        // The reference accumulates selected experts in ascending expert order.
-        std::sort(order.begin(), order.begin() + top_k);
+        std::vector<batch::Route> routes;
+        routes.reserve(count);
+        for (std::size_t row = 0; row < count; ++row) {
+            const auto probabilities = batch::row(std::span(scores), experts, row);
+            routes.push_back(
+                batch::route(
+                    std::span<const float, experts>(probabilities.data(), experts),
+                    std::span<const float, experts>(bias.data(), experts)
+                )
+            );
+        }
+        auto pooled = project(prefix + "pre_expert_proj", input);
+        const auto pre_norm = weights->read(prefix + "pre_expert_norm.weight");
+        for (std::size_t row = 0; row < count; ++row) {
+            auto target = batch::row(std::span(pooled), expert_width, row);
+            Vec values(target.begin(), target.end());
+            norm(values, pre_norm, epsilon, !weights->gguf, false, !weights->gguf);
+            std::copy(values.begin(), values.end(), target.begin());
+        }
+        Vec output(count * expert_width);
         const auto norm_weight = weights->read(prefix + "post_expert_norm.weight");
-        for (std::size_t i = 0; i < top_k; ++i) {
+        // Grouping changes execution order across tokens only. Each token still
+        // accumulates its eight expert contributions in ascending expert order.
+        for (std::size_t expert = 0; expert < experts; ++expert) {
             weights->check_cancel();
-            const auto expert = order[i];
-            auto gate = project(prefix + "switch_mlp.gate_proj", pooled, expert);
-            auto up = project(prefix + "switch_mlp.up_proj", pooled, expert);
-            for (std::size_t j = 0; j < expert_width; ++j)
+            std::vector<std::size_t> rows;
+            std::vector<float> contribution;
+            rows.reserve(count);
+            contribution.reserve(count);
+            for (std::size_t row = 0; row < count; ++row) {
+                const auto route = batch::route_index(routes[row], expert);
+                if (route != top_k) {
+                    rows.push_back(row);
+                    contribution.push_back(routes[row].weights[route]);
+                }
+            }
+            if (rows.empty())
+                continue;
+            Vec gathered(rows.size() * expert_width);
+            for (std::size_t row = 0; row < rows.size(); ++row) {
+                const auto source =
+                    batch::row(std::span(pooled), expert_width, rows[row]);
+                std::copy(
+                    source.begin(),
+                    source.end(),
+                    batch::row(std::span(gathered), expert_width, row).begin()
+                );
+            }
+            auto gate = project(prefix + "switch_mlp.gate_proj", gathered, expert);
+            auto up = project(prefix + "switch_mlp.up_proj", gathered, expert);
+            for (std::size_t j = 0; j < gate.size(); ++j)
                 gate[j] = round(round(gate[j] * sigmoid(gate[j])) * up[j]);
             auto down = project(prefix + "switch_mlp.down_proj", gate, expert);
-            norm(down, norm_weight, post_epsilon, !weights->gguf, true, !weights->gguf);
-            const auto weight = scores[expert] / sum;
-            for (std::size_t j = 0; j < expert_width; ++j)
-                output[j] += down[j] * weight;
+            for (std::size_t row = 0; row < rows.size(); ++row) {
+                const auto selected = batch::row(std::span(down), expert_width, row);
+                Vec normalized(selected.begin(), selected.end());
+                norm(
+                    normalized,
+                    norm_weight,
+                    post_epsilon,
+                    !weights->gguf,
+                    true,
+                    !weights->gguf
+                );
+                auto target = batch::row(std::span(output), expert_width, rows[row]);
+                for (std::size_t j = 0; j < expert_width; ++j)
+                    target[j] += normalized[j] * contribution[row];
+            }
         }
         round(output);
         return project(prefix + "post_expert_proj", output);
     }
 
-    serving::Token step(unsigned token, bool logits) {
-        need(
-            active && !poisoned && token < vocabulary && tokens < p.context,
-            "muse_spark_step_state"
-        );
+    Vec layer(Vec stream, std::size_t index, std::size_t first_position) {
         weights->check_cancel();
-        auto stream = weights->embedding(token);
-        for (std::size_t i = 0; i < layers; ++i) {
-            weights->check_cancel();
-            const auto prefix = weights->base + "layers." + std::to_string(i) + ".";
-            auto input = learned_norm(prefix + "input_layernorm.weight", stream);
-            auto output = attention(prefix + "self_attn.", i, input);
-            norm(output, {}, post_epsilon, false, false, !weights->gguf);
-            stream =
-                residual(prefix + "post_attention_residual_gate.gate", stream, output);
-            input = learned_norm(prefix + "pre_feedforward_layernorm.weight", stream);
-            output = learned_norm(
-                prefix + "post_feedforward_layernorm.weight",
-                moe(prefix + "mlp.", input),
-                true
-            );
-            stream = residual(
-                prefix + "post_feedforward_residual_gate.gate", stream, output
-            );
-        }
-        ++tokens;
-        if (!logits)
-            return {0, false, tokens};
+        const auto prefix = weights->base + "layers." + std::to_string(index) + ".";
+        auto input = learned_norm_rows(prefix + "input_layernorm.weight", stream);
+        auto output = attention(prefix + "self_attn.", index, input, first_position);
+        post_norm_rows(output);
+        stream =
+            residual_rows(prefix + "post_attention_residual_gate.gate", stream, output);
+        // Release attention vectors before the larger expert gather buffers.
+        Vec().swap(input);
+        Vec().swap(output);
+        input = learned_norm_rows(prefix + "pre_feedforward_layernorm.weight", stream);
+        output = learned_norm_rows(
+            prefix + "post_feedforward_layernorm.weight",
+            moe(prefix + "mlp.", input),
+            true
+        );
+        return residual_rows(
+            prefix + "post_feedforward_residual_gate.gate", stream, output
+        );
+    }
+
+    serving::Token select(Vec stream) {
         norm(
             stream,
             weights->read(weights->base + "norm.weight"),
@@ -1140,12 +1236,82 @@ struct Engine::Impl {
             !weights->gguf
         );
         auto values = project("lm_head", stream, 0, false);
-        // FP32 logits retain ranking through the reference's monotonic softcap.
         for (auto& value : values)
             value = 20 * std::tanh(value * output_multiplier / 20);
         const auto chosen =
             unsigned(std::max_element(values.begin(), values.end()) - values.begin());
         return {chosen, chosen == 200001 || chosen == 200008, tokens};
+    }
+
+    serving::Token prefill(
+        std::span<const unsigned> prompt,
+        const std::function<void(const char*, std::size_t)>& progress
+    ) {
+        need(
+            active && !poisoned && !prompt.empty() && tokens <= p.context
+                && prompt.size() <= p.context - tokens,
+            "muse_spark_prefill_state"
+        );
+        for (auto token : prompt)
+            need(token < vocabulary, "muse_spark_prefill_token");
+        std::size_t completed = 0, completed_layers = 0;
+        Vec last;
+        while (completed < prompt.size()) {
+            weights->check_cancel();
+            // Eight hidden-width F32 rows conservatively cover simultaneously
+            // live stream/input, projection outputs, pooled expert activations,
+            // gate/up/down/gather and router/index buffers (under seven widths).
+            // Fixed space covers single-row norm/residual copies, learned vectors
+            // and final vocabulary logits. CUDA source staging is separately
+            // admitted by DenseCompute; checkpoint metadata has its own reserve.
+            const auto count = batch::plan(
+                prompt.size() - completed,
+                8 * hidden * sizeof(float),
+                8ULL * 1024 * 1024
+            );
+            Vec stream(count * hidden);
+            for (std::size_t row = 0; row < count; ++row) {
+                const auto embedded = weights->embedding(prompt[completed + row]);
+                std::copy(
+                    embedded.begin(),
+                    embedded.end(),
+                    batch::row(std::span(stream), hidden, row).begin()
+                );
+            }
+            const auto first_position = tokens;
+            for (std::size_t i = 0; i < layers; ++i) {
+                stream = layer(std::move(stream), i, first_position);
+                if (progress)
+                    progress("prefill_layer", ++completed_layers);
+            }
+            tokens += count;
+            completed += count;
+            if (completed == prompt.size()) {
+                const auto final = batch::row(std::span(stream), hidden, count - 1);
+                last.assign(final.begin(), final.end());
+            }
+            if (progress) {
+                progress("prefill_chunk", completed);
+                for (std::size_t row = completed - count; row < completed; ++row)
+                    progress("prefill_token", row + 1);
+            }
+        }
+        return select(std::move(last));
+    }
+
+    serving::Token step(unsigned token, bool logits) {
+        need(
+            active && !poisoned && token < vocabulary && tokens < p.context,
+            "muse_spark_step_state"
+        );
+        weights->check_cancel();
+        auto stream = weights->embedding(token);
+        for (std::size_t i = 0; i < layers; ++i)
+            stream = layer(std::move(stream), i, tokens);
+        ++tokens;
+        if (!logits)
+            return {0, false, tokens};
+        return select(std::move(stream));
     }
 };
 
@@ -1203,6 +1369,18 @@ void Engine::park() {
 serving::Token Engine::step(unsigned token, bool logits) {
     try {
         return impl_->step(token, logits);
+    } catch (...) {
+        impl_->poisoned = true;
+        throw;
+    }
+}
+
+serving::Token Engine::prefill(
+    std::span<const unsigned> prompt,
+    const std::function<void(const char*, std::size_t)>& progress
+) {
+    try {
+        return impl_->prefill(prompt, progress);
     } catch (...) {
         impl_->poisoned = true;
         throw;
