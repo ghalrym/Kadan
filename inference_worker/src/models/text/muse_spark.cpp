@@ -635,6 +635,83 @@ struct Store {
         return result;
     }
 
+    WeightIdentity identity(const Matrix& descriptor, std::size_t expert) const {
+        need(expert < descriptor.count, "muse_spark_identity_expert");
+        if (gguf)
+            return gguf->identity(descriptor.gguf_name, expert);
+        auto result =
+            descriptor.weight->shard->tensor_identity(descriptor.weight->info.name);
+        const auto expert_bytes = descriptor.weight->info.bytes / descriptor.count;
+        result.payload_begin += expert * expert_bytes;
+        result.payload_end = result.payload_begin + expert_bytes;
+        return result;
+    }
+
+    void retire_prefill_weights(
+        DenseCompute& compute,
+        const std::function<void(const char*, std::size_t)>& progress
+    ) {
+        const auto allocated = [&] {
+            Bytes bytes = 0;
+            for (const auto& device : compute.weight_placement())
+                bytes = checkpoint::weight_bytes_add(bytes, device.allocated_bytes);
+            return bytes;
+        };
+        check_cancel();
+        const auto before = allocated();
+        if (progress)
+            progress("prefill_cache_before_bytes", before);
+
+        // Prefill touches many experts that decode will not immediately reuse.
+        // Retire their physical tiles without changing the bank envelope or row
+        // partition. One layer's identities fit in less than 56 KiB of scratch.
+        constexpr std::size_t group_limit = 3 * experts + 8;
+        std::vector<WeightIdentity> group;
+        group.reserve(group_limit);
+        std::size_t completed_groups = 0, covered_matrices = 0;
+        Bytes released = 0;
+        const auto append = [&](const Matrix& descriptor) {
+            need(
+                descriptor.count <= group_limit - group.size(),
+                "muse_spark_cache_group_bound"
+            );
+            for (std::size_t expert = 0; expert < descriptor.count; ++expert)
+                group.push_back(identity(descriptor, expert));
+            ++covered_matrices;
+        };
+        const auto retire = [&] {
+            check_cancel();
+            released =
+                checkpoint::weight_bytes_add(released, compute.release_weights(group));
+            group.clear();
+            check_cancel();
+            ++completed_groups;
+            if (progress) {
+                progress("prefill_cache_retired_bytes", released);
+                progress("prefill_cache_group", completed_groups);
+            }
+        };
+        for (std::size_t layer = 0; layer < layers; ++layer) {
+            check_cancel();
+            const auto prefix = base + "layers." + std::to_string(layer) + ".";
+            for (auto it = matrices.lower_bound(prefix);
+                 it != matrices.end() && it->first.starts_with(prefix);
+                 ++it)
+                append(it->second);
+            retire();
+        }
+        append(matrices.at(base + "embed_tokens"));
+        append(matrices.at("lm_head"));
+        retire();
+        need(covered_matrices == matrices.size(), "muse_spark_cache_coverage");
+        const auto after = allocated();
+        if (progress)
+            progress("prefill_cache_after_bytes", after);
+        // This Engine owns its compute instance; vectors are read on the host,
+        // and every device-retained source is one of the matrices above.
+        need(after == 0 && released == before, "muse_spark_cache_retirement");
+    }
+
     Vec project(
         DenseCompute& compute,
         const std::string& name,
@@ -661,15 +738,7 @@ struct Store {
         };
         unchanged();
         Vec result(input.size() / descriptor.columns * descriptor.rows);
-        auto identity = gguf ? gguf->identity(descriptor.gguf_name, expert)
-                             : descriptor.weight->shard->tensor_identity(
-                                   descriptor.weight->info.name
-                               );
-        if (!gguf) {
-            const auto expert_bytes = descriptor.weight->info.bytes / descriptor.count;
-            identity.payload_begin += expert * expert_bytes;
-            identity.payload_end = identity.payload_begin + expert_bytes;
-        }
+        const auto source_identity = identity(descriptor, expert);
         ProjectionResult projected;
         if (gguf && gguf->tensor(descriptor.gguf_name).type != 0) {
             const auto type = gguf->tensor(descriptor.gguf_name).type;
@@ -684,7 +753,7 @@ struct Store {
                 );
             };
             projected = compute.dense_gguf_source(
-                identity,
+                source_identity,
                 encoding,
                 packed_reader,
                 {},
@@ -700,7 +769,7 @@ struct Store {
                 source(descriptor, expert, first, destination);
             };
             projected = compute.dense_source(
-                identity,
+                source_identity,
                 reader,
                 {},
                 input,
@@ -1296,6 +1365,7 @@ struct Engine::Impl {
                     progress("prefill_token", row + 1);
             }
         }
+        weights->retire_prefill_weights(*execution.compute, progress);
         return select(std::move(last));
     }
 
