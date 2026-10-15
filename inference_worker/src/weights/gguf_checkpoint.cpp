@@ -17,6 +17,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "kadan/quantization.hpp"
+
 namespace kadan::checkpoint {
 namespace {
 constexpr std::uint64_t metadata_limit = 32 * 1024 * 1024;
@@ -551,8 +553,7 @@ void GgufCheckpoint::read_rows(
                 std::memcpy(row.data(), source, row_bytes);
             else
                 ggml_get_type_traits(type)->to_float(source, row.data(), t.shape[0]);
-            for (auto value : row)
-                require(std::isfinite(value), "gguf_nonfinite_weight");
+            require(quantization::all_finite(row), "gguf_nonfinite_weight");
         }
     }
     file.unchanged();

@@ -1,6 +1,8 @@
 #include "kadan/quantization.hpp"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -43,6 +45,53 @@ void bounded_global() {
             const float local = e2m1(code) * e4m3fn(scale);
             check(!weight_overflows(local, bound) && !weight_overflows(local, -bound));
         }
+}
+
+void finite_spans() {
+    check(all_finite({}));
+    const auto reference = [](std::span<const float> values) {
+        return std::all_of(values.begin(), values.end(), [](float value) {
+            return std::isfinite(value);
+        });
+    };
+    // Cover both signs and every exponent with varied high/low mantissa bits.
+    for (std::uint32_t high = 0; high < 65536; ++high) {
+        const auto bits = (high << 16) | ((high * 40503u) & 0xffffu);
+        const std::array value{std::bit_cast<float>(bits)};
+        check(all_finite(value) == reference(value));
+    }
+    const std::array<std::uint32_t, 10> finite_bits{
+        0u,
+        0x80000000u,
+        1u,
+        0x80000001u,
+        0x007fffffu,
+        0x807fffffu,
+        0x00800000u,
+        0x80800000u,
+        0x7f7fffffu,
+        0xff7fffffu
+    };
+    const std::array<std::uint32_t, 6> nonfinite_bits{
+        0x7f800000u, 0xff800000u, 0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff800001u
+    };
+    alignas(64) std::array<float, 36> storage{};
+    for (std::size_t i = 0; i < storage.size(); ++i)
+        storage[i] = std::bit_cast<float>(finite_bits[i % finite_bits.size()]);
+    // Offset one float from alignment; exercise vector boundaries and short tails.
+    for (std::size_t length = 0; length < storage.size(); ++length) {
+        auto values = std::span(storage).subspan(1, length);
+        check(all_finite(values) == reference(values));
+        for (std::size_t i = 0; i < length; ++i) {
+            const auto saved = std::bit_cast<std::uint32_t>(values[i]);
+            for (auto bits : nonfinite_bits) {
+                values[i] = std::bit_cast<float>(bits);
+                check(all_finite(values) == reference(values));
+                check(std::bit_cast<std::uint32_t>(values[i]) == bits);
+            }
+            values[i] = std::bit_cast<float>(saved);
+        }
+    }
 }
 
 void primitives() {
@@ -304,6 +353,7 @@ void caller_output() {
 
 int main() {
     try {
+        finite_spans();
         bounded_global();
         primitives();
         packed_byte_order();
