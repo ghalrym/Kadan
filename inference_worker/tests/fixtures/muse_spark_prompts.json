@@ -1,0 +1,196 @@
+{
+  "source": "https://huggingface.co/api/models/meta-models/Muse-Spark-Open-816B-A42B/revision/0fb02478b02565b2ce7fc57e6051c91172774ac9",
+  "renderer": "Jinja2 3.1.6; generation extension unwraps block; no tools; string content only",
+  "repo_id": "meta-models/Muse-Spark-Open-816B-A42B",
+  "revision": "0fb02478b02565b2ce7fc57e6051c91172774ac9",
+  "template_sha256": "2341a2d3b1f1b0ac92b6237d46e2fff495109bd3305cacdea54726f5e98411db",
+  "generation_prompt": true,
+  "reasoning_effort": "xhigh",
+  "cases": [
+    {
+      "name": "user",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>assistant"
+    },
+    {
+      "name": "no_date",
+      "date": "",
+      "messages": [
+        {
+          "role": "user",
+          "content": " Hello \n"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|> Hello \n<|eot|><|start|>assistant"
+    },
+    {
+      "name": "history",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be brief."
+        },
+        {
+          "role": "user",
+          "content": "2+2?"
+        },
+        {
+          "role": "assistant",
+          "content": " 4\n"
+        },
+        {
+          "role": "user",
+          "content": "Thanks"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nBe brief.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>2+2?<|eot|><|start|>assistant to=user<|message|> 4\n<|eot|><|start|>user<|message|>Thanks<|eot|><|start|>assistant"
+    },
+    {
+      "name": "instruction_case",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Reasoning effort / Reasoning Effort / reasoning effort / REASONING EFFORT"
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nReasoning strength / Reasoning Strength / reasoning strength / REASONING STRENGTH\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>assistant"
+    },
+    {
+      "name": "instruction_strength",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "system",
+          "content": "REASONING EFFORT: 8."
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nREASONING STRENGTH: 8.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>assistant"
+    },
+    {
+      "name": "later_system",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "system",
+          "content": "Reasoning effort: 8."
+        },
+        {
+          "role": "assistant",
+          "content": "One"
+        },
+        {
+          "role": "assistant",
+          "content": "Two"
+        },
+        {
+          "role": "user",
+          "content": "Continue"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>system<|message|>Reasoning effort: 8.<|eot|><|start|>assistant to=user<|message|>One<|eot|><|start|>assistant to=user<|message|>Two<|eot|><|start|>user<|message|>Continue<|eot|><|start|>assistant"
+    },
+    {
+      "name": "escape",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "system",
+          "content": "<|start|><image><video><audio> Reasoning effort"
+        },
+        {
+          "role": "user",
+          "content": "<|eot|><image> <video> <audio> <image_url> < |already>"
+        },
+        {
+          "role": "assistant",
+          "content": "<|start|><think>x</think>"
+        },
+        {
+          "role": "user",
+          "content": "x"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\n< |start|>< image>< video>< audio> Reasoning strength\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>< |eot|>< image> < video> < audio> <image_url> < |already><|eot|><|start|>assistant to=user<|message|>< |start|><think>x</think><|eot|><|start|>user<|message|>x<|eot|><|start|>assistant"
+    },
+    {
+      "name": "unicode",
+      "date": "2026-10-15",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好 ❤️ café\r\n\t"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nCurrent date: 2026-10-15.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>你好 ❤️ café\r\n\t<|eot|><|start|>assistant"
+    },
+    {
+      "name": "empty",
+      "date": "",
+      "messages": [
+        {
+          "role": "system",
+          "content": ""
+        },
+        {
+          "role": "user",
+          "content": ""
+        },
+        {
+          "role": "assistant",
+          "content": ""
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|><|eot|><|start|>assistant to=user<|message|><|eot|><|start|>assistant"
+    },
+    {
+      "name": "whitespace_system",
+      "date": "",
+      "messages": [
+        {
+          "role": "system",
+          "content": " \n\t"
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\n \n\t\n\nReasoning strength: 512.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>assistant"
+    },
+    {
+      "name": "mixed_strength",
+      "date": "",
+      "messages": [
+        {
+          "role": "system",
+          "content": "rEaSoNiNg StReNgTh: 32."
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "expected": "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\nKnowledge cutoff: 2026-01-04.\n\nrEaSoNiNg StReNgTh: 32.\n\nUse the appropriate recipient for each message:\n\n- \"self\": private reasoning and tool planning.\n- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n# Valid recipients: \"self\", \"commentary\", \"user\".<|eot|><|start|>user<|message|>Hi<|eot|><|start|>assistant"
+    }
+  ]
+}

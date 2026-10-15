@@ -126,6 +126,60 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
+## Muse Spark Open (experimental text support)
+
+The native Muse engine uses the existing worker, resource ledger and bounded
+CUDA projection banks. Weights remain on disk; selected rows are decoded into
+bounded staging buffers. It does not start llama.cpp, MLX or a Python runtime.
+The current model selection, saved context limits and GPU settings remain
+unchanged.
+
+The optional `muse-spark-open-q3-xl` catalog entry pins
+[Unsloth UD-Q3_K_XL](https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/tree/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL).
+Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor
+inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
+matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
+quantization preset; the loader rejects unsupported wire types or geometry.
+This entry is an experiment, not a quantization-quality recommendation.
+
+Acquisition downloads the tensor-free first split before any weight split,
+validates its architecture and exports configuration and byte-level BPE assets
+in C++. The tokenizer uses that split's own vocabulary, merges and control
+IDs. The native prompt renderer matches the complete pinned public chat
+template, and the recipient parser separates reasoning, commentary and final
+text while suppressing unsupported tool messages. The existing worker's
+2,048-token extra reasoning budget is independent of the template's default
+reasoning strength of 512. Generation remains greedy.
+
+`src/models/text/muse_spark.cpp` implements the 62-layer text decoder and
+handles the GGUF converter's absolute norm gains, folded router scale,
+precomputed residual coefficients and Q/K row ordering explicitly. GGUF uses
+F32 activation arithmetic. The alternate public MLX affine group-64 3/4-bit
+layout is also supported natively, with its BF16 activation boundaries; it is
+not registered as a selected model. Original BF16, ModelOpt NVFP4, other GGUF
+presets and multimodal execution are not admitted by this implementation.
+
+The pinned `ggml-base` dependency supplies GGUF metadata parsing and quantized
+row decoding only. Kadan owns model execution, attention state, placement,
+cancellation and sampling. Its MIT notice is installed with the worker.
+Reference equations and conversion semantics were checked against
+[Transformers PR 49644](https://github.com/huggingface/transformers/pull/49644),
+[MLX-LM PR 1975](https://github.com/ml-explore/mlx-lm/pull/1975) and
+[llama.cpp PR 30616](https://github.com/ggml-org/llama.cpp/pull/30616).
+
+Metadata-only unit fixtures cover the published MLX and GGUF inventories using
+sparse files with unread payload holes. Separate units check quantized block
+decoding, tokenizer metadata, prompt rendering, recipient streams and
+pre-download rejection. No unit test executes the model.
+
+No Muse inference, numerical parity, quantization-quality comparison or speed
+measurement has been performed. Disk reads, CPU decoding and PCIe transfers
+can dominate cache misses; the bounded working set does not establish usable
+latency. Prefill currently proceeds token by token. Obtain approval before the
+large download or manual GPU testing, then use the existing API queue to test
+load, short and streamed chat, history, reasoning, cancellation, unload and
+context admission. Record actual memory and loading/prefill/decode times.
+
 ## GPT-OSS
 
 The catalog includes the official OpenAI Transformers-layout checkpoints below.

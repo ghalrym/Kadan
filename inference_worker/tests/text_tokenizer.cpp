@@ -88,6 +88,73 @@ int main() {
         );
     }
     assert(resources->snapshot().used[0] == 0);
+    // Muse Spark's published tokenizer contract, using a compact synthetic vocab.
+    // Its ByteLevel postprocessor controls offsets; encode still presents explicit
+    // special tokens verbatim and never inserts an implicit BOS.
+    {
+        auto muse = metadata;
+        muse["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"] =
+            R"MUSE([^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+)MUSE";
+        muse["pre_tokenizer"]["pretokenizers"][1]["trim_offsets"] = true;
+        muse["post_processor"] = {
+            {"type", "ByteLevel"},
+            {"add_prefix_space", true},
+            {"trim_offsets", false},
+            {"use_regex", true}
+        };
+        muse["decoder"] = {
+            {"type", "ByteLevel"},
+            {"add_prefix_space", true},
+            {"trim_offsets", true},
+            {"use_regex", true}
+        };
+        muse["model"]["ignore_merges"] = true;
+        muse["model"]["fuse_unk"] = false;
+        muse["added_tokens"] = Json::array();
+        for (const auto& [token, id] : std::array<std::pair<const char*, unsigned>, 6>{
+                 {{"<|begin_of_text|>", 200000},
+                  {"<|end_of_text|>", 200001},
+                  {"<|eom|>", 200007},
+                  {"<|eot|>", 200008},
+                  {"<|start|>", 200022},
+                  {"<|message|>", 200023}}
+             })
+            muse["added_tokens"].push_back(
+                {{"id", id},
+                 {"content", token},
+                 {"single_word", false},
+                 {"lstrip", false},
+                 {"rstrip", false},
+                 {"normalized", false},
+                 {"special", true}}
+            );
+        std::ofstream(path) << muse;
+        kadan::text::Tokenizer tokenizer(resources, kadan::Workload::llm);
+        tokenizer.load(path.string(), cancel);
+        assert(tokenizer.encode("abc", output, cancel) == 1 && output[0] == 256);
+        assert(tokenizer.encode("<|begin_of_text|>abc<|eom|>", output, cancel) == 3);
+        assert(output[0] == 200000 && output[1] == 256 && output[2] == 200007);
+        tokenizer.unload();
+        auto rejects_muse = [&](const Json& invalid, const char* expected) {
+            std::ofstream(path) << invalid;
+            bool rejected = false;
+            try {
+                tokenizer.load(path.string(), cancel);
+            } catch (const std::runtime_error& error) {
+                rejected = std::string(error.what()) == expected;
+            }
+            assert(rejected && resources->snapshot().used[0] == 0);
+        };
+        auto invalid = muse;
+        invalid["pre_tokenizer"]["pretokenizers"][1]["add_prefix_space"] = true;
+        rejects_muse(invalid, "text_tokenizer_byte_contract");
+        invalid = muse;
+        invalid["post_processor"]["type"] = "TemplateProcessing";
+        rejects_muse(invalid, "text_tokenizer_post");
+        invalid = muse;
+        invalid["normalizer"] = {{"type", "NFKC"}};
+        rejects_muse(invalid, "text_tokenizer_normalizer");
+    }
     // Match the fixed vocabulary dimensions with synthetic byte strings only.
     // No model files or network execution are involved.
     vocabulary.erase("abc");

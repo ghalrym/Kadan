@@ -91,6 +91,32 @@ std::shared_ptr<MemoryBudget> budget(std::size_t bytes = 1024 * 1024) {
     return std::make_shared<MemoryBudget>(bytes);
 }
 
+void u32_tensor() {
+    Fixture f;
+    const std::vector<std::uint8_t> payload{0x88, 0xc6, 0xfa, 0x88, 0xff, 0, 0, 0};
+    f.write("{" + tensor("packed", "U32", "[1,2]", 0, 8) + "}", payload);
+    Shard shard(f.root.c_str(), "model.safetensors", budget());
+    const auto info = shard.tensor("packed");
+    check(
+        info.dtype == Dtype::u32 && info.bytes == 8 && info.rank == 2
+        && info.shape[0] == 1 && info.shape[1] == 2
+    );
+    std::array<std::uint8_t, 4> second{};
+    shard.read_tensor("packed", 4, second);
+    check((second == std::array<std::uint8_t, 4>{0xff, 0, 0, 0}));
+    const std::atomic_bool cancel{false};
+    std::array<float, 2> floats{};
+    fails(
+        [&] { shard.read_float_tensor("packed", 0, floats, cancel); },
+        "checkpoint_float_dtype"
+    );
+    f.write("{" + tensor("packed", "U32", "[2]", 0, 2) + "}", {0, 0});
+    fails(
+        [&] { Shard bad(f.root.c_str(), "model.safetensors", budget()); },
+        "tensor_byte_size"
+    );
+}
+
 void nvfp4_fixture(Fixture& f) {
     // Same dtype/shape convention as the inspected Qwen expert/lm_head tensors.
     const auto header = "{" + tensor("p.weight_scale_2", "F32", "[]", 0, 4) + ","
@@ -813,6 +839,7 @@ void cache_cases() {
 
 int main() {
     try {
+        u32_tensor();
         compressed_nvfp4_rows();
         converted_cache_cases();
         cache_cases();

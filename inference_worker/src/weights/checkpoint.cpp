@@ -290,6 +290,8 @@ private:
                 const auto dtype = string();
                 if (dtype == "U8")
                     tensor.dtype = Dtype::u8;
+                else if (dtype == "U32")
+                    tensor.dtype = Dtype::u32;
                 else if (dtype == "I8")
                     tensor.dtype = Dtype::i8;
                 else if (dtype == "F8_E4M3")
@@ -327,7 +329,7 @@ private:
         expect('}');
         require(fields == 7, "missing_tensor_field");
         const auto width =
-            tensor.dtype == Dtype::fp32                                    ? 4U
+            (tensor.dtype == Dtype::fp32 || tensor.dtype == Dtype::u32)    ? 4U
             : (tensor.dtype == Dtype::bf16 || tensor.dtype == Dtype::fp16) ? 2U
                                                                            : 1U;
         require(

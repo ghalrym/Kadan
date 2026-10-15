@@ -750,6 +750,108 @@
       "asset_url": null,
       "asset_name": null,
       "manifest": []
+    },
+    {
+      "id": "muse-spark-open-q3-xl",
+      "repo_id": "unsloth/Muse-Spark-Open-816B-A42B-GGUF",
+      "revision": "19d0b1b3a1b1974a48439e11e0639c0dad164fc8",
+      "license": "muse-model-license",
+      "estimated_bytes": 401483491832,
+      "kind": "llm",
+      "display_name": "Muse Spark Open 816B (UD-Q3_K_XL, experimental)",
+      "layout": "gguf",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf",
+        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/blob/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/LICENSE.md",
+      "license_notice": "Quantization quality and native inference have not yet been measured. Muse Model License and Acceptable Use Policy apply.",
+      "inference_available": true,
+      "asset_url": null,
+      "asset_name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
+      "manifest": [
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
+          "size": 13079896,
+          "digest": "15f48c4123331275fc949726db21363fdda019c754e19af9ca6ae3f12754c30a",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf",
+          "size": 49408958816,
+          "digest": "821ed134897930f3643e20fbdec87a6d3fbf3fcf8ac5b26efe281166d333e4e0",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf",
+          "size": 49102264416,
+          "digest": "13a4a6763cecd6eb49305ac93569c525a67ecc450396834fbfbd2110ada6eb7e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf",
+          "size": 49125408128,
+          "digest": "d6d1c18b47b06ba3fd04bcf10ce8730887a6369381a797778ff827a1321dc592",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf",
+          "size": 49137839488,
+          "digest": "be6015f314586637c574777bcf0dd1651c1cfd5c7b589b40fcf93859b0e70b83",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf",
+          "size": 48360224736,
+          "digest": "0fc15c40d1d7ae8d9c507b864e987536c33fe803759938d6334082ea96850f67",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf",
+          "size": 49414133280,
+          "digest": "be31f5b13a63069a01d5a4f441dea19be5c0db721cff05ac671bc459b9dc27fb",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf",
+          "size": 48951246272,
+          "digest": "e5f1300c7833f620204d549856cf43830386ca7478436f44a0c8056c463756e5",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf",
+          "size": 49155343232,
+          "digest": "a9b1e4e4a62af0735fba731e0a1a64bd340941d852805fb65b337f57955dea33",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf"
+        },
+        {
+          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf",
+          "size": 8814993568,
+          "digest": "b6f360ea27f4383cd9ad42439fb6bc20765bfc0415bea7791ffbbdac44a01996",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf"
+        }
+      ]
     }
   ],
   "assets": [

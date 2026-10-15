@@ -56,7 +56,8 @@ enum class Dtype {
     fp32,
     bf16,
     fp16,
-    i8
+    i8,
+    u32
 };
 
 // Borrowed name remains valid for the Shard lifetime; dimensions/byte count copied.

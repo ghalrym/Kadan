@@ -983,6 +983,66 @@ void text_checkpoint_units() {
     }
 }
 
+void gguf_acquisition_units() {
+    // An invalid metadata-only first split must stop acquisition before any
+    // tensor split. The fetch boundary is fake; no checkpoint is downloaded.
+    Directory tmp;
+    std::map<std::string, std::string> content;
+    for (unsigned split = 1; split <= 10; ++split) {
+        auto number = std::to_string(split);
+        const auto name =
+            "Muse-" + std::string(5 - number.size(), '0') + number + "-of-00010.gguf";
+        content[name] = split == 1 ? "invalid metadata" : "unread tensor placeholder";
+    }
+    auto files = local_manifest(tmp.path / "source", content);
+    std::reverse(files.begin(), files.end());
+    auto model = entry("muse", files);
+    model["kind"] = "llm";
+    model["layout"] = "gguf";
+    model["asset_name"] = "Muse-00001-of-00010.gguf";
+    catalog(tmp.path / "data", Json::array({model}));
+    std::vector<std::string> fetched;
+    ModelStore store(
+        tmp.path / "models",
+        tmp.path / "data",
+        [&](const std::string& url,
+            const auto& write,
+            const auto&,
+            bool head,
+            auto offset) {
+            assert(!head && offset == 0);
+            const auto name = fs::path(url).filename().string();
+            fetched.push_back(name);
+            write(content.at(name));
+            return 0;
+        }
+    );
+    store.validate_files(store.entry("muse"), parse_manifest(files));
+    assert(!store.allowed("config.json", store.entry("muse")));
+    assert(!store.allowed("../Muse-00001-of-00010.gguf", store.entry("muse")));
+    rejects([&] { store.acquire("muse", running); });
+    assert(fetched == std::vector<std::string>{"Muse-00001-of-00010.gguf"});
+    assert(!store.complete(store.entry("muse")));
+    auto oversized = files;
+    for (auto& file : oversized)
+        if (file["name"] == "Muse-00001-of-00010.gguf")
+            file["size"] = std::uint64_t(32 * 1024 * 1024 + 1);
+    rejects([&] {
+        store.validate_files(store.entry("muse"), parse_manifest(oversized));
+    });
+
+    ModelStore published(tmp.path / "published", worker_data_directory());
+    const auto& candidate = published.entry("muse-spark-open-q3-xl");
+    published.validate_files(candidate, candidate.manifest);
+    std::uint64_t bytes = 0;
+    for (const auto& file : candidate.manifest)
+        bytes += file.size;
+    assert(bytes == 401483491832ULL && bytes == candidate.estimated_bytes);
+    // Merely registering a candidate does not choose a language model.
+    rejects([&] { published.selected(); });
+    assert(!fs::exists(tmp.path / "published/selection.json"));
+}
+
 void job_units() {
     Directory tmp;
     const auto data = tmp.path / "data", root = tmp.path / "models",
@@ -1332,6 +1392,7 @@ int main() {
     single_file_acquisition_units();
     upstream_manifest_units();
     text_checkpoint_units();
+    gguf_acquisition_units();
     job_units();
     whisper_conversion_units();
     tokenizer_asset_units();

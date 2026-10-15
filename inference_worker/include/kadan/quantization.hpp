@@ -13,6 +13,27 @@ float fp32_le(
     std::span<const std::uint8_t> bytes
 );  // Exactly four little-endian bytes.
 
+// MLX affine row-major packed U32 storage, supplied as little-endian bytes.
+// Three-bit codes cross byte and U32 boundaries; four-bit codes use low nibble
+// first. Each group of 64 columns has one scale and additive bias.
+struct MlxAffineMatrix {
+    std::size_t rows;
+    std::size_t columns;
+    std::size_t bits;
+    std::size_t group_size;
+    std::span<const std::uint8_t> weights;
+    std::span<const float> scales;
+    std::span<const float> biases;
+};
+
+// FP32 reference decode with double intermediate affine arithmetic.
+// Decode whole rows into caller-admitted storage without allocation. Output must
+// be disjoint from inputs. Structural errors throw invalid_argument; numerical
+// overflow throws overflow_error. Discard output after an exception.
+void decode_mlx_affine_rows(
+    const MlxAffineMatrix& matrix, std::size_t first, std::span<float> output
+);
+
 enum class Encoding {
     modelopt_nvfp4,
     modelopt_fp8,
