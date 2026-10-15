@@ -189,9 +189,15 @@ public:
             return Token{selected.token, selected.eos, qwen_model_->tokens()};
         };
         Token selected{};
-        for (std::size_t i = 0; i < prompt_.size(); ++i) {
-            selected = step(prompt_[i], false, i + 1 == prompt_.size());
-            progress_("prefill_token", i + 1);
+        if (muse_) {
+            check_cancel(cancel);
+            progress_("prefill_begin", prompt_.size());
+            selected = muse_model_->prefill(prompt_, progress_);
+        } else {
+            for (std::size_t i = 0; i < prompt_.size(); ++i) {
+                selected = step(prompt_[i], false, i + 1 == prompt_.size());
+                progress_("prefill_token", i + 1);
+            }
         }
         std::string text, pending, reason = "length";
         std::size_t generated = 0, visible = 0;
@@ -205,6 +211,8 @@ public:
             }
             if ((gpt_ || muse_) && visible >= max_output_)
                 break;
+            if (muse_)
+                progress_("decode_token", generated + 1);
             last = std::chrono::steady_clock::now();
             if (!generated) {
                 first = last;

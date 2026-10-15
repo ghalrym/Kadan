@@ -187,8 +187,26 @@ or quantization quality. The CUDA 12.0 trial used the matching host NVIDIA
 
 Those trials preceded packed GPU execution. The packed path avoids CPU weight
 expansion and expanded F32 host-to-device weight copies for GGUF projections.
-It still decodes retained weights into bounded device scratch; prefill proceeds
-token by token. Representation savings do not establish a latency benefit.
+It still decodes retained weights into bounded device scratch. A later packed
+GPU trial completed 53 of 154 prompt tokens before its 900-second ceiling, with
+no output. That trial used token-serial prefill.
+
+Muse now prefills bounded prompt chunks layer by layer, reusing each projection
+across token rows. Chunks contain at most 256 tokens within the existing 128 MiB
+host scratch envelope. Attention writes and consumes K/V in absolute-position
+order, and expert gathering retains each token's ascending-expert accumulation.
+Scalar decode shares the same layer math. Only the final prompt row computes
+vocabulary logits. Component units compare causal rings, routing and scatter
+against independent serial calculations; batched GEMM can change floating-point
+reductions, so these checks do not establish whole-model numerical parity.
+
+Native `prefill_layer` progress reports completed layers across chunks;
+`prefill_chunk` and `prefill_token` report committed tokens only. Muse
+`decode_token` progress counts computed predictions even when recipient parsing
+suppresses control or reasoning tokens. These events support a bounded manual
+stall guard without describing partially computed tokens as complete. The
+batched path requires measured prompt completion and output before any latency
+or usability claim.
 The bounded working set does not
 establish interactive usability. Obtain approval before a large download or
 manual GPU testing, then use the existing API queue to test

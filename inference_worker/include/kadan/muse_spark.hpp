@@ -1,5 +1,8 @@
 #pragma once
 
+#include <functional>
+#include <span>
+
 #include "kadan/model_worker.hpp"
 #include "kadan/worker_compute.hpp"
 
@@ -35,6 +38,12 @@ public:
     void reset() override;
     // false commits a prefill token without computing the vocabulary projection.
     serving::Token step(unsigned token, bool logits) override;
+    // Layer-major bounded prefill. Progress token counts commit only after all
+    // layers in a chunk; failures poison the partially changed request state.
+    serving::Token prefill(
+        std::span<const unsigned>,
+        const std::function<void(const char*, std::size_t)>& progress
+    );
     void close() override;
     std::shared_ptr<Resources> resources() const;
 
