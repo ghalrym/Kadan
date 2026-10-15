@@ -530,20 +530,30 @@ void GgufCheckpoint::read_rows(
     const auto type = static_cast<ggml_type>(t.type);
     const auto row_bytes = ggml_row_size(type, t.shape[0]);
     require(row_bytes <= 1024 * 1024, "gguf_row_scratch_limit");
-    std::vector<std::uint8_t> packed(row_bytes);
+    const auto rows = output.size() / t.shape[0];
+    const auto batch_rows = std::min<std::size_t>(rows, 1024 * 1024 / row_bytes);
+    std::vector<std::uint8_t> packed(batch_rows * row_bytes);
     const auto& file = impl_->files[entry.file];
     file.unchanged();
     const auto first = add(mul(expert, t.shape[1]), first_row);
-    for (std::size_t r = 0; r < output.size() / t.shape[0]; ++r) {
+    for (std::size_t begin = 0; begin < rows; begin += batch_rows) {
         stop(cancel);
-        file.read(add(entry.begin, mul(add(first, r), row_bytes)), packed);
-        auto row = output.subspan(r * t.shape[0], t.shape[0]);
-        if (type == GGML_TYPE_F32)
-            std::memcpy(row.data(), packed.data(), row_bytes);
-        else
-            ggml_get_type_traits(type)->to_float(packed.data(), row.data(), t.shape[0]);
-        for (auto value : row)
-            require(std::isfinite(value), "gguf_nonfinite_weight");
+        const auto count = std::min(batch_rows, rows - begin);
+        file.read(
+            add(entry.begin, mul(add(first, begin), row_bytes)),
+            std::span(packed).first(count * row_bytes)
+        );
+        for (std::size_t r = 0; r < count; ++r) {
+            stop(cancel);
+            const auto* source = packed.data() + r * row_bytes;
+            auto row = output.subspan((begin + r) * t.shape[0], t.shape[0]);
+            if (type == GGML_TYPE_F32)
+                std::memcpy(row.data(), source, row_bytes);
+            else
+                ggml_get_type_traits(type)->to_float(source, row.data(), t.shape[0]);
+            for (auto value : row)
+                require(std::isfinite(value), "gguf_nonfinite_weight");
+        }
     }
     file.unchanged();
     stop(cancel);
