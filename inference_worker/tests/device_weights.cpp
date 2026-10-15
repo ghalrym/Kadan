@@ -149,6 +149,77 @@ int main() {
         check(gpu.frees == 6 && gpu.pointers.empty() && r.snapshot().residents == 0);
     }
     {
+        // Prefill may fill a fixed bank with early-layer experts that decode
+        // never selects. Retiring that stage lets later-layer selections warm.
+        constexpr Bytes capacity = 2 * (110 + 144 + 34);
+        Resources r({host, 1024});
+        Fake gpu(r);
+        DeviceWeights bank(r, 0, Workload::llm, capacity, gpu);
+        std::array<std::byte, 288> packed{};
+        std::array<DeviceWeights::Key, 3> prefill{key, key, key};
+        constexpr std::array<std::size_t, 3> widths{110, 144, 34};
+        for (std::size_t i = 0; i < prefill.size(); ++i) {
+            auto& tile = prefill[i];
+            tile.source.inode = 77;
+            // Distinct expert intervals within one shard, including the same
+            // block range: stage retirement matches the complete identity.
+            tile.source.payload_begin = i * 4096;
+            tile.source.payload_end = (i + 1) * 4096;
+            tile.first = 2;
+            tile.count = 2;
+            tile.width = widths[i];
+        }
+        unsigned reads = 0;
+        auto fetch = [&](const DeviceWeights::Key& tile) {
+            if (auto retained = bank.find(tile))
+                return retained;
+            ++reads;
+            return bank.retain(
+                tile, std::span(packed).first(tile.count * tile.width), cancel
+            );
+        };
+        for (const auto& tile : prefill)
+            check(fetch(tile));
+        check(bank.allocated() == capacity && gpu.copies == 3);
+        auto later_layer = prefill.front();
+        later_layer.source.payload_begin = 12288;
+        later_layer.source.payload_end = 16384;
+        check(!fetch(later_layer) && !bank.find(later_layer));
+        check(bank.allocated() == capacity && gpu.copies == 3);
+
+        const auto admitted = r.snapshot().used;
+        const std::array first_experts{prefill[0].source, prefill[1].source};
+        const auto unrelated = bank.find(prefill[2]);
+        check(bank.release_sources(first_experts) == 2 * (110 + 144));
+        check(!bank.find(prefill[0]) && !bank.find(prefill[1]));
+        check(bank.find(prefill[2]) == unrelated && bank.allocated() == 68);
+        check(bank.release_sources(std::span(&prefill[2].source, 1)) == 68);
+        check(bank.allocated() == 0 && gpu.pointers.empty());
+        check(
+            bank.reserved() == capacity && bank.capacity() == capacity
+            && bank.maximum_capacity() == capacity && r.snapshot().used == admitted
+            && r.snapshot().residents == 1
+        );
+
+        std::array<void*, 3> decoded{};
+        auto decode = prefill;
+        for (std::size_t i = 0; i < decode.size(); ++i) {
+            decode[i].source.payload_begin += 12288;
+            decode[i].source.payload_end += 12288;
+            decode[i].first = 4 + i * 2;
+            decoded[i] = fetch(decode[i]);
+            check(decoded[i]);
+        }
+        check(bank.allocated() == capacity && reads == 7 && gpu.copies == 6);
+        // A second decode visit uses the exact retained row/block keys, without
+        // another source read or fake device upload.
+        for (std::size_t i = 0; i < decode.size(); ++i)
+            check(fetch(decode[i]) == decoded[i]);
+        check(reads == 7 && gpu.copies == 6 && gpu.frees == 3);
+        bank.release();
+        check(gpu.frees == 6 && gpu.pointers.empty() && r.snapshot().residents == 0);
+    }
+    {
         Resources r({host, 1024});
         Fake gpu(r);
         DeviceWeights bank(r, 0, Workload::image, 64, gpu);
