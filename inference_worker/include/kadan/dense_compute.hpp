@@ -165,6 +165,7 @@ public:
     // Unsupported precedes source reads or output writes. Packed weights retain
     // their serialized identity; implementations validate decoded values and
     // synchronize before return. Execution failures throw and must not retry.
+    // Disabling miss retention keeps existing hits and streams uncached tiles.
     virtual ProjectionResult dense_gguf_source(
         const WeightIdentity&,
         gguf::Encoding,
@@ -175,7 +176,8 @@ public:
         std::size_t,
         std::span<float>,
         const std::atomic_bool&,
-        bool = false
+        bool = false,
+        bool = true
     ) {
         return ProjectionResult::unsupported;
     }

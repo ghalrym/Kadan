@@ -130,6 +130,7 @@ struct Store {
     std::size_t packed = 0, execution = 0;
     std::unique_ptr<checkpoint::GgufCheckpoint> gguf;
     std::map<std::string, std::string, std::less<>> gguf_vectors;
+    bool retain_packed_misses = true;
     unsigned bits = 0;
     std::string base;
     std::atomic_bool idle_cancel{false};
@@ -762,7 +763,8 @@ struct Store {
                 descriptor.rows,
                 result,
                 *cancel,
-                !rounded
+                !rounded,
+                retain_packed_misses
             );
         } else {
             const auto reader = [&](std::size_t first, std::span<float> destination) {
@@ -1325,46 +1327,61 @@ struct Engine::Impl {
             need(token < vocabulary, "muse_spark_prefill_token");
         std::size_t completed = 0, completed_layers = 0;
         Vec last;
-        while (completed < prompt.size()) {
-            weights->check_cancel();
-            // Eight hidden-width F32 rows conservatively cover simultaneously
-            // live stream/input, projection outputs, pooled expert activations,
-            // gate/up/down/gather and router/index buffers (under seven widths).
-            // Fixed space covers single-row norm/residual copies, learned vectors
-            // and final vocabulary logits. CUDA source staging is separately
-            // admitted by DenseCompute; checkpoint metadata has its own reserve.
-            const auto count = batch::plan(
-                prompt.size() - completed,
-                8 * hidden * sizeof(float),
-                8ULL * 1024 * 1024
-            );
-            Vec stream(count * hidden);
-            for (std::size_t row = 0; row < count; ++row) {
-                const auto embedded = weights->embedding(prompt[completed + row]);
-                std::copy(
-                    embedded.begin(),
-                    embedded.end(),
-                    batch::row(std::span(stream), hidden, row).begin()
+        constexpr std::size_t prefill_row_bytes = 8 * hidden * sizeof(float),
+                              prefill_fixed_bytes = 8ULL * 1024 * 1024;
+        const bool previous_retention = weights->retain_packed_misses;
+        // A single chunk projects every matrix/expert slice only once. These
+        // entries would be retired before decode could reuse them; cache hits
+        // remain available, and multi-chunk prefill keeps its normal admission.
+        const bool single_chunk =
+            batch::plan(prompt.size(), prefill_row_bytes, prefill_fixed_bytes)
+            == prompt.size();
+        weights->retain_packed_misses =
+            previous_retention && !(weights->gguf && single_chunk);
+        try {
+            while (completed < prompt.size()) {
+                weights->check_cancel();
+                // Eight hidden-width F32 rows conservatively cover simultaneously
+                // live stream/input, projection outputs, pooled expert activations,
+                // gate/up/down/gather and router/index buffers (under seven widths).
+                // Fixed space covers single-row norm/residual copies, learned vectors
+                // and final vocabulary logits. CUDA source staging is separately
+                // admitted by DenseCompute; checkpoint metadata has its own reserve.
+                const auto count = batch::plan(
+                    prompt.size() - completed, prefill_row_bytes, prefill_fixed_bytes
                 );
+                Vec stream(count * hidden);
+                for (std::size_t row = 0; row < count; ++row) {
+                    const auto embedded = weights->embedding(prompt[completed + row]);
+                    std::copy(
+                        embedded.begin(),
+                        embedded.end(),
+                        batch::row(std::span(stream), hidden, row).begin()
+                    );
+                }
+                const auto first_position = tokens;
+                for (std::size_t i = 0; i < layers; ++i) {
+                    stream = layer(std::move(stream), i, first_position);
+                    if (progress)
+                        progress("prefill_layer", ++completed_layers);
+                }
+                tokens += count;
+                completed += count;
+                if (completed == prompt.size()) {
+                    const auto final = batch::row(std::span(stream), hidden, count - 1);
+                    last.assign(final.begin(), final.end());
+                }
+                if (progress) {
+                    progress("prefill_chunk", completed);
+                    for (std::size_t row = completed - count; row < completed; ++row)
+                        progress("prefill_token", row + 1);
+                }
             }
-            const auto first_position = tokens;
-            for (std::size_t i = 0; i < layers; ++i) {
-                stream = layer(std::move(stream), i, first_position);
-                if (progress)
-                    progress("prefill_layer", ++completed_layers);
-            }
-            tokens += count;
-            completed += count;
-            if (completed == prompt.size()) {
-                const auto final = batch::row(std::span(stream), hidden, count - 1);
-                last.assign(final.begin(), final.end());
-            }
-            if (progress) {
-                progress("prefill_chunk", completed);
-                for (std::size_t row = completed - count; row < completed; ++row)
-                    progress("prefill_token", row + 1);
-            }
+        } catch (...) {
+            weights->retain_packed_misses = previous_retention;
+            throw;
         }
+        weights->retain_packed_misses = previous_retention;
         weights->retire_prefill_weights(*execution.compute, progress);
         return select(std::move(last));
     }

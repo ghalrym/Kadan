@@ -1073,7 +1073,8 @@ class Compute final : public H3Compute {
         ProjectionPolicy policy = ProjectionPolicy::standard,
         const image::VaeConvolutionTile* convolution = nullptr,
         const GgufWeightSource* packed_source = nullptr,
-        gguf::Encoding encoding = gguf::Encoding::q3_k
+        gguf::Encoding encoding = gguf::Encoding::q3_k,
+        bool retain_misses = true
     ) {
         require(!cancel.load(), "h3_cuda_cancelled");
         if (convolution) {
@@ -1453,7 +1454,7 @@ class Compute final : public H3Compute {
                         // Admission follows successful decoding, so invalid source
                         // bytes never become a reusable bank entry. Existing bank
                         // ownership and cleanup cover the retained packed allocation.
-                        if (!retained)
+                        if (!retained && retain_misses)
                             arena.weights.retain(key, host_packed, cancel);
                     } else if (!retained)
                         checked(cudaMemcpy(
@@ -2558,7 +2559,8 @@ public:
         std::size_t out,
         std::span<float> y,
         const std::atomic_bool& c,
-        bool precise
+        bool precise,
+        bool retain_misses
     ) override {
         project<float>(
             {},
@@ -2576,7 +2578,8 @@ public:
             ProjectionPolicy::standard,
             nullptr,
             &source,
-            encoding
+            encoding,
+            retain_misses
         );
         return ProjectionResult::finite;
     }
