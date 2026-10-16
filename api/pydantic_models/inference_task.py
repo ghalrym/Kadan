@@ -26,7 +26,7 @@ class ChatTask(TaskInput):
 
 
 # medium is GPT-OSS 120B; the ID predates the 20B checkpoint and stays stable.
-LlmModel = Literal["small", "gpt-oss-20b", "medium", "large"]
+LlmModel = Literal["small", "gpt-oss-20b", "medium", "large", "muse-spark-open-q3-xl"]
 ImageModel = Literal["qwen-image-2.1", "qwen-image-2.1-turbo"]
 
 
