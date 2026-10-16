@@ -1356,7 +1356,16 @@ class Compute final : public H3Compute {
                         );
                         host_packed = device_workspace.host_staging(packed_bytes);
                         stop(cancel, failed);
-                        (*packed_source)(first_column, host_packed);
+                        if (packed_bytes >= PackedReadTeam::parallel_threshold
+                            && out >= 4)
+                            device_workspace.packed_read_team().read(
+                                *packed_source,
+                                first_column,
+                                packed_row_bytes,
+                                host_packed
+                            );
+                        else
+                            (*packed_source)(first_column, host_packed);
                         stop(cancel, failed);
                     }
                     if (!retained && !packed_source) {
