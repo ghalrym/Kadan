@@ -27,6 +27,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-activation-tests",
     "image-schedule-tests",
     "image-checkpoint-config-tests",
+    "image-upload-tests",
+    "image-edit-tests",
     "image-aten-plan-tests",
     "image-timing-tests",
     "image-decoder-input-tests",
