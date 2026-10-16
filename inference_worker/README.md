@@ -142,9 +142,8 @@ inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
 matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
 quantization preset; the loader rejects unsupported wire types or geometry.
 The measurements below do not establish quantization quality.
-API selection through existing settings is awaiting review in
-[PR 259](https://github.com/ghalrym/Kadan/pull/259); native support alone does not
-make Muse selectable through the API.
+The existing Settings and model-selection API accept this catalog ID through
+the shared `LlmModel` type; selection uses the existing worker queue.
 
 Acquisition downloads the tensor-free first split before any weight split,
 validates its architecture and exports configuration and byte-level BPE assets
