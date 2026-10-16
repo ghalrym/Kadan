@@ -166,6 +166,8 @@ public:
     // their serialized identity; implementations validate decoded values and
     // synchronize before return. Execution failures throw and must not retry.
     // Disabling miss retention keeps existing hits and streams uncached tiles.
+    // Source callbacks may run concurrently on disjoint whole rows. All calls
+    // finish before this operation returns or throws.
     virtual ProjectionResult dense_gguf_source(
         const WeightIdentity&,
         gguf::Encoding,

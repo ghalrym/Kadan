@@ -28,6 +28,7 @@ struct Counters {
     unsigned allocations = 0, frees = 0, creates = 0, destroys = 0, resets = 0;
     std::vector<std::byte> host_storage;
     unsigned host_allocations = 0, host_frees = 0;
+    Bytes expected_host_bytes_on_free = 0;
     bool null_host = false;
     bool handle = false;
     unsigned status = 0, status_resets = 0, status_reads = 0;
@@ -90,6 +91,8 @@ struct FakeOperations final : DeviceOperations {
             && (counts->events.back() == "synchronize"
                 || counts->events.back() == "destroy")
         );
+        if (counts->expected_host_bytes_on_free)
+            check(resources.snapshot().used[0] == counts->expected_host_bytes_on_free);
         event("free_host");
         counts->host_storage.clear();
         ++counts->host_frees;
@@ -293,6 +296,71 @@ void host_staging_reuse_and_growth() {
     );
     w.release();
     check(c->host_frees == 1);
+}
+
+void packed_reader_workspace_lifetime() {
+    constexpr auto staging_bytes = DeviceWorkspace::host_staging_capacity;
+    const auto team_bytes = PackedReadTeam::host_bytes();
+    Resources resources({team_bytes + staging_bytes + 4096, 1024});
+    auto counts = std::make_shared<Counters>();
+    DeviceWorkspace workspace(resources, 0, Workload::llm, fake(resources, counts));
+    check(resources.snapshot().used == Footprint({0, 0}));
+    workspace.ensure(128);
+    check(resources.snapshot().used == Footprint({0, 128}));
+    auto* team = &workspace.packed_read_team();
+    check(resources.snapshot().used == Footprint({team_bytes, 128}));
+    auto staging = workspace.host_staging(32);
+    staging.front() = std::byte{42};
+    check(resources.snapshot().used == Footprint({team_bytes + staging_bytes, 128}));
+    workspace.ensure(512);
+    check(&workspace.packed_read_team() == team);
+    check(workspace.host_staging(32).data() == staging.data());
+    check(workspace.host_staging(32).front() == std::byte{42});
+    check(resources.snapshot().used == Footprint({team_bytes + staging_bytes, 512}));
+    unsigned reads = 0;
+    team->read(
+        [&](std::size_t first, std::span<std::byte> destination) {
+            ++reads;
+            check(
+                first == 9 && destination.data() == staging.data()
+                && destination.size() == 32
+            );
+            check(resources.snapshot().used[0] == team_bytes + staging_bytes);
+            std::fill(destination.begin(), destination.end(), std::byte{7});
+        },
+        9,
+        8,
+        staging
+    );
+    check(reads == 1 && staging.back() == std::byte{7});
+    // free_host runs before its own ledger reservation is retired. The reader
+    // team's separate charge must already be gone when this fake acknowledges it.
+    counts->expected_host_bytes_on_free = staging_bytes;
+    workspace.release();
+    check(counts->host_frees == 1 && resources.snapshot().used == Footprint({0, 0}));
+    check(resources.snapshot().residents == 0);
+
+    auto& recreated = workspace.packed_read_team();
+    check(resources.snapshot().used == Footprint({team_bytes, 0}));
+    auto next = workspace.host_staging(8);
+    recreated.read(
+        [&](std::size_t first, std::span<std::byte> destination) {
+            ++reads;
+            check(first == 3 && destination.size() == 8);
+            check(resources.snapshot().used[0] == team_bytes + staging_bytes);
+            destination.front() = std::byte{11};
+        },
+        3,
+        8,
+        next
+    );
+    check(reads == 2 && next.front() == std::byte{11});
+    workspace.release();
+    check(counts->host_allocations == 2 && counts->host_frees == 2);
+    check(
+        resources.snapshot().used == Footprint({0, 0})
+        && resources.snapshot().residents == 0
+    );
 }
 
 void host_staging_admission_and_allocation_failures() {
@@ -681,6 +749,7 @@ int main() {
     reuse_growth_and_release();
     accounting_and_construction_failures();
     host_staging_reuse_and_growth();
+    packed_reader_workspace_lifetime();
     host_staging_admission_and_allocation_failures();
     host_staging_uncertain_cleanup_stays_charged();
     host_staging_owned_threads_and_cancel();

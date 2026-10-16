@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "kadan/cleanup_error.hpp"
+#include "kadan/packed_read_team.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan {
@@ -155,6 +156,20 @@ public:
         return {static_cast<std::byte*>(host_data_), std::size_t(requested)};
     }
 
+    PackedReadTeam& packed_read_team() {
+        healthy();
+        if (!packed_read_team_) {
+            try {
+                packed_read_team_ =
+                    std::make_unique<PackedReadTeam>(resources_, workload_);
+            } catch (...) {
+                const auto error = std::current_exception();
+                rethrow_after_cleanup(error, [&] { release(); });
+            }
+        }
+        return *packed_read_team_;
+    }
+
     void synchronize() {
         healthy();
         if (!touched_)
@@ -178,6 +193,10 @@ public:
             if (handle_) {
                 operations_->destroy_handle();
                 handle_ = false;
+            }
+            if (packed_read_team_) {
+                packed_read_team_->close();
+                packed_read_team_.reset();
             }
             release_host_buffer();
             release_buffer();
@@ -271,6 +290,7 @@ private:
     int device_;
     Workload workload_;
     std::unique_ptr<DeviceOperations> operations_;
+    std::unique_ptr<PackedReadTeam> packed_read_team_;
     Handle reservation_ = 0;
     Handle host_reservation_ = 0;
     void* host_data_ = nullptr;

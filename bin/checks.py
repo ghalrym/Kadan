@@ -50,6 +50,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "worker-compute-tests",
     "device-workspace-tests",
     "device-weight-tests",
+    "packed-read-team-tests",
     "device-weight-trace-tests",
     "kadan_auto_placement_test",
     "inference-owner-tests",

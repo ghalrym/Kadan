@@ -106,6 +106,17 @@ struct Fake final : WeightDeviceOperations {
         ++copies;
     }
 
+    void copy_weight_device(
+        void* destination, std::size_t offset, const void*, std::size_t bytes
+    ) override {
+        check(
+            allocations.contains(destination)
+                && offset + bytes <= allocations.at(destination),
+            "trace_fake_device_copy_bounds"
+        );
+        ++copies;
+    }
+
     void free_weight(void* pointer) override {
         check(allocations.erase(pointer) == 1, "trace_fake_free_owned");
         ++frees;
