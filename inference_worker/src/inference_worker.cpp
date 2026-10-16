@@ -259,6 +259,8 @@ int serve(const char* lock_path) {
             return video_engine(resources, progress);
         case Workload::speech:
             return whisper_engine(resources, progress);
+        case Workload::formatting:
+            return transcription_formatting_engine(resources, progress);
         case Workload::tts:
             return speech_engine(resources, progress);
         case Workload::decision:

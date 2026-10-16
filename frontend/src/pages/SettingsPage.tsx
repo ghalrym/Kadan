@@ -4,6 +4,7 @@ import { modelSettings } from '../data/playground'
 import type { ModelsResponse, CheckpointStatus, ModelLifecycleStatus, SettingsModels } from '../api/generated'
 import { configureContextV1ModelsModelIdContextPut, updateSettings } from '../api/generated/sdk.gen'
 import './SettingsPage.css'
+import { requestTranscriptionFormatting } from '../api/transcription'
 import { WhisperSelector } from '../components/WhisperSelector'
 import { ModelPicker } from '../components/ModelPicker'
 
@@ -105,6 +106,49 @@ function LicenseNotice({ model, close, proceed }: { model: CheckpointStatus; clo
     <p>{model.license_notice} {model.license_url && <a href={model.license_url} target="_blank" rel="noreferrer">License</a>}</p>
     <div className="model-license-actions"><button type="button" className="button" autoFocus onClick={close}>Cancel</button><button type="button" className="button button--primary" onClick={proceed}>Continue</button></div>
   </dialog>
+}
+
+/** Keep the switch on the last confirmed value until the worker saves it. */
+function TranscriptionFormatting({ model, downloading, download }: {
+  model?: CheckpointStatus; downloading: boolean; download: (model: CheckpointStatus) => void;
+}) {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
+  const [refresh, setRefresh] = useState(0)
+  const controller = useRef<AbortController | null>(null)
+  useEffect(() => {
+    const abort = new AbortController()
+    controller.current = abort
+    void requestTranscriptionFormatting(abort.signal).then(value => {
+      if (!abort.signal.aborted) { setEnabled(value); setError('') }
+    }).catch(reason => {
+      if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not read formatting setting.')
+    }).finally(() => { if (controller.current === abort) controller.current = null })
+    return () => { abort.abort(); controller.current?.abort() }
+  }, [refresh])
+  async function toggle() {
+    if (enabled === null || controller.current) return
+    const abort = new AbortController()
+    controller.current = abort
+    setPending(true); setError('')
+    try {
+      const saved = await requestTranscriptionFormatting(abort.signal, !enabled)
+      if (!abort.signal.aborted) setEnabled(saved)
+    } catch (reason) {
+      if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not save formatting setting.')
+    } finally {
+      if (controller.current === abort) controller.current = null
+      if (!abort.signal.aborted) setPending(false)
+    }
+  }
+  return <div className="model-row">
+    <span className="model-label"><ModelIcon type="STT" />S1-mini by Superwhisper formatting</span>
+    <div className="row"><button type="button" role="switch" aria-checked={enabled === true} aria-label="Format transcription" aria-busy={pending} disabled={enabled === null || pending} className="switch" onClick={() => void toggle()}><span /></button>
+      {model && model.status !== 'complete' && <button type="button" className="button" disabled={downloading} onClick={() => download(model)}>Download model</button>}
+    </div>
+    {error && <div role="alert" className="error-panel model-alert model-formatting-error"><span>{error}</span>{enabled === null && <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Retry</button>}</div>}
+  </div>
 }
 
 /**
@@ -226,6 +270,7 @@ export default function SettingsPage() {
   const videoModels = models.filter(model => model.kind === 'video')
   const video = videoModels.find(model => model.id === videoId) ?? videoModels[0]
   const videoDownload = videoModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
+  const formatter = models.find(model => model.kind === 'formatting')
   const speechModels = models.filter(model => model.kind === 'speech')
   const speech = speechModels.find(model => model.id === speechId) ?? speechModels[0]
   const speechDownload = speechModels.find(model => ['downloading', 'cancelling', 'failed', 'cancelled'].includes(model.status))
@@ -317,10 +362,9 @@ export default function SettingsPage() {
               {model.options.map(option => <option key={option}>{option}</option>)}
             </select>}
           </div>)}
-          <div className="model-row">
-            <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
-            <button type="button" role="switch" aria-checked="true" aria-label="Whisper S1 Mini formatting" disabled className="switch"><span /></button>
-          </div>
+          <TranscriptionFormatting model={formatter} downloading={downloading || pending} download={downloadModel} />
+          {formatter && ['downloading', 'cancelling', 'failed', 'cancelled'].includes(formatter.status) && <ModelDownloadStatus model={formatter} pending={pending} downloading={downloading}
+            cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} retry={downloadModel} />}
         </Panel>
       </div>
     </div>

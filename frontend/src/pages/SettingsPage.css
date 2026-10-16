@@ -66,3 +66,5 @@
 .model-license-dialog a { color: inherit; text-decoration: underline; }
 .model-license-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 @media (max-width: 900px) { .model-video-note { grid-column: 1; } }
+
+.model-formatting-error { grid-column: 1 / -1; }

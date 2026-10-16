@@ -9,6 +9,8 @@ void prepare_input(
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
+    if (!input.formatting.has_value())
+        input.formatting = store.whisper_formatting();
     request.model =
         input.model ? store.whisper_model(*input.model) : store.whisper_selected();
     preparation_check(
@@ -49,6 +51,22 @@ void prepare_input(
     std::string().swap(input.audio);
 }
 
+void prepare_input(
+    TranscriptionFormattingRequest& input,
+    InferenceRequest& request,
+    ModelStore& store,
+    const std::atomic_bool& cancel
+) {
+    preparation_check(
+        !input.text.empty() && input.text.size() <= 32000,
+        "Formatter transcript exceeds its input bound",
+        422
+    );
+    request.model = "superwhisper-s1-mini";
+    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.context_limit = 4096;
+}
+
 Json present_transcription(const InferenceRequest& request, const std::string& text) {
     const auto& input = std::get<TranscriptionRequest>(request.input);
     return {
@@ -56,7 +74,8 @@ Json present_transcription(const InferenceRequest& request, const std::string& t
         {"raw_text", text},
         {"language", "en"},
         {"model", request.model},
-        {"formatting_status", input.formatting ? "unavailable" : "disabled"}
+        {"formatting_status", input.formatting.value() ? "requested" : "disabled"},
+        {"formatting_model", nullptr}
     };
 }
 }  // namespace kadan::serving

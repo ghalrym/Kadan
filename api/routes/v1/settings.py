@@ -2,24 +2,26 @@
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from api.pydantic_models.settings import ModelSetting
-from api.services.inference import inference
-from api.services.inference_errors import InferenceFailure
+
 from api.pydantic_models.inference_task import (
     ImageModel,
     ImageSelectionTask,
     LlmModel,
+    WhisperFormattingTask,
 )
+from api.pydantic_models.settings import ModelSetting
+from api.services.inference import inference
+from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/settings", tags=["Settings"])
 
 
 class SettingsResponse(BaseModel):
-    """Expose real catalog selection and null for unavailable transcription settings."""
+    """Expose catalog selections and the saved transcription formatting setting."""
 
     models: list[ModelSetting]
-    whisper_formatting: bool | None = Field(
-        default=None, description="Null: no transcription provider is configured."
+    whisper_formatting: bool = Field(
+        description="Normalize speech transcripts with S1-mini by Superwhisper; retain raw text."
     )
 
 
@@ -32,7 +34,7 @@ class SettingsModels(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    """Accept only the supported LLM and image selections; reject unknown fields."""
+    """Persist supported selections and transcription formatting."""
 
     model_config = ConfigDict(extra="forbid")
     models: SettingsModels
@@ -52,6 +54,7 @@ def get_settings() -> SettingsResponse:
     llm_options = [model.id for model in status.models if model.kind == "llm"]
     image_options = [model.id for model in status.models if model.kind == "image"]
     return SettingsResponse(
+        whisper_formatting=status.whisper_formatting,
         models=[
             ModelSetting(
                 label="Language model",
@@ -65,13 +68,13 @@ def get_settings() -> SettingsResponse:
                 selected=status.selected_image,
                 options=image_options,
             ),
-        ]
+        ],
     )
 
 
 @router.put(
     "",
-    description="Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Other modalities are not configured.",
+    description="Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
@@ -82,11 +85,6 @@ async def update_settings(body: SettingsRequest) -> SettingsResponse:
     inference; requests load the selected model on demand. A language model
     resident for a different checkpoint is unloaded after earlier chats finish,
     so status never reports it. Context changes never unload."""
-    if body.whisper_formatting is not None:
-        raise HTTPException(
-            503,
-            "Transcription settings are unavailable: no transcription provider is configured.",
-        )
     try:
         if body.models.LLM is not None:
             await inference.select_model(body.models.LLM)
@@ -94,6 +92,12 @@ async def update_settings(body: SettingsRequest) -> SettingsResponse:
             await inference.submit(
                 ImageSelectionTask(model_id=body.models.Image),
                 feature="image_selection",
+                operation="configure",
+            )
+        if body.whisper_formatting is not None:
+            await inference.submit(
+                WhisperFormattingTask(enabled=body.whisper_formatting),
+                feature="whisper_formatting",
                 operation="configure",
             )
         return get_settings()

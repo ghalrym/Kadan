@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "kadan/chat_prompt.hpp"
+#include "kadan/s1_mini_prompt.hpp"
 
 using namespace kadan::serving;
 
@@ -110,6 +111,13 @@ void pinned_catalog_units() {
     store.select_whisper("turbo");
     assert(store.whisper_selected() == "large-v3-turbo");
     rejects([&] { store.whisper_model("unknown"); });
+    const auto& formatter = store.entry("superwhisper-s1-mini");
+    assert(
+        formatter.repo_id == "superwhisper/s1-mini" && formatter.kind == "formatting"
+    );
+    assert(formatter.revision == "88f6b15896c73bbb13a3b596e0afe8ea0d5150b4");
+    store.validate_files(formatter, formatter.manifest);
+    assert(store.allowed("LICENSE", formatter) && store.allowed("NOTICE", formatter));
     const auto& speech = store.entry("qwen-tts-1.7b-custom");
     Json files = Json::array();
     for (const auto& name : speech.required_files) {
@@ -138,6 +146,109 @@ void pinned_catalog_units() {
     const auto& video = store.entry("h3-fl2va-int8-turbo");
     store.validate_files(video, video.manifest);
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
+}
+
+void whisper_formatting_setting_units() {
+    Directory tmp;
+    ModelStore store(tmp.path, worker_data_directory());
+    store.select_whisper("large-v3");
+    assert(store.whisper_formatting());
+    for (const bool enabled : {false, true}) {
+        auto configuration = request(
+            "formatting",
+            {{"feature", "whisper_formatting"}, {"enabled", enabled}},
+            "configure"
+        );
+        prepare_input(
+            std::get<WhisperFormattingRequest>(configuration.input),
+            configuration,
+            store,
+            running
+        );
+        ModelStore reopened(tmp.path, worker_data_directory());
+        assert(reopened.whisper_formatting() == enabled);
+        assert(reopened.status().at("whisper_formatting") == enabled);
+        assert(reopened.whisper_selected() == "large-v3");
+    }
+    rejects([&] {
+        request("invalid", {{"feature", "whisper_formatting"}, {"enabled", true}});
+    });
+}
+
+void whisper_formatting_request_units() {
+    Directory tmp;
+    ModelStore store(tmp.path, worker_data_directory());
+    store.select_whisper("large-v3");
+    // Preparation checks file presence only; no model is loaded or executed.
+    const auto root = tmp.path / "whisper/large-v3";
+    for (const auto* file :
+         {"model.safetensors", "dimensions.txt", "assets/english.tokens"})
+        bytes(root / file, "");
+    for (const bool saved : {false, true}) {
+        store.set_whisper_formatting(saved);
+        for (const Json& override : {Json(), Json(false), Json(true)}) {
+            auto transcription = request(
+                "transcription",
+                {{"feature", "stt"},
+                 {"audio",
+                  "data:audio/"
+                  "wav;base64,"
+                  "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="},
+                 {"formatting", override}}
+            );
+            auto& input = std::get<TranscriptionRequest>(transcription.input);
+            assert(input.formatting.has_value() == !override.is_null());
+            prepare_input(input, transcription, store, running);
+            const bool expected = override.is_null() ? saved : override.get<bool>();
+            assert(input.formatting == expected);
+            assert(transcription.model == "large-v3");
+            const auto result = present_transcription(transcription, "  Hello.  ");
+            assert(result.at("text") == "  Hello.  ");
+            assert(result.at("raw_text") == "  Hello.  ");
+            assert(
+                result.at("formatting_status") == (expected ? "requested" : "disabled")
+            );
+        }
+        auto omitted = request(
+            "omitted",
+            {{"feature", "stt"},
+             {"audio",
+              "data:audio/"
+              "wav;base64,"
+              "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="}}
+        );
+        auto& input = std::get<TranscriptionRequest>(omitted.input);
+        prepare_input(input, omitted, store, running);
+        assert(input.formatting == saved);
+    }
+}
+
+void whisper_formatting_response_units() {
+    auto transcription = request(
+        "format", {{"feature", "stt"}, {"audio", "unused"}, {"formatting", true}}
+    );
+    transcription.model = "large-v3";
+    const std::string raw = "um send it on friday no thursday";
+    const auto result = present_transcription(transcription, raw);
+    assert(result.at("text") == raw && result.at("raw_text") == raw);
+    assert(result.at("formatting_status") == "requested");
+    assert(result.at("formatting_model").is_null());
+    const auto formatted =
+        request("formatting", {{"feature", "stt_formatting"}, {"text", raw}});
+    assert(formatted.workload == kadan::Workload::formatting);
+    assert(std::get<TranscriptionFormattingRequest>(formatted.input).text == raw);
+    const auto prompt = kadan::s1::prompt(raw);
+    assert(prompt.starts_with("<|im_start|>system\nYou are a text normalizer"));
+    assert(
+        prompt.find(
+            "[Styling: semi-formal] [Structure: prose] [Context: general]\n" + raw
+            + "<|im_end|>"
+        )
+        != std::string::npos
+    );
+    assert(prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+    rejects([] { kadan::s1::prompt(""); });
+    rejects([] { kadan::s1::prompt(std::string(32001, 'a')); });
 }
 
 void checkpoint_catalog_units() {
@@ -1378,6 +1489,9 @@ void tokenizer_asset_units() {
 int main() {
     manifest_model_units();
     pinned_catalog_units();
+    whisper_formatting_setting_units();
+    whisper_formatting_request_units();
+    whisper_formatting_response_units();
     checkpoint_catalog_units();
     typed_request_units();
     codec_units();

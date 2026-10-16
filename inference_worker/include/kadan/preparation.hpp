@@ -87,6 +87,8 @@ public:
     void select(const std::string& model);
     void set_context(const std::string& model, const Json& value);
     void select_whisper(const std::string& model);
+    bool whisper_formatting() const;
+    void set_whisper_formatting(bool enabled);
     std::string image_selected() const;
     void select_image(const std::string& model);
     Json status() const;
@@ -175,6 +177,12 @@ void prepare_input(
     TranscriptionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
+    TranscriptionFormattingRequest&,
+    InferenceRequest&,
+    ModelStore&,
+    const std::atomic_bool&
+);
+void prepare_input(
     VideoRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
@@ -188,6 +196,9 @@ void prepare_input(
 );
 void prepare_input(
     WhisperSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
+    WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     ImageSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&

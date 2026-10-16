@@ -55,6 +55,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "kadan_auto_placement_test",
     "inference-owner-tests",
     "preparation-tests",
+    "s1-mini-metadata-tests",
     "inference-worker-text-tests",
 ]
 
