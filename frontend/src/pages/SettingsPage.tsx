@@ -9,11 +9,22 @@ import {
 import './SettingsPage.css'
 
 /** Open a native modal on mount; Escape runs `close` instead of dismissing directly. */
-function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+function Modal({ title, close, returnFocusId, children }: {
+  title: string
+  close: () => void
+  returnFocusId: string
+  children: ReactNode
+}) {
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => {
-    dialog.current?.showModal()
-  }, [])
+    const element = dialog.current
+    element?.showModal()
+    return () => {
+      element?.close()
+      // Confirmation replaces the opener with the selected tier's preview button.
+      document.getElementById(returnFocusId)?.focus()
+    }
+  }, [returnFocusId])
   return (
     <dialog
       className="tier-dialog"
@@ -66,11 +77,12 @@ function TierCard({ tier, current, highlighted, choose, showProgress }: {
         <p className="muted">with {tier.ramGb} GB system RAM</p>
       </div>
       {current ? (
-        <button type="button" className="button tier-card-button" onClick={showProgress}>
+        <button id={`${tier.id}-action`} type="button" className="button tier-card-button" onClick={showProgress}>
           View download preview
         </button>
       ) : (
         <button
+          id={`${tier.id}-action`}
           type="button"
           className={`button tier-card-button${highlighted ? ' button--primary' : ''}`}
           onClick={choose}
@@ -139,7 +151,7 @@ export default function SettingsPage() {
   return (
     <div className="scroll-page">
       {confirmTier && (
-        <Modal title={`Download ${confirmTier.name} models?`} close={() => setConfirmTier(null)}>
+        <Modal title={`Download ${confirmTier.name} models?`} close={() => setConfirmTier(null)} returnFocusId={`${confirmTier.id}-action`}>
           <p className="muted">
             {currentTier
               ? `Switching to ${confirmTier.name} downloads the language, image, video, and speech models sized for ${confirmTier.vramGb} GB VRAM and ${confirmTier.ramGb} GB RAM.`
@@ -159,6 +171,7 @@ export default function SettingsPage() {
         <Modal
           title={`${selectedTier.name} download preview`}
           close={() => setProgressOpen(false)}
+          returnFocusId={`${selectedTier.id}-action`}
         >
           <p className="muted">Example progress only. No models are being downloaded.</p>
           <DownloadProgress />
