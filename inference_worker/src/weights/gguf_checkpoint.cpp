@@ -115,6 +115,43 @@ struct ContextDeleter {
 
 using Context = std::unique_ptr<gguf_context, ContextDeleter>;
 
+// Read-ahead is permitted only within a boundary already known to contain no
+// tensor payload: the validated header end, or a file declaring zero tensors.
+class MetadataWindow {
+public:
+    MetadataWindow(const File& file, const std::atomic_bool& cancel, std::uint64_t end)
+        : file_(file), cancel_(cancel), end_(end) {
+    }
+
+    void read(std::uint64_t at, std::span<std::uint8_t> output) {
+        stop(cancel_);
+        require(at <= end_ && output.size() <= end_ - at, "gguf_read_bounds");
+        while (!output.empty()) {
+            stop(cancel_);
+            if (at < begin_ || at - begin_ >= size_) {
+                begin_ = at;
+                size_ = 0;
+                const auto count = std::min<std::uint64_t>(buffer_.size(), end_ - at);
+                file_.read(at, std::span{buffer_}.first(count), &cancel_);
+                size_ = count;
+            }
+            const auto offset = std::size_t(at - begin_);
+            const auto count = std::min(output.size(), size_ - offset);
+            std::memcpy(output.data(), buffer_.data() + offset, count);
+            at += count;
+            output = output.subspan(count);
+        }
+    }
+
+private:
+    const File& file_;
+    const std::atomic_bool& cancel_;
+    std::uint64_t end_;
+    std::array<std::uint8_t, 64 * 1024> buffer_{};
+    std::uint64_t begin_ = 0;
+    std::size_t size_ = 0;
+};
+
 // Preflight before invoking upstream GGUF parsing: bound every length/count and
 // validate types/dimensions before ggml helpers that assume valid enum values.
 class Header {
@@ -129,6 +166,14 @@ public:
         require(u32() == 0x46554747 && u32() == 3, "gguf_version");
         const auto tensor_count = integer(), kv_count = integer();
         require(tensor_count <= 200000 && kv_count <= 16384, "gguf_header_count");
+        if (!tensor_count)
+            // No tensor payload exists in this file. Read-ahead may include
+            // trailing padding, but never exceeds the file or metadata limit.
+            window_ = std::make_unique<MetadataWindow>(
+                file,
+                cancel,
+                std::min<std::uint64_t>(file.initial.st_size, metadata_limit)
+            );
         std::unordered_set<std::string> keys;
         for (std::uint64_t i = 0; i < kv_count; ++i) {
             auto key = text(256);
@@ -184,16 +229,23 @@ public:
             offsets.push_back(integer());
             tensors.push_back(std::move(tensor));
         }
+        // Preflight is complete; the upstream pass owns its own bounded window.
+        window_.reset();
     }
 
 private:
+    std::unique_ptr<MetadataWindow> window_;
+
     void bytes(std::span<std::uint8_t> output) {
         stop(cancel);
         require(
             at <= metadata_limit && output.size() <= metadata_limit - at,
             "gguf_metadata_limit"
         );
-        file.read(at, output);
+        if (window_)
+            window_->read(at, output);
+        else
+            file.read(at, output);
         at += output.size();
     }
 
@@ -281,6 +333,7 @@ struct Reader {
     std::uint64_t end;
     const std::atomic_bool& cancel;
     bool failed = false;
+    MetadataWindow window{file, cancel, end};
 };
 
 std::size_t read_metadata(void* opaque, void* output, std::uint64_t at, std::size_t n) {
@@ -288,7 +341,7 @@ std::size_t read_metadata(void* opaque, void* output, std::uint64_t at, std::siz
     if (reader.cancel.load() || at > reader.end || n > reader.end - at)
         return 0;
     try {
-        reader.file.read(at, {static_cast<std::uint8_t*>(output), n});
+        reader.window.read(at, {static_cast<std::uint8_t*>(output), n});
         return n;
     } catch (...) {
         reader.failed = true;
