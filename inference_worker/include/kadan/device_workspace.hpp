@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <memory>
@@ -9,6 +10,7 @@
 #include <thread>
 
 #include "kadan/cleanup_error.hpp"
+#include "kadan/packed_read_team.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan {
@@ -34,6 +36,8 @@ public:
     virtual void select(int device) = 0;
     virtual void allocate(Bytes bytes) = 0;
     virtual void free() = 0;
+    virtual void* allocate_host(Bytes bytes) = 0;
+    virtual void free_host(void* pointer) = 0;
     virtual void create_handle() = 0;
     virtual void configure_handle() = 0;
     virtual void destroy_handle() = 0;
@@ -49,6 +53,8 @@ public:
 // Context/library overhead remains covered by the caller's context reservation.
 class DeviceWorkspace {
 public:
+    static constexpr Bytes host_staging_capacity = 16 * 1024 * 1024;
+
     DeviceWorkspace(
         Resources& resources,
         int device,
@@ -122,6 +128,48 @@ public:
         }
     }
 
+    // One page-locked source buffer per device. Its fixed bound does not grow
+    // with model size, and GPU scratch growth leaves the host address intact.
+    std::span<std::byte> host_staging(Bytes requested) {
+        healthy();
+        if (!requested || requested > host_staging_capacity)
+            throw std::invalid_argument("compute_host_staging_size");
+        if (!host_data_) {
+            try {
+                activate();
+                auto footprint = resources_.snapshot().capacity;
+                std::fill(footprint.begin(), footprint.end(), 0);
+                footprint[0] = host_staging_capacity;
+                host_reservation_ = resources_.reserve(workload_, std::move(footprint));
+                host_data_ = operations_->allocate_host(host_staging_capacity);
+                if (!host_data_)
+                    throw std::runtime_error("compute_host_staging_allocation");
+                resources_.loaded(host_reservation_);
+                host_resident_ = true;
+                resources_.pin(host_reservation_);
+                host_pinned_ = true;
+            } catch (...) {
+                const auto error = std::current_exception();
+                rethrow_after_cleanup(error, [&] { release(); });
+            }
+        }
+        return {static_cast<std::byte*>(host_data_), std::size_t(requested)};
+    }
+
+    PackedReadTeam& packed_read_team() {
+        healthy();
+        if (!packed_read_team_) {
+            try {
+                packed_read_team_ =
+                    std::make_unique<PackedReadTeam>(resources_, workload_);
+            } catch (...) {
+                const auto error = std::current_exception();
+                rethrow_after_cleanup(error, [&] { release(); });
+            }
+        }
+        return *packed_read_team_;
+    }
+
     void synchronize() {
         healthy();
         if (!touched_)
@@ -146,6 +194,11 @@ public:
                 operations_->destroy_handle();
                 handle_ = false;
             }
+            if (packed_read_team_) {
+                packed_read_team_->close();
+                packed_read_team_.reset();
+            }
+            release_host_buffer();
             release_buffer();
         } catch (...) {
             quarantined_ = true;
@@ -178,6 +231,27 @@ private:
     void healthy() const {
         if (quarantined_)
             throw std::runtime_error("compute_workspace_cleanup_unconfirmed");
+    }
+
+    // release() has acknowledged completion of all device work before this
+    // allocation or its CPU accounting may be retired.
+    void release_host_buffer() {
+        if (host_data_) {
+            operations_->free_host(host_data_);
+            host_data_ = nullptr;
+        }
+        if (host_reservation_) {
+            if (host_pinned_) {
+                resources_.unpin(host_reservation_);
+                host_pinned_ = false;
+            }
+            if (host_resident_) {
+                resources_.begin_eviction(host_reservation_);
+                host_resident_ = false;
+            }
+            resources_.released(host_reservation_);
+            host_reservation_ = 0;
+        }
     }
 
     void release_buffer() {
@@ -216,10 +290,14 @@ private:
     int device_;
     Workload workload_;
     std::unique_ptr<DeviceOperations> operations_;
+    std::unique_ptr<PackedReadTeam> packed_read_team_;
     Handle reservation_ = 0;
+    Handle host_reservation_ = 0;
+    void* host_data_ = nullptr;
     Bytes bytes_ = 0;
     bool allocated_ = false, handle_ = false, pinned_ = false, resident_ = false,
          touched_ = false, quarantined_ = false;
+    bool host_pinned_ = false, host_resident_ = false;
 };
 
 // Bounded mailbox, persistent thread. The synchronous compute boundary joins

@@ -17,6 +17,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "kadan/quantization.hpp"
+
 namespace kadan::checkpoint {
 namespace {
 constexpr std::uint64_t metadata_limit = 32 * 1024 * 1024;
@@ -80,13 +82,19 @@ struct File {
         );
     }
 
-    void read(std::uint64_t at, std::span<std::uint8_t> output) const {
+    void read(
+        std::uint64_t at,
+        std::span<std::uint8_t> output,
+        const std::atomic_bool* cancel = nullptr
+    ) const {
         require(
             at <= std::uint64_t(initial.st_size)
                 && output.size() <= std::uint64_t(initial.st_size) - at,
             "gguf_read_bounds"
         );
         while (!output.empty()) {
+            if (cancel)
+                stop(*cancel);
             const auto n =
                 ::pread(fd, output.data(), output.size(), static_cast<off_t>(at));
             if (n < 0 && errno == EINTR)
@@ -107,6 +115,43 @@ struct ContextDeleter {
 
 using Context = std::unique_ptr<gguf_context, ContextDeleter>;
 
+// Read-ahead is permitted only within a boundary already known to contain no
+// tensor payload: the validated header end, or a file declaring zero tensors.
+class MetadataWindow {
+public:
+    MetadataWindow(const File& file, const std::atomic_bool& cancel, std::uint64_t end)
+        : file_(file), cancel_(cancel), end_(end) {
+    }
+
+    void read(std::uint64_t at, std::span<std::uint8_t> output) {
+        stop(cancel_);
+        require(at <= end_ && output.size() <= end_ - at, "gguf_read_bounds");
+        while (!output.empty()) {
+            stop(cancel_);
+            if (at < begin_ || at - begin_ >= size_) {
+                begin_ = at;
+                size_ = 0;
+                const auto count = std::min<std::uint64_t>(buffer_.size(), end_ - at);
+                file_.read(at, std::span{buffer_}.first(count), &cancel_);
+                size_ = count;
+            }
+            const auto offset = std::size_t(at - begin_);
+            const auto count = std::min(output.size(), size_ - offset);
+            std::memcpy(output.data(), buffer_.data() + offset, count);
+            at += count;
+            output = output.subspan(count);
+        }
+    }
+
+private:
+    const File& file_;
+    const std::atomic_bool& cancel_;
+    std::uint64_t end_;
+    std::array<std::uint8_t, 64 * 1024> buffer_{};
+    std::uint64_t begin_ = 0;
+    std::size_t size_ = 0;
+};
+
 // Preflight before invoking upstream GGUF parsing: bound every length/count and
 // validate types/dimensions before ggml helpers that assume valid enum values.
 class Header {
@@ -121,6 +166,14 @@ public:
         require(u32() == 0x46554747 && u32() == 3, "gguf_version");
         const auto tensor_count = integer(), kv_count = integer();
         require(tensor_count <= 200000 && kv_count <= 16384, "gguf_header_count");
+        if (!tensor_count)
+            // No tensor payload exists in this file. Read-ahead may include
+            // trailing padding, but never exceeds the file or metadata limit.
+            window_ = std::make_unique<MetadataWindow>(
+                file,
+                cancel,
+                std::min<std::uint64_t>(file.initial.st_size, metadata_limit)
+            );
         std::unordered_set<std::string> keys;
         for (std::uint64_t i = 0; i < kv_count; ++i) {
             auto key = text(256);
@@ -176,16 +229,23 @@ public:
             offsets.push_back(integer());
             tensors.push_back(std::move(tensor));
         }
+        // Preflight is complete; the upstream pass owns its own bounded window.
+        window_.reset();
     }
 
 private:
+    std::unique_ptr<MetadataWindow> window_;
+
     void bytes(std::span<std::uint8_t> output) {
         stop(cancel);
         require(
             at <= metadata_limit && output.size() <= metadata_limit - at,
             "gguf_metadata_limit"
         );
-        file.read(at, output);
+        if (window_)
+            window_->read(at, output);
+        else
+            file.read(at, output);
         at += output.size();
     }
 
@@ -273,6 +333,7 @@ struct Reader {
     std::uint64_t end;
     const std::atomic_bool& cancel;
     bool failed = false;
+    MetadataWindow window{file, cancel, end};
 };
 
 std::size_t read_metadata(void* opaque, void* output, std::uint64_t at, std::size_t n) {
@@ -280,7 +341,7 @@ std::size_t read_metadata(void* opaque, void* output, std::uint64_t at, std::siz
     if (reader.cancel.load() || at > reader.end || n > reader.end - at)
         return 0;
     try {
-        reader.file.read(at, {static_cast<std::uint8_t*>(output), n});
+        reader.window.read(at, {static_cast<std::uint8_t*>(output), n});
         return n;
     } catch (...) {
         reader.failed = true;
@@ -530,20 +591,61 @@ void GgufCheckpoint::read_rows(
     const auto type = static_cast<ggml_type>(t.type);
     const auto row_bytes = ggml_row_size(type, t.shape[0]);
     require(row_bytes <= 1024 * 1024, "gguf_row_scratch_limit");
-    std::vector<std::uint8_t> packed(row_bytes);
+    const auto rows = output.size() / t.shape[0];
+    const auto batch_rows = std::min<std::size_t>(rows, 1024 * 1024 / row_bytes);
+    std::vector<std::uint8_t> packed(batch_rows * row_bytes);
     const auto& file = impl_->files[entry.file];
     file.unchanged();
     const auto first = add(mul(expert, t.shape[1]), first_row);
-    for (std::size_t r = 0; r < output.size() / t.shape[0]; ++r) {
+    for (std::size_t begin = 0; begin < rows; begin += batch_rows) {
         stop(cancel);
-        file.read(add(entry.begin, mul(add(first, r), row_bytes)), packed);
-        auto row = output.subspan(r * t.shape[0], t.shape[0]);
-        if (type == GGML_TYPE_F32)
-            std::memcpy(row.data(), packed.data(), row_bytes);
-        else
-            ggml_get_type_traits(type)->to_float(packed.data(), row.data(), t.shape[0]);
-        for (auto value : row)
-            require(std::isfinite(value), "gguf_nonfinite_weight");
+        const auto count = std::min(batch_rows, rows - begin);
+        file.read(
+            add(entry.begin, mul(add(first, begin), row_bytes)),
+            std::span(packed).first(count * row_bytes)
+        );
+        for (std::size_t r = 0; r < count; ++r) {
+            stop(cancel);
+            const auto* source = packed.data() + r * row_bytes;
+            auto row = output.subspan((begin + r) * t.shape[0], t.shape[0]);
+            if (type == GGML_TYPE_F32)
+                std::memcpy(row.data(), source, row_bytes);
+            else
+                ggml_get_type_traits(type)->to_float(source, row.data(), t.shape[0]);
+            require(quantization::all_finite(row), "gguf_nonfinite_weight");
+        }
+    }
+    file.unchanged();
+    stop(cancel);
+}
+
+void GgufCheckpoint::read_packed_rows(
+    std::string_view name,
+    std::size_t expert,
+    std::size_t first_row,
+    std::span<std::byte> output,
+    const std::atomic_bool& cancel
+) const {
+    stop(cancel);
+    const auto& entry = impl_->find(name);
+    const auto& t = entry.tensor;
+    const auto row_bytes = ggml_row_size(static_cast<ggml_type>(t.type), t.shape[0]);
+    require(
+        t.rank >= 2 && expert < t.shape[2] && output.size() % row_bytes == 0
+            && first_row <= t.shape[1]
+            && output.size() / row_bytes <= t.shape[1] - first_row,
+        "gguf_row_range"
+    );
+    const auto& file = impl_->files[entry.file];
+    file.unchanged();
+    const auto first = add(mul(expert, t.shape[1]), first_row);
+    const auto offset = add(entry.begin, mul(first, row_bytes));
+    auto raw = std::span(reinterpret_cast<std::uint8_t*>(output.data()), output.size());
+    for (std::size_t at = 0; at < raw.size();) {
+        stop(cancel);
+        const auto count = std::min<std::size_t>(1024 * 1024, raw.size() - at);
+        file.read(add(offset, at), raw.subspan(at, count), &cancel);
+        at += count;
     }
     file.unchanged();
     stop(cancel);

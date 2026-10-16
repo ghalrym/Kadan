@@ -18,9 +18,11 @@
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
+#include "kadan/gguf_quantization.hpp"
 #include "kadan/h3_compute.hpp"
 #include "kadan/h3_resident.hpp"
 #include "kadan/image_vae.hpp"
+#include "kadan/quantization.hpp"
 
 namespace kadan::video {
 namespace {
@@ -63,6 +65,28 @@ bf16_input(const float* source, __nv_bfloat16* destination, std::size_t count) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count)
         destination[i] = __float2bfloat16_rn(source[i]);
+}
+
+// Packed rows remain in the weight bank; only this bounded tile becomes F32.
+__global__ void gguf_decode_kernel(
+    const unsigned char* packed,
+    float* decoded,
+    unsigned* status,
+    gguf::Encoding encoding,
+    std::size_t count
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count)
+        return;
+    const auto block_values = gguf::block_values(encoding);
+    const float value = gguf::decode(
+        encoding,
+        packed + i / block_values * gguf::block_bytes(encoding),
+        i % block_values
+    );
+    decoded[i] = value;
+    if (!isfinite(value))
+        atomicOr(status, 1U);
 }
 
 struct Layout {
@@ -473,8 +497,29 @@ public:
         ));
     }
 
+    void copy_weight_device(
+        void* pointer, std::size_t offset, const void* source, std::size_t bytes
+    ) override {
+        checked(cudaMemcpy(
+            static_cast<char*>(pointer) + offset,
+            static_cast<const char*>(source) + offset,
+            bytes,
+            cudaMemcpyDeviceToDevice
+        ));
+    }
+
     void free_weight(void* pointer) override {
         checked(cudaFree(pointer));
+    }
+
+    void* allocate_host(Bytes bytes) override {
+        void* pointer = nullptr;
+        checked(cudaHostAlloc(&pointer, bytes, cudaHostAllocPortable));
+        return pointer;
+    }
+
+    void free_host(void* pointer) override {
+        checked(cudaFreeHost(pointer));
     }
 
     void synchronize_weights() override {
@@ -1037,7 +1082,10 @@ class Compute final : public H3Compute {
         const WeightIdentity* identity = nullptr,
         const std::function<void(std::size_t, std::span<Weight>)>* source = nullptr,
         ProjectionPolicy policy = ProjectionPolicy::standard,
-        const image::VaeConvolutionTile* convolution = nullptr
+        const image::VaeConvolutionTile* convolution = nullptr,
+        const GgufWeightSource* packed_source = nullptr,
+        gguf::Encoding encoding = gguf::Encoding::q3_k,
+        bool retain_misses = true
     ) {
         require(!cancel.load(), "h3_cuda_cancelled");
         if (convolution) {
@@ -1071,9 +1119,21 @@ class Compute final : public H3Compute {
             "h3_cuda_alias"
         );
         require(
-            (source && identity) || weights.size() == product(in, out),
+            ((source || packed_source) && identity)
+                || weights.size() == product(in, out),
             "h3_cuda_weight_shape"
         );
+        require(
+            !packed_source
+                || (std::is_same_v<Weight, float> && !source && !convolution
+                    && (encoding == gguf::Encoding::q3_k
+                        || encoding == gguf::Encoding::q4_k
+                        || encoding == gguf::Encoding::q8_0)
+                    && in % gguf::block_values(encoding) == 0),
+            "h3_cuda_gguf_shape"
+        );
+        const auto packed_row_bytes =
+            packed_source ? gguf_projection_row_bytes(in, encoding) : 0;
         constexpr bool quant = sizeof(Weight) == 1;
         constexpr bool bf16 = std::is_same_v<Weight, std::uint16_t>;
         require(!bf16 || (!precise && native_bf16_), "h3_cuda_bf16_policy");
@@ -1126,8 +1186,13 @@ class Compute final : public H3Compute {
                 constexpr std::size_t source_bytes = 16 * 1024 * 1024;
                 const auto alignment = quant ? 4u : 1u;
                 const auto host_columns =
-                    (source_bytes / (in * sizeof(Weight))) / alignment * alignment;
-                require(!source || host_columns > 0, "h3_source_staging_floor");
+                    (source_bytes
+                     / (packed_source ? packed_row_bytes : in * sizeof(Weight)))
+                    / alignment * alignment;
+                require(
+                    !(source || packed_source) || host_columns > 0,
+                    "h3_source_staging_floor"
+                );
                 const auto convolution_plan = convolution
                                                   ? image_vae_convolution_plan(
                                                         convolution->shape,
@@ -1145,8 +1210,15 @@ class Compute final : public H3Compute {
                 const auto patch_bytes =
                     convolution ? convolution_plan->patch_bytes : 0;
                 const auto plan =
-                    convolution
-                        ? convolution_plan->projection
+                    convolution ? convolution_plan->projection
+                    : packed_source
+                        ? gguf_projection_plan(
+                              in,
+                              last_output - first_output,
+                              encoding,
+                              precise,
+                              arena.scratch_limit
+                          )
                         : projection_plan(
                               in,
                               source
@@ -1174,7 +1246,9 @@ class Compute final : public H3Compute {
                                   + (input_rows - plan.rows) * in * sizeof(float)
                 );
                 // The aligned status prefix stays fixed across every column chunk.
-                auto* nonfinite = validate_output ? arena.at<unsigned>(0) : nullptr;
+                auto* nonfinite = (validate_output || packed_source)
+                                      ? arena.at<unsigned>(0)
+                                      : nullptr;
                 if (nonfinite)
                     checked(cudaMemset(nonfinite, 0, sizeof(unsigned)));
                 Layout input_layout;
@@ -1255,8 +1329,9 @@ class Compute final : public H3Compute {
                     const auto out =
                         std::min(chunk_columns, last_output - first_column);
                     auto weights =
-                        source ? std::span<const Weight>{}
-                               : all_weights.subspan(first_column * in, out * in);
+                        (source || packed_source)
+                            ? std::span<const Weight>{}
+                            : all_weights.subspan(first_column * in, out * in);
                     const auto bias = all_bias.empty()
                                           ? all_bias
                                           : all_bias.subspan(first_column, out);
@@ -1270,14 +1345,41 @@ class Compute final : public H3Compute {
                     const auto weight_count = product(in, out);
                     const DeviceWeights::Key key{
                         identity ? *identity : WeightIdentity{},
-                        first_column * in,
-                        weight_count,
-                        sizeof(Weight)
+                        packed_source
+                            ? first_column * (in / gguf::block_values(encoding))
+                            : first_column * in,
+                        packed_source ? weight_count / gguf::block_values(encoding)
+                                      : weight_count,
+                        packed_source ? gguf::block_bytes(encoding) : sizeof(Weight)
                     };
-                    void* retained = identity ? arena.weights.find(key) : nullptr;
+                    void* retained =
+                        identity
+                            ? arena.weights.find(key, !packed_source || retain_misses)
+                            : nullptr;
                     std::unique_ptr<HostAdmission> host_admission;
                     std::unique_ptr<Weight[]> host_weights;
-                    if (!retained) {
+                    std::span<std::byte> host_packed;
+                    const auto packed_bytes = product(out, packed_row_bytes);
+                    if (!retained && packed_source) {
+                        static_assert(
+                            DeviceWorkspace::host_staging_capacity
+                            == gguf_projection_staging_bytes
+                        );
+                        host_packed = device_workspace.host_staging(packed_bytes);
+                        stop(cancel, failed);
+                        if (packed_bytes >= PackedReadTeam::parallel_threshold
+                            && out >= 4)
+                            device_workspace.packed_read_team().read(
+                                *packed_source,
+                                first_column,
+                                packed_row_bytes,
+                                host_packed
+                            );
+                        else
+                            (*packed_source)(first_column, host_packed);
+                        stop(cancel, failed);
+                    }
+                    if (!retained && !packed_source) {
                         if (source) {
                             host_admission = std::make_unique<HostAdmission>(
                                 *resources_,
@@ -1302,17 +1404,25 @@ class Compute final : public H3Compute {
                                     "h3_cuda_nonfinite_weight"
                                 );
                         } else if constexpr (!quant)
-                            for (float value : weights)
-                                require(
-                                    std::isfinite(value), "h3_cuda_nonfinite_weight"
-                                );
+                            require(
+                                quantization::all_finite(weights),
+                                "h3_cuda_nonfinite_weight"
+                            );
                         if (identity)
                             retained = arena.weights.retain(
                                 key, std::as_bytes(weights), cancel
                             );
                     }
                     Layout l = input_layout;
-                    const auto w = l.add(retained ? 0 : weights.size_bytes()),
+                    const auto packed_status =
+                                   l.add(packed_source ? sizeof(unsigned) : 0),
+                               packed = l.add(
+                                   packed_source ? gguf_projection_staging_bytes : 0
+                               ),
+                               w = l.add(
+                                   packed_source ? weight_count * sizeof(float)
+                                                 : (retained ? 0 : weights.size_bytes())
+                               ),
                                b = l.add(out * 4), s = l.add(out * 4),
                                rotated = l.add(tile * in * 4), codes = l.add(tile * in),
                                row_scales = l.add(tile * 4),
@@ -1329,8 +1439,49 @@ class Compute final : public H3Compute {
                     checked(cublasSetWorkspace(
                         arena.blas, arena.at<void>(workspace), 8 * 1024 * 1024
                     ));
-                    auto* weight_pointer = retained ? retained : arena.at<void>(w);
-                    if (!retained)
+                    auto* weight_pointer =
+                        packed_source ? arena.at<void>(w)
+                                      : (retained ? retained : arena.at<void>(w));
+                    if (packed_source) {
+                        auto* packed_pointer =
+                            retained ? retained : arena.at<void>(packed);
+                        if (!retained)
+                            checked(cudaMemcpy(
+                                packed_pointer,
+                                host_packed.data(),
+                                packed_bytes,
+                                cudaMemcpyHostToDevice
+                            ));
+                        auto* decode_status = arena.at<unsigned>(packed_status);
+                        checked(cudaMemset(decode_status, 0, sizeof(unsigned)));
+                        gguf_decode_kernel<<<
+                            unsigned((weight_count + 255) / 256),
+                            256>>>(
+                            static_cast<const unsigned char*>(packed_pointer),
+                            static_cast<float*>(weight_pointer),
+                            decode_status,
+                            encoding,
+                            weight_count
+                        );
+                        checked(cudaGetLastError());
+                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        unsigned invalid = 0;
+                        checked(cudaMemcpy(
+                            &invalid,
+                            decode_status,
+                            sizeof(invalid),
+                            cudaMemcpyDeviceToHost
+                        ));
+                        require(!invalid, "h3_cuda_nonfinite_weight");
+                        stop(cancel, failed);
+                        // Admission follows successful decoding, so invalid source
+                        // bytes never become a reusable bank entry. Existing bank
+                        // ownership and cleanup cover the retained packed allocation.
+                        if (!retained && retain_misses)
+                            arena.weights.retain_device(
+                                key, packed_pointer, packed_bytes, cancel
+                            );
+                    } else if (!retained)
                         checked(cudaMemcpy(
                             weight_pointer,
                             weights.data(),
@@ -2419,6 +2570,41 @@ public:
     ) override {
         project<float>(
             {}, {}, b, x, in, out, 0, y, c, precise, &identity, &source, policy
+        );
+        return ProjectionResult::finite;
+    }
+
+    ProjectionResult dense_gguf_source(
+        const WeightIdentity& identity,
+        gguf::Encoding encoding,
+        const GgufWeightSource& source,
+        std::span<const float> b,
+        std::span<const float> x,
+        std::size_t in,
+        std::size_t out,
+        std::span<float> y,
+        const std::atomic_bool& c,
+        bool precise,
+        bool retain_misses
+    ) override {
+        project<float>(
+            {},
+            {},
+            b,
+            x,
+            in,
+            out,
+            0,
+            y,
+            c,
+            precise,
+            &identity,
+            nullptr,
+            ProjectionPolicy::standard,
+            nullptr,
+            &source,
+            encoding,
+            retain_misses
         );
         return ProjectionResult::finite;
     }

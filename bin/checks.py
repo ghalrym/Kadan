@@ -1,11 +1,11 @@
 """Repeatable formatting, build, and unit-test commands."""
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import typer
 
@@ -41,13 +41,17 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "harmony-tests",
     "muse-spark-prompt-tests",
     "mlx-quantization-tests",
+    "muse-spark-batch-tests",
     "muse-spark-tests",
+    "gguf-quantization-tests",
     "gguf-checkpoint-tests",
     "sequence-state-tests",
     "h3-profile-tests",
     "worker-compute-tests",
     "device-workspace-tests",
     "device-weight-tests",
+    "packed-read-team-tests",
+    "device-weight-trace-tests",
     "kadan_auto_placement_test",
     "inference-owner-tests",
     "preparation-tests",
@@ -59,6 +63,7 @@ CPP_SUFFIXES = {".cpp", ".hpp", ".h", ".cu", ".cuh"}
 # Every CPU component, so clang-tidy sees each non-CUDA translation unit.
 CPP_LINT_OPTIONS = [
     "-DKADAN_ENABLE_CUDA=OFF",
+    "-DKADAN_TRACE_WEIGHT_CACHE=ON",
     "-DKADAN_BUILD_TOOLS=ON",
     "-DKADAN_ENABLE_DECISIONS=ON",
     "-DKADAN_ENABLE_H3_GENERATION=ON",
@@ -192,6 +197,7 @@ def inference_worker(
             build_dir,
             "-DCMAKE_BUILD_TYPE=Debug",
             "-DKADAN_ENABLE_CUDA=OFF",
+            "-DKADAN_TRACE_WEIGHT_CACHE=ON",
             "-DKADAN_BUILD_TOOLS=OFF",
             "-DKADAN_ENABLE_DECISIONS=OFF",
             "-DKADAN_ENABLE_H3_GENERATION=OFF",
@@ -215,14 +221,15 @@ def inference_worker(
         ]
     )
     run(["ctest", "--test-dir", build_dir, "--output-on-failure"])
+    run([sys.executable, "-m", "unittest", "discover", "-s", "bin/tests", "-v"])
 
 
 @app.command()
 def install() -> None:
     """Validate API imports without starting the application or loading a model."""
     # Application dependencies belong only to this explicit image-build check.
-    from api.services.inference_worker import InferenceWorker
     from api.services.inference import InferenceService
+    from api.services.inference_worker import InferenceWorker
 
     assert InferenceWorker and InferenceService
     typer.echo("Inference worker transport imports successfully; no model execution.")

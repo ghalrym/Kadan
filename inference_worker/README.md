@@ -126,11 +126,12 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
-## Muse Spark Open (experimental text support)
+## Muse Spark Open text support
 
 The native Muse engine uses the existing worker, resource ledger and bounded
-CUDA projection banks. Weights remain on disk; selected rows are decoded into
-bounded staging buffers. It does not start llama.cpp, MLX or a Python runtime.
+CUDA projection banks. GGUF projections read bounded packed rows, retain their
+compressed bytes in the existing GPU banks and decode bounded F32 tiles on the
+GPU for the existing GEMM path. F32 tensors and MLX use their existing sources. It does not start llama.cpp, MLX or a Python runtime.
 The current model selection, saved context limits and GPU settings remain
 unchanged.
 
@@ -140,7 +141,10 @@ Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor
 inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
 matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
 quantization preset; the loader rejects unsupported wire types or geometry.
-This entry is an experiment, not a quantization-quality recommendation.
+The measurements below do not establish quantization quality.
+API selection through existing settings is awaiting review in
+[PR 259](https://github.com/ghalrym/Kadan/pull/259); native support alone does not
+make Muse selectable through the API.
 
 Acquisition downloads the tensor-free first split before any weight split,
 validates its architecture and exports configuration and byte-level BPE assets
@@ -160,7 +164,10 @@ not registered as a selected model. Original BF16, ModelOpt NVFP4, other GGUF
 presets and multimodal execution are not admitted by this implementation.
 
 The pinned `ggml-base` dependency supplies GGUF metadata parsing and quantized
-row decoding only. Kadan owns model execution, attention state, placement,
+CPU row decoding only; original Q3_K, Q4_K and Q8_0 CUDA decoders serve packed
+projections. CPU unit tests compare the shared decoder arithmetic against the
+pinned reference, including FP16 patterns and randomized blocks. Kadan owns
+model execution, attention state, placement,
 cancellation and sampling. Its MIT notice is installed with the worker.
 Reference equations and conversion semantics were checked against
 [Transformers PR 49644](https://github.com/huggingface/transformers/pull/49644),
@@ -172,11 +179,53 @@ sparse files with unread payload holes. Separate units check quantized block
 decoding, tokenizer metadata, prompt rendering, recipient streams and
 pre-download rejection. No unit test executes the model.
 
-No Muse inference, numerical parity, quantization-quality comparison or speed
-measurement has been performed. Disk reads, CPU decoding and PCIe transfers
-can dominate cache misses; the bounded working set does not establish usable
-latency. Prefill currently proceeds token by token. Obtain approval before the
-large download or manual GPU testing, then use the existing API queue to test
+Muse now prefills bounded prompt chunks layer by layer, reusing each projection
+across token rows. Chunks contain at most 256 tokens within the existing 128 MiB
+host scratch envelope. Attention writes and consumes K/V in absolute-position
+order, and expert gathering retains each token's ascending-expert accumulation.
+Scalar decode shares the same layer math. Only the final prompt row computes
+vocabulary logits. Component units compare causal rings, routing and scatter
+against independent serial calculations; batched GEMM can change floating-point
+reductions, so these checks do not establish whole-model numerical parity.
+
+Native `prefill_layer` progress reports completed layers across chunks;
+`prefill_chunk` and `prefill_token` report committed tokens only. Muse
+`decode_token` progress counts computed predictions even when recipient parsing
+suppresses control or reasoning tokens. These events support a bounded manual
+stall guard without describing partially computed tokens as complete. The
+batched path has the measured limits below.
+
+An authorized October 16 manual retest used the same native build tree as
+`1ba4dd16a59e71a924fd25f0412c48d710fdbb7a`, the pinned ten-file checkpoint,
+512-token context, greedy sampling and the prior 154-token greeting prompt on a
+Threadripper PRO 5955WX with two 24 GiB RTX 3090s and 448 GiB recognized RAM.
+The system prompt was `Reasoning strength: 0. Answer directly.` and the user
+prompt was `Reply with exactly: Hello Andrew.`; these were retained for
+comparison, not as a recommended reasoning configuration.
+
+| Stage | Measured result |
+| --- | --- |
+| Model load/setup | 1.62 seconds |
+| Prefill, excluding load and setup | 100.96 seconds for 154 tokens |
+| Prompt completion from worker launch | 102.87 seconds |
+| Computed predictions | 62, including recipient control and reasoning tokens |
+| Warm decode | 0.330 predictions/second over warm intervals; median 1.507 seconds |
+| Useful complete answer within five minutes | No; coherent but unfinished reasoning, no final answer |
+| Cleanup | Cancel at 290 seconds; unload acknowledged zero memory usage and clean exit at 292.19 seconds |
+
+Warm intervals exclude the first decode interval between predictions one and
+two. The initial faster decode rate did not persist: the last ten intervals
+had a median of 5.64 seconds. Load/setup does not preload all weights; roughly
+232 GB of cumulative storage reads were recorded near prompt completion, so
+prefill includes cold checkpoint I/O. The retest followed a reboot and removal
+of a DIMM from a known faulty slot. Cache residency and automatic GPU placement
+differed; the result does not isolate the cause of the improvement or establish
+whole-model numerical parity, quantization quality or interactive usability.
+
+The best tested packed GPU path is on `master`. No live deployment is implied by
+the native implementation or this manual measurement.
+Obtain approval before a large download or manual GPU testing, then use the
+existing API queue to test
 load, short and streamed chat, history, reasoning, cancellation, unload and
 context admission. Record actual memory and loading/prefill/decode times.
 
@@ -234,6 +283,24 @@ and launchers have been removed. Engine libraries remain here; metadata inspecti
 sources live in `../bin/cpp/` and are exposed through `../bin/kadan.py native`.
 Run `python bin/kadan.py native build` from the repository root to compile them.
 Normal runtime builds leave `KADAN_BUILD_TOOLS` disabled.
+
+### Weight-cache diagnostics
+
+Developer builds can enable `KADAN_TRACE_WEIGHT_CACHE` to emit ordered cache
+records on worker stderr. It defaults off and changes no runtime cache policy.
+Capture the complete process stderr from bank creation through its final cleanup
+summary, then run `python bin/kadan.py native cache-replay TRACE` on the raw JSON
+lines. Existing controller envelopes must first be reduced to their `line` values.
+Trace output is limited to 131,072 ordinary records, 1,024 summaries and two
+truncation notices per GPU. The replay rejects truncated or incomplete captures.
+
+Replay compares first admission, byte-bounded LRU and a documented experimental
+decayed tile-frequency filter at the same bank capacity. Its transfer counter is
+ideal missed-weight demand, not measured PCIe traffic: packed GGUF admission may
+upload the same bytes again. Include admission traffic and actual copy timings
+before choosing a runtime policy. The replay does not model in-flight pointer
+protection or preserving residency across existing retirement boundaries, and
+does not cover the separate GPT-OSS or AutoModel placement paths.
 
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/kadan.py infer` to submit requests through the live API and its
