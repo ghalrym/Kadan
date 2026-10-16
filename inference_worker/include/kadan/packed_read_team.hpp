@@ -18,12 +18,11 @@
 #include "kadan/resources.hpp"
 
 namespace kadan {
-// One device owner reads the current packed tile. Seven persistent host-only
+// One device owner reads the current packed tile. Three persistent host-only
 // workers and the caller consume disjoint whole rows; no future tile is queued.
 class PackedReadTeam {
 public:
     using Source = std::function<void(std::size_t, std::span<std::byte>)>;
-    static constexpr std::size_t lanes = 8;
     static constexpr std::size_t parallel_threshold = 2 * 1024 * 1024;
     static constexpr Bytes metadata_bytes = 64 * 1024;
 
@@ -37,12 +36,10 @@ public:
         checked(stack_error);
         checked(guard_error);
         checked(destroy_error);
-        constexpr auto workers = lanes - 1;
-        if (stack > (std::numeric_limits<Bytes>::max() - metadata_bytes) / workers
-            || guard > (std::numeric_limits<Bytes>::max() - metadata_bytes) / workers
-                           - stack)
+        if (stack > (std::numeric_limits<Bytes>::max() - metadata_bytes) / 3
+            || guard > (std::numeric_limits<Bytes>::max() - metadata_bytes) / 3 - stack)
             throw std::overflow_error("packed_read_stack_budget");
-        return workers * (Bytes(stack) + guard) + metadata_bytes;
+        return 3 * (Bytes(stack) + guard) + metadata_bytes;
     }
 
     PackedReadTeam(Resources& resources, Workload workload) : resources_(resources) {
@@ -86,7 +83,7 @@ public:
         const auto rows = destination.size() / row_bytes;
         if (rows > std::numeric_limits<std::size_t>::max() - first_row)
             throw std::overflow_error("packed_read_row_range");
-        const bool parallel = destination.size() >= parallel_threshold && rows >= lanes;
+        const bool parallel = destination.size() >= parallel_threshold && rows >= 4;
         {
             std::lock_guard lock(mutex_);
             if (closing_ || busy_)
@@ -107,14 +104,14 @@ public:
         std::exception_ptr caller_error;
         try {
             if (parallel)
-                read_region(source, first_row, row_bytes, destination, lanes - 1);
+                read_region(source, first_row, row_bytes, destination, 3);
             else
                 source(first_row, destination);
         } catch (...) {
             caller_error = std::current_exception();
         }
         std::unique_lock lock(mutex_);
-        errors_[lanes - 1] = caller_error;
+        errors_[3] = caller_error;
         if (parallel)
             done_.wait(lock, [&] { return remaining_ == 0; });
         source_ = nullptr;
@@ -166,7 +163,7 @@ private:
     }
 
     static std::size_t boundary(std::size_t rows, std::size_t lane) {
-        return rows / lanes * lane + rows % lanes * lane / lanes;
+        return rows / 4 * lane + rows % 4 * lane / 4;
     }
 
     static void read_region(
@@ -215,8 +212,8 @@ private:
     bool resident_ = false, pinned_ = false;
     std::mutex mutex_;
     std::condition_variable ready_, done_;
-    std::array<std::thread, lanes - 1> threads_;
-    std::array<std::exception_ptr, lanes> errors_{};
+    std::array<std::thread, 3> threads_;
+    std::array<std::exception_ptr, 4> errors_{};
     const Source* source_ = nullptr;
     std::span<std::byte> destination_;
     std::size_t first_row_ = 0, row_bytes_ = 0, remaining_ = 0;

@@ -1368,7 +1368,7 @@ class Compute final : public H3Compute {
                         host_packed = device_workspace.host_staging(packed_bytes);
                         stop(cancel, failed);
                         if (packed_bytes >= PackedReadTeam::parallel_threshold
-                            && out >= PackedReadTeam::lanes)
+                            && out >= 4)
                             device_workspace.packed_read_team().read(
                                 *packed_source,
                                 first_column,
@@ -1446,11 +1446,12 @@ class Compute final : public H3Compute {
                         auto* packed_pointer =
                             retained ? retained : arena.at<void>(packed);
                         if (!retained)
-                            checked(cudaMemcpy(
+                            checked(cudaMemcpyAsync(
                                 packed_pointer,
                                 host_packed.data(),
                                 packed_bytes,
-                                cudaMemcpyHostToDevice
+                                cudaMemcpyHostToDevice,
+                                cudaStreamLegacy
                             ));
                         auto* decode_status = arena.at<unsigned>(packed_status);
                         checked(cudaMemset(decode_status, 0, sizeof(unsigned)));

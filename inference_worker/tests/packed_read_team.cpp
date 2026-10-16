@@ -83,14 +83,14 @@ void rows_are_disjoint_parallel_and_reused() {
                 ++entered;
                 condition.notify_all();
                 // The timeout only prevents a broken implementation hanging the
-                // unit. Success requires all eight callbacks genuinely overlap.
+                // unit. Success requires all four callbacks genuinely overlap.
                 if (!condition.wait_for(lock, 5s, [&] {
-                        return entered == PackedReadTeam::lanes || timed_out;
+                        return entered == 4 || timed_out;
                     })) {
                     timed_out = true;
                     condition.notify_all();
                 }
-                check(!timed_out, "packed_read_eight_concurrent_callbacks");
+                check(!timed_out, "packed_read_four_concurrent_callbacks");
             }
             for (std::size_t byte = 0; byte < destination.size(); ++byte)
                 destination[byte] = std::byte((offset + byte + repeat + first) % 251);
@@ -100,11 +100,7 @@ void rows_are_disjoint_parallel_and_reused() {
         check(
             lifetime.expired(), "packed_read_parallel_callback_released_after_return"
         );
-        check(
-            regions.size() == PackedReadTeam::lanes
-                && threads.size() == PackedReadTeam::lanes,
-            "packed_read_eight_regions"
-        );
+        check(regions.size() == 4 && threads.size() == 4, "packed_read_four_regions");
         check(
             threads.contains(std::this_thread::get_id()),
             "packed_read_caller_participates"
@@ -190,8 +186,7 @@ void small_reads_and_callback_lifetime() {
             8192,
             below_threshold
         );
-        constexpr std::size_t few_row_bytes = 512 * 1024;
-        std::vector<std::byte> few_rows((PackedReadTeam::lanes - 1) * few_row_bytes);
+        std::vector<std::byte> few_rows(PackedReadTeam::parallel_threshold);
         const auto caller = std::this_thread::get_id();
         team.read(
             [&](std::size_t first, std::span<std::byte> destination) {
@@ -199,11 +194,11 @@ void small_reads_and_callback_lifetime() {
                 check(
                     first == 3 && destination.size() == few_rows.size()
                         && std::this_thread::get_id() == caller,
-                    "packed_read_fewer_than_eight_rows_serial"
+                    "packed_read_fewer_than_four_rows_serial"
                 );
             },
             3,
-            few_row_bytes,
+            few_rows.size(),
             few_rows
         );
         check(calls == 3, "packed_read_serial_calls_exact");
@@ -282,8 +277,8 @@ void failed_read_drains_every_callback(const char* message) {
     {
         std::unique_lock lock(mutex);
         all_entered = condition.wait_for(lock, 5s, [&] {
-            return entered == PackedReadTeam::lanes || returned;
-        }) && entered == PackedReadTeam::lanes;
+            return entered == 4 || returned;
+        }) && entered == 4;
         returned_early = returned;
         release = true;
         condition.notify_all();
@@ -294,7 +289,7 @@ void failed_read_drains_every_callback(const char* message) {
         "packed_read_error_waits_for_outstanding_regions"
     );
     check(
-        caught && completed == PackedReadTeam::lanes && returned,
+        caught && completed == 4 && returned,
         "packed_read_error_propagated_after_all_drained"
     );
     // Caller storage can be destroyed immediately after either return path.

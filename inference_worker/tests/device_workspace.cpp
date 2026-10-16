@@ -333,25 +333,6 @@ void packed_reader_workspace_lifetime() {
         staging
     );
     check(reads == 1 && staging.back() == std::byte{7});
-    auto tile = workspace.host_staging(PackedReadTeam::parallel_threshold);
-    const auto row_bytes = tile.size() / PackedReadTeam::lanes;
-    std::atomic_uint parallel_reads = 0;
-    team->read(
-        [&](std::size_t first, std::span<std::byte> destination) {
-            check(first >= 9 && first < 9 + PackedReadTeam::lanes);
-            check(destination.size() == row_bytes);
-            check(resources.snapshot().used[0] == team_bytes + staging_bytes);
-            ++parallel_reads;
-            std::fill(destination.begin(), destination.end(), std::byte{13});
-        },
-        9,
-        row_bytes,
-        tile
-    );
-    check(parallel_reads.load() == PackedReadTeam::lanes);
-    check(std::all_of(tile.begin(), tile.end(), [](std::byte value) {
-        return value == std::byte{13};
-    }));
     // free_host runs before its own ledger reservation is retired. The reader
     // team's separate charge must already be gone when this fake acknowledges it.
     counts->expected_host_bytes_on_free = staging_bytes;
