@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <dlfcn.h>
@@ -9,6 +10,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "kadan/image_edit.hpp"
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
 
@@ -160,6 +162,7 @@ const char* state_name(JobState state) {
 
 void read_requests(InferenceOwner& owner, Output& output) {
     std::string line;
+    std::array<char, 64 * 1024> buffer;
     try {
         while (!stopping.load()) {
             pollfd descriptor{STDIN_FILENO, POLLIN, 0};
@@ -169,43 +172,45 @@ void read_requests(InferenceOwner& owner, Output& output) {
             require(ready >= 0, "worker_input_poll");
             if (!ready)
                 continue;
-            char byte;
-            const auto count = read(STDIN_FILENO, &byte, 1);
+            const auto count = read(STDIN_FILENO, buffer.data(), buffer.size());
             if (count == 0)
                 break;
             if (count < 0 && errno == EINTR)
                 continue;
-            require(count == 1, "worker_input_read");
-            if (byte != '\n') {
-                require(line.size() < 3 * 1024 * 1024, "worker_input_bound");
-                line += byte;
-                continue;
+            require(count > 0, "worker_input_read");
+            for (ssize_t index = 0; index < count && !stopping.load(); ++index) {
+                const char byte = buffer[index];
+                if (byte != '\n') {
+                    require(line.size() < 64 * 1024 * 1024, "worker_input_bound");
+                    line += byte;
+                    continue;
+                }
+                std::string id;
+                try {
+                    const auto request = Json::parse(line);
+                    id = request.at("id");
+                    require(
+                        id.size() == 32
+                            && id.find_first_not_of("0123456789abcdef")
+                                   == std::string::npos,
+                        "request_id"
+                    );
+                    const auto command = request.at("command").get<std::string>();
+                    if (command == "submit") {
+                        owner.submit(parse_request(request));
+                    } else if (command == "cancel") {
+                        owner.cancel(id);
+                    } else if (command == "stop") {
+                        stopping.store(true);
+                    } else
+                        throw std::invalid_argument("worker_command");
+                } catch (const std::exception& error) {
+                    output.send(
+                        {{"id", id}, {"state", "rejected"}, {"error", error.what()}}
+                    );
+                }
+                line.clear();
             }
-            std::string id;
-            try {
-                const auto request = Json::parse(line);
-                id = request.at("id");
-                require(
-                    id.size() == 32
-                        && id.find_first_not_of("0123456789abcdef")
-                               == std::string::npos,
-                    "request_id"
-                );
-                const auto command = request.at("command").get<std::string>();
-                if (command == "submit") {
-                    owner.submit(parse_request(request));
-                } else if (command == "cancel") {
-                    owner.cancel(id);
-                } else if (command == "stop") {
-                    stopping.store(true);
-                } else
-                    throw std::invalid_argument("worker_command");
-            } catch (const std::exception& error) {
-                output.send(
-                    {{"id", id}, {"state", "rejected"}, {"error", error.what()}}
-                );
-            }
-            line.clear();
         }
     } catch (const std::exception& error) {
         std::cerr << "worker transport: " << error.what() << '\n';
@@ -277,8 +282,9 @@ int serve(const char* lock_path) {
         if (state == JobState::succeeded) {
             message["result"] = result;
         } else if (state == JobState::failed) {
-            message["error"] = result;
-            message["status_code"] = failure_status;
+            message["error"] = result.is_object() ? result.at("error") : result;
+            message["status_code"] =
+                result.is_object() ? result.at("status_code") : Json(failure_status);
         }
         if (state == JobState::succeeded || state == JobState::failed
             || state == JobState::cancelled) {
@@ -324,7 +330,9 @@ int serve(const char* lock_path) {
             {"context", context}
         };
         if (const auto* image = std::get_if<ImageRequest>(&request.input))
-            prepared["total"] = image->steps;
+            prepared["total"] =
+                image->source ? kadan::image::edit_steps(image->steps, image->strength)
+                              : image->steps;
         output.send(prepared);
     };
     InferenceOwner owner(

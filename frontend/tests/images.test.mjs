@@ -54,7 +54,7 @@ test('rejects metadata-only, missing, mismatched and invalid PNG payloads', asyn
 
 test('preserves transport and provider failures', async () => {
   for (const [response, message] of [[{}, /Cannot reach/],
-    [{ response: { ok: false, status: 503 } }, /No image provider/],
+    [{ response: { ok: false, status: 503 } }, /HTTP 503/],
     [{ response: { ok: false, status: 422 } }, /HTTP 422/]]) {
     const { api } = await imageApi(response)
     await assert.rejects(api.requestImages({ prompt: 'mug', count: 1 }, new AbortController().signal), message)
@@ -87,4 +87,138 @@ test('creates a native job ID when randomUUID is unavailable on HTTP', async () 
   } finally {
     Object.defineProperty(globalThis, 'crypto', original)
   }
+})
+
+test('sends edit image, mask, zero strength, cancellation and the same request ID', async () => {
+  const { api, calls } = await imageApi({ response: { ok: true }, data: { image } })
+  const options = { prompt: 'A blue mug', count: 1, seed: 42 }
+  const source = { image: 'data:image/png;base64,c291cmNl', mask: 'data:image/png;base64,bWFzaw==', strength: 0 }
+  const signal = new AbortController().signal
+  assert.equal(await api.requestImages(options, signal, source, 'e'.repeat(32)), image)
+  assert.equal(calls[0].name, 'editImages')
+  assert.deepEqual(calls[0].args.body, { ...options, ...source })
+  assert.equal(calls[0].args.signal, signal)
+  assert.deepEqual(calls[0].args.headers, { 'X-Kadan-Request-Id': 'e'.repeat(32) })
+})
+
+test('shows backend edit errors and field validation details', async () => {
+  for (const [detail, message] of [
+    ['The selected model does not support editing.', /selected model/],
+    [[{ loc: ['body', 'mask'], msg: 'Mask dimensions must match the source' }], /mask: Mask dimensions/],
+  ]) {
+    const { api } = await imageApi({ response: { ok: false, status: 422 }, error: { detail } })
+    await assert.rejects(api.requestImages({ prompt: 'mug', count: 1 }, new AbortController().signal), message)
+  }
+})
+
+async function uploadApi() {
+  const source = await readFile(new URL('../src/api/imageUpload.ts', import.meta.url), 'utf8')
+  const module = new SourceTextModule(stripTypeScriptTypes(source))
+  await module.link(() => { throw new Error('Unexpected upload dependency') })
+  await module.evaluate()
+  return module.namespace
+}
+
+test('validates upload type, emptiness and the inclusive 20 MiB limit', async () => {
+  const { validateImageFile } = await uploadApi()
+  for (const type of ['image/png', 'image/jpeg', 'image/webp'])
+    assert.doesNotThrow(() => validateImageFile({ type, size: 20 * 1024 * 1024 }))
+  for (const [file, message] of [
+    [{ type: 'image/gif', size: 100 }, /PNG, JPEG, or WEBP/],
+    [{ type: 'image/png', size: 0 }, /empty/],
+    [{ type: 'image/png', size: 20 * 1024 * 1024 + 1 }, /20 MiB/],
+  ]) assert.throws(() => validateImageFile(file), message)
+})
+
+test('normalizes dimensions to the native grid and resource limits', async () => {
+  const { imageUploadDimensions } = await uploadApi()
+  assert.deepEqual(imageUploadDimensions(1024, 768), { width: 1024, height: 768 })
+  assert.deepEqual(imageUploadDimensions(4032, 3024), { width: 2496, height: 1856 })
+  for (const [width, height] of [[1, 1], [1, 99999], [99999, 1], [99999, 99999], [3840, 2160]]) {
+    const output = imageUploadDimensions(width, height)
+    assert.ok(output.width >= 32 && output.height >= 32)
+    assert.ok(output.width <= 3072 && output.height <= 3072)
+    assert.ok(output.width * output.height <= 4608 * 1024)
+    assert.equal(output.width % 32, 0)
+    assert.equal(output.height % 32, 0)
+  }
+  assert.throws(() => imageUploadDimensions(0, 100), /invalid dimensions/)
+})
+
+// Replace browser decoding/canvas boundaries only; exercise normalization and validation.
+async function withUploadBrowser({ width = 100, height = 70, pixels = [255, 255, 255, 255], decodeFails = false } = {}, run) {
+  const calls = { revoked: [], draws: [], outputPixels: null }
+  const original = Object.fromEntries(['Image', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+  const create = URL.createObjectURL
+  const revoke = URL.revokeObjectURL
+  URL.createObjectURL = () => 'blob:local-upload'
+  URL.revokeObjectURL = url => calls.revoked.push(url)
+  Object.defineProperty(globalThis, 'Image', { configurable: true, value: class {
+    naturalWidth = width
+    naturalHeight = height
+    async decode() { if (decodeFails) throw new Error('invalid image') }
+  } })
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    createElement: () => ({
+      getContext: () => ({
+        drawImage: (...args) => calls.draws.push(args.slice(1)),
+        getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
+        putImageData: value => { calls.outputPixels = [...value.data] },
+      }),
+      toDataURL: () => 'data:image/png;base64,cG5n',
+    }),
+  } })
+  try { await run(calls) } finally {
+    URL.createObjectURL = create
+    URL.revokeObjectURL = revoke
+    for (const key of ['Image', 'document']) {
+      if (original[key]) Object.defineProperty(globalThis, key, original[key])
+      else delete globalThis[key]
+    }
+  }
+}
+
+const uploadFile = { name: 'image.webp', type: 'image/webp', size: 100 }
+
+test('normalizes source and matching mask identically and converts mask luminance', async () => {
+  const { prepareImageUpload } = await uploadApi()
+  await withUploadBrowser({ pixels: [255, 0, 0, 255] }, async calls => {
+    const source = await prepareImageUpload(uploadFile)
+    const mask = await prepareImageUpload(uploadFile, source)
+    assert.equal(source.dataUrl, 'data:image/png;base64,cG5n')
+    assert.equal(source.originalWidth, 100)
+    assert.equal(source.originalHeight, 70)
+    assert.deepEqual([source.width, source.height], [96, 64])
+    assert.deepEqual([mask.width, mask.height], [96, 64])
+    assert.deepEqual(calls.draws, [[0, 0, 96, 64], [0, 0, 96, 64]])
+    assert.deepEqual(calls.outputPixels, [54, 54, 54, 255])
+    assert.deepEqual(calls.revoked, ['blob:local-upload', 'blob:local-upload'])
+  })
+})
+
+test('rejects mismatched original mask dimensions and releases its object URL', async () => {
+  const { prepareImageUpload } = await uploadApi()
+  await withUploadBrowser({}, async calls => {
+    await assert.rejects(prepareImageUpload(uploadFile, { originalWidth: 96, originalHeight: 64, width: 96, height: 64 }), /original image: 96 × 64/)
+    assert.deepEqual(calls.draws, [])
+    assert.deepEqual(calls.revoked, ['blob:local-upload'])
+  })
+})
+
+test('rejects mask transparency without imposing mask rules on source alpha', async () => {
+  const { prepareImageUpload } = await uploadApi()
+  await withUploadBrowser({ pixels: [255, 255, 255, 0] }, async calls => {
+    const source = await prepareImageUpload(uploadFile)
+    assert.equal(calls.outputPixels, null)
+    await assert.rejects(prepareImageUpload(uploadFile, source), /opaque mask/)
+    assert.equal(calls.revoked.length, 2)
+  })
+})
+
+test('releases invalid image uploads and gives a recoverable decoding error', async () => {
+  const { prepareImageUpload } = await uploadApi()
+  await withUploadBrowser({ decodeFails: true }, async calls => {
+    await assert.rejects(prepareImageUpload(uploadFile), /could not be read/)
+    assert.deepEqual(calls.revoked, ['blob:local-upload'])
+  })
 })

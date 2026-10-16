@@ -15,10 +15,12 @@ struct ImageRequest {
     std::string prompt;
     std::size_t width = 2048, height = 2048, steps = 50;
     std::uint64_t seed = 0;
+    std::span<const float> source, mask;
+    float strength = .65f;
 };
 
-// Complete checkpoint-specific text-to-image pipeline, one image at a time. Editing
-// and CFG are not supported by this boundary. Executors own separate pipelines.
+// Checkpoint-specific text-to-image and source-latent image-to-image pipeline.
+// Source/mask buffers remain caller-owned and admitted throughout the request.
 class Generator {
 public:
     using Hook = std::function<void(const char*, std::size_t)>;

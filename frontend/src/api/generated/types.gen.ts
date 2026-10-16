@@ -1464,9 +1464,19 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Image
    *
-   * Source image reference; no image provider is configured and this reference is not fetched
+   * PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.
    */
   image: string
+  /**
+   * Mask
+   *
+   * Opaque PNG matching the source size. Black preserves pixels, white edits them; gray blends.
+   */
+  mask?: string | null
+  /**
+   * Model Id
+   */
+  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
   /**
    * Prompt
    */
@@ -1476,7 +1486,13 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   seed?: number | null
   /**
+   * Steps
+   */
+  steps?: number
+  /**
    * Strength
+   *
+   * Image-to-image noise strength. Zero preserves the source; one regenerates the editable area from noise. Describe the desired result in prompt.
    */
   strength?: number
 }
@@ -1842,6 +1858,12 @@ export type ListImagesResponse = ListImagesResponses[keyof ListImagesResponses]
 
 export type EditImagesData = {
   body: ApiRoutesV1ImagesEditsImageRequest
+  headers?: {
+    /**
+     * X-Kadan-Request-Id
+     */
+    'x-kadan-request-id'?: string | null
+  }
   path?: never
   query?: never
   url: '/v1/images/edits'

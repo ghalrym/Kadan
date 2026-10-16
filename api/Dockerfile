@@ -6,7 +6,7 @@ FROM python:3.12-slim-bookworm AS worker-build
 COPY --from=cuda-toolkit /usr/local/cuda/ /usr/local/cuda/
 ENV PATH=/usr/local/cuda/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda/lib64
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev \
+      cmake make g++ libopenblas-dev libicu-dev libpcre2-dev nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev libpng-dev \
     && rm -rf /var/lib/apt/lists/*
 # Bookworm CMake predates the required CUDA C++20 feature detection.
 RUN pip install --no-cache-dir cmake==3.31.6

@@ -55,9 +55,10 @@ std::string base64_encode(std::string_view bytes) {
     return encoded;
 }
 
-std::string base64_decode(std::string_view encoded) {
+std::string base64_decode(std::string_view encoded, std::size_t maximum) {
     preparation_check(
-        encoded.size() <= 3 * 1024 * 1024 && encoded.size() % 4 == 0,
+        encoded.size() <= maximum && encoded.size() <= 128 * 1024 * 1024
+            && encoded.size() % 4 == 0,
         "Invalid base64 length",
         422
     );

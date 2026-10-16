@@ -10,7 +10,7 @@ using namespace kadan::serving;
 struct FakeState {
     std::vector<std::string> events;
     std::vector<Footprint> loads;
-    bool wait_once = false, fail_close = false;
+    bool wait_once = false, fail_close = false, invalid_input = false;
     unsigned preparations = 0, close_calls = 0;
     std::shared_ptr<Resources> ledger;
 };
@@ -46,6 +46,8 @@ struct FakeEngine : InferenceEngine {
         const InferenceRequest&, const Footprint&, const std::atomic_bool&
     ) override {
         ++state.preparations;
+        if (state.invalid_input)
+            throw RequestError("Image mask must be opaque", 422);
     }
 
     Json execute(const InferenceRequest&, const std::atomic_bool&) override {
@@ -587,7 +589,37 @@ void failed_acceptance_never_runs() {
     owner.shutdown();
 }
 
+void invalid_engine_input_preserves_status_and_releases_memory() {
+    FakeState state;
+    state.invalid_input = true;
+    Json failure;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto resources) {
+            return std::make_unique<FakeEngine>(state, resources);
+        },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto, JobState kind, const Json& value) {
+            if (kind == JobState::failed)
+                failure = value;
+        }
+    );
+    owner.submit(request("invalid-upload"));
+    assert(owner.advance());
+    assert(
+        failure.at("status_code") == 422
+        && failure.at("error") == "Image mask must be opaque"
+    );
+    assert(owner.pending() == 0 && owner.snapshot().residents == 0);
+    assert(
+        std::find(state.events.begin(), state.events.end(), "execute:invalid-upload")
+        == state.events.end()
+    );
+    owner.shutdown();
+}
+
 int main() {
+    invalid_engine_input_preserves_status_and_releases_memory();
     acceptance_precedes_fast_completion();
     failed_acceptance_never_runs();
     cancellation_during_worker_preparation_never_executes();

@@ -61,10 +61,12 @@ struct Checkpoint {
         write(
             "vae/config.json",
             {{"decoder_base_dim", 144},
+             {"base_dim", 96},
              {"z_dim", 64},
              {"dim_mult", {1, 2, 4, 8, 8}},
              {"num_res_blocks", 2},
              {"out_channels", 4},
+             {"in_channels", 4},
              {"is_residual", true},
              {"patch_size", nullptr},
              {"temperal_downsample", {false, true, true, true}},
