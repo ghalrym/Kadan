@@ -126,7 +126,7 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
-## Muse Spark Open (experimental text support)
+## Muse Spark Open text support
 
 The native Muse engine uses the existing worker, resource ledger and bounded
 CUDA projection banks. GGUF projections read bounded packed rows, retain their
@@ -141,7 +141,7 @@ Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor
 inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
 matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
 quantization preset; the loader rejects unsupported wire types or geometry.
-This entry is an experiment, not a quantization-quality recommendation.
+The measurements below do not establish quantization quality.
 API selection through existing settings is awaiting review in
 [PR 259](https://github.com/ghalrym/Kadan/pull/259); native support alone does not
 make Muse selectable through the API.
@@ -193,7 +193,7 @@ Native `prefill_layer` progress reports completed layers across chunks;
 `decode_token` progress counts computed predictions even when recipient parsing
 suppresses control or reasoning tokens. These events support a bounded manual
 stall guard without describing partially computed tokens as complete. The
-batched path remains experimental.
+batched path has the measured limits below.
 
 An authorized October 16 manual retest used the same native build tree as
 `1ba4dd16a59e71a924fd25f0412c48d710fdbb7a`, the pinned ten-file checkpoint,
