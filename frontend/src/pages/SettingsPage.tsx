@@ -292,7 +292,7 @@ export default function SettingsPage() {
               })}
             </div>
           </div>
-          {modelSettings.filter(model => model.type !== 'LLM').map(model => model.type === 'TTS' ? <div className="model-row model-row--video" key={model.type}>
+          {modelSettings.map(model => model.type === 'TTS' ? <div className="model-row model-row--video" key={model.type}>
             <label htmlFor="model-TTS"><ModelIcon type="TTS" />{model.label}</label>
             <div className="field"><ModelPicker pickerId="TTS" label="TTS model" models={speechModels} current={speech} selectedId={speechId} pending={pending} downloading={downloading} choose={model => setSpeechId(model.id)} download={model => { setSpeechId(model.id); downloadModel(model) }} /></div>
             {speech && !speech.inference_available && <span className="muted model-speech-note">Download only</span>}
@@ -313,9 +313,7 @@ export default function SettingsPage() {
               cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} retry={downloadModel} />}
           </div> : <div className="model-row" key={model.type}>
             <label htmlFor={`model-${model.type}`}><ModelIcon type={model.type} />{model.label}</label>
-            {model.type === 'STT' ? <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} /> : <select className="input" id={`model-${model.type}`} value={model.selected} disabled>
-              {model.options.map(option => <option key={option}>{option}</option>)}
-            </select>}
+            <WhisperSelector models={models.filter(item => item.kind === 'transcription')} pending={pending} downloading={downloading} download={downloadModel} cancel={model => void submitModelChange(`/${model.id}/download`, 'DELETE')} />
           </div>)}
           <div className="model-row">
             <span className="model-label"><ModelIcon type="STT" />Whisper S1 Mini formatting</span>
