@@ -58,15 +58,16 @@ target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(LibArchive REQUIRED)
+find_package(PNG REQUIRED)
 add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation/model_store.cpp
   src/preparation/muse_spark_assets.cpp
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
-  src/requests/inference_request.cpp src/preparation/audio_input.cpp
+  src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
   src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
   src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE kadan_manifest kadan_glm kadan_muse_spark CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive)
+  PRIVATE kadan_manifest kadan_glm kadan_muse_spark CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
@@ -523,6 +524,12 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
 endif()
 
 if(BUILD_TESTING)
+  add_executable(image-upload-tests tests/image_upload.cpp)
+  target_link_libraries(image-upload-tests PRIVATE kadan_preparation PNG::PNG)
+  add_test(NAME image-upload COMMAND image-upload-tests)
+  add_executable(image-edit-tests tests/image_edit.cpp)
+  target_link_libraries(image-edit-tests PRIVATE kadan_resources)
+  add_test(NAME image-edit COMMAND image-edit-tests)
   add_executable(inference-worker-text-tests tests/inference_worker_text.cpp)
   target_link_libraries(inference-worker-text-tests PRIVATE kadan_resources kadan_h3_profile)
   add_test(NAME inference-worker-text COMMAND inference-worker-text-tests)

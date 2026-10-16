@@ -38,6 +38,15 @@ class ImageTask(TaskInput):
     count: Literal[1, 2, 4] = 4
     seed: int | None = None
     steps: int = 50
+    image: str | None = None
+    mask: str | None = None
+    strength: float = Field(default=0.65, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def mask_requires_image(self):
+        if self.mask is not None and self.image is None:
+            raise ValueError("An image mask requires a source image")
+        return self
 
 
 class DecisionTask(TaskInput):

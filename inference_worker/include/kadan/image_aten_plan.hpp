@@ -7,7 +7,8 @@ namespace kadan::image {
 enum class AtenImageStage {
     text,
     denoiser,
-    vae
+    vae,
+    vae_encoder
 };
 
 // Select one whole-component owner from the worker's admitted devices. No fixed
@@ -31,12 +32,25 @@ inline int aten_stage_device(
     return selected;
 }
 
-inline Bytes aten_stage_workspace(AtenImageStage stage, Bytes points, Bytes tokens) {
+inline Bytes aten_stage_workspace(
+    AtenImageStage stage, Bytes points, Bytes tokens, bool editing = false
+) {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;
     if (stage == AtenImageStage::text)
         return 2 * gib + tokens * 4096 * 4 * 16;
-    if (stage == AtenImageStage::denoiser)
-        return 2 * gib + (points + tokens) * 4096 * 2 * 20;
+    if (stage == AtenImageStage::denoiser) {
+        // Source/noise, two mask vectors, and the largest simultaneous mask
+        // restoration intermediates are additional to the generation envelope.
+        const auto edit_buffers = editing ? points * (8 * 64 + 2) * 4 : 0;
+        return 2 * gib + (points + tokens) * 4096 * 2 * 20 + edit_buffers;
+    }
+    if (stage == AtenImageStage::vae_encoder) {
+        // The first block retains the 96-channel full-resolution shortcut while
+        // normalizing/convolving its residual path. Include six full buffers
+        // for live activations and allocator reuse, plus library scratch.
+        const auto largest_activation = points * 256 * 96 * 4;
+        return 2 * gib + 6 * largest_activation;
+    }
     if (stage == AtenImageStage::vae) {
         // The last upsampler has 288 FP32 channels at 16x latent resolution:
         // 4.50 GiB at 2048x2048 (also the observed failed convolution allocation).

@@ -25,7 +25,7 @@ class ImageProgress(BaseModel):
     image_index: int = Field(ge=1)
     image_count: int = Field(ge=1)
     steps_completed: int = Field(default=0, ge=0)
-    steps_total: int = Field(ge=1)
+    steps_total: int = Field(ge=0)
 
 
 class InferenceProgress(BaseModel):

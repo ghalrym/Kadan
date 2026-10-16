@@ -18,23 +18,30 @@ export function createImageRequestId() {
 export async function requestImages(
   options: ImageOptions,
   signal: AbortSignal,
-  source?: { image: string; strength: number },
+  source?: { image: string; mask?: string | null; strength: number },
   requestId?: string,
 ): Promise<ImageSet> {
+  const headers = requestId ? { 'X-Kadan-Request-Id': requestId } : undefined
   const response = source
-    ? await editImages({ body: { ...options, ...source }, signal })
-    : await generateImages({ body: options, signal, headers: requestId ? { 'X-Kadan-Request-Id': requestId } : undefined })
+    ? await editImages({ body: { ...options, ...source }, signal, headers })
+    : await generateImages({ body: options, signal, headers })
   if (!response.response)
     throw new Error(
       'Cannot reach the image API. Check that the backend is running, then retry.',
     )
   if (!response.response.ok) {
-    if (response.response?.status === 503)
-      throw new Error(
-        'No image provider is configured. Generation and editing are unavailable.',
+    const detail = (response.error as { detail?: unknown } | undefined)?.detail
+    if (typeof detail === 'string' && detail.trim()) throw new Error(detail)
+    if (Array.isArray(detail)) {
+      const messages = detail.flatMap((issue: { loc?: unknown[]; msg?: unknown }) =>
+        typeof issue?.msg === 'string'
+          ? [`${Array.isArray(issue.loc) ? issue.loc.filter(part => part !== 'body').join('.') + ': ' : ''}${issue.msg}`]
+          : [],
       )
+      if (messages.length) throw new Error(messages.join(' '))
+    }
     throw new Error(
-      `Image request failed (HTTP ${response.response?.status}). Check your inputs and retry.`,
+      `Image request failed (HTTP ${response.response.status}). Check your inputs and retry.`,
     )
   }
   const image = response.data?.image

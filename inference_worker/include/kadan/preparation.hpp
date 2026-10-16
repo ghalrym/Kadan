@@ -15,21 +15,15 @@ namespace kadan::serving {
 using Json = nlohmann::json;
 namespace fs = std::filesystem;
 
-struct RequestError : std::runtime_error {
-    int status;
-
-    explicit RequestError(const std::string& message, int code = 502)
-        : std::runtime_error(message), status(code) {
-    }
-};
-
 void preparation_check(bool condition, const std::string& message, int status = 502);
 void preparation_cancel(const std::atomic_bool& cancel);
 Json read_document(const fs::path& path, std::size_t maximum = 32 * 1024 * 1024);
 void write_document(const fs::path& path, const Json& value);
 std::string read_bytes(const fs::path& path, std::size_t maximum);
 std::string base64_encode(std::string_view bytes);
-std::string base64_decode(std::string_view encoded);
+std::string base64_decode(
+    std::string_view encoded, std::size_t maximum = 3 * 1024 * 1024
+);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
 // Derive the native text assets from the tensor-free first GGUF split before

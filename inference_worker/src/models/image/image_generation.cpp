@@ -1,5 +1,7 @@
 #include "kadan/image_generation.hpp"
 
+#include <cmath>
+
 #include "kadan/image_aten.hpp"
 
 namespace kadan::image {
@@ -55,6 +57,15 @@ void Generator::validate(const ImageRequest& request) {
             && request.width * request.height <= 4608 * 1024 && request.width % 32 == 0
             && request.height % 32 == 0 && request.steps >= 2 && request.steps <= 100,
         "image_request_bounds"
+    );
+    const auto pixels = request.width * request.height;
+    need(
+        std::isfinite(request.strength) && request.strength >= 0
+            && request.strength <= 1
+            && (request.source.empty() || request.source.size() == pixels * 4)
+            && (request.mask.empty()
+                || (!request.source.empty() && request.mask.size() == pixels)),
+        "image_edit_bounds"
     );
 }
 

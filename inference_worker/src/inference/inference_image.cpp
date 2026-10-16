@@ -1,6 +1,8 @@
 #include <filesystem>
 
+#include "kadan/image_edit.hpp"
 #include "kadan/image_generation.hpp"
+#include "kadan/image_upload.hpp"
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
 
@@ -14,6 +16,15 @@ class ImageEngine final : public InferenceEngine {
     image::ImageRequest request_;
     std::string output_;
     std::size_t count_ = 1;
+    std::vector<float> source_, mask_;
+
+    void release_request() {
+        request_.source = {};
+        request_.mask = {};
+        std::vector<float>().swap(source_);
+        std::vector<float>().swap(mask_);
+        request_memory_.reset();
+    }
 
 public:
     ImageEngine(std::shared_ptr<Resources> r, Progress p)
@@ -40,20 +51,44 @@ public:
         const std::atomic_bool& cancel
     ) override {
         check_cancel(cancel);
-        request_memory_.reset();
+        release_request();
         if (request.operation == Operation::load)
             return;
         const auto& input = std::get<ImageRequest>(request.input);
-        request_ = {input.prompt, input.width, input.height, input.steps, *input.seed};
+        request_ = {
+            input.prompt,
+            input.width,
+            input.height,
+            input.steps,
+            *input.seed,
+            {},
+            {},
+            input.strength
+        };
         image::Generator::validate(request_);
         count_ = input.count;
         require(count_ == 1 || count_ == 2 || count_ == 4, "image_count");
         output_ = request.workspace.string();
-        const Bytes bytes = 8 * 1024 * 1024 + 64 * request_.height * request_.width;
+        const Bytes bytes =
+            8 * 1024 * 1024
+            + (input.source ? 96 : 64) * request_.height * request_.width;
         if (bytes > available[0])
             throw AdmissionWait("image_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::image, bytes);
+        if (input.source) {
+            const auto pixels = request_.width * request_.height;
+            std::vector<std::uint8_t> rgba(pixels * 4);
+            source_.resize(pixels * 4);
+            decode_image_upload(*input.source, rgba, source_);
+            if (input.edit_mask) {
+                mask_.resize(pixels);
+                decode_image_mask(*input.edit_mask, rgba, mask_);
+            }
+            request_.source = source_;
+            request_.mask = mask_;
+            check_cancel(cancel);
+        }
         model_->prepare(request_, cancel);
     }
 
@@ -74,12 +109,12 @@ public:
             paths.emplace_back(path);
         }
         compute_->idle();
-        request_memory_.reset();
+        release_request();
         return present_image(request, paths);
     }
 
     void close() override {
-        request_memory_.reset();
+        release_request();
         if (model_)
             model_->unload();
         model_.reset();

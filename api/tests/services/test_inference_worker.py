@@ -6,10 +6,41 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from api.services.inference_worker import InferenceJob, InferenceTask, InferenceWorker
+from api.services.inference_worker import (
+    InferenceJob,
+    InferenceTask,
+    InferenceWorker,
+    encode_request,
+)
 
 
 class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_upload_above_old_limit_reaches_worker_input(self):
+        worker = InferenceWorker(Path("/unused"))
+        request = InferenceTask(
+            input={
+                "feature": "image",
+                "prompt": "sky",
+                "image": "x" * (3 * 1024 * 1024),
+            }
+        )
+
+        def write(payload):
+            self.assertGreater(len(payload), 3 * 1024 * 1024)
+            worker.jobs[request.id].accepted.set_result(None)
+
+        worker.process = SimpleNamespace(
+            returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())
+        )
+        job = await worker.submit(request)
+        self.assertTrue(job.sent)
+
+    def test_image_upload_still_has_a_bounded_transport(self):
+        with self.assertRaisesRegex(Exception, "transport limit"):
+            encode_request(
+                {"input": {"feature": "image", "image": "x" * (64 * 1024 * 1024)}}
+            )
+
     async def test_timing_lines_are_relayed_across_chunks_without_progress(self):
         callback = Mock()
         worker = InferenceWorker(Path("/unused"), callback)

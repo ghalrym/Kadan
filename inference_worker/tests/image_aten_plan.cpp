@@ -57,6 +57,22 @@ int main() {
         }
         check(rejected);
         check(aten_stage_workspace(AtenImageStage::vae, 18432, 0) > vae);
+        const auto encoder =
+            aten_stage_workspace(AtenImageStage::vae_encoder, 16384, 0);
+        check(encoder == 11 * gib);
+        const auto edited =
+            aten_stage_workspace(AtenImageStage::denoiser, 16384, 2034, true);
+        check(edited > denoiser);
+        // The extra source/noise/mask retention is admitted before editing starts.
+        Snapshot constrained{{32 * gib, 14 * gib + denoiser}, {0, 0}, 0};
+        check(aten_stage_device(constrained, {0}, 14 * gib + denoiser) == 0);
+        rejected = false;
+        try {
+            (void)aten_stage_device(constrained, {0}, 14 * gib + edited);
+        } catch (const ResourceExhausted&) {
+            rejected = true;
+        }
+        check(rejected);
         std::atomic_bool cancelled = false;
         std::array<float, 8> first{}, repeated{}, next{};
         seed_image_latent(first, 1138803809, cancelled);

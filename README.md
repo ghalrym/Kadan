@@ -340,8 +340,9 @@ ledger acknowledgment; failed cleanup retains admission and blocks worker idle.
 Repeated model switching remains a manual lifecycle check.
 
 `KADAN_ATEN_IMAGE_TIMING` lines on stderr report synchronized `load`, `generation`
-and `unload` seconds per component and the automatically chosen device. Sum only
-the three `generation` records for the loading-free comparison. Transfers,
+and `unload` seconds per component and the automatically chosen device. Sum the
+`generation` records for the loading-free comparison (three for generation,
+four when editing also encodes a source image). Transfers,
 operator setup and conversion to owned CPU outputs are included; tokenizer/noise
 preparation and PNG/API publication are outside these timers. The former resident
 image timing option no longer drives worker execution; component timing utilities
@@ -351,3 +352,27 @@ TF32 remains disabled for FP32 matrix multiplication and cuDNN operations during
 ATen generation, as does BF16 reduced-precision reduction. This consolidation does not change the accepted
 precision policy, sampling or model operators. New deployments and GPU validation
 remain separate owner-coordinated actions.
+
+### Image editing
+
+The Images page accepts a PNG, JPEG or WebP source and an optional opaque mask.
+Uploads are normalized to PNG on the model's 32-pixel grid, with at most 3072
+pixels per side and 4,718,592 pixels total. A mask must match the original source
+dimensions; both receive the same resize. Black preserves source pixels, white
+allows editing, and gray blends. Each upload is limited to 20 MiB.
+
+`POST /v1/images/edits` accepts PNG data URLs in `image` and optional `mask`, plus
+the generation settings and `strength` from zero to one (default 0.65). API
+clients must supply already normalized dimensions; output follows the source
+size. Describe the desired result in `prompt`. Zero strength returns source
+pixels; one starts the editable area from noise. Intermediate strengths encode
+the source with the installed checkpoint's VAE and use the corresponding suffix
+of its sampling schedule, including Turbo's saved sigma grid.
+
+This is source-conditioned image-to-image denoising (SDEdit), with latent mask
+restoration and a final source-pixel composite. It does not implement Qwen's
+separate vision/reference-image attention pipeline. Encoding, text conditioning,
+denoising and decoding run sequentially through the existing worker and shared
+resource admission. Real-model editing quality and GPU memory behavior still
+require owner-coordinated manual validation; unit checks and compilation do not
+establish those results.

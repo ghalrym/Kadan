@@ -27,6 +27,17 @@ from api.services.inference_errors import InferenceFailure
 log = logging.getLogger(__name__)
 
 
+def encode_request(message: dict) -> bytes:
+    encoded = (json.dumps(message, allow_nan=False, ensure_ascii=False) + "\n").encode()
+    task = message.get("input", {})
+    maximum = (
+        64 if task.get("feature") == "image" and task.get("image") is not None else 3
+    )
+    if len(encoded) > maximum * 1024 * 1024:
+        raise InferenceFailure("Inference request exceeds its transport limit.", 413)
+    return encoded
+
+
 class JobState(StrEnum):
     QUEUED = "queued"
     PREPARING = "preparing"
@@ -173,13 +184,7 @@ class InferenceWorker:
     async def _send(self, message):
         if self.process is None or self.process.returncode is not None:
             raise InferenceFailure("Inference worker is not running.")
-        encoded = (
-            json.dumps(message, allow_nan=False, ensure_ascii=False) + "\n"
-        ).encode()
-        if len(encoded) > 3 * 1024 * 1024:
-            raise InferenceFailure(
-                "Inference request exceeds its transport limit.", 413
-            )
+        encoded = encode_request(message)
         async with self.write_lock:
             self.process.stdin.write(encoded)
             if message["command"] == "submit":
@@ -191,17 +196,7 @@ class InferenceWorker:
             raise InferenceFailure("Inference worker is stopping.")
         # Reject oversized input before registering a job that was never queued.
         message = request.model_dump(mode="json")
-        if (
-            len(
-                (
-                    json.dumps(message, allow_nan=False, ensure_ascii=False) + "\n"
-                ).encode()
-            )
-            > 3 * 1024 * 1024
-        ):
-            raise InferenceFailure(
-                "Inference request exceeds its transport limit.", 413
-            )
+        encode_request(message)
         if request.id in self.jobs:
             raise InferenceFailure("Request is already active.", 409)
         job = InferenceJob(request, streaming)
