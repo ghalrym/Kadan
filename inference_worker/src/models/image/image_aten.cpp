@@ -17,6 +17,7 @@
 #include "kadan/checkpoint.hpp"
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_checkpoint_config.hpp"
+#include "kadan/image_edit.hpp"
 #include "kadan/image_input.hpp"
 #include "kadan/image_schedule.hpp"
 #include "kadan/text_tokenizer.hpp"
@@ -57,8 +58,12 @@ struct Inventory {
         AtenImageStage component,
         const std::atomic_bool& cancel
     )
-        : stage(component),
-          dtype(component == AtenImageStage::vae ? at::kFloat : at::kBFloat16) {
+        : stage(component), dtype(
+                                component == AtenImageStage::vae
+                                        || component == AtenImageStage::vae_encoder
+                                    ? at::kFloat
+                                    : at::kBFloat16
+                            ) {
         const std::string_view prefix =
             component == AtenImageStage::text ? text_prefix : "";
         for (const auto& file : files) {
@@ -72,6 +77,11 @@ struct Inventory {
                     continue;
                 if (stage == AtenImageStage::vae && !info.name.starts_with("decoder.")
                     && !info.name.starts_with("post_quant_conv."))
+                    continue;
+                if (stage == AtenImageStage::vae_encoder
+                    && ((!info.name.starts_with("encoder.")
+                         && !info.name.starts_with("quant_conv."))
+                        || info.name.find(".time_conv.") != std::string_view::npos))
                     continue;
                 need(
                     info.dtype == checkpoint::Dtype::bf16
@@ -90,7 +100,7 @@ struct Inventory {
                 Bytes elements = 1;
                 for (std::size_t d = 0; d < info.rank; ++d)
                     elements *= info.shape[d];
-                bytes += elements * (stage == AtenImageStage::vae ? 4 : 2);
+                bytes += elements * (dtype == at::kFloat ? 4 : 2);
                 largest = std::max(largest, info.bytes);
             }
             shards.push_back(std::move(shard));
@@ -167,6 +177,35 @@ struct Inventory {
             if (in != out)
                 conv(p + ".conv_shortcut", in, out, 1);
         };
+        if (stage == AtenImageStage::vae_encoder) {
+            conv("encoder.conv_in", 4, 96, 3);
+            const std::array<std::uint64_t, 6> dims{1, 1, 2, 4, 8, 8};
+            for (int i = 0; i < 5; ++i) {
+                const auto p = "encoder.down_blocks." + std::to_string(i);
+                for (int j = 0; j < 2; ++j)
+                    residual(
+                        p + ".resnets." + std::to_string(j),
+                        96 * dims[j ? i + 1 : i],
+                        96 * dims[i + 1]
+                    );
+                if (i < 4)
+                    conv(
+                        p + ".downsampler.resample.1",
+                        96 * dims[i + 1],
+                        96 * dims[i + 1],
+                        3
+                    );
+            }
+            residual("encoder.mid_block.resnets.0", 768, 768);
+            residual("encoder.mid_block.resnets.1", 768, 768);
+            shape("encoder.mid_block.attentions.0.norm.gamma", {768, 1, 1});
+            conv("encoder.mid_block.attentions.0.to_qkv", 768, 2304, 1);
+            conv("encoder.mid_block.attentions.0.proj", 768, 768, 1);
+            shape("encoder.norm_out.gamma", {768, 1, 1, 1});
+            conv("encoder.conv_out", 768, 128, 3);
+            conv("quant_conv", 128, 128, 1);
+            return;
+        }
         conv("post_quant_conv", 64, 64, 1);
         conv("decoder.conv_in", 64, 1152, 3);
         residual("decoder.mid_block.resnets.0", 1152, 1152);
@@ -438,6 +477,7 @@ Tensor rotate_image(const Tensor& input, const Rotary& rotary) {
 Tensor denoise(
     Stage& stage,
     Tensor latent_cpu,
+    const Tensor& source_cpu,
     const Tensor& condition_cpu,
     std::int64_t h,
     std::int64_t w,
@@ -449,6 +489,34 @@ Tensor denoise(
     auto options =
         at::TensorOptions().device(at::kCUDA, stage.device).dtype(at::kFloat);
     auto latent = latent_cpu.to(options.device());
+    auto times = config.sampling_schedule(h * w, request.steps);
+    if (!request.source.empty())
+        times = edit_schedule(times, request.strength);
+    Tensor source, noise, mask, inverse_mask;
+    if (source_cpu.defined()) {
+        source = source_cpu.to(options.device());
+        noise = latent;
+        latent = source * (1.f - times.sigma[0]) + noise * times.sigma[0];
+        if (!request.mask.empty()) {
+            // Match the native pipeline's area average, including soft masks.
+            auto mask_cpu = at::empty({h * w, 1}, at::kFloat);
+            auto* values = mask_cpu.data_ptr<float>();
+            for (std::int64_t y = 0; y < h; ++y) {
+                stop(cancel);
+                for (std::int64_t x = 0; x < w; ++x) {
+                    float sum = 0;
+                    for (int dy = 0; dy < 16; ++dy)
+                        for (int dx = 0; dx < 16; ++dx)
+                            sum +=
+                                request
+                                    .mask[(y * 16 + dy) * request.width + x * 16 + dx];
+                    values[y * w + x] = sum / 256.f;
+                }
+            }
+            mask = mask_cpu.to(options.device());
+            inverse_mask = 1.f - mask;
+        }
+    }
     auto condition = condition_cpu.to(options.device(), at::kBFloat16);
     auto projected = stage.linear(
         "txt_in.out_layer",
@@ -463,7 +531,6 @@ Tensor denoise(
     auto all_rotary = image_rotary(text, h, w, options);
     Rotary image_only{all_rotary.cosine.slice(2, text), all_rotary.sine.slice(2, text)};
     std::array<Tensor, 32> prefix_k, prefix_v;
-    auto times = config.sampling_schedule(h * w, request.steps);
     auto frequency = at::exp(at::arange(128, options) * (-std::log(10000.) / 128));
     for (std::size_t step = 0; step < times.steps; ++step) {
         stop(cancel);
@@ -549,6 +616,12 @@ Tensor denoise(
         auto normalized = detail::aten_modulated_norm(x.slice(0, prefix), scale, 0);
         auto velocity = stage.linear("proj_out", normalized).to(at::kFloat);
         latent = latent + velocity * (times.sigma[step + 1] - times.sigma[step]);
+        if (mask.defined()) {
+            const auto next_sigma = times.sigma[step + 1];
+            latent =
+                mask * latent
+                + inverse_mask * (source * (1.f - next_sigma) + noise * next_sigma);
+        }
         if (hook)
             hook("step_completed", step + 1);
     }
@@ -567,8 +640,18 @@ Tensor vae_norm(Stage& stage, const std::string& p, const Tensor& x, bool activa
     return y;
 }
 
-Tensor convolution(Stage& stage, const std::string& p, const Tensor& x) {
+Tensor convolution(
+    Stage& stage, const std::string& p, const Tensor& x, bool downsample = false
+) {
     const auto weight = stage.weight(p + ".weight");
+    if (downsample)
+        return at::conv2d(
+            at::constant_pad_nd(x, {0, 1, 0, 1}, 0),
+            weight,
+            stage.weight(p + ".bias"),
+            {2, 2},
+            at::IntArrayRef{0, 0}
+        );
     return at::conv2d(
         x,
         weight,
@@ -590,15 +673,16 @@ Tensor residual(
     );
 }
 
-Tensor vae_attention(Stage& stage, const Tensor& x, const std::atomic_bool& cancel) {
-    const std::string p = "decoder.mid_block.attentions.0";
+Tensor vae_attention(
+    Stage& stage, const std::string& p, const Tensor& x, const std::atomic_bool& cancel
+) {
     auto qkv = convolution(stage, p + ".to_qkv", vae_norm(stage, p + ".norm", x, false))
                    .flatten(2);
     auto c = x.size(1), points = qkv.size(2);
     auto q = qkv.slice(1, 0, c).transpose(1, 2).unsqueeze(1);
     auto k = qkv.slice(1, c, 2 * c).transpose(1, 2).unsqueeze(1);
     auto v = qkv.slice(1, 2 * c, 3 * c).transpose(1, 2).unsqueeze(1);
-    // The VAE has one 1152-wide head. Query tiling bounds the math backend's
+    // The VAE has one wide head. Query tiling bounds the math backend's
     // scratch when this shape cannot use Flash/efficient SDPA.
     auto mix = at::empty_like(q);
     for (std::int64_t row = 0; row < points; row += 256) {
@@ -611,6 +695,69 @@ Tensor vae_attention(Stage& stage, const Tensor& x, const std::atomic_bool& canc
            + convolution(
                stage, p + ".proj", mix.squeeze(1).transpose(1, 2).reshape_as(x)
            );
+}
+
+Tensor encode_source(
+    Stage& stage,
+    const ImageRequest& request,
+    const ImageCheckpointConfig& config,
+    const std::atomic_bool& cancel,
+    const Generator::Hook& hook
+) {
+    const auto device = at::Device(at::kCUDA, stage.device);
+    auto x = at::from_blob(
+                 const_cast<float*>(request.source.data()),
+                 {1, 4, std::int64_t(request.height), std::int64_t(request.width)},
+                 at::kFloat
+    )
+                 .to(device);
+    x = convolution(stage, "encoder.conv_in", x);
+    for (int i = 0; i < 5; ++i) {
+        stop(cancel);
+        const auto p = "encoder.down_blocks." + std::to_string(i);
+        auto original = x;
+        for (int j = 0; j < 2; ++j)
+            x = residual(stage, p + ".resnets." + std::to_string(j), x, cancel);
+        if (i < 4)
+            x = convolution(stage, p + ".downsampler.resample.1", x, true);
+        // AvgDown3D orders [channel,time,dy,dx] before averaging channel groups.
+        // A single real frame follows temporal zeros; the first chunk never
+        // executes the checkpoint's time_conv. This also adds block4's identity.
+        const auto temporal = i > 0 && i < 4 ? 2 : 1;
+        const auto spatial = i < 4 ? 2 : 1;
+        const auto group = original.size(1) * temporal * spatial * spatial / x.size(1);
+        auto shortcut = original.unsqueeze(2);
+        if (temporal == 2)
+            shortcut = at::constant_pad_nd(shortcut, {0, 0, 0, 0, 1, 0}, 0);
+        shortcut = shortcut.reshape(
+            {1, original.size(1), 1, temporal, x.size(2), spatial, x.size(3), spatial}
+        );
+        original = Tensor{};
+        shortcut = shortcut.permute({0, 1, 3, 5, 7, 2, 4, 6})
+                       .reshape({1, x.size(1), group, 1, x.size(2), x.size(3)})
+                       .mean(2)
+                       .squeeze(2);
+        x.add_(shortcut);
+        if (hook)
+            hook("vae_down_block", i);
+    }
+    x = residual(stage, "encoder.mid_block.resnets.0", x, cancel);
+    x = vae_attention(stage, "encoder.mid_block.attentions.0", x, cancel);
+    x = residual(stage, "encoder.mid_block.resnets.1", x, cancel);
+    x = convolution(
+        stage, "encoder.conv_out", vae_norm(stage, "encoder.norm_out", x, true)
+    );
+    x = convolution(stage, "quant_conv", x).slice(1, 0, 64);
+    auto mean =
+        at::from_blob(const_cast<float*>(config.mean.data()), {1, 64, 1, 1}, at::kFloat)
+            .to(device);
+    auto stddev =
+        at::from_blob(
+            const_cast<float*>(config.stddev.data()), {1, 64, 1, 1}, at::kFloat
+        )
+            .to(device);
+    stop(cancel);
+    return cpu_float(((x - mean) / stddev).flatten(2).squeeze(0).transpose(0, 1));
 }
 
 Tensor decode(
@@ -637,7 +784,7 @@ Tensor decode(
     x = convolution(stage, "post_quant_conv", x);
     x = convolution(stage, "decoder.conv_in", x);
     x = residual(stage, "decoder.mid_block.resnets.0", x, cancel);
-    x = vae_attention(stage, x, cancel);
+    x = vae_attention(stage, "decoder.mid_block.attentions.0", x, cancel);
     x = residual(stage, "decoder.mid_block.resnets.1", x, cancel);
     for (int i = 0; i < 5; ++i) {
         stop(cancel);
@@ -722,7 +869,8 @@ struct AtenGenerator::Impl {
     Handle metadata;
     text::Tokenizer tokenizer;
     ImageCheckpointConfig config;
-    std::unique_ptr<Inventory> text, denoiser, vae;
+    std::string root;
+    std::unique_ptr<Inventory> text, denoiser, vae, vae_encoder;
 
     explicit Impl(const std::shared_ptr<Resources>& r)
         : resources(*r), metadata(0), tokenizer(r, Workload::image) {
@@ -733,10 +881,25 @@ struct AtenGenerator::Impl {
     }
 
     ~Impl() {
+        vae_encoder.reset();
         vae.reset();
         denoiser.reset();
         text.reset();
         resources.released(metadata);
+    }
+
+    Inventory& encoder(const std::atomic_bool& cancel) {
+        if (!vae_encoder) {
+            const std::array<std::string, 1> files{
+                "diffusion_pytorch_model.safetensors"
+            };
+            auto inventory = std::make_unique<Inventory>(
+                root + "/vae", files, AtenImageStage::vae_encoder, cancel
+            );
+            inventory->validate_vae();
+            vae_encoder = std::move(inventory);
+        }
+        return *vae_encoder;
     }
 };
 
@@ -754,6 +917,7 @@ void AtenGenerator::load(
 ) {
     need(!model_, "image_generator_loaded");
     auto model = std::make_unique<Impl>(resources_);
+    model->root = root;
     model->config = validate_checkpoint_config(root);
     model->tokenizer.load(root + "/processor/tokenizer.json", cancel);
     const std::array<std::string, 2> denoiser_files{
@@ -788,17 +952,27 @@ void AtenGenerator::prepare(
 ) {
     need(bool(model_), "image_generator_not_loaded");
     Generator::validate(request);
+    stop(cancel);
+    if (!request.source.empty() && request.strength == 0)
+        return;
     auto& m = *model_;
     auto prompt = prepare_image_prompt(m.tokenizer, request.prompt, cancel);
     const auto points = (request.height / 16) * (request.width / 16);
-    // All three whole-component plans must fit before the FIFO owner commits to
+    std::vector<const Inventory*> inventories{
+        m.text.get(), m.denoiser.get(), m.vae.get()
+    };
+    if (!request.source.empty() && (request.strength < 1 || !request.mask.empty()))
+        inventories.push_back(&m.encoder(cancel));
+    // All required component plans must fit before the FIFO owner commits to
     // running. Components execute sequentially, so their GPU budgets do not sum.
-    for (const auto* inventory : {m.text.get(), m.denoiser.get(), m.vae.get()}) {
+    for (const auto* inventory : inventories) {
         stop(cancel);
         const auto tokens = inventory->stage == AtenImageStage::text
                                 ? prompt.count
                                 : prompt.count - prompt.prefix;
-        const auto workspace = aten_stage_workspace(inventory->stage, points, tokens);
+        const auto workspace = aten_stage_workspace(
+            inventory->stage, points, tokens, !request.source.empty()
+        );
         (void)stage_owner(*resources_, devices_, inventory->bytes + workspace);
         const auto snapshot = resources_->snapshot();
         if (2 * inventory->largest + 32 * mib > snapshot.capacity[0] - snapshot.used[0])
@@ -816,12 +990,36 @@ void AtenGenerator::generate(
     Generator::validate(request);
     need(output.size() == request.width * request.height * 4, "image_output_shape");
     stop(cancel);
+    if (!request.source.empty() && request.strength == 0) {
+        std::copy(request.source.begin(), request.source.end(), output.begin());
+        return;
+    }
     c10::InferenceMode inference;
     ArithmeticScope arithmetic;
     auto& m = *model_;
     auto prompt = prepare_image_prompt(m.tokenizer, request.prompt, cancel);
     const auto count = prompt.count, drop = prompt.prefix;
     const auto h = request.height / 16, w = request.width / 16, points = h * w;
+    Tensor source;
+    if (!request.source.empty() && (request.strength < 1 || !request.mask.empty())) {
+        auto started = Clock::now();
+        Stage stage(
+            *resources_,
+            devices_,
+            m.encoder(cancel),
+            aten_stage_workspace(AtenImageStage::vae_encoder, points, 0),
+            cancel
+        );
+        stage_timing("load", "vae_encoder", stage.device, started);
+        c10::cuda::CUDAGuard guard(stage.device);
+        started = Clock::now();
+        source = encode_source(stage, request, m.config, cancel, hook);
+        stage.sync();
+        stage_timing("generation", "vae_encoder", stage.device, started);
+        started = Clock::now();
+        stage.close();
+        stage_timing("unload", "vae_encoder", stage.device, started);
+    }
     Tensor condition;
     {
         auto started = Clock::now();
@@ -857,14 +1055,17 @@ void AtenGenerator::generate(
             *resources_,
             devices_,
             *m.denoiser,
-            aten_stage_workspace(AtenImageStage::denoiser, points, count - drop),
+            aten_stage_workspace(
+                AtenImageStage::denoiser, points, count - drop, !request.source.empty()
+            ),
             cancel
         );
         stage_timing("load", "denoiser", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
         started = Clock::now();
-        latent =
-            denoise(stage, latent, condition, h, w, request, m.config, cancel, hook);
+        latent = denoise(
+            stage, latent, source, condition, h, w, request, m.config, cancel, hook
+        );
         stage.sync();
         stage_timing("generation", "denoiser", stage.device, started);
         started = Clock::now();
@@ -891,6 +1092,8 @@ void AtenGenerator::generate(
         stage.close();
         stage_timing("unload", "vae", stage.device, started);
     }
+    if (!request.mask.empty())
+        composite_image_edit(output, request.source, request.mask);
     stop(cancel);
 }
 }  // namespace kadan::image

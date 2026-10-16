@@ -867,7 +867,7 @@
             "type": "integer"
           },
           "steps_total": {
-            "minimum": 1.0,
+            "minimum": 0.0,
             "title": "Steps Total",
             "type": "integer"
           }
@@ -1972,7 +1972,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Accept only the supported LLM and image selections; reject unknown fields.",
+        "description": "Persist supported selections and transcription formatting.",
         "properties": {
           "models": {
             "$ref": "#/components/schemas/SettingsModels"
@@ -1996,7 +1996,7 @@
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose real catalog selection and null for unavailable transcription settings.",
+        "description": "Expose catalog selections and the saved transcription formatting setting.",
         "properties": {
           "models": {
             "items": {
@@ -2006,20 +2006,14 @@
             "type": "array"
           },
           "whisper_formatting": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null: no transcription provider is configured.",
-            "title": "Whisper Formatting"
+            "description": "Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.",
+            "title": "Whisper Formatting",
+            "type": "boolean"
           }
         },
         "required": [
-          "models"
+          "models",
+          "whisper_formatting"
         ],
         "title": "SettingsResponse",
         "type": "object"
@@ -2166,9 +2160,16 @@
             "type": "string"
           },
           "formatting": {
-            "default": true,
-            "title": "Formatting",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
+            "title": "Formatting"
           },
           "language": {
             "anyOf": [
@@ -2201,6 +2202,17 @@
       },
       "TranscriptionResponse": {
         "properties": {
+          "formatting_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatting Error"
+          },
           "formatting_model": {
             "anyOf": [
               {
@@ -2213,6 +2225,12 @@
             "title": "Formatting Model"
           },
           "formatting_status": {
+            "enum": [
+              "disabled",
+              "formatted",
+              "failed",
+              "empty"
+            ],
             "title": "Formatting Status",
             "type": "string"
           },
@@ -2578,11 +2596,41 @@
             "type": "integer"
           },
           "image": {
-            "description": "Source image reference; no image provider is configured and this reference is not fetched",
-            "maxLength": 2048,
+            "description": "PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.",
+            "maxLength": 27962050,
             "minLength": 1,
+            "pattern": "^data:image/png;base64,",
             "title": "Image",
             "type": "string"
+          },
+          "mask": {
+            "anyOf": [
+              {
+                "maxLength": 27962050,
+                "pattern": "^data:image/png;base64,",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque PNG matching the source size. Black preserves pixels, white edits them; gray blends.",
+            "title": "Mask"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "enum": [
+                  "qwen-image-2.1",
+                  "qwen-image-2.1-turbo"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
           },
           "prompt": {
             "maxLength": 8000,
@@ -2594,6 +2642,7 @@
           "seed": {
             "anyOf": [
               {
+                "maximum": 1.8446744073709552e+19,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -2603,8 +2652,16 @@
             ],
             "title": "Seed"
           },
+          "steps": {
+            "default": 50,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Steps",
+            "type": "integer"
+          },
           "strength": {
             "default": 0.65,
+            "description": "Image-to-image noise strength. Zero preserves the source; one regenerates the editable area from noise. Describe the desired result in prompt.",
             "maximum": 1.0,
             "minimum": 0.0,
             "title": "Strength",
@@ -3182,8 +3239,27 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Queue validated inference; unavailable providers still return HTTP 503.",
+        "description": "Submit source-conditioned image-to-image editing to the shared worker.",
         "operationId": "editImages",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-kadan-request-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Kadan-Request-Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3730,7 +3806,7 @@
         ]
       },
       "put": {
-        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Other modalities are not configured.",
+        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

@@ -58,6 +58,9 @@ InferenceRequest parse_request(const Json& envelope) {
         input.count = body.value("count", 4u);
         input.steps = body.value("steps", 50u);
         input.seed = optional<std::uint64_t>(body, "seed");
+        input.image = optional<std::string>(body, "image");
+        input.mask = optional<std::string>(body, "mask");
+        input.strength = body.value("strength", .65f);
         request.input = std::move(input);
         request.workload = Workload::image;
     } else if (feature == "decisions") {
@@ -103,9 +106,12 @@ InferenceRequest parse_request(const Json& envelope) {
         input.audio = body.at("audio");
         input.model = optional<std::string>(body, "model");
         input.language = optional<std::string>(body, "language");
-        input.formatting = body.value("formatting", true);
+        input.formatting = optional<bool>(body, "formatting");
         request.input = std::move(input);
         request.workload = Workload::speech;
+    } else if (feature == "stt_formatting") {
+        request.input = TranscriptionFormattingRequest{body.at("text")};
+        request.workload = Workload::formatting;
     } else if (feature == "video") {
         VideoRequest input;
         input.prompt = body.at("prompt");
@@ -124,6 +130,8 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else if (feature == "whisper_selection") {
         request.input = WhisperSelectionRequest{body.at("model")};
+    } else if (feature == "whisper_formatting") {
+        request.input = WhisperFormattingRequest{body.at("enabled")};
     } else if (feature == "image_selection") {
         request.input = ImageSelectionRequest{body.at("model_id")};
     } else if (feature == "models") {
@@ -134,6 +142,7 @@ InferenceRequest parse_request(const Json& envelope) {
         throw RequestError("Invalid task feature", 422);
     const bool settings = feature == "model_selection" || feature == "model_context"
                           || feature == "whisper_selection"
+                          || feature == "whisper_formatting"
                           || feature == "image_selection";
     preparation_check(
         settings == (request.operation == Operation::configure),

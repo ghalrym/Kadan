@@ -23,11 +23,12 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "checkpoint-tests",
     "checkpoint-floats-tests",
     "projection-validation-tests",
-    "image-weight-loading-tests",
     "h3-resident-block-tests",
     "image-activation-tests",
     "image-schedule-tests",
     "image-checkpoint-config-tests",
+    "image-upload-tests",
+    "image-edit-tests",
     "image-aten-plan-tests",
     "image-timing-tests",
     "image-decoder-input-tests",
@@ -55,12 +56,14 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "kadan_auto_placement_test",
     "inference-owner-tests",
     "preparation-tests",
+    "s1-mini-metadata-tests",
+    "text-tokenizer-tests",
     "inference-worker-text-tests",
 ]
 
 CPP_SUFFIXES = {".cpp", ".hpp", ".h", ".cu", ".cuh"}
 
-# Every CPU component, so clang-tidy sees each non-CUDA translation unit.
+# CPU components only; the ATen image runtime requires the CUDA build.
 CPP_LINT_OPTIONS = [
     "-DKADAN_ENABLE_CUDA=OFF",
     "-DKADAN_TRACE_WEIGHT_CACHE=ON",
@@ -68,7 +71,7 @@ CPP_LINT_OPTIONS = [
     "-DKADAN_ENABLE_DECISIONS=ON",
     "-DKADAN_ENABLE_H3_GENERATION=ON",
     "-DKADAN_ENABLE_TTS_WORKER=ON",
-    "-DKADAN_ENABLE_IMAGE_GENERATION=ON",
+    "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
     "-DBUILD_TESTING=ON",
 ]
 
@@ -204,7 +207,6 @@ def inference_worker(
             "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
             "-DKADAN_ENABLE_WHISPER_BLAS=OFF",
-            "-DKADAN_ENABLE_IMAGE_BLAS=OFF",
             "-DBUILD_TESTING=ON",
             f"-DCMAKE_CXX_FLAGS={flags}",
         ]

@@ -1,0 +1,34 @@
+.image-workspace .image-options--edit {
+  grid-template-columns: 1fr;
+}
+.image-upload-preview {
+  display: block;
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--sidebar);
+}
+.image-upload-name {
+  overflow-wrap: anywhere;
+}
+.image-strength-scale {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.image-workspace .button:disabled {
+  opacity: 0.5;
+}
+.image-workspace .button:not(:disabled):hover {
+  border-color: var(--muted);
+}
+.image-workspace .button:not(:disabled):active {
+  filter: brightness(0.9);
+}
+@media (max-width: 600px) {
+  .image-workspace .button {
+    min-height: 44px;
+  }
+}

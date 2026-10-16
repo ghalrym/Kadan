@@ -878,6 +878,16 @@ void ModelStore::select_whisper(const std::string& name) {
     atomic_document(root_ / "whisper-selection.json", {{"model", model}});
 }
 
+bool ModelStore::whisper_formatting() const {
+    const auto path = root_ / "whisper-formatting.json";
+    return !fs::exists(path) || read_document(path).at("enabled").get<bool>();
+}
+
+void ModelStore::set_whisper_formatting(bool enabled) {
+    fs::create_directories(root_);
+    atomic_document(root_ / "whisper-formatting.json", {{"enabled", enabled}});
+}
+
 void ModelStore::select_image(const std::string& model) {
     preparation_check(
         entry(model).kind == "image" && complete(entry(model)),
@@ -950,6 +960,7 @@ Json ModelStore::status() const {
         {"models", models},
         {"selected_model_id", selection},
         {"selected_whisper", whisper},
+        {"whisper_formatting", whisper_formatting()},
         {"selected_image", image}
     };
 }

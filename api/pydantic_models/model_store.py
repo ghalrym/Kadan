@@ -1,6 +1,7 @@
 """Model metadata and status observed from the inference worker."""
 
 from typing import Literal
+
 from pydantic import BaseModel
 
 DownloadStatus = Literal[
@@ -40,4 +41,5 @@ class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     selected_model_id: str | None = None
     selected_whisper: str | None = None
+    whisper_formatting: bool = True
     selected_image: str | None = None

@@ -1,9 +1,8 @@
-#include <cstdio>
-#include <cstdlib>
 #include <filesystem>
-#include <string_view>
 
+#include "kadan/image_edit.hpp"
 #include "kadan/image_generation.hpp"
+#include "kadan/image_upload.hpp"
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
 
@@ -17,6 +16,15 @@ class ImageEngine final : public InferenceEngine {
     image::ImageRequest request_;
     std::string output_;
     std::size_t count_ = 1;
+    std::vector<float> source_, mask_;
+
+    void release_request() {
+        request_.source = {};
+        request_.mask = {};
+        std::vector<float>().swap(source_);
+        std::vector<float>().swap(mask_);
+        request_memory_.reset();
+    }
 
 public:
     ImageEngine(std::shared_ptr<Resources> r, Progress p)
@@ -33,9 +41,7 @@ public:
         compute_ = std::make_unique<WorkerCompute>(
             media_plan(available), Workload::image, resources_
         );
-        model_ = std::make_unique<image::Generator>(
-            resources_, compute_->compute, compute_->media_activity, compute_->devices
-        );
+        model_ = std::make_unique<image::Generator>(resources_, compute_->devices);
         model_->load(request.configuration.checkpoint.string(), cancel, progress_);
     }
 
@@ -45,20 +51,44 @@ public:
         const std::atomic_bool& cancel
     ) override {
         check_cancel(cancel);
-        request_memory_.reset();
+        release_request();
         if (request.operation == Operation::load)
             return;
         const auto& input = std::get<ImageRequest>(request.input);
-        request_ = {input.prompt, input.width, input.height, input.steps, *input.seed};
+        request_ = {
+            input.prompt,
+            input.width,
+            input.height,
+            input.steps,
+            *input.seed,
+            {},
+            {},
+            input.strength
+        };
         image::Generator::validate(request_);
         count_ = input.count;
         require(count_ == 1 || count_ == 2 || count_ == 4, "image_count");
         output_ = request.workspace.string();
-        const Bytes bytes = 8 * 1024 * 1024 + 64 * request_.height * request_.width;
+        const Bytes bytes =
+            8 * 1024 * 1024
+            + (input.source ? 96 : 64) * request_.height * request_.width;
         if (bytes > available[0])
             throw AdmissionWait("image_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::image, bytes);
+        if (input.source) {
+            const auto pixels = request_.width * request_.height;
+            std::vector<std::uint8_t> rgba(pixels * 4);
+            source_.resize(pixels * 4);
+            decode_image_upload(*input.source, rgba, source_);
+            if (input.edit_mask) {
+                mask_.resize(pixels);
+                decode_image_mask(*input.edit_mask, rgba, mask_);
+            }
+            request_.source = source_;
+            request_.mask = mask_;
+            check_cancel(cancel);
+        }
         model_->prepare(request_, cancel);
     }
 
@@ -66,8 +96,6 @@ public:
     execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
         if (request.operation == Operation::load)
             return Json::object();
-        const auto* timing = std::getenv("KADAN_IMAGE_TIMING");
-        const bool timing_enabled = timing && std::string_view(timing) == "1";
         std::vector<fs::path> paths;
         for (std::size_t i = 0; i < count_; ++i) {
             check_cancel(cancel);
@@ -75,31 +103,18 @@ public:
             std::vector<float> rgba(request_.height * request_.width * 4);
             auto current = request_;
             current.seed += i;
-            image::DenoisingTimings::Sink timing_sink;
-            if (timing_enabled)
-                timing_sink = [&](const image::DenoisingStepTiming& value) {
-                    Json summary = value;
-                    summary["id"] = request.id;
-                    summary["image"] = i + 1;
-                    // A fixed-size diagnostic line, separate from task/progress output.
-                    const auto line = "KADAN_IMAGE_TIMING " + summary.dump() + '\n';
-                    if (line.size() <= 4096) {
-                        std::fwrite(line.data(), 1, line.size(), stderr);
-                        std::fflush(stderr);
-                    }
-                };
-            model_->generate(current, rgba, cancel, progress_, timing_sink);
+            model_->generate(current, rgba, cancel, progress_);
             auto path = output_ + "/image-" + std::to_string(i) + ".png";
             image::publish_png(path, rgba, current.height, current.width, cancel);
             paths.emplace_back(path);
         }
         compute_->idle();
-        request_memory_.reset();
+        release_request();
         return present_image(request, paths);
     }
 
     void close() override {
-        request_memory_.reset();
+        release_request();
         if (model_)
             model_->unload();
         model_.reset();

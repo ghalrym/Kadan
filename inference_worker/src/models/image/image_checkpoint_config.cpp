@@ -73,10 +73,11 @@ ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
     );
     auto v = read(root + "/vae/config.json");
     need(
-        v.at("decoder_base_dim") == 144 && v.at("z_dim") == 64
+        v.at("decoder_base_dim") == 144 && v.at("base_dim") == 96 && v.at("z_dim") == 64
             && v.at("dim_mult") == Json::array({1, 2, 4, 8, 8})
             && v.at("num_res_blocks") == 2 && v.at("out_channels") == 4
-            && v.at("is_residual") == true && v.at("patch_size").is_null()
+            && v.at("in_channels") == 4 && v.at("is_residual") == true
+            && v.at("patch_size").is_null()
             && v.at("temperal_downsample") == Json::array({false, true, true, true}),
         "image_vae_config_contract"
     );

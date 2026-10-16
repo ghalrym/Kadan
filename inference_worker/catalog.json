@@ -338,6 +338,76 @@
       ]
     },
     {
+      "id": "superwhisper-s1-mini",
+      "repo_id": "superwhisper/s1-mini",
+      "revision": "88f6b15896c73bbb13a3b596e0afe8ea0d5150b4",
+      "license": "s1-mini-license",
+      "estimated_bytes": 1514736392,
+      "kind": "formatting",
+      "display_name": "S1-mini by Superwhisper",
+      "layout": "composite",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "model.safetensors",
+        "LICENSE",
+        "NOTICE"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/superwhisper/s1-mini/blob/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/LICENSE",
+      "license_notice": null,
+      "inference_available": true,
+      "asset_url": null,
+      "asset_name": null,
+      "manifest": [
+        {
+          "name": "config.json",
+          "size": 726,
+          "digest": "f5c3703b78ae2a478ae15b247e9f855e0ce2107b",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/config.json"
+        },
+        {
+          "name": "generation_config.json",
+          "size": 181,
+          "digest": "82682d87f3a9bec29c675aa223b0d29efa1483f7",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/generation_config.json"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 11422654,
+          "digest": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/tokenizer.json"
+        },
+        {
+          "name": "model.safetensors",
+          "size": 1503300328,
+          "digest": "69d2057077ab4dc738aaaab75d2a8ffa141e3a09fb9d956198cfce46f381131a",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/model.safetensors"
+        },
+        {
+          "name": "LICENSE",
+          "size": 12033,
+          "digest": "ec0371e837c48cb3f02116a32f2d5821c3e86485",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/LICENSE"
+        },
+        {
+          "name": "NOTICE",
+          "size": 470,
+          "digest": "758c88657c67261299d7cb3d69ae7a0d9da2616e",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/NOTICE"
+        }
+      ]
+    },
+    {
       "id": "whisper-base.en",
       "repo_id": "openai/whisper",
       "revision": "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead",

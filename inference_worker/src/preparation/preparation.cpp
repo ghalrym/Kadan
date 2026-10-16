@@ -109,6 +109,15 @@ void prepare_input(
 }
 
 void prepare_input(
+    WhisperFormattingRequest& input,
+    InferenceRequest&,
+    ModelStore& store,
+    const std::atomic_bool&
+) {
+    store.set_whisper_formatting(input.enabled);
+}
+
+void prepare_input(
     ImageSelectionRequest& input,
     InferenceRequest& request,
     ModelStore& store,

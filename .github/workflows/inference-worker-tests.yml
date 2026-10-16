@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install worker preparation headers
-        run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev
+        run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev libpng-dev
       - name: Install tooling dependencies
         run: python3 -m pip install -r bin/requirements.txt
       - name: Run inference worker unit checks
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install inference worker component headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev libicu-dev libopenblas-dev libpcre2-dev libcurl4-openssl-dev libssl-dev libarchive-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev libicu-dev libopenblas-dev libpcre2-dev libcurl4-openssl-dev libssl-dev libarchive-dev libpng-dev
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

@@ -1099,7 +1099,7 @@ export type SettingsModels = {
 /**
  * SettingsRequest
  *
- * Accept only the supported LLM and image selections; reject unknown fields.
+ * Persist supported selections and transcription formatting.
  */
 export type SettingsRequest = {
   models: SettingsModels
@@ -1112,7 +1112,7 @@ export type SettingsRequest = {
 /**
  * SettingsResponse
  *
- * Expose real catalog selection and null for unavailable transcription settings.
+ * Expose catalog selections and the saved transcription formatting setting.
  */
 export type SettingsResponse = {
   /**
@@ -1122,9 +1122,9 @@ export type SettingsResponse = {
   /**
    * Whisper Formatting
    *
-   * Null: no transcription provider is configured.
+   * Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.
    */
-  whisper_formatting?: boolean | null
+  whisper_formatting: boolean
 }
 
 /**
@@ -1223,8 +1223,10 @@ export type TranscriptionRequest = {
   audio: string
   /**
    * Formatting
+   *
+   * Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.
    */
-  formatting?: boolean
+  formatting?: boolean | null
   /**
    * Language
    */
@@ -1240,13 +1242,17 @@ export type TranscriptionRequest = {
  */
 export type TranscriptionResponse = {
   /**
+   * Formatting Error
+   */
+  formatting_error?: string | null
+  /**
    * Formatting Model
    */
   formatting_model?: string | null
   /**
    * Formatting Status
    */
-  formatting_status: string
+  formatting_status: 'disabled' | 'formatted' | 'failed' | 'empty'
   /**
    * Language
    */
@@ -1464,9 +1470,19 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Image
    *
-   * Source image reference; no image provider is configured and this reference is not fetched
+   * PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.
    */
   image: string
+  /**
+   * Mask
+   *
+   * Opaque PNG matching the source size. Black preserves pixels, white edits them; gray blends.
+   */
+  mask?: string | null
+  /**
+   * Model Id
+   */
+  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
   /**
    * Prompt
    */
@@ -1476,7 +1492,13 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   seed?: number | null
   /**
+   * Steps
+   */
+  steps?: number
+  /**
    * Strength
+   *
+   * Image-to-image noise strength. Zero preserves the source; one regenerates the editable area from noise. Describe the desired result in prompt.
    */
   strength?: number
 }
@@ -1842,6 +1864,12 @@ export type ListImagesResponse = ListImagesResponses[keyof ListImagesResponses]
 
 export type EditImagesData = {
   body: ApiRoutesV1ImagesEditsImageRequest
+  headers?: {
+    /**
+     * X-Kadan-Request-Id
+     */
+    'x-kadan-request-id'?: string | null
+  }
   path?: never
   query?: never
   url: '/v1/images/edits'

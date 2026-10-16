@@ -129,7 +129,7 @@ export function describeImageProgress(
         : 'Generating image',
     detail:
       phase === 'prompt'
-        ? 'Reading the prompt'
+        ? progress.stage === 'vae_down_block' ? 'Reading source image' : 'Reading the prompt'
         : phase === 'denoise'
           ? `Denoising · step ${Math.min(view.step + 1, view.steps)} of ${view.steps}`
           : 'Decoding pixels',

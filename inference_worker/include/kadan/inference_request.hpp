@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
@@ -9,10 +10,19 @@
 #include <nlohmann/json.hpp>
 
 #include "kadan/h3_generation.hpp"
+#include "kadan/image_upload.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::serving {
 using Json = nlohmann::json;
+
+struct RequestError : std::runtime_error {
+    int status;
+
+    explicit RequestError(const std::string& message, int code = 502)
+        : std::runtime_error(message), status(code) {
+    }
+};
 enum class Operation {
     generate,
     completion,
@@ -40,6 +50,9 @@ struct ImageRequest {
     std::optional<std::string> model;
     std::optional<std::uint64_t> seed;
     unsigned count = 4, steps = 50, width = 0, height = 0;
+    std::optional<std::string> image, mask;
+    std::optional<ImageUpload> source, edit_mask;
+    float strength = .65f;
 };
 
 struct ChoiceOption {
@@ -103,9 +116,13 @@ struct SpeechRequest {
 struct TranscriptionRequest {
     std::string audio;
     std::optional<std::string> model, language;
-    bool formatting = true;
+    std::optional<bool> formatting;
     std::filesystem::path assets;
     std::vector<float> pcm;
+};
+
+struct TranscriptionFormattingRequest {
+    std::string text;
 };
 
 struct VideoRequest {
@@ -133,6 +150,10 @@ struct WhisperSelectionRequest {
     std::string model;
 };
 
+struct WhisperFormattingRequest {
+    bool enabled;
+};
+
 struct ImageSelectionRequest {
     std::string model;
 };
@@ -143,11 +164,13 @@ using TaskInput = std::variant<
     DecisionRequest,
     SpeechRequest,
     TranscriptionRequest,
+    TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
     ModelSelectionRequest,
     ContextRequest,
     WhisperSelectionRequest,
+    WhisperFormattingRequest,
     ImageSelectionRequest>;
 
 struct EngineConfiguration {

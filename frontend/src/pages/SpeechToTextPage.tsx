@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Panel } from '../components/Controls'
+import type { TranscriptionResponse } from '../api/generated'
 import { recordingToWav, requestTranscription } from '../api/transcription'
 
 /** Choose or record audio locally and submit only after pressing Submit. */
@@ -7,7 +8,7 @@ export default function SpeechToTextPage() {
   const [recording, setRecording] = useState(false)
   const [pending, setPending] = useState(false)
   const [clip, setClip] = useState<Blob | null>(null)
-  const [text, setText] = useState<string | null>(null)
+  const [text, setText] = useState<TranscriptionResponse | null>(null)
   const [error, setError] = useState('')
   const [seconds, setSeconds] = useState(0)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -52,7 +53,7 @@ export default function SpeechToTextPage() {
     try {
       const audio = await recordingToWav(clip)
       if (abort.signal.aborted) return
-      const transcript = await requestTranscription(audio, false, abort.signal)
+      const transcript = await requestTranscription(audio, abort.signal)
       if (!abort.signal.aborted) setText(transcript)
     } catch (reason) { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Transcription failed.') }
     finally { busy.current = false; if (mounted.current) setPending(false) }
@@ -74,6 +75,8 @@ export default function SpeechToTextPage() {
       <button type="button" className="button button--muted" disabled={recording || pending || !clip} onClick={() => void submit()}>{pending ? 'Working…' : 'Submit'}</button>
     </div>
     {error && <p role="alert" className="error">{error}</p>}
-    {text !== null && <p role="status">{text || 'No speech detected.'}</p>}
+    {text?.formatting_status === 'failed' && <p role="alert" className="error">Formatting failed: {text.formatting_error} Raw transcription shown.</p>}
+    {text?.formatting_status === 'formatted' && <details><summary>Raw transcription</summary><p style={{ whiteSpace: 'pre-wrap' }}>{text.raw_text}</p></details>}
+    {text !== null && <p role="status" style={{ whiteSpace: 'pre-wrap' }}>{text.text || (text.formatting_status === 'formatted' ? 'No text after formatting.' : 'No speech detected.')}</p>}
   </Panel></div></div>
 }

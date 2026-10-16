@@ -9,12 +9,14 @@ Feature = Literal[
     "image",
     "video",
     "stt",
+    "stt_formatting",
     "tts",
     "decisions",
     "models",
     "model_selection",
     "model_context",
     "whisper_selection",
+    "whisper_formatting",
     "image_selection",
 ]
 Operation = Literal["generate", "completion", "load", "unload", "download", "configure"]
@@ -25,7 +27,7 @@ class ImageProgress(BaseModel):
     image_index: int = Field(ge=1)
     image_count: int = Field(ge=1)
     steps_completed: int = Field(default=0, ge=0)
-    steps_total: int = Field(ge=1)
+    steps_total: int = Field(ge=0)
 
 
 class InferenceProgress(BaseModel):

@@ -130,6 +130,7 @@ class SettingsTaskTests(unittest.TestCase):
             {"feature": "model_selection", "model_id": "small"},
             {"feature": "model_context", "model_id": "small", "context_limit": None},
             {"feature": "whisper_selection", "model": "tiny.en"},
+            {"feature": "whisper_formatting", "enabled": False},
         ):
             task = InferenceTask(operation="configure", input=body)
             self.assertEqual(

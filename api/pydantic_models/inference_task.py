@@ -38,6 +38,15 @@ class ImageTask(TaskInput):
     count: Literal[1, 2, 4] = 4
     seed: int | None = None
     steps: int = 50
+    image: str | None = None
+    mask: str | None = None
+    strength: float = Field(default=0.65, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def mask_requires_image(self):
+        if self.mask is not None and self.image is None:
+            raise ValueError("An image mask requires a source image")
+        return self
 
 
 class DecisionTask(TaskInput):
@@ -65,7 +74,12 @@ class TranscriptionTask(TaskInput):
     audio: str = Field(max_length=2 * 1024**2)
     model: str | None = None
     language: str | None = None
-    formatting: bool = True
+    formatting: bool | None = None
+
+
+class TranscriptionFormattingTask(TaskInput):
+    feature: Literal["stt_formatting"] = "stt_formatting"
+    text: str = Field(min_length=1, max_length=32000)
 
 
 class VideoTask(TaskInput):
@@ -102,6 +116,11 @@ class WhisperSelectionTask(TaskInput):
     model: str
 
 
+class WhisperFormattingTask(TaskInput):
+    feature: Literal["whisper_formatting"] = "whisper_formatting"
+    enabled: bool
+
+
 class ImageSelectionTask(TaskInput):
     feature: Literal["image_selection"] = "image_selection"
     model_id: ImageModel
@@ -113,11 +132,13 @@ InferenceInput = Annotated[
     | DecisionTask
     | SpeechTask
     | TranscriptionTask
+    | TranscriptionFormattingTask
     | VideoTask
     | DownloadTask
     | ModelSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
+    | WhisperFormattingTask
     | ImageSelectionTask,
     Field(discriminator="feature"),
 ]
@@ -147,6 +168,7 @@ class InferenceTask(BaseModel):
             "model_selection",
             "model_context",
             "whisper_selection",
+            "whisper_formatting",
             "image_selection",
         )
         if settings != (self.operation == "configure"):
