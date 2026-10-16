@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 project(kadan_inference_worker LANGUAGES CXX)
+option(KADAN_TRACE_WEIGHT_CACHE "Emit bounded developer weight-cache traces to stderr" OFF)
+if(KADAN_TRACE_WEIGHT_CACHE)
+  # DeviceWeights is header-defined: every worker, CUDA and unit target must see
+  # the same layout. This developer build does not change runtime settings.
+  add_compile_definitions(KADAN_TRACE_WEIGHT_CACHE)
+endif()
 # GGUF metadata and row dequantization only. Kadan retains execution, placement,
 # request state and sampling; no llama.cpp model graph or backend is linked.
 include(FetchContent)
@@ -474,6 +480,12 @@ if(BUILD_TESTING)
   target_link_libraries(device-weight-tests PRIVATE kadan_checkpoint kadan_resources)
   target_compile_options(device-weight-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME device-weights COMMAND device-weight-tests)
+  if(KADAN_TRACE_WEIGHT_CACHE)
+    add_executable(device-weight-trace-tests tests/device_weight_trace.cpp)
+    target_link_libraries(device-weight-trace-tests PRIVATE kadan_checkpoint kadan_resources)
+    target_compile_options(device-weight-trace-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME device-weight-trace COMMAND device-weight-trace-tests)
+  endif()
   target_link_libraries(device-workspace-tests PRIVATE kadan_resources)
   target_compile_options(device-workspace-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME device-workspace COMMAND device-workspace-tests)

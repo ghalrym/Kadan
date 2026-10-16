@@ -1341,7 +1341,10 @@ class Compute final : public H3Compute {
                                       : weight_count,
                         packed_source ? gguf::block_bytes(encoding) : sizeof(Weight)
                     };
-                    void* retained = identity ? arena.weights.find(key) : nullptr;
+                    void* retained =
+                        identity
+                            ? arena.weights.find(key, !packed_source || retain_misses)
+                            : nullptr;
                     std::unique_ptr<HostAdmission> host_admission;
                     std::unique_ptr<Weight[]> host_weights;
                     std::span<std::byte> host_packed;
