@@ -10,9 +10,16 @@
 #include <string_view>
 #include <vector>
 
+#include "kadan/resources.hpp"
 #include "kadan/weight_identity.hpp"
 
 namespace kadan::checkpoint {
+class MemoryBudget;
+
+struct PackedCacheSnapshot {
+    std::uint64_t hits = 0, misses = 0, admitted_bytes = 0, resident_bytes = 0;
+};
+
 struct GgufTensor {
     std::string name;
     // GGML order: columns, rows, experts; omitted dimensions are one.
@@ -58,6 +65,13 @@ public:
     const GgufTensor& tensor_at(std::size_t index) const;
     WeightIdentity identity(std::string_view name, std::size_t expert = 0) const;
     void check_unchanged() const;
+    // Attach only after the caller has admitted its metadata allocator. The
+    // resources and allocator outlive this checkpoint. Planning remains cacheless.
+    void enable_packed_cache(
+        Resources&, std::shared_ptr<MemoryBudget>, Bytes transient_host_bytes
+    );
+    void set_packed_cache_admission(bool enabled);
+    PackedCacheSnapshot packed_cache_snapshot() const;
     // Output contains whole rows; caller admits its allocation. Expert is zero
     // for ordinary matrices. On cancellation or error, discard partial output.
     void read_rows(

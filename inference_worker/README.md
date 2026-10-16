@@ -135,6 +135,14 @@ GPU for the existing GEMM path. F32 tensors and MLX use their existing sources. 
 The current model selection, saved context limits and GPU settings remain
 unchanged.
 
+The Muse GGUF owner can retain immutable packed read ranges in host RAM after
+prefill. Admission grows one pinned resource-ledger reservation before allocating
+each range, preserves room for the CUDA source staging, and stops when the existing
+host budget is exhausted. Prefill can reuse entries but does not admit its broad
+one-time sweep. Hits still copy into the existing bounded staging and follow the
+same GPU decoding and finite-value checks. The cache has no eviction policy and
+is released with its checkpoint; metadata-only planning never enables it.
+
 The optional `muse-spark-open-q3-xl` catalog entry pins
 [Unsloth UD-Q3_K_XL](https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/tree/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL).
 Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor

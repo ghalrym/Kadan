@@ -964,6 +964,15 @@ struct Engine::Impl {
             }
             // False selects the existing bounded disk-source projection path.
             execution.compute->prepare_weights(p.execution_weights);
+            if (weights->gguf) {
+                // Keep room for each device's later F32 source admission while
+                // the optional host cache grows inside the existing RAM budget.
+                const auto transient_host_bytes =
+                    execution.devices.size() * (gguf_projection_staging_bytes + 4096);
+                weights->gguf->enable_packed_cache(
+                    *execution.resources, weights->budget, transient_host_bytes
+                );
+            }
             execution.resources->loaded(memory);
         } catch (...) {
             weights.reset();
@@ -1338,6 +1347,10 @@ struct Engine::Impl {
             == prompt.size();
         weights->retain_packed_misses =
             previous_retention && !(weights->gguf && single_chunk);
+        // Prefill touches most experts once. Reuse existing host entries, but
+        // leave first admission to decode rather than copying that whole sweep.
+        if (weights->gguf)
+            weights->gguf->set_packed_cache_admission(false);
         try {
             while (completed < prompt.size()) {
                 weights->check_cancel();
@@ -1383,6 +1396,8 @@ struct Engine::Impl {
         }
         weights->retain_packed_misses = previous_retention;
         weights->retire_prefill_weights(*execution.compute, progress);
+        if (weights->gguf)
+            weights->gguf->set_packed_cache_admission(true);
         return select(std::move(last));
     }
 

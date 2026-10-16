@@ -167,9 +167,35 @@ void capacity_recovers_within_last_clean_measurement() {
     check(resources.snapshot().capacity == Footprint({70, 50}));
 }
 
+void pinned_resize() {
+    using namespace kadan;
+    Resources resources({100, 80});
+    const auto bank = resources.reserve(Workload::llm, {0, 0});
+    fails([&] { resources.resize_pinned(bank, {1, 0}); }, "not_pinned_resident");
+    resources.loaded(bank);
+    fails([&] { resources.resize_pinned(bank, {1, 0}); }, "not_pinned_resident");
+    resources.pin(bank);
+    resources.resize_pinned(bank, {70, 20}, 30);
+    fails([&] { resources.resize_pinned(bank, {71, 20}, 30); }, "exhausted");
+    check(resources.snapshot().used == Footprint({70, 20}));
+    check(resources.reservation(bank).bytes == Footprint({70, 20}));
+    fails([&] { resources.resize_pinned(bank, {70}); }, "budget_shape");
+    resources.refresh_available({0, 0});
+    resources.resize_pinned(bank, {30, 10}, 100);
+    check(resources.snapshot().used == Footprint({30, 10}));
+    fails([&] { resources.resize_pinned(bank, {71, 10}); }, "exhausted");
+    resources.resize_pinned(bank, {0, 0});
+    resources.unpin(bank);
+    resources.begin_eviction(bank);
+    fails([&] { resources.resize_pinned(bank, {1, 0}); }, "not_pinned_resident");
+    resources.released(bank);
+    check(resources.snapshot().residents == 0);
+}
+
 int main() {
     using namespace kadan;
     try {
+        pinned_resize();
         capacity_recovers_within_last_clean_measurement();
         control_plane_limit();
         for (int i = 0; i < 32; ++i) {

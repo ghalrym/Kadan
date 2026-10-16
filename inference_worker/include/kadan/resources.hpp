@@ -129,6 +129,27 @@ public:
         r.state = State::resident;
     }
 
+    // The owner frees storage before shrinking; growth precedes allocation.
+    // Preserve transient host headroom atomically with aggregate admission.
+    void resize_pinned(Handle handle, const Footprint& bytes, Bytes host_headroom = 0) {
+        std::lock_guard lock(mutex_);
+        auto& r = get(handle);
+        require(r.state == State::resident && r.pins > 0, "not_pinned_resident");
+        require(bytes.size() == capacity_.size(), "budget_shape");
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            if (bytes[i] <= r.bytes[i])
+                continue;
+            const auto other = used_[i] - r.bytes[i];
+            const auto remaining = capacity_[i] > other ? capacity_[i] - other : 0;
+            const auto headroom = i == 0 ? host_headroom : 0;
+            if (bytes[i] > remaining || headroom > remaining - bytes[i])
+                throw ResourceExhausted("exhausted");
+        }
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+            used_[i] = used_[i] - r.bytes[i] + bytes[i];
+        std::copy(bytes.begin(), bytes.end(), r.bytes.begin());
+    }
+
     void pin(Handle handle) {
         std::lock_guard lock(mutex_);
         auto& r = get(handle);

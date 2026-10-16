@@ -1,6 +1,7 @@
 #include "kadan/gguf_checkpoint.hpp"
 
 #include <array>
+#include <barrier>
 #include <bit>
 #include <cerrno>
 #include <fcntl.h>
@@ -8,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <latch>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -15,28 +17,48 @@
 #include <unistd.h>
 #include <utility>
 
+#include "kadan/checkpoint.hpp"
+
 namespace {
 struct MetadataReads {
     std::uint64_t header_end = 0, requested_end = 0;
     std::size_t calls = 0, windows = 0, maximum_request = 0;
+    std::size_t trigger_count = 65536;
     off_t trigger_offset = 0;
     bool crossed_header = false, triggered = false;
+    bool fail_read = false;
     std::atomic_bool* cancel_after_refill = nullptr;
     const char* append_after_refill = nullptr;
     int mutation_error = 0;
 };
 
 thread_local MetadataReads* active_metadata_reads = nullptr;
+
+struct PayloadReads {
+    std::atomic_size_t calls = 0;
+    std::latch entered{1}, release{1};
+};
+
+thread_local PayloadReads* active_payload_reads = nullptr;
 }  // namespace
 
 extern "C" ssize_t original_pread(int, void*, size_t, off_t) asm("__real_pread");
 extern "C" ssize_t observed_pread(int, void*, size_t, off_t) asm("__wrap_pread");
 
 extern "C" ssize_t observed_pread(int fd, void* output, size_t count, off_t offset) {
+    if (auto* payload = active_payload_reads) {
+        if (payload->calls.fetch_add(1) == 0)
+            payload->entered.count_down();
+        payload->release.wait();
+    }
     auto* observed = active_metadata_reads;
     if (!observed)
         return original_pread(fd, output, count, offset);
     ++observed->calls;
+    if (observed->fail_read) {
+        errno = EIO;
+        return -1;
+    }
     observed->maximum_request = std::max(observed->maximum_request, count);
     if (offset < 0 || std::uint64_t(offset) > observed->header_end
         || count > observed->header_end - std::uint64_t(offset)) {
@@ -53,8 +75,8 @@ extern "C" ssize_t observed_pread(int fd, void* output, size_t count, off_t offs
     }
     const auto result = original_pread(fd, output, count, offset);
     const int saved_errno = errno;
-    if (result > 0 && offset == observed->trigger_offset && count == 65536
-        && !observed->triggered) {
+    if (result > 0 && offset == observed->trigger_offset
+        && count == observed->trigger_count && !observed->triggered) {
         observed->triggered = true;
         if (observed->cancel_after_refill)
             observed->cancel_after_refill->store(true);
@@ -650,6 +672,220 @@ void packed_f32_payload() {
         "gguf_nonfinite_weight"
     );
 }
+
+void packed_cache_ranges() {
+    Fixture fixture;
+    Bytes encoded(16 * 110);
+    for (std::size_t i = 0; i < encoded.size(); ++i)
+        encoded[i] = i % 251;
+    fixture.write(0, {}, 1);
+    fixture.write(1, {{"packed", 11, {256, 8, 2}, encoded}}, 1);
+    const std::atomic_bool cancel{false};
+    kadan::Resources resources({4096});
+    auto budget = std::make_shared<MemoryBudget>(4096);
+    {
+        GgufCheckpoint checkpoint(fixture.root, cancel);
+        checkpoint.enable_packed_cache(resources, budget, 1024);
+        std::vector<std::byte> output(4 * 110);
+        checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+        check(checkpoint.packed_cache_snapshot().resident_bytes == 0);
+        checkpoint.set_packed_cache_admission(true);
+        checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+        check(resources.snapshot().used[0] == output.size());
+        std::fill(output.begin(), output.end(), std::byte{0});
+        checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+        for (std::size_t i = 0; i < output.size(); ++i)
+            check(std::to_integer<std::uint8_t>(output[i]) == encoded[i]);
+        checkpoint.read_packed_rows("packed", 0, 1, output, cancel);
+        check(checkpoint.packed_cache_snapshot().resident_bytes == 4 * 110);
+        checkpoint.read_packed_rows("packed", 0, 4, output, cancel);
+        checkpoint.read_packed_rows("packed", 1, 0, output, cancel);
+        check(checkpoint.packed_cache_snapshot().resident_bytes == 12 * 110);
+        checkpoint.set_packed_cache_admission(false);
+        checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+        checkpoint.read_packed_rows("packed", 1, 4, output, cancel);
+        const auto snapshot = checkpoint.packed_cache_snapshot();
+        check(snapshot.hits == 2 && snapshot.misses == 6);
+        check(snapshot.admitted_bytes == 12 * 110);
+        check(snapshot.resident_bytes == resources.snapshot().used[0]);
+        check(resources.snapshot().residents == 1 && budget->used() > 0);
+    }
+    check(resources.snapshot().used[0] == 0);
+    check(resources.snapshot().residents == 0 && budget->used() == 0);
+}
+
+void packed_cache_optional_admission() {
+    Fixture fixture;
+    const Bytes encoded(110 * 8, 3);
+    fixture.write(0, {}, 1);
+    fixture.write(1, {{"packed", 11, {256, 8}, encoded}}, 1);
+    const std::atomic_bool cancel{false};
+    for (const bool metadata_failure : {false, true}) {
+        kadan::Resources resources({1024});
+        auto budget = std::make_shared<MemoryBudget>(metadata_failure ? 0 : 4096);
+        {
+            GgufCheckpoint checkpoint(fixture.root, cancel);
+            checkpoint.enable_packed_cache(resources, budget, 256);
+            checkpoint.set_packed_cache_admission(true);
+            std::vector<std::byte> output(encoded.size());
+            checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+            check(output.front() == std::byte{3} && output.back() == std::byte{3});
+            check(checkpoint.packed_cache_snapshot().resident_bytes == 0);
+            check(resources.snapshot().used[0] == 0 && budget->used() == 0);
+        }
+        check(resources.snapshot().residents == 0);
+    }
+}
+
+void packed_cache_concurrent_duplicate() {
+    Fixture fixture;
+    fixture.write(0, {}, 1);
+    fixture.write(1, {{"packed", 11, {256, 8}, Bytes(880, 7)}}, 1);
+    const std::atomic_bool cancel{false};
+    kadan::Resources resources({4096});
+    auto budget = std::make_shared<MemoryBudget>(4096);
+    GgufCheckpoint checkpoint(fixture.root, cancel);
+    checkpoint.enable_packed_cache(resources, budget, 0);
+    checkpoint.set_packed_cache_admission(true);
+    PayloadReads observed;
+    std::array<std::array<std::byte, 880>, 2> output{};
+    auto first = std::async(std::launch::async, [&] {
+        active_payload_reads = &observed;
+        checkpoint.read_packed_rows("packed", 0, 0, output[0], cancel);
+        active_payload_reads = nullptr;
+    });
+    observed.entered.wait();
+    std::latch second_started{1};
+    auto second = std::async(std::launch::async, [&] {
+        active_payload_reads = &observed;
+        second_started.count_down();
+        checkpoint.read_packed_rows("packed", 0, 0, output[1], cancel);
+        active_payload_reads = nullptr;
+    });
+    second_started.wait();
+    observed.release.count_down();
+    first.get();
+    second.get();
+    check(output[0] == output[1] && output[0][879] == std::byte{7});
+    check(observed.calls == 1);
+    const auto snapshot = checkpoint.packed_cache_snapshot();
+    check(snapshot.hits == 1 && snapshot.misses == 1 && snapshot.resident_bytes == 880);
+    check(resources.snapshot().used[0] == 880);
+}
+
+void packed_cache_failed_publication() {
+    for (const bool mutate : {false, true}) {
+        Fixture fixture;
+        fixture.write(0, {}, 1);
+        fixture.write(1, {{"packed", 11, {256, 8}, Bytes(880, 9)}}, 1);
+        std::atomic_bool cancel{false};
+        kadan::Resources resources({4096});
+        auto budget = std::make_shared<MemoryBudget>(4096);
+        GgufCheckpoint checkpoint(fixture.root, cancel);
+        checkpoint.enable_packed_cache(resources, budget, 0);
+        checkpoint.set_packed_cache_admission(true);
+        const auto path = fixture.file(1).string();
+        MetadataReads observed{.header_end = UINT64_MAX};
+        observed.trigger_offset = checkpoint.identity("packed").payload_begin;
+        observed.trigger_count = 880;
+        observed.append_after_refill = mutate ? path.c_str() : nullptr;
+        observed.cancel_after_refill = mutate ? nullptr : &cancel;
+        std::array<std::byte, 880> output{};
+        {
+            ObserveMetadataReads observe(observed);
+            fails(
+                [&] { checkpoint.read_packed_rows("packed", 0, 0, output, cancel); },
+                mutate ? "gguf_checkpoint_changed" : "gguf_cancelled"
+            );
+        }
+        check(observed.triggered && !observed.mutation_error);
+        check(checkpoint.packed_cache_snapshot().resident_bytes == 0);
+        check(resources.snapshot().used[0] == 0 && budget->used() == 0);
+    }
+}
+
+void packed_cache_io_failure() {
+    Fixture fixture;
+    fixture.write(0, {}, 1);
+    fixture.write(1, {{"packed", 11, {256, 8}, Bytes(880, 9)}}, 1);
+    const std::atomic_bool cancel{false};
+    kadan::Resources resources({4096});
+    auto budget = std::make_shared<MemoryBudget>(4096);
+    GgufCheckpoint checkpoint(fixture.root, cancel);
+    checkpoint.enable_packed_cache(resources, budget, 0);
+    checkpoint.set_packed_cache_admission(true);
+    std::array<std::byte, 880> output{};
+    MetadataReads observed{.header_end = UINT64_MAX};
+    observed.fail_read = true;
+    {
+        ObserveMetadataReads observe(observed);
+        fails(
+            [&] { checkpoint.read_packed_rows("packed", 0, 0, output, cancel); },
+            "gguf_read_failed"
+        );
+    }
+    check(observed.calls == 1 && resources.snapshot().used[0] == 0);
+    check(budget->used() == 0);
+    checkpoint.read_packed_rows("packed", 0, 0, output, cancel);
+    check(checkpoint.packed_cache_snapshot().resident_bytes == 880);
+    const auto path = fixture.file(1);
+    std::ofstream changed(path, std::ios::binary | std::ios::app);
+    changed.put(0);
+    changed.close();
+    fails(
+        [&] { checkpoint.read_packed_rows("packed", 0, 0, output, cancel); },
+        "gguf_checkpoint_changed"
+    );
+    check(checkpoint.packed_cache_snapshot().hits == 0);
+}
+
+void packed_cache_pending_cancellation() {
+    for (const bool cancel_producer : {false, true}) {
+        Fixture fixture;
+        fixture.write(0, {}, 1);
+        fixture.write(1, {{"packed", 11, {256, 8}, Bytes(880, 7)}}, 1);
+        std::atomic_bool first_cancel{false}, second_cancel{false};
+        kadan::Resources resources({4096});
+        auto budget = std::make_shared<MemoryBudget>(4096);
+        GgufCheckpoint checkpoint(fixture.root, first_cancel);
+        checkpoint.enable_packed_cache(resources, budget, 0);
+        checkpoint.set_packed_cache_admission(true);
+        PayloadReads observed;
+        std::array<std::array<std::byte, 880>, 2> output{};
+        auto first = std::async(std::launch::async, [&] {
+            active_payload_reads = &observed;
+            try {
+                checkpoint.read_packed_rows("packed", 0, 0, output[0], first_cancel);
+            } catch (...) {
+                active_payload_reads = nullptr;
+                throw;
+            }
+            active_payload_reads = nullptr;
+        });
+        observed.entered.wait();
+        std::latch second_started{1};
+        auto second = std::async(std::launch::async, [&] {
+            second_started.count_down();
+            checkpoint.read_packed_rows("packed", 0, 0, output[1], second_cancel);
+        });
+        second_started.wait();
+        if (cancel_producer) {
+            first_cancel = true;
+            observed.release.count_down();
+            fails([&] { first.get(); }, "gguf_cancelled");
+            second.get();
+            check(output[1][879] == std::byte{7});
+        } else {
+            second_cancel = true;
+            fails([&] { second.get(); }, "gguf_cancelled");
+            observed.release.count_down();
+            first.get();
+            check(output[0][879] == std::byte{7});
+        }
+        check(resources.snapshot().used[0] == 880);
+        check(checkpoint.packed_cache_snapshot().resident_bytes == 880);
+    }
+}
 }  // namespace
 
 int main() {
@@ -659,6 +895,12 @@ int main() {
         reader_rows();
         reader_batched_rows();
         packed_f32_payload();
+        packed_cache_ranges();
+        packed_cache_optional_admission();
+        packed_cache_concurrent_duplicate();
+        packed_cache_failed_publication();
+        packed_cache_io_failure();
+        packed_cache_pending_cancellation();
         metadata_failures();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

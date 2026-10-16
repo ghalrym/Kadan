@@ -3,20 +3,26 @@
 #include <algorithm>
 #include <bit>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <ggml.h>
 #include <gguf.h>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <regex>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <tuple>
 #include <unistd.h>
 #include <unordered_set>
 #include <utility>
 
+#include "kadan/checkpoint.hpp"
 #include "kadan/quantization.hpp"
 
 namespace kadan::checkpoint {
@@ -105,6 +111,201 @@ struct File {
             output = output.subspan(std::size_t(n));
         }
     }
+};
+
+class PackedCache {
+public:
+    PackedCache(
+        Resources& resources, std::shared_ptr<MemoryBudget> budget, Bytes headroom
+    )
+        : resources_(resources), budget_(std::move(budget)),
+          entries_(budget_ ? budget_.get() : std::pmr::null_memory_resource()),
+          headroom_(headroom), footprint_(resources.snapshot().capacity.size(), 0) {
+        require(bool(budget_), "gguf_cache_budget");
+        bank_ = resources_.reserve(Workload::llm, footprint_);
+        resources_.loaded(bank_);
+        resources_.pin(bank_);
+    }
+
+    ~PackedCache() noexcept {
+        try {
+            std::unique_lock lock(mutex_);
+            closing_ = true;
+            changed_.wait(lock, [&] { return readers_ == 0; });
+            entries_.clear();  // Physical storage is gone before ledger release.
+            resources_.unpin(bank_);
+            resources_.begin_eviction(bank_);
+            resources_.released(bank_);
+        } catch (...) {
+            // An unacknowledged cleanup retains its aggregate reservation.
+        }
+    }
+
+    void admission(bool enabled) {
+        std::lock_guard lock(mutex_);
+        admission_ = enabled;
+    }
+
+    PackedCacheSnapshot snapshot() const {
+        std::lock_guard lock(mutex_);
+        return statistics_;
+    }
+
+    void read(
+        const File& file,
+        std::size_t index,
+        std::uint64_t offset,
+        std::span<std::uint8_t> output,
+        const std::atomic_bool& cancel
+    ) {
+        std::unique_lock lock(mutex_);
+        require(!closing_, "gguf_cache_closing");
+        ++readers_;
+
+        struct Reader {
+            PackedCache& cache;
+            std::unique_lock<std::mutex>& lock;
+
+            ~Reader() {
+                if (lock.owns_lock())
+                    lock.unlock();
+                std::lock_guard done(cache.mutex_);
+                --cache.readers_;
+                cache.changed_.notify_all();
+            }
+        } reader{*this, lock};
+
+        const Key key{index, offset, output.size()};
+        Entry* selected = nullptr;
+        for (;;) {
+            stop(cancel);
+            auto existing = entries_.find(key);
+            if (existing == entries_.end())
+                break;
+            if (existing->second.ready) {
+                increment(statistics_.hits, 1);
+                const auto* data = existing->second.data.get();
+                lock.unlock();
+                copy(output.data(), data, output.size(), cancel);
+                file.unchanged();
+                stop(cancel);
+                return;
+            }
+            changed_.wait_for(lock, std::chrono::milliseconds(10));
+        }
+        increment(statistics_.misses, 1);
+        if (admission_ && !output.empty()) {
+            const auto next = entries_.lower_bound(key);
+            const auto overlaps = [&](auto it) {
+                return it != entries_.end() && std::get<0>(it->first) == index
+                       && std::get<1>(it->first) < offset + output.size()
+                       && offset < std::get<1>(it->first) + std::get<2>(it->first);
+            };
+            if (!overlaps(next)
+                && (next == entries_.begin() || !overlaps(std::prev(next)))) {
+                try {
+                    auto [inserted, fresh] = entries_.try_emplace(key);
+                    require(fresh, "gguf_cache_duplicate");
+                    try {
+                        footprint_[0] = add(charged_, output.size());
+                        resources_.resize_pinned(bank_, footprint_, headroom_);
+                        charged_ = footprint_[0];
+                        try {
+                            inserted->second.data =
+                                std::make_unique_for_overwrite<std::uint8_t[]>(
+                                    output.size()
+                                );
+                            selected = &inserted->second;
+                        } catch (...) {
+                            footprint_[0] = charged_ - output.size();
+                            resources_.resize_pinned(bank_, footprint_);
+                            charged_ = footprint_[0];
+                            throw;
+                        }
+                    } catch (...) {
+                        entries_.erase(inserted);
+                        throw;
+                    }
+                } catch (const std::bad_alloc&) {
+                    // Optional metadata or payload cache allocation; stream instead.
+                } catch (const ResourceExhausted&) {
+                    // Preserve the caller's already-admitted transient workspace.
+                }
+            }
+        }
+        lock.unlock();
+        try {
+            for (std::size_t at = 0; at < output.size();) {
+                stop(cancel);
+                const auto count =
+                    std::min<std::size_t>(1024 * 1024, output.size() - at);
+                file.read(add(offset, at), output.subspan(at, count), &cancel);
+                at += count;
+            }
+            file.unchanged();
+            stop(cancel);
+            if (selected) {
+                copy(selected->data.get(), output.data(), output.size(), cancel);
+                file.unchanged();
+                stop(cancel);
+                lock.lock();
+                selected->ready = true;
+                increment(statistics_.admitted_bytes, output.size());
+                statistics_.resident_bytes += output.size();
+                lock.unlock();
+                changed_.notify_all();
+            }
+        } catch (...) {
+            if (selected) {
+                lock.lock();
+                entries_.erase(key);
+                footprint_[0] = charged_ - output.size();
+                resources_.resize_pinned(bank_, footprint_);
+                charged_ = footprint_[0];
+                lock.unlock();
+                changed_.notify_all();
+            }
+            throw;
+        }
+    }
+
+private:
+    using Key = std::tuple<std::size_t, std::uint64_t, std::size_t>;
+
+    struct Entry {
+        std::unique_ptr<std::uint8_t[]> data;
+        bool ready = false;
+    };
+
+    static void increment(std::uint64_t& value, std::uint64_t amount) {
+        value += std::min(amount, UINT64_MAX - value);
+    }
+
+    static void copy(
+        std::uint8_t* destination,
+        const std::uint8_t* source,
+        std::size_t bytes,
+        const std::atomic_bool& cancel
+    ) {
+        for (std::size_t at = 0; at < bytes;) {
+            stop(cancel);
+            const auto count = std::min<std::size_t>(1024 * 1024, bytes - at);
+            std::memcpy(destination + at, source + at, count);
+            at += count;
+        }
+    }
+
+    Resources& resources_;
+    std::shared_ptr<MemoryBudget> budget_;
+    std::pmr::map<Key, Entry> entries_;
+    Bytes headroom_, charged_ = 0;
+    Footprint footprint_;
+    Handle bank_ = 0;
+    mutable std::mutex mutex_;
+    std::condition_variable changed_;
+    std::size_t readers_ = 0;
+    bool admission_ = false, closing_ = false;
+    PackedCacheSnapshot statistics_;
 };
 
 struct ContextDeleter {
@@ -406,6 +607,7 @@ struct GgufCheckpoint::Impl {
     std::vector<File> files;
     std::vector<Entry> tensors;
     Context metadata;
+    std::unique_ptr<PackedCache> packed_cache;
 
     const Entry& find(std::string_view name) const {
         auto it = std::lower_bound(
@@ -549,6 +751,32 @@ void GgufCheckpoint::check_unchanged() const {
         file.unchanged();
 }
 
+void GgufCheckpoint::enable_packed_cache(
+    Resources& resources,
+    std::shared_ptr<MemoryBudget> budget,
+    Bytes transient_host_bytes
+) {
+    require(!impl_->packed_cache, "gguf_cache_already_enabled");
+    try {
+        impl_->packed_cache = std::make_unique<PackedCache>(
+            resources, std::move(budget), transient_host_bytes
+        );
+    } catch (const std::bad_alloc&) {
+        // This optional bank must not prevent ordinary bounded streaming.
+    } catch (const ResourceExhausted&) {
+    }
+}
+
+void GgufCheckpoint::set_packed_cache_admission(bool enabled) {
+    if (impl_->packed_cache)
+        impl_->packed_cache->admission(enabled);
+}
+
+PackedCacheSnapshot GgufCheckpoint::packed_cache_snapshot() const {
+    return impl_->packed_cache ? impl_->packed_cache->snapshot()
+                               : PackedCacheSnapshot{};
+}
+
 WeightIdentity
 GgufCheckpoint::identity(std::string_view name, std::size_t expert) const {
     const auto& entry = impl_->find(name);
@@ -641,6 +869,15 @@ void GgufCheckpoint::read_packed_rows(
     const auto first = add(mul(expert, t.shape[1]), first_row);
     const auto offset = add(entry.begin, mul(first, row_bytes));
     auto raw = std::span(reinterpret_cast<std::uint8_t*>(output.data()), output.size());
+    require(
+        offset <= std::uint64_t(file.initial.st_size)
+            && raw.size() <= std::uint64_t(file.initial.st_size) - offset,
+        "gguf_read_bounds"
+    );
+    if (impl_->packed_cache && t.type != GGML_TYPE_F32 && !raw.empty()) {
+        impl_->packed_cache->read(file, entry.file, offset, raw, cancel);
+        return;
+    }
     for (std::size_t at = 0; at < raw.size();) {
         stop(cancel);
         const auto count = std::min<std::size_t>(1024 * 1024, raw.size() - at);
