@@ -61,7 +61,6 @@ def build(
             "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_WHISPER_BLAS=OFF",
             "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
-            "-DKADAN_ENABLE_IMAGE_BLAS=OFF",
         ]
     )
     run(
