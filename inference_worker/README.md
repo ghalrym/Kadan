@@ -52,8 +52,8 @@ dependencies fail configuration; there is no hidden CPU image fallback.
 The accepted October 13 Turbo fox comparison used ATen with TF32 disabled.
 See the [image execution documentation](../README.md#c-aten-image-execution) for
 its exact build, workload and separate generation/load/unload measurements.
-ATen retains FP32 matmul/cuDNN TF32 disabled and BF16 reduced-precision reduction
-disabled. The former image PV TF32 option and custom image generation backend
+ATen keeps TF32 disabled for FP32 matrix multiplication and cuDNN operations,
+and keeps BF16 reduced-precision reduction disabled. The former image PV TF32 option and custom image generation backend
 have been removed. Shared media sessions, projection kernels and decoder-boundary
 utilities remain for their other callers and component unit tests.
 

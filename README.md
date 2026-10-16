@@ -347,7 +347,7 @@ preparation and PNG/API publication are outside these timers. The former residen
 image timing option no longer drives worker execution; component timing utilities
 remain available for unit checks and diagnostic tooling.
 
-FP32 matmul and cuDNN TF32 remain disabled during ATen generation, as does BF16
-reduced-precision reduction. This consolidation does not change the accepted
+TF32 remains disabled for FP32 matrix multiplication and cuDNN operations during
+ATen generation, as does BF16 reduced-precision reduction. This consolidation does not change the accepted
 precision policy, sampling or model operators. New deployments and GPU validation
 remain separate owner-coordinated actions.
