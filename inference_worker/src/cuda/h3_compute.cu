@@ -1446,12 +1446,11 @@ class Compute final : public H3Compute {
                         auto* packed_pointer =
                             retained ? retained : arena.at<void>(packed);
                         if (!retained)
-                            checked(cudaMemcpyAsync(
+                            checked(cudaMemcpy(
                                 packed_pointer,
                                 host_packed.data(),
                                 packed_bytes,
-                                cudaMemcpyHostToDevice,
-                                cudaStreamLegacy
+                                cudaMemcpyHostToDevice
                             ));
                         auto* decode_status = arena.at<unsigned>(packed_status);
                         checked(cudaMemset(decode_status, 0, sizeof(unsigned)));
