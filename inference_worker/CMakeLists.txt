@@ -315,11 +315,11 @@ if(KADAN_ENABLE_IMAGE_GENERATION)
   # on any workload's retirement would invalidate later image requests.
   target_compile_definitions(kadan_h3_cuda PRIVATE KADAN_ATEN_RUNTIME=1)
   target_compile_definitions(kadan_gpu PRIVATE KADAN_ATEN_RUNTIME=1)
-  add_library(kadan_image_aten src/models/image/image_aten.cpp)
+  add_library(kadan_image_aten src/models/image/image_aten.cpp src/models/image/image_checkpoint_config.cpp)
   target_link_libraries(kadan_image_aten PRIVATE ${TORCH_LIBRARIES} CUDA::cudart
     PUBLIC kadan_checkpoint kadan_resources kadan_text_tokenizer)
   target_compile_options(kadan_image_aten PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_library(kadan_image_generation src/models/image/image_generation.cpp src/models/image/image_checkpoint_config.cpp src/models/image/image_png.cpp)
+  add_library(kadan_image_generation src/models/image/image_generation.cpp src/models/image/image_png.cpp)
   target_link_libraries(kadan_image_generation PUBLIC kadan_image_aten PRIVATE nlohmann_json::nlohmann_json)
   target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
   if(BUILD_TESTING)
