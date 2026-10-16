@@ -56,6 +56,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "inference-owner-tests",
     "preparation-tests",
     "s1-mini-metadata-tests",
+    "text-tokenizer-tests",
     "inference-worker-text-tests",
 ]
 
