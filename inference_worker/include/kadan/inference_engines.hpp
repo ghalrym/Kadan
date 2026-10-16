@@ -52,6 +52,8 @@ private:
 std::unique_ptr<InferenceEngine> decision_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> image_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> video_engine(std::shared_ptr<Resources>, Progress);
+std::unique_ptr<InferenceEngine>
+    transcription_formatting_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> whisper_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> speech_engine(std::shared_ptr<Resources>, Progress);
 class ModelStore;

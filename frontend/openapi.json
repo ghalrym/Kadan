@@ -1972,7 +1972,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Accept only the supported LLM and image selections; reject unknown fields.",
+        "description": "Persist supported selections and transcription formatting.",
         "properties": {
           "models": {
             "$ref": "#/components/schemas/SettingsModels"
@@ -1996,7 +1996,7 @@
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose real catalog selection and null for unavailable transcription settings.",
+        "description": "Expose catalog selections and the saved transcription formatting setting.",
         "properties": {
           "models": {
             "items": {
@@ -2006,20 +2006,14 @@
             "type": "array"
           },
           "whisper_formatting": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null: no transcription provider is configured.",
-            "title": "Whisper Formatting"
+            "description": "Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.",
+            "title": "Whisper Formatting",
+            "type": "boolean"
           }
         },
         "required": [
-          "models"
+          "models",
+          "whisper_formatting"
         ],
         "title": "SettingsResponse",
         "type": "object"
@@ -2166,9 +2160,16 @@
             "type": "string"
           },
           "formatting": {
-            "default": true,
-            "title": "Formatting",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
+            "title": "Formatting"
           },
           "language": {
             "anyOf": [
@@ -2201,6 +2202,17 @@
       },
       "TranscriptionResponse": {
         "properties": {
+          "formatting_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formatting Error"
+          },
           "formatting_model": {
             "anyOf": [
               {
@@ -2213,6 +2225,12 @@
             "title": "Formatting Model"
           },
           "formatting_status": {
+            "enum": [
+              "disabled",
+              "formatted",
+              "failed",
+              "empty"
+            ],
             "title": "Formatting Status",
             "type": "string"
           },
@@ -3788,7 +3806,7 @@
         ]
       },
       "put": {
-        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Other modalities are not configured.",
+        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

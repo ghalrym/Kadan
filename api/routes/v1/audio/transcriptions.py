@@ -1,9 +1,12 @@
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.services.inference import inference
-from api.services.inference_http import infer
 from api.services.inference_errors import InferenceFailure
+from api.services.inference_http import infer
+from api.services.transcription import transcribe
 
 router = APIRouter(prefix="/v1/audio/transcriptions", tags=["Audio"])
 
@@ -15,7 +18,10 @@ class TranscriptionRequest(BaseModel):
     )
     model: str | None = None
     language: str | None = None
-    formatting: bool = True
+    formatting: bool | None = Field(
+        default=None,
+        description="Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
+    )
 
     @field_validator("audio")
     @classmethod
@@ -31,8 +37,9 @@ class TranscriptionResponse(BaseModel):
     raw_text: str
     language: str | None
     model: str
-    formatting_status: str
+    formatting_status: Literal["disabled", "formatted", "failed", "empty"]
     formatting_model: str | None = None
+    formatting_error: str | None = None
 
 
 class TranscriptionUnavailable(BaseModel):
@@ -89,6 +96,4 @@ async def transcribe_audio(
             422,
             "Supply a base64 PCM WAV data URL. Audio references and URLs are not fetched.",
         )
-    return TranscriptionResponse(
-        **await infer(request, inference.submit(body, feature="stt"))
-    )
+    return TranscriptionResponse(**await infer(request, transcribe(body)))

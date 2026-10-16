@@ -20,6 +20,7 @@ enum class Workload {
     image,
     video,
     speech,
+    formatting,
     tts,
     decision
 };

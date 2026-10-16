@@ -292,7 +292,15 @@ add_library(kadan_image_vae src/models/image/image_vae.cpp)
 target_link_libraries(kadan_image_vae PUBLIC kadan_checkpoint kadan_resources kadan_media_session)
 target_compile_options(kadan_image_vae PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
-if(KADAN_ENABLE_IMAGE_GENERATION OR KADAN_ENABLE_H3_GENERATION OR KADAN_ENABLE_TTS_WORKER)
+add_library(kadan_s1_mini src/models/text/s1_mini.cpp)
+target_link_libraries(kadan_s1_mini PUBLIC kadan_resources kadan_checkpoint kadan_manifest kadan_layer_math)
+target_compile_options(kadan_s1_mini PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+if(KADAN_ENABLE_WHISPER_BLAS)
+  target_compile_definitions(kadan_s1_mini PRIVATE KADAN_WHISPER_BLAS=1)
+  target_link_libraries(kadan_s1_mini PRIVATE ${KADAN_WHISPER_OPENBLAS})
+endif()
+
+if(KADAN_ENABLE_IMAGE_GENERATION OR KADAN_ENABLE_H3_GENERATION OR KADAN_ENABLE_TTS_WORKER OR BUILD_TESTING)
 find_package(nlohmann_json 3.10 REQUIRED)
 target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
@@ -300,6 +308,9 @@ find_library(KADAN_TEXT_PCRE2 pcre2-8 REQUIRED)
 add_library(kadan_text_tokenizer src/tokenization/text_tokenizer.cpp)
 target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TEXT_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_library(kadan_transcription_formatting src/inference/inference_transcription_formatting.cpp)
+target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
+target_compile_options(kadan_transcription_formatting PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
@@ -457,6 +468,10 @@ if(BUILD_TESTING)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(s1-mini-metadata-tests tests/s1_mini_metadata.cpp)
+  target_link_libraries(s1-mini-metadata-tests PRIVATE kadan_transcription_formatting)
+  target_compile_options(s1-mini-metadata-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME s1-mini-metadata COMMAND s1-mini-metadata-tests)
   add_executable(preparation-tests tests/preparation.cpp)
   target_link_libraries(preparation-tests PRIVATE kadan_preparation LibArchive::LibArchive)
   target_compile_options(preparation-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -508,7 +523,7 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
   target_link_libraries(kadan-inference-worker PRIVATE kadan_gpu kadan_glm kadan_muse_spark
     kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
     kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
-    kadan_text_tokenizer kadan_preparation nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+    kadan_transcription_formatting kadan_preparation nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
   install(TARGETS kadan-inference-worker
     RUNTIME_DEPENDENCIES
       PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"

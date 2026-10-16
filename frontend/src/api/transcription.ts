@@ -1,18 +1,18 @@
-import { transcribeAudio } from './generated/sdk.gen'
-import type { TranscriptionRequest } from './generated/types.gen'
+import { getSettings, transcribeAudio, updateSettings } from './generated/sdk.gen'
+import type { TranscriptionRequest, TranscriptionResponse } from './generated/types.gen'
 
 /** Submit inline audio; preserve backend errors and valid silent transcripts. */
-export async function requestTranscription(audio: string, formatting: boolean, signal: AbortSignal): Promise<string> {
+export async function requestTranscription(audio: string, signal: AbortSignal): Promise<TranscriptionResponse> {
   const reference = audio.trim()
   if (!reference) throw new Error('Enter an audio reference.')
-  const body: TranscriptionRequest = { audio: reference, formatting }
+  const body: TranscriptionRequest = { audio: reference }
   const result = await transcribeAudio({ body, signal })
   if (!result.response?.ok) {
     const detail = result.error && typeof result.error === 'object' && 'detail' in result.error ? result.error.detail : null
     throw new Error(typeof detail === 'string' ? detail : 'Transcription failed. Check the backend and selected checkpoint.')
   }
   if (typeof result.data?.text !== 'string') throw new Error('The API returned an invalid transcript.')
-  return result.data.text
+  return result.data
 }
 
 /** Convert browser audio to Whisper's PCM input without sending it to another service. */
@@ -41,4 +41,17 @@ export async function recordingToWav(blob: Blob): Promise<string> {
       reader.readAsDataURL(new Blob([buffer], { type: 'audio/wav' }))
     })
   } finally { await decoder.close() }
+}
+
+/** Read or persist the worker-owned formatting preference without changing models. */
+export async function requestTranscriptionFormatting(signal: AbortSignal, enabled?: boolean): Promise<boolean> {
+  const result = enabled === undefined
+    ? await getSettings({ signal })
+    : await updateSettings({ body: { models: {}, whisper_formatting: enabled }, signal })
+  if (!result.response?.ok) {
+    const detail = result.error && typeof result.error === 'object' && 'detail' in result.error ? result.error.detail : null
+    throw new Error(typeof detail === 'string' ? detail : 'Could not save or read transcription formatting.')
+  }
+  if (typeof result.data?.whisper_formatting !== 'boolean') throw new Error('Transcription formatting is unavailable.')
+  return result.data.whisper_formatting
 }

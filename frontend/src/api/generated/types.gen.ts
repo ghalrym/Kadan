@@ -1099,7 +1099,7 @@ export type SettingsModels = {
 /**
  * SettingsRequest
  *
- * Accept only the supported LLM and image selections; reject unknown fields.
+ * Persist supported selections and transcription formatting.
  */
 export type SettingsRequest = {
   models: SettingsModels
@@ -1112,7 +1112,7 @@ export type SettingsRequest = {
 /**
  * SettingsResponse
  *
- * Expose real catalog selection and null for unavailable transcription settings.
+ * Expose catalog selections and the saved transcription formatting setting.
  */
 export type SettingsResponse = {
   /**
@@ -1122,9 +1122,9 @@ export type SettingsResponse = {
   /**
    * Whisper Formatting
    *
-   * Null: no transcription provider is configured.
+   * Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.
    */
-  whisper_formatting?: boolean | null
+  whisper_formatting: boolean
 }
 
 /**
@@ -1223,8 +1223,10 @@ export type TranscriptionRequest = {
   audio: string
   /**
    * Formatting
+   *
+   * Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.
    */
-  formatting?: boolean
+  formatting?: boolean | null
   /**
    * Language
    */
@@ -1240,13 +1242,17 @@ export type TranscriptionRequest = {
  */
 export type TranscriptionResponse = {
   /**
+   * Formatting Error
+   */
+  formatting_error?: string | null
+  /**
    * Formatting Model
    */
   formatting_model?: string | null
   /**
    * Formatting Status
    */
-  formatting_status: string
+  formatting_status: 'disabled' | 'formatted' | 'failed' | 'empty'
   /**
    * Language
    */

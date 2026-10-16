@@ -74,7 +74,12 @@ class TranscriptionTask(TaskInput):
     audio: str = Field(max_length=2 * 1024**2)
     model: str | None = None
     language: str | None = None
-    formatting: bool = True
+    formatting: bool | None = None
+
+
+class TranscriptionFormattingTask(TaskInput):
+    feature: Literal["stt_formatting"] = "stt_formatting"
+    text: str = Field(min_length=1, max_length=32000)
 
 
 class VideoTask(TaskInput):
@@ -111,6 +116,11 @@ class WhisperSelectionTask(TaskInput):
     model: str
 
 
+class WhisperFormattingTask(TaskInput):
+    feature: Literal["whisper_formatting"] = "whisper_formatting"
+    enabled: bool
+
+
 class ImageSelectionTask(TaskInput):
     feature: Literal["image_selection"] = "image_selection"
     model_id: ImageModel
@@ -122,11 +132,13 @@ InferenceInput = Annotated[
     | DecisionTask
     | SpeechTask
     | TranscriptionTask
+    | TranscriptionFormattingTask
     | VideoTask
     | DownloadTask
     | ModelSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
+    | WhisperFormattingTask
     | ImageSelectionTask,
     Field(discriminator="feature"),
 ]
@@ -156,6 +168,7 @@ class InferenceTask(BaseModel):
             "model_selection",
             "model_context",
             "whisper_selection",
+            "whisper_formatting",
             "image_selection",
         )
         if settings != (self.operation == "configure"):

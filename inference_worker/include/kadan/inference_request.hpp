@@ -116,9 +116,13 @@ struct SpeechRequest {
 struct TranscriptionRequest {
     std::string audio;
     std::optional<std::string> model, language;
-    bool formatting = true;
+    std::optional<bool> formatting;
     std::filesystem::path assets;
     std::vector<float> pcm;
+};
+
+struct TranscriptionFormattingRequest {
+    std::string text;
 };
 
 struct VideoRequest {
@@ -146,6 +150,10 @@ struct WhisperSelectionRequest {
     std::string model;
 };
 
+struct WhisperFormattingRequest {
+    bool enabled;
+};
+
 struct ImageSelectionRequest {
     std::string model;
 };
@@ -156,11 +164,13 @@ using TaskInput = std::variant<
     DecisionRequest,
     SpeechRequest,
     TranscriptionRequest,
+    TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
     ModelSelectionRequest,
     ContextRequest,
     WhisperSelectionRequest,
+    WhisperFormattingRequest,
     ImageSelectionRequest>;
 
 struct EngineConfiguration {
