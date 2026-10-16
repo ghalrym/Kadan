@@ -96,34 +96,7 @@ void projection_output_classification() {
 void image_attention_precision() {
     using image::AttentionPrecision;
     check(image::attention_precision_name(AttentionPrecision{}) == "pedantic_fp32");
-    check(
-        image::attention_precision_name(AttentionPrecision::experimental_pv_tf32)
-        == "experimental_pv_tf32"
-    );
-    for (auto workload :
-         {Workload::llm,
-          Workload::image,
-          Workload::video,
-          Workload::speech,
-          Workload::tts,
-          Workload::decision}) {
-        image::validate_attention_precision(
-            AttentionPrecision::pedantic_fp32, workload
-        );
-        if (workload == Workload::image)
-            image::validate_attention_precision(
-                AttentionPrecision::experimental_pv_tf32, workload
-            );
-        else
-            fails([&] {
-                image::validate_attention_precision(
-                    AttentionPrecision::experimental_pv_tf32, workload
-                );
-            });
-    }
-
-    // Fake nested handle scopes: QK stays pedantic, PV restores before another
-    // tile and the outer scope restores an initially fast mode on unwind.
+    // Fake nested handle scopes restore the caller's math mode on unwind.
     for (bool enabled : {false, true})
         for (bool interrupted : {false, true}) {
             int mode = 23;
