@@ -268,6 +268,24 @@ sources live in `../bin/cpp/` and are exposed through `../bin/kadan.py native`.
 Run `python bin/kadan.py native build` from the repository root to compile them.
 Normal runtime builds leave `KADAN_BUILD_TOOLS` disabled.
 
+### Weight-cache diagnostics
+
+Developer builds can enable `KADAN_TRACE_WEIGHT_CACHE` to emit ordered cache
+records on worker stderr. It defaults off and changes no runtime cache policy.
+Capture the complete process stderr from bank creation through its final cleanup
+summary, then run `python bin/kadan.py native cache-replay TRACE` on the raw JSON
+lines. Existing controller envelopes must first be reduced to their `line` values.
+Trace output is limited to 131,072 ordinary records, 1,024 summaries and two
+truncation notices per GPU. The replay rejects truncated or incomplete captures.
+
+Replay compares first admission, byte-bounded LRU and a documented experimental
+decayed tile-frequency filter at the same bank capacity. Its transfer counter is
+ideal missed-weight demand, not measured PCIe traffic: packed GGUF admission may
+upload the same bytes again. Include admission traffic and actual copy timings
+before choosing a runtime policy. The replay does not model in-flight pointer
+protection or preserving residency across existing retirement boundaries, and
+does not cover the separate GPT-OSS or AutoModel placement paths.
+
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/kadan.py infer` to submit requests through the live API and its
 existing queue. There are no standalone model execution tools.

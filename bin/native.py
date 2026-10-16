@@ -1,14 +1,26 @@
 """Metadata-only native inspection and memory planning."""
 
+import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from bin.cache_replay import replay_trace
 from bin.process import ROOT, run
 
 app = typer.Typer(no_args_is_help=True)
 DEFAULT_BUILD = ROOT / "build/inference-worker-tools"
+
+
+@app.command("cache-replay")
+def cache_replay(trace: Path) -> None:
+    """Compare tile cache policies on a complete native trace, without inference."""
+    try:
+        report = replay_trace(trace)
+    except (TypeError, ValueError) as error:
+        raise typer.BadParameter(str(error), param_hint="trace") from error
+    typer.echo(json.dumps(report, indent=2))
 
 
 @app.callback()
