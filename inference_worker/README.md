@@ -126,7 +126,7 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
-## Muse Spark Open (experimental text support)
+## Muse Spark Open text support
 
 The native Muse engine uses the existing worker, resource ledger and bounded
 CUDA projection banks. GGUF projections read bounded packed rows, retain their
@@ -141,7 +141,10 @@ Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor
 inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
 matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
 quantization preset; the loader rejects unsupported wire types or geometry.
-This entry is an experiment, not a quantization-quality recommendation.
+The measurements below do not establish quantization quality.
+API selection through existing settings is awaiting review in
+[PR 259](https://github.com/ghalrym/Kadan/pull/259); native support alone does not
+make Muse selectable through the API.
 
 Acquisition downloads the tensor-free first split before any weight split,
 validates its architecture and exports configuration and byte-level BPE assets
@@ -176,21 +179,6 @@ sparse files with unread payload holes. Separate units check quantized block
 decoding, tokenizer metadata, prompt rendering, recipient streams and
 pre-download rejection. No unit test executes the model.
 
-An authorized October 15 manual trial on a Threadripper PRO 5955WX with two
-24 GiB RTX 3090s verified all ten checkpoint files and loaded the model in
-6.6 seconds. Both the original and batched readers reached a 120-second
-first-prefill guard without completing one token of the 154-token prompt or
-producing output. Cancellation, unload and worker exit completed cleanly.
-These trials do not establish usable latency, decode speed, numerical parity
-or quantization quality. The CUDA 12.0 trial used the matching host NVIDIA
-610.57.04 driver library after an initial mixed-driver initialization failure.
-
-Those trials preceded packed GPU execution. The packed path avoids CPU weight
-expansion and expanded F32 host-to-device weight copies for GGUF projections.
-It still decodes retained weights into bounded device scratch. A later packed
-GPU trial completed 53 of 154 prompt tokens before its 900-second ceiling, with
-no output. That trial used token-serial prefill.
-
 Muse now prefills bounded prompt chunks layer by layer, reusing each projection
 across token rows. Chunks contain at most 256 tokens within the existing 128 MiB
 host scratch envelope. Attention writes and consumes K/V in absolute-position
@@ -205,11 +193,39 @@ Native `prefill_layer` progress reports completed layers across chunks;
 `decode_token` progress counts computed predictions even when recipient parsing
 suppresses control or reasoning tokens. These events support a bounded manual
 stall guard without describing partially computed tokens as complete. The
-batched path requires measured prompt completion and output before any latency
-or usability claim.
-The bounded working set does not
-establish interactive usability. Obtain approval before a large download or
-manual GPU testing, then use the existing API queue to test
+batched path has the measured limits below.
+
+An authorized October 16 manual retest used the same native build tree as
+`1ba4dd16a59e71a924fd25f0412c48d710fdbb7a`, the pinned ten-file checkpoint,
+512-token context, greedy sampling and the prior 154-token greeting prompt on a
+Threadripper PRO 5955WX with two 24 GiB RTX 3090s and 448 GiB recognized RAM.
+The system prompt was `Reasoning strength: 0. Answer directly.` and the user
+prompt was `Reply with exactly: Hello Andrew.`; these were retained for
+comparison, not as a recommended reasoning configuration.
+
+| Stage | Measured result |
+| --- | --- |
+| Model load/setup | 1.62 seconds |
+| Prefill, excluding load and setup | 100.96 seconds for 154 tokens |
+| Prompt completion from worker launch | 102.87 seconds |
+| Computed predictions | 62, including recipient control and reasoning tokens |
+| Warm decode | 0.330 predictions/second over warm intervals; median 1.507 seconds |
+| Useful complete answer within five minutes | No; coherent but unfinished reasoning, no final answer |
+| Cleanup | Cancel at 290 seconds; unload acknowledged zero memory usage and clean exit at 292.19 seconds |
+
+Warm intervals exclude the first decode interval between predictions one and
+two. The initial faster decode rate did not persist: the last ten intervals
+had a median of 5.64 seconds. Load/setup does not preload all weights; roughly
+232 GB of cumulative storage reads were recorded near prompt completion, so
+prefill includes cold checkpoint I/O. The retest followed a reboot and removal
+of a DIMM from a known faulty slot. Cache residency and automatic GPU placement
+differed; the result does not isolate the cause of the improvement or establish
+whole-model numerical parity, quantization quality or interactive usability.
+
+The best tested packed GPU path is on `master`. No live deployment is implied by
+the native implementation or this manual measurement.
+Obtain approval before a large download or manual GPU testing, then use the
+existing API queue to test
 load, short and streamed chat, history, reasoning, cancellation, unload and
 context admission. Record actual memory and loading/prefill/decode times.
 
