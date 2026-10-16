@@ -4,10 +4,9 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
-#include "kadan/dense_compute.hpp"
-#include "kadan/image_timing.hpp"
-#include "kadan/media_session.hpp"
+#include "kadan/resources.hpp"
 
 namespace kadan::image {
 class AtenGenerator;
@@ -16,19 +15,16 @@ struct ImageRequest {
     std::string prompt;
     std::size_t width = 2048, height = 2048, steps = 50;
     std::uint64_t seed = 0;
+    std::span<const float> source, mask;
+    float strength = .65f;
 };
 
-// Complete checkpoint-specific text-to-image pipeline, one image at a time. Editing
-// and CFG are not supported by this boundary. Executors own separate pipelines.
+// Checkpoint-specific text-to-image and source-latent image-to-image pipeline.
+// Source/mask buffers remain caller-owned and admitted throughout the request.
 class Generator {
 public:
     using Hook = std::function<void(const char*, std::size_t)>;
-    explicit Generator(
-        std::shared_ptr<Resources>,
-        std::shared_ptr<DenseCompute>,
-        std::shared_ptr<MediaSessionActivity>,
-        std::vector<int> devices
-    );
+    explicit Generator(std::shared_ptr<Resources>, std::vector<int> devices);
     ~Generator();
     void load(const std::string& root, const std::atomic_bool&, const Hook& = {});
     void prepare(const ImageRequest&, const std::atomic_bool&);
@@ -36,22 +32,13 @@ public:
         const ImageRequest&,
         std::span<float> rgba_chw,
         const std::atomic_bool&,
-        const Hook& = {},
-        const DenoisingTimings::Sink& = {}
+        const Hook& = {}
     );
     void unload();
     static void validate(const ImageRequest&);
 
 private:
-    struct Impl;
-    std::shared_ptr<Resources> resources_;
-    std::shared_ptr<DenseCompute> compute_;
-    std::shared_ptr<MediaSessionActivity> media_activity_;
-    std::vector<int> devices_;
-    std::unique_ptr<Impl> model_;
-#ifdef KADAN_ATEN_IMAGE
     std::unique_ptr<AtenGenerator> aten_;
-#endif
     bool busy_ = false;
 };
 

@@ -9,7 +9,7 @@
 #include "kadan/checkpoint_floats.hpp"
 #include "kadan/dense_compute.hpp"
 #include "kadan/worker_compute.hpp"
-#if defined(KADAN_IMAGE_BLAS) || defined(KADAN_WHISPER_BLAS)
+#ifdef KADAN_WHISPER_BLAS
 #include <cblas.h>
 #endif
 namespace kadan::checkpoint {
@@ -170,7 +170,7 @@ static inline ProjectionResult project_source(
             if (cancel.load())
                 throw std::runtime_error("source_projection_cancelled");
             auto nr = std::min<std::size_t>(64, rows - t);
-#if defined(KADAN_IMAGE_BLAS) || defined(KADAN_WHISPER_BLAS)
+#ifdef KADAN_WHISPER_BLAS
             if (in > INT_MAX || out > INT_MAX)
                 throw std::overflow_error("source_projection_blas_shape");
             cblas_sgemm(

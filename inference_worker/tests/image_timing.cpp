@@ -77,16 +77,14 @@ void aggregation_and_reset() {
     );
 
     tick = 100;
-    timing.reset(
-        2, 16390, 6, .02f, 0.f, finish, AttentionPrecision::experimental_pv_tf32
-    );
+    timing.reset(2, 16390, 6, .02f, 0.f, finish, AttentionPrecision::pedantic_fp32);
     tick = 110;
     timing.publish(DenoisingOutcome::cancelled, finish);
     check(records.size() == 2);
     const auto& second = records[1];
     check(second.step == 2 && second.started_ns == 100 && second.wall_ns == 10);
     json = second;
-    check(json["attention_precision_requested"] == "experimental_pv_tf32");
+    check(json["attention_precision_requested"] == "pedantic_fp32");
     check(second.outcome == DenoisingOutcome::cancelled && second.next_sigma == 0.f);
     check(
         second.device_count == 0 && second.rows_min == 0 && second.completed_blocks == 0
@@ -165,7 +163,6 @@ void bounded_devices_counters_and_record() {
     check(result.outcome == DenoisingOutcome::failed);
 
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
-    result.attention_precision_requested = AttentionPrecision::experimental_pv_tf32;
     result.started_ns = result.wall_ns = result.unaccounted_ns = maximum;
     result.step = result.tokens = result.text = result.completed_blocks = maximum;
     result.rows_min = result.rows_max = maximum;

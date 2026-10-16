@@ -222,6 +222,15 @@ public:
             }
             publish_(request.id, JobState::waiting_for_resources, "");
             return false;
+        } catch (const RequestError& error) {
+            const Json failure{{"error", error.what()}, {"status_code", error.status}};
+            cleanup();
+            finish(
+                job,
+                job->cancel.load() ? JobState::cancelled : JobState::failed,
+                failure
+            );
+            return true;
         } catch (const std::exception& error) {
             const std::string diagnostic = error.what();
             cleanup();  // Failed cleanup poisons the owner and retains the FIFO head.

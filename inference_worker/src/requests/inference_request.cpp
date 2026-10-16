@@ -58,6 +58,9 @@ InferenceRequest parse_request(const Json& envelope) {
         input.count = body.value("count", 4u);
         input.steps = body.value("steps", 50u);
         input.seed = optional<std::uint64_t>(body, "seed");
+        input.image = optional<std::string>(body, "image");
+        input.mask = optional<std::string>(body, "mask");
+        input.strength = body.value("strength", .65f);
         request.input = std::move(input);
         request.workload = Workload::image;
     } else if (feature == "decisions") {

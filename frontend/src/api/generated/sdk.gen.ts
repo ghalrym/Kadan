@@ -377,7 +377,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Queue validated inference; unavailable providers still return HTTP 503.
+ * Submit source-conditioned image-to-image editing to the shared worker.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,
