@@ -497,6 +497,17 @@ public:
         ));
     }
 
+    void copy_weight_device(
+        void* pointer, std::size_t offset, const void* source, std::size_t bytes
+    ) override {
+        checked(cudaMemcpy(
+            static_cast<char*>(pointer) + offset,
+            static_cast<const char*>(source) + offset,
+            bytes,
+            cudaMemcpyDeviceToDevice
+        ));
+    }
+
     void free_weight(void* pointer) override {
         checked(cudaFree(pointer));
     }
@@ -1357,7 +1368,7 @@ class Compute final : public H3Compute {
                         host_packed = device_workspace.host_staging(packed_bytes);
                         stop(cancel, failed);
                         if (packed_bytes >= PackedReadTeam::parallel_threshold
-                            && out >= 4)
+                            && out >= PackedReadTeam::lanes)
                             device_workspace.packed_read_team().read(
                                 *packed_source,
                                 first_column,
@@ -1467,7 +1478,9 @@ class Compute final : public H3Compute {
                         // bytes never become a reusable bank entry. Existing bank
                         // ownership and cleanup cover the retained packed allocation.
                         if (!retained && retain_misses)
-                            arena.weights.retain(key, host_packed, cancel);
+                            arena.weights.retain_device(
+                                key, packed_pointer, packed_bytes, cancel
+                            );
                     } else if (!retained)
                         checked(cudaMemcpy(
                             weight_pointer,

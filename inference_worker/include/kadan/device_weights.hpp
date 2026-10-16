@@ -24,6 +24,10 @@ public:
     // nullptr means confirmed allocation OOM, without an outstanding allocation.
     virtual void* allocate_weight(Bytes) = 0;
     virtual void copy_weight(void*, std::size_t, std::span<const std::byte>) = 0;
+    // Both pointers belong to this selected device; offset applies to both.
+    virtual void copy_weight_device(
+        void* destination, std::size_t offset, const void* source, std::size_t bytes
+    ) = 0;
     virtual void free_weight(void*) = 0;
     virtual void synchronize_weights() = 0;
 };
@@ -113,81 +117,17 @@ public:
         std::span<const std::byte> source,
         const std::atomic_bool& cancel
     ) {
-        healthy();
-        stop(cancel);
-        if (!key.width
-            || key.count > std::numeric_limits<std::size_t>::max() / key.width
-            || key.count * key.width != source.size())
-            throw std::invalid_argument("weight_representation_size");
-        if (auto pointer = lookup(key))
-            return pointer;
-        if (source.empty()) {
-            trace_refusal(key, "empty");
-            return nullptr;
-        }
-        if (source.size() > limit_ - allocated_) {
-            trace_refusal(key, "envelope");
-            return nullptr;
-        }
-        if (source.size() > operations_.available_weight_bytes()) {
-            trace_refusal(key, "physical");
-            return nullptr;
-        }
-        if (!reservation_) {
-            auto footprint = resources_.snapshot().capacity;
-            if (device_ < 0 || std::size_t(device_) + 1 >= footprint.size())
-                throw std::invalid_argument("weight_device");
-            std::fill(footprint.begin(), footprint.end(), 0);
-            footprint[0] = metadata_bytes;
-            footprint[device_ + 1] = limit_;
-            reservation_ = resources_.reserve(workload_, std::move(footprint));
-        }
-        auto entry = entries_.end();
-        try {
-            entry = entries_.try_emplace(key).first;
-        } catch (const std::bad_alloc&) {
-            trace_refusal(key, "metadata");
-            return nullptr;
-        }
-        try {
-            entry->second.pointer = operations_.allocate_weight(source.size());
-            if (!entry->second.pointer) {
-                entries_.erase(entry);
-                trace_refusal(key, "allocation");
-                return nullptr;
-            }
-            entry->second.bytes = source.size();
-            allocated_ += source.size();
-            for (std::size_t at = 0; at < source.size();) {
-                stop(cancel);
-                const auto count =
-                    std::min<std::size_t>(1024 * 1024, source.size() - at);
-                operations_.copy_weight(
-                    entry->second.pointer, at, source.subspan(at, count)
-                );
-                at += count;
-            }
-            operations_.synchronize_weights();
-            stop(cancel);
-#ifdef KADAN_TRACE_WEIGHT_CACHE
-            trace_.admitted_bytes += source.size();
-            trace_event("admit", key);
-#endif
-            return entry->second.pointer;
-        } catch (...) {
-            const auto error = std::current_exception();
-            rethrow_after_cleanup(error, [&] {
-                try {
-                    drop(entry, "rollback");
-                } catch (...) {
-                    quarantined_ = true;
-#ifdef KADAN_TRACE_WEIGHT_CACHE
-                    trace_summary();
-#endif
-                    throw;
-                }
-            });
-        }
+        return retain_bytes(key, source.data(), source.size(), false, cancel);
+    }
+
+    // The caller validates immutable packed bytes on this device before admission.
+    // Copy into bank ownership while the source scratch remains alive.
+    void* retain_device(
+        const Key& key, const void* source, Bytes bytes, const std::atomic_bool& cancel
+    ) {
+        if (bytes && !source)
+            throw std::invalid_argument("weight_device_source");
+        return retain_bytes(key, source, bytes, true, cancel);
     }
 
     // Keep the admitted bank envelope/partition for the next stage. Only physical
@@ -241,16 +181,108 @@ public:
     }
 
 private:
+    void* retain_bytes(
+        const Key& key,
+        const void* source,
+        Bytes bytes,
+        bool device_source,
+        const std::atomic_bool& cancel
+    ) {
+        healthy();
+        stop(cancel);
+        if (!key.width
+            || key.count > std::numeric_limits<std::size_t>::max() / key.width
+            || key.count * key.width != bytes)
+            throw std::invalid_argument("weight_representation_size");
+        if (auto pointer = lookup(key))
+            return pointer;
+        if (!bytes) {
+            trace_refusal(key, "empty");
+            return nullptr;
+        }
+        if (bytes > limit_ - allocated_) {
+            trace_refusal(key, "envelope");
+            return nullptr;
+        }
+        if (bytes > operations_.available_weight_bytes()) {
+            trace_refusal(key, "physical");
+            return nullptr;
+        }
+        if (!reservation_) {
+            auto footprint = resources_.snapshot().capacity;
+            if (device_ < 0 || std::size_t(device_) + 1 >= footprint.size())
+                throw std::invalid_argument("weight_device");
+            std::fill(footprint.begin(), footprint.end(), 0);
+            footprint[0] = metadata_bytes;
+            footprint[device_ + 1] = limit_;
+            reservation_ = resources_.reserve(workload_, std::move(footprint));
+        }
+        auto entry = entries_.end();
+        try {
+            entry = entries_.try_emplace(key).first;
+        } catch (const std::bad_alloc&) {
+            trace_refusal(key, "metadata");
+            return nullptr;
+        }
+        try {
+            entry->second.pointer = operations_.allocate_weight(bytes);
+            if (!entry->second.pointer) {
+                entries_.erase(entry);
+                trace_refusal(key, "allocation");
+                return nullptr;
+            }
+            entry->second.bytes = bytes;
+            allocated_ += bytes;
+            for (std::size_t at = 0; at < bytes;) {
+                stop(cancel);
+                const auto count = std::min<std::size_t>(1024 * 1024, bytes - at);
+                if (device_source)
+                    operations_.copy_weight_device(
+                        entry->second.pointer, at, source, count
+                    );
+                else
+                    operations_.copy_weight(
+                        entry->second.pointer,
+                        at,
+                        {static_cast<const std::byte*>(source) + at, count}
+                    );
+                at += count;
+            }
+            operations_.synchronize_weights();
+            stop(cancel);
+            entry->second.ready = true;
+#ifdef KADAN_TRACE_WEIGHT_CACHE
+            trace_.admitted_bytes += bytes;
+            trace_event("admit", key);
+#endif
+            return entry->second.pointer;
+        } catch (...) {
+            const auto error = std::current_exception();
+            rethrow_after_cleanup(error, [&] {
+                try {
+                    drop(entry, "rollback");
+                } catch (...) {
+                    quarantined_ = true;
+#ifdef KADAN_TRACE_WEIGHT_CACHE
+                    trace_summary();
+#endif
+                    throw;
+                }
+            });
+        }
+    }
+
     struct Entry {
         void* pointer = nullptr;
         Bytes bytes = 0;
+        bool ready = false;
     };
 
     using Entries = std::pmr::map<Key, Entry>;
 
     void* lookup(const Key& key) const {
         const auto it = entries_.find(key);
-        return it == entries_.end() ? nullptr : it->second.pointer;
+        return it == entries_.end() || !it->second.ready ? nullptr : it->second.pointer;
     }
 
     void trace_refusal(
