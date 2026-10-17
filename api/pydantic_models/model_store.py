@@ -69,4 +69,3 @@ class ModelStoreStatus(BaseModel):
     selected_model_id: str | None = None
     selected_whisper: str | None = None
     whisper_formatting: bool = True
-    selected_image: str | None = None

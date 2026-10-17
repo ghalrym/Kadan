@@ -132,8 +132,6 @@ InferenceRequest parse_request(const Json& envelope) {
         request.input = WhisperSelectionRequest{body.at("model")};
     } else if (feature == "whisper_formatting") {
         request.input = WhisperFormattingRequest{body.at("enabled")};
-    } else if (feature == "image_selection") {
-        request.input = ImageSelectionRequest{body.at("model_id")};
     } else if (feature == "models") {
         request.input = DownloadRequest{
             body.at("model_id"), body.value("license_acknowledged", false)
@@ -142,8 +140,7 @@ InferenceRequest parse_request(const Json& envelope) {
         throw RequestError("Invalid task feature", 422);
     const bool settings = feature == "tier_selection" || feature == "model_context"
                           || feature == "whisper_selection"
-                          || feature == "whisper_formatting"
-                          || feature == "image_selection";
+                          || feature == "whisper_formatting";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",

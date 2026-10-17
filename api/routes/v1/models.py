@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
-from api.pydantic_models.model_store import CheckpointStatus
-from api.pydantic_models.inference_task import ModelContextTask
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
+from api.pydantic_models.inference_task import ModelContextTask
+from api.pydantic_models.model_store import CheckpointStatus
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
 
@@ -12,7 +12,6 @@ router = APIRouter(prefix="/v1/models", tags=["models"])
 class ModelsResponse(BaseModel):
     models: list[CheckpointStatus]
     selected_model_id: str | None
-    selected_image: str | None
 
 
 class DownloadRequest(BaseModel):
@@ -50,7 +49,6 @@ def list_models() -> ModelsResponse:
         return ModelsResponse(
             models=snapshot.models,
             selected_model_id=snapshot.selected_model_id,
-            selected_image=snapshot.selected_image,
         )
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc

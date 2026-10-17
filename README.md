@@ -259,11 +259,9 @@ model accuracy, throughput or target-machine memory fit.
 
 ### Qwen-Image-2.1-Turbo (draft)
 
-`POST /v1/images/generations` accepts `model_id: "qwen-image-2.1-turbo"`.
-Omitting it uses the image model selected on the Settings page (stored by the
-worker in `image-selection.json`), which defaults to Turbo. Selecting a model
-in Settings requires a completed download; download the chosen checkpoint
-through the model catalog before submitting generation.
+`POST /v1/images/generations` uses Qwen-Image-2.1-Turbo, the image model of
+every hardware tier; `model_id`, when given, must be `"qwen-image-2.1-turbo"`.
+Choosing a tier in Settings downloads it with the tier's other checkpoints.
 Turbo always uses the eight sigmas saved in its `model_index.json`, followed by
 Euler's terminal zero; the request's `steps` does not replace that grid. Its
 scheduler uses shift 1 without dynamic shifting or terminal stretching. The
@@ -329,16 +327,34 @@ Matching those kernels, equal-seed noise, or full numerical output is not
 established by this correction. No GPL source or upstream kernel source is
 copied, and no license is added to Kadan.
 
-Each image component is preloaded completely on the admitted GPU with the most
-available memory. Text stores BF16 weights and performs FP32 forward operations;
-denoising keeps BF16 weights/hidden states and uses library SDPA, normalization,
-SwiGLU and linear operations; VAE uses FP32 convolution and normalization. Text
-prefix K/V is cached for the current sampling request only. The FP32 Euler latent
-and Kadan noise/seed contract are retained. The 1152-channel VAE attention uses
-256-query SDPA slices to bound fallback scratch. All component capacities are preflighted before the queue commits to running.
-Stage workspace admission caps ATen’s allocator, and cancellation is checked at weight-read chunks, layers,
-blocks and VAE attention slices. Insufficient whole-component capacity fails
-admission instead of silently falling back to a different arithmetic path.
+Image stages prefer whole-component residency on the admitted GPU with the most
+available memory. When a component does not fit, weights are read on demand through
+the existing shard reader and transferred for each operator. The ledger reserves
+space for the largest overlapping weights, dtype conversion, host transfer buffers
+and stage workspace. Weights retain their checkpoint precision; this path does not
+quantize them. Repeated disk reads and GPU transfers trade speed for bounded residency.
+
+Text stores BF16 weights and performs FP32 forward operations; denoising keeps
+BF16 weights/hidden states and uses library SDPA, normalization, SwiGLU and linear
+operations. Text prefix K/V is cached for the current sampling request only. The
+FP32 Euler latent and Kadan noise/seed contract are retained.
+
+VAE computation stays on the GPU in FP32. If the full-resolution workspace does
+not fit, the decoder keeps global attention on the full latent grid, then runs
+its convolutional up blocks in 16-cell latent tiles with a 13-cell halo. Only
+the tile interiors are published. The encoder tiles its convolutional down blocks
+with a nine-cell halo and assembles the complete bottleneck before global attention.
+Halos cover convolution dependencies and preserve stride alignment; no blending or
+independent per-tile attention is used. The 1152-channel VAE attention still uses
+256-query SDPA slices to bound scratch. Different convolution shapes may select
+different library kernels; numerical parity and lower-tier performance require
+manual validation on the installed model.
+
+All stage plans are preflighted before the queue commits to running. Preparation
+and execution use the same planner, and stage admission caps ATen's allocator.
+Cancellation is checked during weight reads, layers, blocks and tile loops. If
+neither resident nor streamed/tiled execution fits the available RAM and GPU
+budgets, admission fails; there is no CPU execution fallback.
 
 ATen caches CUDA handles for the process lifetime. In the full worker, all
 workloads synchronize and free their owned allocations on retirement without

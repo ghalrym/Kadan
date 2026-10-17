@@ -57,6 +57,9 @@ class ImageModelTests(unittest.TestCase):
     def test_unknown_image_model_is_rejected(self):
         with self.assertRaises(ValidationError):
             generations.ImageRequest(prompt="test", model_id="unknown")
+        # The base model was removed; Turbo is the only image model.
+        with self.assertRaises(ValidationError):
+            generations.ImageRequest(prompt="test", model_id="qwen-image-2.1")
         with self.assertRaises(ValidationError):
             InferenceTask(
                 input={"feature": "image", "prompt": "test", "model_id": "unknown"}

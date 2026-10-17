@@ -302,7 +302,8 @@ void checkpoint_catalog_units() {
         const auto& hardware = store.hardware_tier(tier);
         assert(hardware.models.at("llm") == id);
         assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
-        assert(!hardware.models.at("image") && !hardware.models.at("video"));
+        assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
+        assert(!hardware.models.at("video"));
         const auto& model = store.entry(id);
         assert(
             model.kind == "llm" && model.layout == "gguf" && model.inference_available
@@ -323,7 +324,12 @@ void checkpoint_catalog_units() {
     }
     assert(store.entry("qwen3.8-flash-next-q3-k-xl").license_notice);
     for (const auto* removed :
-         {"small", "gpt-oss-20b", "medium", "large", "muse-spark-open-q3-xl"})
+         {"small",
+          "gpt-oss-20b",
+          "medium",
+          "large",
+          "muse-spark-open-q3-xl",
+          "qwen-image-2.1"})
         rejects([&] { store.entry(removed); });
     rejects([&] { store.hardware_tier("max"); });
     assert(store.status().at("tiers").size() == 4);
@@ -1203,11 +1209,7 @@ void job_units() {
             .dump();
     Json models = Json::array();
     for (const auto* id :
-         {"small",
-          "qwen-image-2.1",
-          "qwen-image-2.1-turbo",
-          "laya",
-          "h3-fl2va-int8-turbo"}) {
+         {"small", "qwen-image-2.1-turbo", "laya", "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1224,7 +1226,7 @@ void job_units() {
           {"ram_gb", 32},
           {"models",
            {{"llm", "small"},
-            {"image", nullptr},
+            {"image", "qwen-image-2.1-turbo"},
             {"video", nullptr},
             {"speech", nullptr},
             {"transcription", nullptr},
@@ -1243,7 +1245,7 @@ void job_units() {
     );
     const auto initial = store.status();
     assert(initial.at("selected_model_id") == "small");
-    assert(initial.at("selected_image") == "qwen-image-2.1-turbo");
+    assert(!initial.contains("selected_image"));
     auto context = request(
         "context",
         {{"feature", "model_context"},
@@ -1280,15 +1282,23 @@ void job_units() {
         && std::get<ImageRequest>(defaulted.input).steps == 8
     );
     files.cleanup(defaulted.id);
-    rejects([&] { store.select_image("small"); });
-    auto image_selection = request(
-        "image-selection",
-        {{"feature", "image_selection"}, {"model_id", "qwen-image-2.1"}},
-        "configure"
+    // Turbo serves every tier, so images need no tier choice.
+    fs::remove(root / "tier.json");
+    auto untiered = request(
+        "untiered-image", {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
     );
-    prepare_task(image_selection, store, files, running);
-    assert(store.status().at("selected_image") == "qwen-image-2.1");
-    files.cleanup(image_selection.id);
+    prepare_task(untiered, store, files, running);
+    assert(untiered.model == "qwen-image-2.1-turbo");
+    files.cleanup(untiered.id);
+    write_document(root / "tier.json", {{"tier", "go"}});
+    // Image selection was removed; Turbo is every tier's image model.
+    rejects([&] {
+        request(
+            "image-selection",
+            {{"feature", "image_selection"}, {"model_id", "qwen-image-2.1-turbo"}},
+            "configure"
+        );
+    });
     auto image = request(
         "image",
         {{"feature", "image"},
@@ -1299,9 +1309,9 @@ void job_units() {
     );
     prepare_task(image, store, files, running);
     assert(
-        image.model == "qwen-image-2.1"
+        image.model == "qwen-image-2.1-turbo"
         && std::get<ImageRequest>(image.input).width == 2048
-        && std::get<ImageRequest>(image.input).steps == 20
+        && std::get<ImageRequest>(image.input).steps == 8
     );
     bytes(jobs / "image/one.png", "image-one");
     bytes(jobs / "image/two.png", "image-two");

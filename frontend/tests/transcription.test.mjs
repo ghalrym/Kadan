@@ -37,7 +37,7 @@ test('reads and saves both formatting states without changing models', async () 
     assert.equal(await api.requestTranscriptionFormatting(signal), enabled)
     assert.equal(calls[0].name, 'getSettings')
     assert.equal(await api.requestTranscriptionFormatting(signal, enabled), enabled)
-    assert.deepEqual(calls[1].body, { models: {}, whisper_formatting: enabled })
+    assert.deepEqual(calls[1].body, { whisper_formatting: enabled })
     assert.equal(calls[1].name, 'updateSettings')
   }
 })

@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 
+#include "kadan/image_vae_tiles.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::image {
@@ -30,6 +31,56 @@ inline int aten_stage_device(
     if (selected < 0)
         throw ResourceExhausted("image_aten_component_headroom");
     return selected;
+}
+
+struct AtenStagePlan {
+    int device;
+    bool stream_weights;
+    bool tile_vae;
+    Bytes host_bytes;
+    Bytes device_bytes;
+};
+
+// Keep a whole component resident when it fits. Otherwise stream one operator's
+// weights; two largest tensors cover a weight plus bias or dtype conversion.
+inline AtenStagePlan aten_stage_plan(
+    const Snapshot& snapshot,
+    const std::vector<int>& devices,
+    Bytes weights,
+    Bytes largest,
+    Bytes workspace,
+    Bytes tiled_workspace = 0
+) {
+    constexpr Bytes mib = 1024ULL * 1024;
+    const auto host = 2 * largest + 256 * mib;
+    if (host > snapshot.capacity[0] - snapshot.used[0])
+        throw ResourceExhausted("image_aten_host_headroom");
+    const auto fit = [&](Bytes scratch, bool tiled) -> AtenStagePlan {
+        try {
+            return {
+                aten_stage_device(snapshot, devices, weights + scratch),
+                false,
+                tiled,
+                host,
+                weights + scratch
+            };
+        } catch (const ResourceExhausted&) {
+            return {
+                aten_stage_device(snapshot, devices, 2 * largest + scratch),
+                true,
+                tiled,
+                host,
+                2 * largest + scratch
+            };
+        }
+    };
+    try {
+        return fit(workspace, false);
+    } catch (const ResourceExhausted&) {
+        if (!tiled_workspace)
+            throw;
+        return fit(tiled_workspace, true);
+    }
 }
 
 inline Bytes aten_stage_workspace(
@@ -64,4 +115,22 @@ inline Bytes aten_stage_workspace(
     }
     throw std::invalid_argument("image_aten_stage");
 }
+
+// Tiling changes only the convolutional sections. Global bottleneck attention
+// still sees the complete latent grid and is accounted for independently.
+inline Bytes aten_tiled_vae_workspace(AtenImageStage stage, Bytes points) {
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    if (stage == AtenImageStage::vae) {
+        constexpr Bytes side = vae_tile_core + 2 * vae_decode_halo;
+        const auto tile_points = std::min(points, side * side);
+        return 2 * gib + 4 * tile_points * 256 * 288 * 4 + 10 * points * 1152 * 4;
+    }
+    if (stage == AtenImageStage::vae_encoder) {
+        constexpr Bytes side = vae_tile_core + 2 * vae_encode_halo;
+        const auto tile_points = std::min(points, side * side);
+        return 2 * gib + 6 * tile_points * 256 * 96 * 4 + 10 * points * 768 * 4;
+    }
+    return 0;
+}
+
 }  // namespace kadan::image

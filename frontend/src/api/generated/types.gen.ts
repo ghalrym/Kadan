@@ -737,30 +737,6 @@ export type ModelLoadRequest = {
 }
 
 /**
- * ModelSetting
- *
- * A catalog-backed selection; None means no model is selected.
- */
-export type ModelSetting = {
-  /**
-   * Label
-   */
-  label: string
-  /**
-   * Options
-   */
-  options: Array<string>
-  /**
-   * Selected
-   */
-  selected: string | null
-  /**
-   * Type
-   */
-  type: 'LLM' | 'Image' | 'Video' | 'TTS' | 'STT'
-}
-
-/**
  * ModelsResponse
  */
 export type ModelsResponse = {
@@ -768,10 +744,6 @@ export type ModelsResponse = {
    * Models
    */
   models: Array<CheckpointStatus>
-  /**
-   * Selected Image
-   */
-  selected_image: string | null
   /**
    * Selected Model Id
    */
@@ -1063,21 +1035,9 @@ export type ScoreQuestion = {
 }
 
 /**
- * SettingsModels
- *
- * Per-modality selections; an omitted modality is left unchanged.
- */
-export type SettingsModels = {
-  /**
-   * Image
-   */
-  Image?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
-}
-
-/**
  * SettingsRequest
  *
- * Persist the hardware tier, image selection and transcription formatting.
+ * Persist the hardware tier and transcription formatting.
  */
 export type SettingsRequest = {
   /**
@@ -1086,7 +1046,6 @@ export type SettingsRequest = {
    * The user read the license notices of the tier's checkpoints.
    */
   license_acknowledged?: boolean
-  models?: SettingsModels
   /**
    * Tier
    */
@@ -1100,13 +1059,9 @@ export type SettingsRequest = {
 /**
  * SettingsResponse
  *
- * Expose the hardware tier, catalog selections and transcription formatting.
+ * Expose the hardware tier and transcription formatting.
  */
 export type SettingsResponse = {
-  /**
-   * Models
-   */
-  models: Array<ModelSetting>
   /**
    * Tier
    *
@@ -1525,7 +1480,7 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Model Id
    */
-  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
+  model_id?: 'qwen-image-2.1-turbo' | null
   /**
    * Prompt
    */
@@ -1563,7 +1518,7 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    *
    * Omit to use the image model selected in Settings.
    */
-  model_id?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
+  model_id?: 'qwen-image-2.1-turbo' | null
   /**
    * Prompt
    */

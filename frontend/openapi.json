@@ -1317,52 +1317,6 @@
         "title": "ModelLoadRequest",
         "type": "object"
       },
-      "ModelSetting": {
-        "description": "A catalog-backed selection; None means no model is selected.",
-        "properties": {
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "options": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Options",
-            "type": "array"
-          },
-          "selected": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Selected"
-          },
-          "type": {
-            "enum": [
-              "LLM",
-              "Image",
-              "Video",
-              "TTS",
-              "STT"
-            ],
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "label",
-          "type",
-          "selected",
-          "options"
-        ],
-        "title": "ModelSetting",
-        "type": "object"
-      },
       "ModelsResponse": {
         "properties": {
           "models": {
@@ -1371,17 +1325,6 @@
             },
             "title": "Models",
             "type": "array"
-          },
-          "selected_image": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Selected Image"
           },
           "selected_model_id": {
             "anyOf": [
@@ -1397,8 +1340,7 @@
         },
         "required": [
           "models",
-          "selected_model_id",
-          "selected_image"
+          "selected_model_id"
         ],
         "title": "ModelsResponse",
         "type": "object"
@@ -1907,42 +1849,15 @@
         "title": "ScoreQuestion",
         "type": "object"
       },
-      "SettingsModels": {
-        "additionalProperties": false,
-        "description": "Per-modality selections; an omitted modality is left unchanged.",
-        "properties": {
-          "Image": {
-            "anyOf": [
-              {
-                "enum": [
-                  "qwen-image-2.1",
-                  "qwen-image-2.1-turbo"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Image"
-          }
-        },
-        "title": "SettingsModels",
-        "type": "object"
-      },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Persist the hardware tier, image selection and transcription formatting.",
+        "description": "Persist the hardware tier and transcription formatting.",
         "properties": {
           "license_acknowledged": {
             "default": false,
             "description": "The user read the license notices of the tier's checkpoints.",
             "title": "License Acknowledged",
             "type": "boolean"
-          },
-          "models": {
-            "$ref": "#/components/schemas/SettingsModels",
-            "default": {}
           },
           "tier": {
             "anyOf": [
@@ -1977,15 +1892,8 @@
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose the hardware tier, catalog selections and transcription formatting.",
+        "description": "Expose the hardware tier and transcription formatting.",
         "properties": {
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/ModelSetting"
-            },
-            "title": "Models",
-            "type": "array"
-          },
           "tier": {
             "anyOf": [
               {
@@ -2020,7 +1928,6 @@
         "required": [
           "tier",
           "tiers",
-          "models",
           "whisper_formatting"
         ],
         "title": "SettingsResponse",
@@ -2705,10 +2612,7 @@
           "model_id": {
             "anyOf": [
               {
-                "enum": [
-                  "qwen-image-2.1",
-                  "qwen-image-2.1-turbo"
-                ],
+                "const": "qwen-image-2.1-turbo",
                 "type": "string"
               },
               {
@@ -2787,10 +2691,7 @@
           "model_id": {
             "anyOf": [
               {
-                "enum": [
-                  "qwen-image-2.1",
-                  "qwen-image-2.1-turbo"
-                ],
+                "const": "qwen-image-2.1-turbo",
                 "type": "string"
               },
               {
@@ -3850,7 +3751,7 @@
         ]
       },
       "put": {
-        "description": "Persist the hardware tier and queue downloads of its checkpoints, the image selection and transcription formatting. The tier selects the language model and unloads a resident language model of another tier after earlier chats finish.",
+        "description": "Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language and image models and unloads a resident language model of another tier after earlier chats finish.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

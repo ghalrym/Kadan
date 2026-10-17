@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference_task import ModelContextTask
@@ -8,9 +8,7 @@ from api.routes.v1 import models
 
 class ContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_change_only_persists_and_never_unloads(self):
-        snapshot = SimpleNamespace(
-            models=[], selected_model_id="small", selected_image=None
-        )
+        snapshot = SimpleNamespace(models=[], selected_model_id="small")
         with (
             patch.object(models.inference, "models_status", return_value=snapshot),
             patch.object(models.inference, "submit", new=AsyncMock()) as submit,
