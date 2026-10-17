@@ -88,3 +88,6 @@ pnpm-debug.log*
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Archives from the documented local Tsuchi backup procedure
+/tsuchi-backup*.tar.gz
