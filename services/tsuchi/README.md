@@ -15,14 +15,14 @@ Kadan at <http://127.0.0.1:8630> is the everyday agent interface. Tsuchi's site 
 
 Open <http://127.0.0.1:8620>. Create an agent namespace using a name and a key such as `research`. No accounts, passwords, API credentials, or sample data are created. Interactive API documentation is at <http://127.0.0.1:8620/docs> and the schema is at `/openapi.json`.
 
-Compose publishes **127.0.0.1 only**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Keep the service on loopback or a private container network. Do not publish it to the internet. The container's `0.0.0.0:8000` listener is inside Docker; its host port remains loopback-only.
+Compose publishes **127.0.0.1 only**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Keep the service on loopback or a private container network. Do not publish it to the internet. Compose runs `tsuchi-api`, whose `0.0.0.0:8000` listener stays inside Docker, and `tsuchi-frontend`, an nginx container that serves the site and proxies `/api`, `/docs` and `/openapi.json` to it. Only the frontend publishes a port, on loopback.
 
-The service runs as UID 10001 with a read-only application filesystem. The `tsuchi_tsuchi_data` Docker volume holds SQLite and uploaded files. Restarting or rebuilding the container preserves data. `docker compose down` preserves the volume; **do not use `down -v` with data you want to keep**.
+The service runs as UID 10001 with a read-only application filesystem. The `tsuchi_tsuchi_data` Docker volume holds SQLite and uploaded files. Restarting or rebuilding the containers preserves data. `docker compose down` preserves the volume; **do not use `down -v` with data you want to keep**.
 
 Set `TSUCHI_PORT` or `TSUCHI_MAX_UPLOAD_BYTES` in the repository root `.env` to change the local port or upload limit. The default per-file limit is 100 MiB. There is no GPU requirement or model download.
 
 ```sh
-docker compose logs --tail=100 tsuchi
+docker compose logs --tail=100 tsuchi-api tsuchi-frontend
 curl http://127.0.0.1:8620/api/health
 docker compose stop
 ```
@@ -81,8 +81,8 @@ Update a resource with `PUT /resources/{id}`, its complete editable fields, and 
 For a complete backup of all namespaces, stop the service and archive the whole volume. Stop it first so the SQLite database and files cannot change during the copy. The commands below apply to Tsuchi managed by this repository's root Compose project. If you still use the standalone deployment, stop and back up through that original Compose project first; root Compose cannot stop a container belonging to another project. Run these commands from the repository root, writing the backup somewhere with enough free disk space:
 
 ```sh
-docker compose stop tsuchi
-docker compose run --rm -T --no-deps --entrypoint tar tsuchi \
+docker compose stop tsuchi-api tsuchi-frontend
+docker compose run --rm -T --no-deps --entrypoint tar tsuchi-api \
   -czf - -C /data . > tsuchi-backup.tar.gz
 docker compose up -d
 ```
@@ -96,17 +96,17 @@ tar -tzf tsuchi-backup.tar.gz
 Restore your own trusted backup into a **new empty volume**, preserving the original. The following uses a separate Compose project and refuses to extract into a nonempty data directory:
 
 ```sh
-TSUCHI_DATA_VOLUME=tsuchi-restored-data docker compose -p tsuchi-restored run --rm -T --no-deps --entrypoint sh tsuchi \
+TSUCHI_DATA_VOLUME=tsuchi-restored-data docker compose -p tsuchi-restored run --rm -T --no-deps --entrypoint sh tsuchi-api \
   -c 'test -z "$(ls -A /data)" && tar -xzf - -C /data --no-same-owner' \
   < tsuchi-backup.tar.gz
-TSUCHI_DATA_VOLUME=tsuchi-restored-data TSUCHI_PORT=8621 docker compose -p tsuchi-restored up -d --no-deps tsuchi
+TSUCHI_DATA_VOLUME=tsuchi-restored-data TSUCHI_PORT=8621 docker compose -p tsuchi-restored up -d --no-deps tsuchi-api tsuchi-frontend
 ```
 
 Inspect the restored instance at <http://127.0.0.1:8621> before switching anything over. Coordinate this additional service and port with the server owner. The original volume is untouched.
 
 ## Development
 
-Python 3.14 and Node 24 or later are used for the verified build. The backend serves the built frontend, so production needs one process and one exposed local port.
+Python 3.14 and Node 24 or later are used for the verified build. Outside Docker, the backend serves the built frontend from `web/dist`, so one process and one local port are enough. In Compose the frontend runs in its own nginx container.
 
 Run from `services/tsuchi`:
 

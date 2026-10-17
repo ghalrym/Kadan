@@ -9,7 +9,7 @@ from pathlib import Path
 
 import typer
 
-from bin.process import ROOT, run
+from bin.process import REPOSITORY, ROOT, run
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -89,7 +89,10 @@ def cpp_sources() -> list[Path]:
 @app.command("format")
 def format_python(write: bool = False) -> None:
     """Check Python formatting, or apply it with --write."""
-    run([sys.executable, "-m", "ruff", "format", *([] if write else ["--check"]), "."])
+    run(
+        [sys.executable, "-m", "ruff", "format", *([] if write else ["--check"]), "."],
+        cwd=REPOSITORY,
+    )
 
 
 @app.command("cpp-format")

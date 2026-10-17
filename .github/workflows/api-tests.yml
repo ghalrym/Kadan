@@ -19,11 +19,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: services/hikari/requirements-dev.txt
       - name: Install formatter
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r services/hikari/requirements-dev.txt
       - name: Check Python formatting
-        run: python bin/hikari.py check format
+        run: python services/hikari/bin/hikari.py check format
   backend:
     name: API unit tests
     runs-on: ubuntu-latest
@@ -37,13 +37,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: api/requirements*.txt
+          cache-dependency-path: services/hikari/api/requirements*.txt
       - name: Install unit-test dependencies
         run: |
-          python -m pip install -r api/requirements.txt -r bin/requirements.txt
+          python -m pip install -r services/hikari/api/requirements.txt -r services/hikari/bin/requirements.txt
       - name: Run isolated unit tests
         run: |
-          python bin/hikari.py check api
+          python services/hikari/bin/hikari.py check api
   frontend-lint:
     name: Frontend lint
     runs-on: ubuntu-latest
@@ -54,10 +54,10 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --prefix frontend
+          cache-dependency-path: services/hikari/frontend/package-lock.json
+      - run: npm ci --prefix services/hikari/frontend
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python3 -m pip install -r bin/requirements.txt
-      - run: python3 bin/hikari.py check frontend-lint
+      - run: python3 -m pip install -r services/hikari/bin/requirements.txt
+      - run: python3 services/hikari/bin/hikari.py check frontend-lint

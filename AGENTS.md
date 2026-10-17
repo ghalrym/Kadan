@@ -7,6 +7,8 @@
 
 ## API
 
+Hikari lives in `services/hikari/`. Paths in the API, Database and Developer tooling sections are relative to that directory.
+
 - Keep imports at module scope. Use function-local imports only when strictly necessary, and explain why.
 - `api/routes/` owns HTTP endpoints. Mirror the URL hierarchy: `/v1/chat/completions` belongs in `api/routes/v1/chat/completions.py`.
 - Keep each route's request and response Pydantic models in that route's file.
@@ -26,7 +28,7 @@
 From the repository root, generate the API schema, then the frontend client:
 
 ```sh
-.venv/bin/python bin/hikari.py generate api
+.venv/bin/python services/hikari/bin/hikari.py generate api
 ```
 
 # Developer tooling

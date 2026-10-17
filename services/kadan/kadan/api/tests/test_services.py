@@ -458,14 +458,14 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
         requests.append(str(request.url))
         if unavailable:
             raise httpx.ConnectError("offline", request=request)
-        if request.url.host == "tsuchi":
+        if request.url.host == "tsuchi-api":
             return httpx.Response(200, json={"status": "ok"})
         return httpx.Response(200, json={"tier": None, "tiers": []})
 
     async def status():
         settings = Settings(
-            tsuchi_url="http://tsuchi:8000",
-            hikari_url="http://api:8000",
+            tsuchi_url="http://tsuchi-api:8000",
+            hikari_url="http://hikari-api:8000",
             tsuchi_browser_url="http://localhost:18620",
             hikari_browser_url="http://localhost:18088",
             _env_file=None,
@@ -475,8 +475,8 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
 
     result = asyncio.run(status())
     assert set(requests) == {
-        "http://tsuchi:8000/api/health",
-        "http://api:8000/v1/settings",
+        "http://tsuchi-api:8000/api/health",
+        "http://hikari-api:8000/v1/settings",
     }
     assert result.tsuchi.state == ("unavailable" if unavailable else "ready")
     assert result.hikari.state == ("unavailable" if unavailable else "tier_required")

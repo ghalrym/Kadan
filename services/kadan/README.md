@@ -1,6 +1,6 @@
 # Kadan agent app
 
-Kadan is the everyday agent interface in this repository. This service coordinates conversations and workspace browsing; Tsuchi stores the records and Hikari supplies inference. The React interface and FastAPI coordinator ship together in one image.
+Kadan is the everyday agent interface in this repository. This service coordinates conversations and workspace browsing; Tsuchi stores the records and Hikari supplies inference. The React interface and FastAPI coordinator ship as separate frontend and API images.
 
 ## Available in this prototype
 
@@ -19,25 +19,27 @@ Selecting a tier and managing model downloads remain explicit actions in Hikari 
 Build from the repository root:
 
 ```sh
-docker build -t kadan-agent:local services/kadan
+docker build -t kadan-api:local services/kadan
+docker build -t kadan-frontend:local services/kadan/web
 ```
+
+Compose runs these as `kadan-api` and `kadan-frontend`. The frontend image serves the compiled interface with nginx and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
 
 The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs point at the loopback ports published on the host.
 
 | Variable | Compose value | Purpose |
 | --- | --- | --- |
-| `KADAN_TSUCHI_URL` | `http://tsuchi:8000` | Storage API inside Docker |
-| `KADAN_HIKARI_URL` | `http://api:8000` | Inference API inside Docker |
+| `KADAN_TSUCHI_URL` | `http://tsuchi-api:8000` | Storage API inside Docker |
+| `KADAN_HIKARI_URL` | `http://hikari-api:8000` | Inference API inside Docker |
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
 | `KADAN_HIKARI_BROWSER_URL` | `http://127.0.0.1:8088` | Hikari operator interface; Settings is `/settings` |
-| `KADAN_FRONTEND_DIRECTORY` | `/app/web/dist` | Compiled interface |
 | `KADAN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","::1"]` (default) | Exact HTTP request hosts and additional browser-link hosts |
 
-The image listens on `0.0.0.0:8630` inside its container. Root Compose publishes it as `127.0.0.1:8630:8630` by default. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
+The API image listens on `0.0.0.0:8630` inside its container and is not published; the frontend publishes `127.0.0.1:8630:8080`. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
 
 Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. The service rejects other HTTP Host headers and cross-origin writes; these guards do not replace authentication.
 
-For owner-authorized access from another computer on a trusted LAN, use a machine-specific Compose override to publish port 8630 on the server's exact LAN address. Add that address to `KADAN_ALLOWED_HOSTS`, retaining loopback for the image healthcheck. Set both browser URLs to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Tsuchi also needs that address in `TSUCHI_ALLOWED_HOSTS` and a matching LAN port binding. The frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
+For owner-authorized access from another computer on a trusted LAN, use a deployment-specific Compose override to publish `kadan-frontend` on the server's exact LAN address, mapping host port 8630 to container port 8080. Publish `tsuchi-frontend` and `hikari-frontend` on that address at their respective host ports, also targeting container port 8080. Keep the API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining loopback for the image healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
 
 On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 
@@ -82,6 +84,6 @@ npm test --prefix web
 npm run build --prefix web
 ```
 
-Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python bin/hikari.py check format` also covers this service.
+Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
 
 The standalone prototype was manually checked on desktop against temporary isolated storage for agent/persona creation, persona editing, conversation persistence, memory search, Space navigation and file metadata browsing. This monorepo packaging still needs owner verification with the combined Compose stack. Mobile rendering, browser download completion and real inference have not been verified. No model was downloaded or tier selected during prototype work.

@@ -1,7 +1,6 @@
 .git
 .venv
-web/node_modules
-web/dist
+web
 __pycache__
 **/__pycache__
 .pytest_cache
