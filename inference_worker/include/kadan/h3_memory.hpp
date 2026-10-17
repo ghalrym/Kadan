@@ -5,6 +5,12 @@
 #include "kadan/resources.hpp"
 
 namespace kadan::video {
+// Keep half the spare host memory for changing physical pressure and metadata.
+// The inventory applies the final cap; no nominal tier decides admission.
+inline Bytes h3_cache_memory(Bytes available, Bytes execution) {
+    return available > execution ? (available - execution) / 2 : 0;
+}
+
 // Bound the largest streamed execution stage, not the entire checkpoint.
 inline Bytes h3_request_memory(const H3Profile& profile, std::size_t prompt_bytes) {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;

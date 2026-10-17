@@ -378,8 +378,20 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
 
 HardwareTier HardwareTier::parse(const Json& value) {
     HardwareTier tier{
-        value.at("id"), value.at("name"), value.at("vram_gb"), value.at("ram_gb"), {}
+        value.at("id"),
+        value.at("name"),
+        value.at("vram_gb"),
+        value.at("ram_gb"),
+        {value.at("video_defaults").at("duration"),
+         value.at("video_defaults").at("resolution")},
+        {}
     };
+    preparation_check(
+        tier.video_defaults.duration >= 1 && tier.video_defaults.duration <= 15
+            && (tier.video_defaults.resolution == "480p"
+                || tier.video_defaults.resolution == "768p"),
+        "Invalid hardware tier video defaults"
+    );
     preparation_check(
         value.at("models").is_object() && value.at("models").size() == 6,
         "Invalid hardware tier models"
@@ -961,6 +973,9 @@ Json ModelStore::status() const {
              {"name", item.name},
              {"vram_gb", item.vram_gb},
              {"ram_gb", item.ram_gb},
+             {"video_defaults",
+              {{"duration", item.video_defaults.duration},
+               {"resolution", item.video_defaults.resolution}}},
              {"models", assigned}}
         );
     }

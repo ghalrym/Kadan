@@ -221,6 +221,7 @@ export type {
   UpdateSettingsResponse,
   UpdateSettingsResponses,
   ValidationError,
+  VideoDefaults,
   VideoGenerationRequest,
   VideoGenerationResponse,
   VideoJob,

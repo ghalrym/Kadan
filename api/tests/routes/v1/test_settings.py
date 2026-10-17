@@ -45,6 +45,7 @@ def snapshot(tier=None):
                     "name": "Go",
                     "vram_gb": 8,
                     "ram_gb": 32,
+                    "video_defaults": {"duration": 5, "resolution": "480p"},
                     "models": {
                         "llm": "qwen3.8-27b-q4-k-m",
                         "image": "qwen-image-2.1-turbo",
@@ -81,6 +82,8 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(models["formatting"].status, "complete")
         self.assertEqual(models["image"].id, "qwen-image-2.1-turbo")
         self.assertIsNone(models["video"])
+        self.assertEqual(tier.video_defaults.duration, 5)
+        self.assertEqual(tier.video_defaults.resolution, "480p")
 
     async def test_tier_selection_saves_and_queues_downloads(self):
         body = settings.SettingsRequest(tier="go", license_acknowledged=True)

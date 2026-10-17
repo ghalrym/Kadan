@@ -75,8 +75,8 @@ and libarchive reads checkpoint containers.
 ## Hardware tier text models
 
 Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
-language model, Qwen-Image-2.1-Turbo (the only image model) and the S1-mini
-formatter; video, speech and transcription assignments are still open (`null`).
+language model, Qwen-Image-2.1-Turbo (the only image model), H3 FL2VA INT8 + Turbo
+and the S1-mini formatter; speech and transcription assignments remain open (`null`).
 Choosing a tier persists `tier.json` in the model store and selects its language
 and image models; the API then queues the tier's incomplete downloads through
 the existing FIFO.
@@ -140,6 +140,61 @@ speed and memory fit on each tier are unmeasured. Manually test each tier
 through the existing API queue: download, load, short and streamed chat,
 multi-turn history, cancellation, unload and context admission, recording
 actual memory and loading, prefill and decode times.
+
+## Hardware tier video
+
+All four tiers use the existing pinned `h3-fl2va-int8-turbo` audiovisual bundle.
+The catalog owns the clip defaults exposed by Settings and used by the video
+page and requests that omit duration or resolution:
+
+| Tier | VRAM / RAM | Default clip |
+| --- | --- | --- |
+| Go | 8 GB / 32 GB | 480p, 5 seconds |
+| Plus | 16 GB / 64 GB | 480p, 8 seconds |
+| Pro | 24 GB / 128 GB | 768p, 5 seconds |
+| Ultra | 48 GB / 512 GB | 768p, 8 seconds |
+
+These are starting settings. Every tier accepts explicit 1–15 second, 480p or
+768p requests; admission uses the actual request geometry, prompt and available
+memory. A larger request can wait for resources rather than fit its nominal tier.
+The native worker retains the existing queue, cancellation, joint audio/video
+denoising, stereo audio decoding and MP4 packaging.
+
+The supported H3 execution format is ConvRot INT8 for text and denoiser
+projections, with the existing BF16/F32 dense weights and Turbo adapter, FP16
+video VAE and F32 audio VAE. Checkpoints stay on disk and projections stream in
+bounded slices. GPU workspaces and weight banks are admitted per physical
+device; two 24 GB devices do not provide one contiguous 48 GB allocation.
+Text encoding, denoising, audio decoding and temporally chunked video decoding
+run in sequence. Existing resident denoiser stages use device memory when their
+admission succeeds. The F32/F64 precision policy is unchanged.
+
+The host cache uses half the memory remaining after the request's execution
+envelope, capped by the serialized and decoded weight inventory. When the full
+inventory does not fit, completed stages retire their cached tensors so the
+next stage can reuse the cache. Host and device retention are decided separately.
+Larger machines retain completed stages when the full inventory fits. Device
+retirement preserves bank partitions and reservations; it makes room for later
+weights, without enlarging the resident activation budget. Each request checks
+physical and ledger headroom before execution, so the queue owner can release
+and reload caches for a larger request or changed memory pressure.
+
+The [official model card](https://huggingface.co/MiniMaxAI/MiniMax-H3) describes
+the joint audiovisual transformer and separate VAEs. The
+[8 GB benchmark installation](https://github.com/YHK-AI/MiniMax-H3-Benchmark/blob/main/docs/INSTALLATION.md)
+demonstrates another implementation using a pruned INT8 denoiser, NVFP4 text
+encoder and disk-backed loading. Kadan retains its supported, pinned INT8
+bundle (68,972,509,501 download bytes); that benchmark's smaller bundle and
+timings are not Kadan measurements. The
+[MiniMax integration index](https://github.com/MiniMax-AI/awesome-minimax-h3-integration)
+also lists NF4 and GGUF paths for other implementations. Those formats are not
+enabled for Kadan H3. Existing checkpoint license notices and acknowledgment
+remain in place.
+
+Tier defaults and memory policy are covered by CPU unit checks. Generation
+quality, speed, physical peak memory, audio synchronization and cancellation
+during inference still require owner verification through the existing API queue
+on each target machine. No inference or GPU load tests were run for this change.
 
 Build and install the `inference-runtime` component using the options in
 [`api/Dockerfile`](../api/Dockerfile). The former standalone worker executables

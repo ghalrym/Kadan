@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DownloadStatus = Literal[
     "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
@@ -52,6 +52,13 @@ class TierModels(BaseModel):
     formatting: str | None = None
 
 
+class VideoDefaults(BaseModel):
+    """Suggested clip settings; request limits and memory admission are separate."""
+
+    duration: int = Field(ge=1, le=15)
+    resolution: Literal["480p", "768p"]
+
+
 class HardwareTier(BaseModel):
     """A hardware profile fixing one checkpoint per modality; None is unassigned."""
 
@@ -59,6 +66,7 @@ class HardwareTier(BaseModel):
     name: str
     vram_gb: int
     ram_gb: int
+    video_defaults: VideoDefaults
     models: TierModels
 
 

@@ -12,6 +12,60 @@ void check(bool value) {
         throw std::runtime_error("test_failed");
 }
 
+class InventoryCompute final : public kadan::video::H3Compute {
+public:
+    bool fits = false;
+    kadan::Bytes requested = 0;
+
+    bool prepare_weights(kadan::Bytes bytes) override {
+        requested = bytes;
+        return fits;
+    }
+
+    void dense(
+        std::span<const float>,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&,
+        bool
+    ) override {
+        throw std::runtime_error("unexpected_inference");
+    }
+
+    void attention(
+        std::span<const float>,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        bool,
+        std::span<float>,
+        const std::atomic_bool&,
+        bool
+    ) override {
+        throw std::runtime_error("unexpected_inference");
+    }
+
+    void convrot(
+        std::span<const std::uint8_t>,
+        std::span<const float>,
+        std::span<const float>,
+        std::span<const float>,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        std::span<float>,
+        const std::atomic_bool&
+    ) override {
+        throw std::runtime_error("unexpected_inference");
+    }
+};
+
 int main() {
     char folder[] = "/tmp/kadan-h3-header-XXXXXX";
     check(mkdtemp(folder));
@@ -44,9 +98,27 @@ int main() {
         write(length);
         auto cache =
             kadan::video::h3_weight_cache(resources, paths, 1024 * 1024, cancel);
-        check(bool(cache));
-        cache.reset();
+        check(bool(cache.host));
+        check(!cache.retain_host_stages && !cache.retain_device_stages);
+        cache = {};
         check(resources->snapshot().used[0] == 0);
+    }
+    {
+        // The single BF16 scalar needs 2 raw + 4 decoded bytes. The generous
+        // budget is capped to the actual inventory plus bounded cache metadata.
+        auto cache =
+            kadan::video::h3_weight_cache(resources, paths, 48 * 1024 * 1024, cancel);
+        check(cache.retain_host_stages);
+        check(cache.host->reserved_bytes() == 8 * 1024 * 1024 + 6);
+    }
+    check(resources->snapshot().used[0] == 0);
+    auto compute = std::make_shared<InventoryCompute>();
+    for (bool fits : {false, true}) {
+        compute->fits = fits;
+        auto cache =
+            kadan::video::h3_weight_cache(resources, paths, 0, cancel, compute);
+        check(compute->requested == 4);
+        check(cache.retain_device_stages == fits && !cache.host);
     }
     write(8193);
     bool rejected = false;

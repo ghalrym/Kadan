@@ -648,6 +648,33 @@ void inventory_cases() {
     check(inventory.stored_bytes == 24);
 }
 
+void cache_retirement() {
+    auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
+    ReadCache cache(resources, 4096, kadan::Workload::video);
+    ReadCache::Key text{}, denoiser{};
+    text.inode = 1;
+    denoiser.inode = 2;
+    std::array<std::uint8_t, 4> output{};
+    auto source = [](auto, auto target) {
+        std::fill(target.begin(), target.end(), 7);
+    };
+    cache.read(text, 4, 0, output, source, nullptr, 0);
+    cache.read(text, 4, 0, output, source, nullptr, 1);
+    cache.read(denoiser, 4, 0, output, source, nullptr);
+    check(cache.stats().entries == 3);
+    const auto before = cache.stats();
+    cache.release_sources({&text, 1});
+    check(cache.stats().entries == 1 && cache.stats().allocated < before.allocated);
+    check(cache.reserved_bytes() == 4096 && resources->snapshot().used[0] == 4096);
+    cache.read(denoiser, 4, 0, output, source, nullptr);
+    check(cache.stats().source_bytes == before.source_bytes);
+    cache.read(text, 4, 0, output, source, nullptr);
+    check(cache.stats().source_bytes == before.source_bytes + 4);
+    check(std::all_of(output.begin(), output.end(), [](auto value) {
+        return value == 7;
+    }));
+}
+
 void converted_cache_cases() {
     Fixture f;
     f.write(
@@ -841,6 +868,7 @@ int main() {
     try {
         u32_tensor();
         compressed_nvfp4_rows();
+        cache_retirement();
         converted_cache_cases();
         cache_cases();
         inventory_cases();

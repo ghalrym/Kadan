@@ -2127,6 +2127,9 @@
             "title": "Ram Gb",
             "type": "integer"
           },
+          "video_defaults": {
+            "$ref": "#/components/schemas/VideoDefaults"
+          },
           "vram_gb": {
             "title": "Vram Gb",
             "type": "integer"
@@ -2137,6 +2140,7 @@
           "name",
           "vram_gb",
           "ram_gb",
+          "video_defaults",
           "models"
         ],
         "title": "TierSetting",
@@ -2313,6 +2317,31 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VideoDefaults": {
+        "description": "Suggested clip settings; request limits and memory admission are separate.",
+        "properties": {
+          "duration": {
+            "maximum": 15.0,
+            "minimum": 1.0,
+            "title": "Duration",
+            "type": "integer"
+          },
+          "resolution": {
+            "enum": [
+              "480p",
+              "768p"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "duration",
+          "resolution"
+        ],
+        "title": "VideoDefaults",
+        "type": "object"
+      },
       "VideoGenerationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2352,21 +2381,34 @@
             "type": "string"
           },
           "resolution": {
-            "default": "768p",
-            "enum": [
-              "480p",
-              "768p"
+            "anyOf": [
+              {
+                "enum": [
+                  "480p",
+                  "768p"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Resolution",
-            "type": "string"
+            "description": "Omit for the selected tier default.",
+            "title": "Resolution"
           },
           "seconds": {
-            "default": 8,
-            "description": "Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.",
-            "maximum": 15.0,
-            "minimum": 1.0,
-            "title": "Seconds",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 15.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.",
+            "title": "Seconds"
           },
           "seed": {
             "default": 42,
@@ -3751,7 +3793,7 @@
         ]
       },
       "put": {
-        "description": "Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language and image models and unloads a resident language model of another tier after earlier chats finish.",
+        "description": "Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

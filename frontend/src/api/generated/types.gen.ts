@@ -1203,6 +1203,7 @@ export type TierSetting = {
    * Ram Gb
    */
   ram_gb: number
+  video_defaults: VideoDefaults
   /**
    * Vram Gb
    */
@@ -1308,6 +1309,22 @@ export type ValidationError = {
 }
 
 /**
+ * VideoDefaults
+ *
+ * Suggested clip settings; request limits and memory admission are separate.
+ */
+export type VideoDefaults = {
+  /**
+   * Duration
+   */
+  duration: number
+  /**
+   * Resolution
+   */
+  resolution: '480p' | '768p'
+}
+
+/**
  * VideoGenerationRequest
  */
 export type VideoGenerationRequest = {
@@ -1333,14 +1350,16 @@ export type VideoGenerationRequest = {
   prompt: string
   /**
    * Resolution
+   *
+   * Omit for the selected tier default.
    */
-  resolution?: '480p' | '768p'
+  resolution?: '480p' | '768p' | null
   /**
    * Seconds
    *
-   * Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.
+   * Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.
    */
-  seconds?: number
+  seconds?: number | null
   /**
    * Seed
    */

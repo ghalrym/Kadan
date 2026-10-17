@@ -365,7 +365,7 @@ void unpack(
 }
 }  // namespace h3
 
-std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(
+H3WeightCache h3_weight_cache(
     std::shared_ptr<Resources> resources,
     const H3GenerationPaths& paths,
     Bytes limit,
@@ -399,38 +399,37 @@ std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(
         }
     }
     stop(cancel);
+    H3WeightCache result;
     if (compute) {
         const auto execution_bytes = checkpoint::weight_bytes_add(
             inventory.floating_f32_bytes, inventory.raw_nonfloating_bytes
         );
-        compute->prepare_weights(execution_bytes);
+        result.retain_device_stages = compute->prepare_weights(execution_bytes);
         report_weight_inventory(inventory, hook);
         report_weight_placement(*compute, hook);
     }
     if (!limit)
-        return {};
-    // Raw integer and decoded float weights share one envelope, including metadata.
-    const auto selected = std::min(
-        limit,
+        return result;
+    // A shard can cache both its serialized and decoded floating representation.
+    // Include both plus metadata, rather than assuming only the larger one exists.
+    const auto inventory_bytes = checkpoint::weight_bytes_add(
         checkpoint::weight_bytes_add(
-            std::max(
-                inventory.stored_bytes,
-                checkpoint::weight_bytes_add(
-                    inventory.floating_f32_bytes, inventory.raw_nonfloating_bytes
-                )
-            ),
-            8 * 1024 * 1024
-        )
+            inventory.stored_bytes, inventory.floating_f32_bytes
+        ),
+        8 * 1024 * 1024
     );
-    return std::make_shared<checkpoint::ReadCache>(
+    const auto selected = std::min(limit, inventory_bytes);
+    result.retain_host_stages = selected == inventory_bytes;
+    result.host = std::make_shared<checkpoint::ReadCache>(
         std::move(resources), selected, Workload::video
     );
+    return result;
 }
 
 H3Generation::H3Generation(
     std::shared_ptr<Resources> resources,
     std::shared_ptr<H3Compute> compute,
-    std::shared_ptr<checkpoint::ReadCache> cache,
+    H3WeightCache cache,
     std::vector<int> devices,
     std::shared_ptr<MediaSessionActivity> activity
 )
@@ -519,10 +518,37 @@ void H3Generation::execute(
     if (hook)
         hook("tokenized", nt);
     std::vector<float> text(nt * 5120);
+    auto retire = [&](std::initializer_list<const std::string*> completed) {
+        const bool host = cache_.host && !cache_.retain_host_stages;
+        const bool device = compute_ && !cache_.retain_device_stages;
+        if (!host && !device)
+            return;
+        Admission metadata(resources_, 32 * 1024 * 1024);
+        auto budget = std::make_shared<checkpoint::MemoryBudget>(32 * 1024 * 1024);
+        for (const auto* path : completed) {
+            stop(cancel);
+            const std::filesystem::path file(*path);
+            checkpoint::Limits limits;
+            limits.metadata_value_bytes = 8192;
+            checkpoint::Shard shard(
+                file.parent_path().c_str(), file.filename().string(), budget, limits
+            );
+            std::pmr::vector<WeightIdentity> sources(budget.get());
+            sources.reserve(shard.tensor_count());
+            for (std::size_t i = 0; i < shard.tensor_count(); ++i)
+                sources.push_back(shard.tensor_identity(shard.tensor_at(i).name));
+            shard.check_unchanged();
+            if (host)
+                cache_.host->release_sources(sources);
+            if (device)
+                compute_->release_weights(sources);
+        }
+    };
     H3TextEncoder text_model(resources_, compute_);
-    load(text_model, paths.text, cancel, cache_);
+    load(text_model, paths.text, cancel, cache_.host);
     text_model.execute({ids.data(), nt}, workspace.path("features"), cancel, hook);
     text_model.unload();
+    retire({&paths.text});
     read_tensor(
         workspace.path("features"),
         "KADAN_H3_CONDITIONING_F32_V1\n" + std::to_string(nt) + " 5120\nF32LE\n",
@@ -568,10 +594,10 @@ void H3Generation::execute(
             tags[i] = 2;
         }
     H3Denoiser denoiser(resources_, compute_);
-    load(denoiser, paths.denoiser, cancel, cache_);
+    load(denoiser, paths.denoiser, cancel, cache_.host);
     const std::filesystem::path adapter(paths.turbo);
     denoiser.load_turbo(
-        adapter.parent_path().c_str(), adapter.filename().string(), cancel, cache_
+        adapter.parent_path().c_str(), adapter.filename().string(), cancel, cache_.host
     );
 #ifdef KADAN_WORKER_CUDA
     std::optional<ResidentDenoising> resident;
@@ -641,13 +667,18 @@ void H3Generation::execute(
     }
 #endif
     denoiser.unload();
+    retire({&paths.denoiser, &paths.turbo});
     if (!paths.audio_vae.empty()) {
         Admission audio_output(resources_, at * 800 * 2 * sizeof(float) + 8192);
         std::vector<float> waveform(at * 800 * 2);
         H3AudioDecoder audio_decoder(resources_);
         const std::filesystem::path asset(paths.audio_vae);
         audio_decoder.load(
-            asset.parent_path().c_str(), asset.filename().string(), {}, cancel, cache_
+            asset.parent_path().c_str(),
+            asset.filename().string(),
+            {},
+            cancel,
+            cache_.host
         );
         audio_decoder.decode(
             audio, at, waveform, cancel, [&](const char* phase, std::size_t index) {
@@ -656,6 +687,7 @@ void H3Generation::execute(
             }
         );
         audio_decoder.unload();
+        retire({&paths.audio_vae});
         if (request.output_frames)
             waveform.resize(std::min(waveform.size(), output_frames * 32000 / 24 * 2));
         write_audio(workspace.path("audio"), waveform, cancel);
@@ -665,7 +697,7 @@ void H3Generation::execute(
     std::vector<float> latent(video.size());
     h3::unpack(video, latent, t, h, w);
     H3VideoDecoder decoder(resources_, compute_);
-    load(decoder, paths.vae, cancel, cache_);
+    load(decoder, paths.vae, cancel, cache_.host);
     std::vector<float> chunk(7 * h * w * 24),
         frames(3 * 28 * request.height * request.width),
         tail(3 * 5 * request.height * request.width);
@@ -729,6 +761,7 @@ void H3Generation::execute(
                 write_frame(f);
     }
     decoder.unload();
+    retire({&paths.vae});
     check(written == output_frames, "h3_generation_frame_count");
     output.close();
     check(bool(output), "h3_generation_output_close");

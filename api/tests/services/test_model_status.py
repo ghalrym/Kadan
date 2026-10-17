@@ -114,6 +114,7 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
                 name="Go",
                 vram_gb=8,
                 ram_gb=32,
+                video_defaults={"duration": 5, "resolution": "480p"},
                 models={
                     "llm": "small",
                     "image": None,

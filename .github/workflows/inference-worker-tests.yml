@@ -56,7 +56,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Run clang-tidy
         run: python bin/kadan.py check cpp-lint --build-dir /tmp/kadan-lint
-      - name: Run tokenizer metadata unit tests
+      - name: Run tokenizer and H3 inventory unit tests
         run: |
-          cmake --build /tmp/kadan-lint --target text-tokenizer-tests --parallel 2
-          ctest --test-dir /tmp/kadan-lint -R '^text-tokenizer$' --output-on-failure
+          cmake --build /tmp/kadan-lint --target text-tokenizer-tests h3-inventory-tests --parallel 2
+          ctest --test-dir /tmp/kadan-lint -R '^(text-tokenizer|h3-inventory)$' --output-on-failure

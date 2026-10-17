@@ -3,6 +3,8 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+
+#include "kadan/h3_memory.hpp"
 using namespace kadan::video;
 
 void check(bool b) {
@@ -44,6 +46,18 @@ int main() {
                         == p.video_time * (p.width / 32) * (p.height / 32)
                     );
                 }
+        constexpr kadan::Bytes gib = 1024ULL * 1024 * 1024;
+        const auto go = h3_request_memory(h3_api_profile(480, "16:9", 3), 128);
+        const auto long_video = h3_request_memory(h3_api_profile(768, "16:9", 15), 128);
+        check(go == 9 * gib);
+        check(long_video == 56 * gib);
+        check(h3_cache_memory(32 * gib, go) == 23 * gib / 2);
+        check(h3_cache_memory(512 * gib, long_video) == 228 * gib);
+        check(h3_cache_memory(go, go) == 0);
+        check(h3_cache_memory(go - 1, go) == 0);
+        // A larger request must be readmitted when the existing cache envelope
+        // leaves too little execution room, even if its pages are still untouched.
+        check(32 * gib - h3_cache_memory(32 * gib, go) < long_video);
         const auto maximum = h3_api_profile(768, "16:9", 15);
         check(
             maximum.video_tokens == 107856 && maximum.audio_tokens == 1206
