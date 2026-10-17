@@ -154,10 +154,6 @@ struct WhisperFormattingRequest {
     bool enabled;
 };
 
-struct ImageSelectionRequest {
-    std::string model;
-};
-
 using TaskInput = std::variant<
     ChatRequest,
     ImageRequest,
@@ -170,8 +166,7 @@ using TaskInput = std::variant<
     TierSelectionRequest,
     ContextRequest,
     WhisperSelectionRequest,
-    WhisperFormattingRequest,
-    ImageSelectionRequest>;
+    WhisperFormattingRequest>;
 
 struct EngineConfiguration {
     std::filesystem::path checkpoint;

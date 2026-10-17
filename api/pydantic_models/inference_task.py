@@ -33,7 +33,8 @@ LlmModel = Literal[
     "qwen3.8-flash-next-q3-k-xl",
     "glm-5.3-flash-q3-k-xl",
 ]
-ImageModel = Literal["qwen-image-2.1", "qwen-image-2.1-turbo"]
+# Every hardware tier generates images with Turbo.
+ImageModel = Literal["qwen-image-2.1-turbo"]
 
 
 class ImageTask(TaskInput):
@@ -127,11 +128,6 @@ class WhisperFormattingTask(TaskInput):
     enabled: bool
 
 
-class ImageSelectionTask(TaskInput):
-    feature: Literal["image_selection"] = "image_selection"
-    model_id: ImageModel
-
-
 InferenceInput = Annotated[
     ChatTask
     | ImageTask
@@ -144,8 +140,7 @@ InferenceInput = Annotated[
     | TierSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
-    | WhisperFormattingTask
-    | ImageSelectionTask,
+    | WhisperFormattingTask,
     Field(discriminator="feature"),
 ]
 
@@ -175,7 +170,6 @@ class InferenceTask(BaseModel):
             "model_context",
             "whisper_selection",
             "whisper_formatting",
-            "image_selection",
         )
         if settings != (self.operation == "configure"):
             raise ValueError("Model settings require the configure operation")

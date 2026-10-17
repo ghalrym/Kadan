@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import ImageSelectionTask, WhisperFormattingTask
+from api.pydantic_models.inference_task import WhisperFormattingTask
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1 import settings
 from api.services.inference_errors import InferenceFailure
@@ -31,13 +31,12 @@ def checkpoint(model_id, kind, status="not_downloaded"):
     }
 
 
-def snapshot(selected_image="qwen-image-2.1-turbo", tier=None):
+def snapshot(tier=None):
     return ModelStoreStatus.model_validate(
         {
             "models": [
                 checkpoint("qwen3.8-27b-q4-k-m", "llm", "downloading"),
                 checkpoint("superwhisper-s1-mini", "formatting", "complete"),
-                checkpoint("qwen-image-2.1", "image"),
                 checkpoint("qwen-image-2.1-turbo", "image"),
             ],
             "tiers": [
@@ -48,7 +47,7 @@ def snapshot(selected_image="qwen-image-2.1-turbo", tier=None):
                     "ram_gb": 32,
                     "models": {
                         "llm": "qwen3.8-27b-q4-k-m",
-                        "image": None,
+                        "image": "qwen-image-2.1-turbo",
                         "video": None,
                         "speech": None,
                         "transcription": None,
@@ -59,7 +58,6 @@ def snapshot(selected_image="qwen-image-2.1-turbo", tier=None):
             "selected_tier": tier,
             "selected_model_id": "qwen3.8-27b-q4-k-m" if tier else None,
             "whisper_formatting": True,
-            "selected_image": selected_image,
         }
     )
 
@@ -81,7 +79,8 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             ("qwen3.8-27b-q4-k-m", "downloading", 5),
         )
         self.assertEqual(models["formatting"].status, "complete")
-        self.assertIsNone(models["image"])
+        self.assertEqual(models["image"].id, "qwen-image-2.1-turbo")
+        self.assertIsNone(models["video"])
 
     async def test_tier_selection_saves_and_queues_downloads(self):
         body = settings.SettingsRequest(tier="go", license_acknowledged=True)
@@ -98,46 +97,17 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         select.assert_awaited_once_with("go")
         download.assert_awaited_once_with("go", True)
         self.assertEqual(result.tier, "go")
-        language = next(model for model in result.models if model.type == "LLM")
-        self.assertEqual(language.selected, "qwen3.8-27b-q4-k-m")
 
-    def test_unknown_tier_and_language_selection_are_rejected(self):
+    def test_unknown_tier_and_model_selections_are_rejected(self):
         with self.assertRaises(ValidationError):
             settings.SettingsRequest(tier="max")
-        with self.assertRaises(ValidationError):
-            settings.SettingsRequest(models={"LLM": "qwen3.8-27b-q4-k-m"})
-
-    def test_image_selection_comes_from_worker(self):
-        with patch.object(settings.inference, "models_status", return_value=snapshot()):
-            result = settings.get_settings()
-        image = next(model for model in result.models if model.type == "Image")
-        self.assertEqual(image.selected, "qwen-image-2.1-turbo")
-        self.assertEqual(image.options, ["qwen-image-2.1", "qwen-image-2.1-turbo"])
-
-    async def test_image_selection_is_submitted_to_worker(self):
-        body = settings.SettingsRequest(models={"Image": "qwen-image-2.1"})
-        with (
-            patch.object(
-                settings.inference,
-                "models_status",
-                return_value=snapshot("qwen-image-2.1"),
-            ),
-            patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
-            patch.object(settings.inference, "unload", new=AsyncMock()) as unload,
+        # The tier decides every model; there is no per-model selection.
+        for models in (
+            {"LLM": "qwen3.8-27b-q4-k-m"},
+            {"Image": "qwen-image-2.1-turbo"},
         ):
-            await settings.update_settings(body)
-        submit.assert_awaited_once_with(
-            ImageSelectionTask(model_id="qwen-image-2.1"),
-            feature="image_selection",
-            operation="configure",
-        )
-        unload.assert_not_awaited()
-
-    def test_unknown_image_model_is_rejected(self):
-        with self.assertRaises(ValidationError):
-            settings.SettingsRequest(models={"Image": "qwen3.8-27b-q4-k-m"})
-        with self.assertRaises(ValidationError):
-            settings.SettingsRequest(models={"Video": "anything"})
+            with self.assertRaises(ValidationError):
+                settings.SettingsRequest(models=models)
 
     async def test_formatting_saves_both_states_without_selecting_a_tier(self):
         for enabled in (False, True):

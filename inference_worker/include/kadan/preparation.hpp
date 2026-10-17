@@ -95,8 +95,6 @@ public:
     void select_whisper(const std::string& model);
     bool whisper_formatting() const;
     void set_whisper_formatting(bool enabled);
-    std::string image_selected() const;
-    void select_image(const std::string& model);
     Json status() const;
     Json architecture_context(const std::string& model) const;
 
@@ -206,9 +204,6 @@ void prepare_input(
 );
 void prepare_input(
     WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    ImageSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);

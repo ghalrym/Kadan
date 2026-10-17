@@ -790,49 +790,6 @@
       "manifest": []
     },
     {
-      "id": "qwen-image-2.1",
-      "repo_id": "Qwen/Qwen-Image-2.1",
-      "revision": "d26bb61231c349cf6b7896fa83353113880e1ba3",
-      "license": "qwen-research",
-      "estimated_bytes": 33100000000,
-      "kind": "image",
-      "display_name": "Qwen-Image-2.1",
-      "layout": "components",
-      "subfolder": "",
-      "component_paths": [
-        "processor",
-        "scheduler",
-        "text_encoder",
-        "transformer",
-        "vae"
-      ],
-      "required_files": [
-        "model_index.json",
-        "LICENSE",
-        "processor/preprocessor_config.json",
-        "processor/tokenizer.json",
-        "processor/tokenizer_config.json",
-        "processor/chat_template.jinja",
-        "scheduler/scheduler_config.json",
-        "text_encoder/config.json",
-        "text_encoder/model.safetensors.index.json",
-        "transformer/config.json",
-        "transformer/diffusion_pytorch_model.safetensors.index.json",
-        "vae/config.json"
-      ],
-      "weight_paths": [
-        "text_encoder",
-        "transformer",
-        "vae"
-      ],
-      "license_url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/d26bb61231c349cf6b7896fa83353113880e1ba3/LICENSE",
-      "license_notice": "Qwen-Image-2.1 is licensed for research and evaluation only. Commercial use requires a separate license; continuing does not grant commercial rights.",
-      "inference_available": true,
-      "asset_url": null,
-      "asset_name": null,
-      "manifest": []
-    },
-    {
       "id": "qwen-image-2.1-turbo",
       "repo_id": "Qwen/Qwen-Image-2.1-Turbo",
       "revision": "fc13ba1986fcb905854dc8de2f52eee395f49b5b",
@@ -938,7 +895,7 @@
       "ram_gb": 32,
       "models": {
         "llm": "qwen3.8-27b-q4-k-m",
-        "image": null,
+        "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": null,
         "transcription": null,
@@ -952,7 +909,7 @@
       "ram_gb": 64,
       "models": {
         "llm": "qwen3.8-27b-q8-0",
-        "image": null,
+        "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": null,
         "transcription": null,
@@ -966,7 +923,7 @@
       "ram_gb": 128,
       "models": {
         "llm": "qwen3.8-flash-next-q3-k-xl",
-        "image": null,
+        "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": null,
         "transcription": null,
@@ -980,7 +937,7 @@
       "ram_gb": 512,
       "models": {
         "llm": "glm-5.3-flash-q3-k-xl",
-        "image": null,
+        "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": null,
         "transcription": null,

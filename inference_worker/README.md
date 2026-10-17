@@ -71,10 +71,11 @@ and libarchive reads checkpoint containers.
 ## Hardware tier text models
 
 Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
-language model and the S1-mini formatter; image, video, speech and transcription
-assignments are still open (`null`). Choosing a tier persists `tier.json` in the
-model store and selects its language model; the API then queues the tier's
-incomplete downloads through the existing FIFO.
+language model, Qwen-Image-2.1-Turbo (the only image model) and the S1-mini
+formatter; video, speech and transcription assignments are still open (`null`).
+Choosing a tier persists `tier.json` in the model store and selects its language
+and image models; the API then queues the tier's incomplete downloads through
+the existing FIFO.
 
 | Tier | Hardware | Catalog ID | Checkpoint | Download bytes |
 | --- | --- | --- | --- | --- |

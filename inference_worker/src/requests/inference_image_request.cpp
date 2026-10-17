@@ -59,12 +59,12 @@ void prepare_input(
             }
         }
     }
-    request.model = input.model ? *input.model : store.image_selected();
-    if (request.model != "qwen-image-2.1" && request.model != "qwen-image-2.1-turbo")
+    // Every tier generates images with Turbo, so no tier choice is needed.
+    request.model = input.model.value_or("qwen-image-2.1-turbo");
+    if (request.model != "qwen-image-2.1-turbo")
         throw RequestError("Unsupported image model", 422);
     // The pinned Turbo grid determines updates, even when steps was supplied.
-    if (request.model == "qwen-image-2.1-turbo")
-        input.steps = 8;
+    input.steps = 8;
     if (!input.source) {
         if (input.aspect == "1:1") {
             input.width = 2048;

@@ -17,7 +17,6 @@ Feature = Literal[
     "model_context",
     "whisper_selection",
     "whisper_formatting",
-    "image_selection",
 ]
 Operation = Literal["generate", "completion", "load", "unload", "download", "configure"]
 

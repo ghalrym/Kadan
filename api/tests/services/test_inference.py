@@ -214,7 +214,6 @@ class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
         for model, requested_steps, prepared_steps in (
             (None, 50, 8),
             ("qwen-image-2.1-turbo", 20, 8),
-            ("qwen-image-2.1", 20, 20),
         ):
             with self.subTest(model=model):
                 service = InferenceService()

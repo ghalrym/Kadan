@@ -3,13 +3,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.pydantic_models.inference_task import (
-    ImageModel,
-    ImageSelectionTask,
-    WhisperFormattingTask,
-)
+from api.pydantic_models.inference_task import WhisperFormattingTask
 from api.pydantic_models.model_store import CheckpointStatus, TierId, TierModality
-from api.pydantic_models.settings import ModelSetting
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
 
@@ -36,27 +31,19 @@ class TierSetting(BaseModel):
 
 
 class SettingsResponse(BaseModel):
-    """Expose the hardware tier, catalog selections and transcription formatting."""
+    """Expose the hardware tier and transcription formatting."""
 
     tier: TierId | None = Field(
         description="The selected hardware tier; null until the user chooses one."
     )
     tiers: list[TierSetting]
-    models: list[ModelSetting]
     whisper_formatting: bool = Field(
         description="Normalize speech transcripts with S1-mini by Superwhisper; retain raw text."
     )
 
 
-class SettingsModels(BaseModel):
-    """Per-modality selections; an omitted modality is left unchanged."""
-
-    model_config = ConfigDict(extra="forbid")
-    Image: ImageModel | None = None
-
-
 class SettingsRequest(BaseModel):
-    """Persist the hardware tier, image selection and transcription formatting."""
+    """Persist the hardware tier and transcription formatting."""
 
     model_config = ConfigDict(extra="forbid")
     tier: TierId | None = None
@@ -64,7 +51,6 @@ class SettingsRequest(BaseModel):
         default=False,
         description="The user read the license notices of the tier's checkpoints.",
     )
-    models: SettingsModels = SettingsModels()
     whisper_formatting: bool | None = None
 
 
@@ -95,32 +81,16 @@ def get_settings() -> SettingsResponse:
         )
         for tier in status.tiers
     ]
-    llm_options = [model.id for model in status.models if model.kind == "llm"]
-    image_options = [model.id for model in status.models if model.kind == "image"]
     return SettingsResponse(
         tier=status.selected_tier,
         tiers=tiers,
         whisper_formatting=status.whisper_formatting,
-        models=[
-            ModelSetting(
-                label="Language model",
-                type="LLM",
-                selected=status.selected_model_id,
-                options=llm_options,
-            ),
-            ModelSetting(
-                label="Image generation",
-                type="Image",
-                selected=status.selected_image,
-                options=image_options,
-            ),
-        ],
     )
 
 
 @router.put(
     "",
-    description="Persist the hardware tier and queue downloads of its checkpoints, the image selection and transcription formatting. The tier selects the language model and unloads a resident language model of another tier after earlier chats finish.",
+    description="Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language and image models and unloads a resident language model of another tier after earlier chats finish.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
@@ -129,17 +99,11 @@ async def update_settings(body: SettingsRequest) -> SettingsResponse:
     The worker validates and persists each change at the queue head; an
     omitted field leaves its setting unchanged. Choosing a tier queues its
     incomplete downloads in the same FIFO; poll this endpoint for progress.
-    Requests load the tier's language model on demand."""
+    Requests load the tier's models on demand."""
     try:
         if body.tier is not None:
             await inference.select_tier(body.tier)
             await inference.download_tier(body.tier, body.license_acknowledged)
-        if body.models.Image is not None:
-            await inference.submit(
-                ImageSelectionTask(model_id=body.models.Image),
-                feature="image_selection",
-                operation="configure",
-            )
         if body.whisper_formatting is not None:
             await inference.submit(
                 WhisperFormattingTask(enabled=body.whisper_formatting),

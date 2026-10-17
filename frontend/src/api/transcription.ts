@@ -47,7 +47,7 @@ export async function recordingToWav(blob: Blob): Promise<string> {
 export async function requestTranscriptionFormatting(signal: AbortSignal, enabled?: boolean): Promise<boolean> {
   const result = enabled === undefined
     ? await getSettings({ signal })
-    : await updateSettings({ body: { models: {}, whisper_formatting: enabled }, signal })
+    : await updateSettings({ body: { whisper_formatting: enabled }, signal })
   if (!result.response?.ok) {
     const detail = result.error && typeof result.error === 'object' && 'detail' in result.error ? result.error.detail : null
     throw new Error(typeof detail === 'string' ? detail : 'Could not save or read transcription formatting.')
