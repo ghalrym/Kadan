@@ -3,80 +3,318 @@ import { Panel } from '../components/Controls'
 import type { TranscriptionResponse } from '../api/generated'
 import { recordingToWav, requestTranscription } from '../api/transcription'
 
-/** Choose or record audio locally and submit only after pressing Submit. */
+type Phase = 'idle' | 'starting' | 'recording' | 'ready' | 'transcribing'
+
+function formatTime(total: number) {
+  const seconds = Math.max(0, Math.floor(total))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+const hints: Record<Phase, string> = {
+  idle: 'Click to start recording',
+  starting: 'Waiting for microphone…',
+  recording: 'Recording — click to stop',
+  ready: 'Click to record again',
+  transcribing: 'Transcribing…',
+}
+
+/** Choose or record audio locally and submit only after pressing Transcribe. */
 export default function SpeechToTextPage() {
-  const [recording, setRecording] = useState(false)
-  const [pending, setPending] = useState(false)
+  const [phase, setPhase] = useState<Phase>('idle')
   const [clip, setClip] = useState<Blob | null>(null)
+  const [clipUrl, setClipUrl] = useState('')
+  const [duration, setDuration] = useState(0)
   const [text, setText] = useState<TranscriptionResponse | null>(null)
   const [error, setError] = useState('')
-  const [seconds, setSeconds] = useState(0)
+  const [elapsed, setElapsed] = useState(0)
+  const [copied, setCopied] = useState(false)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const controller = useRef<AbortController | null>(null)
-  const busy = useRef(false)
   const mounted = useRef(true)
+  const recording = phase === 'recording'
+  const busy = phase === 'starting' || phase === 'transcribing'
+
   useEffect(() => {
     mounted.current = true
-    return () => { mounted.current = false; controller.current?.abort(); stream.current?.getTracks().forEach(track => track.stop()) }
+    return () => {
+      mounted.current = false
+      controller.current?.abort()
+      if (recorder.current?.state === 'recording') recorder.current.stop()
+      stream.current?.getTracks().forEach((track) => track.stop())
+    }
   }, [])
+
   useEffect(() => {
     if (!recording) return
-    const timer = window.setInterval(() => setSeconds(value => value + 1), 1000)
+    const started = performance.now()
+    const timer = window.setInterval(
+      () => setElapsed((performance.now() - started) / 1000),
+      200,
+    )
     return () => window.clearInterval(timer)
   }, [recording])
+
+  useEffect(
+    () => () => {
+      if (clipUrl) URL.revokeObjectURL(clipUrl)
+    },
+    [clipUrl],
+  )
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  function selectClip(next: Blob | null, length = 0) {
+    setClip(next)
+    setClipUrl(next ? URL.createObjectURL(next) : '')
+    setDuration(length)
+    setText(null)
+    setError('')
+    setPhase(next ? 'ready' : 'idle')
+  }
+
   async function toggleRecording() {
-    if (recorder.current?.state === 'recording') { recorder.current.stop(); return }
-    if (busy.current) return
-    busy.current = true
-    setPending(true); setError('')
+    if (recorder.current?.state === 'recording') {
+      recorder.current.stop()
+      return
+    }
+    if (busy) return
+    setPhase('starting')
+    setError('')
     try {
       const media = await navigator.mediaDevices.getUserMedia({ audio: true })
-      if (!mounted.current) { media.getTracks().forEach(track => track.stop()); return }
+      if (!mounted.current) {
+        media.getTracks().forEach((track) => track.stop())
+        return
+      }
       stream.current = media
       const instance = new MediaRecorder(media)
       recorder.current = instance
       const chunks: Blob[] = []
-      instance.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
-      instance.onstop = () => {
-        media.getTracks().forEach(track => track.stop())
-        if (mounted.current) { setClip(new Blob(chunks, { type: instance.mimeType })); setRecording(false) }
+      const started = performance.now()
+      instance.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data)
       }
-      instance.start(); setRecording(true); setSeconds(0); setClip(null); setText(null)
-    } catch (reason) { stream.current?.getTracks().forEach(track => track.stop()); setError(reason instanceof Error ? reason.message : 'Cannot record audio.') }
-    finally { busy.current = false; if (mounted.current) setPending(false) }
+      instance.onstop = () => {
+        media.getTracks().forEach((track) => track.stop())
+        stream.current = null
+        recorder.current = null
+        if (!mounted.current) return
+        const length = (performance.now() - started) / 1000
+        selectClip(
+          chunks.length ? new Blob(chunks, { type: instance.mimeType }) : null,
+          length,
+        )
+        if (!chunks.length) setError('No audio was captured.')
+      }
+      instance.start()
+      selectClip(null)
+      setElapsed(0)
+      setPhase('recording')
+    } catch (reason) {
+      stream.current?.getTracks().forEach((track) => track.stop())
+      stream.current = null
+      if (!mounted.current) return
+      setPhase(clip ? 'ready' : 'idle')
+      setError(
+        reason instanceof Error ? reason.message : 'Cannot record audio.',
+      )
+    }
   }
+
   async function submit() {
-    if (!clip || busy.current) return
-    busy.current = true; setPending(true); setError('')
-    const abort = new AbortController(); controller.current = abort
+    if (!clip || busy || recording) return
+    setPhase('transcribing')
+    setError('')
+    const abort = new AbortController()
+    controller.current = abort
     try {
       const audio = await recordingToWav(clip)
       if (abort.signal.aborted) return
       const transcript = await requestTranscription(audio, abort.signal)
       if (!abort.signal.aborted) setText(transcript)
-    } catch (reason) { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Transcription failed.') }
-    finally { busy.current = false; if (mounted.current) setPending(false) }
+    } catch (reason) {
+      if (!abort.signal.aborted)
+        setError(
+          reason instanceof Error ? reason.message : 'Transcription failed.',
+        )
+    } finally {
+      if (controller.current === abort) {
+        controller.current = null
+        if (mounted.current) setPhase('ready')
+      }
+    }
   }
-  return <div className="scroll-page"><div className="recording-layout"><Panel className="recording-panel">
-    <button type="button" className="record-button" disabled={pending} aria-label={recording ? 'Stop recording' : 'Start recording'} aria-pressed={recording} onClick={() => void toggleRecording()}><span /></button>
-    <span className="recording-timer">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}.0</span>
-    <label>Audio file
-      <input type="file" accept="audio/*" disabled={recording || pending} onChange={event => {
-        const file = event.target.files?.[0]
-        if (!file) return
-        setClip(file); setText(null); setError(''); setSeconds(0)
-        event.target.value = ''
-      }} />
-    </label>
-    {clip instanceof File && <p>{clip.name}</p>}
-    <div className="row">
-      <button type="button" className="button" disabled={recording || pending || !clip} onClick={() => { setClip(null); setText(null); setSeconds(0); setError('') }}>Discard</button>
-      <button type="button" className="button button--muted" disabled={recording || pending || !clip} onClick={() => void submit()}>{pending ? 'Working…' : 'Submit'}</button>
+
+  function cancel() {
+    controller.current?.abort()
+    controller.current = null
+    setPhase(clip ? 'ready' : 'idle')
+  }
+
+  async function copy() {
+    if (!text?.text) return
+    try {
+      await navigator.clipboard.writeText(text.text)
+      setCopied(true)
+    } catch {
+      setError('Could not copy to the clipboard.')
+    }
+  }
+
+  const fileName = clip instanceof File ? clip.name : 'Recording'
+  const shownTime = recording ? elapsed : duration
+  const transcript =
+    text?.text ||
+    (text?.formatting_status === 'formatted'
+      ? 'No text after formatting.'
+      : 'No speech detected.')
+
+  return (
+    <div className="scroll-page">
+      <div className="recording-layout">
+        <Panel className="recording-panel">
+          <div className="recorder">
+            <button
+              type="button"
+              className={`record-button${recording ? ' record-button--active' : ''}`}
+              disabled={busy}
+              aria-label={recording ? 'Stop recording' : 'Start recording'}
+              aria-pressed={recording}
+              onClick={() => void toggleRecording()}
+            >
+              <span />
+            </button>
+            <span
+              className={`recording-timer${recording ? ' recording-timer--live' : ''}`}
+              aria-live="off"
+            >
+              {formatTime(shownTime)}
+            </span>
+            <span className="recording-hint" aria-live="polite">
+              {hints[phase]}
+            </span>
+          </div>
+
+          <div className="recording-divider" aria-hidden="true">
+            <span>or</span>
+          </div>
+
+          <label
+            className={`audio-drop${recording || busy ? ' audio-drop--disabled' : ''}`}
+          >
+            <input
+              type="file"
+              accept="audio/*"
+              className="sr-only"
+              disabled={recording || busy}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) selectClip(file)
+              }}
+            />
+            <span className="audio-drop-title">Choose an audio file</span>
+            <span className="faint">WAV, MP3, M4A, OGG, WebM…</span>
+          </label>
+
+          {clip && clipUrl && (
+            <div className="clip-preview">
+              <div className="clip-preview-header">
+                <span className="clip-name" title={fileName}>
+                  {fileName}
+                </span>
+                {duration > 0 && (
+                  <span className="mono faint">{formatTime(duration)}</span>
+                )}
+              </div>
+              <audio
+                controls
+                src={clipUrl}
+                onLoadedMetadata={(event) => {
+                  const length = event.currentTarget.duration
+                  if (Number.isFinite(length)) setDuration(length)
+                }}
+              />
+            </div>
+          )}
+
+          <div className="recording-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={recording || busy || !clip}
+              onClick={() => selectClip(null)}
+            >
+              Discard
+            </button>
+            {phase === 'transcribing' ? (
+              <button type="button" className="button" onClick={cancel}>
+                <span className="recording-spinner" aria-hidden="true" />
+                Cancel
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={recording || busy || !clip}
+                onClick={() => void submit()}
+              >
+                Transcribe
+              </button>
+            )}
+          </div>
+
+          {error && (
+            <p role="alert" className="recording-error">
+              {error}
+            </p>
+          )}
+        </Panel>
+
+        {text !== null && (
+          <Panel className="transcript-panel">
+            <div className="panel-header">
+              <span className="section-heading">Transcript</span>
+              {text.language && (
+                <span className="eyebrow">{text.language}</span>
+              )}
+              <button
+                type="button"
+                className="button"
+                disabled={!text.text}
+                onClick={() => void copy()}
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <div className="panel-body stack">
+              {text.formatting_status === 'failed' && (
+                <p role="alert" className="recording-error">
+                  Formatting failed: {text.formatting_error} Raw transcription
+                  shown.
+                </p>
+              )}
+              <p
+                role="status"
+                className={`transcript-text${text.text ? '' : ' faint'}`}
+              >
+                {transcript}
+              </p>
+              {text.formatting_status === 'formatted' && (
+                <details className="transcript-raw">
+                  <summary className="eyebrow">Raw transcription</summary>
+                  <p className="transcript-text muted">{text.raw_text}</p>
+                </details>
+              )}
+            </div>
+          </Panel>
+        )}
+      </div>
     </div>
-    {error && <p role="alert" className="error">{error}</p>}
-    {text?.formatting_status === 'failed' && <p role="alert" className="error">Formatting failed: {text.formatting_error} Raw transcription shown.</p>}
-    {text?.formatting_status === 'formatted' && <details><summary>Raw transcription</summary><p style={{ whiteSpace: 'pre-wrap' }}>{text.raw_text}</p></details>}
-    {text !== null && <p role="status" style={{ whiteSpace: 'pre-wrap' }}>{text.text || (text.formatting_status === 'formatted' ? 'No text after formatting.' : 'No speech detected.')}</p>}
-  </Panel></div></div>
+  )
 }
