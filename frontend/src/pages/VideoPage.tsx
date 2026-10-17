@@ -4,6 +4,7 @@ import VideoJobCard from '../components/VideoJobCard'
 import {
   isPendingVideo,
   loadVideos,
+  loadVideoDefaults,
   refreshVideo,
   submitVideo,
   stopVideo,
@@ -18,9 +19,9 @@ import {
  */
 export default function VideoPage() {
   const [prompt, setPrompt] = useState('')
-  const [duration, setDuration] = useState('8')
+  const [duration, setDuration] = useState('')
   const [resolution, setResolution] =
-    useState<NonNullable<VideoGenerationRequest['resolution']>>('768p')
+    useState<NonNullable<VideoGenerationRequest['resolution']> | undefined>()
   const [aspect, setAspect] = useState<NonNullable<VideoGenerationRequest['aspect']>>('16:9')
   const [jobs, setJobs] = useState<VideoJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,6 +30,8 @@ export default function VideoPage() {
   const [notice, setNotice] = useState('')
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
+  const edited = useRef({ duration: false, resolution: false })
+  const [defaultsLoaded, setDefaultsLoaded] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -46,6 +49,18 @@ export default function VideoPage() {
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
+      })
+    loadVideoDefaults(controller.signal)
+      .then((defaults) => {
+        if (controller.signal.aborted) return
+        if (!edited.current.duration) setDuration(String(defaults.duration))
+        if (!edited.current.resolution) setResolution(defaults.resolution)
+        setDefaultsLoaded(true)
+      })
+      .catch((failure) => {
+        if (controller.signal.aborted) return
+        setDefaultsLoaded(false)
+        setError(failure instanceof Error ? failure.message : 'Could not load video defaults.')
       })
     return () => controller.abort()
   }, [refresh])
@@ -164,18 +179,18 @@ export default function VideoPage() {
         </label>
         <label className="field">
           <span className="eyebrow">Duration</span>
-          <div className="input-unit"><input className="input mono" type="number" min={1} max={15} step={1} required value={duration} disabled={pending} onChange={event => setDuration(event.target.value)} /><span className="muted mono">seconds</span></div>
+          <div className="input-unit"><input className="input mono" type="number" min={1} max={15} step={1} required value={duration} disabled={pending || !defaultsLoaded} onChange={event => { edited.current.duration = true; setDuration(event.target.value) }} /><span className="muted mono">seconds</span></div>
         </label>
         <label className="field">
           <span className="eyebrow">Frame rate</span>
           <span className="input mono">24 fps</span>
         </label>
-        <SegmentedControl label="Resolution" options={['480p', '768p']} selected={resolution} onChange={value => setResolution(value as NonNullable<VideoGenerationRequest['resolution']>)} disabled={pending} />
+        <SegmentedControl label="Resolution" options={['480p', '768p']} selected={resolution ?? ''} onChange={value => { edited.current.resolution = true; setResolution(value as NonNullable<VideoGenerationRequest['resolution']>) }} disabled={pending || !defaultsLoaded} />
         <SegmentedControl label="Aspect" options={['16:9', '9:16', '1:1']} selected={aspect} onChange={value => setAspect(value as NonNullable<VideoGenerationRequest['aspect']>)} disabled={pending} />
         <button
           className="button button--primary"
           type="submit"
-          disabled={pending || loading || !prompt.trim()}
+          disabled={pending || loading || !defaultsLoaded || !prompt.trim()}
         >
           {pending ? 'Submitting…' : 'Queue video'}
         </button>

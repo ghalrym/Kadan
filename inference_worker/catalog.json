@@ -896,10 +896,14 @@
       "models": {
         "llm": "qwen3.8-27b-q4-k-m",
         "image": "qwen-image-2.1-turbo",
-        "video": null,
+        "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",
         "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
+      },
+      "video_defaults": {
+        "duration": 5,
+        "resolution": "480p"
       }
     },
     {
@@ -910,10 +914,14 @@
       "models": {
         "llm": "qwen3.8-27b-q8-0",
         "image": "qwen-image-2.1-turbo",
-        "video": null,
+        "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",
         "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
+      },
+      "video_defaults": {
+        "duration": 8,
+        "resolution": "480p"
       }
     },
     {
@@ -924,10 +932,14 @@
       "models": {
         "llm": "qwen3.8-flash-next-q3-k-xl",
         "image": "qwen-image-2.1-turbo",
-        "video": null,
+        "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",
         "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
+      },
+      "video_defaults": {
+        "duration": 5,
+        "resolution": "768p"
       }
     },
     {
@@ -938,10 +950,14 @@
       "models": {
         "llm": "glm-5.3-flash-q3-k-xl",
         "image": "qwen-image-2.1-turbo",
-        "video": null,
+        "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",
         "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
+      },
+      "video_defaults": {
+        "duration": 8,
+        "resolution": "768p"
       }
     }
   ]

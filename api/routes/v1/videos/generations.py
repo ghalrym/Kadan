@@ -14,15 +14,17 @@ class VideoGenerationRequest(BaseModel):
     seed: int = Field(default=42, ge=0, le=4294967295)
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     negative_prompt: Literal[""] = ""
-    duration: int = Field(
-        default=8,
+    duration: int | None = Field(
+        default=None,
         ge=1,
         le=15,
         validation_alias=AliasChoices("seconds", "duration"),
-        description="Whole seconds at 24 fps. Local extension: 1–15; duration is also accepted.",
+        description="Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.",
     )
     fps: Literal[24] = 24
-    resolution: Literal["480p", "768p"] = "768p"
+    resolution: Literal["480p", "768p"] | None = Field(
+        default=None, description="Omit for the selected tier default."
+    )
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"
 
 

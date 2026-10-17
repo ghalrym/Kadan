@@ -95,9 +95,9 @@ class VideoTask(TaskInput):
     seed: int = 42
     prompt: str
     negative_prompt: Literal[""] = ""
-    duration: int = 8
+    duration: int | None = Field(default=None, ge=1, le=15)
     fps: Literal[24] = 24
-    resolution: Literal["480p", "768p"] = "768p"
+    resolution: Literal["480p", "768p"] | None = None
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"
 
 

@@ -41,8 +41,7 @@ public:
         compute_ = video::h3_cuda_compute(resources_, plan.devices);
         // Retention uses only bounded native reservations; disk remains the backing
         // store.
-        const Bytes cache_bytes =
-            std::min<Bytes>(4ULL * 1024 * 1024 * 1024, (available[0] - host_peak) / 8);
+        const Bytes cache_bytes = video::h3_cache_memory(available[0], host_peak);
         cache_ = video::h3_weight_cache(
             resources_, paths_, cache_bytes, cancel, compute_, progress_
         );
@@ -76,7 +75,12 @@ public:
             !request_.prompt.empty() && request_.prompt.size() <= 32000,
             "video_prompt_bounds"
         );
-        if (available[0] < video::h3_request_memory(profile, request_.prompt.size()))
+        const auto snapshot = resources_->snapshot();
+        const auto host_available =
+            std::min(available[0], snapshot.capacity[0] - snapshot.used[0]);
+        // The cache envelope can exceed its populated pages. A larger request or
+        // new memory pressure must let the owner close and reload before execution.
+        if (host_available < video::h3_request_memory(profile, request_.prompt.size()))
             throw AdmissionWait("video_request_headroom");
     }
 
@@ -92,7 +96,7 @@ public:
 
     void close() override {
         model_.reset();
-        cache_.reset();
+        cache_ = {};
         // An unconfirmed resident launcher keeps its context; never reset under it.
         if (media_activity_->owners.load())
             throw std::runtime_error("video_media_session_busy");
@@ -113,7 +117,7 @@ private:
     std::shared_ptr<video::H3Compute> compute_;
     std::shared_ptr<MediaSessionActivity> media_activity_ =
         std::make_shared<MediaSessionActivity>();
-    std::shared_ptr<checkpoint::ReadCache> cache_;
+    video::H3WeightCache cache_;
     std::unique_ptr<video::H3Generation> model_;
     video::H3GenerationPaths paths_;
     video::H3GenerationRequest request_;

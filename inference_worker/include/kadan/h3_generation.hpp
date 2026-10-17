@@ -24,9 +24,15 @@ struct H3GenerationPaths {
     std::string tokenizer, text, denoiser, turbo, vae, audio_vae;
 };
 
-// Header-only preparation. The caller has admitted `limit` in addition to the
-// execution envelope; retained raw bytes and metadata cannot exceed it.
-std::shared_ptr<checkpoint::ReadCache> h3_weight_cache(
+struct H3WeightCache {
+    std::shared_ptr<checkpoint::ReadCache> host;
+    bool retain_host_stages = false;
+    bool retain_device_stages = false;
+};
+
+// Header-only preparation. The cache reserves its own envelope, separately from
+// execution. Completed stages retire when the complete inventory cannot fit.
+H3WeightCache h3_weight_cache(
     std::shared_ptr<Resources>,
     const H3GenerationPaths&,
     Bytes limit,
@@ -46,7 +52,7 @@ public:
     explicit H3Generation(
         std::shared_ptr<Resources> resources,
         std::shared_ptr<H3Compute> compute = {},
-        std::shared_ptr<checkpoint::ReadCache> cache = {},
+        H3WeightCache cache = {},
         std::vector<int> devices = {},
         std::shared_ptr<MediaSessionActivity> activity = {}
     );
@@ -60,7 +66,7 @@ public:
 private:
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<H3Compute> compute_;
-    std::shared_ptr<checkpoint::ReadCache> cache_;
+    H3WeightCache cache_;
     std::vector<int> devices_;
     std::shared_ptr<MediaSessionActivity> activity_;
     bool busy_ = false;

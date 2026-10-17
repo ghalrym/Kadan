@@ -17,6 +17,7 @@ from api.pydantic_models.inference import (
 from api.pydantic_models.inference_task import (
     DownloadTask,
     TierSelectionTask,
+    VideoTask,
 )
 from api.pydantic_models.model_store import (
     DownloadObservation,
@@ -262,8 +263,24 @@ class InferenceService:
                 **body.model_dump(mode="json", exclude_unset=True),
             },
         )
-        if feature == "video":
-            video_jobs.prepare(request.id, body)
+        if isinstance(request.input, VideoTask):
+            video = request.input
+            if video.duration is None or video.resolution is None:
+                status = self.models_status()
+                tier = next(
+                    (tier for tier in status.tiers if tier.id == status.selected_tier),
+                    None,
+                )
+                if tier is None:
+                    raise InferenceFailure(
+                        "Choose a hardware tier in Settings before submitting a video.",
+                        422,
+                    )
+                if video.duration is None:
+                    video.duration = tier.video_defaults.duration
+                if video.resolution is None:
+                    video.resolution = tier.video_defaults.resolution
+            video_jobs.prepare(request.id, video)
         try:
             job = await self.worker.submit(request, streaming=streaming)
         except BaseException:

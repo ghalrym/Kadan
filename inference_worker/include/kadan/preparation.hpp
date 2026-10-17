@@ -58,10 +58,16 @@ struct CatalogEntry {
     static CatalogEntry parse(const Json& value);
 };
 
+struct VideoDefaults {
+    unsigned duration;
+    std::string resolution;
+};
+
 // A hardware tier fixes one checkpoint per modality (null when unassigned).
 struct HardwareTier {
     std::string id, name;
     unsigned vram_gb, ram_gb;
+    VideoDefaults video_defaults;
     std::map<std::string, std::optional<std::string>> models;
 
     static HardwareTier parse(const Json& value);

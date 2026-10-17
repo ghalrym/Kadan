@@ -305,9 +305,16 @@ void checkpoint_catalog_units() {
         assert(hardware.models.at("llm") == id);
         assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
         assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
+        assert(hardware.models.at("video") == "h3-fl2va-int8-turbo");
+        assert(
+            hardware.video_defaults.duration == (tier == "go" || tier == "pro" ? 5 : 8)
+        );
+        assert(
+            hardware.video_defaults.resolution
+            == (tier == "go" || tier == "plus" ? "480p" : "768p")
+        );
         assert(hardware.models.at("speech") == "qwen-tts-1.7b-custom");
         assert(hardware.models.at("transcription") == "whisper-medium");
-        assert(!hardware.models.at("video"));
         const auto& model = store.entry(id);
         assert(
             model.kind == "llm" && model.layout == "gguf" && model.inference_available
@@ -412,6 +419,27 @@ void typed_request_units() {
         "video", {{"feature", "video"}, {"prompt", "Mountain"}, {"resolution", "480p"}}
     );
     assert(std::get<VideoRequest>(video.input).short_edge == 480);
+    assert(std::get<VideoRequest>(video.input).resolution_supplied);
+    assert(!std::get<VideoRequest>(video.input).duration_supplied);
+    for (const auto duration : {1u, 15u}) {
+        const auto clip = request(
+            "video",
+            {{"feature", "video"}, {"prompt", "Mountain"}, {"duration", duration}}
+        );
+        assert(std::get<VideoRequest>(clip.input).duration == duration);
+        assert(std::get<VideoRequest>(clip.input).duration_supplied);
+    }
+    rejects([&] {
+        request(
+            "video",
+            {{"feature", "video"}, {"prompt", "Mountain"}, {"resolution", "1080p"}}
+        );
+    });
+    rejects([&] {
+        request(
+            "video", {{"feature", "video"}, {"prompt", "Mountain"}, {"duration", 16}}
+        );
+    });
     const auto download =
         request("download", {{"feature", "models"}, {"model_id", "small"}}, "download");
     assert(std::get<DownloadRequest>(download.input).model == "small");
@@ -1228,6 +1256,7 @@ void job_units() {
           {"name", "Go"},
           {"vram_gb", 8},
           {"ram_gb", 32},
+          {"video_defaults", {{"duration", 5}, {"resolution", "480p"}}},
           {"models",
            {{"llm", "small"},
             {"image", "qwen-image-2.1-turbo"},
@@ -1286,6 +1315,23 @@ void job_units() {
         && std::get<ImageRequest>(defaulted.input).steps == 8
     );
     files.cleanup(defaulted.id);
+    auto video =
+        request("defaulted-video", {{"feature", "video"}, {"prompt", "mountain"}});
+    prepare_task(video, store, files, running);
+    assert(std::get<VideoRequest>(video.input).duration == 5);
+    assert(std::get<VideoRequest>(video.input).short_edge == 480);
+    files.cleanup(video.id);
+    auto explicit_video = request(
+        "explicit-video",
+        {{"feature", "video"},
+         {"prompt", "mountain"},
+         {"duration", 15},
+         {"resolution", "768p"}}
+    );
+    prepare_task(explicit_video, store, files, running);
+    assert(std::get<VideoRequest>(explicit_video.input).duration == 15);
+    assert(std::get<VideoRequest>(explicit_video.input).short_edge == 768);
+    files.cleanup(explicit_video.id);
     // Turbo serves every tier, so images need no tier choice.
     fs::remove(root / "tier.json");
     auto untiered = request(

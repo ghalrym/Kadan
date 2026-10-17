@@ -52,6 +52,18 @@ public:
         entries_.clear();
     }
 
+    // Retire every representation of these immutable sources at a stage boundary.
+    // Keep the admitted envelope available for the next stage's reads.
+    void release_sources(std::span<const WeightIdentity> sources) {
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            if (std::find(sources.begin(), sources.end(), it->first.source)
+                != sources.end())
+                it = entries_.erase(it);
+            else
+                ++it;
+        }
+    }
+
     void read(
         const Key& key,
         std::size_t bytes,

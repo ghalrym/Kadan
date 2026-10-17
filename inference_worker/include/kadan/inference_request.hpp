@@ -128,6 +128,7 @@ struct TranscriptionFormattingRequest {
 struct VideoRequest {
     std::string prompt, model = "h3-fl2va-int8-turbo", aspect = "16:9";
     unsigned short_edge = 768, duration = 8;
+    bool resolution_supplied = false, duration_supplied = false;
     std::uint64_t seed = 42;
     video::H3GenerationPaths paths;
 };

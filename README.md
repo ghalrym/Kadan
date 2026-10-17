@@ -37,9 +37,12 @@ system memory.
   history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
 - Images: Qwen Image generation. Editing is unavailable.
-- Video: H3 FL2VA INT8 + Turbo, 480p/768p, 16:9/9:16/1:1,
-  24 fps and integer durations from 1–15 seconds. Distilled H3 does not support
-  negative prompts.
+- Video: H3 FL2VA INT8 + Turbo with audio across all four hardware tiers,
+  480p/768p, 16:9/9:16/1:1, 24 fps and integer durations from 1–15 seconds.
+  Omitted clip settings use the selected tier's defaults; explicit settings
+  remain subject to actual memory admission. See [video defaults and memory
+  placement](inference_worker/README.md#hardware-tier-video). Distilled H3 does
+  not support negative prompts.
 - Speech: Qwen3-TTS 1.7B CustomVoice, named speakers, supported languages and
   instructions. Describe and clone modes have no enabled native integration.
 - Transcription: native Whisper, English, up to 30 seconds of mono 16-bit

@@ -571,7 +571,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language and image models and unloads a resident language model of another tier after earlier chats finish.
+ * Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

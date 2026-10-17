@@ -4,7 +4,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.pydantic_models.inference_task import WhisperFormattingTask
-from api.pydantic_models.model_store import CheckpointStatus, TierId, TierModality
+from api.pydantic_models.model_store import (
+    CheckpointStatus,
+    TierId,
+    TierModality,
+    VideoDefaults,
+)
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
 
@@ -27,6 +32,7 @@ class TierSetting(BaseModel):
     name: str
     vram_gb: int
     ram_gb: int
+    video_defaults: VideoDefaults
     models: list[TierModel]
 
 
@@ -71,6 +77,7 @@ def get_settings() -> SettingsResponse:
             name=tier.name,
             vram_gb=tier.vram_gb,
             ram_gb=tier.ram_gb,
+            video_defaults=tier.video_defaults,
             models=[
                 TierModel(
                     modality=modality,
@@ -90,7 +97,7 @@ def get_settings() -> SettingsResponse:
 
 @router.put(
     "",
-    description="Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language and image models and unloads a resident language model of another tier after earlier chats finish.",
+    description="Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
