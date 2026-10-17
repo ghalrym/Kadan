@@ -206,7 +206,7 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         async def content(key, asset_id):
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id, row=None):
+        async def image(request_id, prompt, source, model_id):
             sources.append(source)
             return GeneratedImage(
                 model_id=IMAGE_MODEL,
@@ -221,18 +221,24 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         monkeypatch.setattr(
             "kadan.api.pet_jobs.prepare_base", lambda raw: b"canonical-base"
         )
-        monkeypatch.setattr("kadan.api.pet_jobs.extract_row", lambda raw, row: None)
+        monkeypatch.setattr(
+            "kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
+        )
         monkeypatch.setattr(
             "kadan.api.pet_jobs.assemble_atlas", lambda strips: b"webp-atlas"
         )
+        monkeypatch.setattr("kadan.api.pet_jobs.validate_row", lambda row, frames: None)
         await asyncio.wait_for(pets.generate(job), timeout=5)
         saved = services.jobs[job.id]
         assert saved.status == "ready"
-        assert saved.completed_steps == 12
-        assert len(saved.steps) == 12
-        assert len(sources) == 12 and sources[0] is None
+        assert saved.completed_steps == 74
+        assert len(saved.steps) == 74
+        assert len(sources) == 74 and sources[0] is None
         assert all(source == b"canonical-base" for source in sources[1:])
         assert all(step.strength is None for step in saved.steps)
+        assert all(step.raw_asset_id in assets for step in saved.steps)
+        assert all(step.provenance_asset_id in assets for step in saved.steps)
+        assert [step.name for step in saved.steps[:3]] == ["base", "idle/0", "idle/1"]
         assert saved.manifest.base_asset_id == saved.steps[0].output_asset_id
         assert assets[saved.manifest.atlas_asset_id] == b"webp-atlas"
         assert not any(call[2].endswith("/pet") for call in services.calls)
@@ -312,7 +318,7 @@ def test_malformed_cleanup_response_does_not_claim_stopped():
     asyncio.run(run())
 
 
-def test_row_request_uses_untiled_reference_and_independent_output_dimensions():
+def test_frame_request_uses_untiled_reference_and_one_fixed_canvas():
     async def run():
         services = Storage()
         response = SimpleNamespace(
@@ -327,8 +333,7 @@ def test_row_request_uses_untiled_reference_and_independent_output_dimensions():
         )
         services.client.post = AsyncMock(return_value=response)
         pets = PetJobs(services)
-        row = ROWS[1]
-        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, row)
+        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL)
         request = services.client.post.call_args.kwargs["json"]
         assert request["mode"] == "reference"
         assert (
@@ -336,9 +341,125 @@ def test_row_request_uses_untiled_reference_and_independent_output_dimensions():
             == "data:image/png;base64," + base64.b64encode(PNG).decode()
         )
         assert (request["width"], request["height"]) == (
-            SOURCE_CELL[0] * row.frame_count,
+            SOURCE_CELL[0],
             SOURCE_CELL[1],
         )
         assert "strength" not in request and "mask" not in request
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel_phase", ["during_request", "after_output"])
+def test_cancelled_frame_resumes_without_regenerating_completed_frames(
+    monkeypatch, cancel_phase
+):
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.api.pet_jobs.prepare_base", lambda raw: b"base")
+    monkeypatch.setattr("kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: PNG)
+    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+    monkeypatch.setattr("kadan.api.pet_jobs.validate_row", lambda row, frames: None)
+
+    async def run():
+        pets, services, job = await setup_running()
+        assets = {}
+        requests = []
+        cancelled = False
+
+        async def upload(job, asset_id, label, data, media_type):
+            nonlocal cancelled
+            assets[asset_id] = data
+            if label == "idle/2" and cancel_phase == "after_output" and not cancelled:
+                cancelled = True
+                await pets.cancel(KEY, job.id)
+                raise asyncio.CancelledError
+            return asset_id
+
+        async def content(key, asset_id):
+            if asset_id not in assets:
+                raise ServiceError("Missing", 404)
+            return assets[asset_id]
+
+        async def image(request_id, prompt, source, model_id):
+            nonlocal cancelled
+            requests.append(request_id)
+            if (
+                len(requests) == 4
+                and cancel_phase == "during_request"
+                and not cancelled
+            ):
+                cancelled = True
+                await pets.cancel(KEY, job.id)
+                raise asyncio.CancelledError
+            return GeneratedImage(
+                model_id=IMAGE_MODEL,
+                seeds=[42],
+                images_base64=[base64.b64encode(PNG).decode()],
+                mime_type="image/png",
+            )
+
+        pets.upload, pets.content, pets.image = upload, content, image
+        await pets.process(job)
+        stopped = services.jobs[job.id]
+        assert stopped.status == "cancelled"
+        assert [step.name for step in stopped.steps] == ["base", "idle/0", "idle/1"]
+        saved_steps = deepcopy(stopped.steps)
+        saved_bytes = {
+            step.output_asset_id: assets[step.output_asset_id] for step in saved_steps
+        }
+        resumed = await pets.resume(KEY, job.id)
+        resumed = await pets.save(
+            resumed,
+            worker=True,
+            status="running",
+            owner_id=pets.owner,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+        )
+        await pets.process(resumed)
+        finished = services.jobs[job.id]
+        assert finished.status == "ready"
+        assert finished.steps[:3] == saved_steps
+        assert all(assets[asset_id] == data for asset_id, data in saved_bytes.items())
+        assert len(requests) == (75 if cancel_phase == "during_request" else 74)
+        if cancel_phase == "after_output":
+            assert finished.steps[3].request_id == stopped.pending_request_id
+        assert all(requests.count(step.request_id) == 1 for step in saved_steps)
+        assert not any(call[2].endswith("/pet") for call in services.calls)
+
+    asyncio.run(run())
+
+
+def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+
+    async def run():
+        pets = PetJobs(Storage())
+        outputs = [uuid4() for _ in range(6)]
+        job = SimpleNamespace(
+            agent_key=KEY,
+            steps=[SimpleNamespace(output_asset_id=asset) for asset in outputs],
+        )
+        pets.content = AsyncMock(
+            side_effect=[b"one", b"two", b"three", b"four", b"five"]
+        )
+        monkeypatch.setattr(
+            "kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: b"six"
+        )
+        seen = []
+
+        def reject_repeated(row, frames):
+            seen.append(frames)
+            raise ValueError("repeated row")
+
+        monkeypatch.setattr("kadan.api.pet_jobs.validate_row", reject_repeated)
+        with pytest.raises(ValueError, match="repeated row"):
+            await pets.prepare_output(job, PNG, ROWS[0], 5)
+        assert seen == [[b"one", b"two", b"three", b"four", b"five", b"six"]]
+        assert [call.args[1] for call in pets.content.call_args_list] == outputs[1:]
 
     asyncio.run(run())

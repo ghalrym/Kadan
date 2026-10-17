@@ -275,7 +275,27 @@ PET_ANIMATIONS = (
     "running",
     "review",
 )
-PET_STEP_NAMES = ("base", *PET_ANIMATIONS, "look-0", "look-1")
+PET_FRAME_COUNTS = {
+    "idle": 6,
+    "running-right": 8,
+    "running-left": 8,
+    "waving": 4,
+    "jumping": 5,
+    "failed": 8,
+    "waiting": 6,
+    "running": 6,
+    "review": 6,
+    "look-0": 8,
+    "look-1": 8,
+}
+PET_STEP_NAMES = (
+    "base",
+    *(
+        f"{name}/{frame}"
+        for name, count in PET_FRAME_COUNTS.items()
+        for frame in range(count)
+    ),
+)
 PetStatus = Literal[
     "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
 ]
@@ -316,6 +336,8 @@ class PetStep(Model):
     name: str = Field(min_length=1, max_length=100)
     source_asset_id: UUID | None = None
     output_asset_id: UUID
+    raw_asset_id: UUID
+    provenance_asset_id: UUID
     prompt: str = Field(min_length=1, max_length=20000)
     request_id: UUID
     model_id: str = Field(min_length=1, max_length=500)
@@ -327,11 +349,11 @@ class PetStep(Model):
 class PetState(Model):
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
-    completed_steps: int = Field(default=0, ge=0, le=12)
-    total_steps: Literal[12] = 12
+    completed_steps: int = Field(default=0, ge=0, le=74)
+    total_steps: Literal[74] = 74
     error: str | None = Field(default=None, max_length=10000)
     cancel_requested: bool = False
-    steps: list[PetStep] = Field(default_factory=list, max_length=12)
+    steps: list[PetStep] = Field(default_factory=list, max_length=74)
     manifest: PetManifest | None = None
     pending_step_name: str | None = Field(default=None, max_length=100)
     pending_request_id: UUID | None = None
@@ -357,13 +379,27 @@ class PetState(Model):
             raise ValueError("Each pet step must have separate output artwork")
         if any(step.source_asset_id == step.output_asset_id for step in self.steps):
             raise ValueError("Source and output artwork must be separate assets")
+        image_ids = {step.output_asset_id for step in self.steps}
+        image_ids.update(step.raw_asset_id for step in self.steps)
+        image_ids.update(
+            step.source_asset_id for step in self.steps if step.source_asset_id
+        )
+        provenance_ids = {step.provenance_asset_id for step in self.steps}
+        if image_ids & provenance_ids:
+            raise ValueError("Provenance and artwork must be separate assets")
+        if len(provenance_ids) != len(self.steps):
+            raise ValueError("Each pet step must have separate provenance")
+        if any(step.raw_asset_id == step.output_asset_id for step in self.steps):
+            raise ValueError("Raw and prepared artwork must be separate assets")
         if (self.pending_step_name is None) != (self.pending_request_id is None):
             raise ValueError(
                 "Pending step name and request ID must be supplied together"
             )
         if self.pending_step_name is not None:
             next_step = (
-                PET_STEP_NAMES[len(self.steps)] if len(self.steps) < 12 else "atlas"
+                PET_STEP_NAMES[len(self.steps)]
+                if len(self.steps) < len(PET_STEP_NAMES)
+                else "atlas"
             )
             if self.pending_step_name != next_step:
                 raise ValueError("Pending step must be the next unfinished step")
@@ -378,15 +414,13 @@ class PetState(Model):
             if (
                 self.cancel_requested
                 or self.manifest is None
-                or len(self.steps) != 12
+                or len(self.steps) != len(PET_STEP_NAMES)
                 or self.pending_step_name is not None
             ):
                 raise ValueError("Ready pets require every step and an atlas manifest")
             if self.manifest.base_asset_id != self.steps[0].output_asset_id:
                 raise ValueError("Manifest must reference the generated base artwork")
-            if self.manifest.atlas_asset_id in {
-                step.output_asset_id for step in self.steps
-            }:
+            if self.manifest.atlas_asset_id in image_ids | provenance_ids:
                 raise ValueError("Atlas must be assembled into a separate asset")
         elif self.manifest is not None:
             raise ValueError("Only ready pets can contain an atlas manifest")
@@ -394,6 +428,8 @@ class PetState(Model):
 
     def asset_references(self) -> set[UUID]:
         refs = {step.output_asset_id for step in self.steps}
+        refs.update(step.raw_asset_id for step in self.steps)
+        refs.update(step.provenance_asset_id for step in self.steps)
         refs.update(step.source_asset_id for step in self.steps if step.source_asset_id)
         if self.manifest:
             refs.update((self.manifest.atlas_asset_id, self.manifest.base_asset_id))

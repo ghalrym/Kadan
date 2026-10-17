@@ -32,6 +32,8 @@ class PetStep(BaseModel):
     name: str
     source_asset_id: UUID | None = None
     output_asset_id: UUID
+    raw_asset_id: UUID
+    provenance_asset_id: UUID
     prompt: str
     request_id: UUID
     model_id: str
@@ -46,7 +48,7 @@ class PetState(BaseModel):
     ] = "queued"
     stage: str = "queued"
     completed_steps: int = 0
-    total_steps: Literal[12] = 12
+    total_steps: Literal[74] = 74
     error: str | None = None
     cancel_requested: bool = False
     steps: list[PetStep] = Field(default_factory=list)

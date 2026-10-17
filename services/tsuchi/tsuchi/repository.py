@@ -243,7 +243,14 @@ class Repository:
     def _validate_pet_assets(
         self, db: sqlite3.Connection, key: str, pet: PetState
     ) -> None:
-        for asset_id in pet.asset_references():
+        provenance_ids = {step.provenance_asset_id for step in pet.steps}
+        for asset_id in provenance_ids:
+            asset = self._asset(db, key, asset_id)
+            if asset.deleted_at or asset.media_type != "application/json":
+                raise StorageError(
+                    "Pet provenance must reference active JSON assets in this namespace"
+                )
+        for asset_id in pet.asset_references() - provenance_ids:
             asset = self._asset(db, key, asset_id)
             if asset.deleted_at or not asset.is_image:
                 raise StorageError(
@@ -282,6 +289,10 @@ class Repository:
                 raise StorageError("Invalid pet job state transition", 409)
             if value.steps[: len(current.steps)] != current.steps:
                 raise StorageError("Completed pet steps are immutable", 409)
+            if len(value.steps) > len(current.steps) + 1:
+                raise StorageError(
+                    "Pet progress must persist one completed step at a time", 409
+                )
             active = current.status in {"running", "cancelling"}
             expired = active and current.lease_expires_at <= now
             cancellation = (

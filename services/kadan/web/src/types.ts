@@ -100,6 +100,19 @@ export interface PetManifest {
   pixelated: boolean;
   animations: { name: import("./pet").PetState; row: number; durations: number[] }[];
 }
+export interface PetStep {
+  name: string;
+  source_asset_id: string | null;
+  output_asset_id: string;
+  raw_asset_id: string;
+  provenance_asset_id: string;
+  prompt: string;
+  request_id: string;
+  model_id: string;
+  seed: number | null;
+  strength: number | null;
+  meta: string;
+}
 export interface PetJob {
   id: string;
   agent_key: string;
@@ -107,7 +120,10 @@ export interface PetJob {
   status: "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "failed" | "ready";
   stage: string;
   completed_steps: number;
-  total_steps: number;
+  total_steps: 74;
+  steps: PetStep[];
+  pending_step_name: string | null;
+  pending_request_id: string | null;
   version: number;
   created_at: string;
   updated_at: string;

@@ -21,9 +21,11 @@ from .pet_artwork import (
     PetRow,
     assemble_atlas,
     base_prompt,
-    extract_row,
+    frame_name,
+    frame_prompt,
     prepare_base,
-    row_prompt,
+    prepare_frame,
+    validate_row,
 )
 from .pydantic_models.pets import (
     GeneratedImage,
@@ -357,7 +359,7 @@ class PetJobs:
             "Tsuchi",
             "POST",
             f"/api/agents/{job.agent_key}/assets",
-            files={"file": (f"{label}.{suffix}", data, media_type)},
+            files={"file": (f"{label.replace('/', '-')}.{suffix}", data, media_type)},
             data={
                 "title": f"Pet {label}",
                 "tags": json.dumps(["pet", str(job.id)]),
@@ -385,7 +387,6 @@ class PetJobs:
         prompt: str,
         source: bytes | None,
         model_id: str | None,
-        row: PetRow | None = None,
     ) -> GeneratedImage:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -396,12 +397,10 @@ class PetJobs:
         if model_id:
             body["model_id"] = model_id
         if source is not None:
-            if row is None:
-                raise ValueError("A pet reference edit requires an animation row")
             body.update(
                 image="data:image/png;base64," + base64.b64encode(source).decode(),
                 mode="reference",
-                width=SOURCE_CELL[0] * row.frame_count,
+                width=SOURCE_CELL[0],
                 height=SOURCE_CELL[1],
             )
         response = await self.services.client.post(
@@ -442,15 +441,36 @@ class PetJobs:
                 raise
             return None
 
+    async def prepare_output(
+        self, job: PetJob, raw: bytes, row: PetRow | None, frame: int
+    ) -> bytes:
+        if row is None:
+            return await asyncio.to_thread(prepare_base, raw)
+        output = await asyncio.to_thread(prepare_frame, raw, row, frame)
+        if frame == row.frame_count - 1:
+            previous = [
+                await self.content(job.agent_key, step.output_asset_id)
+                for step in job.steps[-frame:]
+            ]
+            await asyncio.to_thread(validate_row, row, [*previous, output])
+        return output
+
     async def generate(self, job: PetJob) -> None:
-        for index, name in enumerate(["base", *(row.name for row in ROWS)]):
+        frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
+        for index, item in enumerate([None, *frames]):
             if index < len(job.steps):
                 continue
-            row = ROWS[index - 1] if index else None
-            prompt = row_prompt(job.prompt, row) if row else base_prompt(job.prompt)
+            row, frame = item if item is not None else (None, 0)
+            name = frame_name(row, frame) if row is not None else "base"
+            prompt = (
+                frame_prompt(job.prompt, row, frame)
+                if row is not None
+                else base_prompt(job.prompt)
+            )
+            source_id = job.steps[0].output_asset_id if row is not None else None
             source = (
-                await self.content(job.agent_key, job.steps[0].output_asset_id)
-                if row
+                await self.content(job.agent_key, source_id)
+                if source_id is not None
                 else None
             )
             recovered = (
@@ -460,22 +480,20 @@ class PetJobs:
             )
             if recovered:
                 try:
-                    if row:
-                        await asyncio.to_thread(extract_row, recovered[0], row)
-                    else:
-                        await asyncio.to_thread(prepare_base, recovered[0])
+                    output = await self.prepare_output(job, recovered[0], row, frame)
                 except ValueError:
                     recovered = None
             request_id = job.pending_request_id if recovered else uuid4()
             job = await self.owned_update(
                 job,
-                stage=f"Generating {name}",
+                stage=(
+                    f"Generating {row.name} frame {frame + 1}/{row.frame_count}"
+                    if row is not None
+                    else "Generating base"
+                ),
                 pending_step_name=name,
                 pending_request_id=request_id,
             )
-            source_id = uuid5(request_id, "source")
-            if source is not None:
-                await self.upload(job, source_id, f"{name}-source", source, "image/png")
             if recovered:
                 raw, generation = recovered
             else:
@@ -489,7 +507,6 @@ class PetJobs:
                     prompt,
                     source,
                     job.steps[0].model_id if job.steps else None,
-                    row,
                 )
                 raw = base64.b64decode(generation.images_base64[0], validate=True)
                 metadata = generation.model_dump(exclude={"images_base64"})
@@ -504,14 +521,15 @@ class PetJobs:
                     job, uuid5(request_id, "raw"), f"{name}-raw", raw, "image/png"
                 )
             output_id = uuid5(request_id, "output")
-            if row is not None:
-                await asyncio.to_thread(extract_row, raw, row)
-            output = await asyncio.to_thread(prepare_base, raw) if row is None else raw
+            if not recovered:
+                output = await self.prepare_output(job, raw, row, frame)
             await self.upload(job, output_id, name, output, "image/png")
             step = PetStep(
                 name=name,
                 source_asset_id=source_id if row else uuid5(request_id, "raw"),
                 output_asset_id=output_id,
+                raw_asset_id=uuid5(request_id, "raw"),
+                provenance_asset_id=uuid5(request_id, "provenance"),
                 prompt=prompt,
                 request_id=request_id,
                 model_id=generation.model_id,
@@ -526,11 +544,11 @@ class PetJobs:
                 pending_request_id=None,
             )
         job = await self.owned_update(job, stage="Validating and assembling animation")
-        strips = {
+        frames = {
             step.name: await self.content(job.agent_key, step.output_asset_id)
             for step in job.steps[1:]
         }
-        atlas = await asyncio.to_thread(assemble_atlas, strips)
+        atlas = await asyncio.to_thread(assemble_atlas, frames)
         atlas_id = uuid5(job.id, "atlas")
         await self.upload(job, atlas_id, "atlas", atlas, "image/webp")
         manifest = PetManifest(
