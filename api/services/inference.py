@@ -16,10 +16,14 @@ from api.pydantic_models.inference import (
 )
 from api.pydantic_models.inference_task import (
     DownloadTask,
-    LlmModel,
-    ModelSelectionTask,
+    TierSelectionTask,
 )
-from api.pydantic_models.model_store import DownloadObservation, ModelStoreStatus
+from api.pydantic_models.model_store import (
+    DownloadObservation,
+    HardwareTier,
+    ModelStoreStatus,
+    TierId,
+)
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import InferenceTask, InferenceWorker
@@ -348,18 +352,37 @@ class InferenceService:
             finally:
                 self.worker.jobs.pop(job_id, None)
 
-    async def select_model(self, model_id: LlmModel) -> None:
-        """Save selection, then unload a different resident model after earlier chats."""
+    def tier(self, tier: TierId) -> HardwareTier:
+        for candidate in self.models_status().tiers:
+            if candidate.id == tier:
+                return candidate
+        raise InferenceFailure(f"Unknown hardware tier: {tier}", 422)
+
+    async def select_tier(self, tier: TierId) -> None:
+        """Save the tier, then unload a different resident language model after earlier chats."""
+        language_model = self.tier(tier).models["llm"]
         await self.submit(
-            ModelSelectionTask(model_id=model_id),
-            feature="model_selection",
+            TierSelectionTask(tier=tier),
+            feature="tier_selection",
             operation="configure",
         )
         if (
             self.state in ("loading", "ready", "offloaded")
-            and self.model_id != model_id
+            and self.model_id != language_model
         ):
             await self.unload(cancel_llm=False)
+
+    async def download_tier(self, tier: TierId, license_acknowledged: bool) -> None:
+        """Queue the tier's assigned checkpoints that are neither complete nor queued."""
+        states = {model.id: model.status for model in self.models_status().models}
+        for model_id in dict.fromkeys(self.tier(tier).models.values()):
+            if model_id is None or states.get(model_id) in (
+                "complete",
+                "downloading",
+                "cancelling",
+            ):
+                continue
+            await self.download(model_id, license_acknowledged)
 
     async def unload(self, cancel_llm: bool = True):
         """Unload through the FIFO; cancel_llm=False lets earlier chats finish first."""

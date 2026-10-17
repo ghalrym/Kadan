@@ -11,7 +11,7 @@
 namespace {
 using kadan::gguf::decode;
 using kadan::gguf::Encoding;
-using Block = std::array<unsigned char, 144>;
+using Block = std::array<unsigned char, 210>;
 
 void check(bool condition) {
     if (!condition)
@@ -128,12 +128,15 @@ void reference_blocks(Encoding encoding, ggml_type type) {
     for (unsigned trial = 0; trial < 2048; ++trial) {
         for (auto& byte : block)
             byte = random_bits(state) & 255u;
-        const std::size_t offset = encoding == Encoding::q3_k ? 108 : 0;
+        const std::size_t offset = encoding == Encoding::q3_k   ? 108
+                                   : encoding == Encoding::q6_k ? 208
+                                                                : 0;
         const unsigned scale =
             trial < halves.size()
                 ? halves[trial]
                 : (random_bits(state) & 0x83ffu) | ((random_bits(state) % 31) << 10);
-        half_bits(block, offset, scale);
+        if (encoding != Encoding::bf16)
+            half_bits(block, offset, scale);
         if (encoding == Encoding::q4_k) {
             const unsigned minimum = trial < halves.size()
                                          ? halves[halves.size() - 1 - trial]
@@ -155,6 +158,23 @@ int main() {
         reference_blocks(Encoding::q3_k, GGML_TYPE_Q3_K);
         reference_blocks(Encoding::q4_k, GGML_TYPE_Q4_K);
         reference_blocks(Encoding::q8_0, GGML_TYPE_Q8_0);
+        reference_blocks(Encoding::q6_k, GGML_TYPE_Q6_K);
+        reference_blocks(Encoding::iq3_xxs, GGML_TYPE_IQ3_XXS);
+        reference_blocks(Encoding::iq4_nl, GGML_TYPE_IQ4_NL);
+        reference_blocks(Encoding::iq4_xs, GGML_TYPE_IQ4_XS);
+        reference_blocks(Encoding::bf16, GGML_TYPE_BF16);
+        for (std::uint32_t type = 0; type < 64; ++type) {
+            const auto mapped = kadan::gguf::encoding(type);
+            check(
+                mapped.has_value()
+                == (type == GGML_TYPE_Q8_0 || type == GGML_TYPE_Q3_K
+                    || type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K
+                    || type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ4_NL
+                    || type == GGML_TYPE_IQ4_XS || type == GGML_TYPE_BF16)
+            );
+            if (mapped)
+                check(kadan::gguf::supported(*mapped));
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

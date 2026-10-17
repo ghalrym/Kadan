@@ -68,155 +68,73 @@ accepts only storage/tensor descriptors from verified Whisper archives and does
 not execute pickle globals. Curl handles downloads, OpenSSL verifies digests,
 and libarchive reads checkpoint containers.
 
-## Muse Spark Open text support
+## Hardware tier text models
 
-The native Muse engine uses the existing worker, resource ledger and bounded
-CUDA projection banks. GGUF projections read bounded packed rows, retain their
-compressed bytes in the existing GPU banks and decode bounded F32 tiles on the
-GPU for the existing GEMM path. F32 tensors and MLX use their existing sources. It does not start llama.cpp, MLX or a Python runtime.
-The current model selection, saved context limits and GPU settings remain
-unchanged.
+Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
+language model and the S1-mini formatter; image, video, speech and transcription
+assignments are still open (`null`). Choosing a tier persists `tier.json` in the
+model store and selects its language model; the API then queues the tier's
+incomplete downloads through the existing FIFO.
 
-The optional `muse-spark-open-q3-xl` catalog entry pins
-[Unsloth UD-Q3_K_XL](https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/tree/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL).
-Its ten files total 401,483,491,832 bytes (373.911 GiB). Its published tensor
-inventory contains 1,429 tensors: expert gate/up matrices use Q3_K, expert down
-matrices use Q4_K, other matrices use Q8_0 and vectors use F32. This is a mixed
-quantization preset; the loader rejects unsupported wire types or geometry.
-The measurements below do not establish quantization quality.
-The existing Settings and model-selection API accept this catalog ID through
-the shared `LlmModel` type; selection uses the existing worker queue.
+| Tier | Hardware | Catalog ID | Checkpoint | Download bytes |
+| --- | --- | --- | --- | --- |
+| Go | 8 GB VRAM, 32 GB RAM | `qwen3.8-27b-q4-k-m` | [ggml-org Qwen3.8-27B Q4_K_M](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/tree/71bc7b627595dc8a91039addd9c791ae548d6747) | 18,973,870,528 |
+| Plus | 16 GB VRAM, 64 GB RAM | `qwen3.8-27b-q8-0` | [ggml-org Qwen3.8-27B Q8_0](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/tree/71bc7b627595dc8a91039addd9c791ae548d6747) | 28,595,763,648 |
+| Pro | 24 GB VRAM, 128 GB RAM | `qwen3.8-flash-next-q3-k-xl` | [Unsloth Qwen3.8 Flash Next UD-Q3_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL) | 89,986,353,824 |
+| Ultra | 48 GB VRAM, 512 GB RAM | `glm-5.3-flash-q3-k-xl` | [Unsloth GLM-5.3 Flash UD-Q3_K_XL](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/tree/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL) | 147,535,922,080 |
 
-Acquisition downloads the tensor-free first split before any weight split,
-validates its architecture and exports configuration and byte-level BPE assets
-in C++. The tokenizer uses that split's own vocabulary, merges and control
-IDs. The native prompt renderer matches the complete pinned public chat
-template, and the recipient parser separates reasoning, commentary and final
-text while suppressing unsupported tool messages. The existing worker's
-2,048-token extra reasoning budget is independent of the template's default
-reasoning strength of 512. Generation remains greedy.
+Qwen3.8 Flash Next is under the Qwen Community License 1.0; its catalog notice
+must be acknowledged before download.
 
-`src/models/text/muse_spark.cpp` implements the 62-layer text decoder and
-handles the GGUF converter's absolute norm gains, folded router scale,
-precomputed residual coefficients and Q/K row ordering explicitly. GGUF uses
-F32 activation arithmetic. The alternate public MLX affine group-64 3/4-bit
-layout is also supported natively, with its BF16 activation boundaries; it is
-not registered as a selected model. Original BF16, ModelOpt NVFP4, other GGUF
-presets and multimodal execution are not admitted by this implementation.
+Acquisition downloads the first GGUF file (an unsplit file, or a tensor-free
+first split) before any weight split. `src/preparation/gguf_assets.cpp`
+validates the exact architecture contract and derives `config.json` and a
+byte-level BPE `tokenizer.json` from the GGUF tokenizer arrays: normal tokens
+form the vocabulary, control and user-defined tokens are added tokens, and the
+published pre-tokenizers (Qwen NFC with `\p{M}`, GLM with `ignore_merges`) are
+reproduced. The derivation matches the upstream `tokenizer.json` vocabularies,
+merges and added tokens exactly.
 
-The pinned `ggml-base` dependency supplies GGUF metadata parsing and quantized
-CPU row decoding only; original Q3_K, Q4_K and Q8_0 CUDA decoders serve packed
-projections. CPU unit tests compare the shared decoder arithmetic against the
-pinned reference, including FP16 patterns and randomized blocks. Kadan owns
-model execution, attention state, placement,
-cancellation and sampling. Its MIT notice is installed with the worker.
-Reference equations and conversion semantics were checked against
-[Transformers PR 49644](https://github.com/huggingface/transformers/pull/49644),
-[MLX-LM PR 1975](https://github.com/ml-explore/mlx-lm/pull/1975) and
-[llama.cpp PR 30616](https://github.com/ggml-org/llama.cpp/pull/30616).
+`src/models/text/` holds one engine (`gguf_engine.cpp`) and one model per GGUF
+architecture, following llama.cpp
+`6420cf5dd588c68e48657a0bbd82bb3bd5ac7209` graphs and converter conventions:
 
-Metadata-only unit fixtures cover the published MLX and GGUF inventories using
-sparse files with unread payload holes. Separate units check quantized block
-decoding, tokenizer metadata, prompt rendering, recipient streams and
-pre-download rejection. No unit test executes the model.
+- `qwen35.cpp`: Qwen3.8 27B, 48 gated delta net layers and 16 gated full
+  attention layers with a dense SwiGLU MLP.
+- `qwen4exp.cpp`: Qwen3.8 Flash Next, four hyper-connection streams in place of
+  layer norms, n-gram hash embeddings on layer 1, a 512-expert top-10 MoE with a
+  gated shared expert, and QSA top-block selection on full attention layers.
+- `glm.cpp`: GLM-5.3 Flash, mHC streams, KDA linear layers and nope-only MLA
+  with the k-pool sparse indexer. MLA is absorbed, so only the latent is cached.
 
-Muse now prefills bounded prompt chunks layer by layer, reusing each projection
-across token rows. Chunks contain at most 256 tokens within the existing 128 MiB
-host scratch envelope. Attention writes and consumes K/V in absolute-position
-order, and expert gathering retains each token's ascending-expert accumulation.
-Scalar decode shares the same layer math. Only the final prompt row computes
-vocabulary logits. Component units compare causal rings, routing and scatter
-against independent serial calculations; batched GEMM can change floating-point
-reductions, so these checks do not establish whole-model numerical parity.
+`qwen_layers.cpp` holds the delta net and gated attention shared by both Qwen
+models. Layer math is F32 on the host; text-only interleaved M-RoPE reduces to
+NEOX rotation of the first 64 dimensions. Projections run through the existing
+device banks, which keep packed rows and decode F32, Q8_0, Q3_K, Q4_K, Q6_K,
+IQ3_XXS, IQ4_NL, IQ4_XS and BF16 on the GPU. Attention uses the device attention
+path when available.
 
-Native `prefill_layer` progress reports completed layers across chunks;
-`prefill_chunk` and `prefill_token` report committed tokens only. Muse
-`decode_token` progress counts computed predictions even when recipient parsing
-suppresses control or reasoning tokens. These events support a bounded manual
-stall guard without describing partially computed tokens as complete. The
-batched path has the measured limits below.
+Checkpoints larger than VRAM are tiered across VRAM, host RAM and disk by
+`gguf_placement.cpp`. Each slice (one expert of an expert stack, or one matrix)
+carries a usage score that gains one per projection and halves every 512
+tokens. A slice stays device-resident while it fits 90% of the planned bank
+capacity; a resident slice is released only for one scoring 1.5x higher, so
+routinely routed experts stay in VRAM and rare ones do not thrash it. Slices
+without device residency are held in a host RAM cache with the same admission
+rule and stream to the GPU without displacing resident tiles; anything else is
+read from the GGUF files. The chat engine admits host memory left after the
+model's state and a 4 GiB headroom (capped at the checkpoint size) as that RAM
+cache in the shared resource ledger.
+Prefill is layer-major in chunks of 64 tokens; selection is greedy. MTP heads,
+vision towers and Hadamard-folded checkpoints are not executed.
 
-An authorized October 16 manual retest used the same native build tree as
-`1ba4dd16a59e71a924fd25f0412c48d710fdbb7a`, the pinned ten-file checkpoint,
-512-token context, greedy sampling and the prior 154-token greeting prompt on a
-Threadripper PRO 5955WX with two 24 GiB RTX 3090s and 448 GiB recognized RAM.
-The system prompt was `Reasoning strength: 0. Answer directly.` and the user
-prompt was `Reply with exactly: Hello Andrew.`; these were retained for
-comparison, not as a recommended reasoning configuration.
-
-| Stage | Measured result |
-| --- | --- |
-| Model load/setup | 1.62 seconds |
-| Prefill, excluding load and setup | 100.96 seconds for 154 tokens |
-| Prompt completion from worker launch | 102.87 seconds |
-| Computed predictions | 62, including recipient control and reasoning tokens |
-| Warm decode | 0.330 predictions/second over warm intervals; median 1.507 seconds |
-| Useful complete answer within five minutes | No; coherent but unfinished reasoning, no final answer |
-| Cleanup | Cancel at 290 seconds; unload acknowledged zero memory usage and clean exit at 292.19 seconds |
-
-Warm intervals exclude the first decode interval between predictions one and
-two. The initial faster decode rate did not persist: the last ten intervals
-had a median of 5.64 seconds. Load/setup does not preload all weights; roughly
-232 GB of cumulative storage reads were recorded near prompt completion, so
-prefill includes cold checkpoint I/O. The retest followed a reboot and removal
-of a DIMM from a known faulty slot. Cache residency and automatic GPU placement
-differed; the result does not isolate the cause of the improvement or establish
-whole-model numerical parity, quantization quality or interactive usability.
-
-The best tested packed GPU path is on `master`. No live deployment is implied by
-the native implementation or this manual measurement.
-Obtain approval before a large download or manual GPU testing, then use the
-existing API queue to test
-load, short and streamed chat, history, reasoning, cancellation, unload and
-context admission. Record actual memory and loading/prefill/decode times.
-
-## GPT-OSS
-
-The catalog includes the official OpenAI Transformers-layout checkpoints below.
-The existing `medium` ID continues to identify 120B so its cached checkpoint and
-saved settings retain their identity.
-
-| Catalog ID | Checkpoint | Published total / active parameters | Download bytes |
-| --- | --- | --- | --- |
-| `gpt-oss-20b` | [OpenAI GPT-OSS 20B](https://huggingface.co/openai/gpt-oss-20b/tree/6cee5e81ee83917806bbde320786a8fb61efebee) | 21B / 3.6B | 13,789,263,104 |
-| `medium` | [OpenAI GPT-OSS 120B](https://huggingface.co/openai/gpt-oss-120b/tree/b5c939de8f754692c1647ca79fbf85e8c1e70f8a) | 117B / 5.1B | 65,276,857,840 |
-
-Both are Apache-2.0 licensed; each catalog entry links the license at its pinned
-revision. Byte counts sum the Hub's file sizes for root files accepted by
-`ModelStore::allowed`, including weights, tokenizer, configuration and license
-files. They exclude `.gitattributes` and the separate `original/` checkpoint.
-BF16 dequantization, GGUF and third-party requantizations are not registered
-choices; choosing a different quantization requires a separate loader/quality
-discussion.
-
-`src/cuda/gpt_oss_model.cpp` executes both sizes (`gpt_oss` /
-`GptOssForCausalLM`) in the existing chat engine with batch-one CUDA kernels in
-`src/cuda/gpt_oss_kernel.cu`: RMSNorm, fused BF16 QKV with biases, half-split
-YaRN rotary, grouped-query attention with per-head sinks over a BF16 K/V cache
-(128-slot ring on sliding layers), and top-4 routed experts that read the
-checkpoint's packed MXFP4 blocks directly with the clamped SwiGLU. Activations
-and accumulation are FP32; selection is greedy.
-
-`src/models/text/gpt_oss_plan.cpp` places complete layers in contiguous ranges
-that end, with the LM head, on the largest device. It prefers one device, then
-several, and otherwise keeps each layer's attention and context state on the
-GPU while experts that do not fit stay in mapped pinned host memory, which the
-same kernels read across the bus. The embedding table is always host-mapped.
-These host bytes are admitted before loading.
-
-`include/kadan/harmony.hpp` renders prompts like OpenAI's `openai-harmony`
-encoder (system messages become developer instructions; earlier reasoning is
-dropped) with low reasoning effort, and converts generated channels to text:
-analysis streams inside `<think>…</think>`, final and preamble commentary stay
-visible, and tool-call bodies are never emitted. Reasoning has a 2,048-token
-budget beside the normal answer limit. `<|return|>`, `<|call|>` and
-`<|endoftext|>` stop generation. Tools are not part of the chat request model.
-
-No Kadan speed or memory-fit figure has been measured. Manually test each size
-through the existing API queue: loading and automatic placement (including host
-experts for 120B), basic and streamed chat, multi-turn history, reasoning
-separation, cancellation, unload and context limits, recording actual memory and
-latency.
+Unit tests cover the device decoders bit for bit against ggml, checkpoint
+binding, metadata validation, asset derivation and the shared layer math. No
+model has been executed: whole-model numerical parity, quantization quality,
+speed and memory fit on each tier are unmeasured. Manually test each tier
+through the existing API queue: download, load, short and streamed chat,
+multi-turn history, cancellation, unload and context admission, recording
+actual memory and loading, prefill and decode times.
 
 Build and install the `inference-runtime` component using the options in
 [`api/Dockerfile`](../api/Dockerfile). The former standalone worker executables
@@ -240,8 +158,7 @@ decayed tile-frequency filter at the same bank capacity. Its transfer counter is
 ideal missed-weight demand, not measured PCIe traffic: packed GGUF admission may
 upload the same bytes again. Include admission traffic and actual copy timings
 before choosing a runtime policy. The replay does not model in-flight pointer
-protection or preserving residency across existing retirement boundaries, and
-does not cover the separate GPT-OSS or AutoModel placement paths.
+protection or preserving residency across existing retirement boundaries.
 
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/kadan.py infer` to submit requests through the live API and its

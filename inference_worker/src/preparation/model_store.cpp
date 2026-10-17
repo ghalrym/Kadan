@@ -13,35 +13,15 @@
 #include <unistd.h>
 
 #include "../weights/metadata_json.hpp"
-#include "kadan/glm.hpp"
-#include "kadan/gpt_oss_manifest.hpp"
-#include "kadan/model_manifest.hpp"
-#include "kadan/muse_spark.hpp"
+#include "kadan/gguf_text.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
 namespace {
 void validate_text_checkpoint(const fs::path& checkpoint) {
     try {
-        auto budget = std::make_shared<checkpoint::MemoryBudget>(512ULL * 1024 * 1024);
-        const auto root = checkpoint.string();
-        std::string architecture;
-        {
-            const auto config = checkpoint::json::read(
-                root.c_str(), "config.json", 16 * 1024 * 1024, budget
-            );
-            architecture = config.at("model_type").string();
-        }
-        if (architecture == "qwen3_5_moe")
-            checkpoint::read_text_config(root.c_str(), budget);
-        else if (architecture == "glm5_next")
-            glm::validate_config(root.c_str(), budget);
-        else if (architecture == "gpt_oss")
-            gpt_oss::read_config(root.c_str(), budget);
-        else if (architecture == "muse_spark")
-            kadan::muse_spark::validate_config(root.c_str(), budget);
-        else
-            throw std::invalid_argument("unsupported_model_type");
+        auto budget = std::make_shared<checkpoint::MemoryBudget>(4ULL * 1024 * 1024);
+        text::validate_config(checkpoint.string().c_str(), budget);
     } catch (const std::exception& error) {
         throw RequestError(
             std::string("Unsupported text checkpoint: ") + error.what(), 422
@@ -384,14 +364,32 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     entry.component_paths = value.value("component_paths", std::vector<std::string>());
     entry.weight_paths = value.value("weight_paths", std::vector<std::string>());
     entry.manifest = parse_manifest(value.at("manifest"));
+    // The first manifest file carries the GGUF metadata: one unsplit file, or a
+    // tensor-free first split acquired before any weight split.
     if (entry.layout == "gguf")
         preparation_check(
             entry.kind == "llm" && !entry.manifest.empty()
                 && !fs::path(entry.asset_name).has_parent_path()
-                && entry.asset_name.ends_with("-00001-of-00010.gguf"),
-            "Invalid Muse GGUF catalog metadata"
+                && entry.manifest.front().name == entry.asset_name,
+            "Invalid GGUF catalog metadata"
         );
     return entry;
+}
+
+HardwareTier HardwareTier::parse(const Json& value) {
+    HardwareTier tier{
+        value.at("id"), value.at("name"), value.at("vram_gb"), value.at("ram_gb"), {}
+    };
+    preparation_check(
+        value.at("models").is_object() && value.at("models").size() == 6,
+        "Invalid hardware tier models"
+    );
+    for (const auto& [kind, model] : value.at("models").items())
+        tier.models.emplace(
+            kind,
+            model.is_null() ? std::nullopt : std::optional(model.get<std::string>())
+        );
+    return tier;
 }
 
 ModelStore::ModelStore(
@@ -408,6 +406,20 @@ ModelStore::ModelStore(
             identities.insert(model.id).second, "Duplicate catalog model"
         );
         catalog_.push_back(std::move(model));
+    }
+    std::set<std::string> tier_ids;
+    for (const auto& value : document.value("tiers", Json::array())) {
+        auto tier = HardwareTier::parse(value);
+        preparation_check(tier_ids.insert(tier.id).second, "Duplicate hardware tier");
+        for (const auto& [kind, model] : tier.models)
+            preparation_check(
+                !model || entry(*model).kind == kind,
+                "Hardware tier model kind mismatch"
+            );
+        preparation_check(
+            tier.models.at("llm").has_value(), "Hardware tier has no LLM"
+        );
+        tiers_.push_back(std::move(tier));
     }
 }
 
@@ -490,17 +502,16 @@ void ModelStore::validate_files(
         );
         if (layout == "gguf") {
             preparation_check(
-                names.contains(model.asset_name) && files.size() == 10,
-                "Invalid Muse GGUF split manifest"
+                names.contains(model.asset_name), "Invalid GGUF split manifest"
             );
             for (const auto& file : files)
                 preparation_check(
                     file.name.ends_with(".gguf")
                         && !fs::path(file.name).has_parent_path()
                         && file.url.starts_with("https://")
-                        && (file.name != model.asset_name
+                        && (files.size() == 1 || file.name != model.asset_name
                             || file.size <= 32 * 1024 * 1024),
-                    "Invalid Muse GGUF split asset"
+                    "Invalid GGUF split asset"
                 );
         }
         return;
@@ -604,7 +615,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     preparation_cancel(cancel);
     if (complete(catalog)) {
         if (catalog.layout == "gguf")
-            prepare_muse_gguf_assets(destination, catalog.asset_name, cancel);
+            prepare_gguf_assets(destination, catalog.asset_name, cancel);
         if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
@@ -613,7 +624,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     StoreLock lock(root_ / ".download.lock", cancel);
     if (complete(catalog)) {
         if (catalog.layout == "gguf")
-            prepare_muse_gguf_assets(destination, catalog.asset_name, cancel);
+            prepare_gguf_assets(destination, catalog.asset_name, cancel);
         if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
@@ -750,7 +761,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
                                    + revision + "/" + name;
         download(url, stage / name, file, cancel, fetch_, progress);
         if (catalog.layout == "gguf" && name == catalog.asset_name)
-            prepare_muse_gguf_assets(stage, name, cancel);
+            prepare_gguf_assets(stage, name, cancel);
         if (catalog.kind == "llm" && name == "config.json")
             validate_text_checkpoint(stage);
         if (!name.ends_with(".safetensors.index.json"))
@@ -777,15 +788,38 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     return destination;
 }
 
+std::optional<std::string> ModelStore::tier() const {
+    if (!fs::is_regular_file(root_ / "tier.json"))
+        return std::nullopt;
+    const auto id = read_document(root_ / "tier.json").at("tier").get<std::string>();
+    hardware_tier(id);
+    return id;
+}
+
+const HardwareTier& ModelStore::hardware_tier(const std::string& id) const {
+    for (const auto& tier : tiers_)
+        if (tier.id == id)
+            return tier;
+    throw RequestError("Unknown hardware tier: " + id, 422);
+}
+
+void ModelStore::select_tier(const std::string& id) {
+    hardware_tier(id);
+    fs::create_directories(root_);
+    atomic_document(root_ / "tier.json", {{"tier", id}});
+}
+
 std::string ModelStore::selected() const {
+    std::optional<std::string> id;
     try {
-        const auto model =
-            read_document(root_ / "selection.json").at("model_id").get<std::string>();
-        preparation_check(entry(model).kind == "llm", "Invalid selected model", 422);
-        return model;
+        id = tier();
     } catch (const std::exception&) {
-        throw RequestError("Select a language model before submitting a request.", 422);
     }
+    if (!id)
+        throw RequestError(
+            "Choose a hardware tier in Settings before submitting a request.", 422
+        );
+    return *hardware_tier(*id).models.at("llm");
 }
 
 std::string ModelStore::whisper_model(const std::string& name) const {
@@ -837,15 +871,6 @@ Json ModelStore::context(const std::string& model) const {
     if (!fs::exists(root_ / "context.json"))
         return 65536;
     return read_document(root_ / "context.json").value(model, Json(65536));
-}
-
-void ModelStore::select(const std::string& model) {
-    preparation_check(
-        entry(model).kind == "llm" && complete(entry(model)),
-        "Cannot select incomplete language model",
-        422
-    );
-    atomic_document(root_ / "selection.json", {{"model_id", model}});
 }
 
 void ModelStore::set_context(const std::string& model, const Json& value) {
@@ -943,9 +968,10 @@ Json ModelStore::status() const {
         }
         models.push_back(std::move(model));
     }
-    Json selection = nullptr, whisper = nullptr, image = nullptr;
+    Json selection = nullptr, whisper = nullptr, image = nullptr, tier = nullptr;
     try {
         selection = selected();
+        tier = *this->tier();
     } catch (const RequestError&) {
     }
     try {
@@ -956,8 +982,23 @@ Json ModelStore::status() const {
         image = image_selected();
     } catch (const RequestError&) {
     }
+    Json tiers = Json::array();
+    for (const auto& item : tiers_) {
+        Json assigned = Json::object();
+        for (const auto& [kind, model] : item.models)
+            assigned[kind] = model ? Json(*model) : Json(nullptr);
+        tiers.push_back(
+            {{"id", item.id},
+             {"name", item.name},
+             {"vram_gb", item.vram_gb},
+             {"ram_gb", item.ram_gb},
+             {"models", assigned}}
+        );
+    }
     return {
         {"models", models},
+        {"tiers", tiers},
+        {"selected_tier", tier},
         {"selected_model_id", selection},
         {"selected_whisper", whisper},
         {"whisper_formatting", whisper_formatting()},

@@ -1,84 +1,164 @@
 {
   "models": [
     {
-      "id": "small",
-      "repo_id": "nvidia/Qwen3.6-35B-A3B-NVFP4",
-      "revision": "1355db6a052410cfd62085d94b58866fd0f2c3c5",
+      "id": "qwen3.8-27b-q4-k-m",
+      "repo_id": "ggml-org/Qwen3.8-27B-GGUF",
+      "revision": "71bc7b627595dc8a91039addd9c791ae548d6747",
       "license": "apache-2.0",
-      "estimated_bytes": 23500000000,
+      "estimated_bytes": 18973870528,
       "kind": "llm",
-      "display_name": null,
-      "layout": "root",
+      "display_name": "Qwen3.8 27B (Q4_K_M)",
+      "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
-      "required_files": [],
+      "required_files": [
+        "Qwen3.8-27B-Q4_K_M.gguf"
+      ],
       "weight_paths": [],
-      "license_url": null,
+      "license_url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/blob/71bc7b627595dc8a91039addd9c791ae548d6747/README.md",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
-      "asset_name": null,
-      "manifest": []
+      "asset_name": "Qwen3.8-27B-Q4_K_M.gguf",
+      "manifest": [
+        {
+          "name": "Qwen3.8-27B-Q4_K_M.gguf",
+          "size": 18973870528,
+          "digest": "c600de0300ae8a0eb3a6c0b8b5561b8b96f16bd2c863c2a66c42de29d391a747",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/71bc7b627595dc8a91039addd9c791ae548d6747/Qwen3.8-27B-Q4_K_M.gguf"
+        }
+      ]
     },
     {
-      "id": "gpt-oss-20b",
-      "repo_id": "openai/gpt-oss-20b",
-      "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "id": "qwen3.8-27b-q8-0",
+      "repo_id": "ggml-org/Qwen3.8-27B-GGUF",
+      "revision": "71bc7b627595dc8a91039addd9c791ae548d6747",
       "license": "apache-2.0",
-      "estimated_bytes": 13789263104,
+      "estimated_bytes": 28595763648,
       "kind": "llm",
-      "display_name": "GPT-OSS 20B (MXFP4)",
-      "layout": "root",
+      "display_name": "Qwen3.8 27B (Q8_0)",
+      "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
-      "required_files": [],
+      "required_files": [
+        "Qwen3.8-27B-Q8_0.gguf"
+      ],
       "weight_paths": [],
-      "license_url": "https://huggingface.co/openai/gpt-oss-20b/blob/6cee5e81ee83917806bbde320786a8fb61efebee/LICENSE",
+      "license_url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/blob/71bc7b627595dc8a91039addd9c791ae548d6747/README.md",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
-      "asset_name": null,
-      "manifest": []
+      "asset_name": "Qwen3.8-27B-Q8_0.gguf",
+      "manifest": [
+        {
+          "name": "Qwen3.8-27B-Q8_0.gguf",
+          "size": 28595763648,
+          "digest": "aab65c67ef0dad127960efef9247f1832bca105faa1c7a052cc039b223cf86a1",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/71bc7b627595dc8a91039addd9c791ae548d6747/Qwen3.8-27B-Q8_0.gguf"
+        }
+      ]
     },
     {
-      "id": "medium",
-      "repo_id": "openai/gpt-oss-120b",
-      "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
-      "license": "apache-2.0",
-      "estimated_bytes": 65276857840,
+      "id": "qwen3.8-flash-next-q3-k-xl",
+      "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "revision": "766911a6b7369840a91dbcd95f9f997acaab6cd6",
+      "license": "qwen-community-1.0",
+      "estimated_bytes": 89986353824,
       "kind": "llm",
-      "display_name": "GPT-OSS 120B (MXFP4)",
-      "layout": "root",
+      "display_name": "Qwen3.8 Flash Next (UD-Q3_K_XL)",
+      "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
-      "required_files": [],
+      "required_files": [
+        "Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf",
+        "Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf",
+        "Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf"
+      ],
       "weight_paths": [],
-      "license_url": "https://huggingface.co/openai/gpt-oss-120b/blob/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/LICENSE",
-      "license_notice": null,
+      "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE",
+      "license_notice": "Qwen Community License 1.0: free to use, modify and redistribute with the notice retained. Offering this model as a hosted model service or AI work assistant for commercial purposes requires a separate license from Qwen; very large commercial products must display the model name.",
       "inference_available": true,
       "asset_url": null,
-      "asset_name": null,
-      "manifest": []
+      "asset_name": "Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf",
+      "manifest": [
+        {
+          "name": "Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf",
+          "size": 10946624,
+          "digest": "f2ef4328929d8b8c8930e2856eef52128dd4ce3425302f04bc3c657431cc4c49",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf"
+        },
+        {
+          "name": "Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf",
+          "size": 49983253824,
+          "digest": "7d230e7c9421d868b89eebaf23033af0ea1a4e046956df00fb156814fb62346e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf"
+        },
+        {
+          "name": "Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf",
+          "size": 39992153376,
+          "digest": "21d4f90f9cd7b7c3a1582667c20cb22f7b03de895b88a23bb20aaeaa44f2c199",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf"
+        }
+      ]
     },
     {
-      "id": "large",
-      "repo_id": "mbehr90/GLM-5.3-Flash-nvfp4",
-      "revision": "70acfebe23b1d2d82ea1c64734355d23504d02bb",
+      "id": "glm-5.3-flash-q3-k-xl",
+      "repo_id": "unsloth/GLM-5.3-Flash-GGUF",
+      "revision": "a38483c8cd5df544f53d70fb281afe97369d5ab6",
       "license": "mit",
-      "estimated_bytes": 198000000000,
+      "estimated_bytes": 147535922080,
       "kind": "llm",
-      "display_name": null,
-      "layout": "root",
+      "display_name": "GLM-5.3 Flash (UD-Q3_K_XL)",
+      "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
-      "required_files": [],
+      "required_files": [
+        "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
+        "GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf",
+        "GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf",
+        "GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf"
+      ],
       "weight_paths": [],
-      "license_url": null,
+      "license_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/main/LICENSE",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
-      "asset_name": null,
-      "manifest": []
+      "asset_name": "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
+      "manifest": [
+        {
+          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
+          "size": 9429984,
+          "digest": "be89305a221c1449cf9a5a84b5c492520a7fb23a3af1b2178a20ecf0b6ecae76",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf"
+        },
+        {
+          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf",
+          "size": 49609243584,
+          "digest": "310b5bef056c5cc61d98e1845feac97e35d0a5aa412fca354b6cd597d66b486e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf"
+        },
+        {
+          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf",
+          "size": 49623486016,
+          "digest": "eacaab11505a25f00e78b4dce64795cc38bc25839372ec586745af0261673a0c",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf"
+        },
+        {
+          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf",
+          "size": 48293762496,
+          "digest": "c650640c9f94f5f1662ac84b803405db3265ee9fc24ffe56670bb0eafd632d00",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf"
+        }
+      ]
     },
     {
       "id": "h3-fl2va",
@@ -117,7 +197,7 @@
         "FL2VA/video_vae/source"
       ],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": false,
       "asset_url": null,
       "asset_name": null,
@@ -162,7 +242,7 @@
       ],
       "weight_paths": [],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": true,
       "asset_url": null,
       "asset_name": null,
@@ -820,108 +900,6 @@
       "asset_url": null,
       "asset_name": null,
       "manifest": []
-    },
-    {
-      "id": "muse-spark-open-q3-xl",
-      "repo_id": "unsloth/Muse-Spark-Open-816B-A42B-GGUF",
-      "revision": "19d0b1b3a1b1974a48439e11e0639c0dad164fc8",
-      "license": "muse-model-license",
-      "estimated_bytes": 401483491832,
-      "kind": "llm",
-      "display_name": "Muse Spark Open 816B (UD-Q3_K_XL)",
-      "layout": "gguf",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf",
-        "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf"
-      ],
-      "weight_paths": [],
-      "license_url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/blob/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/LICENSE.md",
-      "license_notice": "Text-only support. Quantization quality and whole-model numerical parity have not been established. Muse Model License and Acceptable Use Policy apply.",
-      "inference_available": true,
-      "asset_url": null,
-      "asset_name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
-      "manifest": [
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf",
-          "size": 13079896,
-          "digest": "15f48c4123331275fc949726db21363fdda019c754e19af9ca6ae3f12754c30a",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00001-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf",
-          "size": 49408958816,
-          "digest": "821ed134897930f3643e20fbdec87a6d3fbf3fcf8ac5b26efe281166d333e4e0",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00002-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf",
-          "size": 49102264416,
-          "digest": "13a4a6763cecd6eb49305ac93569c525a67ecc450396834fbfbd2110ada6eb7e",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00003-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf",
-          "size": 49125408128,
-          "digest": "d6d1c18b47b06ba3fd04bcf10ce8730887a6369381a797778ff827a1321dc592",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00004-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf",
-          "size": 49137839488,
-          "digest": "be6015f314586637c574777bcf0dd1651c1cfd5c7b589b40fcf93859b0e70b83",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00005-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf",
-          "size": 48360224736,
-          "digest": "0fc15c40d1d7ae8d9c507b864e987536c33fe803759938d6334082ea96850f67",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00006-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf",
-          "size": 49414133280,
-          "digest": "be31f5b13a63069a01d5a4f441dea19be5c0db721cff05ac671bc459b9dc27fb",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00007-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf",
-          "size": 48951246272,
-          "digest": "e5f1300c7833f620204d549856cf43830386ca7478436f44a0c8056c463756e5",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00008-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf",
-          "size": 49155343232,
-          "digest": "a9b1e4e4a62af0735fba731e0a1a64bd340941d852805fb65b337f57955dea33",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00009-of-00010.gguf"
-        },
-        {
-          "name": "Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf",
-          "size": 8814993568,
-          "digest": "b6f360ea27f4383cd9ad42439fb6bc20765bfc0415bea7791ffbbdac44a01996",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-GGUF/resolve/19d0b1b3a1b1974a48439e11e0639c0dad164fc8/UD-Q3_K_XL/Muse-Spark-Open-816B-A42B-UD-Q3_K_XL-00010-of-00010.gguf"
-        }
-      ]
     }
   ],
   "assets": [
@@ -951,5 +929,63 @@
     "tokenizer_config.json",
     "video_preprocessor_config.json",
     "vocab.json"
+  ],
+  "tiers": [
+    {
+      "id": "go",
+      "name": "Go",
+      "vram_gb": 8,
+      "ram_gb": 32,
+      "models": {
+        "llm": "qwen3.8-27b-q4-k-m",
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "formatting": "superwhisper-s1-mini"
+      }
+    },
+    {
+      "id": "plus",
+      "name": "Plus",
+      "vram_gb": 16,
+      "ram_gb": 64,
+      "models": {
+        "llm": "qwen3.8-27b-q8-0",
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "formatting": "superwhisper-s1-mini"
+      }
+    },
+    {
+      "id": "pro",
+      "name": "Pro",
+      "vram_gb": 24,
+      "ram_gb": 128,
+      "models": {
+        "llm": "qwen3.8-flash-next-q3-k-xl",
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "formatting": "superwhisper-s1-mini"
+      }
+    },
+    {
+      "id": "ultra",
+      "name": "Ultra",
+      "vram_gb": 48,
+      "ram_gb": 512,
+      "models": {
+        "llm": "glm-5.3-flash-q3-k-xl",
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "formatting": "superwhisper-s1-mini"
+      }
+    }
   ]
 }

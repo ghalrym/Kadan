@@ -1300,11 +1300,10 @@
             "anyOf": [
               {
                 "enum": [
-                  "small",
-                  "gpt-oss-20b",
-                  "medium",
-                  "large",
-                  "muse-spark-open-q3-xl"
+                  "qwen3.8-27b-q4-k-m",
+                  "qwen3.8-27b-q8-0",
+                  "qwen3.8-flash-next-q3-k-xl",
+                  "glm-5.3-flash-q3-k-xl"
                 ],
                 "type": "string"
               },
@@ -1908,27 +1907,6 @@
         "title": "ScoreQuestion",
         "type": "object"
       },
-      "SelectionRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "model_id": {
-            "enum": [
-              "small",
-              "gpt-oss-20b",
-              "medium",
-              "large",
-              "muse-spark-open-q3-xl"
-            ],
-            "title": "Model Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "model_id"
-        ],
-        "title": "SelectionRequest",
-        "type": "object"
-      },
       "SettingsModels": {
         "additionalProperties": false,
         "description": "Per-modality selections; an omitted modality is left unchanged.",
@@ -1947,24 +1925,6 @@
               }
             ],
             "title": "Image"
-          },
-          "LLM": {
-            "anyOf": [
-              {
-                "enum": [
-                  "small",
-                  "gpt-oss-20b",
-                  "medium",
-                  "large",
-                  "muse-spark-open-q3-xl"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Llm"
           }
         },
         "title": "SettingsModels",
@@ -1972,10 +1932,34 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Persist supported selections and transcription formatting.",
+        "description": "Persist the hardware tier, image selection and transcription formatting.",
         "properties": {
+          "license_acknowledged": {
+            "default": false,
+            "description": "The user read the license notices of the tier's checkpoints.",
+            "title": "License Acknowledged",
+            "type": "boolean"
+          },
           "models": {
-            "$ref": "#/components/schemas/SettingsModels"
+            "$ref": "#/components/schemas/SettingsModels",
+            "default": {}
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "go",
+                  "plus",
+                  "pro",
+                  "ultra"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
           },
           "whisper_formatting": {
             "anyOf": [
@@ -1989,20 +1973,42 @@
             "title": "Whisper Formatting"
           }
         },
-        "required": [
-          "models"
-        ],
         "title": "SettingsRequest",
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose catalog selections and the saved transcription formatting setting.",
+        "description": "Expose the hardware tier, catalog selections and transcription formatting.",
         "properties": {
           "models": {
             "items": {
               "$ref": "#/components/schemas/ModelSetting"
             },
             "title": "Models",
+            "type": "array"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "go",
+                  "plus",
+                  "pro",
+                  "ultra"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The selected hardware tier; null until the user chooses one.",
+            "title": "Tier"
+          },
+          "tiers": {
+            "items": {
+              "$ref": "#/components/schemas/TierSetting"
+            },
+            "title": "Tiers",
             "type": "array"
           },
           "whisper_formatting": {
@@ -2012,6 +2018,8 @@
           }
         },
         "required": [
+          "tier",
+          "tiers",
           "models",
           "whisper_formatting"
         ],
@@ -2148,6 +2156,83 @@
           "detail"
         ],
         "title": "SpeechUnavailable",
+        "type": "object"
+      },
+      "TierModel": {
+        "description": "A tier's checkpoint for one modality, with its live download state.",
+        "properties": {
+          "modality": {
+            "enum": [
+              "llm",
+              "image",
+              "video",
+              "speech",
+              "transcription",
+              "formatting"
+            ],
+            "title": "Modality",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckpointStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while the tier assigns no checkpoint to this modality."
+          }
+        },
+        "required": [
+          "modality",
+          "model"
+        ],
+        "title": "TierModel",
+        "type": "object"
+      },
+      "TierSetting": {
+        "description": "A selectable hardware tier and the checkpoints it downloads.",
+        "properties": {
+          "id": {
+            "enum": [
+              "go",
+              "plus",
+              "pro",
+              "ultra"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/TierModel"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ram_gb": {
+            "title": "Ram Gb",
+            "type": "integer"
+          },
+          "vram_gb": {
+            "title": "Vram Gb",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "vram_gb",
+          "ram_gb",
+          "models"
+        ],
+        "title": "TierSetting",
         "type": "object"
       },
       "TranscriptionRequest": {
@@ -3438,47 +3523,6 @@
         ]
       }
     },
-    "/v1/models/selection": {
-      "put": {
-        "operationId": "select_model_v1_models_selection_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SelectionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Select Model",
-        "tags": [
-          "models"
-        ]
-      }
-    },
     "/v1/models/{model_id}/context": {
       "put": {
         "operationId": "configure_context_v1_models__model_id__context_put",
@@ -3786,7 +3830,7 @@
     },
     "/v1/settings": {
       "get": {
-        "description": "Read the shared model store and return the catalog selection.\n\nRaise HTTP 503 if the stored selection is outside the catalog; this read does\nnot load a model or configure another modality.",
+        "description": "Read the shared model store, including each tier's download progress.\n\nRaise HTTP 503 if the worker status is unavailable; this read does not load\na model or configure another modality.",
         "operationId": "getSettings",
         "responses": {
           "200": {
@@ -3806,7 +3850,7 @@
         ]
       },
       "put": {
-        "description": "Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.",
+        "description": "Persist the hardware tier and queue downloads of its checkpoints, the image selection and transcription formatting. The tier selects the language model and unloads a resident language model of another tier after earlier chats finish.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

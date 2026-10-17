@@ -1,902 +1,752 @@
-// GLM text equations/reference: Transformers
-// 536ecc007387a50e77603bb5d92100e9b07514cc,
-// models/glm5_next/modeling_glm5_next.py. Original bounded C++ execution.
-#include "kadan/glm.hpp"
-
+// GLM-5.3 Flash (GGUF glm5-next): llama.cpp src/models/glm5-next.cpp at
+// 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209. mHC streams, KDA linear layers and
+// nope-only MLA with the k-pool sparse indexer; MLA is absorbed so only the
+// 512-wide latent is cached. Text only; the MTP block is not executed.
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <numeric>
-#include <set>
 #include <string>
 
-#include "../../weights/metadata_json.hpp"
-#include "kadan/checkpoint.hpp"
-#include "kadan/weight_inventory.hpp"
+#include "gguf_model.hpp"
 
-namespace kadan::glm {
+namespace kadan::text {
 namespace {
-constexpr std::size_t H = 4096, Q = 8192, heads = 64, dim = 128,
-                      metadata = 512ULL << 20, scratch = 128ULL << 20;
-constexpr std::string_view base = "model.language_model.";
+constexpr std::size_t hidden = 4096, layers = 45, blocks = 46, streams = 4,
+                      wide = streams * hidden, mixes = (2 + streams) * streams,
+                      sinkhorn = 20, heads = 64, kda_dim = 128, inner = heads * kda_dim,
+                      conv = 4, q_rank = 1536, latent = 512, nope = 256,
+                      value_dim = 256, experts = 288, top_k = 8, dense_layers = 3,
+                      ff = 12288, expert_ff = 2048, index_heads = 32, index_dim = 128,
+                      pool = 4, index_budget = 2048, vocabulary_size = 154880,
+                      context_length = 1048576;
+constexpr float eps = 1e-5f, layer_norm_eps = 1e-6f, hc_eps = 1e-6f, l2_eps = 1e-6f,
+                gate_bound = -5, routed_scale = 2.5f, clamp = 10;
 
-void need(bool b, const char* e) {
-    if (!b)
-        throw std::runtime_error(e);
+bool sparse_attention(std::size_t layer) {
+    return layer % 4 == 3;
 }
 
-using Vec = std::vector<float>;
-
-float bf(float x) {
-    auto u = std::bit_cast<std::uint32_t>(x);
-    u += 0x7fff + ((u >> 16) & 1);
-    return std::bit_cast<float>(u & 0xffff0000);
+std::string prefix(std::size_t layer) {
+    return "blk." + std::to_string(layer) + ".";
 }
 
-void cast(Vec& x) {
-    for (auto& v : x) {
-        need(std::isfinite(v), "glm_nonfinite");
-        v = bf(v);
+template <class Metadata> void validate(const Metadata& m) {
+    need(m.string("general.architecture") == "glm5-next", "glm_architecture");
+    for (const auto& [key, expected] :
+         std::initializer_list<std::pair<const char*, std::uint64_t>>{
+             {"block_count", blocks},
+             {"context_length", context_length},
+             {"embedding_length", hidden},
+             {"feed_forward_length", ff},
+             {"attention.head_count", heads},
+             {"expert_count", experts},
+             {"expert_used_count", top_k},
+             {"expert_group_count", 1},
+             {"expert_group_used_count", 1},
+             {"expert_gating_func", 2},
+             {"vocab_size", vocabulary_size},
+             {"attention.q_lora_rank", q_rank},
+             {"attention.kv_lora_rank", latent},
+             {"rope.dimension_count", 0},
+             {"attention.key_length", latent},
+             {"attention.value_length", latent},
+             {"attention.key_length_mla", nope},
+             {"attention.value_length_mla", value_dim},
+             {"ssm.conv_kernel", conv},
+             {"kda.head_dim", kda_dim},
+             {"attention.indexer.head_count", index_heads},
+             {"attention.indexer.key_length", index_dim},
+             {"attention.indexer.top_k", index_budget},
+             {"attention.indexer.kpool", pool},
+             {"hyper_connection.count", streams},
+             {"hyper_connection.sinkhorn_iterations", sinkhorn},
+             {"expert_feed_forward_length", expert_ff},
+             {"expert_shared_feed_forward_length", expert_ff},
+             {"expert_shared_count", 1},
+             {"leading_dense_block_count", dense_layers},
+             {"nextn_predict_layers", 1}
+         })
+        need(m.integer(std::string("glm5-next.") + key) == expected, "glm_dimensions");
+    for (const auto& [key, expected] :
+         std::initializer_list<std::pair<const char*, double>>{
+             {"attention.layer_norm_rms_epsilon", eps},
+             {"attention.layer_norm_epsilon", layer_norm_eps},
+             {"kda.gate_lower_bound", gate_bound},
+             {"hyper_connection.epsilon", hc_eps},
+             {"expert_weights_scale", routed_scale}
+         })
+        need(
+            std::abs(m.number(std::string("glm5-next.") + key) - expected)
+                <= std::abs(expected) * 1e-6,
+            "glm_arithmetic"
+        );
+    need(m.boolean("glm5-next.expert_weights_norm"), "glm_routing");
+    const auto kv = m.integers("glm5-next.attention.head_count_kv");
+    need(kv.size() == blocks, "glm_layer_schedule");
+    for (std::size_t i = 0; i < blocks; ++i)
+        need(
+            kv[i] == ((i == layers || sparse_attention(i)) ? 1 : 0),
+            "glm_layer_schedule"
+        );
+    for (const auto* key :
+         {"glm5-next.swiglu_clamp_exp", "glm5-next.swiglu_clamp_shexp"}) {
+        const auto limits = m.numbers(key);
+        need(
+            limits.size() == blocks
+                && std::all_of(
+                    limits.begin(), limits.end(), [](double v) { return v == clamp; }
+                ),
+            "glm_swiglu_clamp"
+        );
     }
+    need(
+        !m.has("glm5-next.attention.indexer.types")
+            && m.string("tokenizer.ggml.model") == "gpt2"
+            && m.string("tokenizer.ggml.pre") == "glm4"
+            && m.integer("tokenizer.ggml.eos_token_id") == 154820
+            && m.integer("tokenizer.ggml.eot_token_id") == 154827
+            && m.integer("tokenizer.ggml.eom_token_id") == 154829,
+        "glm_contract"
+    );
 }
 
-float sigmoid(float x) {
-    return x >= 0 ? 1 / (1 + std::exp(-x)) : std::exp(x) / (1 + std::exp(x));
+float clamped_swiglu(float gate, float up) {
+    return silu(std::min(gate, clamp)) * std::clamp(up, -clamp, clamp);
 }
 
-void norm(Vec& x, std::span<const float> w, float eps = 1e-5, bool rounded = true) {
-    need(w.empty() || w.size() == x.size(), "glm_norm_shape");
-    float ss = 0;
-    for (float v : x)
-        ss += v * v;
-    auto inv = 1 / std::sqrt(ss / x.size() + eps);
-    for (std::size_t i = 0; i < x.size(); ++i)
-        x[i] = (rounded ? bf(x[i] * inv) : x[i] * inv) * (w.empty() ? 1 : w[i]);
-    if (rounded)
-        cast(x);
-}
-
-struct Tensor {
-    checkpoint::Shard* shard;
-    checkpoint::TensorInfo info;
+struct Mixing {
+    std::array<float, streams> pre, post;
+    std::array<float, streams * streams> comb;
 };
 
-struct Store {
-    std::shared_ptr<checkpoint::MemoryBudget> budget =
-        std::make_shared<checkpoint::MemoryBudget>(metadata);
-    std::vector<std::unique_ptr<checkpoint::Shard>> shards;
-    std::map<std::string, Tensor, std::less<>> tensors;
-    std::size_t packed = 0, execution = 0;
-    std::atomic_bool idle_cancel{false};
-    const std::atomic_bool* cancel = &idle_cancel;
-
-    Store(const char* root, const std::atomic_bool* requested = nullptr) {
-        if (requested)
-            cancel = requested;
-        need(!cancel->load(), "glm_cancelled");
-        validate_config(root, budget);
-        auto generation =
-            checkpoint::json::read(root, "generation_config.json", 65536, budget);
-        const auto& eos = generation.at("eos_token_id").children;
-        need(
-            eos.size() == 3 && eos[0].integer() == 154820 && eos[1].integer() == 154827
-                && eos[2].integer() == 154829,
-            "glm_eos_contract"
-        );
-        auto index = checkpoint::json::read(
-            root, "model.safetensors.index.json", 64 << 20, budget
-        );
-        std::set<std::string> files;
-        for (const auto& entry : index.at("weight_map").children)
-            files.emplace(entry.string());
-        need(files.size() <= 128, "glm_shard_count");
-        for (const auto& file : files) {
-            need(!cancel->load(), "glm_cancelled");
-            auto s = std::make_unique<checkpoint::Shard>(
-                root, file, budget, checkpoint::Limits{16 << 20, 131072, 4096}
-            );
-            for (std::size_t i = 0; i < s->tensor_count(); ++i) {
-                need(!cancel->load(), "glm_cancelled");
-                auto v = s->tensor_at(i);
-                if (!(v.name.starts_with(base) || v.name == "lm_head.weight")
-                    || v.name.starts_with("model.language_model.layers.45."))
-                    continue;
-                need(
-                    tensors.emplace(std::string(v.name), Tensor{s.get(), v}).second,
-                    "glm_duplicate_tensor"
-                );
-                packed = checkpoint::weight_bytes_add(packed, v.bytes);
-                execution = checkpoint::weight_bytes_add(
-                    execution,
-                    v.dtype == checkpoint::Dtype::u8
-                        ? v.bytes * 8
-                        : v.bytes * 4 / checkpoint::storage_width(v.dtype)
-                );
+class Glm final : public Model {
+public:
+    Glm(const GgufWeights& weights, DenseCompute& compute, std::size_t context)
+        : w_(weights), compute_(compute), context_(context),
+          output_norm_(weights.read("output_norm.weight")) {
+        need(context && context <= context_length, "glm_context");
+        layers_.resize(layers);
+        for (std::size_t i = 0; i < layers; ++i) {
+            const auto p = prefix(i);
+            auto& l = layers_[i];
+            for (std::size_t m = 0; m < 2; ++m) {
+                const std::string tag = m ? "hc_ffn_" : "hc_attn_";
+                l.hc_base[m] = w_.read(p + tag + "base.weight");
+                l.hc_scale[m] = w_.read(p + tag + "scale.weight");
             }
-            shards.push_back(std::move(s));
+            l.attn_norm = w_.read(p + "attn_norm.weight");
+            l.ffn_norm = w_.read(p + "ffn_norm.weight");
+            if (i >= dense_layers)
+                l.bias = w_.read(p + "exp_probs_b.bias");
+            if (sparse_attention(i)) {
+                l.q_norm = w_.read(p + "attn_q_a_norm.weight");
+                l.kv_norm = w_.read(p + "attn_kv_a_norm.weight");
+                l.k_b = w_.decode(p + "attn_k_b.weight");
+                l.v_b = w_.decode(p + "attn_v_b.weight");
+                l.index_scale = w_.read(p + "indexer.k_norm.weight");
+                l.index_bias = w_.read(p + "indexer.k_norm.bias");
+                l.ape = w_.read(p + "indexer_compressor_ape.weight");
+                l.latents.resize(context * latent);
+                l.index_keys.resize(context * index_dim);
+                l.index_gates.resize(context * index_dim);
+                l.pooled.resize(context / pool * index_dim);
+            } else {
+                for (std::size_t c = 0; c < 3; ++c)
+                    l.conv_weight[c] =
+                        w_.read(p + "ssm_conv1d_" + "qkv"[c] + ".weight");
+                l.dt = w_.read(p + "ssm_dt.bias");
+                l.a = w_.read(p + "ssm_a");
+                l.o_norm = w_.read(p + "ssm_norm.weight");
+                l.conv.resize(3 * (conv - 1) * inner);
+                l.state.resize(heads * kda_dim * kda_dim);
+            }
         }
-        auto matrix = [&](const std::string& n, std::size_t rows, std::size_t cols) {
-            shape(n, {rows, cols});
-            need(get(n).info.dtype == checkpoint::Dtype::bf16, "glm_matrix_dtype");
-        };
-        auto vector =
-            [&](const std::string& n, std::size_t count, checkpoint::Dtype dtype) {
-                shape(n, {count});
-                need(get(n).info.dtype == dtype, "glm_vector_dtype");
-            };
-        matrix(std::string(base) + "embed_tokens.weight", 154880, H);
-        matrix("lm_head.weight", 154880, H);
-        vector(std::string(base) + "norm.weight", H, checkpoint::Dtype::bf16);
-        for (std::size_t i = 0; i < 45; ++i) {
-            const auto p = std::string(base) + "layers." + std::to_string(i) + ".";
-            for (auto tag : {"attn", "ffn"}) {
-                auto n = p + "hc_" + tag;
-                matrix(n + "_fn", 24, 16384);
-                vector(n + "_base", 24, checkpoint::Dtype::fp32);
-                vector(n + "_scale", 3, checkpoint::Dtype::fp32);
+    }
+
+    std::size_t vocabulary() const override {
+        return vocabulary_size;
+    }
+
+    bool eos(unsigned token) const override {
+        return token == 154820 || token == 154827 || token == 154829;
+    }
+
+    void reset() override {
+        for (auto& l : layers_) {
+            std::fill(l.conv.begin(), l.conv.end(), 0.f);
+            std::fill(l.state.begin(), l.state.end(), 0.f);
+        }
+    }
+
+    Vec forward(
+        std::span<const unsigned> tokens,
+        std::size_t position,
+        bool logits,
+        const Progress& progress
+    ) override {
+        const auto rows = tokens.size();
+        need(rows && position + rows <= context_, "glm_context_exceeded");
+        Vec x(rows * hidden), residual(rows * wide);
+        for (std::size_t row = 0; row < rows; ++row) {
+            need(tokens[row] < vocabulary_size, "glm_token");
+            w_.rows(
+                "token_embd.weight",
+                tokens[row],
+                std::span(x).subspan(row * hidden, hidden)
+            );
+            for (std::size_t s = 0; s < streams; ++s)
+                std::copy_n(
+                    x.begin() + row * hidden,
+                    hidden,
+                    residual.begin() + row * wide + s * hidden
+                );
+        }
+        for (std::size_t i = 0; i < layers; ++i) {
+            const auto p = prefix(i);
+            auto& l = layers_[i];
+            std::vector<Mixing> mixing;
+            auto h = pre(i, 0, residual, mixing);
+            rms_norm(h, l.attn_norm, eps);
+            post(
+                residual, sparse_attention(i) ? dsa(i, h, position) : kda(i, h), mixing
+            );
+            h = pre(i, 1, residual, mixing);
+            rms_norm(h, l.ffn_norm, eps);
+            post(residual, i < dense_layers ? dense(p, h) : moe(i, h), mixing);
+            if (progress)
+                progress("layer", i + 1);
+        }
+        if (!logits)
+            return {};
+        // Collapse the streams by their mean before the output norm.
+        Vec last(hidden);
+        const auto* row = residual.data() + (rows - 1) * wide;
+        for (std::size_t d = 0; d < hidden; ++d) {
+            float sum = 0;
+            for (std::size_t s = 0; s < streams; ++s)
+                sum += row[s * hidden + d];
+            last[d] = sum / float(streams);
+        }
+        rms_norm(last, output_norm_, eps);
+        return w_.project(compute_, "output.weight", last);
+    }
+
+private:
+    struct Layer {
+        std::array<Vec, 2> hc_base, hc_scale;
+        std::array<Vec, 3> conv_weight;
+        Vec attn_norm, ffn_norm, bias, q_norm, kv_norm, k_b, v_b, index_scale,
+            index_bias, ape, dt, a, o_norm, conv, state, latents, index_keys,
+            index_gates, pooled;
+    };
+
+    const GgufWeights& w_;
+    DenseCompute& compute_;
+    std::size_t context_;
+    Vec output_norm_;
+    std::vector<Layer> layers_;
+
+    // mHC pre-mix: sigmoid stream weights, 2 * sigmoid post weights and a
+    // Sinkhorn-normalized [src][dst] combination, as build_hc_pre.
+    Vec
+    pre(std::size_t layer,
+        std::size_t which,
+        std::span<const float> residual,
+        std::vector<Mixing>& mixing) {
+        const auto rows = residual.size() / wide;
+        const auto& l = layers_[layer];
+        const auto& base = l.hc_base[which];
+        const auto& scale = l.hc_scale[which];
+        Vec flat(residual.begin(), residual.end());
+        rms_norm(flat, wide, eps);
+        const auto coefficients = w_.project(
+            compute_,
+            prefix(layer) + (which ? "hc_ffn_fn.weight" : "hc_attn_fn.weight"),
+            flat
+        );
+        mixing.assign(rows, {});
+        Vec input(rows * hidden);
+        for (std::size_t row = 0; row < rows; ++row) {
+            const auto* c = coefficients.data() + row * mixes;
+            auto& m = mixing[row];
+            for (std::size_t s = 0; s < streams; ++s) {
+                m.pre[s] = sigmoid(c[s] * scale[0] + base[s]) + hc_eps;
+                m.post[s] = 2 * sigmoid(c[streams + s] * scale[1] + base[streams + s]);
             }
-            vector(p + "input_layernorm.weight", H, checkpoint::Dtype::bf16);
-            vector(p + "post_attention_layernorm.weight", H, checkpoint::Dtype::bf16);
-            auto a = p + "self_attn.";
-            if (i % 4 != 3) {
-                for (auto tag : {"q", "k", "v"}) {
-                    matrix(a + tag + "_proj.weight", Q, H);
-                    shape(a + tag + "_conv1d.weight", {Q, 1, 4});
-                    need(
-                        get(a + tag + "_conv1d.weight").info.dtype
-                            == checkpoint::Dtype::bf16,
-                        "glm_conv_dtype"
+            auto& comb = m.comb;
+            for (std::size_t src = 0; src < streams; ++src) {
+                float maximum = -INFINITY;
+                for (std::size_t dst = 0; dst < streams; ++dst) {
+                    const auto k = src * streams + dst;
+                    comb[k] = c[2 * streams + k] * scale[2] + base[2 * streams + k];
+                    maximum = std::max(maximum, comb[k]);
+                }
+                float total = 0;
+                for (std::size_t dst = 0; dst < streams; ++dst)
+                    total += comb[src * streams + dst] =
+                        std::exp(comb[src * streams + dst] - maximum);
+                for (std::size_t dst = 0; dst < streams; ++dst)
+                    comb[src * streams + dst] =
+                        comb[src * streams + dst] / total + hc_eps;
+            }
+            const auto normalize = [&](bool columns) {
+                for (std::size_t a = 0; a < streams; ++a) {
+                    float total = hc_eps;
+                    for (std::size_t b = 0; b < streams; ++b)
+                        total += comb[columns ? b * streams + a : a * streams + b];
+                    for (std::size_t b = 0; b < streams; ++b)
+                        comb[columns ? b * streams + a : a * streams + b] /= total;
+                }
+            };
+            normalize(true);
+            for (std::size_t iteration = 1; iteration < sinkhorn; ++iteration) {
+                normalize(false);
+                normalize(true);
+            }
+            for (std::size_t s = 0; s < streams; ++s)
+                for (std::size_t d = 0; d < hidden; ++d)
+                    input[row * hidden + d] +=
+                        m.pre[s] * residual[row * wide + s * hidden + d];
+        }
+        return input;
+    }
+
+    static void post(
+        Vec& residual, std::span<const float> block, const std::vector<Mixing>& mixing
+    ) {
+        const auto rows = block.size() / hidden;
+        Vec next(residual.size());
+        for (std::size_t row = 0; row < rows; ++row) {
+            const auto& m = mixing[row];
+            for (std::size_t dst = 0; dst < streams; ++dst)
+                for (std::size_t d = 0; d < hidden; ++d) {
+                    float value = block[row * hidden + d] * m.post[dst];
+                    for (std::size_t src = 0; src < streams; ++src)
+                        value += residual[row * wide + src * hidden + d]
+                                 * m.comb[src * streams + dst];
+                    next[row * wide + dst * hidden + d] = value;
+                }
+        }
+        residual.swap(next);
+    }
+
+    Vec kda(std::size_t layer, std::span<const float> h) {
+        const auto rows = h.size() / hidden;
+        const auto p = prefix(layer);
+        auto& l = layers_[layer];
+        std::array<Vec, 3> projected{
+            w_.project(compute_, p + "attn_q.weight", h),
+            w_.project(compute_, p + "attn_k.weight", h),
+            w_.project(compute_, p + "attn_v.weight", h)
+        };
+        const auto f = w_.project(
+            compute_,
+            p + "ssm_f_b.weight",
+            w_.project(compute_, p + "ssm_f_a.weight", h)
+        );
+        const auto g = w_.project(
+            compute_,
+            p + "ssm_g_b.weight",
+            w_.project(compute_, p + "ssm_g_a.weight", h)
+        );
+        const auto beta = w_.project(compute_, p + "ssm_beta.weight", h);
+        const float scale = 1 / std::sqrt(float(kda_dim));
+        Vec output(rows * inner), query(kda_dim), decay(kda_dim), head(kda_dim);
+        std::array<Vec, 3> mixed;
+        for (auto& v : mixed)
+            v.resize(inner);
+        for (std::size_t row = 0; row < rows; ++row) {
+            w_.check_cancel();
+            for (std::size_t which = 0; which < 3; ++which) {
+                const auto* x = projected[which].data() + row * inner;
+                auto* history = l.conv.data() + which * (conv - 1) * inner;
+                const auto& kernel = l.conv_weight[which];
+                for (std::size_t c = 0; c < inner; ++c) {
+                    float sum = x[c] * kernel[c * conv + conv - 1];
+                    for (std::size_t k = 0; k + 1 < conv; ++k)
+                        sum += history[k * inner + c] * kernel[c * conv + k];
+                    mixed[which][c] = silu(sum);
+                }
+                std::move(history + inner, history + (conv - 1) * inner, history);
+                std::copy(x, x + inner, history + (conv - 2) * inner);
+            }
+            l2_norm(mixed[0], kda_dim, l2_eps);
+            l2_norm(mixed[1], kda_dim, l2_eps);
+            for (std::size_t hd = 0; hd < heads; ++hd) {
+                for (std::size_t d = 0; d < kda_dim; ++d) {
+                    const auto at = hd * kda_dim + d;
+                    query[d] = mixed[0][at] * scale;
+                    // ssm_a holds -exp(A_log): g = bound * sigmoid(-(f + dt) * a).
+                    decay[d] = std::exp(
+                        gate_bound
+                        * sigmoid(-(f[row * inner + at] + l.dt[at]) * l.a[hd])
                     );
                 }
-                for (auto tag : {"f", "g"}) {
-                    matrix(a + tag + "_a_proj.weight", 128, H);
-                    matrix(a + tag + "_b_proj.weight", Q, 128);
-                }
-                matrix(a + "b_proj.weight", 64, H);
-                matrix(a + "o_proj.weight", H, Q);
-                vector(a + "o_norm.weight", 128, checkpoint::Dtype::bf16);
-                vector(a + "A_log", 64, checkpoint::Dtype::fp32);
-                vector(a + "dt_bias", Q, checkpoint::Dtype::fp32);
-            } else {
-                matrix(a + "q_a_proj.weight", 1536, H);
-                matrix(a + "q_b_proj.weight", 16384, 1536);
-                vector(a + "q_a_layernorm.weight", 1536, checkpoint::Dtype::bf16);
-                matrix(a + "kv_a_proj_with_mqa.weight", 512, H);
-                matrix(a + "kv_b_proj.weight", 32768, 512);
-                vector(a + "kv_a_layernorm.weight", 512, checkpoint::Dtype::bf16);
-                matrix(a + "o_proj.weight", H, 16384);
-                auto idx = a + "indexer.";
-                matrix(idx + "wq_b.weight", 4096, 1536);
-                matrix(idx + "wk.weight", 128, H);
-                matrix(idx + "weights_proj.weight", 32, H);
-                matrix(idx + "index_kpool_compress_gate", 128, H);
-                matrix(idx + "index_kpool_compress_ape", 4, 128);
-                vector(idx + "k_norm.weight", 128, checkpoint::Dtype::bf16);
-                vector(idx + "k_norm.bias", 128, checkpoint::Dtype::bf16);
-            }
-            auto mlp = p + "mlp.";
-            auto dense = [&](const std::string& n, std::size_t width) {
-                matrix(n + "gate_proj.weight", width, H);
-                matrix(n + "up_proj.weight", width, H);
-                matrix(n + "down_proj.weight", H, width);
-            };
-            if (i < 3)
-                dense(mlp, 12288);
-            else {
-                dense(mlp + "shared_experts.", 2048);
-                matrix(mlp + "gate.weight", 288, H);
-                vector(
-                    mlp + "gate.e_score_correction_bias", 288, checkpoint::Dtype::fp32
+                delta_rule(
+                    std::span(l.state).subspan(
+                        hd * kda_dim * kda_dim, kda_dim * kda_dim
+                    ),
+                    query,
+                    std::span<const float>(mixed[1]).subspan(hd * kda_dim, kda_dim),
+                    std::span<const float>(mixed[2]).subspan(hd * kda_dim, kda_dim),
+                    decay,
+                    sigmoid(beta[row * heads + hd]),
+                    head
                 );
-                for (std::size_t e = 0; e < 288; ++e)
-                    for (auto tag : {"gate", "up", "down"}) {
-                        auto n =
-                            mlp + "experts." + std::to_string(e) + "." + tag + "_proj";
-                        bool down = std::string_view(tag) == "down";
-                        auto rows = down ? H : 2048, cols = down ? 2048 : H;
-                        shape(n + ".weight_packed", {rows, cols / 2});
-                        shape(n + ".weight_scale", {rows, cols / 16});
-                        shape(n + ".weight_global_scale", {1});
-                        need(
-                            get(n + ".weight_packed").info.dtype
-                                    == checkpoint::Dtype::u8
-                                && get(n + ".weight_scale").info.dtype
-                                       == checkpoint::Dtype::fp8
-                                && get(n + ".weight_global_scale").info.dtype
-                                       == checkpoint::Dtype::fp32,
-                            "glm_quant_tensor_dtype"
-                        );
-                    }
+                rms_norm(head, l.o_norm, eps);
+                for (std::size_t d = 0; d < kda_dim; ++d)
+                    output[row * inner + hd * kda_dim + d] =
+                        head[d] * sigmoid(g[row * inner + hd * kda_dim + d]);
             }
         }
+        return w_.project(compute_, p + "attn_output.weight", output);
     }
 
-    Tensor& get(const std::string& n) {
-        auto it = tensors.find(n);
-        need(it != tensors.end(), "glm_missing_tensor");
-        return it->second;
-    }
-
-    void shape(const std::string& n, std::initializer_list<std::uint64_t> sizes) {
-        const auto& t = get(n).info;
-        need(
-            t.rank == sizes.size()
-                && std::equal(sizes.begin(), sizes.end(), t.shape.begin()),
-            "glm_tensor_shape"
+    Vec dsa(std::size_t layer, std::span<const float> h, std::size_t position) {
+        const auto rows = h.size() / hidden;
+        const auto p = prefix(layer);
+        auto& l = layers_[layer];
+        auto qr = w_.project(compute_, p + "attn_q_a.weight", h);
+        rms_norm(qr, l.q_norm, eps);
+        const auto q = w_.project(compute_, p + "attn_q_b.weight", qr);
+        auto kv = w_.project(compute_, p + "attn_kv_a_mqa.weight", h);
+        rms_norm(kv, l.kv_norm, eps);
+        std::copy(kv.begin(), kv.end(), l.latents.begin() + position * latent);
+        // Indexer keys use LayerNorm with bias; pool gates select within a block.
+        auto keys = w_.project(compute_, p + "indexer.attn_k.weight", h);
+        for (std::size_t row = 0; row < rows; ++row) {
+            auto key = std::span(keys).subspan(row * index_dim, index_dim);
+            const float mean =
+                std::accumulate(key.begin(), key.end(), 0.f) / float(index_dim);
+            float variance = 0;
+            for (auto v : key)
+                variance += (v - mean) * (v - mean);
+            const float factor =
+                1 / std::sqrt(variance / float(index_dim) + layer_norm_eps);
+            for (std::size_t d = 0; d < index_dim; ++d)
+                key[d] = (key[d] - mean) * factor * l.index_scale[d] + l.index_bias[d];
+        }
+        const auto gates =
+            w_.project(compute_, p + "indexer_compressor_gate.weight", h);
+        std::copy(
+            keys.begin(), keys.end(), l.index_keys.begin() + position * index_dim
         );
-    }
-
-    Vec read(const std::string& n, std::size_t first = 0, std::size_t count = 0) {
-        auto& t = get(n);
-        if (!count)
-            count = checkpoint::execution_weight_bytes(
-                        t.info, checkpoint::WeightRepresentation::f32
-                    )
-                    / 4;
-        need(count <= 131072, "glm_small_tensor_bound");
-        Vec out(count);
-        t.shard->read_float_tensor(n, first, out, *cancel);
-        return out;
-    }
-
-    void source(const std::string& n, std::size_t first, std::span<float> out) {
-        auto it = tensors.find(n);
-        if (it != tensors.end()) {
-            it->second.shard->read_float_tensor(n, first, out, *cancel);
-            return;
-        }
-        need(n.ends_with(".weight"), "glm_source_name");
-        auto prefix = n.substr(0, n.size() - 7);
-        auto& t = get(prefix + ".weight_packed");
-        const auto cols = t.info.shape[1] * 2;
-        need(first % cols == 0 && out.size() % cols == 0, "glm_quant_row_alignment");
-        auto& scale = get(prefix + ".weight_scale");
-        auto multiplier = read(prefix + ".weight_global_scale", 0, 1)[0];
-        need(
-            std::isfinite(multiplier) && multiplier > 0
-                && std::isfinite(1.f / multiplier),
-            "glm_global_scale"
+        std::copy(
+            gates.begin(), gates.end(), l.index_gates.begin() + position * index_dim
         );
-        multiplier = 1.f / multiplier;
-        constexpr std::size_t tile_rows = 64;
-        std::vector<std::uint8_t> packedrow(tile_rows * cols / 2),
-            blocks(tile_rows * cols / 16);
-        for (std::size_t row = 0; row < out.size() / cols; row += tile_rows) {
-            need(!cancel->load(), "glm_cancelled");
-            const auto rows = std::min(tile_rows, out.size() / cols - row);
-            t.shard->read_tensor(
-                prefix + ".weight_packed",
-                (first / cols + row) * cols / 2,
-                std::span(packedrow).first(rows * cols / 2)
-            );
-            scale.shard->read_tensor(
-                prefix + ".weight_scale",
-                (first / cols + row) * cols / 16,
-                std::span(blocks).first(rows * cols / 16)
-            );
-            for (std::size_t b = 0; b < rows * cols / 16; ++b) {
-                auto v = quantization::e4m3fn(blocks[b]);
-                need(std::isfinite(v) && v >= 0, "glm_block_scale");
-            }
-            for (std::size_t c = 0; c < rows * cols; ++c) {
-                auto value =
-                    bf(quantization::e2m1((packedrow[c / 2] >> (4 * (c % 2))) & 15)
-                       * quantization::e4m3fn(blocks[c / 16]) * multiplier);
-                need(std::isfinite(value), "glm_weight_nonfinite");
-                out[row * cols + c] = value;
+        for (std::size_t at = position; at < position + rows; ++at) {
+            if ((at + 1) % pool)
+                continue;
+            const auto block = (at + 1) / pool - 1;
+            for (std::size_t d = 0; d < index_dim; ++d) {
+                std::array<float, pool> logit;
+                for (std::size_t m = 0; m < pool; ++m)
+                    logit[m] = l.index_gates[(block * pool + m) * index_dim + d]
+                               + l.ape[m * index_dim + d];
+                const float maximum = *std::max_element(logit.begin(), logit.end());
+                float total = 0;
+                for (auto& v : logit)
+                    total += v = std::exp(v - maximum);
+                float value = 0;
+                for (std::size_t m = 0; m < pool; ++m)
+                    value += logit[m] / total
+                             * l.index_keys[(block * pool + m) * index_dim + d];
+                l.pooled[block * index_dim + d] = value;
             }
         }
+        // Absorb wk_b: each head's query becomes a latent-space query.
+        Vec absorbed(rows * heads * latent);
+        for (std::size_t row = 0; row < rows; ++row)
+            for (std::size_t hd = 0; hd < heads; ++hd) {
+                const auto* qh = q.data() + (row * heads + hd) * nope;
+                const auto* kb = l.k_b.data() + hd * latent * nope;
+                auto* out = absorbed.data() + (row * heads + hd) * latent;
+                for (std::size_t r = 0; r < latent; ++r) {
+                    float sum = 0;
+                    for (std::size_t n = 0; n < nope; ++n)
+                        sum += kb[r * nope + n] * qh[n];
+                    out[r] = sum;
+                }
+            }
+        const float scale = 1 / std::sqrt(float(nope));
+        Vec attended(rows * heads * latent);
+        const auto budget = index_budget / pool;
+        if ((position + rows) / pool <= budget)
+            attend(
+                compute_,
+                absorbed,
+                l.latents,
+                l.latents,
+                rows,
+                position + rows,
+                heads,
+                1,
+                latent,
+                position,
+                scale,
+                attended,
+                w_.cancel()
+            );
+        else {
+            auto iq = w_.project(compute_, p + "indexer.attn_q_b.weight", qr);
+            auto weights = w_.project(compute_, p + "indexer.proj.weight", h);
+            for (auto& v : weights)
+                v /= std::sqrt(float(index_dim * index_heads));
+            for (std::size_t row = 0; row < rows; ++row) {
+                const auto at = position + row, visible = (at + 1) / pool;
+                std::vector<std::size_t> selected;
+                if (visible <= budget)
+                    for (std::size_t t = 0; t <= at; ++t)
+                        selected.push_back(t);
+                else {
+                    Vec score(visible, 0.f);
+                    for (std::size_t b = 0; b < visible; ++b)
+                        for (std::size_t hd = 0; hd < index_heads; ++hd) {
+                            float dot = 0;
+                            for (std::size_t d = 0; d < index_dim; ++d)
+                                dot += iq[(row * index_heads + hd) * index_dim + d]
+                                       * l.pooled[b * index_dim + d];
+                            score[b] +=
+                                std::max(dot, 0.f) * weights[row * index_heads + hd];
+                        }
+                    std::vector<std::size_t> order(visible);
+                    std::iota(order.begin(), order.end(), 0);
+                    std::partial_sort(
+                        order.begin(),
+                        order.begin() + budget,
+                        order.end(),
+                        [&](auto a, auto b) { return score[a] > score[b]; }
+                    );
+                    for (std::size_t i = 0; i < budget; ++i)
+                        for (std::size_t m = 0; m < pool; ++m)
+                            selected.push_back(order[i] * pool + m);
+                    for (std::size_t k = 0; k < (at + 1) % pool; ++k)
+                        selected.push_back(at - k);
+                }
+                Vec gathered(selected.size() * latent);
+                for (std::size_t i = 0; i < selected.size(); ++i)
+                    std::copy_n(
+                        l.latents.begin() + selected[i] * latent,
+                        latent,
+                        gathered.begin() + i * latent
+                    );
+                attend(
+                    compute_,
+                    std::span<const float>(absorbed).subspan(
+                        row * heads * latent, heads * latent
+                    ),
+                    gathered,
+                    gathered,
+                    1,
+                    selected.size(),
+                    heads,
+                    1,
+                    latent,
+                    selected.size() - 1,
+                    scale,
+                    std::span(attended).subspan(row * heads * latent, heads * latent),
+                    w_.cancel()
+                );
+            }
+        }
+        // Expand each head's attended latent through wv_b.
+        Vec output(rows * heads * value_dim);
+        for (std::size_t row = 0; row < rows; ++row)
+            for (std::size_t hd = 0; hd < heads; ++hd) {
+                const auto* lat = attended.data() + (row * heads + hd) * latent;
+                const auto* vb = l.v_b.data() + hd * value_dim * latent;
+                for (std::size_t n = 0; n < value_dim; ++n) {
+                    float sum = 0;
+                    for (std::size_t r = 0; r < latent; ++r)
+                        sum += vb[n * latent + r] * lat[r];
+                    output[(row * heads + hd) * value_dim + n] = sum;
+                }
+            }
+        return w_.project(compute_, p + "attn_output.weight", output);
     }
 
-    Vec project(
-        DenseCompute& compute,
-        const std::string& n,
-        std::span<const float> x,
-        std::size_t out,
-        bool rounded = true
+    Vec feed_forward(
+        const std::string& gate_name,
+        const std::string& up_name,
+        const std::string& down_name,
+        std::span<const float> h,
+        std::size_t expert = 0
     ) {
-        auto it = tensors.find(n);
-        auto key =
-            it != tensors.end() ? n : n.substr(0, n.size() - 7) + ".weight_packed";
-        auto& t = get(key);
-        const auto in = t.info.shape[1] * (it != tensors.end() ? 1 : 2);
-        need(in && x.size() % in == 0, "glm_projection_input");
-        shape(key, {out, it != tensors.end() ? in : in / 2});
-        Vec y(out * (x.size() / in));
-        auto source_fn = [&](std::size_t first, std::span<float> dst) {
-            source(n, first, dst);
-        };
-        need(
-            compute.dense_source(
-                t.shard->tensor_identity(key),
-                source_fn,
-                {},
-                x,
-                in,
-                out,
-                y,
-                *cancel,
-                false
-            ) != ProjectionResult::unsupported,
-            "glm_cuda_source_required"
-        );
-        if (rounded)
-            cast(y);
-        return y;
+        auto gate = w_.project(compute_, gate_name, h, expert);
+        const auto up = w_.project(compute_, up_name, h, expert);
+        for (std::size_t j = 0; j < gate.size(); ++j)
+            gate[j] = clamped_swiglu(gate[j], up[j]);
+        return w_.project(compute_, down_name, gate, expert);
     }
-};
 
-struct State {
-    Vec recurrent, conv, latent, pools, tail_key, tail_gate;
+    Vec dense(const std::string& p, std::span<const float> h) {
+        return feed_forward(
+            p + "ffn_gate.weight", p + "ffn_up.weight", p + "ffn_down.weight", h
+        );
+    }
+
+    // Sigmoid router with selection bias; selected probabilities are
+    // renormalized and scaled, then summed in selection order.
+    Vec moe(std::size_t layer, std::span<const float> h) {
+        const auto rows = h.size() / hidden;
+        const auto p = prefix(layer);
+        const auto& bias = layers_[layer].bias;
+        const auto logits = w_.project(compute_, p + "ffn_gate_inp.weight", h);
+        std::vector<std::array<std::size_t, top_k>> chosen(rows);
+        std::vector<std::array<float, top_k>> weight(rows);
+        for (std::size_t row = 0; row < rows; ++row) {
+            std::array<float, experts> probability;
+            for (std::size_t e = 0; e < experts; ++e)
+                probability[e] = sigmoid(logits[row * experts + e]);
+            std::array<std::size_t, experts> order;
+            std::iota(order.begin(), order.end(), 0);
+            std::partial_sort(
+                order.begin(), order.begin() + top_k, order.end(), [&](auto a, auto b) {
+                    return probability[a] + bias[a] > probability[b] + bias[b];
+                }
+            );
+            float sum = 0;
+            for (std::size_t i = 0; i < top_k; ++i) {
+                chosen[row][i] = order[i];
+                sum += weight[row][i] = probability[order[i]];
+            }
+            sum = std::max(sum, 6.103515625e-5f);
+            for (auto& v : weight[row])
+                v = v / sum * routed_scale;
+        }
+        Vec contribution(rows * top_k * hidden);
+        for (std::size_t e = 0; e < experts; ++e) {
+            std::vector<std::pair<std::size_t, std::size_t>> routed;
+            for (std::size_t row = 0; row < rows; ++row)
+                for (std::size_t i = 0; i < top_k; ++i)
+                    if (chosen[row][i] == e)
+                        routed.emplace_back(row, i);
+            if (routed.empty())
+                continue;
+            Vec gathered(routed.size() * hidden);
+            for (std::size_t r = 0; r < routed.size(); ++r)
+                std::copy_n(
+                    h.begin() + routed[r].first * hidden,
+                    hidden,
+                    gathered.begin() + r * hidden
+                );
+            const auto down = feed_forward(
+                p + "ffn_gate_exps.weight",
+                p + "ffn_up_exps.weight",
+                p + "ffn_down_exps.weight",
+                gathered,
+                e
+            );
+            for (std::size_t r = 0; r < routed.size(); ++r) {
+                const auto [row, slot] = routed[r];
+                for (std::size_t d = 0; d < hidden; ++d)
+                    contribution[(row * top_k + slot) * hidden + d] =
+                        down[r * hidden + d] * weight[row][slot];
+            }
+        }
+        const auto shared = feed_forward(
+            p + "ffn_gate_shexp.weight",
+            p + "ffn_up_shexp.weight",
+            p + "ffn_down_shexp.weight",
+            h
+        );
+        Vec output(rows * hidden);
+        for (std::size_t row = 0; row < rows; ++row)
+            for (std::size_t d = 0; d < hidden; ++d) {
+                float sum = 0;
+                for (std::size_t i = 0; i < top_k; ++i)
+                    sum += contribution[(row * top_k + i) * hidden + d];
+                output[row * hidden + d] = sum + shared[row * hidden + d];
+            }
+        return output;
+    }
 };
 }  // namespace
 
-std::size_t state_bytes(std::size_t context) {
-    need(context && context <= serving::max_resident_capacity, "glm_context_bound");
-    return 34ULL * (64 * 128 * 128 + 3 * 8192 * 4) * 4
-           + 11ULL * (context * 512 + ((context + 3) / 4) * 128 + 8 * 128) * 4;
+void validate_glm(const checkpoint::GgufMetadata& m) {
+    validate(m);
 }
 
-void validate_config(
-    const char* root, std::shared_ptr<checkpoint::MemoryBudget> budget
-) {
-    auto cfg = checkpoint::json::read(root, "config.json", 16 << 20, budget);
-    need(cfg.at("model_type").string() == "glm5_next", "glm_model_type");
-    const auto& t = cfg.at("text_config");
-    for (auto [key, value] : std::initializer_list<std::pair<const char*, std::size_t>>{
-             {"hidden_size", H},
-             {"num_hidden_layers", 45},
-             {"vocab_size", 154880},
-             {"num_attention_heads", 64},
-             {"q_lora_rank", 1536},
-             {"kv_lora_rank", 512},
-             {"qk_nope_head_dim", 256},
-             {"qk_rope_head_dim", 0},
-             {"v_head_dim", 256},
-             {"n_routed_experts", 288},
-             {"num_experts_per_tok", 8},
-             {"first_k_dense_replace", 3},
-             {"intermediate_size", 12288},
-             {"moe_intermediate_size", 2048},
-             {"n_shared_experts", 1},
-             {"hc_mult", 4},
-             {"hc_sinkhorn_iters", 20},
-             {"index_head_dim", 128},
-             {"index_n_heads", 32},
-             {"index_topk", 2048},
-             {"index_kpool", 4},
-             {"n_group", 1},
-             {"topk_group", 1}
-         })
-        need(t.at(key).integer() == value, "glm_config_shape");
-    need(
-        t.at("rms_norm_eps").number() == 1e-5 && t.at("hc_eps").number() == 1e-6
-            && t.at("routed_scaling_factor").number() == 2.5
-            && t.at("swiglu_limit").number() == 10,
-        "glm_config_math"
-    );
-    need(
-        t.at("mhc").boolean() && t.at("mla_use_nope").boolean()
-            && t.at("norm_topk_prob").boolean()
-            && t.at("index_kpool_compress").boolean()
-            && t.at("index_kpool_always_select_tail").boolean(),
-        "glm_config_flags"
-    );
-    need(
-        t.at("scoring_func").string() == "sigmoid"
-            && t.at("topk_method").string() == "noaux_tc",
-        "glm_router_config"
-    );
-    const auto& linear = t.at("linear_attn_config");
-    need(
-        linear.at("num_heads").integer() == 64 && linear.at("head_dim").integer() == 128
-            && linear.at("short_conv_kernel_size").integer() == 4
-            && linear.at("gate_lower_bound").number() == -5,
-        "glm_kda_config"
-    );
-    const auto& types = t.at("layer_types").children;
-    need(types.size() == 45, "glm_layer_count");
-    for (std::size_t i = 0; i < 45; ++i)
-        need(
-            types[i].string()
-                == (i % 4 == 3 ? "deepseek_sparse_attention" : "linear_attention"),
-            "glm_layer_type"
-        );
-    const auto& quant = cfg.at("quantization_config");
-    need(
-        quant.at("quant_method").string() == "compressed-tensors"
-            && quant.at("format").string() == "nvfp4-pack-quantized",
-        "glm_quant_format"
-    );
-    need(
-        t.at("max_position_embeddings").integer() == 1048576
-            && t.at("hidden_act").string() == "silu",
-        "glm_context_activation"
-    );
-    const auto& mlpt = t.at("mlp_layer_types").children;
-    const auto& idxt = t.at("indexer_types").children;
-    need(mlpt.size() == 45 && idxt.size() == 45, "glm_block_types");
-    for (std::size_t i = 0; i < 45; ++i)
-        need(
-            mlpt[i].string() == (i < 3 ? "dense" : "sparse")
-                && idxt[i].string() == "full",
-            "glm_block_type"
-        );
-    const auto& groups = quant.at("config_groups").children;
-    need(groups.size() == 1, "glm_quant_groups");
-    const auto& group = groups[0];
-    const auto& w = group.at("weights");
-    need(
-        group.at("format").string() == "nvfp4-pack-quantized"
-            && group.at("input_activations").kind == checkpoint::json::Value::Kind::null
-            && group.at("output_activations").kind
-                   == checkpoint::json::Value::Kind::null
-            && w.at("group_size").integer() == 16 && w.at("num_bits").integer() == 4
-            && w.at("type").string() == "float"
-            && w.at("strategy").string() == "tensor_group"
-            && w.at("symmetric").boolean() && !w.at("dynamic").boolean()
-            && w.at("scale_dtype").string() == "torch.float8_e4m3fn",
-        "glm_quant_contract"
-    );
+void validate_glm(const checkpoint::GgufCheckpoint& m) {
+    validate(m);
 }
 
-Plan plan(const char* root, std::size_t context, const std::atomic_bool* cancel) {
-    auto bytes = state_bytes(context);
-    Store s(root, cancel);
-    return {
-        context, metadata + scratch + bytes, s.packed, s.tensors.size(), s.execution
-    };
-}
-
-struct Engine::Impl {
-    Plan p;
-    WorkerCompute execution;
-    Handle memory = 0;
-    std::unique_ptr<Store> weights;
-    std::array<State, 45> states;
-    std::size_t tokens = 0;
-    bool active = false;
-
-    Impl(
-        const char* root,
-        Plan plan,
-        const ComputePlan& cp,
-        std::shared_ptr<Resources> owner,
-        const std::atomic_bool* cancel
-    )
-        : p(plan), execution(cp, Workload::llm, std::move(owner)) {
-        need(bool(execution.compute), "glm_cuda_required");
-        memory = execution.resources->reserve(
-            Workload::llm, host_footprint(*execution.resources, p.host - (48ULL << 20))
-        );
-        try {
-            weights = std::make_unique<Store>(root, cancel);
-            need(
-                weights->packed == p.packed && weights->tensors.size() == p.tensors,
-                "glm_preflight_changed"
-            );
-            for (std::size_t i = 0; i < 45; ++i) {
-                need(!weights->cancel->load(), "glm_cancelled");
-                auto& s = states[i];
-                if (i % 4 != 3) {
-                    s.recurrent.resize(64 * 128 * 128);
-                    s.conv.resize(3 * 8192 * 4);
-                } else {
-                    s.latent.resize(p.context * 512);
-                    s.pools.resize(((p.context + 3) / 4) * 128);
-                    s.tail_key.resize(4 * 128);
-                    s.tail_gate.resize(4 * 128);
-                }
+void bind_glm(GgufWeights& w) {
+    validate_glm(w.gguf());
+    w.matrix("token_embd.weight", vocabulary_size, hidden);
+    w.matrix("output.weight", vocabulary_size, hidden);
+    w.vector("output_norm.weight", {hidden});
+    w.skip(prefix(layers));
+    for (std::size_t i = 0; i < layers; ++i) {
+        const auto p = prefix(i);
+        for (const auto* tag : {"hc_attn_", "hc_ffn_"}) {
+            w.matrix(p + tag + "fn.weight", mixes, wide);
+            w.vector(p + tag + "base.weight", {mixes});
+            w.vector(p + tag + "scale.weight", {3});
+        }
+        w.vector(p + "attn_norm.weight", {hidden});
+        w.vector(p + "ffn_norm.weight", {hidden});
+        if (sparse_attention(i)) {
+            w.matrix(p + "attn_q_a.weight", q_rank, hidden);
+            w.vector(p + "attn_q_a_norm.weight", {q_rank});
+            w.matrix(p + "attn_q_b.weight", heads * nope, q_rank);
+            w.matrix(p + "attn_kv_a_mqa.weight", latent, hidden);
+            w.vector(p + "attn_kv_a_norm.weight", {latent});
+            w.table(p + "attn_k_b.weight", latent, nope, heads);
+            w.table(p + "attn_v_b.weight", value_dim, latent, heads);
+            w.matrix(p + "attn_output.weight", hidden, heads * value_dim);
+            w.matrix(p + "indexer.attn_q_b.weight", index_heads * index_dim, q_rank);
+            w.matrix(p + "indexer.attn_k.weight", index_dim, hidden);
+            w.vector(p + "indexer.k_norm.weight", {index_dim});
+            w.vector(p + "indexer.k_norm.bias", {index_dim});
+            w.matrix(p + "indexer.proj.weight", index_heads, hidden);
+            w.matrix(p + "indexer_compressor_gate.weight", index_dim, hidden);
+            w.vector(p + "indexer_compressor_ape.weight", {index_dim, pool});
+        } else {
+            for (const auto* tag : {"q", "k", "v"}) {
+                w.matrix(p + "attn_" + tag + ".weight", inner, hidden);
+                w.vector(p + "ssm_conv1d_" + tag + ".weight", {conv, 1, inner});
             }
-            execution.compute->prepare_weights(p.execution_weights);
-        } catch (...) {
-            weights.reset();
-            execution.resources->released(memory);
-            memory = 0;
-            throw;
-        }
-    }
-
-    ~Impl() {
-        weights.reset();
-        for (auto& s : states)
-            s = {};
-        if (memory)
-            execution.resources->released(memory);
-    }
-
-    Vec project(
-        const std::string& n,
-        std::span<const float> x,
-        std::size_t out,
-        bool rounded = true
-    ) {
-        return weights->project(*execution.compute, n, x, out, rounded);
-    }
-
-    Vec rms(const std::string& n, Vec x) {
-        norm(x, weights->read(n));
-        return x;
-    }
-
-    struct Mixing {
-        Vec input, post, comb;
-    };
-
-    Mixing mix(const std::string& prefix, const Vec& streams) {
-        Vec x = streams;
-        norm(x, {}, 1e-5, false);
-        auto coeff = project(prefix + "_fn", x, 24, false);
-        auto bias = weights->read(prefix + "_base"),
-             scale = weights->read(prefix + "_scale");
-        Mixing m{Vec(H), Vec(4), Vec(16)};
-        for (std::size_t a = 0; a < 4; ++a) {
-            float pre = sigmoid(coeff[a] * scale[0] + bias[a]) + 1e-6f;
-            m.post[a] = bf(2 * sigmoid(coeff[4 + a] * scale[1] + bias[4 + a]));
-            for (std::size_t j = 0; j < H; ++j)
-                m.input[j] += pre * streams[a * H + j];
-            float max = -INFINITY;
-            for (std::size_t b = 0; b < 4; ++b) {
-                auto k = a * 4 + b;
-                m.comb[k] = coeff[8 + k] * scale[2] + bias[8 + k];
-                max = std::max(max, m.comb[k]);
+            for (const auto* tag : {"f", "g"}) {
+                w.matrix(p + "ssm_" + tag + "_a.weight", kda_dim, hidden);
+                w.matrix(p + "ssm_" + tag + "_b.weight", inner, kda_dim);
             }
-            float sum = 0;
-            for (std::size_t b = 0; b < 4; ++b)
-                sum += std::exp(m.comb[a * 4 + b] - max);
-            for (std::size_t b = 0; b < 4; ++b)
-                m.comb[a * 4 + b] = std::exp(m.comb[a * 4 + b] - max) / sum + 1e-6f;
+            w.vector(p + "ssm_dt.bias", {inner});
+            w.vector(p + "ssm_a", {heads});
+            w.matrix(p + "ssm_beta.weight", heads, hidden);
+            w.vector(p + "ssm_norm.weight", {kda_dim});
+            w.matrix(p + "attn_output.weight", hidden, inner);
         }
-        auto normalize = [&](bool columns) {
-            for (std::size_t a = 0; a < 4; ++a) {
-                float sum = 1e-6f;
-                for (std::size_t b = 0; b < 4; ++b)
-                    sum += m.comb[columns ? b * 4 + a : a * 4 + b];
-                for (std::size_t b = 0; b < 4; ++b)
-                    m.comb[columns ? b * 4 + a : a * 4 + b] /= sum;
-            }
-        };
-        normalize(true);
-        for (int i = 1; i < 20; ++i) {
-            normalize(false);
-            normalize(true);
-        }
-        cast(m.input);
-        cast(m.comb);
-        return m;
-    }
-
-    void combine(Vec& streams, const Mixing& m, const Vec& y) {
-        Vec next(streams.size());
-        for (std::size_t b = 0; b < 4; ++b)
-            for (std::size_t j = 0; j < H; ++j) {
-                float v = 0;
-                for (std::size_t a = 0; a < 4; ++a)
-                    v += m.comb[a * 4 + b] * streams[a * H + j];
-                next[b * H + j] = bf(bf(v) + bf(m.post[b] * y[j]));
-            }
-        streams.swap(next);
-    }
-
-    Vec kda(const std::string& prefix, State& s, const Vec& x) {
-        std::array<Vec, 3> qkv;
-        for (std::size_t which = 0; which < 3; ++which) {
-            std::string tag = which == 0 ? "q" : which == 1 ? "k" : "v";
-            qkv[which] = project(prefix + tag + "_proj.weight", x, Q);
-            auto conv = weights->read(prefix + tag + "_conv1d.weight");
-            for (std::size_t j = 0; j < Q; ++j) {
-                auto* h = s.conv.data() + (which * Q + j) * 4;
-                std::move(h + 1, h + 4, h);
-                h[3] = qkv[which][j];
-                float v = 0;
-                for (std::size_t k = 0; k < 4; ++k)
-                    v += h[k] * conv[j * 4 + k];
-                v = bf(v);
-                qkv[which][j] = bf(v * sigmoid(v));
-            }
-        }
-        auto f = project(
-            prefix + "f_b_proj.weight", project(prefix + "f_a_proj.weight", x, 128), Q
-        );
-        auto bias = weights->read(prefix + "dt_bias"),
-             alog = weights->read(prefix + "A_log"),
-             beta = project(prefix + "b_proj.weight", x, 64);
-        auto gate = project(
-                 prefix + "g_b_proj.weight",
-                 project(prefix + "g_a_proj.weight", x, 128),
-                 Q
-             ),
-             normw = weights->read(prefix + "o_norm.weight");
-        Vec output(Q);
-        for (std::size_t h = 0; h < heads; ++h) {
-            float qnorm = 1e-6f, knorm = 1e-6f;
-            for (std::size_t j = 0; j < dim; ++j) {
-                qnorm += qkv[0][h * dim + j] * qkv[0][h * dim + j];
-                knorm += qkv[1][h * dim + j] * qkv[1][h * dim + j];
-            }
-            qnorm = 1 / std::sqrt(qnorm) / std::sqrt(float(dim));
-            knorm = 1 / std::sqrt(knorm);
-            Vec memory(dim), delta(dim);
-            auto* state = s.recurrent.data() + h * dim * dim;
-            for (std::size_t k = 0; k < dim; ++k) {
-                auto i = h * dim + k;
-                auto decay =
-                    std::exp(-5 * sigmoid(std::exp(alog[h]) * (f[i] + bias[i])));
-                for (std::size_t v = 0; v < dim; ++v) {
-                    state[k * dim + v] *= decay;
-                    memory[v] += state[k * dim + v] * qkv[1][i] * knorm;
-                }
-            }
-            for (std::size_t v = 0; v < dim; ++v)
-                delta[v] = (qkv[2][h * dim + v] - memory[v]) * bf(sigmoid(beta[h]));
-            for (std::size_t k = 0; k < dim; ++k)
-                for (std::size_t v = 0; v < dim; ++v) {
-                    state[k * dim + v] += qkv[1][h * dim + k] * knorm * delta[v];
-                    output[h * dim + v] +=
-                        state[k * dim + v] * qkv[0][h * dim + k] * qnorm;
-                }
-            Vec row(output.begin() + h * dim, output.begin() + (h + 1) * dim);
-            cast(row);
-            norm(row, normw, 1e-5, false);
-            for (std::size_t v = 0; v < dim; ++v)
-                output[h * dim + v] = bf(row[v] * sigmoid(gate[h * dim + v]));
-        }
-        return project(prefix + "o_proj.weight", output, H);
-    }
-
-    Vec mlp(const std::string& prefix, const Vec& x, std::size_t intermediate) {
-        auto gate = project(prefix + "gate_proj.weight", x, intermediate),
-             up = project(prefix + "up_proj.weight", x, intermediate);
-        for (std::size_t i = 0; i < intermediate; ++i) {
-            auto g = std::min(10.f, gate[i]);
-            gate[i] = bf(bf(g * sigmoid(g)) * std::clamp(up[i], -10.f, 10.f));
-        }
-        return project(prefix + "down_proj.weight", gate, H);
-    }
-
-    Vec moe(const std::string& prefix, const Vec& x) {
-        auto scores = project(prefix + "gate.weight", x, 288, false),
-             bias = weights->read(prefix + "gate.e_score_correction_bias");
-        std::array<std::size_t, 288> order;
-        std::iota(order.begin(), order.end(), 0);
-        for (auto& v : scores)
-            v = sigmoid(v);
-        std::partial_sort(
-            order.begin(), order.begin() + 8, order.end(), [&](auto a, auto b) {
-                return scores[a] + bias[a] > scores[b] + bias[b];
-            }
-        );
-        float sum = 1e-20f;
-        for (std::size_t i = 0; i < 8; ++i)
-            sum += scores[order[i]];
-        std::sort(order.begin(), order.begin() + 8);
-        Vec y(H);
-        for (std::size_t i = 0; i < 8; ++i) {
-            auto expert =
-                mlp(prefix + "experts." + std::to_string(order[i]) + ".", x, 2048);
-            auto factor = scores[order[i]] / sum * 2.5f;
-            for (std::size_t j = 0; j < H; ++j)
-                y[j] = bf(y[j] + bf(expert[j] * factor));
-        }
-        auto shared = mlp(prefix + "shared_experts.", x, 2048);
-        for (std::size_t j = 0; j < H; ++j)
-            y[j] = bf(y[j] + shared[j]);
-        return y;
-    }
-
-    Vec dsa(const std::string&, State&, const Vec&);
-};
-
-Vec Engine::Impl::dsa(const std::string& prefix, State& s, const Vec& x) {
-    auto qr =
-        rms(prefix + "q_a_layernorm.weight",
-            project(prefix + "q_a_proj.weight", x, 1536));
-    auto q = project(prefix + "q_b_proj.weight", qr, 16384);
-    auto latent =
-        rms(prefix + "kv_a_layernorm.weight",
-            project(prefix + "kv_a_proj_with_mqa.weight", x, 512));
-    std::copy(latent.begin(), latent.end(), s.latent.begin() + tokens * 512);
-    const auto ip = prefix + "indexer.";
-    auto iq = project(ip + "wq_b.weight", qr, 4096),
-         key = project(ip + "wk.weight", x, 128),
-         scale = weights->read(ip + "k_norm.weight"),
-         bias = weights->read(ip + "k_norm.bias");
-    float mean = std::accumulate(key.begin(), key.end(), 0.f) / 128, variance = 0;
-    for (auto v : key)
-        variance += (v - mean) * (v - mean);
-    for (std::size_t i = 0; i < 128; ++i)
-        key[i] =
-            bf((key[i] - mean) / std::sqrt(variance / 128 + 1e-6f) * scale[i]
-               + bias[i]);
-    auto gate = project(ip + "index_kpool_compress_gate", x, 128);
-    auto tail = tokens % 4;
-    std::copy(key.begin(), key.end(), s.tail_key.begin() + tail * 128);
-    std::copy(gate.begin(), gate.end(), s.tail_gate.begin() + tail * 128);
-    const auto pools = (tokens + 1) / 4;
-    if (tail == 3) {
-        auto ape = weights->read(ip + "index_kpool_compress_ape");
-        for (std::size_t d = 0; d < 128; ++d) {
-            float max = -INFINITY;
-            for (std::size_t j = 0; j < 4; ++j)
-                max = std::max(max, s.tail_gate[j * 128 + d] + ape[j * 128 + d]);
-            float total = 0;
-            for (std::size_t j = 0; j < 4; ++j)
-                total += std::exp(s.tail_gate[j * 128 + d] + ape[j * 128 + d] - max);
-            float value = 0;
-            for (std::size_t j = 0; j < 4; ++j)
-                value +=
-                    bf(bf(std::exp(s.tail_gate[j * 128 + d] + ape[j * 128 + d] - max)
-                          / total)
-                       * s.tail_key[j * 128 + d]);
-            s.pools[(pools - 1) * 128 + d] = bf(value);
+        if (i < dense_layers) {
+            w.matrix(p + "ffn_gate.weight", ff, hidden);
+            w.matrix(p + "ffn_up.weight", ff, hidden);
+            w.matrix(p + "ffn_down.weight", hidden, ff);
+        } else {
+            w.matrix(p + "ffn_gate_inp.weight", experts, hidden);
+            w.vector(p + "exp_probs_b.bias", {experts});
+            w.matrix(p + "ffn_gate_exps.weight", expert_ff, hidden, experts);
+            w.matrix(p + "ffn_up_exps.weight", expert_ff, hidden, experts);
+            w.matrix(p + "ffn_down_exps.weight", hidden, expert_ff, experts);
+            w.matrix(p + "ffn_gate_shexp.weight", expert_ff, hidden);
+            w.matrix(p + "ffn_up_shexp.weight", expert_ff, hidden);
+            w.matrix(p + "ffn_down_shexp.weight", hidden, expert_ff);
         }
     }
-    auto headweight = project(ip + "weights_proj.weight", x, 32);
-    Vec poolscore(pools);
-    for (std::size_t pidx = 0; pidx < pools; ++pidx)
-        for (std::size_t h = 0; h < 32; ++h) {
-            float dot = 0;
-            for (std::size_t d = 0; d < 128; ++d)
-                dot += iq[h * 128 + d] * s.pools[pidx * 128 + d];
-            poolscore[pidx] +=
-                std::max(0.f, dot / std::sqrt(128.f)) * headweight[h] / std::sqrt(32.f);
-        }
-    std::vector<std::size_t> order(pools);
-    std::iota(order.begin(), order.end(), 0);
-    auto chosen = std::min<std::size_t>(512, pools);
-    std::partial_sort(
-        order.begin(), order.begin() + chosen, order.end(), [&](auto a, auto b) {
-            return poolscore[a] > poolscore[b];
-        }
-    );
-    std::vector<std::size_t> selected;
-    selected.reserve(2051);
-    for (std::size_t i = 0; i < chosen; ++i)
-        for (std::size_t j = 0; j < 4; ++j)
-            selected.push_back(order[i] * 4 + j);
-    for (std::size_t j = pools * 4; j <= tokens; ++j)
-        selected.push_back(j);
-    std::sort(selected.begin(), selected.end());
-    need(!selected.empty() && selected.size() <= 2051, "glm_sparse_indices");
-    // Keep only compressed KV between tokens. Two bounded expansion passes
-    // preserve BF16 softmax probabilities without retaining expanded per-head K/V
-    // history.
-    Vec scores(selected.size() * 64);
-    auto expand = [&](auto use) {
-        for (std::size_t first = 0; first < selected.size(); first += 16) {
-            const auto count = std::min<std::size_t>(16, selected.size() - first);
-            Vec latents(count * 512);
-            for (std::size_t i = 0; i < count; ++i)
-                std::copy_n(
-                    s.latent.begin() + selected[first + i] * 512,
-                    512,
-                    latents.begin() + i * 512
-                );
-            auto kv = project(prefix + "kv_b_proj.weight", latents, 32768);
-            for (std::size_t i = 0; i < count; ++i)
-                use(first + i, std::span<const float>(kv).subspan(i * 32768, 32768));
-        }
-    };
-    expand([&](std::size_t i, std::span<const float> kv) {
-        for (std::size_t h = 0; h < 64; ++h) {
-            float value = 0;
-            for (std::size_t d = 0; d < 256; ++d)
-                value += q[h * 256 + d] * kv[h * 512 + d];
-            scores[h * selected.size() + i] = bf(bf(value) / 16);
-        }
-    });
-    for (std::size_t h = 0; h < 64; ++h) {
-        auto first = scores.begin() + h * selected.size();
-        auto last = first + selected.size();
-        auto max = *std::max_element(first, last);
-        float sum = 0;
-        for (auto it = first; it != last; ++it)
-            sum += std::exp(*it - max);
-        for (auto it = first; it != last; ++it)
-            *it = bf(std::exp(*it - max) / sum);
-    }
-    Vec output(16384);
-    expand([&](std::size_t i, std::span<const float> kv) {
-        for (std::size_t h = 0; h < 64; ++h)
-            for (std::size_t d = 0; d < 256; ++d)
-                output[h * 256 + d] +=
-                    scores[h * selected.size() + i] * kv[h * 512 + 256 + d];
-    });
-    cast(output);
-    return project(prefix + "o_proj.weight", output, H);
+    w.finish();
 }
 
-Engine::Engine(
-    const char* root,
-    Plan p,
-    const ComputePlan& cp,
-    std::shared_ptr<Resources> owner,
-    const std::atomic_bool* cancel
-)
-    : impl_(std::make_unique<Impl>(root, p, cp, std::move(owner), cancel)) {
+std::size_t glm_state_bytes(std::size_t context) {
+    const std::size_t linear = 34, sparse = 11;
+    return sizeof(float)
+           * (linear * (3 * (conv - 1) * inner + heads * kda_dim * kda_dim)
+              + sparse
+                    * (context * (latent + 2 * index_dim) + context / pool * index_dim
+                       + 2 * heads * latent * nope));
 }
 
-Engine::~Engine() = default;
-
-void Engine::set_cancel(const std::atomic_bool& cancel) {
-    impl_->weights->cancel = &cancel;
+std::unique_ptr<Model>
+glm_model(const GgufWeights& w, DenseCompute& compute, std::size_t context) {
+    return std::make_unique<Glm>(w, compute, context);
 }
-
-std::shared_ptr<Resources> Engine::resources() const {
-    return impl_->execution.resources;
-}
-
-serving::Info Engine::info() const {
-    return {154880, impl_->p.context, impl_->p.execution_weights, impl_->p.host};
-}
-
-void Engine::reset() {
-    auto& m = *impl_;
-    m.tokens = 0;
-    for (std::size_t i = 0; i < 45; ++i) {
-        std::fill(m.states[i].recurrent.begin(), m.states[i].recurrent.end(), 0);
-        std::fill(m.states[i].conv.begin(), m.states[i].conv.end(), 0);
-    }
-}
-
-void Engine::begin_request() {
-    for (const auto& shard : impl_->weights->shards)
-        shard->check_unchanged();
-    impl_->execution.resume();
-    reset();
-    impl_->active = true;
-}
-
-void Engine::end_request() {
-    impl_->execution.idle();
-    impl_->active = false;
-}
-
-void Engine::park() {
-    need(!impl_->active, "glm_active_park");
-    impl_->execution.park();
-}
-
-serving::Token Engine::step(unsigned token, bool) {
-    auto& m = *impl_;
-    need(m.active && token < 154880 && m.tokens < m.p.context, "glm_step_state");
-    auto x = m.weights->read(std::string(base) + "embed_tokens.weight", token * H, H);
-    Vec streams;
-    streams.reserve(4 * H);
-    for (int i = 0; i < 4; ++i)
-        streams.insert(streams.end(), x.begin(), x.end());
-    for (std::size_t i = 0; i < 45; ++i) {
-        auto prefix = std::string(base) + "layers." + std::to_string(i) + ".";
-        auto mix = m.mix(prefix + "hc_attn", streams);
-        auto input = m.rms(prefix + "input_layernorm.weight", mix.input);
-        auto output = i % 4 == 3 ? m.dsa(prefix + "self_attn.", m.states[i], input)
-                                 : m.kda(prefix + "self_attn.", m.states[i], input);
-        m.combine(streams, mix, output);
-        mix = m.mix(prefix + "hc_ffn", streams);
-        input = m.rms(prefix + "post_attention_layernorm.weight", mix.input);
-        output = i < 3 ? m.mlp(prefix + "mlp.", input, 12288)
-                       : m.moe(prefix + "mlp.", input);
-        m.combine(streams, mix, output);
-    }
-    for (std::size_t j = 0; j < H; ++j)
-        x[j] =
-            bf((streams[j] + streams[H + j] + streams[2 * H + j] + streams[3 * H + j])
-               / 4);
-    x = m.rms(std::string(base) + "norm.weight", x);
-    auto logits = m.project("lm_head.weight", x, 154880);
-    auto chosen =
-        std::size_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
-    ++m.tokens;
-    return {unsigned(chosen), is_eos(unsigned(chosen)), m.tokens};
-}
-
-void Engine::close() {
-    auto r = resources();
-    impl_->active = false;
-    impl_->execution.park();
-    impl_.reset();
-    for (auto b : r->snapshot().used)
-        need(b == 0, "glm_cleanup_unconfirmed");
-}
-}  // namespace kadan::glm
+}  // namespace kadan::text

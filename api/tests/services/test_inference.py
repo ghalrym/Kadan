@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference import ImageProgress
-from api.pydantic_models.inference_task import ModelSelectionTask
+from api.pydantic_models.inference_task import TierSelectionTask
+from api.pydantic_models.model_store import HardwareTier, ModelStoreStatus
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.images.generations import ImageRequest
 from api.services.inference import InferenceService
@@ -411,17 +412,37 @@ class UnloadTests(unittest.IsolatedAsyncioTestCase):
         cancel.assert_not_awaited()
 
 
-class ModelSelectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_selection_unloads_only_a_different_resident_model(self):
+class TierSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tier_selection_unloads_only_another_tiers_model(self):
+        language_model = "qwen3.8-27b-q4-k-m"
         for state, model_id, unloads in (
-            ("ready", "small", True),
-            ("offloaded", "small", True),
-            ("loading", "small", True),
-            ("ready", "gpt-oss-20b", False),
+            ("ready", "qwen3.8-27b-q8-0", True),
+            ("offloaded", "qwen3.8-27b-q8-0", True),
+            ("loading", "glm-5.3-flash-q3-k-xl", True),
+            ("ready", language_model, False),
             ("unloaded", None, False),
-            ("error", "small", False),
+            ("error", "qwen3.8-27b-q8-0", False),
         ):
             service = InferenceService()
+            service.worker.models = ModelStoreStatus(
+                models=[],
+                tiers=[
+                    HardwareTier(
+                        id="go",
+                        name="Go",
+                        vram_gb=8,
+                        ram_gb=32,
+                        models={
+                            "llm": language_model,
+                            "image": None,
+                            "video": None,
+                            "speech": None,
+                            "transcription": None,
+                            "formatting": None,
+                        },
+                    )
+                ],
+            )
             service.state = state
             service.model_id = model_id
             with (
@@ -429,10 +450,10 @@ class ModelSelectionTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(service, "submit", new=AsyncMock()) as submit,
                 patch.object(service, "unload", new=AsyncMock()) as unload,
             ):
-                await service.select_model("gpt-oss-20b")
+                await service.select_tier("go")
                 submit.assert_awaited_once_with(
-                    ModelSelectionTask(model_id="gpt-oss-20b"),
-                    feature="model_selection",
+                    TierSelectionTask(tier="go"),
+                    feature="tier_selection",
                     operation="configure",
                 )
                 if unloads:

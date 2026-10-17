@@ -79,9 +79,6 @@ import type {
   LoadSelectedModelData,
   LoadSelectedModelErrors,
   LoadSelectedModelResponses,
-  SelectModelV1ModelsSelectionPutData,
-  SelectModelV1ModelsSelectionPutErrors,
-  SelectModelV1ModelsSelectionPutResponses,
   SelectWhisperModelData,
   SelectWhisperModelErrors,
   SelectWhisperModelResponses,
@@ -448,31 +445,6 @@ export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
   >({ url: '/v1/models', ...options })
 
 /**
- * Select Model
- */
-export const selectModelV1ModelsSelectionPut = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<SelectModelV1ModelsSelectionPutData, ThrowOnError>,
-): RequestResult<
-  SelectModelV1ModelsSelectionPutResponses,
-  SelectModelV1ModelsSelectionPutErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).put<
-    SelectModelV1ModelsSelectionPutResponses,
-    SelectModelV1ModelsSelectionPutErrors,
-    ThrowOnError
-  >({
-    url: '/v1/models/selection',
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-
-/**
  * Configure Context
  */
 export const configureContextV1ModelsModelIdContextPut = <
@@ -583,10 +555,10 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 /**
  * Get Settings
  *
- * Read the shared model store and return the catalog selection.
+ * Read the shared model store, including each tier's download progress.
  *
- * Raise HTTP 503 if the stored selection is outside the catalog; this read does
- * not load a model or configure another modality.
+ * Raise HTTP 503 if the worker status is unavailable; this read does not load
+ * a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,
@@ -599,7 +571,7 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 /**
  * Update Settings
  *
- * Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.
+ * Persist the hardware tier and queue downloads of its checkpoints, the image selection and transcription formatting. The tier selects the language model and unloads a resident language model of another tier after earlier chats finish.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

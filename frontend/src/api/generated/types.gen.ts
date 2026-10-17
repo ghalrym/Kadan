@@ -729,11 +729,10 @@ export type ModelLoadRequest = {
    * Model Id
    */
   model_id?:
-    | 'small'
-    | 'gpt-oss-20b'
-    | 'medium'
-    | 'large'
-    | 'muse-spark-open-q3-xl'
+    | 'qwen3.8-27b-q4-k-m'
+    | 'qwen3.8-27b-q8-0'
+    | 'qwen3.8-flash-next-q3-k-xl'
+    | 'glm-5.3-flash-q3-k-xl'
     | null
 }
 
@@ -1064,17 +1063,6 @@ export type ScoreQuestion = {
 }
 
 /**
- * SelectionRequest
- */
-export type SelectionRequest = {
-  /**
-   * Model Id
-   */
-  model_id:
-    'small' | 'gpt-oss-20b' | 'medium' | 'large' | 'muse-spark-open-q3-xl'
-}
-
-/**
  * SettingsModels
  *
  * Per-modality selections; an omitted modality is left unchanged.
@@ -1084,25 +1072,25 @@ export type SettingsModels = {
    * Image
    */
   Image?: 'qwen-image-2.1' | 'qwen-image-2.1-turbo' | null
-  /**
-   * Llm
-   */
-  LLM?:
-    | 'small'
-    | 'gpt-oss-20b'
-    | 'medium'
-    | 'large'
-    | 'muse-spark-open-q3-xl'
-    | null
 }
 
 /**
  * SettingsRequest
  *
- * Persist supported selections and transcription formatting.
+ * Persist the hardware tier, image selection and transcription formatting.
  */
 export type SettingsRequest = {
-  models: SettingsModels
+  /**
+   * License Acknowledged
+   *
+   * The user read the license notices of the tier's checkpoints.
+   */
+  license_acknowledged?: boolean
+  models?: SettingsModels
+  /**
+   * Tier
+   */
+  tier?: 'go' | 'plus' | 'pro' | 'ultra' | null
   /**
    * Whisper Formatting
    */
@@ -1112,13 +1100,23 @@ export type SettingsRequest = {
 /**
  * SettingsResponse
  *
- * Expose catalog selections and the saved transcription formatting setting.
+ * Expose the hardware tier, catalog selections and transcription formatting.
  */
 export type SettingsResponse = {
   /**
    * Models
    */
   models: Array<ModelSetting>
+  /**
+   * Tier
+   *
+   * The selected hardware tier; null until the user chooses one.
+   */
+  tier: 'go' | 'plus' | 'pro' | 'ultra' | null
+  /**
+   * Tiers
+   */
+  tiers: Array<TierSetting>
   /**
    * Whisper Formatting
    *
@@ -1209,6 +1207,51 @@ export type SpeechUnavailable = {
    * Detail
    */
   detail: string
+}
+
+/**
+ * TierModel
+ *
+ * A tier's checkpoint for one modality, with its live download state.
+ */
+export type TierModel = {
+  /**
+   * Modality
+   */
+  modality:
+    'llm' | 'image' | 'video' | 'speech' | 'transcription' | 'formatting'
+  /**
+   * Null while the tier assigns no checkpoint to this modality.
+   */
+  model: CheckpointStatus | null
+}
+
+/**
+ * TierSetting
+ *
+ * A selectable hardware tier and the checkpoints it downloads.
+ */
+export type TierSetting = {
+  /**
+   * Id
+   */
+  id: 'go' | 'plus' | 'pro' | 'ultra'
+  /**
+   * Models
+   */
+  models: Array<TierModel>
+  /**
+   * Name
+   */
+  name: string
+  /**
+   * Ram Gb
+   */
+  ram_gb: number
+  /**
+   * Vram Gb
+   */
+  vram_gb: number
 }
 
 /**
@@ -1980,33 +2023,6 @@ export type ListModelsV1ModelsGetResponses = {
 
 export type ListModelsV1ModelsGetResponse =
   ListModelsV1ModelsGetResponses[keyof ListModelsV1ModelsGetResponses]
-
-export type SelectModelV1ModelsSelectionPutData = {
-  body: SelectionRequest
-  path?: never
-  query?: never
-  url: '/v1/models/selection'
-}
-
-export type SelectModelV1ModelsSelectionPutErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type SelectModelV1ModelsSelectionPutError =
-  SelectModelV1ModelsSelectionPutErrors[keyof SelectModelV1ModelsSelectionPutErrors]
-
-export type SelectModelV1ModelsSelectionPutResponses = {
-  /**
-   * Successful Response
-   */
-  200: ModelsResponse
-}
-
-export type SelectModelV1ModelsSelectionPutResponse =
-  SelectModelV1ModelsSelectionPutResponses[keyof SelectModelV1ModelsSelectionPutResponses]
 
 export type ConfigureContextV1ModelsModelIdContextPutData = {
   body: ContextRequest

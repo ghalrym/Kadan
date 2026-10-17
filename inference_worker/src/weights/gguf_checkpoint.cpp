@@ -17,6 +17,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "kadan/gguf_quantization.hpp"
 #include "kadan/quantization.hpp"
 
 namespace kadan::checkpoint {
@@ -210,8 +211,7 @@ public:
             }
             tensor.type = u32();
             require(
-                tensor.type == GGML_TYPE_F32 || tensor.type == GGML_TYPE_Q8_0
-                    || tensor.type == GGML_TYPE_Q3_K || tensor.type == GGML_TYPE_Q4_K,
+                tensor.type == GGML_TYPE_F32 || gguf::encoding(tensor.type),
                 "gguf_tensor_type"
             );
             const auto type = static_cast<ggml_type>(tensor.type);
@@ -437,17 +437,21 @@ GgufCheckpoint::GgufCheckpoint(const std::string& root, const std::atomic_bool& 
     File directory(
         ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC), true
     );
+    // One unsplit file carries no split metadata; split sets are numbered.
+    const bool single = names.size() == 1 && !std::regex_match(names[0], pattern);
     for (std::size_t i = 0; i < names.size(); ++i) {
         std::smatch match;
         require(
-            names[i].size() <= 255 && std::regex_match(names[i], match, pattern),
+            names[i].size() <= 255
+                && (single || std::regex_match(names[i], match, pattern)),
             "gguf_split_name"
         );
-        if (i == 0)
+        if (!single && i == 0)
             prefix = match[1];
         require(
-            match[1] == prefix && std::stoul(match[2]) == i + 1
-                && std::stoul(match[3]) == names.size(),
+            single
+                || (match[1] == prefix && std::stoul(match[2]) == i + 1
+                    && std::stoul(match[3]) == names.size()),
             "gguf_split_name"
         );
         File opened(
@@ -461,17 +465,20 @@ GgufCheckpoint::GgufCheckpoint(const std::string& root, const std::atomic_bool& 
         auto context = parse_metadata(file, header);
         require(gguf_get_version(context.get()) == 3, "gguf_version");
         require(
-            ::kadan::checkpoint::integer(
-                context.get(), key_id(context.get(), "split.no")
-            ) == i
-                && ::kadan::checkpoint::integer(
-                       context.get(), key_id(context.get(), "split.count")
-                   ) == names.size(),
+            single
+                || (::kadan::checkpoint::integer(
+                        context.get(), key_id(context.get(), "split.no")
+                    ) == i
+                    && ::kadan::checkpoint::integer(
+                           context.get(), key_id(context.get(), "split.count")
+                       ) == names.size()),
             "gguf_split_metadata"
         );
-        const auto expected = ::kadan::checkpoint::integer(
-            context.get(), key_id(context.get(), "split.tensors.count")
-        );
+        const auto expected =
+            single ? header.tensors.size()
+                   : ::kadan::checkpoint::integer(
+                         context.get(), key_id(context.get(), "split.tensors.count")
+                     );
         if (i == 0)
             total_tensors = expected;
         require(
@@ -658,7 +665,8 @@ void GgufCheckpoint::read_vector(
     const auto& entry = impl_->find(name);
     const auto& t = entry.tensor;
     require(
-        t.rank == 1 && t.type == GGML_TYPE_F32 && output.size() == t.shape[0],
+        t.type == GGML_TYPE_F32 && output.size() == t.shape[0] * t.shape[1] * t.shape[2]
+            && output.size_bytes() == t.bytes,
         "gguf_vector_shape"
     );
     const auto& file = impl_->files[entry.file];
@@ -700,6 +708,49 @@ bool metadata_boolean(const gguf_context* ctx, std::string_view key) {
     return gguf_get_val_bool(ctx, id);
 }
 
+// Signed or unsigned 32/64-bit integer arrays; values must fit in int64.
+std::vector<std::int64_t>
+metadata_integers(const gguf_context* ctx, std::string_view key) {
+    const auto id = key_id(ctx, key);
+    require(gguf_get_kv_type(ctx, id) == GGUF_TYPE_ARRAY, "gguf_metadata_integers");
+    const auto type = gguf_get_arr_type(ctx, id);
+    const auto n = gguf_get_arr_n(ctx, id);
+    require(n <= 524288, "gguf_array_limit");
+    const auto* raw = gguf_get_arr_data(ctx, id);
+    std::vector<std::int64_t> out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (type == GGUF_TYPE_INT32)
+            out[i] = static_cast<const std::int32_t*>(raw)[i];
+        else if (type == GGUF_TYPE_UINT32)
+            out[i] = static_cast<const std::uint32_t*>(raw)[i];
+        else if (type == GGUF_TYPE_INT64)
+            out[i] = static_cast<const std::int64_t*>(raw)[i];
+        else if (type == GGUF_TYPE_UINT64) {
+            const auto value = static_cast<const std::uint64_t*>(raw)[i];
+            require(value <= INT64_MAX, "gguf_metadata_integers");
+            out[i] = std::int64_t(value);
+        } else
+            throw std::invalid_argument("gguf_metadata_integers");
+    }
+    return out;
+}
+
+std::vector<double> metadata_numbers(const gguf_context* ctx, std::string_view key) {
+    const auto id = key_id(ctx, key);
+    require(
+        gguf_get_kv_type(ctx, id) == GGUF_TYPE_ARRAY
+            && gguf_get_arr_type(ctx, id) == GGUF_TYPE_FLOAT32,
+        "gguf_metadata_numbers"
+    );
+    const auto n = gguf_get_arr_n(ctx, id);
+    require(n <= 524288, "gguf_array_limit");
+    const auto* raw = static_cast<const float*>(gguf_get_arr_data(ctx, id));
+    std::vector<double> out(raw, raw + n);
+    for (auto value : out)
+        require(std::isfinite(value), "gguf_metadata_numbers");
+    return out;
+}
+
 std::vector<bool> metadata_booleans(const gguf_context* ctx, std::string_view key) {
     const auto id = key_id(ctx, key);
     require(
@@ -739,6 +790,19 @@ bool GgufCheckpoint::boolean(std::string_view key) const {
 
 std::vector<bool> GgufCheckpoint::booleans(std::string_view key) const {
     return metadata_booleans(impl_->metadata.get(), key);
+}
+
+std::vector<std::int64_t> GgufCheckpoint::integers(std::string_view key) const {
+    return metadata_integers(impl_->metadata.get(), key);
+}
+
+std::vector<double> GgufCheckpoint::numbers(std::string_view key) const {
+    return metadata_numbers(impl_->metadata.get(), key);
+}
+
+bool GgufCheckpoint::has(std::string_view key) const {
+    const auto* ctx = impl_->metadata.get();
+    return key.size() <= 256 && gguf_find_key(ctx, std::string(key).c_str()) >= 0;
 }
 
 struct GgufMetadata::Impl {
@@ -799,16 +863,15 @@ std::vector<std::string> GgufMetadata::strings(std::string_view key) const {
 }
 
 std::vector<std::int64_t> GgufMetadata::integers(std::string_view key) const {
+    return metadata_integers(impl_->metadata.get(), key);
+}
+
+std::vector<double> GgufMetadata::numbers(std::string_view key) const {
+    return metadata_numbers(impl_->metadata.get(), key);
+}
+
+bool GgufMetadata::has(std::string_view key) const {
     const auto* ctx = impl_->metadata.get();
-    const auto id = key_id(ctx, key);
-    require(
-        gguf_get_kv_type(ctx, id) == GGUF_TYPE_ARRAY
-            && gguf_get_arr_type(ctx, id) == GGUF_TYPE_INT32,
-        "gguf_metadata_integers"
-    );
-    const auto n = gguf_get_arr_n(ctx, id);
-    require(n <= 524288, "gguf_array_limit");
-    const auto* raw = static_cast<const std::int32_t*>(gguf_get_arr_data(ctx, id));
-    return {raw, raw + n};
+    return key.size() <= 256 && gguf_find_key(ctx, std::string(key).c_str()) >= 0;
 }
 }  // namespace kadan::checkpoint

@@ -37,8 +37,24 @@ class CheckpointStatus(BaseModel):
     architecture_context_limit: int | None
 
 
+TierId = Literal["go", "plus", "pro", "ultra"]
+TierModality = Literal["llm", "image", "video", "speech", "transcription", "formatting"]
+
+
+class HardwareTier(BaseModel):
+    """A hardware profile fixing one checkpoint per modality; None is unassigned."""
+
+    id: TierId
+    name: str
+    vram_gb: int
+    ram_gb: int
+    models: dict[TierModality, str | None]
+
+
 class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
+    tiers: list[HardwareTier] = []
+    selected_tier: TierId | None = None
     selected_model_id: str | None = None
     selected_whisper: str | None = None
     whisper_formatting: bool = True

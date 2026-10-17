@@ -42,6 +42,9 @@
 .tier-dialog::backdrop { background: #0009; }
 .tier-dialog h2 { margin: 0 0 14px; font-size: 16px; }
 .tier-dialog > p { font-size: 13px; line-height: 1.6; }
+.tier-dialog-notice { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--sidebar); font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); }
+.tier-dialog-notice a { margin-left: 2px; text-decoration: underline; }
+.tier-alert { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .tier-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .tier-dialog-actions .button { padding: 9px 14px; font-size: 13px; }
 
@@ -54,4 +57,6 @@
 .tier-download--complete .tier-download-status { color: var(--success); }
 .tier-download--complete .progress { --meter-color: var(--success); }
 .tier-download--failed .tier-download-status { color: var(--error); }
-.tier-download--queued .progress { --meter-color: #4a4f58; }
+.tier-download--queued .progress, .tier-download--not_downloaded .progress { --meter-color: #4a4f58; }
+.tier-download--queued .tier-download-status { color: var(--muted); }
+.tier-download--unassigned { opacity: .6; }

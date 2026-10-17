@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,10 +26,10 @@ std::string
 base64_decode(std::string_view encoded, std::size_t maximum = 3 * 1024 * 1024);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
-// Derive the native text assets from the tensor-free first GGUF split before
-// downloading any remaining split. The existing model selection is unchanged.
-void prepare_muse_gguf_assets(
-    const fs::path&, const std::string& first_split, const std::atomic_bool& cancel
+// Validate the GGUF architecture and derive config.json and tokenizer.json
+// from the first file's metadata before any remaining split is downloaded.
+void prepare_gguf_assets(
+    const fs::path&, const std::string& first_file, const std::atomic_bool& cancel
 );
 
 struct ManifestFile {
@@ -57,6 +58,15 @@ struct CatalogEntry {
     static CatalogEntry parse(const Json& value);
 };
 
+// A hardware tier fixes one checkpoint per modality (null when unassigned).
+struct HardwareTier {
+    std::string id, name;
+    unsigned vram_gb, ram_gb;
+    std::map<std::string, std::optional<std::string>> models;
+
+    static HardwareTier parse(const Json& value);
+};
+
 class ModelStore {
 public:
     using Fetch = std::function<std::int64_t(
@@ -73,11 +83,14 @@ public:
     );
     const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
+    // The language model of the selected hardware tier.
     std::string selected() const;
+    std::optional<std::string> tier() const;
+    const HardwareTier& hardware_tier(const std::string& id) const;
+    void select_tier(const std::string& id);
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
     Json context(const std::string& model) const;
-    void select(const std::string& model);
     void set_context(const std::string& model, const Json& value);
     void select_whisper(const std::string& model);
     bool whisper_formatting() const;
@@ -106,6 +119,7 @@ private:
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
     std::vector<CatalogEntry> catalog_;
+    std::vector<HardwareTier> tiers_;
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
@@ -182,7 +196,7 @@ void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    ModelSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+    TierSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     ContextRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&

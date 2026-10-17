@@ -4,6 +4,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstring>
 #include <fstream>
@@ -139,7 +140,10 @@ void pinned_catalog_units() {
         rejects([&] { store.validate_files(speech, parse_manifest(incomplete)); });
     }
     for (const auto* model :
-         {"small", "qwen-tts-1.7b-custom", "h3-fl2va", "h3-fl2va-int8-turbo"})
+         {"qwen3.8-27b-q4-k-m",
+          "qwen-tts-1.7b-custom",
+          "h3-fl2va",
+          "h3-fl2va-int8-turbo"})
         for (const auto* path :
              {"../config.json", "/config.json", "model.py", "speech_tokenizer/run.py"})
             assert(!store.allowed(path, store.entry(model)));
@@ -287,27 +291,43 @@ void checkpoint_catalog_units() {
         )
         == turbo.required_files.end()
     );
-    for (const auto* id : {"gpt-oss-20b", "medium"}) {
+    // Each hardware tier pins one GGUF language model and the formatter.
+    const std::map<std::string, std::string> tiers{
+        {"go", "qwen3.8-27b-q4-k-m"},
+        {"plus", "qwen3.8-27b-q8-0"},
+        {"pro", "qwen3.8-flash-next-q3-k-xl"},
+        {"ultra", "glm-5.3-flash-q3-k-xl"}
+    };
+    for (const auto& [tier, id] : tiers) {
+        const auto& hardware = store.hardware_tier(tier);
+        assert(hardware.models.at("llm") == id);
+        assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
+        assert(!hardware.models.at("image") && !hardware.models.at("video"));
         const auto& model = store.entry(id);
-        assert(model.kind == "llm" && model.layout == "root");
-        assert(model.inference_available);
-        assert(model.license == "apache-2.0");
         assert(
-            model.license_url
-            == "https://huggingface.co/" + model.repo_id + "/blob/" + model.revision
-                   + "/LICENSE"
+            model.kind == "llm" && model.layout == "gguf" && model.inference_available
         );
-        assert(!store.allowed("original/model.safetensors", model));
-        assert(!store.allowed("model.gguf", model));
-        const bool small = model.id == "gpt-oss-20b";
-        assert(store.allowed(
-            small ? "model-00000-of-00002.safetensors"
-                  : "model-00000-of-00014.safetensors",
-            model
-        ));
-        assert(store.allowed("chat_template.jinja", model));
-        assert(store.allowed("tokenizer.json", model));
+        assert(model.manifest.front().name == model.asset_name);
+        store.validate_files(model, model.manifest);
+        std::uint64_t bytes = 0;
+        for (const auto& file : model.manifest) {
+            bytes += file.size;
+            assert(file.url.starts_with(
+                "https://huggingface.co/" + model.repo_id + "/resolve/" + model.revision
+                + "/"
+            ));
+        }
+        assert(bytes == model.estimated_bytes);
+        assert(!store.allowed("config.json", model));
+        assert(!store.allowed("model.safetensors", model));
     }
+    assert(store.entry("qwen3.8-flash-next-q3-k-xl").license_notice);
+    for (const auto* removed :
+         {"small", "gpt-oss-20b", "medium", "large", "muse-spark-open-q3-xl"})
+        rejects([&] { store.entry(removed); });
+    rejects([&] { store.hardware_tier("max"); });
+    assert(store.status().at("tiers").size() == 4);
+    assert(store.status().at("selected_tier").is_null());
     assert(transfers == 0);
     assert(store.status().at("selected_model_id").is_null());
 }
@@ -944,73 +964,146 @@ void upstream_manifest_units() {
     }
 }
 
-void text_checkpoint_units() {
-    // Metadata-only profiles. No shard contents are parsed or executed here.
-    for (const auto* profile : {"qwen", "glm", "gpt_oss", "gpt_oss_120b"}) {
-        const bool gpt = std::string_view(profile).starts_with("gpt_oss");
-        auto original = read_document(
-            worker_data_directory() / "tests/fixtures"
-            / (std::string(gpt ? "gpt_oss" : profile) + "_config.json")
-        );
-        if (std::string_view(profile) == "gpt_oss_120b") {
-            original["num_hidden_layers"] = 36;
-            original["num_local_experts"] = 128;
-            for (std::size_t i = 24; i < 36; ++i)
-                original["layer_types"].push_back(
-                    i % 2 ? "full_attention" : "sliding_attention"
-                );
-        }
-        for (const auto* variant :
-             {"valid",
-              "architecture",
-              "quantization",
-              "oversized",
-              "missing",
-              "malformed"}) {
+// Minimal metadata-only GGUF v3 writer; acquisition never reads tensors.
+class GgufWriter {
+public:
+    void string(std::string_view key, std::string_view value) {
+        name(key, 8);
+        text(value);
+    }
+
+    void u32(std::string_view key, std::uint32_t value) {
+        name(key, 4);
+        integer(value, 4);
+    }
+
+    void f32(std::string_view key, float value) {
+        name(key, 6);
+        integer(std::bit_cast<std::uint32_t>(value), 4);
+    }
+
+    void booleans(std::string_view key, const std::vector<bool>& values) {
+        array(key, 7, values.size());
+        for (const bool value : values)
+            body_.push_back(char(value));
+    }
+
+    void integers(std::string_view key, const std::vector<std::int32_t>& values) {
+        array(key, 5, values.size());
+        for (const auto value : values)
+            integer(std::uint32_t(value), 4);
+    }
+
+    void strings(std::string_view key, const std::vector<std::string>& values) {
+        array(key, 8, values.size());
+        for (const auto& value : values)
+            text(value);
+    }
+
+    std::string finish() const {
+        std::string out = "GGUF";
+        const auto append = [&](std::uint64_t value, unsigned width) {
+            for (unsigned i = 0; i < width; ++i)
+                out.push_back(char((value >> (8 * i)) & 255));
+        };
+        append(3, 4);
+        append(0, 8);
+        append(count_, 8);
+        out += body_;
+        while (out.size() % 32)
+            out.push_back('\0');
+        return out;
+    }
+
+private:
+    std::string body_;
+    std::uint64_t count_ = 0;
+
+    void integer(std::uint64_t value, unsigned width) {
+        for (unsigned i = 0; i < width; ++i)
+            body_.push_back(char((value >> (8 * i)) & 255));
+    }
+
+    void text(std::string_view value) {
+        integer(value.size(), 8);
+        body_ += value;
+    }
+
+    void name(std::string_view key, std::uint32_t type) {
+        ++count_;
+        text(key);
+        integer(type, 4);
+    }
+
+    void array(std::string_view key, std::uint32_t element, std::size_t count) {
+        name(key, 9);
+        integer(element, 4);
+        integer(count, 8);
+    }
+};
+
+// The qwen35 metadata contract with a tiny tokenizer: three normal tokens,
+// one control token and one unused slot.
+std::string qwen35_metadata(bool valid) {
+    GgufWriter w;
+    w.string("general.architecture", "qwen35");
+    for (const auto& [key, value] :
+         std::initializer_list<std::pair<const char*, std::uint32_t>>{
+             {"qwen35.block_count", valid ? 64 : 63},
+             {"qwen35.context_length", 262144},
+             {"qwen35.embedding_length", 5120},
+             {"qwen35.feed_forward_length", 17408},
+             {"qwen35.attention.head_count", 24},
+             {"qwen35.attention.head_count_kv", 4},
+             {"qwen35.attention.key_length", 256},
+             {"qwen35.attention.value_length", 256},
+             {"qwen35.rope.dimension_count", 64},
+             {"qwen35.ssm.conv_kernel", 4},
+             {"qwen35.ssm.state_size", 128},
+             {"qwen35.ssm.group_count", 16},
+             {"qwen35.ssm.time_step_rank", 48},
+             {"qwen35.ssm.inner_size", 6144},
+             {"qwen35.full_attention_interval", 4},
+             {"tokenizer.ggml.eos_token_id", 248046},
+             {"tokenizer.ggml.padding_token_id", 248044}
+         })
+        w.u32(key, value);
+    w.f32("qwen35.rope.freq_base", 1e7f);
+    w.f32("qwen35.attention.layer_norm_rms_epsilon", 1e-6f);
+    w.integers("qwen35.rope.dimension_sections", {11, 11, 10, 0});
+    std::vector<bool> recurrent;
+    for (unsigned i = 0; i < 64; ++i)
+        recurrent.push_back((i + 1) % 4 != 0);
+    w.booleans("qwen35.attention.recurrent_layers", recurrent);
+    w.string("tokenizer.ggml.model", "gpt2");
+    w.string("tokenizer.ggml.pre", "qwen35");
+    w.strings("tokenizer.ggml.tokens", {"a", "b", "ab", "<|im_end|>", "<|unused|>"});
+    w.integers("tokenizer.ggml.token_type", {1, 1, 1, 3, 5});
+    w.strings("tokenizer.ggml.merges", {"a b"});
+    return w.finish();
+}
+
+void gguf_acquisition_units() {
+    // Metadata-only fixtures: the fetch boundary is fake and no checkpoint
+    // tensors exist, so this validates acquisition without inference.
+    for (const auto* layout : {"split", "single"}) {
+        for (const bool valid : {true, false}) {
             Directory tmp;
-            auto config = original;
-            const std::string test = variant;
-            const bool root_layout = gpt && test != "missing";
-            if (test == "architecture")
-                config["model_type"] = "unsupported";
-            if (test == "quantization")
-                config["quantization_config"]["quant_method"] = "unsupported";
-            std::map<std::string, std::string> content{
-                {"config.json", config.dump()},
-                {"model.safetensors.index.json",
-                 R"({"weight_map":{"weight":"model.safetensors"}})"},
-                {"model.safetensors", "fake payload"}
-            };
-            if (root_layout)
-                content["tokenizer_config.json"] = "{}";
-            if (test == "missing")
-                content.erase("config.json");
-            if (test == "malformed")
-                content["config.json"] = "{";
-            auto manifest = local_manifest(tmp.path / "source", content);
-            std::reverse(manifest.begin(), manifest.end());
-            if (test == "oversized")
-                for (auto& file : manifest)
-                    if (file["name"] == "config.json")
-                        file["size"] = 16 * 1024 * 1024 + 1;
-            auto model = entry("test", manifest);
+            const bool split = std::string_view(layout) == "split";
+            const std::string first =
+                split ? "model-00001-of-00002.gguf" : "model.gguf";
+            std::map<std::string, std::string> content{{first, qwen35_metadata(valid)}};
+            if (split)
+                content["model-00002-of-00002.gguf"] = "unread tensor placeholder";
+            auto files = local_manifest(tmp.path / "source", content);
+            std::stable_partition(files.begin(), files.end(), [&](const auto& file) {
+                return file.at("name") == first;
+            });
+            auto model = entry("text", files);
             model["kind"] = "llm";
-            model["inference_available"] = !gpt;
-            if (root_layout)
-                model["layout"] = "root";
+            model["layout"] = "gguf";
+            model["asset_name"] = first;
             catalog(tmp.path / "data", Json::array({model}));
-            auto document = read_document(tmp.path / "data/catalog.json");
-            document["assets"] = {
-                "config.json", "tokenizer_config.json", "model.safetensors.index.json"
-            };
-            write_document(tmp.path / "data/catalog.json", document);
-            Json siblings = Json::array();
-            for (const auto& file : manifest)
-                siblings.push_back(
-                    {{"rfilename", file.at("name")},
-                     {"lfs",
-                      {{"size", file.at("size")}, {"sha256", file.at("digest")}}}}
-                );
             std::vector<std::string> fetched;
             ModelStore store(
                 tmp.path / "models",
@@ -1021,137 +1114,79 @@ void text_checkpoint_units() {
                     bool head,
                     auto offset) {
                     assert(!head && offset == 0);
-                    if (url.find("/api/models/") != std::string::npos) {
-                        write(Json{{"sha", "revision"}, {"siblings", siblings}}.dump());
-                        return 0;
-                    }
                     const auto name = fs::path(url).filename().string();
                     fetched.push_back(name);
                     write(content.at(name));
                     return 0;
                 }
             );
-            // GPT-OSS remains blocked before acquisition for inference requests.
-            if (gpt) {
-                ChatRequest input;
-                input.model = "test";
-                InferenceRequest task;
-                task.operation = Operation::load;
-                rejects([&] { prepare_input(input, task, store, running); });
-                assert(fetched.empty());
-            }
-            DownloadRequest input;
-            input.model = "test";
-            InferenceRequest task;
-            task.operation = Operation::download;
-            const auto acquire = [&] {
-                prepare_input(input, task, store, running);
-            };
-            if (test == "valid") {
-                acquire();
-                assert(fetched.size() == (root_layout ? 4 : 3));
-                assert(fetched[0] == "config.json");
-                assert(fetched[1] == "model.safetensors.index.json");
-                assert(store.complete(store.entry("test")));
-                fetched.clear();
-                acquire();
-                assert(fetched.empty());
-                // Cached completion does not bypass compatibility validation.
-                const auto type = config.at("model_type").get<std::string>();
-                config["model_type"] = std::string(type.size(), 'x');
-                write_document(task.configuration.checkpoint / "config.json", config);
-                assert(store.complete(store.entry("test")));
-                rejects(acquire);
-                assert(fetched.empty());
-            } else {
+            store.validate_files(store.entry("text"), parse_manifest(files));
+            assert(!store.allowed("config.json", store.entry("text")));
+            assert(!store.allowed("../" + first, store.entry("text")));
+            if (!valid) {
                 try {
-                    acquire();
+                    store.acquire("text", running);
                     assert(false);
                 } catch (const RequestError& error) {
                     assert(error.status == 422);
-                    if (test == "quantization") {
-                        const auto expected =
-                            std::string(profile) == "qwen"  ? "unsupported_quantization"
-                            : std::string(profile) == "glm" ? "glm_quant_format"
-                                                            : "gpt_oss_quantization";
-                        assert(
-                            std::string(error.what()).find(expected)
-                            != std::string::npos
-                        );
-                    }
+                    assert(
+                        std::string(error.what()).find("qwen35_dimensions")
+                        != std::string::npos
+                    );
                 }
-                if (test == "missing" || test == "oversized")
-                    assert(fetched.empty());
-                else {
-                    assert(fetched == std::vector<std::string>{"config.json"});
-                    fetched.clear();
-                    rejects(acquire);  // Resume revalidates the authenticated config.
-                    assert(fetched.empty());
-                }
-                assert(!store.complete(store.entry("test")));
+                // The invalid first file stops acquisition before any weight split.
+                assert(fetched == std::vector<std::string>{first});
+                assert(!store.complete(store.entry("text")));
+                continue;
+            }
+            const auto root = store.acquire("text", running);
+            assert(fetched.size() == content.size() && fetched[0] == first);
+            assert(store.complete(store.entry("text")));
+            assert(
+                read_document(root / "config.json")
+                == Json(
+                    {{"model_type", "qwen35"},
+                     {"kadan_checkpoint_format", "gguf"},
+                     {"max_position_embeddings", 262144}}
+                )
+            );
+            const auto tokenizer = read_document(root / "tokenizer.json");
+            assert(tokenizer.at("normalizer").at("type") == "NFC");
+            assert(
+                tokenizer.at("model").at("vocab")
+                == Json({{"a", 0}, {"b", 1}, {"ab", 2}})
+            );
+            assert(tokenizer.at("model").at("merges") == Json::array({"a b"}));
+            assert(!tokenizer.at("model").at("ignore_merges").get<bool>());
+            const auto& added = tokenizer.at("added_tokens");
+            assert(added.size() == 1 && added[0].at("id") == 3);
+            assert(added[0].at("content") == "<|im_end|>" && added[0].at("special"));
+            fetched.clear();
+            store.acquire("text", running);
+            assert(fetched.empty());
+            if (split) {
+                auto oversized = files;
+                oversized[0]["size"] = std::uint64_t(32 * 1024 * 1024 + 1);
+                rejects([&] {
+                    store.validate_files(
+                        store.entry("text"), parse_manifest(oversized)
+                    );
+                });
             }
         }
     }
-}
 
-void gguf_acquisition_units() {
-    // An invalid metadata-only first split must stop acquisition before any
-    // tensor split. The fetch boundary is fake; no checkpoint is downloaded.
+    // Choosing a hardware tier is what selects the language model.
     Directory tmp;
-    std::map<std::string, std::string> content;
-    for (unsigned split = 1; split <= 10; ++split) {
-        auto number = std::to_string(split);
-        const auto name =
-            "Muse-" + std::string(5 - number.size(), '0') + number + "-of-00010.gguf";
-        content[name] = split == 1 ? "invalid metadata" : "unread tensor placeholder";
-    }
-    auto files = local_manifest(tmp.path / "source", content);
-    std::reverse(files.begin(), files.end());
-    auto model = entry("muse", files);
-    model["kind"] = "llm";
-    model["layout"] = "gguf";
-    model["asset_name"] = "Muse-00001-of-00010.gguf";
-    catalog(tmp.path / "data", Json::array({model}));
-    std::vector<std::string> fetched;
-    ModelStore store(
-        tmp.path / "models",
-        tmp.path / "data",
-        [&](const std::string& url,
-            const auto& write,
-            const auto&,
-            bool head,
-            auto offset) {
-            assert(!head && offset == 0);
-            const auto name = fs::path(url).filename().string();
-            fetched.push_back(name);
-            write(content.at(name));
-            return 0;
-        }
-    );
-    store.validate_files(store.entry("muse"), parse_manifest(files));
-    assert(!store.allowed("config.json", store.entry("muse")));
-    assert(!store.allowed("../Muse-00001-of-00010.gguf", store.entry("muse")));
-    rejects([&] { store.acquire("muse", running); });
-    assert(fetched == std::vector<std::string>{"Muse-00001-of-00010.gguf"});
-    assert(!store.complete(store.entry("muse")));
-    auto oversized = files;
-    for (auto& file : oversized)
-        if (file["name"] == "Muse-00001-of-00010.gguf")
-            file["size"] = std::uint64_t(32 * 1024 * 1024 + 1);
-    rejects([&] {
-        store.validate_files(store.entry("muse"), parse_manifest(oversized));
-    });
-
-    ModelStore published(tmp.path / "published", worker_data_directory());
-    const auto& candidate = published.entry("muse-spark-open-q3-xl");
-    published.validate_files(candidate, candidate.manifest);
-    std::uint64_t bytes = 0;
-    for (const auto& file : candidate.manifest)
-        bytes += file.size;
-    assert(bytes == 401483491832ULL && bytes == candidate.estimated_bytes);
-    // Merely registering a candidate does not choose a language model.
+    ModelStore published(tmp.path, worker_data_directory());
     rejects([&] { published.selected(); });
-    assert(!fs::exists(tmp.path / "published/selection.json"));
+    rejects([&] { published.select_tier("max"); });
+    published.select_tier("pro");
+    assert(published.selected() == "qwen3.8-flash-next-q3-k-xl");
+    assert(read_document(tmp.path / "tier.json") == Json({{"tier", "pro"}}));
+    assert(published.status().at("selected_tier") == "pro");
+    ModelStore reopened(tmp.path, worker_data_directory());
+    assert(reopened.tier() == "pro");
 }
 
 void job_units() {
@@ -1159,7 +1194,11 @@ void job_units() {
     const auto data = tmp.path / "data", root = tmp.path / "models",
                jobs = tmp.path / "jobs";
     const auto config =
-        read_document(worker_data_directory() / "tests/fixtures/qwen_config.json")
+        Json{
+            {"model_type", "qwen35"},
+            {"kadan_checkpoint_format", "gguf"},
+            {"max_position_embeddings", 262144}
+        }
             .dump();
     Json models = Json::array();
     for (const auto* id :
@@ -1176,7 +1215,22 @@ void job_units() {
         );
     }
     catalog(data, models);
-    write_document(root / "selection.json", {{"model_id", "small"}});
+    auto document = read_document(data / "catalog.json");
+    document["tiers"] = Json::array(
+        {{{"id", "go"},
+          {"name", "Go"},
+          {"vram_gb", 8},
+          {"ram_gb", 32},
+          {"models",
+           {{"llm", "small"},
+            {"image", nullptr},
+            {"video", nullptr},
+            {"speech", nullptr},
+            {"transcription", nullptr},
+            {"formatting", nullptr}}}}}
+    );
+    write_document(data / "catalog.json", document);
+    write_document(root / "tier.json", {{"tier", "go"}});
     write_document(root / "context.json", {{"small", 4096}});
     JobWorkspace files(jobs);
     ModelStore store(
@@ -1200,14 +1254,21 @@ void job_units() {
     assert(store.context("small").is_null());
     files.cleanup(context.id);
     store.set_context("small", 4096);
-    rejects([&] { store.set_context("small", 65536); });
+    rejects([&] { store.set_context("small", 300000); });
     auto selection = request(
-        "selection",
-        {{"feature", "model_selection"}, {"model_id", "small"}},
-        "configure"
+        "selection", {{"feature", "tier_selection"}, {"tier", "go"}}, "configure"
     );
     prepare_task(selection, store, files, running);
     assert(store.status().at("selected_model_id") == "small");
+    assert(store.status().at("selected_tier") == "go");
+    rejects([&] {
+        auto unknown = request(
+            "unknown-tier",
+            {{"feature", "tier_selection"}, {"tier", "max"}},
+            "configure"
+        );
+        prepare_task(unknown, store, files, running);
+    });
     files.cleanup(selection.id);
     auto defaulted = request(
         "defaulted-image", {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
@@ -1303,7 +1364,7 @@ void job_units() {
         "load"
     );
     prepare_task(load, store, files, running);
-    assert(load.context->effective == 32768);
+    assert(load.context->effective == 262144);
     assert(!load.context->configured);
     files.cleanup("maximum");
     load = request("bad", {{"feature", "llm"}, {"context_limit", 999999}}, "load");
@@ -1505,7 +1566,6 @@ int main() {
     partial_initialization_units();
     single_file_acquisition_units();
     upstream_manifest_units();
-    text_checkpoint_units();
     gguf_acquisition_units();
     job_units();
     whisper_conversion_units();

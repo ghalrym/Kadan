@@ -79,13 +79,13 @@ void prepare_input(
 }
 
 void prepare_input(
-    ModelSelectionRequest& input,
+    TierSelectionRequest& input,
     InferenceRequest& request,
     ModelStore& store,
     const std::atomic_bool&
 ) {
-    request.model = input.model;
-    store.select(input.model);
+    store.select_tier(input.tier);
+    request.model = store.selected();
 }
 
 void prepare_input(
