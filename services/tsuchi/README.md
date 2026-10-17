@@ -41,6 +41,8 @@ docker compose stop
 
 The image library stores generated images supplied by Hikari, Kadan, or the owner. Tsuchi does not generate them. Images referenced by decks stay separate assets. Slide layouts are `title`, `text`, `split`, and `image`; decks remain editable in the UI and JSON export. This is a defined v1 format, not full ChatGPT feature parity or PowerPoint round-trip support.
 
+Each agent can select one active image from its own library as an avatar. Selection persists in SQLite and is included in namespace exports. Clearing a selection retains the image; trashing the selected image clears the selection. Restoring an image does not select it again. Existing databases gain the nullable selection field automatically at startup.
+
 Search uses SQLite FTS5 across resource titles, Markdown, tags, slide text, and message content. It is lexical search, without embeddings or GPU usage. File contents such as PDF text and audio are not automatically extracted or transcribed. Tags and asset titles can be searched in the file library.
 
 Edits use an expected version to prevent silent overwrites. Resource history can restore an earlier snapshot as a new revision. Trash keeps content and bytes; there is no permanent-delete action. A Space with live children and an asset referenced by live content cannot be trashed until those links are removed. The UI reports these conflicts. Namespace operations validate all parent, attachment, slide image, and message resource links against the selected agent.
@@ -144,7 +146,9 @@ Local single-owner storage service. FastAPI + Pydantic, SQLite FTS5, file blobs,
 - `GET /api/health` => `{status:"ok", version:"0.1.0"}`
 - `GET /api/agents` => Agent[]
 - `POST /api/agents` body `{key, name}` => Agent (201)
-- Agent: `{key,name,created_at}`. No agent delete in v1.
+- `GET /api/agents/{key}` => Agent.
+- Agent: `{key,name,created_at,avatar_asset_id:string|null}`. No agent delete in v1.
+- `PUT /api/agents/{key}/avatar` body `{asset_id:string|null}` => Agent. Select an active, verified PNG/JPEG/WebP/GIF asset in this namespace, or clear the selection with `null`.
 - `GET /api/agents/{key}/stats` => `{resources:{persona:number,memory:number,space:number,deck:number,conversation:number},assets:number,images:number,trashed_resources:number,trashed_assets:number,storage_bytes:number,database_bytes:number,revisions:number}`. Counts exclude trash unless named otherwise. Storage bytes include retained files in trash. Database bytes are global, not agent-specific.
 - `GET /api/agents/{key}/activity?limit=50` => `{id,action,entity_type,entity_id,title,created_at}`[]. Newest first.
 

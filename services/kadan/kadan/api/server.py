@@ -9,8 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from .config import ServiceError, Settings
 from .http_safety import LocalRequestSafety
 from .routes import agents, health, status
-from .routes.agents import assets, resources
+from .routes.agents import assets, avatar, resources
 from .routes.agents.assets import content
+from .routes.agents.avatar import generations
 from .routes.agents.conversations import chat, notes
 from .services import LocalServices
 
@@ -43,6 +44,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         agents.router,
         resources.router,
         assets.router,
+        avatar.router,
+        generations.router,
         content.router,
         notes.router,
         chat.router,

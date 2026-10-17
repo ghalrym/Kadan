@@ -17,6 +17,10 @@ import type { Agent, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Workspace from "./Workspace";
 import Personas from "./Personas";
+import AgentAvatar from "./AgentAvatar";
+import AvatarEditor from "./AvatarEditor";
+import { activityLabel } from "./avatar";
+import type { AvatarActivity } from "./avatar";
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -29,8 +33,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState<AvatarActivity>("idle");
+  const [editingAvatar, setEditingAvatar] = useState(false);
+  const [avatarEditors, setAvatarEditors] = useState<string[]>([]);
+  const [generatingAvatars, setGeneratingAvatars] = useState<string[]>([]);
   const [menu, setMenu] = useState(false);
-  const [mobile, setMobile] = useState(() => matchMedia("(max-width: 700px)").matches);
+  const [mobile, setMobile] = useState(
+    () => matchMedia("(max-width: 700px)").matches,
+  );
   const navigation = useRef<HTMLElement>(null);
   const openNavigation = useRef<HTMLButtonElement>(null);
   const closeNavigation = useRef<HTMLButtonElement>(null);
@@ -63,7 +73,8 @@ export default function App() {
     if (!menu || !mobile) return;
     closeNavigation.current?.focus();
     return () => {
-      if (matchMedia("(max-width: 700px)").matches) openNavigation.current?.focus();
+      if (matchMedia("(max-width: 700px)").matches)
+        openNavigation.current?.focus();
       else document.getElementById("main")?.focus();
     };
   }, [menu, mobile]);
@@ -113,6 +124,8 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("kadan.agent", key);
     setThread(null);
+    setActivity("idle");
+    setEditingAvatar(false);
     setThreads([]);
     setPersonas([]);
     setError("");
@@ -210,7 +223,18 @@ export default function App() {
       setSavingAgent(false);
     }
   }
+  function openAvatar() {
+    setAvatarEditors((keys) => (keys.includes(key) ? keys : [...keys, key]));
+    setEditingAvatar(true);
+  }
+  const generatingAvatar = generatingAvatars.includes(key);
   const disabled = busy || creatingThread || loading;
+  const avatarActivity =
+    activity !== "idle"
+      ? activity
+      : busy || creatingThread || generatingAvatar
+        ? "working"
+        : "idle";
   return (
     <div className="app">
       <a className="skip-link" href="#main" inert={mobile && menu}>
@@ -237,7 +261,7 @@ export default function App() {
             setMenu(false);
           } else if (event.key === "Tab") {
             const controls = navigation.current?.querySelectorAll<HTMLElement>(
-              'button:not(:disabled), select:not(:disabled), a[href]',
+              "button:not(:disabled), select:not(:disabled), a[href]",
             );
             const first = controls?.[0];
             const last = controls?.[controls.length - 1];
@@ -352,7 +376,12 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-bottom">
-          <a href={status?.tsuchi.browser_url ?? undefined} aria-disabled={!status?.tsuchi.browser_url} target="_blank" rel="noreferrer">
+          <a
+            href={status?.tsuchi.browser_url ?? undefined}
+            aria-disabled={!status?.tsuchi.browser_url}
+            target="_blank"
+            rel="noreferrer"
+          >
             <span
               className={`status-dot ${status?.tsuchi.state === "ready" ? "ready" : ""}`}
             />
@@ -395,6 +424,23 @@ export default function App() {
           >
             <Menu size={20} />
           </button>
+          {selectedAgent && (
+            <button
+              className="avatar-trigger"
+              aria-label={`Edit avatar for ${selectedAgent.name}`}
+              title="Edit avatar"
+              disabled={disabled}
+              onClick={openAvatar}
+            >
+              <AgentAvatar
+                agentKey={key}
+                name={selectedAgent.name}
+                assetId={selectedAgent.avatar_asset_id}
+                activity={avatarActivity}
+                follow={!editingAvatar}
+              />
+            </button>
+          )}
           <div className="breadcrumb">
             <span>{selectedAgent?.name || "Kadan"}</span>
             <span className="separator">/</span>
@@ -406,6 +452,13 @@ export default function App() {
                   : thread?.title || "Threads"}
             </h1>
           </div>
+          {selectedAgent && (
+            <span className="agent-activity-label" role="status">
+              {generatingAvatar && activity === "idle" && !busy
+                ? "Generating avatar"
+                : activityLabel[avatarActivity]}
+            </span>
+          )}
           <button
             className="icon refresh"
             aria-label="Refresh services and agents"
@@ -442,7 +495,11 @@ export default function App() {
             </button>
           </div>
         ) : view === "workspace" ? (
-          <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
+          <Workspace
+            key={key}
+            agentKey={key}
+            browserUrl={status?.tsuchi.browser_url ?? null}
+          />
         ) : view === "personas" ? (
           <Personas
             key={key}
@@ -465,12 +522,27 @@ export default function App() {
             onBusy={setBusy}
             blocked={loading}
             refreshStatus={refreshStatus}
+            onActivity={setActivity}
           />
         ) : (
           <div className="center-empty">
-            <div className="empty-icon">
-              <MessageSquare size={28} />
-            </div>
+            {selectedAgent && (
+              <button
+                className="avatar-trigger avatar-empty-trigger"
+                aria-label={`Edit avatar for ${selectedAgent.name}`}
+                disabled={disabled}
+                onClick={openAvatar}
+              >
+                <AgentAvatar
+                  agentKey={key}
+                  name={selectedAgent.name}
+                  assetId={selectedAgent.avatar_asset_id}
+                  activity={avatarActivity}
+                  size="large"
+                  follow={!editingAvatar}
+                />
+              </button>
+            )}
             <h2>No thread selected</h2>
             <button
               className="primary"
@@ -483,6 +555,29 @@ export default function App() {
           </div>
         )}
       </main>
+      {agents
+        .filter((agent) => avatarEditors.includes(agent.key))
+        .map((agent) => (
+          <AvatarEditor
+            key={agent.key}
+            agent={agent}
+            open={editingAvatar && agent.key === key}
+            browserUrl={status?.tsuchi.browser_url ?? null}
+            onChange={(updated) =>
+              setAgents((rows) =>
+                rows.map((row) => (row.key === updated.key ? updated : row)),
+              )
+            }
+            onClose={() => setEditingAvatar(false)}
+            onGenerating={(generating) =>
+              setGeneratingAvatars((keys) =>
+                generating
+                  ? [...keys.filter((value) => value !== agent.key), agent.key]
+                  : keys.filter((value) => value !== agent.key),
+              )
+            }
+          />
+        ))}
       <dialog
         ref={dialog}
         onClose={() => {

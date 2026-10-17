@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
 from uuid import UUID
@@ -7,7 +8,15 @@ import httpx
 from pydantic import ValidationError
 
 from .config import ServiceError, Settings
-from .pydantic_models.inference import CompletionMessage, HikariSettings, PreparedChat
+from .pydantic_models.agents import Agent
+from .pydantic_models.assets import Asset
+from .pydantic_models.inference import (
+    MAX_AVATAR_BYTES,
+    AvatarGeneration,
+    CompletionMessage,
+    HikariSettings,
+    PreparedChat,
+)
 from .pydantic_models.resources import Message, Resource, ResourceKind
 from .routes.agents.conversations.chat import ChatInput
 from .routes.agents.conversations.notes import NoteInput
@@ -35,7 +44,15 @@ class LocalServices:
         self.client = client
         self.settings = settings
 
-    async def json_request(self, service: str, method: str, path: str, **kwargs):
+    async def json_request(
+        self,
+        service: str,
+        method: str,
+        path: str,
+        *,
+        timeout: httpx.Timeout = httpx.Timeout(15, connect=3),
+        **kwargs,
+    ):
         base = (
             self.settings.tsuchi_url
             if service == "Tsuchi"
@@ -43,7 +60,7 @@ class LocalServices:
         )
         try:
             response = await self.client.request(
-                method, base + path, timeout=httpx.Timeout(15, connect=3), **kwargs
+                method, base + path, timeout=timeout, **kwargs
             )
         except httpx.RequestError as error:
             raise ServiceError(
@@ -56,6 +73,85 @@ class LocalServices:
         except ValueError as error:
             raise ServiceError(
                 f"{service} returned an invalid response.", 502, "invalid_response"
+            ) from error
+
+    async def select_avatar(self, key: str, asset_id: UUID | None) -> Agent:
+        value = await self.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{key}/avatar",
+            json={"asset_id": str(asset_id) if asset_id is not None else None},
+        )
+        return parse_agent(value)
+
+    async def generate_avatar(self, key: str, prompt: str) -> Asset:
+        agent = parse_agent(
+            await self.json_request("Tsuchi", "GET", f"/api/agents/{key}")
+        )
+        try:
+            value = await self.json_request(
+                "Hikari",
+                "POST",
+                "/v1/images/generations",
+                json={"prompt": prompt, "aspect": "1:1", "count": 1},
+                timeout=httpx.Timeout(1800, connect=3),
+            )
+        except ServiceError as error:
+            if error.code == "service_unavailable":
+                raise ServiceError(
+                    "Hikari disconnected or timed out while generating the avatar. "
+                    "Check Hikari before trying again; no avatar was selected.",
+                    503,
+                    "generation_unavailable",
+                ) from error
+            raise
+        try:
+            generation = AvatarGeneration.model_validate(value)
+            image = base64.b64decode(generation.image.images_base64[0], validate=True)
+            if (
+                not image.startswith(b"\x89PNG\r\n\x1a\n")
+                or len(image) > MAX_AVATAR_BYTES
+            ):
+                raise ValueError("Invalid PNG or image exceeds the 20 MiB limit")
+        except ValueError as error:
+            raise ServiceError(
+                "Hikari did not return one valid PNG avatar within the 20 MiB limit. "
+                "No avatar was selected.",
+                502,
+                "invalid_image",
+            ) from error
+        try:
+            stored = await self.json_request(
+                "Tsuchi",
+                "POST",
+                f"/api/agents/{key}/assets",
+                files={"file": ("avatar.png", image, "image/png")},
+                data={"title": f"{agent.name[:480]} avatar", "tags": '["avatar"]'},
+                timeout=httpx.Timeout(60, connect=3),
+            )
+        except ServiceError as error:
+            raise ServiceError(
+                "The image was generated, but Kadan could not confirm it was saved "
+                "in Tsuchi. Check the agent's image library before generating again. "
+                "No avatar was selected.",
+                error.status,
+                "avatar_storage_failed",
+            ) from error
+        try:
+            asset = Asset.model_validate(stored)
+            if (
+                asset.agent_key != key
+                or not asset.is_image
+                or asset.deleted_at is not None
+            ):
+                raise ValueError("Stored asset is not an active image for this agent")
+            return asset
+        except ValueError as error:
+            raise ServiceError(
+                "Tsuchi did not confirm a usable avatar image. "
+                "Check the agent's image library; no avatar was selected.",
+                502,
+                "invalid_response",
             ) from error
 
     async def resource(self, key: str, resource_id: UUID) -> Resource:
@@ -394,6 +490,17 @@ class LocalServices:
                     "user_saved": True,
                 },
             )
+
+
+def parse_agent(value: object) -> Agent:
+    try:
+        return Agent.model_validate(value)
+    except ValidationError as error:
+        raise ServiceError(
+            "Tsuchi returned an invalid agent. Reload to check the saved avatar.",
+            502,
+            "invalid_response",
+        ) from error
 
 
 def parse_resource(value: object) -> Resource:

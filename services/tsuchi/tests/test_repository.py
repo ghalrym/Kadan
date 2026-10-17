@@ -1,3 +1,4 @@
+import sqlite3
 from uuid import uuid4
 
 import pytest
@@ -52,6 +53,94 @@ def create_asset(repository, key="alpha", is_image=False):
         updated_at=now,
     )
     return repository.create_asset(asset)
+
+
+def test_existing_database_adds_avatar_column_without_losing_agents(tmp_path):
+    with sqlite3.connect(tmp_path / "tsuchi.sqlite3") as db:
+        db.execute(
+            "CREATE TABLE agents (key TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO agents VALUES (?, ?, ?)",
+            ("alpha", "Alpha", utc_now().isoformat()),
+        )
+    repository = Repository(tmp_path)
+    repository.initialize()
+    repository.initialize()
+    agent = repository.get_agent("alpha")
+    assert agent.name == "Alpha"
+    assert agent.avatar_asset_id is None
+    assert repository.create_agent(AgentInput(key="beta", name="Beta")).key == "beta"
+
+
+def test_avatar_selection_persists_after_reopening_repository(repository):
+    image = create_asset(repository, is_image=True)
+    assert repository.update_avatar("alpha", image.id).avatar_asset_id == image.id
+    reopened = Repository(repository.data_dir)
+    reopened.initialize()
+    assert reopened.get_agent("alpha").avatar_asset_id == image.id
+    assert reopened.list_agents()[0].avatar_asset_id == image.id
+    assert reopened.get_agent("beta").avatar_asset_id is None
+
+
+@pytest.mark.parametrize("invalid", ["other_agent", "file", "trashed", "missing"])
+def test_invalid_avatar_selection_keeps_current_avatar(repository, invalid):
+    current = create_asset(repository, is_image=True)
+    repository.update_avatar("alpha", current.id)
+    candidate = create_asset(
+        repository,
+        key="beta" if invalid == "other_agent" else "alpha",
+        is_image=invalid != "file",
+    )
+    if invalid == "trashed":
+        repository.trash_asset("alpha", candidate.id, candidate.version)
+    with pytest.raises(StorageError):
+        repository.update_avatar(
+            "alpha", uuid4() if invalid == "missing" else candidate.id
+        )
+    assert repository.get_agent("alpha").avatar_asset_id == current.id
+
+
+def test_clearing_avatar_keeps_image_in_library(repository):
+    image = create_asset(repository, is_image=True)
+    repository.update_avatar("alpha", image.id)
+    assert repository.update_avatar("alpha", None).avatar_asset_id is None
+    assert repository.get_agent("alpha").avatar_asset_id is None
+    assert repository.get_asset("alpha", image.id).deleted_at is None
+
+
+def test_trashing_selected_image_clears_avatar_and_restore_does_not_reselect(
+    repository,
+):
+    image = create_asset(repository, is_image=True)
+    repository.update_avatar("alpha", image.id)
+    trashed = repository.trash_asset("alpha", image.id, image.version)
+    assert repository.get_agent("alpha").avatar_asset_id is None
+    repository.restore_asset("alpha", image.id, trashed.version)
+    assert repository.get_agent("alpha").avatar_asset_id is None
+
+
+def test_rejected_trash_keeps_selected_avatar(repository):
+    image = create_asset(repository, is_image=True)
+    repository.update_avatar("alpha", image.id)
+    repository.create_resource(
+        "alpha",
+        MarkdownContent(kind="memory", title="Linked", attachment_ids=[image.id]),
+    )
+    with pytest.raises(StorageError):
+        repository.trash_asset("alpha", image.id, image.version)
+    assert repository.get_agent("alpha").avatar_asset_id == image.id
+
+
+def test_export_manifest_preserves_selected_avatar(repository):
+    image = create_asset(repository, is_image=True)
+    repository.update_avatar("alpha", image.id)
+    with repository.connect() as db:
+        manifest = repository.export_manifest(db, "alpha")
+    restored = ExportManifest.model_validate_json(manifest.model_dump_json())
+    assert restored.schema_version == 1
+    assert restored.agent.avatar_asset_id == image.id
+    assert restored.assets[0].id == image.id
 
 
 def test_namespace_lookup_cannot_read_another_agents_resource(repository):

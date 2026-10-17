@@ -16,6 +16,7 @@ from .models import (
     AssetUpdate,
     MessageAppend,
     Metadata,
+    Model,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -27,6 +28,10 @@ from .models import (
 )
 from .repository import Repository
 from .services import FileStorage, inline_media, safe_filename
+
+
+class AvatarUpdate(Model):
+    asset_id: UUID | None
 
 
 class ExportResponse(FileResponse):
@@ -52,6 +57,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents", response_model=Agent, status_code=201)
     def create_agent(value: AgentInput):
         return repository.create_agent(value)
+
+    @router.get("/agents/{key}", response_model=Agent)
+    def get_agent(key: AgentKey):
+        return repository.get_agent(key)
+
+    @router.put("/agents/{key}/avatar", response_model=Agent)
+    def update_avatar(key: AgentKey, value: AvatarUpdate):
+        return repository.update_avatar(key, value.asset_id)
 
     @router.get("/agents/{key}/stats", response_model=Stats)
     def stats(key: AgentKey):

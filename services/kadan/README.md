@@ -5,6 +5,7 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 ## Available in this prototype
 
 - Create and select agents, with each agent's records kept in its own Tsuchi namespace.
+- Choose a saved image as an agent avatar, or generate a candidate with Hikari and save it in Tsuchi before selecting it.
 - Create and edit personas, select one for a message, and reopen persisted conversations.
 - Save a note without inference, or stream a response through Hikari's `/v1/chat/completions` API when the selected language model is available.
 - Search memories and Spaces by text, browse Space children, and search file metadata or download a file.
@@ -13,6 +14,14 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending message IDs and drafts stay in browser session storage so an uncertain save can be reconciled after reload.
 
 Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. It does not execute tools or shell commands, retrieve workspace content into prompts automatically, manage authentication, edit memories or files, render slide decks, or run autonomous tasks. Workspace browsing is read-only. Files are searched by metadata, not their contents. Chat requests are limited to 100 messages and 48,000 characters; longer conversations require a new thread, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
+
+## Agent avatars
+
+Click an agent’s portrait in the header to select a saved image, return to initials, or generate a candidate. Upload existing images in Tsuchi, then refresh the picker. **Save avatar** persists the selection for that agent in Tsuchi; generation never replaces the selected avatar automatically. The picker can close while generation continues in the current page, and retains its candidate when reopened. Reloading the page loses the in-flight UI state; check the agent’s Tsuchi image library before generating again.
+
+The asset contract is one existing verified raster asset ID, or `null` for initials. Avatars and picker thumbnails decode and draw a still frame into a square canvas; animated uploads therefore remain still too. The original asset stays unchanged in Tsuchi. This is whole-image motion, not an articulated character or sprite sheet: idle portraits move at most 4 pixels and tilt at most 2 degrees toward a mouse pointer. Movement resets on blur, pointer exit, touch, and activity changes. Reduced-motion and non-hover devices disable motion. Waiting for Hikari uses a dashed ring; actual response deltas use the working ring. No voice or speaking state is inferred.
+
+Generation calls Hikari’s existing `/v1/images/generations` endpoint with one square image and its selected local model, then uploads the PNG to Tsuchi. It does not select/download a model or use a hosted generator. Hikari must already be configured for image inference. The request permits up to 30 minutes and a 20 MiB PNG; upstream failures are shown without changing the selected avatar. Closing the picker does not cancel inference. Generated composition, cropping, and likeness depend on the selected model and prompt; preview the result before saving. Trashing the selected asset in Tsuchi clears its avatar selection.
 
 ## Docker integration
 
@@ -63,7 +72,9 @@ Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 an
 | --- | --- |
 | `GET /api/health` | Coordinator liveness |
 | `GET /api/status` | Storage and inference readiness, including browser links |
-| `GET, POST /api/agents` | List or create agents |
+| `GET, POST /api/agents` | List or create agents, including the saved avatar asset ID |
+| `PUT /api/agents/{key}/avatar` | Select an active image by `asset_id`, or clear with `null` |
+| `POST /api/agents/{key}/avatar/generations` | Generate a local image from `prompt`, store it in Tsuchi, and return the unselected asset |
 | `GET, POST /api/agents/{key}/resources` | Browse/search resources; create a persona or conversation |
 | `GET, PUT /api/agents/{key}/resources/{id}` | Read a resource; update a persona with an expected version |
 | `GET /api/agents/{key}/assets` | Search active file metadata |
@@ -84,6 +95,6 @@ npm test --prefix web
 npm run build --prefix web
 ```
 
-Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
+Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing, avatar movement bounds, activity mapping, and identifier generation. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
 
 The standalone prototype was manually checked on desktop against temporary isolated storage for agent/persona creation, persona editing, conversation persistence, memory search, Space navigation and file metadata browsing. This monorepo packaging still needs owner verification with the combined Compose stack. Mobile rendering, browser download completion and real inference have not been verified. No model was downloaded or tier selected during prototype work.

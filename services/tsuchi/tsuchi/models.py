@@ -40,6 +40,7 @@ class AgentInput(Model):
 
 class Agent(AgentInput):
     created_at: datetime
+    avatar_asset_id: UUID | None = None
 
 
 class SourceLink(Model):

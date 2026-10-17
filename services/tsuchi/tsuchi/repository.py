@@ -99,6 +99,12 @@ class Repository:
                 );
                 CREATE INDEX IF NOT EXISTS activity_namespace ON activity(agent_key, sequence);
             """)
+            # Serialize the additive migration for existing storage volumes.
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
+            if "avatar_asset_id" not in columns:
+                db.execute("ALTER TABLE agents ADD COLUMN avatar_asset_id TEXT")
+            db.commit()
 
     @contextmanager
     def connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -146,11 +152,27 @@ class Repository:
             ).fetchone():
                 raise StorageError("This agent key already exists", 409)
             db.execute(
-                "INSERT INTO agents VALUES (?, ?, ?)",
+                "INSERT INTO agents (key, name, created_at) VALUES (?, ?, ?)",
                 (agent.key, agent.name, agent.created_at.isoformat()),
             )
             self._activity(db, agent.key, "created", "agent", agent.key, agent.name)
         return agent
+
+    def update_avatar(self, key: str, asset_id: UUID | None) -> Agent:
+        with self.connect(write=True) as db:
+            agent = self._agent(db, key)
+            if asset_id is not None:
+                asset = self._asset(db, key, asset_id)
+                self._active(asset)
+                if not asset.is_image:
+                    raise StorageError("Avatars must reference a verified raster image")
+            if agent.avatar_asset_id != asset_id:
+                db.execute(
+                    "UPDATE agents SET avatar_asset_id = ? WHERE key = ?",
+                    (str(asset_id) if asset_id else None, key),
+                )
+                self._activity(db, key, "avatar_updated", "agent", key, agent.name)
+            return agent.model_copy(update={"avatar_asset_id": asset_id})
 
     @staticmethod
     def _activity(
@@ -589,6 +611,10 @@ class Repository:
                 }
             )
             self._save_asset(db, updated)
+            db.execute(
+                "UPDATE agents SET avatar_asset_id = NULL WHERE key = ? AND avatar_asset_id = ?",
+                (key, str(asset_id)),
+            )
             self._activity(db, key, "trashed", "asset", str(asset_id), current.title)
             return updated
 

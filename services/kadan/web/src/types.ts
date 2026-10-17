@@ -2,6 +2,7 @@ export interface Agent {
   key: string;
   name: string;
   created_at: string;
+  avatar_asset_id: string | null;
 }
 export interface Message {
   id: string;
@@ -38,7 +39,11 @@ export interface Asset {
   updated_at: string;
 }
 export interface Status {
-  tsuchi: { state: "ready" | "unavailable"; message: string; browser_url: string | null };
+  tsuchi: {
+    state: "ready" | "unavailable";
+    message: string;
+    browser_url: string | null;
+  };
   hikari: {
     state: "ready" | "tier_required" | "model_required" | "unavailable";
     message: string;

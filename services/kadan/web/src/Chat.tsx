@@ -10,6 +10,8 @@ import Markdown from "./Markdown";
 import { agentPath, api, streamChat } from "./api";
 import type { Resource, Status } from "./types";
 import { randomUuid } from "./uuid";
+import { chatActivity } from "./avatar";
+import type { AvatarActivity } from "./avatar";
 
 interface Props {
   agentKey: string;
@@ -18,6 +20,7 @@ interface Props {
   status: Status | null;
   onChange: (value: Resource) => void;
   onBusy: (value: boolean) => void;
+  onActivity: (value: AvatarActivity) => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
@@ -44,6 +47,7 @@ export default function Chat({
   status,
   onChange,
   onBusy,
+  onActivity,
   blocked,
   refreshStatus,
 }: Props) {
@@ -89,6 +93,7 @@ export default function Chat({
     if (!draft.trim() || sending || blocked) return;
     setSending(true);
     onBusy(true);
+    onActivity(generate ? "waiting" : "working");
     setError("");
     setNotice("");
     setPartial("");
@@ -122,6 +127,7 @@ export default function Chat({
           },
           controller.current.signal,
           (event) => {
+            onActivity(chatActivity(event));
             if (event.event === "user_saved") {
               reconcileSaved(event.data.conversation);
               setDraft("");
@@ -160,6 +166,7 @@ export default function Chat({
     } finally {
       setSending(false);
       onBusy(false);
+      onActivity("idle");
       controller.current = null;
     }
   }
@@ -245,14 +252,22 @@ export default function Chat({
             <p>
               {!storageReady ? status?.tsuchi.message : status?.hikari.message}
             </p>
-            {(!storageReady ? status?.tsuchi.browser_url : status?.hikari.settings_url) && <a
-              href={(!storageReady ? status?.tsuchi.browser_url : status?.hikari.settings_url) ?? undefined}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {!storageReady ? "Open Tsuchi" : "Open Hikari Settings"}
-              <ExternalLink size={13} />
-            </a>}
+            {(!storageReady
+              ? status?.tsuchi.browser_url
+              : status?.hikari.settings_url) && (
+              <a
+                href={
+                  (!storageReady
+                    ? status?.tsuchi.browser_url
+                    : status?.hikari.settings_url) ?? undefined
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
+                {!storageReady ? "Open Tsuchi" : "Open Hikari Settings"}
+                <ExternalLink size={13} />
+              </a>
+            )}
           </div>
         )}
         {error && (
