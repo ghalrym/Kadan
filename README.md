@@ -20,17 +20,19 @@ Preparation starts only when a task reaches the FIFO head. Checkpoint conversion
 in the C++ worker. It never invokes Python. Video encoding uses FFmpeg as a codec.
 
 The API starts the inference worker without loading a model or running inference.
-Settings saves a model and context; requests load the selected model on demand.
-Selecting a different language model unloads the resident one. Checkpoint selection persists;
+Settings saves a hardware tier, which selects its language model and queues its
+downloads; requests load the tier's model on demand. Changing tiers unloads a
+resident language model of the previous tier. The tier persists;
 chat conversations stay in the browser. Native prefix reuse is currently unavailable.
 HTTP request observations and native reservations are distinct from measured
 system memory.
 
 ## Supported native capabilities
 
-- Chat: pinned Qwen3.5 small, GPT-OSS 20B and 120B (`medium`) and GLM5-next
-  large checkpoints, text messages, JSON or streaming SSE responses. GPT-OSS
-  reasoning streams inside `<think>…</think>` before the answer. Context
+- Chat: one pinned GGUF checkpoint per hardware tier (Qwen3.8 27B Q4_K_M and
+  Q8_0, Qwen3.8 Flash Next and GLM-5.3 Flash), text messages, JSON or streaming
+  SSE responses. GLM reasoning streams inside `<think>…</think>` before the
+  answer. Context
   admission uses the configured token capacity; it never silently truncates
   history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
@@ -119,7 +121,7 @@ group and command supports `--help` with its arguments and options.
 | `generate schema` / `generate client` | Run either generation step separately. |
 | `assets whisper` / `assets whisper-assets` / `assets tts-tokenizer` | Export local model assets using the API's serializers. |
 | `native build` | Compile CPU-only checkpoint inspectors and metadata planners. |
-| `native --help` | List checkpoint/model inspection and memory-planning commands. |
+| `native --help` | List checkpoint inspection and weight-cache replay commands. |
 | `infer chat` / `infer image` / `infer video` | Submit a JSON request file through the live API to its worker queue. |
 | `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
 | `infer video-status` / `infer video-cancel` / `infer video-download` | Inspect, cancel, or download a server-owned video job. |

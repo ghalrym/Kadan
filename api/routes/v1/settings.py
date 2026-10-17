@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.pydantic_models.inference_task import (
     ImageModel,
     ImageSelectionTask,
-    LlmModel,
     WhisperFormattingTask,
 )
+from api.pydantic_models.model_store import CheckpointStatus, TierId, TierModality
 from api.pydantic_models.settings import ModelSetting
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
@@ -16,9 +16,32 @@ from api.services.inference_errors import InferenceFailure
 router = APIRouter(prefix="/v1/settings", tags=["Settings"])
 
 
-class SettingsResponse(BaseModel):
-    """Expose catalog selections and the saved transcription formatting setting."""
+class TierModel(BaseModel):
+    """A tier's checkpoint for one modality, with its live download state."""
 
+    modality: TierModality
+    model: CheckpointStatus | None = Field(
+        description="Null while the tier assigns no checkpoint to this modality."
+    )
+
+
+class TierSetting(BaseModel):
+    """A selectable hardware tier and the checkpoints it downloads."""
+
+    id: TierId
+    name: str
+    vram_gb: int
+    ram_gb: int
+    models: list[TierModel]
+
+
+class SettingsResponse(BaseModel):
+    """Expose the hardware tier, catalog selections and transcription formatting."""
+
+    tier: TierId | None = Field(
+        description="The selected hardware tier; null until the user chooses one."
+    )
+    tiers: list[TierSetting]
     models: list[ModelSetting]
     whisper_formatting: bool = Field(
         description="Normalize speech transcripts with S1-mini by Superwhisper; retain raw text."
@@ -29,31 +52,54 @@ class SettingsModels(BaseModel):
     """Per-modality selections; an omitted modality is left unchanged."""
 
     model_config = ConfigDict(extra="forbid")
-    LLM: LlmModel | None = None
     Image: ImageModel | None = None
 
 
 class SettingsRequest(BaseModel):
-    """Persist supported selections and transcription formatting."""
+    """Persist the hardware tier, image selection and transcription formatting."""
 
     model_config = ConfigDict(extra="forbid")
-    models: SettingsModels
+    tier: TierId | None = None
+    license_acknowledged: bool = Field(
+        default=False,
+        description="The user read the license notices of the tier's checkpoints.",
+    )
+    models: SettingsModels = SettingsModels()
     whisper_formatting: bool | None = None
 
 
 @router.get("", operation_id="getSettings")
 def get_settings() -> SettingsResponse:
-    """Read the shared model store and return the catalog selection.
+    """Read the shared model store, including each tier's download progress.
 
-    Raise HTTP 503 if the stored selection is outside the catalog; this read does
-    not load a model or configure another modality."""
+    Raise HTTP 503 if the worker status is unavailable; this read does not load
+    a model or configure another modality."""
     try:
         status = inference.models_status()
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
+    checkpoints = {model.id: model for model in status.models}
+    tiers = [
+        TierSetting(
+            id=tier.id,
+            name=tier.name,
+            vram_gb=tier.vram_gb,
+            ram_gb=tier.ram_gb,
+            models=[
+                TierModel(
+                    modality=modality,
+                    model=checkpoints.get(model_id) if model_id is not None else None,
+                )
+                for modality, model_id in tier.models
+            ],
+        )
+        for tier in status.tiers
+    ]
     llm_options = [model.id for model in status.models if model.kind == "llm"]
     image_options = [model.id for model in status.models if model.kind == "image"]
     return SettingsResponse(
+        tier=status.selected_tier,
+        tiers=tiers,
         whisper_formatting=status.whisper_formatting,
         models=[
             ModelSetting(
@@ -74,20 +120,20 @@ def get_settings() -> SettingsResponse:
 
 @router.put(
     "",
-    description="Persist LLM and image selections in the worker model store. Selection requires a completed download and unloads a language model resident for a different checkpoint. Transcription formatting is saved without loading a model.",
+    description="Persist the hardware tier and queue downloads of its checkpoints, the image selection and transcription formatting. The tier selects the language model and unloads a resident language model of another tier after earlier chats finish.",
     operation_id="updateSettings",
 )
 async def update_settings(body: SettingsRequest) -> SettingsResponse:
-    """Persist completed LLM and image selections and return the refreshed settings.
+    """Persist settings and return the refreshed view.
 
-    The worker validates and persists selection at the queue head. An omitted
-    modality leaves its selection unchanged. Selection alone does not load
-    inference; requests load the selected model on demand. A language model
-    resident for a different checkpoint is unloaded after earlier chats finish,
-    so status never reports it. Context changes never unload."""
+    The worker validates and persists each change at the queue head; an
+    omitted field leaves its setting unchanged. Choosing a tier queues its
+    incomplete downloads in the same FIFO; poll this endpoint for progress.
+    Requests load the tier's language model on demand."""
     try:
-        if body.models.LLM is not None:
-            await inference.select_model(body.models.LLM)
+        if body.tier is not None:
+            await inference.select_tier(body.tier)
+            await inference.download_tier(body.tier, body.license_acknowledged)
         if body.models.Image is not None:
             await inference.submit(
                 ImageSelectionTask(model_id=body.models.Image),

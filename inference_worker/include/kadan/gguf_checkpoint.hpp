@@ -38,15 +38,18 @@ public:
     std::vector<bool> booleans(std::string_view key) const;
     std::vector<std::string> strings(std::string_view key) const;
     std::vector<std::int64_t> integers(std::string_view key) const;
+    std::vector<double> numbers(std::string_view key) const;
+    bool has(std::string_view key) const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
-// GGUF v3 split checkpoint. Construction reads bounded metadata only. Payload
-// access uses immutable file descriptors and bounded packed scratch.
-// Supports F32, Q8_0, Q3_K, Q4_K; no ggml graph or inference runtime is created.
+// GGUF v3 checkpoint: one unsplit file or a numbered split set. Construction
+// reads bounded metadata only. Payload access uses immutable file descriptors
+// and bounded packed scratch. Supports F32 and every gguf::Encoding; no ggml
+// graph or inference runtime is created.
 class GgufCheckpoint {
 public:
     GgufCheckpoint(const std::string& root, const std::atomic_bool& cancel);
@@ -77,6 +80,7 @@ public:
         std::span<std::byte> output,
         const std::atomic_bool& cancel
     ) const;
+    // Reads a whole F32 tensor of any rank; caller admits the output.
     void read_vector(
         std::string_view name, std::span<float> output, const std::atomic_bool& cancel
     ) const;
@@ -85,6 +89,9 @@ public:
     double number(std::string_view key) const;
     bool boolean(std::string_view key) const;
     std::vector<bool> booleans(std::string_view key) const;
+    std::vector<std::int64_t> integers(std::string_view key) const;
+    std::vector<double> numbers(std::string_view key) const;
+    bool has(std::string_view key) const;
 
 private:
     struct Impl;

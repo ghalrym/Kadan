@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_valid
 from api.pydantic_models.chat import ChatMessage
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
+from api.pydantic_models.model_store import TierId
 
 
 class TaskInput(BaseModel):
@@ -25,8 +26,13 @@ class ChatTask(TaskInput):
     reuse_prefix: bool = True
 
 
-# medium is GPT-OSS 120B; the ID predates the 20B checkpoint and stays stable.
-LlmModel = Literal["small", "gpt-oss-20b", "medium", "large", "muse-spark-open-q3-xl"]
+# One GGUF language model per hardware tier.
+LlmModel = Literal[
+    "qwen3.8-27b-q4-k-m",
+    "qwen3.8-27b-q8-0",
+    "qwen3.8-flash-next-q3-k-xl",
+    "glm-5.3-flash-q3-k-xl",
+]
 ImageModel = Literal["qwen-image-2.1", "qwen-image-2.1-turbo"]
 
 
@@ -100,9 +106,9 @@ class DownloadTask(TaskInput):
     license_acknowledged: bool = False
 
 
-class ModelSelectionTask(TaskInput):
-    feature: Literal["model_selection"] = "model_selection"
-    model_id: str
+class TierSelectionTask(TaskInput):
+    feature: Literal["tier_selection"] = "tier_selection"
+    tier: TierId
 
 
 class ModelContextTask(TaskInput):
@@ -135,7 +141,7 @@ InferenceInput = Annotated[
     | TranscriptionFormattingTask
     | VideoTask
     | DownloadTask
-    | ModelSelectionTask
+    | TierSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
     | WhisperFormattingTask
@@ -165,7 +171,7 @@ class InferenceTask(BaseModel):
     @model_validator(mode="after")
     def validate_operation(self):
         settings = self.feature in (
-            "model_selection",
+            "tier_selection",
             "model_context",
             "whisper_selection",
             "whisper_formatting",

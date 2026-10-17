@@ -113,8 +113,7 @@ inline constexpr Bytes gguf_projection_reserve_bytes =
     gguf_projection_staging_bytes + projection_status_bytes;
 
 inline std::size_t gguf_projection_row_bytes(std::size_t in, gguf::Encoding encoding) {
-    if (encoding != gguf::Encoding::q3_k && encoding != gguf::Encoding::q4_k
-        && encoding != gguf::Encoding::q8_0)
+    if (!gguf::supported(encoding))
         throw std::invalid_argument("gguf_projection_encoding");
     const auto values = gguf::block_values(encoding),
                bytes = gguf::block_bytes(encoding);

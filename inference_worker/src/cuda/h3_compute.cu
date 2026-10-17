@@ -1126,9 +1126,7 @@ class Compute final : public H3Compute {
         require(
             !packed_source
                 || (std::is_same_v<Weight, float> && !source && !convolution
-                    && (encoding == gguf::Encoding::q3_k
-                        || encoding == gguf::Encoding::q4_k
-                        || encoding == gguf::Encoding::q8_0)
+                    && gguf::supported(encoding)
                     && in % gguf::block_values(encoding) == 0),
             "h3_cuda_gguf_shape"
         );

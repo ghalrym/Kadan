@@ -137,8 +137,8 @@ struct DownloadRequest {
     bool license_acknowledged = false;
 };
 
-struct ModelSelectionRequest {
-    std::string model;
+struct TierSelectionRequest {
+    std::string tier;
 };
 
 struct ContextRequest {
@@ -167,7 +167,7 @@ using TaskInput = std::variant<
     TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
-    ModelSelectionRequest,
+    TierSelectionRequest,
     ContextRequest,
     WhisperSelectionRequest,
     WhisperFormattingRequest,

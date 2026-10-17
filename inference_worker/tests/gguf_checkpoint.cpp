@@ -139,21 +139,34 @@ public:
                / (split == 0 ? "muse-00001-of-00002.gguf" : "muse-00002-of-00002.gguf");
     }
 
-    void
-    write(unsigned split, const std::vector<Tensor>& tensors, std::uint32_t total = 4) {
+    // An unsplit file has no split keys and its own, unnumbered name.
+    void write(
+        unsigned split,
+        const std::vector<Tensor>& tensors,
+        std::uint32_t total = 4,
+        bool single = false
+    ) {
         Bytes b;
         append(b, 0x46554747, 4);
         append(b, 3, 4);
         append(b, tensors.size(), 8);
-        append(b, 10, 8);
+        append(b, single ? 8 : 11, 8);
         auto integer = [&](std::string_view key, std::uint32_t value) {
             text(b, key);
             append(b, 4, 4);
             append(b, value, 4);
         };
-        integer("split.no", split);
-        integer("split.count", 2);
-        integer("split.tensors.count", total);
+        if (!single) {
+            integer("split.no", split);
+            integer("split.count", 2);
+            integer("split.tensors.count", total);
+        }
+        text(b, "muse-spark.hash_offsets");
+        append(b, 9, 4);
+        append(b, 10, 4);
+        append(b, 2, 8);
+        append(b, 0, 8);
+        append(b, 300001275, 8);
         text(b, "general.architecture");
         append(b, 8, 4);
         text(b, "muse-spark");
@@ -200,7 +213,7 @@ public:
             while ((b.size() - begin) % 32)
                 b.push_back(0);
         }
-        std::ofstream out(file(split), std::ios::binary);
+        std::ofstream out(single ? root / "model.gguf" : file(split), std::ios::binary);
         out.write(reinterpret_cast<const char*>(b.data()), b.size());
     }
 };
@@ -633,6 +646,51 @@ void metadata_failures() {
     fails([&] { GgufMetadata bad(f.file(0), cancel); }, "gguf_header_count");
 }
 
+void single_file_tensors() {
+    Fixture f;
+    // Q6_K, IQ4_NL and BF16 rows; payload values are decoded by ggml.
+    Bytes q6(210), iq4(18), bf16;
+    q6[208] = 0x00;
+    q6[209] = 0x3c;  // d = 1
+    q6[192] = 2;     // scales for elements 0-15 and 64-79
+    q6[196] = 2;
+    q6[0] = 0x21;  // codes 1 and 2 before the -32 offset
+    iq4[0] = 0x00;
+    iq4[1] = 0x3c;
+    for (float v : {1.f, -2.f})
+        append(bf16, std::bit_cast<std::uint32_t>(v) >> 16, 2);
+    f.write(
+        0,
+        {{"q6", 14, {256, 1}, q6},
+         {"iq4", 20, {32, 1}, iq4},
+         {"bf16", 30, {2, 1}, bf16},
+         {"conv", 0, {2, 1, 2}, f32({1, 2, 3, 4})}},
+        4,
+        true
+    );
+    const std::atomic_bool cancel{false};
+    GgufCheckpoint checkpoint(f.root, cancel);
+    check(checkpoint.tensor_count() == 4);
+    check(checkpoint.has("muse-spark.hash_offsets") && !checkpoint.has("split.no"));
+    const auto offsets = checkpoint.integers("muse-spark.hash_offsets");
+    check(offsets.size() == 2 && offsets[1] == 300001275);
+    std::array<float, 256> q6_row{};
+    checkpoint.read_rows("q6", 0, 0, q6_row, cancel);
+    check(q6_row[0] == 2.f * float(1 - 32) && q6_row[64] == 2.f * float(2 - 32));
+    std::array<float, 32> iq4_row{};
+    checkpoint.read_rows("iq4", 0, 0, iq4_row, cancel);
+    check(iq4_row[0] == -127.f);
+    std::array<float, 2> bf16_row{};
+    checkpoint.read_rows("bf16", 0, 0, bf16_row, cancel);
+    check(bf16_row[0] == 1.f && bf16_row[1] == -2.f);
+    // Small F32 tensors of any rank are read whole.
+    std::array<float, 4> conv{};
+    checkpoint.read_vector("conv", conv, cancel);
+    check(conv[0] == 1.f && conv[3] == 4.f);
+    std::array<float, 3> wrong{};
+    fails([&] { checkpoint.read_vector("conv", wrong, cancel); }, "gguf_vector_shape");
+}
+
 void packed_f32_payload() {
     Fixture f;
     const auto bytes = f32({1, -2, std::numeric_limits<float>::infinity(), 4});
@@ -659,6 +717,7 @@ int main() {
         reader_rows();
         reader_batched_rows();
         packed_f32_payload();
+        single_file_tensors();
         metadata_failures();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
