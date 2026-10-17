@@ -15,6 +15,24 @@ CELL = (192, 208)
 SOURCE_CELL = (384, 416)
 BACKGROUND = (255, 0, 255)
 COLUMNS = 8
+LOOK_DIRECTIONS = (
+    "straight up toward the top edge of the image, chin raised and pupils upward",
+    "mostly up and slightly right, chin raised and pupils toward the upper right",
+    "diagonally up and right toward the top-right corner of the image",
+    "mostly right and slightly up, toward the upper part of the right image edge",
+    "straight right toward the right edge of the image, nose and pupils turned right",
+    "mostly right and slightly down, toward the lower part of the right image edge",
+    "diagonally down and right toward the bottom-right corner of the image",
+    "mostly down and slightly right, chin lowered and pupils toward the lower right",
+    "straight down toward the bottom edge of the image, chin lowered and pupils downward",
+    "mostly down and slightly left, chin lowered and pupils toward the lower left",
+    "diagonally down and left toward the bottom-left corner of the image",
+    "mostly left and slightly down, toward the lower part of the left image edge",
+    "straight left toward the left edge of the image, nose and pupils turned left",
+    "mostly left and slightly up, toward the upper part of the left image edge",
+    "diagonally up and left toward the top-left corner of the image",
+    "mostly up and slightly left, chin raised and pupils toward the upper left",
+)
 
 
 class PetRow(BaseModel):
@@ -171,8 +189,9 @@ ROWS = (
             durations=(150,) * 8,
             angles=tuple((half * 8 + step) * 22.5 for step in range(8)),
             poses=tuple(
-                f"body facing front, head and eyes looking {angle:g} degrees clockwise from up"
-                for angle in ((half * 8 + step) * 22.5 for step in range(8))
+                f"body facing front, turn the head and direct both eyes {direction}. "
+                "The gaze must visibly follow that screen direction rather than look at the viewer"
+                for direction in LOOK_DIRECTIONS[half * 8 : (half + 1) * 8]
             ),
         )
         for half in range(2)
