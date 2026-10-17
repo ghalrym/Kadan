@@ -64,11 +64,35 @@ void residual_rounding_and_rows() {
         == 1.0078125f
     );
 }
+
+void batch_modulation_keeps_samples_independent() {
+    using namespace kadan::image::detail;
+    auto first = at::tensor({-3.f, -1.f, 1.f, 3.f}).to(at::kBFloat16).repeat({3, 1});
+    auto second = at::tensor({4.f, -2.f, 7.f, 1.f}).to(at::kBFloat16).repeat({3, 1});
+    auto values = at::stack({first, second});
+    auto scales = at::tensor({2.f, 3.f}).reshape({2, 1});
+    const auto normalized = aten_modulated_norm(values, scales, 1);
+    check(at::equal(normalized[0], aten_modulated_norm(first, scales, 1)));
+    check(at::equal(normalized[1], aten_modulated_norm(second, scales, 1)));
+    auto gate = at::tensor({.5f, -.5f}).to(at::kBFloat16).reshape({2, 1});
+    const auto result = aten_gated_residual(values.clone(), normalized, gate, 1);
+    check(
+        at::equal(result[0], aten_gated_residual(first.clone(), normalized[0], gate, 1))
+    );
+    check(
+        at::equal(
+            result[1], aten_gated_residual(second.clone(), normalized[1], gate, 1)
+        )
+    );
+    const auto image_only = aten_modulated_norm(values.slice(1, 1), scales, 0);
+    check(at::equal(image_only, normalized.slice(1, 1)));
+}
 }  // namespace
 
 int main() {
     normalization_rounding_and_rows();
     residual_rounding_and_rows();
+    batch_modulation_keeps_samples_independent();
     std::cout
         << "image ATen modulation arithmetic units passed (CPU only, no inference)\n";
 }

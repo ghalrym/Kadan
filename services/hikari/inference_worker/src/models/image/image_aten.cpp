@@ -35,11 +35,12 @@ Tensor rms_heads(Stage& stage, const std::string& name, const Tensor& x) {
 }
 
 Tensor heads(const Tensor& x, std::int64_t count) {
-    return x.reshape({1, x.size(0), count, 128}).transpose(1, 2);
+    return x.reshape({x.dim() == 3 ? x.size(0) : 1, x.size(-2), count, 128})
+        .transpose(1, 2);
 }
 
 Tensor unheads(const Tensor& x) {
-    return x.transpose(1, 2).reshape({x.size(2), -1});
+    return x.transpose(1, 2).reshape({x.size(0), x.size(2), -1});
 }
 
 Tensor text_rope(const Tensor& x, const Tensor& cosine, const Tensor& sine) {
@@ -109,7 +110,7 @@ Tensor encode_text(
         q = text_rope(q, cosine, sine);
         k = text_rope(k, cosine, sine);
         auto mix = at::scaled_dot_product_attention(q, k, v, {}, 0., true, {}, true);
-        x = x + stage.linear(p + "self_attn.o_proj", unheads(mix));
+        x = x + stage.linear(p + "self_attn.o_proj", unheads(mix).squeeze(0));
         normalized = stage.rms(p + "post_attention_layernorm", x);
         auto gate = at::silu(stage.linear(p + "mlp.gate_proj", normalized));
         auto up = stage.linear(p + "mlp.up_proj", normalized);
@@ -130,11 +131,13 @@ struct Rotary {
     Tensor cosine, sine;
 };
 
-Rotary
-image_rotary(const ImageReferenceLayout& layout, const at::TensorOptions& options) {
+Rotary image_rotary(
+    const std::vector<std::array<std::int64_t, 3>>& coordinates,
+    const at::TensorOptions& options
+) {
     auto positions = at::from_blob(
-                         const_cast<std::int64_t*>(layout.positions.front().data()),
-                         {std::int64_t(layout.positions.size()), 3},
+                         const_cast<std::int64_t*>(coordinates.front().data()),
+                         {std::int64_t(coordinates.size()), 3},
                          at::kLong
     )
                          .to(options);
@@ -151,7 +154,8 @@ image_rotary(const ImageReferenceLayout& layout, const at::TensorOptions& option
 }
 
 Tensor rotate_image(const Tensor& input, const Rotary& rotary) {
-    auto pairs = input.to(at::kFloat).reshape({1, 32, input.size(2), 64, 2});
+    auto pairs =
+        input.to(at::kFloat).reshape({input.size(0), 32, input.size(2), 64, 2});
     auto a = pairs.select(-1, 0), b = pairs.select(-1, 1);
     return at::stack(
                {a * rotary.cosine - b * rotary.sine,
@@ -162,19 +166,21 @@ Tensor rotate_image(const Tensor& input, const Rotary& rotary) {
         .to(input.scalar_type());
 }
 
-Tensor denoise(
+Tensor denoise_batch(
     Stage& stage,
     Tensor latent_cpu,
     const Tensor& source_cpu,
-    const Tensor& condition_cpu,
-    const ImagePrompt& prompt,
+    const std::vector<Tensor>& conditions_cpu,
+    std::span<const ImagePrompt> prompts,
     std::int64_t h,
     std::int64_t w,
-    const ImageRequest& request,
+    std::span<const ImageRequest> requests,
     const ImageCheckpointConfig& config,
     const std::atomic_bool& cancel,
     const Generator::Hook& hook
 ) {
+    const auto& request = requests.front();
+    const auto batch = std::int64_t(requests.size());
     auto options =
         at::TensorOptions().device(at::kCUDA, stage.device).dtype(at::kFloat);
     auto latent = latent_cpu.to(options.device());
@@ -206,36 +212,70 @@ Tensor denoise(
             inverse_mask = 1.f - mask;
         }
     }
-    auto condition = condition_cpu.to(options.device(), at::kBFloat16);
-    auto projected = stage.linear(
-        "txt_in.out_layer",
-        at::gelu(
-            stage.linear(
-                "txt_in.in_layer", stage.rms("txt_in.text_norm", condition, true)
-            ),
-            "tanh"
-        )
-    );
-    const auto layout = image_reference_layout(
-        condition.size(0),
-        request.reference ? std::int64_t(prompt.image_start - prompt.prefix) : 0,
-        request.reference ? prompt.image_count : 0,
-        request.source_height / 16,
-        request.source_width / 16,
-        h,
-        w
-    );
-    if (request.reference) {
-        const auto start = std::int64_t(prompt.image_start - prompt.prefix);
-        projected = at::cat(
-            {projected.slice(0, 0, start),
-             stage.linear("img_in", source_cpu.to(options.device(), at::kBFloat16)),
-             projected.slice(0, start + prompt.image_count)},
-            0
-        );
+    std::vector<ImageReferenceLayout> layouts;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& prompt = prompts[i];
+        layouts.push_back(image_reference_layout(
+            conditions_cpu[i].size(0),
+            request.reference ? std::int64_t(prompt.image_start - prompt.prefix) : 0,
+            request.reference ? prompt.image_count : 0,
+            request.source_height / 16,
+            request.source_width / 16,
+            h,
+            w
+        ));
     }
+    const auto layout = image_batch_reference_layout(std::move(layouts));
     const auto prefix_tokens = layout.prefix;
-    auto all_rotary = image_rotary(layout, options);
+    std::vector<Tensor> projections, cosines, sines;
+    Tensor key_mask;
+    if (layout.padded) {
+        auto host_mask = at::empty({batch, 1, 1, prefix_tokens + h * w}, at::kBool);
+        for (std::int64_t i = 0; i < batch; ++i)
+            std::copy(
+                layout.items[i].valid_keys.begin(),
+                layout.items[i].valid_keys.end(),
+                host_mask[i].data_ptr<bool>()
+            );
+        key_mask = host_mask.to(options.device());
+    }
+    for (std::int64_t i = 0; i < batch; ++i) {
+        auto condition = conditions_cpu[i].to(options.device(), at::kBFloat16);
+        auto projected = stage.linear(
+            "txt_in.out_layer",
+            at::gelu(
+                stage.linear(
+                    "txt_in.in_layer", stage.rms("txt_in.text_norm", condition, true)
+                ),
+                "tanh"
+            )
+        );
+        if (request.reference) {
+            const auto start = std::int64_t(prompts[i].image_start - prompts[i].prefix);
+            projected = at::cat(
+                {projected.slice(0, 0, start),
+                 stage.linear("img_in", source_cpu.to(options.device(), at::kBFloat16)),
+                 projected.slice(0, start + prompts[i].image_count)},
+                0
+            );
+        }
+        const auto prefix = layout.items[i].valid_prefix;
+        projections.push_back(
+            at::cat(
+                {projected,
+                 at::zeros({prefix_tokens - prefix, 4096}, projected.options())},
+                0
+            )
+        );
+        auto rotary = image_rotary(layout.items[i].positions, options);
+        cosines.push_back(rotary.cosine);
+        sines.push_back(rotary.sine);
+    }
+    auto projected = at::stack(projections);
+    projections.clear();
+    Rotary all_rotary{at::cat(cosines, 0), at::cat(sines, 0)};
+    cosines.clear();
+    sines.clear();
     Rotary image_only{
         all_rotary.cosine.slice(2, prefix_tokens),
         all_rotary.sine.slice(2, prefix_tokens)
@@ -261,7 +301,7 @@ Tensor denoise(
         auto activated_time = at::silu(time);
         detail::AtenModulation modulation(stage.linear("modulation.1", activated_time));
         auto image = stage.linear("img_in", latent.to(at::kBFloat16));
-        Tensor x = step ? image : at::cat({projected, image}, 0);
+        Tensor x = step ? image : at::cat({projected, image}, 1);
         const auto prefix = step ? 0 : prefix_tokens;
         const auto& rotary = step ? image_only : all_rotary;
         if (hook)
@@ -289,34 +329,51 @@ Tensor denoise(
             if (!step) {
                 prefix_k[layer] = k.slice(2, 0, prefix_tokens).clone();
                 prefix_v[layer] = v.slice(2, 0, prefix_tokens).clone();
-                std::vector<Tensor> attention;
-                for (const auto& segment : layout.segments) {
-                    Tensor mask;
-                    if (segment.text && segment.start) {
-                        mask = at::arange(segment.end, options).unsqueeze(0)
-                               <= at::arange(segment.start, segment.end, options)
-                                      .unsqueeze(1);
+                // Prefix segments have different lengths in each prompt. Keep
+                // their causal/reference semantics, then denoise all images in
+                // one batched attention call with padding excluded from keys.
+                auto prefix_mix =
+                    at::zeros({batch, 32, prefix_tokens, 128}, v.options());
+                for (std::int64_t i = 0; i < batch; ++i) {
+                    for (const auto& segment : layout.items[i].segments) {
+                        Tensor mask;
+                        if (segment.text && segment.start) {
+                            mask = at::arange(segment.end, options).unsqueeze(0)
+                                   <= at::arange(segment.start, segment.end, options)
+                                          .unsqueeze(1);
+                        }
+                        prefix_mix.slice(0, i, i + 1)
+                            .slice(2, segment.start, segment.end)
+                            .copy_(
+                                at::scaled_dot_product_attention(
+                                    q.slice(0, i, i + 1)
+                                        .slice(2, segment.start, segment.end),
+                                    k.slice(0, i, i + 1).slice(2, 0, segment.end),
+                                    v.slice(0, i, i + 1).slice(2, 0, segment.end),
+                                    mask.defined() ? std::optional<Tensor>(mask)
+                                                   : std::nullopt,
+                                    0.,
+                                    segment.text && segment.start == 0
+                                )
+                            );
                     }
-                    attention.push_back(
-                        at::scaled_dot_product_attention(
-                            q.slice(2, segment.start, segment.end),
-                            k.slice(2, 0, segment.end),
-                            v.slice(2, 0, segment.end),
-                            mask.defined() ? std::optional<Tensor>(mask) : std::nullopt,
-                            0.,
-                            segment.text && segment.start == 0
-                        )
-                    );
                 }
-                attention.push_back(
-                    at::scaled_dot_product_attention(q.slice(2, prefix_tokens), k, v)
+                mix = at::cat(
+                    {prefix_mix,
+                     at::scaled_dot_product_attention(
+                         q.slice(2, prefix_tokens),
+                         k,
+                         v,
+                         layout.padded ? std::optional<Tensor>(key_mask) : std::nullopt
+                     )},
+                    2
                 );
-                mix = at::cat(attention, 2);
             } else {
                 mix = at::scaled_dot_product_attention(
                     q,
                     at::cat({prefix_k[layer], k}, 2),
-                    at::cat({prefix_v[layer], v}, 2)
+                    at::cat({prefix_v[layer], v}, 2),
+                    layout.padded ? std::optional<Tensor>(key_mask) : std::nullopt
                 );
             }
             x = detail::aten_gated_residual(
@@ -340,7 +397,7 @@ Tensor denoise(
         auto scale = stage.linear("norm_out.linear", activated_time.slice(0, 0, 1))
                          .to(at::kFloat)
                          .add(1);
-        auto normalized = detail::aten_modulated_norm(x.slice(0, prefix), scale, 0);
+        auto normalized = detail::aten_modulated_norm(x.slice(1, prefix), scale, 0);
         auto velocity = stage.linear("proj_out", normalized).to(at::kFloat);
         latent = latent + velocity * (times.sigma[step + 1] - times.sigma[step]);
         if (mask.defined()) {
@@ -824,31 +881,177 @@ void AtenGenerator::prepare(
     }
 }
 
+void AtenGenerator::prepare_batch(
+    std::span<const ImageRequest> requests, const std::atomic_bool& cancel
+) {
+    need(!requests.empty(), "image_batch_empty");
+    std::size_t tokens = 0;
+    for (const auto& request : requests) {
+        need(
+            requests.size() == 1 || Generator::compatible(requests.front(), request),
+            "image_batch_incompatible"
+        );
+        prepare(request, cancel);
+        auto prompt = prepare_image_prompt(
+            model_->tokenizer,
+            request.prompt,
+            cancel,
+            request.reference ? request.source_width : 0,
+            request.reference ? request.source_height : 0
+        );
+        tokens = std::max(tokens, prompt.count - prompt.prefix - prompt.image_count);
+    }
+    if (requests.size() == 1)
+        return;
+    const auto& request = requests.front();
+    const auto points = request.height / 16 * (request.width / 16);
+    const auto reference =
+        request.reference ? request.source_height / 16 * (request.source_width / 16)
+                          : 0;
+    const auto& inventory = *model_->denoiser;
+    (void)aten_stage_plan(
+        stage_snapshot(*resources_, devices_),
+        devices_,
+        inventory.bytes,
+        inventory.largest,
+        aten_batch_workspace(points, tokens, reference, requests.size())
+    );
+}
+
+std::size_t AtenGenerator::admissible_batch_size(
+    const ImageRequest& request, std::size_t limit, const std::atomic_bool& cancel
+) {
+    stop(cancel);
+    if (!limit)
+        return 0;
+    if (!model_ || (!request.source.empty() && !request.reference)
+        || !request.mask.empty())
+        return 1;
+    const auto points = request.height / 16 * (request.width / 16);
+    const auto reference =
+        request.reference ? request.source_height / 16 * (request.source_width / 16)
+                          : 0;
+    const auto prompt = prepare_image_prompt(
+        model_->tokenizer,
+        request.prompt,
+        cancel,
+        request.reference ? request.source_width : 0,
+        request.reference ? request.source_height : 0
+    );
+    const auto tokens = prompt.count - prompt.prefix - prompt.image_count;
+    const auto& inventory = *model_->denoiser;
+    auto snapshot = stage_snapshot(*resources_, devices_);
+    std::size_t admitted = 1;
+    // Collection capacity is provisional: estimate the head request, then
+    // prepare_batch admits the longest actual prompt before each execution.
+    // The owner shrinks and retries candidates when that full plan cannot fit.
+    for (std::size_t count = 2; count <= limit; ++count) {
+        stop(cancel);
+        try {
+            (void)aten_stage_plan(
+                snapshot,
+                devices_,
+                inventory.bytes,
+                inventory.largest,
+                aten_batch_workspace(points, tokens, reference, count)
+            );
+            admitted = count;
+        } catch (const ResourceExhausted&) {
+            break;
+        }
+    }
+    return admitted;
+}
+
 void AtenGenerator::generate(
     const ImageRequest& request,
     std::span<float> output,
     const std::atomic_bool& cancel,
     const Generator::Hook& hook
 ) {
+    generate_batch(
+        {&request, 1},
+        {&output, 1},
+        cancel,
+        [&](std::size_t, const char* event, std::size_t value) {
+            if (hook)
+                hook(event, value);
+        }
+    );
+}
+
+void AtenGenerator::generate_batch(
+    std::span<const ImageRequest> requests,
+    std::span<const std::span<float>> outputs,
+    const std::atomic_bool& cancel,
+    const Generator::BatchHook& batch_hook
+) {
     need(bool(model_), "image_generator_not_loaded");
-    Generator::validate(request);
-    need(output.size() == request.width * request.height * 4, "image_output_shape");
+    need(!requests.empty() && requests.size() == outputs.size(), "image_batch_shape");
+    const auto& request = requests.front();
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        Generator::validate(requests[i]);
+        need(
+            outputs[i].size() == requests[i].width * requests[i].height * 4,
+            "image_output_shape"
+        );
+        need(
+            requests.size() == 1 || Generator::compatible(request, requests[i]),
+            "image_batch_incompatible"
+        );
+    }
     stop(cancel);
+    measurement_ = {};
+    measurement_.images = requests.size();
+    measurement_.peak_allocated.resize(resources_->snapshot().capacity.size());
+    measurement_.peak_reserved.resize(measurement_.peak_allocated.size());
+    measurement_.baseline_allocated.resize(measurement_.peak_allocated.size());
+    measurement_.baseline_reserved.resize(measurement_.peak_allocated.size());
+    measurement_.additional_image.resize(measurement_.peak_allocated.size());
+    measurement_.baseline_allocated[0] = resources_->snapshot().used[0];
+    measurement_.baseline_reserved[0] = measurement_.baseline_allocated[0];
+    at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
+    for (const auto device : devices_) {
+        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+        measurement_.baseline_allocated[device + 1] = stats.allocated_bytes[0].current;
+        measurement_.baseline_reserved[device + 1] = stats.reserved_bytes[0].current;
+    }
+    const auto indexed_hook = [&](std::size_t index) -> Generator::Hook {
+        return [&, index](const char* event, std::size_t value) {
+            if (batch_hook)
+                batch_hook(index, event, value);
+        };
+    };
+    const Generator::Hook hook = [&](const char* event, std::size_t value) {
+        for (std::size_t i = 0; i < requests.size(); ++i)
+            if (batch_hook)
+                batch_hook(i, event, value);
+    };
     if (!request.source.empty() && !request.reference && request.strength == 0) {
-        std::copy(request.source.begin(), request.source.end(), output.begin());
+        std::copy(
+            request.source.begin(), request.source.end(), outputs.front().begin()
+        );
         return;
     }
     c10::InferenceMode inference;
     ArithmeticScope arithmetic;
     auto& m = *model_;
-    auto prompt = prepare_image_prompt(
-        m.tokenizer,
-        request.prompt,
-        cancel,
-        request.reference ? request.source_width : 0,
-        request.reference ? request.source_height : 0
-    );
-    const auto count = prompt.count, drop = prompt.prefix;
+    std::vector<ImagePrompt> prompts;
+    std::size_t count = 0, text_tokens = 0;
+    for (const auto& item : requests) {
+        prompts.push_back(prepare_image_prompt(
+            m.tokenizer,
+            item.prompt,
+            cancel,
+            item.reference ? item.source_width : 0,
+            item.reference ? item.source_height : 0
+        ));
+        const auto& prompt = prompts.back();
+        count = std::max(count, prompt.count);
+        text_tokens =
+            std::max(text_tokens, prompt.count - prompt.prefix - prompt.image_count);
+    }
+    const auto& prompt = prompts.front();
     const auto h = request.height / 16, w = request.width / 16, points = h * w;
     const auto reference_points =
         request.reference ? (request.source_height / 16) * (request.source_width / 16)
@@ -870,7 +1073,8 @@ void AtenGenerator::generate(
             m.encoder(cancel),
             aten_stage_workspace(AtenImageStage::vae_encoder, source_points, 0),
             cancel,
-            aten_tiled_vae_workspace(AtenImageStage::vae_encoder, source_points)
+            aten_tiled_vae_workspace(AtenImageStage::vae_encoder, source_points),
+            &measurement_
         );
         stage_timing("load", "vae_encoder", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
@@ -897,7 +1101,9 @@ void AtenGenerator::generate(
                 reference_points,
                 prompt.image_count
             ),
-            cancel
+            cancel,
+            0,
+            &measurement_
         );
         stage_timing("load", "vision", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
@@ -916,7 +1122,7 @@ void AtenGenerator::generate(
         stage.close();
         stage_timing("unload", "vision", stage.device, started);
     }
-    Tensor condition;
+    std::vector<Tensor> conditions;
     {
         auto started = Clock::now();
         Stage stage(
@@ -924,15 +1130,24 @@ void AtenGenerator::generate(
             devices_,
             *m.text,
             aten_stage_workspace(AtenImageStage::text, points, count),
-            cancel
+            cancel,
+            0,
+            &measurement_
         );
         stage_timing("load", "text", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
         started = Clock::now();
-        condition =
-            encode_text(stage, prompt, vision ? &*vision : nullptr, cancel, hook)
-                .slice(0, drop)
-                .contiguous();
+        for (std::size_t i = 0; i < requests.size(); ++i) {
+            conditions.push_back(encode_text(
+                                     stage,
+                                     prompts[i],
+                                     vision ? &*vision : nullptr,
+                                     cancel,
+                                     indexed_hook(i)
+            )
+                                     .slice(0, prompts[i].prefix)
+                                     .contiguous());
+        }
         stage.sync();
         stage_timing("generation", "text", stage.device, started);
         started = Clock::now();
@@ -942,37 +1157,46 @@ void AtenGenerator::generate(
     vision.reset();
     // Preserve Kadan's seed/noise contract. A shared replay tensor is needed for
     // elementwise comparison to PyTorch CPU CHW noise in the reference harness.
-    auto latent = at::empty({std::int64_t(points), 64}, at::kFloat);
-    seed_image_latent(
-        {latent.data_ptr<float>(), std::size_t(latent.numel())}, request.seed, cancel
+    auto latent = at::empty(
+        {std::int64_t(requests.size()), std::int64_t(points), 64}, at::kFloat
     );
+    for (std::size_t i = 0; i < requests.size(); ++i)
+        seed_image_latent(
+            {latent[i].data_ptr<float>(), points * 64}, requests[i].seed, cancel
+        );
     {
         auto started = Clock::now();
         Stage stage(
             *resources_,
             devices_,
             *m.denoiser,
-            aten_stage_workspace(
-                AtenImageStage::denoiser,
-                points,
-                count - drop - prompt.image_count,
-                !request.source.empty() && !request.reference,
-                reference_points
-            ),
-            cancel
+            requests.size() == 1
+                ? aten_stage_workspace(
+                      AtenImageStage::denoiser,
+                      points,
+                      text_tokens,
+                      !request.source.empty() && !request.reference,
+                      reference_points
+                  )
+                : aten_batch_workspace(
+                      points, text_tokens, reference_points, requests.size()
+                  ),
+            cancel,
+            0,
+            &measurement_
         );
         stage_timing("load", "denoiser", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
         started = Clock::now();
-        latent = denoise(
+        latent = denoise_batch(
             stage,
             latent,
             source,
-            condition,
-            prompt,
+            conditions,
+            prompts,
             h,
             w,
-            request,
+            requests,
             m.config,
             cancel,
             hook
@@ -989,23 +1213,29 @@ void AtenGenerator::generate(
             *resources_,
             devices_,
             *m.vae,
-            aten_stage_workspace(AtenImageStage::vae, points, count - drop),
+            aten_stage_workspace(AtenImageStage::vae, points, text_tokens),
             cancel,
-            aten_tiled_vae_workspace(AtenImageStage::vae, points)
+            aten_tiled_vae_workspace(AtenImageStage::vae, points),
+            &measurement_
         );
         stage_timing("load", "vae", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
         started = Clock::now();
-        auto decoded = decode(stage, latent, h, w, m.config, cancel, hook);
-        stage.sync();
+        for (std::size_t i = 0; i < requests.size(); ++i) {
+            auto decoded =
+                decode(stage, latent[i], h, w, m.config, cancel, indexed_hook(i));
+            stage.sync();
+            std::copy_n(
+                decoded.data_ptr<float>(), outputs[i].size(), outputs[i].data()
+            );
+        }
         stage_timing("generation", "vae", stage.device, started);
-        std::copy_n(decoded.data_ptr<float>(), output.size(), output.data());
         started = Clock::now();
         stage.close();
         stage_timing("unload", "vae", stage.device, started);
     }
     if (!request.mask.empty())
-        composite_image_edit(output, request.source, request.mask);
+        composite_image_edit(outputs.front(), request.source, request.mask);
     stop(cancel);
 }
 }  // namespace kadan::image

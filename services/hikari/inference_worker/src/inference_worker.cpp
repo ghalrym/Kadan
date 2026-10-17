@@ -230,7 +230,6 @@ int serve(const char* lock_path) {
     PhysicalMemory memory;
     Output output;
     std::string active;
-    int failure_status = 502;
     ModelStore store(
         std::filesystem::path(lock_path).parent_path().parent_path(),
         worker_data_directory(),
@@ -259,7 +258,19 @@ int serve(const char* lock_path) {
         case Workload::llm:
             return chat_engine(resources, progress, content, store);
         case Workload::image:
-            return image_engine(resources, progress);
+            return image_engine(
+                resources,
+                progress,
+                [&](const std::string& id, const char* phase, std::size_t value) {
+                    output.send(
+                        {{"id", id},
+                         {"state", "progress"},
+                         {"phase", phase},
+                         {"value", value}}
+                    );
+                },
+                [&] { return memory.probe(); }
+            );
         case Workload::video:
             return video_engine(resources, progress);
         case Workload::speech:
@@ -284,9 +295,8 @@ int serve(const char* lock_path) {
         if (state == JobState::succeeded) {
             message["result"] = result;
         } else if (state == JobState::failed) {
-            message["error"] = result.is_object() ? result.at("error") : result;
-            message["status_code"] =
-                result.is_object() ? result.at("status_code") : Json(failure_status);
+            message["error"] = result.at("error");
+            message["status_code"] = result.at("status_code");
         }
         if (state == JobState::succeeded || state == JobState::failed
             || state == JobState::cancelled) {
@@ -307,13 +317,7 @@ int serve(const char* lock_path) {
     std::fill(capacity.begin(), capacity.end(), std::numeric_limits<Bytes>::max());
     auto prepare = [&](InferenceRequest& request, const std::atomic_bool& cancel) {
         active = request.id;
-        failure_status = 502;
-        try {
-            prepare_task(request, store, files, cancel);
-        } catch (const RequestError& error) {
-            failure_status = error.status;
-            throw;
-        }
+        prepare_task(request, store, files, cancel);
         Json context = nullptr;
         if (request.context) {
             const auto& limits = *request.context;

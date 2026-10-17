@@ -5,6 +5,30 @@ video, transcription and speech. It owns the FIFO, checkpoint acquisition,
 input preparation, engine lifecycle, result packaging and workspace cleanup.
 The API submits serialized Pydantic tasks and relays events and results.
 
+## Image batches
+
+Adjacent compatible image requests share one ATen denoising batch. Prompts and
+seeds may differ; dimensions, checkpoint, sampling settings and the reference
+image must match. Source-latent edits remain singleton work. Each image keeps its
+own noise, attention context and output; text conditioning and VAE decoding run
+sequentially within their shared loaded stages. GPU memory is never pooled.
+
+The oldest request waits at most ten seconds for compatible neighbors, including
+time already spent queued. A full admissible batch or an incompatible FIFO
+neighbor starts execution immediately. Each shape begins with a measured
+singleton, then may grow by one image after each successful measured batch.
+Admission checks current host and individual GPU headroom, native stage plans,
+measured peaks and incremental per-image memory. Existing count requests use the
+same bounded execution. Cancellation, progress, results and errors retain their
+request IDs.
+
+`KADAN_ATEN_IMAGE_BATCH` logs record image count, elapsed batch execution time,
+worker RSS baseline/peak and CUDA allocator peaks. Footprint arrays use host RAM
+at index zero and CUDA device N at index N+1. Component loading, generation and
+unloading remain separate `KADAN_ATEN_IMAGE_TIMING` records. These observations
+are specific to the measured shape and process lifetime; they are not a fixed
+hardware batch-size guarantee.
+
 ## Source layout
 
 `src/inference_worker.cpp` is the process entry point. Implementation files are

@@ -1306,6 +1306,21 @@ void job_units() {
         prepare_task(unknown, store, files, running);
     });
     files.cleanup(selection.id);
+    std::string oversized_prompt;
+    for (unsigned index = 0; index < 3000; ++index)
+        oversized_prompt += "狐";
+    auto oversized_image = request(
+        "oversized-image",
+        {{"feature", "image"}, {"prompt", oversized_prompt}, {"count", 1}}
+    );
+    bool prompt_rejected = false;
+    try {
+        prepare_task(oversized_image, store, files, running);
+    } catch (const RequestError& error) {
+        prompt_rejected = error.status == 422;
+    }
+    assert(prompt_rejected);
+    files.cleanup(oversized_image.id);
     auto defaulted = request(
         "defaulted-image", {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
     );

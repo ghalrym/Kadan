@@ -1,5 +1,6 @@
 #include "kadan/image_generation.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "kadan/image_aten.hpp"
@@ -105,5 +106,44 @@ void Generator::generate(
     Busy active(busy_);
     stop(cancel);
     aten_->generate(request, output, cancel, hook);
+}
+
+bool Generator::compatible(const ImageRequest& a, const ImageRequest& b) {
+    return a.width == b.width && a.height == b.height && a.steps == b.steps
+           && a.reference == b.reference && a.source_width == b.source_width
+           && a.source_height == b.source_height && a.mask.empty() && b.mask.empty()
+           && (a.source.empty() || a.reference) && (b.source.empty() || b.reference)
+           && a.source.size() == b.source.size()
+           && std::equal(a.source.begin(), a.source.end(), b.source.begin());
+}
+
+void Generator::prepare_batch(
+    std::span<const ImageRequest> requests, const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    stop(cancel);
+    aten_->prepare_batch(requests, cancel);
+}
+
+void Generator::generate_batch(
+    std::span<const ImageRequest> requests,
+    std::span<const std::span<float>> outputs,
+    const std::atomic_bool& cancel,
+    const BatchHook& hook
+) {
+    Busy active(busy_);
+    stop(cancel);
+    aten_->generate_batch(requests, outputs, cancel, hook);
+}
+
+std::size_t Generator::admissible_batch_size(
+    const ImageRequest& request, std::size_t limit, const std::atomic_bool& cancel
+) {
+    Busy active(busy_);
+    return aten_->admissible_batch_size(request, limit, cancel);
+}
+
+const BatchMeasurement& Generator::last_batch_measurement() const {
+    return aten_->last_batch_measurement();
 }
 }  // namespace kadan::image

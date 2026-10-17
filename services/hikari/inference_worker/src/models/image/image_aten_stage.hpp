@@ -252,6 +252,7 @@ class Stage {
     Inventory& inventory_;
     const std::atomic_bool& cancel_;
     AtenStagePlan plan_;
+    BatchMeasurement* measurement_;
 
     Tensor read_weight(const std::string& name) const {
         stop(cancel_);
@@ -285,7 +286,8 @@ public:
         Inventory& inventory,
         Bytes workspace,
         const std::atomic_bool& cancel,
-        Bytes tiled_workspace = 0
+        Bytes tiled_workspace = 0,
+        BatchMeasurement* measurement = nullptr
     )
         : resources_(r), inventory_(inventory), cancel_(cancel),
           plan_(aten_stage_plan(
@@ -296,7 +298,12 @@ public:
               workspace,
               tiled_workspace
           )),
-          device(plan_.device) {
+          measurement_(measurement), device(plan_.device) {
+        if (measurement_ && inventory.stage == AtenImageStage::denoiser) {
+            constexpr Bytes fixed = 2ULL * 1024 * 1024 * 1024;
+            measurement_->additional_image[device + 1] =
+                (workspace - fixed) / measurement_->images;
+        }
         auto footprint = r.snapshot().capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
         footprint[0] = plan_.host_bytes;
@@ -308,6 +315,7 @@ public:
             std::size_t free = 0, total = 0;
             C10_CUDA_CHECK(cudaMemGetInfo(&free, &total));
             need(free >= footprint[device + 1], "image_aten_physical_headroom");
+            c10::cuda::CUDACachingAllocator::resetPeakStats(device);
             c10::cuda::CUDACachingAllocator::setMemoryFraction(
                 double(footprint[device + 1]) / double(total), device
             );
@@ -339,6 +347,19 @@ public:
             return;
         c10::cuda::CUDAGuard guard(device);
         sync();
+        if (measurement_) {
+            const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+            measurement_->peak_allocated[device + 1] = std::max<Bytes>(
+                measurement_->peak_allocated[device + 1], stats.allocated_bytes[0].peak
+            );
+            measurement_->peak_reserved[device + 1] = std::max<Bytes>(
+                measurement_->peak_reserved[device + 1], stats.reserved_bytes[0].peak
+            );
+            const auto host = resources_.snapshot().used[0];
+            measurement_->peak_allocated[0] =
+                std::max(measurement_->peak_allocated[0], host);
+            measurement_->peak_reserved[0] = measurement_->peak_allocated[0];
+        }
         bank.clear();
         at::cuda::clearCublasWorkspaces();
         c10::cuda::CUDACachingAllocator::emptyCache();

@@ -4,6 +4,9 @@
 #include <iostream>
 #include <thread>
 #include <tuple>
+
+#include "kadan/image_batch_memory.hpp"
+#include "kadan/image_batch_output.hpp"
 using namespace kadan;
 using namespace kadan::serving;
 
@@ -618,7 +621,390 @@ void invalid_engine_input_preserves_status_and_releases_memory() {
     owner.shutdown();
 }
 
+struct BatchState : FakeState {
+    std::size_t capacity = 2;
+    std::vector<std::vector<std::string>> batches;
+    std::function<void()> during_execution;
+    bool fail_batch = false;
+    std::string blocked_preparation;
+};
+
+struct BatchEngine : FakeEngine {
+    BatchState& batch_state;
+
+    BatchEngine(BatchState& state, std::shared_ptr<Resources> ledger)
+        : FakeEngine(state, std::move(ledger)), batch_state(state) {
+    }
+
+    std::size_t
+    batch_capacity(const InferenceRequest&, const Footprint& available) override {
+        // Tests can inject physical pressure independently for either device.
+        return available[1] < 40 || available[2] < 40 ? 1 : batch_state.capacity;
+    }
+
+    void prepare_batch(
+        std::span<const InferenceBatchItem> items, const Footprint&
+    ) override {
+        for (const auto& item : items)
+            if (item.request->id == batch_state.blocked_preparation)
+                throw AdmissionWait("longer_prompt_does_not_fit");
+    }
+
+    std::vector<InferenceBatchResult>
+    execute_batch(std::span<const InferenceBatchItem> items) override {
+        std::vector<std::string> ids;
+        std::vector<InferenceBatchResult> results;
+        for (const auto& item : items) {
+            ids.push_back(item.request->id);
+            results.push_back(
+                {std::get<ImageRequest>(item.request->input).seed.value(), nullptr}
+            );
+        }
+        batch_state.batches.push_back(ids);
+        if (batch_state.during_execution)
+            batch_state.during_execution();
+        if (batch_state.fail_batch)
+            throw std::runtime_error("shared_denoising_failed");
+        return results;
+    }
+};
+
+InferenceRequest image_request(std::string id, std::uint64_t seed = 1) {
+    auto result = request(id);
+    result.model = "image-model";
+    ImageRequest image;
+    image.prompt = id;
+    image.width = image.height = 256;
+    image.steps = 8;
+    image.seed = seed;
+    image.count = 1;
+    result.input = image;
+    return result;
+}
+
+void later_candidate_pressure_does_not_block_the_admissible_head() {
+    BatchState state;
+    state.blocked_preparation = "blocked";
+    std::vector<std::pair<std::string, JobState>> events;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto) { events.emplace_back(id, event); }
+    );
+    owner.submit(image_request("head"));
+    owner.submit(image_request("blocked"));
+    owner.submit(image_request("tail"));
+    assert(owner.advance());
+    assert((state.batches == std::vector<std::vector<std::string>>{{"head"}}));
+    assert(
+        (events.back() == std::pair<std::string, JobState>{"head", JobState::succeeded})
+    );
+    assert(owner.pending() == 2);
+    assert(!owner.advance());
+    assert((
+        events.back()
+        == std::pair<std::string, JobState>{"blocked", JobState::waiting_for_resources}
+    ));
+    assert(owner.pending() == 2 && owner.snapshot().residents == 0);
+    assert(state.batches.size() == 1);
+    state.blocked_preparation.clear();
+    assert(owner.advance());
+    assert((state.batches.back() == std::vector<std::string>{"blocked", "tail"}));
+    assert(owner.pending() == 0);
+    owner.shutdown();
+}
+
+void full_image_batch_launches_without_waiting_and_preserves_seeds() {
+    BatchState state;
+    std::vector<std::pair<std::string, Json>> results;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto value) {
+            if (event == JobState::succeeded)
+                results.emplace_back(id, value);
+        }
+    );
+    owner.submit(image_request("pose-a", 42));
+    owner.submit(image_request("pose-b", 91));
+    assert(owner.advance());
+    assert(
+        (state.batches == std::vector<std::vector<std::string>>{{"pose-a", "pose-b"}})
+    );
+    assert(
+        (results
+         == std::vector<std::pair<std::string, Json>>{{"pose-a", 42}, {"pose-b", 91}})
+    );
+    assert(owner.pending() == 0);
+    owner.shutdown();
+}
+
+void image_collection_deadline_uses_oldest_submission() {
+    BatchState state;
+    auto now = std::chrono::steady_clock::time_point{};
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [](auto, auto, auto) {},
+        32,
+        {},
+        [&] { return now; }
+    );
+    owner.submit(image_request("oldest"));
+    assert(!owner.advance());
+    now += std::chrono::seconds(9);
+    assert(!owner.advance());
+    now += std::chrono::seconds(1);
+    assert(owner.advance());
+    assert((state.batches == std::vector<std::vector<std::string>>{{"oldest"}}));
+    owner.shutdown();
+}
+
+void incompatible_image_head_is_not_overtaken() {
+    BatchState state;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [](auto, auto, auto) {}
+    );
+    owner.submit(image_request("first"));
+    auto incompatible = image_request("different-shape");
+    std::get<ImageRequest>(incompatible.input).width = 512;
+    owner.submit(incompatible);
+    owner.submit(image_request("third"));
+    assert(owner.advance());
+    assert(owner.advance());
+    assert(
+        (state.batches
+         == std::vector<std::vector<std::string>>{{"first"}, {"different-shape"}})
+    );
+    assert(owner.pending() == 1);
+    owner.shutdown();
+}
+
+void cancellation_does_not_cancel_a_batch_sibling() {
+    BatchState state;
+    std::vector<std::pair<std::string, JobState>> terminal;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto) {
+            if (event == JobState::succeeded || event == JobState::cancelled)
+                terminal.emplace_back(id, event);
+        }
+    );
+    state.during_execution = [&] {
+        assert(owner.cancel("first"));
+    };
+    owner.submit(image_request("first"));
+    owner.submit(image_request("second"));
+    assert(owner.advance());
+    assert(
+        (terminal
+         == std::vector<std::pair<std::string, JobState>>{
+             {"first", JobState::cancelled}, {"second", JobState::succeeded}
+         })
+    );
+    owner.shutdown();
+}
+
+void failed_batch_preserves_the_waiting_queue() {
+    BatchState state;
+    state.fail_batch = true;
+    std::vector<std::string> failed;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto) {
+            if (event == JobState::failed)
+                failed.push_back(id);
+        }
+    );
+    owner.submit(image_request("first"));
+    owner.submit(image_request("second"));
+    owner.submit(image_request("later"));
+    assert(owner.advance());
+    assert((failed == std::vector<std::string>{"first", "second"}));
+    assert(owner.pending() == 1 && owner.snapshot().residents == 0);
+    assert(owner.cancel("later"));
+    assert(owner.advance());
+    owner.shutdown();
+}
+
+void physical_pressure_reduces_batch_before_launch() {
+    BatchState state;
+    Footprint available{100, 80, 70};
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&] { return available; },
+        [](auto, auto, auto) {}
+    );
+    owner.submit(image_request("first"));
+    assert(!owner.advance());
+    owner.submit(image_request("second"));
+    available[2] = 20;
+    assert(owner.advance());
+    assert((state.batches == std::vector<std::vector<std::string>>{{"first"}}));
+    owner.shutdown();
+}
+
+void shared_reference_compatibility_ignores_prompt_and_seed() {
+    auto first = image_request("pose-a", 42), second = image_request("pose-b", 43);
+    auto& a = std::get<ImageRequest>(first.input);
+    auto& b = std::get<ImageRequest>(second.input);
+    a.reference = b.reference = true;
+    a.source = b.source = ImageUpload{"same-reference", 256, 256};
+    a.source_width = b.source_width = a.source_height = b.source_height = 256;
+    assert(compatible_images(first, second));
+    b.source->png = "other-reference";
+    assert(!compatible_images(first, second));
+    b.source = a.source;
+    b.steps = 10;
+    assert(!compatible_images(first, second));
+    b.steps = a.steps;
+    b.reference = a.reference = false;
+    assert(!compatible_images(first, second));
+}
+
+void image_batch_counts_images_and_does_not_split_fifo_requests() {
+    BatchState state;
+    state.capacity = 4;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [](auto, auto, auto) {}
+    );
+    auto first = image_request("two-images"), second = image_request("another-two");
+    std::get<ImageRequest>(first.input).count = 2;
+    std::get<ImageRequest>(second.input).count = 2;
+    owner.submit(first);
+    owner.submit(second);
+    assert(owner.advance());
+    assert(
+        (state.batches
+         == std::vector<std::vector<std::string>>{{"two-images", "another-two"}})
+    );
+    owner.submit(image_request("one-image"));
+    auto four = image_request("four-images");
+    std::get<ImageRequest>(four.input).count = 4;
+    owner.submit(four);
+    owner.submit(image_request("later-small"));
+    assert(owner.advance());
+    assert((state.batches.back() == std::vector<std::string>{"one-image"}));
+    assert(owner.advance());
+    assert((state.batches.back() == std::vector<std::string>{"four-images"}));
+    owner.shutdown();
+}
+
+void cancelled_collection_head_unblocks_next_request() {
+    BatchState state;
+    std::vector<std::pair<std::string, JobState>> events;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto) { events.emplace_back(id, event); }
+    );
+    owner.submit(image_request("cancelled"));
+    assert(!owner.advance());
+    assert(owner.cancel("cancelled"));
+    owner.submit(image_request("first"));
+    owner.submit(image_request("second"));
+    assert(owner.advance());
+    assert(
+        (events.back()
+         == std::pair<std::string, JobState>{"cancelled", JobState::cancelled})
+    );
+    assert(owner.advance());
+    assert(
+        (state.batches == std::vector<std::vector<std::string>>{{"first", "second"}})
+    );
+    owner.shutdown();
+}
+
+void later_subbatch_failure_preserves_completed_request_outputs() {
+    ImageBatchOutput completed{1, {"first/image-0.png"}, nullptr};
+    ImageBatchOutput incomplete{2, {"second/image-0.png"}, nullptr};
+    ImageBatchOutput waiting{1, {}, nullptr};
+    ImageBatchOutput rejected{
+        1, {}, {{"error", "invalid_prompt"}, {"status_code", 422}}
+    };
+    for (auto* output : {&completed, &incomplete, &waiting, &rejected})
+        output->fail_if_incomplete("later_subbatch_failed");
+    assert(completed.failure.is_null());
+    assert(completed.paths.size() == completed.count);
+    assert(incomplete.failure == "later_subbatch_failed");
+    assert(waiting.failure == "later_subbatch_failed");
+    assert(rejected.failure.at("status_code") == 422);
+}
+
+void failed_candidate_does_not_change_head_error_status() {
+    BatchState state;
+    state.fail_batch = true;
+    std::vector<std::pair<std::string, Json>> failures;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, const auto& value) {
+            if (event == JobState::failed)
+                failures.emplace_back(id, value);
+        },
+        32,
+        [](auto&, auto&) { throw RequestError("invalid_candidate", 422); }
+    );
+    owner.submit(image_request("head"));
+    auto candidate = image_request("candidate");
+    candidate.prepared = false;
+    owner.submit(candidate);
+    assert(owner.advance());
+    assert(owner.advance());
+    assert(failures.size() == 2);
+    assert(failures[0].first == "head" && failures[0].second.at("status_code") == 502);
+    assert(
+        failures[1].first == "candidate" && failures[1].second.at("status_code") == 422
+    );
+    owner.shutdown();
+}
+
+void image_memory_growth_is_measured_and_devices_are_independent() {
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    ImageBatchMemory memory;
+    const Footprint free{64 * gib, 24 * gib, 24 * gib};
+    assert(memory.capacity(free, 16) == 1);
+    memory.observe(1, {2 * gib, 19 * gib, 4 * gib}, {gib, 2 * gib, 0});
+    assert(memory.capacity(free, 16) == 2);
+    memory.observe(2, {3 * gib, 21 * gib, 4 * gib}, {gib, 2 * gib, 0});
+    assert(memory.capacity(free, 16) == 3);
+    memory.observe(3, {4 * gib, 23 * gib, 4 * gib}, {gib, 2 * gib, 0});
+    assert(memory.capacity(free, 16) == 3);
+    assert(memory.capacity({64 * gib, 22 * gib, 100 * gib}, 16) == 2);
+    assert(memory.capacity({3 * gib, 100 * gib, 100 * gib}, 16) == 1);
+    assert(memory.capacity(free, 1) == 1);
+}
+
 int main() {
+    later_candidate_pressure_does_not_block_the_admissible_head();
+    later_subbatch_failure_preserves_completed_request_outputs();
+    failed_candidate_does_not_change_head_error_status();
+    cancelled_collection_head_unblocks_next_request();
+    image_batch_counts_images_and_does_not_split_fifo_requests();
+    image_memory_growth_is_measured_and_devices_are_independent();
+    shared_reference_compatibility_ignores_prompt_and_seed();
+    physical_pressure_reduces_batch_before_launch();
+    failed_batch_preserves_the_waiting_queue();
+    cancellation_does_not_cancel_a_batch_sibling();
+    incompatible_image_head_is_not_overtaken();
+    image_collection_deadline_uses_oldest_submission();
+    full_image_batch_launches_without_waiting_and_preserves_seeds();
     invalid_engine_input_preserves_status_and_releases_memory();
     acceptance_precedes_fast_completion();
     failed_acceptance_never_runs();

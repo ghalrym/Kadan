@@ -14,6 +14,11 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     preparation_check(
+        !input.prompt.empty() && input.prompt.size() <= 8000,
+        "Image prompt must contain between 1 and 8000 UTF-8 bytes",
+        422
+    );
+    preparation_check(
         input.count == 1 || input.count == 2 || input.count == 4,
         "Image count must be 1, 2, or 4",
         422

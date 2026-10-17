@@ -147,6 +147,23 @@ inline Bytes aten_stage_workspace(
     throw std::invalid_argument("image_aten_stage");
 }
 
+// Components remain sequential. Only denoising retains a batch of padded
+// prefixes, latent images, projections and KV caches; the fixed library scratch
+// and loaded weights are shared. Prefix uses the longest prompt in the batch.
+inline Bytes aten_batch_workspace(
+    Bytes points, Bytes tokens, Bytes reference_points, std::size_t images
+) {
+    if (!images)
+        throw std::invalid_argument("image_batch_empty");
+    constexpr Bytes fixed = 2ULL * 1024 * 1024 * 1024;
+    const auto one = aten_stage_workspace(
+        AtenImageStage::denoiser, points, tokens, false, reference_points
+    );
+    if (images > (std::numeric_limits<Bytes>::max() - fixed) / (one - fixed))
+        throw std::overflow_error("image_batch_workspace");
+    return fixed + images * (one - fixed);
+}
+
 // Tiling changes only the convolutional sections. Global bottleneck attention
 // still sees the complete latent grid and is accounted for independently.
 inline Bytes aten_tiled_vae_workspace(AtenImageStage stage, Bytes points) {

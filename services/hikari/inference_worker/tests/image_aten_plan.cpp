@@ -129,6 +129,59 @@ void reference_budget_units() {
     check(ledger.snapshot().used == Footprint({0, 0}));
 }
 
+void batch_budget_units() {
+    using namespace kadan;
+    using namespace kadan::image;
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    const auto one = aten_batch_workspace(1024, 100, 1024, 1);
+    const auto two = aten_batch_workspace(1024, 100, 1024, 2);
+    check(
+        one == aten_stage_workspace(AtenImageStage::denoiser, 1024, 100, false, 1024)
+    );
+    check(two - one == one - 2 * gib);
+    check(aten_batch_workspace(1024, 200, 1024, 2) > two);
+    // A short head can provisionally admit four images. A later long prompt
+    // must trigger the full-batch preflight and reduce the batch before running.
+    const Snapshot pose_device{{64 * gib, 24 * gib}, {0, 0}, 0};
+    const auto pose_batch = aten_stage_plan(
+        pose_device, {0}, 14 * gib, gib / 8, aten_batch_workspace(624, 250, 624, 4)
+    );
+    check(!pose_batch.stream_weights);
+    bool longer_rejected = false;
+    try {
+        (void)aten_stage_plan(
+            pose_device, {0}, 14 * gib, gib / 8, aten_batch_workspace(624, 8192, 624, 4)
+        );
+    } catch (const ResourceExhausted&) {
+        longer_rejected = true;
+    }
+    check(longer_rejected);
+    const auto reduced = aten_stage_plan(
+        pose_device, {0}, 14 * gib, gib / 8, aten_batch_workspace(624, 8192, 624, 2)
+    );
+    check(reduced.device_bytes <= 24 * gib);
+    // Two individually adequate devices cannot pool memory for one larger batch.
+    Snapshot snapshot{{64 * gib, 8 * gib, 8 * gib}, {0, 0, 0}, 0};
+    const auto fitting = aten_stage_plan(snapshot, {0, 1}, 4 * gib, gib / 2, two);
+    check(fitting.device_bytes <= 8 * gib);
+    bool rejected = false;
+    try {
+        (void)aten_stage_plan(
+            snapshot, {0, 1}, 4 * gib, gib / 2, aten_batch_workspace(1024, 100, 1024, 8)
+        );
+    } catch (const ResourceExhausted&) {
+        rejected = true;
+    }
+    check(rejected);
+    rejected = false;
+    try {
+        (void)aten_batch_workspace(1024, 100, 1024, 0);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected);
+}
+
 void vae_budget_units() {
     using namespace kadan;
     using namespace kadan::image;
@@ -186,6 +239,7 @@ int main() {
         tile_geometry_units();
         vae_budget_units();
         reference_budget_units();
+        batch_budget_units();
         using namespace kadan;
         using namespace kadan::image;
         constexpr Bytes gib = 1024ULL * 1024 * 1024;

@@ -1,10 +1,12 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 
 #include "kadan/inference_request.hpp"
@@ -34,6 +36,36 @@ struct PublicationFailure : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+struct InferenceBatchItem {
+    const InferenceRequest* request;
+    const std::atomic_bool* cancel;
+};
+
+struct InferenceBatchResult {
+    Json result;
+    Json failure;
+};
+
+// Prompts and seeds vary; a denoising batch shares shape, sampling and its
+// reference image. Source-latent edits keep their existing singleton path.
+inline bool compatible_images(const InferenceRequest& a, const InferenceRequest& b) {
+    const auto* left = std::get_if<ImageRequest>(&a.input);
+    const auto* right = std::get_if<ImageRequest>(&b.input);
+    if (!left || !right || a.workload != Workload::image
+        || b.workload != Workload::image || a.operation != Operation::generate
+        || b.operation != Operation::generate || a.model != b.model
+        || a.configuration != b.configuration || left->width != right->width
+        || left->height != right->height || left->steps != right->steps
+        || left->reference != right->reference || left->strength != right->strength
+        || left->source_width != right->source_width
+        || left->source_height != right->source_height || left->edit_mask
+        || right->edit_mask || bool(left->source) != bool(right->source))
+        return false;
+    if (left->source)
+        return left->reference && left->source->png == right->source->png;
+    return true;
+}
+
 class InferenceEngine {
 public:
     virtual ~InferenceEngine() = default;
@@ -43,6 +75,25 @@ public:
     prepare(const InferenceRequest&, const Footprint&, const std::atomic_bool&) = 0;
     virtual Json execute(const InferenceRequest&, const std::atomic_bool&) = 0;
     virtual void close() = 0;
+
+    virtual std::size_t batch_capacity(const InferenceRequest&, const Footprint&) {
+        return 1;
+    }
+
+    virtual void prepare_batch(
+        std::span<const InferenceBatchItem> batch, const Footprint& available
+    ) {
+        if (batch.size() != 1)
+            throw std::logic_error("unsupported_batch");
+        prepare(*batch[0].request, available, *batch[0].cancel);
+    }
+
+    virtual std::vector<InferenceBatchResult>
+    execute_batch(std::span<const InferenceBatchItem> batch) {
+        if (batch.size() != 1)
+            throw std::logic_error("unsupported_batch");
+        return {{execute(*batch[0].request, *batch[0].cancel), nullptr}};
+    }
 };
 
 // Exactly one execution thread calls advance(). Transport threads may only
@@ -54,6 +105,7 @@ public:
         std::unique_ptr<InferenceEngine>(Workload, std::shared_ptr<Resources>)>;
     using Prepare = std::function<void(InferenceRequest&, const std::atomic_bool&)>;
     using Probe = std::function<Footprint()>;
+    using Clock = std::function<std::chrono::steady_clock::time_point()>;
     using Publish = std::function<void(const std::string&, JobState, const Json&)>;
 
     InferenceOwner(
@@ -62,12 +114,14 @@ public:
         Probe probe,
         Publish publish,
         std::size_t limit = 32,
-        Prepare prepare = {}
+        Prepare prepare = {},
+        Clock clock = [] { return std::chrono::steady_clock::now(); }
     )
         : ceiling_(std::move(ceiling)),
           resources_(std::make_shared<Resources>(ceiling_)),
           factory_(std::move(factory)), probe_(std::move(probe)),
-          publish_(std::move(publish)), prepare_(std::move(prepare)), limit_(limit) {
+          publish_(std::move(publish)), prepare_(std::move(prepare)),
+          clock_(std::move(clock)), limit_(limit) {
         if (!limit_ || limit_ > 1024)
             throw std::invalid_argument("queue_limit");
     }
@@ -84,7 +138,7 @@ public:
         for (const auto& job : queue_)
             if (job->request.id == request.id)
                 throw std::runtime_error("duplicate_request");
-        queue_.push_back(std::make_shared<Job>(std::move(request)));
+        queue_.push_back(std::make_shared<Job>(std::move(request), clock_()));
         // Keep acceptance and admission under the same lock: advance() must not
         // publish preparation or completion before the queued acknowledgement.
         try {
@@ -125,27 +179,18 @@ public:
                 return false;
             job = queue_.front();
         }
-        if (!job->request.prepared && !job->cancel.load()) {
-            publish_(job->request.id, JobState::preparing, "");
-            try {
-                if (!prepare_)
-                    throw std::runtime_error("preparation_unavailable");
-                prepare_(job->request, job->cancel);
-            } catch (const std::exception& error) {
-                job->error = error.what();
-            }
-            job->request.prepared = true;
-        }
+        prepare_job(job);
         if (job->cancel.load()) {
             finish(job, JobState::cancelled, "");
             return true;
         }
-        if (!job->error.empty()) {
+        if (!job->error.is_null()) {
             finish(job, JobState::failed, job->error);
             return true;
         }
         const auto& request = job->request;
         bool execution_started = false;
+        std::vector<std::shared_ptr<Job>> jobs{job};
         try {
             if (request.operation == Operation::download
                 || request.operation == Operation::configure) {
@@ -191,20 +236,88 @@ public:
             for (std::size_t index = 0; index < available.size(); ++index)
                 available[index] = std::min(available[index], ceiling_[index]);
             resources_->refresh_available(available);
-            engine_->prepare(request, available, job->cancel);
-            if (job->cancel.load()) {
+            const auto capacity = engine_->batch_capacity(request, available);
+            bool blocked = false;
+            std::size_t images = image_count(request);
+            if (capacity > images && compatible_images(request, request)) {
+                // Snapshot candidates without holding the transport lock during
+                // preparation. Jobs remain in the FIFO until terminal delivery.
+                std::vector<std::shared_ptr<Job>> candidates;
+                {
+                    std::lock_guard guard(mutex_);
+                    candidates.assign(std::next(queue_.begin()), queue_.end());
+                }
+                for (const auto& candidate : candidates) {
+                    if (candidate->cancel.load()
+                        || candidate->request.workload != Workload::image
+                        || candidate->request.operation != Operation::generate) {
+                        blocked = true;
+                        break;
+                    }
+                    prepare_job(candidate);
+                    if (!candidate->error.is_null() || candidate->cancel.load()
+                        || !compatible_images(request, candidate->request)
+                        || image_count(candidate->request) > capacity - images) {
+                        blocked = true;
+                        break;
+                    }
+                    jobs.push_back(candidate);
+                    images += image_count(candidate->request);
+                    if (images == capacity)
+                        break;
+                }
+                if (!blocked && images < capacity
+                    && clock_() - job->submitted < std::chrono::seconds(10))
+                    return false;
+            }
+            std::vector<InferenceBatchItem> batch;
+            for (const auto& current : jobs)
+                batch.push_back({&current->request, &current->cancel});
+            for (;;) {
+                try {
+                    engine_->prepare_batch(batch, available);
+                    break;
+                } catch (const ResourceExhausted&) {
+                    if (jobs.size() == 1)
+                        throw;
+                    // A later prompt or the combined host buffers may not fit.
+                    // Retain that suffix in the FIFO and admit the oldest prefix.
+                    jobs.pop_back();
+                    batch.pop_back();
+                }
+            }
+            if (std::all_of(jobs.begin(), jobs.end(), [](const auto& current) {
+                    return current->cancel.load();
+                })) {
                 cleanup();
-                finish(job, JobState::cancelled, "");
+                finish_batch(jobs, "");
                 return true;
             }
-            publish_(request.id, JobState::running, "");
+            for (const auto& current : jobs)
+                if (!current->cancel.load())
+                    publish_(current->request.id, JobState::running, "");
             execution_started = true;
-            auto result = engine_->execute(request, job->cancel);
-            if (job->cancel.load()) {
+            const auto results = engine_->execute_batch(batch);
+            if (results.size() != jobs.size())
+                throw std::runtime_error("batch_result_count");
+            if (std::any_of(
+                    jobs.begin(),
+                    jobs.end(),
+                    [](const auto& current) { return current->cancel.load(); }
+                )
+                || std::any_of(results.begin(), results.end(), [](const auto& result) {
+                       return !result.failure.is_null();
+                   }))
                 cleanup();
-                finish(job, JobState::cancelled, "");
-            } else
-                finish(job, JobState::succeeded, result);
+            for (std::size_t index = 0; index < jobs.size(); ++index) {
+                const auto& current = jobs[index];
+                if (current->cancel.load())
+                    finish(current, JobState::cancelled, "");
+                else if (!results[index].failure.is_null())
+                    finish(current, JobState::failed, results[index].failure);
+                else
+                    finish(current, JobState::succeeded, results[index].result);
+            }
             return true;
         } catch (const CleanupFailure&) {
             throw;
@@ -213,7 +326,7 @@ public:
         } catch (const ResourceExhausted&) {
             cleanup();
             if (execution_started) {
-                finish(job, JobState::failed, "admission_after_execution");
+                finish_batch(jobs, "admission_after_execution");
                 return true;
             }
             if (job->cancel.load()) {
@@ -225,20 +338,12 @@ public:
         } catch (const RequestError& error) {
             const Json failure{{"error", error.what()}, {"status_code", error.status}};
             cleanup();
-            finish(
-                job,
-                job->cancel.load() ? JobState::cancelled : JobState::failed,
-                failure
-            );
+            finish_batch(jobs, failure);
             return true;
         } catch (const std::exception& error) {
             const std::string diagnostic = error.what();
             cleanup();  // Failed cleanup poisons the owner and retains the FIFO head.
-            finish(
-                job,
-                job->cancel.load() ? JobState::cancelled : JobState::failed,
-                diagnostic
-            );
+            finish_batch(jobs, diagnostic);
             return true;
         }
     }
@@ -266,13 +371,46 @@ public:
 
 private:
     struct Job {
-        explicit Job(InferenceRequest q) : request(std::move(q)) {
+        Job(InferenceRequest q, std::chrono::steady_clock::time_point time)
+            : request(std::move(q)), submitted(time) {
         }
 
         InferenceRequest request;
-        std::string error;
+        Json error;
+        std::chrono::steady_clock::time_point submitted;
         std::atomic_bool cancel{false};
     };
+
+    static std::size_t image_count(const InferenceRequest& request) {
+        const auto* input = std::get_if<ImageRequest>(&request.input);
+        return input ? input->count : 1;
+    }
+
+    void prepare_job(const std::shared_ptr<Job>& job) {
+        if (job->request.prepared || job->cancel.load())
+            return;
+        publish_(job->request.id, JobState::preparing, "");
+        try {
+            if (!prepare_)
+                throw std::runtime_error("preparation_unavailable");
+            prepare_(job->request, job->cancel);
+        } catch (const RequestError& error) {
+            job->error = {{"error", error.what()}, {"status_code", error.status}};
+        } catch (const std::exception& error) {
+            job->error = error.what();
+        }
+        job->request.prepared = true;
+    }
+
+    void
+    finish_batch(const std::vector<std::shared_ptr<Job>>& jobs, const Json& error) {
+        for (const auto& current : jobs)
+            finish(
+                current,
+                current->cancel.load() ? JobState::cancelled : JobState::failed,
+                error
+            );
+    }
 
     void cleanup() {
         try {
@@ -302,7 +440,12 @@ private:
                                  // delivery.
         }
         try {
-            publish_(job->request.id, state, result);
+            if (state == JobState::failed && !result.is_object())
+                publish_(
+                    job->request.id, state, {{"error", result}, {"status_code", 502}}
+                );
+            else
+                publish_(job->request.id, state, result);
         } catch (...) {
             std::lock_guard guard(mutex_);
             poisoned_ = true;
@@ -316,6 +459,7 @@ private:
     Probe probe_;
     Publish publish_;
     Prepare prepare_;
+    Clock clock_;
     std::size_t limit_;
     mutable std::mutex mutex_;
     std::deque<std::shared_ptr<Job>> queue_;

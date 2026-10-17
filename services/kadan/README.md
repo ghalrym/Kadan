@@ -31,6 +31,11 @@ creation UUID to check or resume the same job after an ambiguous response.
 
 Kadan generates a canonical base through Hikari, then generates each articulated
 pose on its own 384x416 canvas using Hikari's native reference-image conditioning.
+Up to four independent poses are submitted together so Hikari can batch them.
+Each request ID and seed is persisted before submission, and each completed frame
+is saved independently. Cancellation and resume fence every pending request.
+Update the Kadan and Tsuchi backends together for this additional pending-frame
+state; existing saved jobs load without a data migration.
 The two neutral idle endpoints reuse the canonical artwork with explicit provenance.
 Kadan removes the chroma background and packs validated cells into a 1536x2288 v2
 atlas without fitting each silhouette independently. Structural checks do not prove
