@@ -81,7 +81,7 @@ ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
             && text.at("rope_scaling").at("rope_type") == "default",
         "image_multimodal_config_contract"
     );
-    const auto &vision = encoder.at("vision_config");
+    const auto& vision = encoder.at("vision_config");
     need(
         vision.at("model_type") == "qwen3_vl" && vision.at("depth") == 27
             && vision.at("hidden_size") == 1152 && vision.at("num_heads") == 16
