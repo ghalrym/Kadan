@@ -136,7 +136,12 @@ class InferenceJob:
 class InferenceWorker:
     def __init__(self, root: Path | None = None, on_event=None):
         self.root = root or (
-            Path(os.getenv("KADAN_MODEL_DIR", "~/.local/share/kadan/models"))
+            Path(
+                os.getenv(
+                    "HIKARI_MODEL_DIR",
+                    os.getenv("KADAN_MODEL_DIR", "~/.local/share/kadan/models"),
+                )
+            )
             .expanduser()
             .resolve()
             / "inference"
@@ -159,10 +164,19 @@ class InferenceWorker:
             raise RuntimeError("Inference transport already started")
         self.root.mkdir(parents=True, exist_ok=True)
         executable = Path(
-            os.getenv("KADAN_INFERENCE_WORKER", "/opt/kadan/bin/kadan-inference-worker")
+            os.getenv(
+                "HIKARI_INFERENCE_WORKER",
+                os.getenv(
+                    "KADAN_INFERENCE_WORKER", "/opt/kadan/bin/kadan-inference-worker"
+                ),
+            )
         )
         if not executable.is_absolute() or not executable.is_file():
             raise InferenceFailure("The inference worker executable is unavailable.")
+        environment = None
+        if "HIKARI_VIDEO_DIR" in os.environ:
+            environment = os.environ.copy()
+            environment["KADAN_VIDEO_DIR"] = environment["HIKARI_VIDEO_DIR"]
         self.ready = asyncio.get_running_loop().create_future()
         self.process = await asyncio.create_subprocess_exec(
             str(executable),
@@ -172,6 +186,7 @@ class InferenceWorker:
             stderr=asyncio.subprocess.PIPE,
             limit=128 * 1024 * 1024 + 1,
             start_new_session=True,
+            env=environment,
         )
         self.stderr_reader = asyncio.create_task(self._stderr())
         self.reader = asyncio.create_task(self._read())

@@ -1,3 +1,6 @@
+# Preserve existing volume and container identity across checkout/repository renames.
+name: kadan
+
 services:
   postgres:
     image: postgres:18

@@ -184,7 +184,7 @@ The [official model card](https://huggingface.co/MiniMaxAI/MiniMax-H3) describes
 the joint audiovisual transformer and separate VAEs. The
 [8 GB benchmark installation](https://github.com/YHK-AI/MiniMax-H3-Benchmark/blob/main/docs/INSTALLATION.md)
 demonstrates another implementation using a pruned INT8 denoiser, NVFP4 text
-encoder and disk-backed loading. Kadan retains its supported, pinned INT8
+encoder and disk-backed loading. Hikari retains its supported, pinned INT8
 bundle (68,972,509,501 download bytes); that benchmark's smaller bundle and
 timings are not Kadan measurements. The
 [MiniMax integration index](https://github.com/MiniMax-AI/awesome-minimax-h3-integration)
@@ -200,8 +200,8 @@ on each target machine. No inference or GPU load tests were run for this change.
 Build and install the `inference-runtime` component using the options in
 [`api/Dockerfile`](../api/Dockerfile). The former standalone worker executables
 and launchers have been removed. Engine libraries remain here; metadata inspection tool
-sources live in `../bin/cpp/` and are exposed through `../bin/kadan.py native`.
-Run `python bin/kadan.py native build` from the repository root to compile them.
+sources live in `../bin/cpp/` and are exposed through `../bin/hikari.py native`.
+Run `python bin/hikari.py native build` from the repository root to compile them.
 Normal runtime builds leave `KADAN_BUILD_TOOLS` disabled.
 
 ### Weight-cache diagnostics
@@ -209,7 +209,7 @@ Normal runtime builds leave `KADAN_BUILD_TOOLS` disabled.
 Developer builds can enable `KADAN_TRACE_WEIGHT_CACHE` to emit ordered cache
 records on worker stderr. It defaults off and changes no runtime cache policy.
 Capture the complete process stderr from bank creation through its final cleanup
-summary, then run `python bin/kadan.py native cache-replay TRACE` on the raw JSON
+summary, then run `python bin/hikari.py native cache-replay TRACE` on the raw JSON
 lines. Existing controller envelopes must first be reduced to their `line` values.
 Trace output is limited to 131,072 ordinary records, 1,024 summaries and two
 truncation notices per GPU. The replay rejects truncated or incomplete captures.
@@ -222,5 +222,5 @@ before choosing a runtime policy. The replay does not model in-flight pointer
 protection or preserving residency across existing retirement boundaries.
 
 All inference is executed by the API-owned worker. Developer generation commands
-use `python bin/kadan.py infer` to submit requests through the live API and its
+use `python bin/hikari.py infer` to submit requests through the live API and its
 existing queue. There are no standalone model execution tools.

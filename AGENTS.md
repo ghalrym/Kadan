@@ -26,12 +26,12 @@
 From the repository root, generate the API schema, then the frontend client:
 
 ```sh
-.venv/bin/python bin/kadan.py generate api
+.venv/bin/python bin/hikari.py generate api
 ```
 
 # Developer tooling
 
-- `bin/kadan.py` is the Typer entry point for repeatable developer commands.
+- `bin/hikari.py` is the Typer entry point for repeatable developer commands.
 - Keep command implementations in focused modules under `bin/`; native tool sources belong in `bin/cpp/`.
 - Add tooling commands here instead of standalone scripts or diagnostic executables in application source directories. Skills remain separate.
 - Keep application runtime logic in its owning package; tooling should call that implementation rather than copy it.

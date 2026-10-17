@@ -1,4 +1,4 @@
-"""Kadan model loading controls, separate from versioned inference endpoints."""
+"""Hikari model loading controls, separate from versioned inference endpoints."""
 
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request

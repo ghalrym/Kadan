@@ -112,7 +112,7 @@ export async function requestDecisions(
     result = await evaluateDecisions({ body: { state, questions }, signal })
   } catch (failure) {
     if (signal.aborted) throw failure
-    throw new DecisionError('Cannot reach Kadan', 'The decisions API did not respond. Check that the backend is running, then retry.', { retryable: true })
+    throw new DecisionError('Cannot reach Hikari', 'The decisions API did not respond. Check that the backend is running, then retry.', { retryable: true })
   }
   const status = result.response?.status
   if (!result.response?.ok) {
@@ -130,9 +130,9 @@ export async function requestDecisions(
     if (status === 409 || status === 429)
       throw new DecisionError('Decision model busy', message ?? 'Another evaluation is running. Wait for it to finish, then retry.', { retryable: true })
     if (status === 502)
-      throw new DecisionError('Unexpected model output', message ?? 'The decision model returned an answer Kadan could not read. Retry.', { retryable: true })
+      throw new DecisionError('Unexpected model output', message ?? 'The decision model returned an answer Hikari could not read. Retry.', { retryable: true })
     if (!status)
-      throw new DecisionError('Cannot reach Kadan', 'The decisions API did not respond. Check that the backend is running, then retry.', { retryable: true })
+      throw new DecisionError('Cannot reach Hikari', 'The decisions API did not respond. Check that the backend is running, then retry.', { retryable: true })
     throw new DecisionError('Evaluation failed', message ?? `The decisions API returned HTTP ${status}. Retry.`, { retryable: true })
   }
   const answers = result.data?.answers

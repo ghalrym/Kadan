@@ -33,7 +33,7 @@ def execute(build_dir: Path, name: str, arguments: list[str | Path | int]) -> No
     executable = build_dir / "tools" / name
     if not executable.is_file():
         raise FileNotFoundError(
-            f"{executable} is missing. Run bin/kadan.py native --build-dir {build_dir} build first."
+            f"{executable} is missing. Run bin/hikari.py native --build-dir {build_dir} build first."
         )
     # Keep caller-relative input/output paths meaningful when invoked outside the repository.
     run([executable, *map(str, arguments)], cwd=Path.cwd())

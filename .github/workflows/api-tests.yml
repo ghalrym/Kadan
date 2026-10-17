@@ -23,7 +23,7 @@ jobs:
       - name: Install formatter
         run: python -m pip install -r requirements-dev.txt
       - name: Check Python formatting
-        run: python bin/kadan.py check format
+        run: python bin/hikari.py check format
   backend:
     name: API unit tests
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
           python -m pip install -r api/requirements.txt -r bin/requirements.txt
       - name: Run isolated unit tests
         run: |
-          python bin/kadan.py check api
+          python bin/hikari.py check api
   frontend-lint:
     name: Frontend lint
     runs-on: ubuntu-latest
@@ -60,4 +60,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r bin/requirements.txt
-      - run: python3 bin/kadan.py check frontend-lint
+      - run: python3 bin/hikari.py check frontend-lint

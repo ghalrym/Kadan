@@ -64,10 +64,10 @@ export default function AppLayout() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <img src="/kadan.svg" width="24" height="24" alt="" />
+            <img src="/hikari.svg" width="24" height="24" alt="" />
           </div>
           <div>
-            <strong>Kadan</strong>
+            <strong>Hikari</strong>
             <span className="mono muted">v0.0.1</span>
           </div>
         </div>

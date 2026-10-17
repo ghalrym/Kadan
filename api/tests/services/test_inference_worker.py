@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,111 @@ from api.services.inference_worker import (
     InferenceWorker,
     encode_request,
 )
+
+
+class InferenceWorkerConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_directory_uses_hikari_then_legacy_then_persistent_default(self):
+        cases = (
+            ({}, "/tmp/hikari-test-home/.local/share/kadan/models/inference"),
+            (
+                {"KADAN_MODEL_DIR": "~/legacy-models"},
+                "/tmp/hikari-test-home/legacy-models/inference",
+            ),
+            (
+                {
+                    "HIKARI_MODEL_DIR": "~/hikari-models",
+                    "KADAN_MODEL_DIR": "~/legacy-models",
+                },
+                "/tmp/hikari-test-home/hikari-models/inference",
+            ),
+        )
+        for environment, expected in cases:
+            with (
+                self.subTest(environment=environment),
+                patch.dict(
+                    os.environ,
+                    {"HOME": "/tmp/hikari-test-home", **environment},
+                    clear=True,
+                ),
+            ):
+                self.assertEqual(InferenceWorker().root, Path(expected))
+
+    def test_explicit_root_overrides_model_directory_environment(self):
+        with patch.dict(
+            os.environ,
+            {"HIKARI_MODEL_DIR": "/hikari-models", "KADAN_MODEL_DIR": "/legacy-models"},
+            clear=True,
+        ):
+            self.assertEqual(InferenceWorker(Path("/explicit")).root, Path("/explicit"))
+
+    async def test_executable_uses_hikari_then_legacy_then_installed_default(self):
+        cases = (
+            ({}, "/opt/kadan/bin/kadan-inference-worker"),
+            ({"KADAN_INFERENCE_WORKER": "/legacy-worker"}, "/legacy-worker"),
+            (
+                {
+                    "HIKARI_INFERENCE_WORKER": "/hikari-worker",
+                    "KADAN_INFERENCE_WORKER": "/legacy-worker",
+                },
+                "/hikari-worker",
+            ),
+        )
+        for environment, expected in cases:
+            with (
+                self.subTest(environment=environment),
+                patch.dict(os.environ, environment, clear=True),
+                patch("pathlib.Path.mkdir"),
+                patch("pathlib.Path.is_file", return_value=True),
+                patch(
+                    "asyncio.create_subprocess_exec",
+                    side_effect=OSError("Launch disabled for configuration test"),
+                ) as launch,
+            ):
+                worker = InferenceWorker(Path("/unused"))
+                with self.assertRaisesRegex(OSError, "Launch disabled"):
+                    await worker.start()
+                launch.assert_awaited_once()
+                self.assertEqual(launch.call_args.args[0], expected)
+
+    async def test_video_directory_is_forwarded_without_changing_parent_environment(
+        self,
+    ):
+        cases = (
+            ({}, None),
+            ({"KADAN_VIDEO_DIR": "/legacy-videos"}, None),
+            ({"HIKARI_VIDEO_DIR": "~/hikari-videos"}, "~/hikari-videos"),
+            (
+                {
+                    "HIKARI_VIDEO_DIR": "/hikari-videos",
+                    "KADAN_VIDEO_DIR": "/legacy-videos",
+                },
+                "/hikari-videos",
+            ),
+            ({"HIKARI_VIDEO_DIR": "", "KADAN_VIDEO_DIR": "/legacy-videos"}, ""),
+        )
+        for configuration, override in cases:
+            environment = {"UNRELATED_SETTING": "retained", **configuration}
+            with (
+                self.subTest(configuration=configuration),
+                patch.dict(os.environ, environment, clear=True),
+                patch("pathlib.Path.mkdir"),
+                patch("pathlib.Path.is_file", return_value=True),
+                patch(
+                    "asyncio.create_subprocess_exec",
+                    side_effect=OSError("Launch disabled for configuration test"),
+                ) as launch,
+            ):
+                worker = InferenceWorker(Path("/unused"))
+                with self.assertRaisesRegex(OSError, "Launch disabled"):
+                    await worker.start()
+                launch.assert_awaited_once()
+                self.assertEqual(
+                    launch.call_args.kwargs["env"],
+                    {**environment, "KADAN_VIDEO_DIR": override}
+                    if override is not None
+                    else None,
+                )
+                self.assertEqual(dict(os.environ), environment)
 
 
 class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
