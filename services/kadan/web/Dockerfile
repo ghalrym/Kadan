@@ -1,8 +1,11 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24-bookworm-slim AS development
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
+CMD ["npx", "vite", "--host", "0.0.0.0", "--port", "8080", "--strictPort"]
+
+FROM development AS build
 RUN npm run build
 
 FROM nginx:stable-alpine AS runtime

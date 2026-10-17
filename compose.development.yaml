@@ -26,3 +26,52 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+
+  tsuchi-api:
+    # Without watchfiles, uvicorn's StatReload polls bind-mounted *.py files.
+    command: [uvicorn, tsuchi.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers, --reload, --reload-dir, /app/tsuchi]
+    volumes:
+      - ./services/tsuchi/tsuchi:/app/tsuchi:ro
+
+  kadan-api:
+    command: [uvicorn, kadan.api.server:app, --host, 0.0.0.0, --port, "8630", --reload, --reload-dir, /app/kadan]
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
+
+  tsuchi-frontend:
+    build:
+      target: development
+    environment:
+      WATCH_POLLING: "true"
+      API_PROXY_TARGET: http://tsuchi-api:8000
+    volumes:
+      - ./services/tsuchi/web:/app
+      - tsuchi_frontend_node_modules:/app/node_modules
+    command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  kadan-frontend:
+    build:
+      target: development
+    environment:
+      WATCH_POLLING: "true"
+      API_PROXY_TARGET: http://kadan-api:8630
+    volumes:
+      - ./services/kadan/web:/app
+      - kadan_frontend_node_modules:/app/node_modules
+    command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  tsuchi_frontend_node_modules:
+  kadan_frontend_node_modules:

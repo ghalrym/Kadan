@@ -123,3 +123,27 @@ lock. Named volumes belong to the project, not the service, so data is kept.
 Run one API process. The inference worker takes an exclusive lock in the model
 store. Development hot reload shuts down and joins its owned process before the
 replacement starts; reloading cancels in-flight work.
+
+### Development hot reload
+
+`compose.development.yaml` bind-mounts source into every service on the same
+published ports. The frontends run Vite dev servers, and the APIs run uvicorn
+with `--reload`, so local edits apply without rebuilding images. Copy
+`.env.example` to `.env`: its `COMPOSE_FILE` line makes plain `docker compose`
+commands include the override.
+
+```sh
+docker compose up --build -d
+```
+
+To pick up only frontend or Kadan/Tsuchi API edits, replace just those services
+and leave `hikari-api` running:
+
+```sh
+docker compose up -d --no-deps --build --force-recreate --wait hikari-frontend kadan-frontend tsuchi-frontend kadan-api tsuchi-api
+```
+
+Frontend dependencies install into per-frontend `node_modules` volumes on start,
+so `package.json` changes need only a container restart. Python dependency
+changes need an image rebuild. Remove `COMPOSE_FILE` from `.env` to run the
+nginx frontends and baked API images.
