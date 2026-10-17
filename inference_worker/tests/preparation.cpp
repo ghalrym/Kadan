@@ -303,6 +303,7 @@ void checkpoint_catalog_units() {
         assert(hardware.models.at("llm") == id);
         assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
         assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
+        assert(hardware.models.at("speech") == "qwen-tts-1.7b-custom");
         assert(!hardware.models.at("video"));
         const auto& model = store.entry(id);
         assert(

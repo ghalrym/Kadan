@@ -897,7 +897,7 @@
         "llm": "qwen3.8-27b-q4-k-m",
         "image": "qwen-image-2.1-turbo",
         "video": null,
-        "speech": null,
+        "speech": "qwen-tts-1.7b-custom",
         "transcription": null,
         "formatting": "superwhisper-s1-mini"
       }
@@ -911,7 +911,7 @@
         "llm": "qwen3.8-27b-q8-0",
         "image": "qwen-image-2.1-turbo",
         "video": null,
-        "speech": null,
+        "speech": "qwen-tts-1.7b-custom",
         "transcription": null,
         "formatting": "superwhisper-s1-mini"
       }
@@ -925,7 +925,7 @@
         "llm": "qwen3.8-flash-next-q3-k-xl",
         "image": "qwen-image-2.1-turbo",
         "video": null,
-        "speech": null,
+        "speech": "qwen-tts-1.7b-custom",
         "transcription": null,
         "formatting": "superwhisper-s1-mini"
       }
@@ -939,7 +939,7 @@
         "llm": "glm-5.3-flash-q3-k-xl",
         "image": "qwen-image-2.1-turbo",
         "video": null,
-        "speech": null,
+        "speech": "qwen-tts-1.7b-custom",
         "transcription": null,
         "formatting": "superwhisper-s1-mini"
       }
