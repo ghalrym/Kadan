@@ -3,8 +3,7 @@
 .pytest_cache
 **/__pycache__
 data
-web/node_modules
-web/dist
+web
 .env
 tests
 verification

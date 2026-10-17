@@ -19,20 +19,22 @@ Selecting a tier and managing model downloads remain explicit actions in Hikari 
 Build from the repository root:
 
 ```sh
-docker build -t kadan-agent:local services/kadan
+docker build -t kadan-api:local services/kadan
+docker build -t kadan-frontend:local services/kadan/web
 ```
+
+Compose runs these as `kadan-api` and `kadan-frontend`. The frontend image serves the compiled interface with nginx and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
 
 The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs point at the loopback ports published on the host.
 
 | Variable | Compose value | Purpose |
 | --- | --- | --- |
-| `KADAN_TSUCHI_URL` | `http://tsuchi:8000` | Storage API inside Docker |
-| `KADAN_HIKARI_URL` | `http://api:8000` | Inference API inside Docker |
+| `KADAN_TSUCHI_URL` | `http://tsuchi-api:8000` | Storage API inside Docker |
+| `KADAN_HIKARI_URL` | `http://hikari-api:8000` | Inference API inside Docker |
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
 | `KADAN_HIKARI_BROWSER_URL` | `http://127.0.0.1:8088` | Hikari operator interface; Settings is `/settings` |
-| `KADAN_FRONTEND_DIRECTORY` | `/app/web/dist` | Compiled interface |
 
-The image listens on `0.0.0.0:8630` inside its container. Publish it only as `127.0.0.1:8630:8630`. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
+The API image listens on `0.0.0.0:8630` inside its container and is not published; the frontend publishes `127.0.0.1:8630:8080`. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
 
 Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs must use loopback HTTP. This local prototype rejects non-loopback HTTP Host headers and cross-origin writes; these guards do not replace authentication. Do not expose its published port to a network. Root Compose packaging and existing Tsuchi volume preservation are maintained separately from this service.
 
@@ -77,6 +79,6 @@ npm test --prefix web
 npm run build --prefix web
 ```
 
-Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python bin/hikari.py check format` also covers this service.
+Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
 
 The standalone prototype was manually checked on desktop against temporary isolated storage for agent/persona creation, persona editing, conversation persistence, memory search, Space navigation and file metadata browsing. This monorepo packaging still needs owner verification with the combined Compose stack. Mobile rendering, browser download completion and real inference have not been verified. No model was downloaded or tier selected during prototype work.
