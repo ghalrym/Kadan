@@ -101,7 +101,9 @@ struct Inventory {
                 for (std::size_t d = 0; d < info.rank; ++d)
                     elements *= info.shape[d];
                 bytes += elements * (dtype == at::kFloat ? 4 : 2);
-                largest = std::max(largest, info.bytes);
+                largest = std::max(
+                    {largest, info.bytes, elements * (dtype == at::kFloat ? 4 : 2)}
+                );
             }
             shards.push_back(std::move(shard));
         }
@@ -232,7 +234,7 @@ struct Inventory {
     }
 };
 
-int stage_owner(Resources& resources, const std::vector<int>& devices, Bytes bytes) {
+Snapshot stage_snapshot(Resources& resources, const std::vector<int>& devices) {
     at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
     auto snapshot = resources.snapshot();
     for (int device : devices) {
@@ -247,7 +249,7 @@ int stage_owner(Resources& resources, const std::vector<int>& devices, Bytes byt
         snapshot.capacity[device + 1] =
             snapshot.used[device + 1] + std::min<Bytes>(free, ledger_free);
     }
-    return aten_stage_device(snapshot, devices, bytes);
+    return snapshot;
 }
 
 // Admission precedes allocation. ATen's allocator is capped at this ledger
@@ -255,6 +257,31 @@ int stage_owner(Resources& resources, const std::vector<int>& devices, Bytes byt
 class Stage {
     Resources& resources_;
     Handle handle_ = 0;
+    Inventory& inventory_;
+    const std::atomic_bool& cancel_;
+    AtenStagePlan plan_;
+
+    Tensor read_weight(const std::string& name) const {
+        stop(cancel_);
+        const auto& weight = inventory_.weights.at(name);
+        std::vector<std::int64_t> shape(
+            weight.info.shape.begin(), weight.info.shape.begin() + weight.info.rank
+        );
+        const auto stored =
+            weight.info.dtype == checkpoint::Dtype::bf16 ? at::kBFloat16 : at::kFloat;
+        auto cpu = at::empty(shape, at::TensorOptions().dtype(stored).device(at::kCPU));
+        need(cpu.nbytes() == weight.info.bytes, "image_aten_weight_bytes");
+        auto* destination = static_cast<std::uint8_t*>(cpu.data_ptr());
+        for (std::size_t offset = 0; offset < cpu.nbytes(); offset += 8 * mib) {
+            stop(cancel_);
+            auto bytes = std::min<std::size_t>(8 * mib, cpu.nbytes() - offset);
+            weight.shard->read_tensor(
+                weight.info.name, offset, {destination + offset, bytes}
+            );
+        }
+        weight.shard->check_unchanged();
+        return cpu.to(at::Device(at::kCUDA, device), inventory_.dtype, false, true);
+    }
 
 public:
     int device;
@@ -265,13 +292,23 @@ public:
         const std::vector<int>& devices,
         Inventory& inventory,
         Bytes workspace,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        Bytes tiled_workspace = 0
     )
-        : resources_(r), device(stage_owner(r, devices, inventory.bytes + workspace)) {
+        : resources_(r), inventory_(inventory), cancel_(cancel),
+          plan_(aten_stage_plan(
+              stage_snapshot(r, devices),
+              devices,
+              inventory.bytes,
+              inventory.largest,
+              workspace,
+              tiled_workspace
+          )),
+          device(plan_.device) {
         auto footprint = r.snapshot().capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
-        footprint[0] = 2 * inventory.largest + 32 * mib;
-        footprint[device + 1] = inventory.bytes + workspace;
+        footprint[0] = plan_.host_bytes;
+        footprint[device + 1] = plan_.device_bytes;
         handle_ = r.reserve(Workload::image, footprint);
         try {
             at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
@@ -282,33 +319,9 @@ public:
             c10::cuda::CUDACachingAllocator::setMemoryFraction(
                 double(footprint[device + 1]) / double(total), device
             );
-            for (auto& [name, weight] : inventory.weights) {
-                stop(cancel);
-                std::vector<std::int64_t> shape(
-                    weight.info.shape.begin(),
-                    weight.info.shape.begin() + weight.info.rank
-                );
-                auto stored = weight.info.dtype == checkpoint::Dtype::bf16
-                                  ? at::kBFloat16
-                                  : at::kFloat;
-                auto cpu = at::empty(
-                    shape, at::TensorOptions().dtype(stored).device(at::kCPU)
-                );
-                need(cpu.nbytes() == weight.info.bytes, "image_aten_weight_bytes");
-                auto* destination = static_cast<std::uint8_t*>(cpu.data_ptr());
-                for (std::size_t offset = 0; offset < cpu.nbytes(); offset += 8 * mib) {
-                    stop(cancel);
-                    auto bytes = std::min<std::size_t>(8 * mib, cpu.nbytes() - offset);
-                    weight.shard->read_tensor(
-                        weight.info.name, offset, {destination + offset, bytes}
-                    );
-                }
-                bank.emplace(
-                    name,
-                    cpu.to(at::Device(at::kCUDA, device), inventory.dtype, false, true)
-                );
-                weight.shard->check_unchanged();
-            }
+            if (!plan_.stream_weights)
+                for (const auto& [name, weight] : inventory.weights)
+                    bank.emplace(name, read_weight(name));
             sync();
         } catch (...) {
             auto error = std::current_exception();
@@ -348,12 +361,16 @@ public:
         handle_ = 0;
     }
 
+    bool tiled_vae() const {
+        return plan_.tile_vae;
+    }
+
     Tensor weight(const std::string& name) const {
-        return bank.at(name);
+        return plan_.stream_weights ? read_weight(name) : bank.at(name);
     }
 
     Tensor linear(const std::string& p, const Tensor& x) const {
-        // Text keeps BF16 weights resident but uses the reference FP32 forward.
+        // Text stores BF16 weights but uses the reference FP32 forward.
         return at::linear(x, weight(p + ".weight").to(x.scalar_type()));
     }
 
@@ -697,20 +714,9 @@ Tensor vae_attention(
            );
 }
 
-Tensor encode_source(
-    Stage& stage,
-    const ImageRequest& request,
-    const ImageCheckpointConfig& config,
-    const std::atomic_bool& cancel,
-    const Generator::Hook& hook
+Tensor encode_vae_blocks(
+    Stage& stage, Tensor x, const std::atomic_bool& cancel, const Generator::Hook& hook
 ) {
-    const auto device = at::Device(at::kCUDA, stage.device);
-    auto x = at::from_blob(
-                 const_cast<float*>(request.source.data()),
-                 {1, 4, std::int64_t(request.height), std::int64_t(request.width)},
-                 at::kFloat
-    )
-                 .to(device);
     x = convolution(stage, "encoder.conv_in", x);
     for (int i = 0; i < 5; ++i) {
         stop(cancel);
@@ -741,6 +747,57 @@ Tensor encode_source(
         if (hook)
             hook("vae_down_block", i);
     }
+    return x;
+}
+
+Tensor encode_source(
+    Stage& stage,
+    const ImageRequest& request,
+    const ImageCheckpointConfig& config,
+    const std::atomic_bool& cancel,
+    const Generator::Hook& hook
+) {
+    const auto device = at::Device(at::kCUDA, stage.device);
+    auto x = at::from_blob(
+                 const_cast<float*>(request.source.data()),
+                 {1, 4, std::int64_t(request.height), std::int64_t(request.width)},
+                 at::kFloat
+    )
+                 .to(device);
+    if (stage.tiled_vae()) {
+        const auto h = x.size(2) / 16, w = x.size(3) / 16;
+        auto encoded = at::empty({1, 768, h, w}, x.options());
+        for (std::int64_t y = 0; y < h; y += vae_tile_core) {
+            const auto rows = vae_tile_axis(y, h, vae_encode_halo);
+            for (std::int64_t column = 0; column < w; column += vae_tile_core) {
+                stop(cancel);
+                const auto cols = vae_tile_axis(column, w, vae_encode_halo);
+                auto tile = encode_vae_blocks(
+                    stage,
+                    x.slice(2, rows.input_begin * 16, rows.input_end * 16)
+                        .slice(3, cols.input_begin * 16, cols.input_end * 16)
+                        .contiguous(),
+                    cancel,
+                    hook
+                );
+                encoded.slice(2, rows.begin, rows.end)
+                    .slice(3, cols.begin, cols.end)
+                    .copy_(tile.slice(
+                                   2,
+                                   rows.crop_begin(),
+                                   rows.crop_begin() + rows.end - rows.begin
+                    )
+                               .slice(
+                                   3,
+                                   cols.crop_begin(),
+                                   cols.crop_begin() + cols.end - cols.begin
+                               ));
+            }
+        }
+        x = std::move(encoded);
+    } else {
+        x = encode_vae_blocks(stage, x, cancel, hook);
+    }
     x = residual(stage, "encoder.mid_block.resnets.0", x, cancel);
     x = vae_attention(stage, "encoder.mid_block.attentions.0", x, cancel);
     x = residual(stage, "encoder.mid_block.resnets.1", x, cancel);
@@ -760,32 +817,9 @@ Tensor encode_source(
     return cpu_float(((x - mean) / stddev).flatten(2).squeeze(0).transpose(0, 1));
 }
 
-Tensor decode(
-    Stage& stage,
-    Tensor latent,
-    std::int64_t h,
-    std::int64_t w,
-    const ImageCheckpointConfig& config,
-    const std::atomic_bool& cancel,
-    const Generator::Hook& hook
+Tensor decode_vae_blocks(
+    Stage& stage, Tensor x, const std::atomic_bool& cancel, const Generator::Hook& hook
 ) {
-    auto options =
-        at::TensorOptions().device(at::kCUDA, stage.device).dtype(at::kFloat);
-    auto mean =
-        at::from_blob(const_cast<float*>(config.mean.data()), {1, 64, 1, 1}, at::kFloat)
-            .to(options.device());
-    auto stddev =
-        at::from_blob(
-            const_cast<float*>(config.stddev.data()), {1, 64, 1, 1}, at::kFloat
-        )
-            .to(options.device());
-    auto x = latent.to(options.device()).transpose(0, 1).reshape({1, 64, h, w}) * stddev
-             + mean;
-    x = convolution(stage, "post_quant_conv", x);
-    x = convolution(stage, "decoder.conv_in", x);
-    x = residual(stage, "decoder.mid_block.resnets.0", x, cancel);
-    x = vae_attention(stage, "decoder.mid_block.attentions.0", x, cancel);
-    x = residual(stage, "decoder.mid_block.resnets.1", x, cancel);
     for (int i = 0; i < 5; ++i) {
         stop(cancel);
         const auto p = "decoder.up_blocks." + std::to_string(i);
@@ -820,7 +854,67 @@ Tensor decode(
         stage, "decoder.conv_out", vae_norm(stage, "decoder.norm_out", x, true)
     );
     stop(cancel);
-    return cpu_float(x.clamp(-1, 1));
+    return x.clamp(-1, 1);
+}
+
+Tensor decode(
+    Stage& stage,
+    Tensor latent,
+    std::int64_t h,
+    std::int64_t w,
+    const ImageCheckpointConfig& config,
+    const std::atomic_bool& cancel,
+    const Generator::Hook& hook
+) {
+    auto options =
+        at::TensorOptions().device(at::kCUDA, stage.device).dtype(at::kFloat);
+    auto mean =
+        at::from_blob(const_cast<float*>(config.mean.data()), {1, 64, 1, 1}, at::kFloat)
+            .to(options.device());
+    auto stddev =
+        at::from_blob(
+            const_cast<float*>(config.stddev.data()), {1, 64, 1, 1}, at::kFloat
+        )
+            .to(options.device());
+    auto x = latent.to(options.device()).transpose(0, 1).reshape({1, 64, h, w}) * stddev
+             + mean;
+    x = convolution(stage, "post_quant_conv", x);
+    x = convolution(stage, "decoder.conv_in", x);
+    x = residual(stage, "decoder.mid_block.resnets.0", x, cancel);
+    x = vae_attention(stage, "decoder.mid_block.attentions.0", x, cancel);
+    x = residual(stage, "decoder.mid_block.resnets.1", x, cancel);
+    if (!stage.tiled_vae())
+        return cpu_float(decode_vae_blocks(stage, x, cancel, hook));
+    auto output = at::empty({1, 4, h * 16, w * 16}, at::kFloat);
+    for (std::int64_t y = 0; y < h; y += vae_tile_core) {
+        const auto rows = vae_tile_axis(y, h, vae_decode_halo);
+        for (std::int64_t column = 0; column < w; column += vae_tile_core) {
+            stop(cancel);
+            const auto cols = vae_tile_axis(column, w, vae_decode_halo);
+            auto tile = decode_vae_blocks(
+                stage,
+                x.slice(2, rows.input_begin, rows.input_end)
+                    .slice(3, cols.input_begin, cols.input_end)
+                    .contiguous(),
+                cancel,
+                hook
+            );
+            auto pixels = tile.slice(
+                                  2,
+                                  rows.crop_begin() * 16,
+                                  (rows.crop_begin() + rows.end - rows.begin) * 16
+            )
+                              .slice(
+                                  3,
+                                  cols.crop_begin() * 16,
+                                  (cols.crop_begin() + cols.end - cols.begin) * 16
+                              );
+            output.slice(2, rows.begin * 16, rows.end * 16)
+                .slice(3, cols.begin * 16, cols.end * 16)
+                .copy_(cpu_float(pixels));
+        }
+    }
+    return output;
 }
 
 // Backend flags are process-wide, so restore them before another workload runs.
@@ -963,7 +1057,7 @@ void AtenGenerator::prepare(
     };
     if (!request.source.empty() && (request.strength < 1 || !request.mask.empty()))
         inventories.push_back(&m.encoder(cancel));
-    // All required component plans must fit before the FIFO owner commits to
+    // All required stage plans must fit before the FIFO owner commits to
     // running. Components execute sequentially, so their GPU budgets do not sum.
     for (const auto* inventory : inventories) {
         stop(cancel);
@@ -973,10 +1067,14 @@ void AtenGenerator::prepare(
         const auto workspace = aten_stage_workspace(
             inventory->stage, points, tokens, !request.source.empty()
         );
-        (void)stage_owner(*resources_, devices_, inventory->bytes + workspace);
-        const auto snapshot = resources_->snapshot();
-        if (2 * inventory->largest + 32 * mib > snapshot.capacity[0] - snapshot.used[0])
-            throw ResourceExhausted("image_aten_host_headroom");
+        (void)aten_stage_plan(
+            stage_snapshot(*resources_, devices_),
+            devices_,
+            inventory->bytes,
+            inventory->largest,
+            workspace,
+            aten_tiled_vae_workspace(inventory->stage, points)
+        );
     }
 }
 
@@ -1008,7 +1106,8 @@ void AtenGenerator::generate(
             devices_,
             m.encoder(cancel),
             aten_stage_workspace(AtenImageStage::vae_encoder, points, 0),
-            cancel
+            cancel,
+            aten_tiled_vae_workspace(AtenImageStage::vae_encoder, points)
         );
         stage_timing("load", "vae_encoder", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);
@@ -1079,7 +1178,8 @@ void AtenGenerator::generate(
             devices_,
             *m.vae,
             aten_stage_workspace(AtenImageStage::vae, points, count - drop),
-            cancel
+            cancel,
+            aten_tiled_vae_workspace(AtenImageStage::vae, points)
         );
         stage_timing("load", "vae", stage.device, started);
         c10::cuda::CUDAGuard guard(stage.device);

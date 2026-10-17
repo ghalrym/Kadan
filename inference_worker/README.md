@@ -48,6 +48,10 @@ requires LibTorch 2.14.1+cu130 and CUDA 13.0; `api/Dockerfile` supplies these by
 default. `KADAN_ENABLE_IMAGE_GENERATION=ON` requires CUDA and the pinned Torch
 package. CPU unit and metadata-tool builds leave generation disabled. Missing
 dependencies fail configuration; there is no hidden CPU image fallback.
+Lower-memory GPUs stream operator weights and tile the VAE convolutional stages
+when whole-component residency or full-resolution workspace does not fit. All
+VAE arithmetic and global bottleneck attention stay on the GPU. The shared ledger
+admits host transfers, weight residency and tiled workspace before execution.
 
 The accepted October 13 Turbo fox comparison used ATen with TF32 disabled.
 See the [image execution documentation](../README.md#c-aten-image-execution) for
