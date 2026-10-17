@@ -41,6 +41,17 @@ TierId = Literal["go", "plus", "pro", "ultra"]
 TierModality = Literal["llm", "image", "video", "speech", "transcription", "formatting"]
 
 
+class TierModels(BaseModel):
+    """Checkpoint assignments for a tier, which always provides a language model."""
+
+    llm: str
+    image: str | None = None
+    video: str | None = None
+    speech: str | None = None
+    transcription: str | None = None
+    formatting: str | None = None
+
+
 class HardwareTier(BaseModel):
     """A hardware profile fixing one checkpoint per modality; None is unassigned."""
 
@@ -48,7 +59,7 @@ class HardwareTier(BaseModel):
     name: str
     vram_gb: int
     ram_gb: int
-    models: dict[TierModality, str | None]
+    models: TierModels
 
 
 class ModelStoreStatus(BaseModel):

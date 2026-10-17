@@ -1,7 +1,5 @@
 """Settings view of the worker-owned model store."""
 
-from typing import get_args
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -90,9 +88,9 @@ def get_settings() -> SettingsResponse:
             models=[
                 TierModel(
                     modality=modality,
-                    model=checkpoints.get(tier.models.get(modality) or ""),
+                    model=checkpoints.get(model_id) if model_id is not None else None,
                 )
-                for modality in get_args(TierModality)
+                for modality, model_id in tier.models
             ],
         )
         for tier in status.tiers

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <numeric>
 #include <string>
+#include <variant>
 
 #include "gguf_model.hpp"
 #include "qwen_layers.hpp"
@@ -118,6 +119,24 @@ struct Mixer {
     Vec norm, inject;
 };
 
+struct QsaAttention {
+    AttentionLayer attention;
+    Vec index_q_norm, index_k_norm, raw_keys, pooled;
+
+    QsaAttention(const GgufWeights& w, const std::string& p, std::size_t context)
+        : attention(w, p, attention_spec, context),
+          index_q_norm(w.read(p + "indexer.q_norm.weight")),
+          index_k_norm(w.read(p + "indexer.k_norm.weight")),
+          raw_keys(context * index_dim), pooled(context / pool * index_dim) {
+    }
+};
+
+struct Layer {
+    Mixer attention_mixer, ffn_mixer;
+    Vec shared_gate;
+    std::variant<DeltaNetLayer, QsaAttention> attention;
+};
+
 class Qwen4Exp final : public Model {
 public:
     Qwen4Exp(const GgufWeights& weights, DenseCompute& compute, std::size_t context)
@@ -145,17 +164,18 @@ public:
         }
         for (std::size_t i = 0; i < layers; ++i) {
             const auto p = prefix(i);
-            attention_mixer_.push_back(mixer(p + "hc_attn_"));
-            ffn_mixer_.push_back(mixer(p + "hc_ffn_"));
-            shared_gate_.push_back(w_.read(p + "ffn_gate_inp_shexp.weight"));
-            if (full_attention(i)) {
-                attention_.emplace_back(w_, p, attention_spec, context);
-                index_q_norm_.push_back(w_.read(p + "indexer.q_norm.weight"));
-                index_k_norm_.push_back(w_.read(p + "indexer.k_norm.weight"));
-                raw_keys_.emplace_back(context * index_dim);
-                pooled_.emplace_back(context / pool * index_dim);
-            } else
-                delta_.emplace_back(w_, p, delta_spec);
+            layers_.push_back(
+                {mixer(p + "hc_attn_"),
+                 mixer(p + "hc_ffn_"),
+                 w_.read(p + "ffn_gate_inp_shexp.weight"),
+                 full_attention(i)
+                     ? std::variant<DeltaNetLayer, QsaAttention>(
+                           std::in_place_type<QsaAttention>, w_, p, context
+                       )
+                     : std::variant<DeltaNetLayer, QsaAttention>(
+                           std::in_place_type<DeltaNetLayer>, w_, p, delta_spec
+                       )}
+            );
         }
         const auto p = prefix(ple_layer);
         ple_norm_key_ = w_.read(p + "ple_norm_key.weight");
@@ -174,8 +194,9 @@ public:
     }
 
     void reset() override {
-        for (auto& layer : delta_)
-            layer.reset();
+        for (auto& layer : layers_)
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                delta->reset();
         std::fill(ple_state_.begin(), ple_state_.end(), 0.f);
         recent_.clear();
     }
@@ -211,18 +232,19 @@ public:
                     hidden,
                     residual.begin() + row * wide + s * hidden
                 );
-        std::size_t next_delta = 0, next_attention = 0;
         for (std::size_t i = 0; i < layers; ++i) {
-            const auto p = prefix(i);
+            auto& layer = layers_[i];
             if (i == ple_layer)
                 ple(tokens, residual);
             Vec inject;
-            auto x = mix(attention_mixer_[i], residual, &inject);
-            const auto mixed = full_attention(i)
-                                   ? attend_layer(i, next_attention++, x, position)
-                                   : delta_[next_delta++].forward(compute_, w_, x);
+            auto x = mix(layer.attention_mixer, residual, &inject);
+            auto* attention = std::get_if<QsaAttention>(&layer.attention);
+            const auto mixed =
+                attention
+                    ? attend_layer(i, *attention, x, position)
+                    : std::get<DeltaNetLayer>(layer.attention).forward(compute_, w_, x);
             combine(residual, mixed, inject);
-            x = mix(ffn_mixer_[i], residual, &inject);
+            x = mix(layer.ffn_mixer, residual, &inject);
             combine(residual, moe(i, x), inject);
             if (progress)
                 progress("layer", i + 1);
@@ -243,10 +265,7 @@ private:
     DenseCompute& compute_;
     std::size_t context_;
     Mixer head_;
-    std::vector<Mixer> attention_mixer_, ffn_mixer_;
-    std::vector<Vec> shared_gate_, index_q_norm_, index_k_norm_, raw_keys_, pooled_;
-    std::vector<DeltaNetLayer> delta_;
-    std::vector<AttentionLayer> attention_;
+    std::vector<Layer> layers_;
     std::vector<std::uint64_t> multipliers_;
     std::array<std::uint64_t, ple_heads> offsets_{}, sizes_{};
     Vec ple_norm_key_, ple_norm_query_, ple_norm_conv_, ple_conv_, ple_state_;
@@ -401,14 +420,14 @@ private:
     // index_budget / pool visible blocks every position is attended.
     Vec attend_layer(
         std::size_t layer,
-        std::size_t index,
+        QsaAttention& state,
         std::span<const float> x,
         std::size_t position
     ) {
         const auto rows = x.size() / hidden;
         const auto p = prefix(layer);
-        auto& raw = raw_keys_[index];
-        auto& pooled = pooled_[index];
+        auto& raw = state.raw_keys;
+        auto& pooled = state.pooled;
         const auto keys = w_.project(compute_, p + "indexer.k_proj.weight", x);
         std::copy(keys.begin(), keys.end(), raw.begin() + position * index_dim);
         for (std::size_t at = position; at < position + rows; ++at) {
@@ -422,7 +441,7 @@ private:
                     mean[d] += raw[(block * pool + m) * index_dim + d];
             for (auto& v : mean)
                 v /= float(pool);
-            rms_norm(mean, index_k_norm_[index], eps);
+            rms_norm(mean, state.index_k_norm, eps);
             rope(
                 mean,
                 index_dim,
@@ -435,7 +454,7 @@ private:
         const auto budget = index_budget / pool;
         if ((position + rows) / pool > budget) {
             auto q = w_.project(compute_, p + "indexer.q_proj.weight", x);
-            rms_norm(q, index_q_norm_[index], eps);
+            rms_norm(q, state.index_q_norm, eps);
             for (std::size_t row = 0; row < rows; ++row) {
                 const auto at = position + row, visible = (at + 1) / pool;
                 if (visible <= budget)
@@ -468,7 +487,7 @@ private:
                     selected.push_back(at - k);
             }
         }
-        return attention_[index].forward(compute_, w_, x, position, &sparse);
+        return state.attention.forward(compute_, w_, x, position, &sparse);
     }
 
     Vec moe(std::size_t layer, std::span<const float> x) {
@@ -541,7 +560,7 @@ private:
         for (std::size_t row = 0; row < rows; ++row) {
             float gate = 0;
             for (std::size_t c = 0; c < hidden; ++c)
-                gate += shared_gate_[layer][c] * x[row * hidden + c];
+                gate += layers_[layer].shared_gate[c] * x[row * hidden + c];
             gate = sigmoid(gate);
             for (std::size_t d = 0; d < hidden; ++d) {
                 float sum = 0;

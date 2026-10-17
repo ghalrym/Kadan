@@ -360,7 +360,7 @@ class InferenceService:
 
     async def select_tier(self, tier: TierId) -> None:
         """Save the tier, then unload a different resident language model after earlier chats."""
-        language_model = self.tier(tier).models["llm"]
+        language_model = self.tier(tier).models.llm
         await self.submit(
             TierSelectionTask(tier=tier),
             feature="tier_selection",
@@ -375,7 +375,9 @@ class InferenceService:
     async def download_tier(self, tier: TierId, license_acknowledged: bool) -> None:
         """Queue the tier's assigned checkpoints that are neither complete nor queued."""
         states = {model.id: model.status for model in self.models_status().models}
-        for model_id in dict.fromkeys(self.tier(tier).models.values()):
+        for model_id in dict.fromkeys(
+            model_id for _, model_id in self.tier(tier).models
+        ):
             if model_id is None or states.get(model_id) in (
                 "complete",
                 "downloading",
