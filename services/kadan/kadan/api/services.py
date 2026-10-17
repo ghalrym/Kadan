@@ -1,18 +1,21 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from uuid import UUID
 
 import httpx
 from pydantic import ValidationError
 
 from .config import ServiceError, Settings
+from .plugins import PluginRegistry
 from .pydantic_models.inference import CompletionMessage, HikariSettings, PreparedChat
 from .pydantic_models.resources import Message, Resource, ResourceKind
 from .routes.agents.conversations.chat import ChatInput
 from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
+from .tool_loop import ToolTurn, tool_events, tool_history
 
 MAX_PROMPT_MESSAGES = 100
 MAX_PROMPT_CHARACTERS = 48000
@@ -34,6 +37,7 @@ class LocalServices:
     def __init__(self, client: httpx.AsyncClient, settings: Settings):
         self.client = client
         self.settings = settings
+        self.plugins = PluginRegistry(settings.plugins)
 
     async def json_request(self, service: str, method: str, path: str, **kwargs):
         base = (
@@ -228,6 +232,7 @@ class LocalServices:
             resource_ids=[persona.id] if persona else [],
         )
         messages = completion_messages(current, persona, user)
+        plugin_ids = self.plugins.select(value.plugin_ids)
         status = await self.inference_status()
         if status.state != "ready":
             raise ServiceError(status.message, 503, status.state)
@@ -236,6 +241,7 @@ class LocalServices:
             user_message=user,
             messages=messages,
             model_id=status.model_id,
+            plugin_ids=plugin_ids,
         )
 
     async def save_chat_user(self, key: str, chat: PreparedChat) -> Resource:
@@ -252,11 +258,18 @@ class LocalServices:
         finish = None
         done = False
         try:
+            turn = ToolTurn(conversation=saved, messages=list(chat.messages))
+            async with aclosing(
+                tool_events(self, key, chat.model_id, chat.plugin_ids, turn)
+            ) as updates:
+                async for update in updates:
+                    yield event(update.event, update.data)
+            saved = turn.conversation
             async with self.client.stream(
                 "POST",
                 self.settings.hikari_url + "/v1/chat/completions",
                 json={
-                    "messages": [message.model_dump() for message in chat.messages],
+                    "messages": [message.model_dump() for message in turn.messages],
                     "model": chat.model_id,
                     "stream": True,
                     "conversation_id": f"kadan:{key}:{saved.id}",
@@ -384,7 +397,7 @@ class LocalServices:
         except ServiceError as error:
             message = str(error)
             if error.code == "version_conflict":
-                message = "The conversation changed while Hikari replied. Your message is saved; this reply was not saved. Reload the conversation."
+                message = "The conversation changed during this turn. Saved messages and completed tool actions remain; this reply was not saved. Reload the conversation."
             yield event(
                 "error",
                 {
@@ -436,11 +449,8 @@ def completion_messages(
         messages.append(CompletionMessage(role="system", content=persona.markdown))
     for message in [*conversation.messages, user]:
         if message.role == "tool":
-            raise ServiceError(
-                "This conversation contains tool messages. Kadan's prototype supports text conversations only; start a new conversation.",
-                422,
-                "unsupported_history",
-            )
+            messages.append(tool_history(message.content))
+            continue
         if not message.content.strip():
             raise ServiceError(
                 "This conversation contains an empty message that Hikari cannot replay. Start a new conversation.",

@@ -96,6 +96,13 @@ select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+summary {
+  cursor: pointer;
+}
 a {
   color: var(--text);
   text-underline-offset: 3px;
@@ -624,6 +631,116 @@ main {
   color: var(--muted);
   font-size: var(--small);
 }
+.tool-activity {
+  margin-bottom: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: var(--small);
+}
+.tool-activity > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 24px;
+}
+.tool-activity > summary:hover,
+.plugin-details summary:hover {
+  color: var(--accent);
+}
+.tool-activity[open] .tool-chevron {
+  transform: rotate(180deg);
+}
+.tool-activity > summary strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.tool-activity > summary span {
+  margin-left: auto;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.tool-activity.error > summary span {
+  color: var(--error);
+}
+.tool-activity > .field-hint {
+  margin-top: var(--s3);
+}
+.tool-activity dl {
+  margin: var(--s4) 0 0;
+}
+.tool-activity dt {
+  color: var(--muted);
+  margin-top: var(--s3);
+}
+.tool-activity dd {
+  margin: var(--s1) 0 0;
+}
+.tool-activity pre,
+.plugin-details pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+  font: var(--small) / 1.5 var(--mono);
+}
+.tool-unavailable {
+  color: var(--muted);
+  font-size: var(--small);
+}
+.plugin-controls {
+  margin-top: var(--s2);
+}
+.plugin-controls > button {
+  padding-left: 0;
+}
+.plugin-options {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.plugin-option {
+  margin-top: var(--s3);
+}
+.plugin-option > label {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--s3);
+  min-height: 44px;
+}
+.plugin-option input {
+  accent-color: var(--accent);
+  min-height: 0;
+  width: 16px;
+  height: 16px;
+  margin: var(--s1) 0 0;
+  flex-shrink: 0;
+}
+.plugin-option label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plugin-option label > span > span {
+  display: block;
+}
+.plugin-option label:has(input:disabled) {
+  color: var(--muted);
+}
+.plugin-details {
+  margin: var(--s1) 0 0 calc(var(--s4) + var(--s3));
+  font-size: var(--small);
+  color: var(--muted);
+}
+.plugin-details summary {
+  padding: var(--s1) 0;
+}
+.plugin-details p {
+  margin: var(--s2) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .workspace {
   display: flex;
   flex-direction: column;
@@ -942,6 +1059,10 @@ dialog form {
   }
 }
 @media (max-width: 700px) {
+  .tool-activity > summary,
+  .plugin-details summary {
+    min-height: 44px;
+  }
   button,
   .button,
   .icon {
