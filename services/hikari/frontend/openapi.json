@@ -71,6 +71,23 @@
         "title": "CacheUsage",
         "type": "object"
       },
+      "CancellationResponse": {
+        "properties": {
+          "status": {
+            "enum": [
+              "cancelled",
+              "not_active"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "CancellationResponse",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
           "meta": {
@@ -3388,6 +3405,50 @@
           }
         },
         "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/requests/{request_id}/cancel": {
+      "post": {
+        "description": "Join an active image request's cleanup before acknowledging cancellation.\n\nAn absent request has no recoverable result here. Callers must distinguish\nthat from a confirmed cancellation and reconcile their durable output first.",
+        "operationId": "cancelImageRequest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancellationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Image Request",
         "tags": [
           "Images"
         ]

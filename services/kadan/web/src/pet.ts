@@ -15,6 +15,7 @@ export interface PetSheet {
   url: string;
   version: 1 | 2;
   pixelated?: boolean;
+  animations?: { name: PetState; row: number; durations: number[] }[];
 }
 
 export const COLUMNS = 8;

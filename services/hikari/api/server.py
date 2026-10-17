@@ -5,6 +5,7 @@ from api.routes.v1 import decisions, images, metrics, requests, settings, videos
 from api.routes.v1.audio import speech, transcriptions
 from api.routes.v1.chat import completions, messages
 from api.routes.v1.images import edits, generations as image_generations
+from api.routes.v1.images import requests as image_requests
 from api.routes.v1.videos import generations as video_generations
 from api.routes import model_lifecycle
 from api.services.telemetry import TelemetryMiddleware
@@ -38,6 +39,7 @@ for router in (
     images.router,
     image_generations.router,
     edits.router,
+    image_requests.router,
     video_generations.router,
     videos.router,
     speech.router,

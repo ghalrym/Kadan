@@ -38,7 +38,11 @@ export interface Asset {
   updated_at: string;
 }
 export interface Status {
-  tsuchi: { state: "ready" | "unavailable"; message: string; browser_url: string | null };
+  tsuchi: {
+    state: "ready" | "unavailable";
+    message: string;
+    browser_url: string | null;
+  };
   hikari: {
     state: "ready" | "tier_required" | "model_required" | "unavailable";
     message: string;
@@ -47,8 +51,28 @@ export interface Status {
     settings_url: string | null;
   };
 }
+export interface Plugin {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  skills: { name: string; description: string; instructions: string }[];
+  setup: { instructions: string };
+}
+export interface ToolExecution {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  status: "started" | "completed" | "error";
+  result?: Record<string, unknown> | null;
+}
 export type ChatEvent =
   | { event: "user_saved"; data: { conversation: Resource } }
+  | { event: "status"; data: { message: string } }
+  | {
+      event: "tool_started" | "tool_finished";
+      data: { conversation: Resource; execution: ToolExecution };
+    }
   | { event: "delta"; data: { content: string } }
   | {
       event: "done";
@@ -63,3 +87,30 @@ export type ChatEvent =
         user_saved: boolean;
       };
     };
+
+export interface PetManifest {
+  schema_version: 1;
+  sprite_version: 2;
+  atlas_asset_id: string;
+  base_asset_id: string;
+  cell_width: 192;
+  cell_height: 208;
+  columns: 8;
+  rows: 11;
+  pixelated: boolean;
+  animations: { name: import("./pet").PetState; row: number; durations: number[] }[];
+}
+export interface PetJob {
+  id: string;
+  agent_key: string;
+  prompt: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "failed" | "ready";
+  stage: string;
+  completed_steps: number;
+  total_steps: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  error: string | null;
+  manifest: PetManifest | null;
+}

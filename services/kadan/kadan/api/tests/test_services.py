@@ -137,7 +137,9 @@ class Boundary:
 
 async def with_services(boundary, operation):
     async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
-        return await operation(LocalServices(client, Settings(_env_file=None)))
+        return await operation(
+            LocalServices(client, Settings(_env_file=None, plugins=[]))
+        )
 
 
 def run(boundary, operation):
@@ -340,7 +342,6 @@ def test_no_persona_is_an_explicit_request_and_replays_existing_text():
 @pytest.mark.parametrize(
     "messages",
     [
-        [Message(role="tool", content="tool result")],
         [Message(role="assistant", content="")],
         [Message(role="user", content="x" * 48000)],
         [Message(role="user", content="x") for _ in range(100)],

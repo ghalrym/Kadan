@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
-import Composer, { readiness } from "./Composer";
-import Pet, { agentPet, useMood } from "./Pet";
+import ToolActivity from "./ToolActivity";
+import { conversationActivity } from "./toolActivity";
+import Composer, { readiness, usePlugins } from "./Composer";
+import Pet, { useMood } from "./Pet";
+import { useAgentPet } from "./PetContext";
 import { agentPath, api, streamChat } from "./api";
 import type { Resource, Status } from "./types";
 import { randomUuid } from "./uuid";
@@ -12,6 +15,7 @@ export interface Opening {
   content: string;
   persona: string;
   generate: boolean;
+  pluginIds: string[];
 }
 
 interface Props {
@@ -60,6 +64,7 @@ export default function Chat({
   blocked,
   refreshStatus,
 }: Props) {
+  const petSheet = useAgentPet(agentKey);
   const draftKey = `kadan.draft.${agentKey}.${thread.id}`;
   const pendingKey = `${draftKey}.pending`;
   const pending = useRef<PendingMessage | null>(pendingMessage(pendingKey));
@@ -71,6 +76,10 @@ export default function Chat({
   const [partial, setPartial] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [streamStatus, setStreamStatus] = useState("");
+  const [activeTools, setActiveTools] = useState<Set<string>>(new Set());
+  const plugins = usePlugins(`kadan.plugins.${agentKey}.${thread.id}.disabled`, opening?.pluginIds);
+  const activities = conversationActivity(thread.messages);
   const controller = useRef<AbortController | null>(null);
   const opened = useRef(false);
   const end = useRef<HTMLDivElement>(null);
@@ -101,7 +110,7 @@ export default function Chat({
     sessionStorage.removeItem(`kadan.draft.${agentKey}.home`);
     onOpened();
     setDraft(opening.content);
-    void send(opening.generate, opening.content, opening.persona);
+    void send(opening.generate, opening.content, opening.persona, opening.pluginIds);
     // Runs once per mounted thread; the ref guards StrictMode's re-run.
   }, []);
   function reconcileSaved(value: Resource) {
@@ -118,13 +127,15 @@ export default function Chat({
     }
     onChange(value);
   }
-  async function send(generate: boolean, text = draft, personaId = persona) {
-    if (!text.trim() || sending || blocked) return;
+  async function send(generate: boolean, text = draft, personaId = persona, selectedPluginIds?: string[]) {
+    if (!text.trim() || sending || blocked || (generate && !plugins.ready && !selectedPluginIds)) return;
     setSending(true);
     onBusy(true);
     setError("");
     setNotice("");
     setPartial("");
+    setStreamStatus(generate ? "Waiting for Hikari…" : "Saving note…");
+    setActiveTools(new Set());
     const currentDraft = text.trim();
     const messageId =
       pending.current?.content === currentDraft
@@ -151,6 +162,7 @@ export default function Chat({
             content: currentDraft,
             expected_version: thread.version,
             persona_id: personaId || null,
+            plugin_ids: selectedPluginIds ?? plugins.ids,
             message_id: messageId,
           },
           controller.current.signal,
@@ -161,6 +173,17 @@ export default function Chat({
             }
             if (event.event === "delta")
               setPartial((text) => text + event.data.content);
+            if (event.event === "status") setStreamStatus(event.data.message);
+            if (event.event === "tool_started" || event.event === "tool_finished") {
+              onChange(event.data.conversation);
+              setPartial("");
+              setActiveTools((current) => {
+                const next = new Set(current);
+                if (event.event === "tool_started") next.add(event.data.execution.id);
+                else next.delete(event.data.execution.id);
+                return next;
+              });
+            }
             if (event.event === "done") {
               onChange(event.data.conversation);
               setPartial("");
@@ -186,6 +209,7 @@ export default function Chat({
       }
       void refreshStatus();
     } finally {
+      setActiveTools(new Set());
       setSending(false);
       onBusy(false);
       controller.current = null;
@@ -210,7 +234,16 @@ export default function Chat({
     <section className="chat" aria-label="Conversation">
       <div className="messages">
         <div className="messages-inner">
-          {thread.messages.map((message) => (
+          {activities.map((activity) => {
+            const message = activity.message;
+            if (activity.kind === "tool") return (
+              <ToolActivity
+                key={activity.execution?.id || message.id}
+                execution={activity.execution}
+                active={Boolean(activity.execution && activeTools.has(activity.execution.id))}
+              />
+            );
+            return (
             <article className={`message ${message.role}`} key={message.id}>
               <h3 className={message.role === "user" || message.role === "assistant" ? "sr-only" : "role"}>
                 {ROLE[message.role]}
@@ -236,7 +269,8 @@ export default function Chat({
                   ))}
               </footer>
             </article>
-          ))}
+          );
+          })}
           {partial && (
             <article className={`message assistant ${sending ? "streaming" : "unsaved"}`}>
               <h3 className="sr-only">Assistant</h3>
@@ -252,7 +286,7 @@ export default function Chat({
           )}
           {sending && !partial && (
             <div className="thinking" role="status">
-              <span className="sr-only">{ready.chat ? "Waiting for Hikari" : "Saving note"}</span>
+              <span>{streamStatus}</span>
               <i />
               <i />
               <i />
@@ -287,7 +321,8 @@ export default function Chat({
         personas={personas}
         persona={persona}
         onPersona={setPersona}
-        pet={<Pet sheet={agentPet(agentKey)} state={mood} size={96} look className="hero-pet" />}
+        plugins={plugins}
+        pet={<Pet sheet={petSheet} state={mood} size={96} look className="hero-pet" />}
       />
     </section>
   );

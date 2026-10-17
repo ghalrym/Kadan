@@ -1,8 +1,9 @@
 import re
 import sqlite3
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from datetime import timedelta
 from pathlib import Path
-from typing import Iterator
 from uuid import UUID, uuid4
 
 from .config import StorageError
@@ -16,6 +17,8 @@ from .models import (
     ExportRevision,
     Message,
     Metadata,
+    PetJob,
+    PetState,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -93,12 +96,24 @@ class Repository:
                     updated_at TEXT NOT NULL, data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS assets_namespace ON assets(agent_key, deleted, is_image);
+                CREATE TABLE IF NOT EXISTS pet_jobs (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    status TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS pet_jobs_namespace ON pet_jobs(agent_key, updated_at);
+                CREATE INDEX IF NOT EXISTS pet_jobs_status ON pet_jobs(status);
                 CREATE TABLE IF NOT EXISTS activity (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_key TEXT NOT NULL REFERENCES agents(key), data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS activity_namespace ON activity(agent_key, sequence);
             """)
+            # Serialize the additive migration for existing storage volumes.
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
+            if "selected_pet_id" not in columns:
+                db.execute("ALTER TABLE agents ADD COLUMN selected_pet_id TEXT")
+            db.commit()
 
     @contextmanager
     def connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -146,11 +161,230 @@ class Repository:
             ).fetchone():
                 raise StorageError("This agent key already exists", 409)
             db.execute(
-                "INSERT INTO agents VALUES (?, ?, ?)",
+                "INSERT INTO agents (key, name, created_at) VALUES (?, ?, ?)",
                 (agent.key, agent.name, agent.created_at.isoformat()),
             )
             self._activity(db, agent.key, "created", "agent", agent.key, agent.name)
         return agent
+
+    @staticmethod
+    def _pet(db: sqlite3.Connection, key: str, pet_id: UUID) -> PetJob:
+        row = db.execute(
+            "SELECT data FROM pet_jobs WHERE agent_key = ? AND id = ?",
+            (key, str(pet_id)),
+        ).fetchone()
+        if row is None:
+            raise StorageError("Pet not found in this namespace", 404)
+        return PetJob.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_pet(db: sqlite3.Connection, pet: PetJob) -> None:
+        db.execute(
+            """INSERT INTO pet_jobs VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+            updated_at=excluded.updated_at, data=excluded.data""",
+            (
+                str(pet.id),
+                pet.agent_key,
+                pet.status,
+                pet.updated_at.isoformat(),
+                pet.model_dump_json(),
+            ),
+        )
+
+    def create_pet(self, key: str, pet_id: UUID, prompt: str) -> PetJob:
+        now = utc_now()
+        pet = PetJob(
+            id=pet_id,
+            agent_key=key,
+            prompt=prompt,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            row = db.execute(
+                "SELECT data FROM pet_jobs WHERE id = ?", (str(pet_id),)
+            ).fetchone()
+            if row is not None:
+                current = PetJob.model_validate_json(row[0])
+                if current.agent_key == key and current.prompt == prompt:
+                    return current
+                raise StorageError("This pet job ID is already in use", 409)
+            self._save_pet(db, pet)
+        return pet
+
+    def get_pet(self, key: str, pet_id: UUID) -> PetJob:
+        with self.connect() as db:
+            self._agent(db, key)
+            return self._pet(db, key, pet_id)
+
+    def list_pets(self, key: str) -> list[PetJob]:
+        with self.connect() as db:
+            self._agent(db, key)
+            return [
+                PetJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM pet_jobs WHERE agent_key = ? ORDER BY updated_at DESC, id",
+                    (key,),
+                )
+            ]
+
+    def active_pet_jobs(self) -> list[PetJob]:
+        with self.connect() as db:
+            return [
+                PetJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM pet_jobs WHERE status IN ('queued', 'running', 'cancelling') ORDER BY updated_at, id"
+                )
+            ]
+
+    def _validate_pet_assets(
+        self, db: sqlite3.Connection, key: str, pet: PetState
+    ) -> None:
+        for asset_id in pet.asset_references():
+            asset = self._asset(db, key, asset_id)
+            if asset.deleted_at or not asset.is_image:
+                raise StorageError(
+                    "Pet artwork must reference active raster images in this namespace"
+                )
+
+    def update_pet(
+        self,
+        key: str,
+        pet_id: UUID,
+        value: PetState,
+        expected_version: int,
+        worker_id: UUID | None = None,
+    ) -> PetJob:
+        with self.connect(write=True) as db:
+            current = self._pet(db, key, pet_id)
+            self._check_version(current, expected_version)
+            now = utc_now()
+            transitions = {
+                "queued": {"running", "cancelled"},
+                "running": {
+                    "running",
+                    "cancelling",
+                    "cancelled",
+                    "interrupted",
+                    "failed",
+                    "ready",
+                },
+                "cancelling": {"cancelling", "cancelled", "interrupted", "failed"},
+                "interrupted": {"queued"},
+                "failed": {"queued"},
+                "cancelled": {"queued"},
+                "ready": set(),
+            }
+            if value.status not in transitions[current.status]:
+                raise StorageError("Invalid pet job state transition", 409)
+            if value.steps[: len(current.steps)] != current.steps:
+                raise StorageError("Completed pet steps are immutable", 409)
+            active = current.status in {"running", "cancelling"}
+            expired = active and current.lease_expires_at <= now
+            cancellation = (
+                active
+                and value.status == "cancelling"
+                and value.cancel_requested
+                and worker_id != current.owner_id
+            )
+            if cancellation:
+                # A user can request cancellation, but cannot alter worker progress.
+                unchanged = {
+                    "steps",
+                    "completed_steps",
+                    "pending_step_name",
+                    "pending_request_id",
+                    "owner_id",
+                    "lease_expires_at",
+                    "manifest",
+                    "error",
+                }
+                if any(
+                    getattr(current, field) != getattr(value, field)
+                    for field in unchanged
+                ):
+                    raise StorageError(
+                        "Cancellation cannot modify generation progress", 409
+                    )
+            elif expired and (
+                value.status == "interrupted"
+                or (value.status == "cancelled" and current.cancel_requested)
+            ):
+                if (
+                    value.steps != current.steps
+                    or value.pending_step_name != current.pending_step_name
+                    or value.pending_request_id != current.pending_request_id
+                ):
+                    raise StorageError(
+                        "Recovery cannot modify completed or pending steps", 409
+                    )
+            elif active and (expired or worker_id != current.owner_id):
+                raise StorageError("Pet job lease is not owned by this worker", 409)
+            if (
+                current.cancel_requested
+                and value.status != "queued"
+                and not value.cancel_requested
+            ):
+                raise StorageError(
+                    "Cancellation requests cannot be cleared by worker updates", 409
+                )
+            if value.status in {"running", "cancelling"} and not cancellation:
+                if worker_id is None or value.owner_id != worker_id:
+                    raise StorageError("A worker must own its pet job lease", 409)
+                if not now < value.lease_expires_at <= now + timedelta(minutes=5):
+                    raise StorageError(
+                        "Pet job lease must expire within five minutes", 409
+                    )
+            if (
+                current.status in {"queued", "interrupted", "failed", "cancelled"}
+                and value.steps != current.steps
+            ):
+                raise StorageError(
+                    "Claiming or resuming a pet cannot alter completed steps", 409
+                )
+            # Validate new references only: cancellation and failure must still work
+            # after someone has moved already completed artwork to trash.
+            if len(value.steps) > len(current.steps) or value.status in {
+                "ready",
+                "queued",
+            }:
+                self._validate_pet_assets(db, key, value)
+            updated = PetJob.model_validate(
+                {
+                    **current.model_dump(),
+                    **value.model_dump(),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_pet(db, updated)
+            return updated
+
+    def selected_pet(self, key: str) -> PetJob | None:
+        with self.connect() as db:
+            agent = self._agent(db, key)
+            return (
+                self._pet(db, key, agent.selected_pet_id)
+                if agent.selected_pet_id
+                else None
+            )
+
+    def select_pet(self, key: str, pet_id: UUID | None) -> PetJob | None:
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            pet = self._pet(db, key, pet_id) if pet_id is not None else None
+            if pet:
+                if pet.status != "ready":
+                    raise StorageError("Only ready pets can be selected", 409)
+                self._validate_pet_assets(db, key, pet)
+            db.execute(
+                "UPDATE agents SET selected_pet_id = ? WHERE key = ?",
+                (str(pet_id) if pet_id else None, key),
+            )
+            return pet
 
     @staticmethod
     def _activity(
@@ -235,7 +469,9 @@ class Repository:
             ]
 
     @staticmethod
-    def _check_version(current: Resource | Asset, expected_version: int) -> None:
+    def _check_version(
+        current: Resource | Asset | PetJob, expected_version: int
+    ) -> None:
         if current.version != expected_version:
             raise StorageError("This item changed. Reload it before saving again.", 409)
 
@@ -542,6 +778,28 @@ class Repository:
     def create_asset(self, asset: Asset) -> Asset:
         with self.connect(write=True) as db:
             self._agent(db, asset.agent_key)
+            row = db.execute(
+                "SELECT data FROM assets WHERE id = ?", (str(asset.id),)
+            ).fetchone()
+            if row is not None:
+                current = Asset.model_validate_json(row[0])
+                replay_fields = {
+                    "agent_key",
+                    "filename",
+                    "media_type",
+                    "size_bytes",
+                    "sha256",
+                    "is_image",
+                    "title",
+                    "tags",
+                    "sources",
+                }
+                if current.deleted_at is None and all(
+                    getattr(current, field) == getattr(asset, field)
+                    for field in replay_fields
+                ):
+                    return current
+                raise StorageError("This asset ID is already in use", 409)
             self._save_asset(db, asset)
             self._activity(
                 db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
@@ -589,6 +847,13 @@ class Repository:
                 }
             )
             self._save_asset(db, updated)
+            agent = self._agent(db, key)
+            if agent.selected_pet_id:
+                pet = self._pet(db, key, agent.selected_pet_id)
+                if asset_id in pet.asset_references():
+                    db.execute(
+                        "UPDATE agents SET selected_pet_id = NULL WHERE key = ?", (key,)
+                    )
             self._activity(db, key, "trashed", "asset", str(asset_id), current.title)
             return updated
 
@@ -675,6 +940,12 @@ class Repository:
                 Asset.model_validate_json(row[0])
                 for row in db.execute(
                     "SELECT data FROM assets WHERE agent_key = ? ORDER BY id", (key,)
+                )
+            ],
+            pet_jobs=[
+                PetJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM pet_jobs WHERE agent_key = ? ORDER BY id", (key,)
                 )
             ],
             activity=[

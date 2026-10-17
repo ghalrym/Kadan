@@ -8,8 +8,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import ServiceError, Settings
 from .http_safety import LocalRequestSafety
-from .routes import agents, health, status
-from .routes.agents import assets, resources
+from .routes import agents, health, plugins, status
+from .routes.agents import assets, pets, resources
 from .routes.agents.assets import content
 from .routes.agents.conversations import chat, notes
 from .services import LocalServices
@@ -26,7 +26,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trust_env=False,
         ) as client:
             app.state.services = LocalServices(client, config)
-            yield
+            app.state.services.pets.start()
+            try:
+                yield
+            finally:
+                await app.state.services.pets.close()
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
     app.add_middleware(LocalRequestSafety, allowed_hosts=config.allowed_hosts)
@@ -39,9 +43,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         health.router,
+        plugins.router,
         status.router,
         agents.router,
         resources.router,
+        pets.router,
         assets.router,
         content.router,
         notes.router,

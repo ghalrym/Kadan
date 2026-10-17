@@ -87,16 +87,21 @@ class FileStorage:
         return self.blob_dir / str(UUID(str(asset_id)))
 
     def upload(
-        self, key: str, source: BinaryIO, filename: str | None, metadata: Metadata
+        self,
+        key: str,
+        source: BinaryIO,
+        filename: str | None,
+        metadata: Metadata,
+        asset_id: UUID | None = None,
     ) -> Asset:
         self.repository.get_agent(key)
-        asset_id = uuid4()
+        asset_id = asset_id or uuid4()
         target = self.blob_path(asset_id)
         digest, size = hashlib.sha256(), 0
-        created = False
+        descriptor, name = tempfile.mkstemp(prefix="upload-", dir=self.temp_dir)
+        temporary = Path(name)
         try:
-            with target.open("xb") as output:
-                created = True
+            with os.fdopen(descriptor, "wb") as output:
                 while chunk := source.read(1024 * 1024):
                     size += len(chunk)
                     if size > self.max_upload_bytes:
@@ -108,19 +113,14 @@ class FileStorage:
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
-            directory_descriptor = os.open(self.blob_dir, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
-            name = safe_filename(filename)
-            media_type, is_image = classify_media(target, name)
+            filename = safe_filename(filename)
+            media_type, is_image = classify_media(temporary, filename)
             now = utc_now()
             asset = Asset(
                 **metadata.model_dump(),
                 id=asset_id,
                 agent_key=key,
-                filename=name,
+                filename=filename,
                 media_type=media_type,
                 is_image=is_image,
                 size_bytes=size,
@@ -129,11 +129,27 @@ class FileStorage:
                 created_at=now,
                 updated_at=now,
             )
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                with target.open("rb") as existing:
+                    if (
+                        hashlib.file_digest(existing, "sha256").hexdigest()
+                        != asset.sha256
+                    ):
+                        raise StorageError(
+                            "This asset ID already contains different artwork", 409
+                        ) from None
+            directory_descriptor = os.open(self.blob_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            # Retain a published immutable blob if the database write fails. A
+            # retry with the same ID/content can finish registration after a crash.
             return self.repository.create_asset(asset)
-        except Exception:
-            if created:
-                target.unlink(missing_ok=True)
-            raise
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def export(self, key: str) -> Path:
         descriptor, filename = tempfile.mkstemp(

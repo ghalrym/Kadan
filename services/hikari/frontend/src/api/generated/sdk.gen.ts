@@ -12,6 +12,9 @@ import type {
   CancelDownloadV1ModelsModelIdDownloadDeleteData,
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelImageRequestData,
+  CancelImageRequestErrors,
+  CancelImageRequestResponses,
   CancelVideoData,
   CancelVideoErrors,
   CancelVideoResponses,
@@ -412,6 +415,27 @@ export const generateImages = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   })
+
+/**
+ * Cancel Image Request
+ *
+ * Join an active image request's cleanup before acknowledging cancellation.
+ *
+ * An absent request has no recoverable result here. Callers must distinguish
+ * that from a confirmed cancellation and reconcile their durable output first.
+ */
+export const cancelImageRequest = <ThrowOnError extends boolean = false>(
+  options: Options<CancelImageRequestData, ThrowOnError>,
+): RequestResult<
+  CancelImageRequestResponses,
+  CancelImageRequestErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    CancelImageRequestResponses,
+    CancelImageRequestErrors,
+    ThrowOnError
+  >({ url: '/v1/images/requests/{request_id}/cancel', ...options })
 
 /**
  * Get Metrics

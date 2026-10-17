@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 from uuid import UUID
@@ -19,7 +19,7 @@ MAX_CONVERSATION_MESSAGES = 10000
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Model(BaseModel):
@@ -40,6 +40,7 @@ class AgentInput(Model):
 
 class Agent(AgentInput):
     created_at: datetime
+    selected_pet_id: UUID | None = None
 
 
 class SourceLink(Model):
@@ -91,7 +92,7 @@ class Message(Model):
     def aware_timestamp(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("Message timestamps require a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
 
 
 class Metadata(Model):
@@ -263,6 +264,151 @@ class ExportRevision(ResourceVersion):
         return self
 
 
+PET_ANIMATIONS = (
+    "idle",
+    "running-right",
+    "running-left",
+    "waving",
+    "jumping",
+    "failed",
+    "waiting",
+    "running",
+    "review",
+)
+PET_STEP_NAMES = ("base", *PET_ANIMATIONS, "look-0", "look-1")
+PetStatus = Literal[
+    "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
+]
+
+
+class PetAnimation(Model):
+    name: str
+    row: int = Field(ge=0, le=8)
+    durations: list[Annotated[int, Field(ge=16, le=10000)]] = Field(
+        min_length=1, max_length=8
+    )
+
+
+class PetManifest(Model):
+    schema_version: Literal[1] = 1
+    sprite_version: Literal[2] = 2
+    atlas_asset_id: UUID
+    base_asset_id: UUID
+    cell_width: Literal[192] = 192
+    cell_height: Literal[208] = 208
+    columns: Literal[8] = 8
+    rows: Literal[11] = 11
+    pixelated: bool = False
+    animations: list[PetAnimation] = Field(min_length=9, max_length=9)
+
+    @model_validator(mode="after")
+    def canonical_rows(self) -> Self:
+        if [(item.name, item.row) for item in self.animations] != list(
+            zip(PET_ANIMATIONS, range(9), strict=True)
+        ):
+            raise ValueError("Pet animations must use the nine canonical atlas rows")
+        if self.atlas_asset_id == self.base_asset_id:
+            raise ValueError("Pet atlas and base artwork must be separate assets")
+        return self
+
+
+class PetStep(Model):
+    name: str = Field(min_length=1, max_length=100)
+    source_asset_id: UUID | None = None
+    output_asset_id: UUID
+    prompt: str = Field(min_length=1, max_length=20000)
+    request_id: UUID
+    model_id: str = Field(min_length=1, max_length=500)
+    seed: int | None = None
+    strength: float | None = Field(default=None, ge=0, le=1)
+    meta: str = Field(default="", max_length=2000000)
+
+
+class PetState(Model):
+    status: PetStatus = "queued"
+    stage: str = Field(default="queued", min_length=1, max_length=500)
+    completed_steps: int = Field(default=0, ge=0, le=12)
+    total_steps: Literal[12] = 12
+    error: str | None = Field(default=None, max_length=10000)
+    cancel_requested: bool = False
+    steps: list[PetStep] = Field(default_factory=list, max_length=12)
+    manifest: PetManifest | None = None
+    pending_step_name: str | None = Field(default=None, max_length=100)
+    pending_request_id: UUID | None = None
+    owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+
+    @field_validator("lease_expires_at")
+    @classmethod
+    def aware_lease(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("Lease expiry requires a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def valid_progress(self) -> Self:
+        if self.completed_steps != len(self.steps):
+            raise ValueError("Completed steps must match persisted step outputs")
+        if [step.name for step in self.steps] != list(
+            PET_STEP_NAMES[: len(self.steps)]
+        ):
+            raise ValueError("Pet steps must follow the canonical creation order")
+        if len({step.output_asset_id for step in self.steps}) != len(self.steps):
+            raise ValueError("Each pet step must have separate output artwork")
+        if any(step.source_asset_id == step.output_asset_id for step in self.steps):
+            raise ValueError("Source and output artwork must be separate assets")
+        if (self.pending_step_name is None) != (self.pending_request_id is None):
+            raise ValueError(
+                "Pending step name and request ID must be supplied together"
+            )
+        if self.pending_step_name is not None:
+            next_step = (
+                PET_STEP_NAMES[len(self.steps)] if len(self.steps) < 12 else "atlas"
+            )
+            if self.pending_step_name != next_step:
+                raise ValueError("Pending step must be the next unfinished step")
+        if self.status in {"running", "cancelling"}:
+            if self.owner_id is None or self.lease_expires_at is None:
+                raise ValueError("Running jobs require an owner and lease")
+        elif self.owner_id is not None or self.lease_expires_at is not None:
+            raise ValueError("Only running jobs can retain an owner or lease")
+        if self.status in {"cancelling", "cancelled"} and not self.cancel_requested:
+            raise ValueError("Cancellation states require a cancellation request")
+        if self.status == "ready":
+            if (
+                self.cancel_requested
+                or self.manifest is None
+                or len(self.steps) != 12
+                or self.pending_step_name is not None
+            ):
+                raise ValueError("Ready pets require every step and an atlas manifest")
+            if self.manifest.base_asset_id != self.steps[0].output_asset_id:
+                raise ValueError("Manifest must reference the generated base artwork")
+            if self.manifest.atlas_asset_id in {
+                step.output_asset_id for step in self.steps
+            }:
+                raise ValueError("Atlas must be assembled into a separate asset")
+        elif self.manifest is not None:
+            raise ValueError("Only ready pets can contain an atlas manifest")
+        return self
+
+    def asset_references(self) -> set[UUID]:
+        refs = {step.output_asset_id for step in self.steps}
+        refs.update(step.source_asset_id for step in self.steps if step.source_asset_id)
+        if self.manifest:
+            refs.update((self.manifest.atlas_asset_id, self.manifest.base_asset_id))
+        return refs
+
+
+class PetJob(PetState):
+    id: UUID
+    agent_key: AgentKey
+    prompt: str = Field(min_length=1, max_length=10000)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
 class ExportManifest(Model):
     schema_version: Literal[1] = 1
     exported_at: datetime
@@ -271,3 +417,4 @@ class ExportManifest(Model):
     versions: list[ExportRevision] = Field(default_factory=list)
     assets: list[Asset] = Field(default_factory=list)
     activity: list[Activity] = Field(default_factory=list)
+    pet_jobs: list[PetJob] = Field(default_factory=list)

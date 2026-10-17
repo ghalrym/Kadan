@@ -59,6 +59,16 @@ export type CacheUsage = {
 }
 
 /**
+ * CancellationResponse
+ */
+export type CancellationResponse = {
+  /**
+   * Status
+   */
+  status: 'cancelled' | 'not_active'
+}
+
+/**
  * ChatMessage
  */
 export type ChatMessage = {
@@ -1950,6 +1960,38 @@ export type GenerateImagesResponses = {
 
 export type GenerateImagesResponse =
   GenerateImagesResponses[keyof GenerateImagesResponses]
+
+export type CancelImageRequestData = {
+  body?: never
+  path: {
+    /**
+     * Request Id
+     */
+    request_id: string
+  }
+  query?: never
+  url: '/v1/images/requests/{request_id}/cancel'
+}
+
+export type CancelImageRequestErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelImageRequestError =
+  CancelImageRequestErrors[keyof CancelImageRequestErrors]
+
+export type CancelImageRequestResponses = {
+  /**
+   * Successful Response
+   */
+  200: CancellationResponse
+}
+
+export type CancelImageRequestResponse =
+  CancelImageRequestResponses[keyof CancelImageRequestResponses]
 
 export type GetMetricsData = {
   body?: never

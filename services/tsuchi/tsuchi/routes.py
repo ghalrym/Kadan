@@ -3,7 +3,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, Query, UploadFile
-from pydantic import ValidationError
+from pydantic import Field, ValidationError, field_validator
 from starlette.responses import FileResponse
 
 from .config import StorageError
@@ -16,6 +16,9 @@ from .models import (
     AssetUpdate,
     MessageAppend,
     Metadata,
+    Model,
+    PetJob,
+    PetState,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -27,6 +30,27 @@ from .models import (
 )
 from .repository import Repository
 from .services import FileStorage, inline_media, safe_filename
+
+
+class PetCreate(Model):
+    id: UUID
+    prompt: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("prompt")
+    @classmethod
+    def nonblank_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Describe the pet to create")
+        return value.strip()
+
+
+class PetUpdate(PetState):
+    expected_version: int = Field(ge=1)
+    worker_id: UUID | None = None
+
+
+class PetSelection(Model):
+    pet_id: UUID | None
 
 
 class ExportResponse(FileResponse):
@@ -52,6 +76,39 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents", response_model=Agent, status_code=201)
     def create_agent(value: AgentInput):
         return repository.create_agent(value)
+
+    @router.get("/pet-jobs", response_model=list[PetJob])
+    def active_pet_jobs():
+        return repository.active_pet_jobs()
+
+    @router.get("/agents/{key}/pets", response_model=list[PetJob])
+    def list_pets(key: AgentKey):
+        return repository.list_pets(key)
+
+    @router.post("/agents/{key}/pets", response_model=PetJob, status_code=201)
+    def create_pet(key: AgentKey, value: PetCreate):
+        return repository.create_pet(key, value.id, value.prompt)
+
+    @router.get("/agents/{key}/pets/{pet_id}", response_model=PetJob)
+    def get_pet(key: AgentKey, pet_id: UUID):
+        return repository.get_pet(key, pet_id)
+
+    @router.put("/agents/{key}/pets/{pet_id}", response_model=PetJob)
+    def update_pet(key: AgentKey, pet_id: UUID, value: PetUpdate):
+        state = PetState.model_validate(
+            value.model_dump(exclude={"expected_version", "worker_id"})
+        )
+        return repository.update_pet(
+            key, pet_id, state, value.expected_version, value.worker_id
+        )
+
+    @router.get("/agents/{key}/pet", response_model=PetJob | None)
+    def selected_pet(key: AgentKey):
+        return repository.selected_pet(key)
+
+    @router.put("/agents/{key}/pet", response_model=PetJob | None)
+    def select_pet(key: AgentKey, value: PetSelection):
+        return repository.select_pet(key, value.pet_id)
 
     @router.get("/agents/{key}/stats", response_model=Stats)
     def stats(key: AgentKey):
@@ -140,6 +197,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         title: Annotated[str | None, Form()] = None,
         tags: Annotated[str, Form()] = "[]",
         sources: Annotated[str, Form()] = "[]",
+        asset_id: Annotated[UUID | None, Form()] = None,
     ):
         try:
             metadata = Metadata(
@@ -151,7 +209,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             raise StorageError(
                 "Upload title, tags or sources are invalid", 422
             ) from error
-        return files.upload(key, file.file, file.filename, metadata)
+        return files.upload(key, file.file, file.filename, metadata, asset_id)
 
     @router.get("/agents/{key}/assets/{asset_id}", response_model=Asset)
     def get_asset(key: AgentKey, asset_id: UUID):
