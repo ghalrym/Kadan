@@ -271,6 +271,7 @@ public:
                     return false;
             }
             std::vector<InferenceBatchItem> batch;
+            batch.reserve(jobs.size());
             for (const auto& current : jobs)
                 batch.push_back({&current->request, &current->cancel});
             for (;;) {
