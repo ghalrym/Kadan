@@ -97,7 +97,7 @@ export default function Personas({
       onChange([value, ...personas.filter((item) => item.id !== value.id)]);
       setError("");
       setNotice(
-        "Latest version loaded below. Your draft is unchanged; review it before saving.",
+        "Latest version loaded below. Your draft is unchanged.",
       );
     } catch (e) {
       setError((e as Error).message);
@@ -133,7 +133,7 @@ export default function Personas({
       onChange([value, ...personas.filter((item) => item.id !== value.id)]);
       setSelected(value);
       setLatest(null);
-      setNotice("Persona saved.");
+      setNotice("Saved");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -152,7 +152,6 @@ export default function Personas({
           <Plus size={16} />
           New persona
         </button>
-        {personas.length === 0 && <p className="quiet">No personas yet.</p>}
         {personas.map((item) => (
           <button
             disabled={saving || blocked}
@@ -160,7 +159,9 @@ export default function Personas({
             onClick={() => choose(item)}
             key={item.id}
           >
-            <UserRound size={17} />
+            <span className="initial" aria-hidden="true">
+              {item.title.trim().charAt(0).toUpperCase()}
+            </span>
             <strong>{item.title}</strong>
           </button>
         ))}
@@ -189,10 +190,6 @@ export default function Personas({
               disabled={saving || blocked}
             />
           </label>
-          <p className="field-hint">
-            Select a persona in a thread to include these instructions in the
-            next response.
-          </p>
           {error && (
             <div role="alert" className="error">
               {error}
@@ -238,11 +235,7 @@ export default function Personas({
       ) : (
         <div className="detail-empty">
           <UserRound size={26} />
-          <p>
-            {personas.length
-              ? "Select a persona to edit it."
-              : "Create a persona to set response instructions."}
-          </p>
+          <p>{personas.length ? "Select a persona" : "No personas yet"}</p>
         </div>
       )}
     </section>

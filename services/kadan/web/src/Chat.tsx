@@ -1,21 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ArrowUp,
-  ExternalLink,
-  FileText,
-  MessageSquare,
-  Square,
-} from "lucide-react";
+import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
+import Composer, { readiness } from "./Composer";
+import Pet, { agentPet, useMood } from "./Pet";
 import { agentPath, api, streamChat } from "./api";
 import type { Resource, Status } from "./types";
 import { randomUuid } from "./uuid";
 
+/** The first message of a thread started from the agent's home screen. */
+export interface Opening {
+  content: string;
+  persona: string;
+  generate: boolean;
+}
+
 interface Props {
   agentKey: string;
+  agentName: string;
   thread: Resource;
   personas: Resource[];
   status: Status | null;
+  opening: Opening | null;
+  onOpened: () => void;
   onChange: (value: Resource) => void;
   onBusy: (value: boolean) => void;
   blocked: boolean;
@@ -37,11 +43,18 @@ function pendingMessage(key: string): PendingMessage | null {
     return null;
   }
 }
+const ROLE = { user: "You", assistant: "Assistant", system: "System", tool: "Tool" } as const;
+const clock = (value: string) =>
+  new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
 export default function Chat({
   agentKey,
+  agentName,
   thread,
   personas,
   status,
+  opening,
+  onOpened,
   onChange,
   onBusy,
   blocked,
@@ -53,24 +66,44 @@ export default function Chat({
   const [draft, setDraft] = useState(
     () => sessionStorage.getItem(draftKey) || "",
   );
-  const [persona, setPersona] = useState("");
+  const [persona, setPersona] = useState(opening?.persona ?? "");
   const [sending, setSending] = useState(false);
   const [partial, setPartial] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const controller = useRef<AbortController | null>(null);
+  const opened = useRef(false);
   const end = useRef<HTMLDivElement>(null);
-  const ready =
-    status?.hikari.state === "ready" && status.tsuchi.state === "ready";
-  const storageReady = status?.tsuchi.state === "ready";
+  const ready = readiness(status);
+  const [mood, react] = useMood(
+    !status
+      ? "idle"
+      : sending
+        ? "running"
+        : !ready.chat
+          ? "waiting"
+          : draft.trim()
+            ? "review"
+            : "idle",
+  );
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
+    end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [thread.messages.length, partial]);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     if (draft) sessionStorage.setItem(draftKey, draft);
     else sessionStorage.removeItem(draftKey);
   }, [draft, draftKey]);
+  useEffect(() => {
+    if (opened.current) return;
+    opened.current = true;
+    if (!opening) return react("waving");
+    sessionStorage.removeItem(`kadan.draft.${agentKey}.home`);
+    onOpened();
+    setDraft(opening.content);
+    void send(opening.generate, opening.content, opening.persona);
+    // Runs once per mounted thread; the ref guards StrictMode's re-run.
+  }, []);
   function reconcileSaved(value: Resource) {
     const confirmed = pending.current;
     if (
@@ -85,14 +118,14 @@ export default function Chat({
     }
     onChange(value);
   }
-  async function send(generate: boolean) {
-    if (!draft.trim() || sending || blocked) return;
+  async function send(generate: boolean, text = draft, personaId = persona) {
+    if (!text.trim() || sending || blocked) return;
     setSending(true);
     onBusy(true);
     setError("");
     setNotice("");
     setPartial("");
-    const currentDraft = draft.trim();
+    const currentDraft = text.trim();
     const messageId =
       pending.current?.content === currentDraft
         ? pending.current.id
@@ -109,7 +142,7 @@ export default function Chat({
         });
         reconcileSaved(saved);
         setDraft("");
-        setNotice("Note saved. No response requested.");
+        react("waving");
       } else {
         controller.current = new AbortController();
         await streamChat(
@@ -117,7 +150,7 @@ export default function Chat({
           {
             content: currentDraft,
             expected_version: thread.version,
-            persona_id: persona || null,
+            persona_id: personaId || null,
             message_id: messageId,
           },
           controller.current.signal,
@@ -131,28 +164,23 @@ export default function Chat({
             if (event.event === "done") {
               onChange(event.data.conversation);
               setPartial("");
-              setNotice(
-                event.data.finish_reason === "length"
-                  ? "Response saved. Hikari reached its response limit."
-                  : "Response saved.",
-              );
+              react("jumping", 2);
+              if (event.data.finish_reason === "length")
+                setNotice("Stopped at Hikari's response limit.");
             }
           },
         );
       }
     } catch (e) {
-      setError(
-        (e as Error).name === "AbortError"
-          ? "Response stopped. Reloading saved messages…"
-          : (e as Error).message,
-      );
+      const aborted = (e as Error).name === "AbortError";
+      if (!aborted) react("failed", 2);
+      setError(aborted ? "Stopped. Reloading saved messages…" : (e as Error).message);
       try {
         const saved = await api<Resource>(
           `${agentPath(agentKey)}/resources/${thread.id}`,
         );
         reconcileSaved(saved);
-        if ((e as Error).name === "AbortError")
-          setError("Response stopped. Saved messages reloaded.");
+        if (aborted) setError("Stopped. Saved messages reloaded.");
       } catch {
         /* Keep the already confirmed messages visible. */
       }
@@ -163,223 +191,104 @@ export default function Chat({
       controller.current = null;
     }
   }
+  function reload() {
+    setSending(true);
+    onBusy(true);
+    api<Resource>(`${agentPath(agentKey)}/resources/${thread.id}`)
+      .then((value) => {
+        reconcileSaved(value);
+        setPartial("");
+        setError("");
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => {
+        setSending(false);
+        onBusy(false);
+      });
+  }
   return (
     <section className="chat" aria-label="Conversation">
       <div className="messages">
-        {!thread.messages.length && (
-          <div className="conversation-empty">
-            <MessageSquare size={26} />
-            <h2>New thread</h2>
-          </div>
-        )}
-        {thread.messages.map((message) => (
-          <article className={`message ${message.role}`} key={message.id}>
-            <div className="message-meta">
-              <strong>
-                {message.role === "user"
-                  ? "You"
-                  : message.role === "assistant"
-                    ? "Assistant"
-                    : message.role === "system"
-                      ? "System"
-                      : "Tool"}
-              </strong>
-              <time dateTime={message.created_at}>
-                {new Date(message.created_at).toLocaleTimeString(undefined, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-            </div>
-            <Markdown>{message.content}</Markdown>
-            {message.resource_ids?.length > 0 && (
-              <div className="message-refs">
-                {message.resource_ids.map((id) => (
-                  <span key={id}>
-                    {personas.find((p) => p.id === id)?.title ||
-                      `Resource ${id.slice(0, 8)}`}
+        <div className="messages-inner">
+          {thread.messages.map((message) => (
+            <article className={`message ${message.role}`} key={message.id}>
+              <h3 className={message.role === "user" || message.role === "assistant" ? "sr-only" : "role"}>
+                {ROLE[message.role]}
+              </h3>
+              <div className="body">
+                <Markdown>{message.content}</Markdown>
+              </div>
+              <footer>
+                <time dateTime={message.created_at}>{clock(message.created_at)}</time>
+                {message.resource_ids?.map((id) => (
+                  <span className="tag" key={id}>
+                    {personas.find((p) => p.id === id)?.title || `Resource ${id.slice(0, 8)}`}
                   </span>
                 ))}
-              </div>
-            )}
-            {(message.attachment_ids?.length > 0 ||
-              message.sources?.length > 0) && (
-              <p className="field-hint">
-                This stored message has attachments or source links. View them
-                in Tsuchi.
-              </p>
-            )}
-          </article>
-        ))}
-        {partial && (
-          <article className="message assistant">
-            <div className="message-meta">
-              <strong>Assistant</strong>
-              <span>
-                {sending ? "Responding…" : "Partial response · not saved"}
-              </span>
-            </div>
-            <Markdown>{partial}</Markdown>
-          </article>
-        )}
-        {sending && !partial && (
-          <p className="stream-status" role="status">
-            {ready ? "Waiting for Hikari…" : "Saving note…"}
-          </p>
-        )}
-        <div ref={end} />
-      </div>
-      <div className="composer-wrap">
-        {!ready && (
-          <div className="inference-state">
-            <div>
-              <span className="status-dot" />
-              <strong>
-                {!status
-                  ? "Checking services"
-                  : !storageReady
-                    ? "Storage unavailable"
-                    : "Chat unavailable"}
-              </strong>
-            </div>
-            <p>
-              {!storageReady ? status?.tsuchi.message : status?.hikari.message}
-            </p>
-            {(!storageReady ? status?.tsuchi.browser_url : status?.hikari.settings_url) && <a
-              href={(!storageReady ? status?.tsuchi.browser_url : status?.hikari.settings_url) ?? undefined}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {!storageReady ? "Open Tsuchi" : "Open Hikari Settings"}
-              <ExternalLink size={13} />
-            </a>}
-          </div>
-        )}
-        {error && (
-          <div className="error feedback" role="alert">
-            {error}
-            <button
-              disabled={sending || blocked}
-              onClick={() => {
-                setSending(true);
-                onBusy(true);
-                api<Resource>(`${agentPath(agentKey)}/resources/${thread.id}`)
-                  .then((value) => {
-                    reconcileSaved(value);
-                    setPartial("");
-                    setError("");
-                  })
-                  .catch((e) => setError(e.message))
-                  .finally(() => {
-                    setSending(false);
-                    onBusy(false);
-                  });
-              }}
-            >
-              Reload thread
-            </button>
-          </div>
-        )}
-        <form
-          className="composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send(Boolean(ready));
-          }}
-        >
-          <label className="sr-only" htmlFor="message">
-            Message
-          </label>
-          <textarea
-            id="message"
-            placeholder={ready ? "Message your agent…" : "Write a note…"}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            maxLength={16000}
-            rows={3}
-            disabled={sending || blocked || !storageReady}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void send(Boolean(ready));
-              }
-            }}
-          />
-          <div className="composer-actions">
-            {ready ? (
-              <label className="persona-select">
-                <SettingsIcon />
-                <span className="sr-only">Persona for next response</span>
-                <select
-                  aria-label="Persona for next response"
-                  value={persona}
-                  onChange={(event) => setPersona(event.target.value)}
-                  disabled={sending || blocked}
-                >
-                  <option value="">No persona</option>
-                  {personas.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <span />
-            )}
-            <div className="send-actions">
-              {ready && (
-                <button
-                  className="quiet-button"
-                  type="button"
-                  onClick={() => void send(false)}
-                  disabled={sending || blocked || !draft.trim()}
-                >
-                  Save note
-                </button>
-              )}
-              {sending && controller.current ? (
-                <button
-                  className="icon stop"
-                  type="button"
-                  aria-label="Stop response"
-                  onClick={() => controller.current?.abort()}
-                >
-                  <Square size={15} />
-                </button>
-              ) : (
-                <button
-                  className="primary send"
-                  disabled={
-                    sending || blocked || !draft.trim() || !storageReady
-                  }
-                  aria-label={ready ? "Send message" : "Save note"}
-                >
-                  {ready ? (
-                    <ArrowUp size={18} />
+                {(message.attachment_ids?.length > 0 || message.sources?.length > 0) &&
+                  (status?.tsuchi.browser_url ? (
+                    <a className="tag" href={status.tsuchi.browser_url} target="_blank" rel="noreferrer">
+                      Attachments in Tsuchi
+                      <ArrowUpRight size={12} />
+                    </a>
                   ) : (
-                    <>
-                      <FileText size={15} />
-                      Save note
-                    </>
-                  )}
-                </button>
+                    <span className="tag">Attachments in Tsuchi</span>
+                  ))}
+              </footer>
+            </article>
+          ))}
+          {partial && (
+            <article className={`message assistant ${sending ? "streaming" : "unsaved"}`}>
+              <h3 className="sr-only">Assistant</h3>
+              <div className="body">
+                <Markdown>{partial}</Markdown>
+              </div>
+              {!sending && (
+                <footer>
+                  <span className="tag warn">Not saved</span>
+                </footer>
               )}
+            </article>
+          )}
+          {sending && !partial && (
+            <div className="thinking" role="status">
+              <span className="sr-only">{ready.chat ? "Waiting for Hikari" : "Saving note"}</span>
+              <i />
+              <i />
+              <i />
             </div>
-          </div>
-        </form>
-        <div className="composer-foot" role="status">
-          {notice ||
-            (draft
-              ? "Unsent draft · kept in this browser tab"
-              : ready
-                ? "Persona and thread messages are sent to Hikari. Workspace content stays separate."
-                : "")}
+          )}
+          {notice && !sending && (
+            <p className="notice" role="status">
+              {notice}
+            </p>
+          )}
+          <div ref={end} />
         </div>
       </div>
+      {error && (
+        <div className="banner inline" role="alert">
+          {error}
+          <button disabled={sending || blocked} onClick={reload}>
+            <RotateCw size={14} />
+            Reload
+          </button>
+        </div>
+      )}
+      <Composer
+        agentName={agentName}
+        value={draft}
+        onChange={setDraft}
+        onSend={(generate) => void send(generate)}
+        onStop={controller.current ? () => controller.current?.abort() : undefined}
+        sending={sending}
+        blocked={blocked}
+        status={status}
+        personas={personas}
+        persona={persona}
+        onPersona={setPersona}
+        pet={<Pet sheet={agentPet(agentKey)} state={mood} size={96} look className="hero-pet" />}
+      />
     </section>
   );
-}
-function SettingsIcon() {
-  return <span className="persona-indicator" aria-hidden="true" />;
 }

@@ -188,7 +188,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
           {!selected ? (
             <div className="detail-empty">
               <Folder size={24} />
-              <p>Select a record to view it.</p>
+              <p>Select a record</p>
             </div>
           ) : (
             <>
@@ -268,9 +268,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                       </article>
                     ))}
                   {selected.kind === "deck" && (
-                    <p className="field-hint">
-                      Open Tsuchi to view or edit this slide deck.
-                    </p>
+                    <p className="field-hint">Slide decks open in Tsuchi.</p>
                   )}
                 </>
               )}
