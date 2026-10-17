@@ -23,7 +23,7 @@ jobs:
       - name: Install tooling dependencies
         run: python3 -m pip install -r bin/requirements.txt
       - name: Run inference worker unit checks
-        run: python3 bin/kadan.py check inference-worker --build-dir /tmp/kadan-inference-worker --sanitize
+        run: python3 bin/hikari.py check inference-worker --build-dir /tmp/kadan-inference-worker --sanitize
   cpp-format:
     name: C++ format
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
       - name: Install pinned LLVM tools
         run: python -m pip install -r requirements-dev.txt
       - name: Check C++ formatting
-        run: python bin/kadan.py check cpp-format
+        run: python bin/hikari.py check cpp-format
   cpp-lint:
     name: C++ lint
     runs-on: ubuntu-latest
@@ -55,7 +55,7 @@ jobs:
       - name: Install pinned LLVM tools
         run: python -m pip install -r requirements-dev.txt
       - name: Run clang-tidy
-        run: python bin/kadan.py check cpp-lint --build-dir /tmp/kadan-lint
+        run: python bin/hikari.py check cpp-lint --build-dir /tmp/kadan-lint
       - name: Run tokenizer and H3 inventory unit tests
         run: |
           cmake --build /tmp/kadan-lint --target text-tokenizer-tests h3-inventory-tests --parallel 2

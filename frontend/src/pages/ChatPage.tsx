@@ -117,7 +117,7 @@ export default function ChatPage() {
               key={index}
               className={`chat-message chat-message--${message.role}`}
               aria-label={
-                message.role === 'user' ? 'Your message' : 'Kadan response'
+                message.role === 'user' ? 'Your message' : 'Hikari response'
               }
             >
               <p>{message.text}</p>
@@ -168,8 +168,8 @@ export default function ChatPage() {
                 submit()
               }
             }}
-            placeholder="Message Kadan…"
-            aria-label="Message Kadan"
+            placeholder="Message Hikari…"
+            aria-label="Message Hikari"
             aria-describedby="chat-input-help"
           />
           <div className="row">

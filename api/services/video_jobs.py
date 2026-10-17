@@ -11,7 +11,11 @@ from api.pydantic_models.media import VideoJob
 class VideoJobs:
     def __init__(self, root=None):
         self.root = Path(
-            root or os.getenv("KADAN_VIDEO_DIR", "~/.local/share/kadan/videos")
+            root
+            or os.getenv(
+                "HIKARI_VIDEO_DIR",
+                os.getenv("KADAN_VIDEO_DIR", "~/.local/share/kadan/videos"),
+            )
         ).expanduser()
         self._lock = threading.RLock()
         self._jobs = {}

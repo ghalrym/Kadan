@@ -1,46 +1,13 @@
 #!/usr/bin/env python3
-"""The entry point for Kadan developer tooling."""
+"""Compatibility entry point for existing Kadan developer commands."""
 
 from pathlib import Path
-import subprocess
 import sys
 
-import typer
-
-# Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, generate, inference, native, profiling, publishing
-
-app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
-app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
-app.add_typer(
-    native.app,
-    name="native",
-    help="Inspect native checkpoint metadata and memory plans.",
-)
-app.add_typer(
-    inference.app,
-    name="infer",
-    help="Submit inference to the live worker through its API.",
-)
-app.add_typer(
-    assets.app, name="assets", help="Export local checkpoint and tokenizer assets."
-)
-app.add_typer(
-    profiling.app, name="profile", help="Collect and summarize CUDA profiling data."
-)
-app.add_typer(checks.app, name="check", help="Run formatting, builds, and unit checks.")
-app.add_typer(
-    publishing.app, name="pr", help="Run the restricted GitHub workflow publisher."
-)
+from bin.hikari import main
 
 
 if __name__ == "__main__":
-    try:
-        app()
-    except subprocess.CalledProcessError as error:
-        sys.exit(error.returncode if error.returncode > 0 else 128 - error.returncode)
-    except (OSError, inference.InferenceError) as error:
-        typer.echo(str(error), err=True)
-        sys.exit(1)
+    main()

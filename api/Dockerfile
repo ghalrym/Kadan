@@ -42,6 +42,6 @@ COPY --from=worker-build /out/ /opt/kadan/
 RUN test -x /opt/kadan/bin/kadan-inference-worker \
     && LD_LIBRARY_PATH=/opt/kadan/lib ldd /opt/kadan/libexec/kadan-inference-worker > /tmp/inference-worker-linkage \
     && ! grep "not found" /tmp/inference-worker-linkage
-RUN ffmpeg -version && ffprobe -version && python bin/kadan.py check install
+RUN ffmpeg -version && ffprobe -version && python bin/hikari.py check install
 EXPOSE 8000
 CMD ["python", "-m", "api"]

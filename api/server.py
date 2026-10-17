@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     lifespan=lifespan,
-    title="Kadan API",
+    title="Hikari API",
     version="0.0.1",
     description="Local model downloads and selection are persisted. One native C++ worker owns the bounded FIFO, model engines, resource admission and lifecycle. The API submits requests and presents native results. Chat history is client-owned.",
 )

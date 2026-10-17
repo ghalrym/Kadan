@@ -1,7 +1,40 @@
-# Kadan
+# Hikari
 
-Kadan serves chat, Laya decisions, image generation, H3 video with audio,
+Hikari serves chat, Laya decisions, image generation, H3 video with audio,
 CustomVoice speech and Whisper transcription from one machine.
+
+## Hikari rename and existing installations
+
+Hikari is the inference service formerly named Kadan. The Kadan name is reserved
+for the future agent layer. This change renames the application and developer
+entry point; the GitHub repository remains `ghalrym/Kadan` until its webhooks and
+publishing configuration can move together.
+
+Existing installations keep their data and operational identifiers:
+
+| Surface | Hikari behavior |
+| --- | --- |
+| Developer CLI | Use `python bin/hikari.py`; `python bin/kadan.py` still runs the same commands. |
+| API configuration | `HIKARI_MODEL_DIR`, `HIKARI_VIDEO_DIR` and `HIKARI_INFERENCE_WORKER` take precedence over their `KADAN_*` counterparts. Unset Hikari variables retain the existing configuration and defaults. |
+| CLI API URL | `HIKARI_API_URL` takes precedence over `KADAN_API_URL`; an explicit `infer --url` takes precedence over both. |
+| Persistent storage | Keep `~/.local/share/kadan/models`, `~/.local/share/kadan/videos`, `/var/lib/kadan/models`, database credentials and named volumes. No automatic moves or data rewriting occur. |
+| Compose | The default project name stays `kadan`, even from a checkout named Hikari. Keep any existing `-p` / `COMPOSE_PROJECT_NAME` and storage overrides. |
+| HTTP clients | Endpoint paths, request/response fields, model IDs and `X-Kadan-Request-Id` are unchanged. |
+| Native tools | `kadan-inference-worker`, `kadan-*` tool names, C++ namespaces/includes, `KADAN_*` CMake options, native environment variables, timing records and prepared-asset formats stay compatible. |
+
+The API forwards `HIKARI_VIDEO_DIR` as `KADAN_VIDEO_DIR` to its child worker,
+so the installed native executable and API use the same video directory.
+
+Keep the old `/kadan.svg` asset URL for already-open clients; the application now
+uses `/hikari.svg`. Historical benchmark names and evidence remain unchanged.
+
+Before renaming the GitHub repository, coordinate its remote URLs, webhook
+subscriptions, GitHub App installation/repository selection, publishing workflow
+repository guard, `bin/publishing.py` repository constant, and the existing
+`kadan-pr-publishing` environment and `AI_KADAN_APP_PRIVATE_KEY` secret references.
+These remain pointed at the current repository; this code change neither updates
+those resources nor restarts the server. A future Kadan agent deployment must use
+its own Compose project name and storage instead of reusing this inference store.
 
 ## Runtime ownership
 
@@ -63,8 +96,8 @@ Hardware power and thermal policy belongs to the machine, not the application.
 ## Chat API scope
 
 `POST /v1/chat/completions` accepts nonempty text messages with `system`, `user`
-or `assistant` roles. Each message uses either Kadan's `text` field or the
-OpenAI `content` string. JSON responses include `choices` and Kadan's `message`;
+or `assistant` roles. Each message uses either Hikari's `text` field or the
+OpenAI `content` string. JSON responses include `choices` and Hikari's `message`;
 SSE responses use content deltas, a `stop` or `length` terminal chunk and `[DONE]`.
 
 This is a text-only subset, not full OpenAI API compatibility. Tool calls,
@@ -101,8 +134,8 @@ replacement starts; reloading cancels in-flight work.
 
 For a separately built native installation, use the build dependencies and CMake
 options in `api/Dockerfile`, install the `inference-runtime` component, and set
-`KADAN_INFERENCE_WORKER` to its installed `bin/kadan-inference-worker` wrapper.
-Install `api/requirements.txt` in a virtual environment and set `KADAN_MODEL_DIR`
+`HIKARI_INFERENCE_WORKER` to its installed `bin/kadan-inference-worker` wrapper.
+Install `api/requirements.txt` in a virtual environment and set `HIKARI_MODEL_DIR`
 to writable checkpoint storage before starting one Uvicorn worker.
 `API_PROXY_TARGET` selects the frontend's API destination.
 
@@ -112,10 +145,10 @@ Install the tooling dependencies and use the central command from the repository
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/python bin/kadan.py --help
+.venv/bin/python bin/hikari.py --help
 ```
 
-`bin/kadan.py` is the entry point for repeatable developer operations. Each command
+`bin/hikari.py` is the entry point for repeatable developer operations. Each command
 group and command supports `--help` with its arguments and options.
 
 | Command | Purpose |
@@ -143,7 +176,7 @@ All generation runs in the API-owned inference worker. CLI commands send the sam
 JSON request bodies as the frontend to the existing API endpoints. The API applies
 validation, checkpoint preparation, queueing, memory admission, and cancellation.
 The CLI has no local inference fallback. Select a server with
-`infer --url http://127.0.0.1:8000` or `KADAN_API_URL`; `--timeout` defaults to 3600
+`infer --url http://127.0.0.1:8000` or `HIKARI_API_URL`; `--timeout` defaults to 3600
 seconds and includes time waiting in the queue. Submissions are never retried
 automatically because a lost response may already have been queued.
 
@@ -154,9 +187,9 @@ For example, save this request as `build/video-request.json`:
 ```
 
 ```sh
-python bin/kadan.py infer video build/video-request.json
-python bin/kadan.py infer video-status JOB_ID
-python bin/kadan.py infer video-download JOB_ID build/video.mp4
+python bin/hikari.py infer video build/video-request.json
+python bin/hikari.py infer video-status JOB_ID
+python bin/hikari.py infer video-download JOB_ID build/video.mp4
 ```
 
 Video submission returns the server's job ID immediately; `Queued` means accepted,
@@ -224,18 +257,18 @@ repository root:
 
 ```sh
 python -m pip install -r requirements-dev.txt
-python bin/kadan.py check format --write
+python bin/hikari.py check format --write
 ```
 
-CI runs `python bin/kadan.py check format` on every push and pull request and fails
+CI runs `python bin/hikari.py check format` on every push and pull request and fails
 if any Python file needs formatting.
 
 The same requirements pin clang-format and clang-tidy for C++ and CUDA sources.
 `.clang-format` owns style and `.clang-tidy` lists the bug-focused checks that gate CI:
 
 ```sh
-python bin/kadan.py check cpp-format --write
-python bin/kadan.py check cpp-lint
+python bin/hikari.py check cpp-format --write
+python bin/hikari.py check cpp-lint
 ```
 
 `cpp-lint` configures every CPU component, so it needs the nlohmann_json, ICU,
@@ -246,14 +279,14 @@ They do not start the application, execute inference or benchmark GPUs.
 The workflows list the unit targets and API tests.
 
 ```sh
-python bin/kadan.py check format
-python bin/kadan.py check cpp-format
-python bin/kadan.py check cpp-lint
-python bin/kadan.py check api
-python bin/kadan.py check inference-worker
-python bin/kadan.py check frontend-lint
-python bin/kadan.py check frontend-unit
-python bin/kadan.py check frontend-build
+python bin/hikari.py check format
+python bin/hikari.py check cpp-format
+python bin/hikari.py check cpp-lint
+python bin/hikari.py check api
+python bin/hikari.py check inference-worker
+python bin/hikari.py check frontend-lint
+python bin/hikari.py check frontend-unit
+python bin/hikari.py check frontend-build
 ```
 
 Manual end-to-end testing uses the playground. Check generation, cancellation and
@@ -290,7 +323,7 @@ The supported dependency pair is PyTorch/LibTorch **2.14.1+cu130** and CUDA
 **13.0**. The API Dockerfile installs this pair by default:
 
 ```sh
-docker build -f api/Dockerfile -t kadan-api .
+docker build -f api/Dockerfile -t hikari-api .
 ```
 
 For an existing LibTorch installation, use `-DCMAKE_PREFIX_PATH=<torch-prefix>`
@@ -299,7 +332,7 @@ options in `api/Dockerfile`. CMake requires the pinned Torch package, rejects a
 mismatched toolkit and fixes the architecture to SM86 without probing a GPU.
 CPU unit/tool builds leave image generation disabled. Distribute the dependency
 license notices with the binary; Docker retains the PyTorch and NVIDIA notices
-under `/opt/kadan/share/kadan/licenses`. Kadan's license is unchanged.
+under `/opt/kadan/share/kadan/licenses`. Hikari's license is unchanged.
 
 The accepted October 13 fox comparison used build
 `bdf012f034158c27b08ec13ff78c8cd39aa87a2a`, ATen enabled and TF32 disabled,
@@ -325,10 +358,10 @@ fixtures verify these boundaries without a model or CUDA execution.
 
 This composition does not reproduce Comfy Kitchen’s CUDA reduction tree or
 kernel fusion. ComfyUI also fuses gate/up projections and forms rotary tables in
-FP64 before casting; Kadan retains separate projections and FP32 rotary tables.
+FP64 before casting; Hikari retains separate projections and FP32 rotary tables.
 Matching those kernels, equal-seed noise, or full numerical output is not
 established by this correction. No GPL source or upstream kernel source is
-copied, and no license is added to Kadan.
+copied, and no license is added to Hikari.
 
 Image stages prefer whole-component residency on the admitted GPU with the most
 available memory. When a component does not fit, weights are read on demand through
@@ -340,7 +373,7 @@ quantize them. Repeated disk reads and GPU transfers trade speed for bounded res
 Text stores BF16 weights and performs FP32 forward operations; denoising keeps
 BF16 weights/hidden states and uses library SDPA, normalization, SwiGLU and linear
 operations. Text prefix K/V is cached for the current sampling request only. The
-FP32 Euler latent and Kadan noise/seed contract are retained.
+FP32 Euler latent and Hikari noise/seed contract are retained.
 
 VAE computation stays on the GPU in FP32. If the full-resolution workspace does
 not fit, the decoder keeps global attention on the full latent grid, then runs

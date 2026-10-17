@@ -110,7 +110,7 @@ export async function submitVideo(
   return validateJob(result.data?.job)
 }
 
-/** Stop the Kadan-owned worker; polling confirms cancellation after cleanup. */
+/** Stop the Hikari-owned worker; polling confirms cancellation after cleanup. */
 export async function stopVideo(id: string) {
   const result = await cancelVideo({ path: { video_id: id } })
   checkResponse(result.response)
