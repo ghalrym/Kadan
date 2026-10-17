@@ -28,10 +28,11 @@ def same_origin(origin: str, host: str, scheme: str) -> bool:
 
 
 class LocalRequestSafety:
-    """Keep the unauthenticated prototype local and reject cross-origin writes."""
+    """Restrict request hosts and reject cross-origin writes."""
 
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp, allowed_hosts: list[str]):
         self.app = app
+        self.allowed_hosts = {host.lower().strip("[]") for host in allowed_hosts}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -42,7 +43,7 @@ class LocalRequestSafety:
         try:
             parsed = urlsplit(f"http://{host}")
             allowed = (
-                parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                parsed.hostname in self.allowed_hosts
                 and parsed.username is None
                 and parsed.password is None
             )

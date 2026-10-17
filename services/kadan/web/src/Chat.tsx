@@ -9,6 +9,7 @@ import {
 import Markdown from "./Markdown";
 import { agentPath, api, streamChat } from "./api";
 import type { Resource, Status } from "./types";
+import { randomUuid } from "./uuid";
 
 interface Props {
   agentKey: string;
@@ -95,7 +96,7 @@ export default function Chat({
     const messageId =
       pending.current?.content === currentDraft
         ? pending.current.id
-        : crypto.randomUUID();
+        : randomUuid();
     pending.current = { id: messageId, content: currentDraft };
     sessionStorage.setItem(pendingKey, JSON.stringify(pending.current));
     const path = `${agentPath(agentKey)}/conversations/${thread.id}`;

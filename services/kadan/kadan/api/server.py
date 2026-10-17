@@ -29,7 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(LocalRequestSafety)
+    app.add_middleware(LocalRequestSafety, allowed_hosts=config.allowed_hosts)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, error: ServiceError):

@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { assetUrl } from "./api";
 import { Markdown } from "./components";
 import type { Asset, Deck, Slide } from "./types";
+import { randomUuid } from "./uuid";
 
 export function SlidePreview({
   slide,
@@ -52,7 +53,7 @@ export function DeckEditor({
       slides: [
         ...deck.slides,
         {
-          id: crypto.randomUUID(),
+          id: randomUuid(),
           layout: "title",
           title: "",
           body: "",

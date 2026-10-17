@@ -31,10 +31,15 @@ The root Compose integration supplies the following environment. The upstream na
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
 | `KADAN_HIKARI_BROWSER_URL` | `http://127.0.0.1:8088` | Hikari operator interface; Settings is `/settings` |
 | `KADAN_FRONTEND_DIRECTORY` | `/app/web/dist` | Compiled interface |
+| `KADAN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","::1"]` (default) | Exact HTTP request hosts and additional browser-link hosts |
 
-The image listens on `0.0.0.0:8630` inside its container. Publish it only as `127.0.0.1:8630:8630`. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
+The image listens on `0.0.0.0:8630` inside its container. Root Compose publishes it as `127.0.0.1:8630:8630` by default. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
 
-Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs must use loopback HTTP. This local prototype rejects non-loopback HTTP Host headers and cross-origin writes; these guards do not replace authentication. Do not expose its published port to a network. Root Compose packaging and existing Tsuchi volume preservation are maintained separately from this service.
+Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. The service rejects other HTTP Host headers and cross-origin writes; these guards do not replace authentication.
+
+For owner-authorized access from another computer on a trusted LAN, use a machine-specific Compose override to publish port 8630 on the server's exact LAN address. Add that address to `KADAN_ALLOWED_HOSTS`, retaining loopback for the image healthcheck. Set both browser URLs to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Tsuchi also needs that address in `TSUCHI_ALLOWED_HOSTS` and a matching LAN port binding. The frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
+
+On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 
 ## Local development
 

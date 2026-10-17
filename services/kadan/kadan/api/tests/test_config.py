@@ -47,3 +47,24 @@ def test_config_accepts_only_local_or_owned_service_origins(field, url):
 def test_config_rejects_unowned_origins_paths_and_credentials(field, url):
     with pytest.raises(ValidationError):
         Settings(**{field: url}, _env_file=None)
+
+
+def test_explicit_lan_host_is_allowed_for_browser_links():
+    settings = Settings(
+        allowed_hosts=["localhost", "127.0.0.1", "192.0.2.10"],
+        tsuchi_browser_url="http://192.0.2.10:8620/",
+        hikari_browser_url="http://192.0.2.10:8088",
+        _env_file=None,
+    )
+    assert settings.tsuchi_browser_url == "http://192.0.2.10:8620"
+    assert settings.hikari_browser_url == "http://192.0.2.10:8088"
+
+
+@pytest.mark.parametrize("field", ["tsuchi_url", "hikari_url"])
+def test_browser_host_allowlist_does_not_expand_upstream_origins(field):
+    with pytest.raises(ValidationError):
+        Settings(
+            allowed_hosts=["192.0.2.10"],
+            **{field: "http://192.0.2.10:8000"},
+            _env_file=None,
+        )
