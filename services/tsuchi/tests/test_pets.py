@@ -608,3 +608,70 @@ def test_pending_step_must_identify_next_frame():
         PetState(pending_step_name="idle/0", pending_request_id=uuid4())
     assert PET_STEP_NAMES[1:7] == tuple(f"idle/{frame}" for frame in range(6))
     assert PET_STEP_NAMES[-1] == "look-1/7"
+
+
+@pytest.mark.parametrize("seed", [None, 0, 2**32 - 1])
+def test_pending_seed_accepts_random_or_uint32(seed):
+    pet = PetState(
+        pending_step_name="base", pending_request_id=uuid4(), pending_seed=seed
+    )
+    assert pet.pending_seed == seed
+
+
+@pytest.mark.parametrize("seed", [-1, 2**32])
+def test_pending_seed_rejects_out_of_range(seed):
+    with pytest.raises(ValidationError):
+        PetState(
+            pending_step_name="base", pending_request_id=uuid4(), pending_seed=seed
+        )
+
+
+def test_pending_seed_requires_request():
+    with pytest.raises(ValidationError, match="requires a pending request"):
+        PetState(pending_seed=42)
+
+
+def test_cancellation_and_expired_recovery_cannot_change_pending_seed(
+    repository, monkeypatch
+):
+    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    pet = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(
+            pet, pending_step_name="base", pending_request_id=uuid4(), pending_seed=42
+        ),
+        pet.version,
+        pet.owner_id,
+    )
+    with pytest.raises(StorageError, match="Cancellation cannot modify"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(pet, status="cancelling", cancel_requested=True, pending_seed=43),
+            pet.version,
+        )
+    monkeypatch.setattr(
+        "tsuchi.repository.utc_now", lambda: pet.lease_expires_at + timedelta(seconds=1)
+    )
+    with pytest.raises(StorageError, match="Recovery cannot modify"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(
+                pet,
+                status="interrupted",
+                owner_id=None,
+                lease_expires_at=None,
+                pending_seed=43,
+            ),
+            pet.version,
+        )
+    interrupted = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(pet, status="interrupted", owner_id=None, lease_expires_at=None),
+        pet.version,
+    )
+    assert interrupted.pending_seed == 42
+    assert interrupted.pending_request_id == pet.pending_request_id

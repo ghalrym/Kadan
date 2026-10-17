@@ -124,6 +124,7 @@ export interface PetJob {
   steps: PetStep[];
   pending_step_name: string | null;
   pending_request_id: string | null;
+  pending_seed: number | null;
   version: number;
   created_at: string;
   updated_at: string;

@@ -357,6 +357,7 @@ class PetState(Model):
     manifest: PetManifest | None = None
     pending_step_name: str | None = Field(default=None, max_length=100)
     pending_request_id: UUID | None = None
+    pending_seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
 
@@ -395,6 +396,8 @@ class PetState(Model):
             raise ValueError(
                 "Pending step name and request ID must be supplied together"
             )
+        if self.pending_seed is not None and self.pending_request_id is None:
+            raise ValueError("Pending seed requires a pending request")
         if self.pending_step_name is not None:
             next_step = (
                 PET_STEP_NAMES[len(self.steps)]

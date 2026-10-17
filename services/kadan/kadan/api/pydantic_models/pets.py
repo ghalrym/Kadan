@@ -1,10 +1,10 @@
 """Persisted pet candidates and their generation provenance."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .resources import AgentKey
 
@@ -57,6 +57,13 @@ class PetState(BaseModel):
     lease_expires_at: datetime | None = None
     pending_step_name: str | None = None
     pending_request_id: UUID | None = None
+    pending_seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+
+    @model_validator(mode="after")
+    def valid_pending_seed(self) -> Self:
+        if self.pending_seed is not None and self.pending_request_id is None:
+            raise ValueError("Pending seed requires a pending request")
+        return self
 
 
 class PetJob(PetState):

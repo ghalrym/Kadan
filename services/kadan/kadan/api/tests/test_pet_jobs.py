@@ -12,7 +12,7 @@ from kadan.api.builtin_mcp import BuiltinTools
 from kadan.api.config import ServiceError
 from kadan.api.pet_artwork import ROWS, SOURCE_CELL
 from kadan.api.pet_jobs import IMAGE_MODEL, PetJobs
-from kadan.api.pydantic_models.pets import GeneratedImage, PetJob
+from kadan.api.pydantic_models.pets import GeneratedImage, PetJob, PetStep
 
 KEY = "andrew"
 PET_ID = UUID("10000000-0000-4000-8000-000000000003")
@@ -465,5 +465,57 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
             await pets.prepare_output(job, PNG, ROWS[0], 5)
         assert seen == [[b"one", b"two", b"three", b"four", b"five", b"six"]]
         assert [call.args[1] for call in pets.content.call_args_list] == outputs[1:]
+
+    asyncio.run(run())
+
+
+def test_rejected_saved_frame_persists_new_seed_before_retry():
+    async def run():
+        pets, services, job = await setup_running()
+        base = PetStep(
+            name="base",
+            output_asset_id=uuid4(),
+            raw_asset_id=uuid4(),
+            provenance_asset_id=uuid4(),
+            prompt="fox",
+            request_id=uuid4(),
+            model_id=IMAGE_MODEL,
+            seed=2**32 - 1,
+        )
+        old_request = uuid4()
+        job = await pets.save(
+            job,
+            worker=True,
+            steps=[base],
+            completed_steps=1,
+            pending_step_name="idle/0",
+            pending_request_id=old_request,
+            pending_seed=base.seed,
+        )
+        pets.content = AsyncMock(return_value=b"canonical-base")
+        pets.saved_generation = AsyncMock(
+            return_value=(
+                PNG,
+                GeneratedImage(
+                    model_id=IMAGE_MODEL,
+                    seeds=[base.seed],
+                    images_base64=["unused"],
+                    mime_type="image/png",
+                ),
+            )
+        )
+        pets.prepare_output = AsyncMock(side_effect=ValueError("boundary"))
+
+        async def image(request_id, prompt, source, model_id, seed):
+            persisted = services.jobs[job.id]
+            assert request_id != old_request
+            assert persisted.pending_request_id == request_id
+            assert seed == persisted.pending_seed == 0
+            assert persisted.steps == [base]
+            raise ServiceError("stop after observing submitted retry")
+
+        pets.image = image
+        with pytest.raises(ServiceError, match="stop after"):
+            await pets.generate(job)
 
     asyncio.run(run())

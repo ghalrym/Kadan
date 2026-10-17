@@ -397,13 +397,14 @@ class PetJobs:
         }
         if model_id:
             body["model_id"] = model_id
+        if seed is not None:
+            body["seed"] = seed
         if source is not None:
             body.update(
                 image="data:image/png;base64," + base64.b64encode(source).decode(),
                 mode="reference",
                 width=SOURCE_CELL[0],
                 height=SOURCE_CELL[1],
-                seed=seed,
             )
         response = await self.services.client.post(
             self.services.settings.hikari_url
@@ -475,6 +476,13 @@ class PetJobs:
                 if source_id is not None
                 else None
             )
+            seed = (
+                job.pending_seed
+                if job.pending_request_id
+                else job.steps[0].seed
+                if row is not None
+                else None
+            )
             recovered = (
                 await self.saved_generation(job, job.pending_request_id)
                 if job.pending_request_id
@@ -484,6 +492,9 @@ class PetJobs:
                 try:
                     output = await self.prepare_output(job, recovered[0], row, frame)
                 except ValueError:
+                    # Keep initial poses on shared noise, but let a rejected frame
+                    # change on retry. Persist this choice before submitting it.
+                    seed = (recovered[1].seeds[0] + 1) % 2**32
                     recovered = None
             request_id = job.pending_request_id if recovered else uuid4()
             job = await self.owned_update(
@@ -495,6 +506,7 @@ class PetJobs:
                 ),
                 pending_step_name=name,
                 pending_request_id=request_id,
+                pending_seed=seed,
             )
             if recovered:
                 raw, generation = recovered
@@ -509,7 +521,7 @@ class PetJobs:
                     prompt,
                     source,
                     job.steps[0].model_id if job.steps else None,
-                    job.steps[0].seed if job.steps else None,
+                    seed,
                 )
                 raw = base64.b64decode(generation.images_base64[0], validate=True)
                 metadata = generation.model_dump(exclude={"images_base64"})
@@ -545,6 +557,7 @@ class PetJobs:
                 completed_steps=index + 1,
                 pending_step_name=None,
                 pending_request_id=None,
+                pending_seed=None,
             )
         job = await self.owned_update(job, stage="Validating and assembling animation")
         frames = {
@@ -571,4 +584,5 @@ class PetJobs:
             lease_expires_at=None,
             pending_step_name=None,
             pending_request_id=None,
+            pending_seed=None,
         )
