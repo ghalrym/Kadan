@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { randomUuid } from "./uuid";
 import { Download, History, RotateCcw, Save, Trash2 } from "lucide-react";
 import {
   agentPath,
@@ -159,7 +160,7 @@ export function ResourceEditor({
     try {
       const message = {
         ...messageDraft,
-        id: crypto.randomUUID(),
+        id: randomUuid(),
         created_at: new Date().toISOString(),
       };
       const saved = await request<Resource>(

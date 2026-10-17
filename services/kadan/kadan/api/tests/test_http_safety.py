@@ -47,8 +47,45 @@ def test_local_guard_rejects_request_before_app_is_called(headers, expected):
         sent.append(message)
 
     asyncio.run(
-        LocalRequestSafety(app)(
+        LocalRequestSafety(app, ["127.0.0.1", "localhost", "::1"])(
             {"type": "http", "method": "POST", "scheme": "http", "headers": headers},
+            receive,
+            send,
+        )
+    )
+    assert sent[0]["status"] == expected
+
+
+@pytest.mark.parametrize(
+    ("host", "origin", "expected"),
+    [
+        (b"192.0.2.10:8630", b"http://192.0.2.10:8630", 204),
+        (b"192.0.2.11:8630", b"http://192.0.2.11:8630", 400),
+        (b"192.0.2.10:8630", b"http://192.0.2.11:8630", 403),
+        (b"192.0.2.10:8630", b"http://192.0.2.10:8620", 403),
+    ],
+)
+def test_lan_writes_require_an_allowed_host_and_same_origin(host, origin, expected):
+    sent = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(
+        LocalRequestSafety(app, ["192.0.2.10"])(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "headers": [(b"host", host), (b"origin", origin)],
+            },
             receive,
             send,
         )

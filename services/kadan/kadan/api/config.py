@@ -9,6 +9,7 @@ class Settings(BaseSettings):
         env_prefix="KADAN_", env_file=".env", extra="ignore"
     )
 
+    allowed_hosts: list[str] = ["127.0.0.1", "localhost", "::1"]
     tsuchi_url: str = "http://127.0.0.1:8620"
     hikari_url: str = "http://127.0.0.1:8088"
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
@@ -27,10 +28,15 @@ class Settings(BaseSettings):
         origin = value.removesuffix("/")
         if origin == internal_origins.get(info.field_name):
             return origin
+        allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+        if info.field_name in {"tsuchi_browser_url", "hikari_browser_url"}:
+            allowed_hosts.update(
+                host.lower().strip("[]") for host in info.data.get("allowed_hosts", [])
+            )
         parsed = urlsplit(value)
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.hostname not in allowed_hosts
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
@@ -39,7 +45,8 @@ class Settings(BaseSettings):
             or any(character.isspace() for character in value)
         ):
             raise ValueError(
-                "Use a loopback HTTP origin or this service's exact Docker origin"
+                "Use a loopback HTTP origin, this service's exact Docker origin, "
+                "or an explicitly allowed host for browser URLs"
             )
         if parsed.port == 0:
             raise ValueError("A service port must be between 1 and 65535")
