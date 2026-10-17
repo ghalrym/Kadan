@@ -76,8 +76,9 @@ and libarchive reads checkpoint containers.
 
 Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
 language model, Qwen-Image-2.1-Turbo (the only image model), the
-Qwen3-TTS 1.7B CustomVoice speech model and the S1-mini formatter; video and
-transcription assignments are still open (`null`).
+Qwen3-TTS 1.7B CustomVoice speech model, Whisper medium for transcription (also
+the default without a saved Whisper choice) and the S1-mini formatter; the video
+assignment is still open (`null`).
 Choosing a tier persists `tier.json` in the model store and selects its language
 and image models; the API then queues the tier's incomplete downloads through
 the existing FIFO.
