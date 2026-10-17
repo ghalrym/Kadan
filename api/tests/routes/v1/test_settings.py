@@ -38,6 +38,7 @@ def snapshot(tier=None):
                 checkpoint("qwen3.8-27b-q4-k-m", "llm", "downloading"),
                 checkpoint("superwhisper-s1-mini", "formatting", "complete"),
                 checkpoint("qwen-image-2.1-turbo", "image"),
+                checkpoint("qwen-tts-1.7b-custom", "speech"),
             ],
             "tiers": [
                 {
@@ -49,7 +50,7 @@ def snapshot(tier=None):
                         "llm": "qwen3.8-27b-q4-k-m",
                         "image": "qwen-image-2.1-turbo",
                         "video": None,
-                        "speech": None,
+                        "speech": "qwen-tts-1.7b-custom",
                         "transcription": None,
                         "formatting": "superwhisper-s1-mini",
                     },
@@ -80,6 +81,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(models["formatting"].status, "complete")
         self.assertEqual(models["image"].id, "qwen-image-2.1-turbo")
+        self.assertEqual(models["speech"].id, "qwen-tts-1.7b-custom")
         self.assertIsNone(models["video"])
 
     async def test_tier_selection_saves_and_queues_downloads(self):
