@@ -60,7 +60,8 @@ ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
             "model-00004-of-00004.safetensors"
         };
     }
-    auto text = read(root + "/text_encoder/config.json").at("text_config");
+    const auto encoder = read(root + "/text_encoder/config.json");
+    auto text = encoder.at("text_config");
     need(
         text.at("vocab_size") == 151936 && text.at("hidden_size") == 4096
             && text.at("num_hidden_layers") == 36
@@ -70,6 +71,28 @@ ImageCheckpointConfig validate_checkpoint_config(const std::string& root) {
             && text.at("rms_norm_eps") == 1e-6
             && !text.at("attention_bias").get<bool>(),
         "image_text_config_contract"
+    );
+    need(
+        encoder.at("model_type") == "qwen3_vl" && encoder.at("image_token_id") == 151655
+            && encoder.at("vision_start_token_id") == 151652
+            && encoder.at("vision_end_token_id") == 151653
+            && text.at("rope_scaling").at("mrope_interleaved") == true
+            && text.at("rope_scaling").at("mrope_section") == Json::array({24, 20, 20})
+            && text.at("rope_scaling").at("rope_type") == "default",
+        "image_multimodal_config_contract"
+    );
+    const auto vision = encoder.at("vision_config");
+    need(
+        vision.at("model_type") == "qwen3_vl" && vision.at("depth") == 27
+            && vision.at("hidden_size") == 1152 && vision.at("num_heads") == 16
+            && vision.at("intermediate_size") == 4304
+            && vision.at("out_hidden_size") == 4096 && vision.at("in_channels") == 3
+            && vision.at("patch_size") == 16 && vision.at("spatial_merge_size") == 2
+            && vision.at("temporal_patch_size") == 2
+            && vision.at("num_position_embeddings") == 2304
+            && vision.at("hidden_act") == "gelu_pytorch_tanh"
+            && vision.at("deepstack_visual_indexes") == Json::array({8, 16, 24}),
+        "image_vision_config_contract"
     );
     auto v = read(root + "/vae/config.json");
     need(

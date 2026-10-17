@@ -39,25 +39,47 @@ struct Checkpoint {
             {"use_karras_sigmas", false}
         };
 
+    Json text{
+        {"model_type", "qwen3_vl"},
+        {"image_token_id", 151655},
+        {"vision_start_token_id", 151652},
+        {"vision_end_token_id", 151653},
+        {"text_config",
+         {{"vocab_size", 151936},
+          {"hidden_size", 4096},
+          {"num_hidden_layers", 36},
+          {"num_attention_heads", 32},
+          {"num_key_value_heads", 8},
+          {"head_dim", 128},
+          {"intermediate_size", 12288},
+          {"rope_theta", 5000000},
+          {"rms_norm_eps", 1e-6},
+          {"attention_bias", false},
+          {"rope_scaling",
+           {{"mrope_interleaved", true},
+            {"mrope_section", {24, 20, 20}},
+            {"rope_type", "default"}}}}},
+        {"vision_config",
+         {{"model_type", "qwen3_vl"},
+          {"depth", 27},
+          {"hidden_size", 1152},
+          {"num_heads", 16},
+          {"intermediate_size", 4304},
+          {"out_hidden_size", 4096},
+          {"in_channels", 3},
+          {"patch_size", 16},
+          {"spatial_merge_size", 2},
+          {"temporal_patch_size", 2},
+          {"num_position_embeddings", 2304},
+          {"hidden_act", "gelu_pytorch_tanh"},
+          {"deepstack_visual_indexes", {8, 16, 24}}}}
+    };
+
     Checkpoint() {
         char name[] = "/tmp/kadan-image-config-XXXXXX";
         const auto* dir = mkdtemp(name);
         check(dir != nullptr);
         root = dir;
-        write(
-            "text_encoder/config.json",
-            {{"text_config",
-              {{"vocab_size", 151936},
-               {"hidden_size", 4096},
-               {"num_hidden_layers", 36},
-               {"num_attention_heads", 32},
-               {"num_key_value_heads", 8},
-               {"head_dim", 128},
-               {"intermediate_size", 12288},
-               {"rope_theta", 5000000},
-               {"rms_norm_eps", 1e-6},
-               {"attention_bias", false}}}}
-        );
         write(
             "vae/config.json",
             {{"decoder_base_dim", 144},
@@ -100,6 +122,7 @@ struct Checkpoint {
     }
 
     kadan::image::ImageCheckpointConfig load() const {
+        write("text_encoder/config.json", text);
         write("model_index.json", pipeline);
         write("scheduler/scheduler_config.json", scheduler);
         return kadan::image::validate_checkpoint_config(root.string());
@@ -161,6 +184,40 @@ void turbo_profile() {
         }
 }
 
+void rejected_multimodal_profiles() {
+    for (const auto& field :
+         {"depth",
+          "hidden_size",
+          "num_heads",
+          "intermediate_size",
+          "out_hidden_size",
+          "in_channels",
+          "patch_size",
+          "spatial_merge_size",
+          "temporal_patch_size",
+          "num_position_embeddings"}) {
+        Checkpoint checkpoint;
+        checkpoint.text["vision_config"][field] = 1;
+        checkpoint.rejects("image_vision_config_contract");
+    }
+    for (const auto& field : {"model_type", "hidden_act", "deepstack_visual_indexes"}) {
+        Checkpoint checkpoint;
+        checkpoint.text["vision_config"][field] = "unsupported";
+        checkpoint.rejects("image_vision_config_contract");
+    }
+    for (const auto& field :
+         {"image_token_id", "vision_start_token_id", "vision_end_token_id"}) {
+        Checkpoint checkpoint;
+        checkpoint.text[field] = 0;
+        checkpoint.rejects("image_multimodal_config_contract");
+    }
+    for (const auto& field : {"mrope_interleaved", "mrope_section", "rope_type"}) {
+        Checkpoint checkpoint;
+        checkpoint.text["text_config"]["rope_scaling"][field] = nullptr;
+        checkpoint.rejects("image_multimodal_config_contract");
+    }
+}
+
 void rejected_profiles() {
     for (const auto& sigmas : std::array<Json, 7>{
              Json::array(),
@@ -194,4 +251,5 @@ int main() {
     base_profile();
     turbo_profile();
     rejected_profiles();
+    rejected_multimodal_profiles();
 }

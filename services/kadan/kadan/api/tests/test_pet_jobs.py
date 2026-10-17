@@ -10,6 +10,7 @@ import pytest
 
 from kadan.api.builtin_mcp import BuiltinTools
 from kadan.api.config import ServiceError
+from kadan.api.pet_artwork import ROWS, SOURCE_CELL
 from kadan.api.pet_jobs import IMAGE_MODEL, PetJobs
 from kadan.api.pydantic_models.pets import GeneratedImage, PetJob
 
@@ -205,7 +206,7 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         async def content(key, asset_id):
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id):
+        async def image(request_id, prompt, source, model_id, row=None):
             sources.append(source)
             return GeneratedImage(
                 model_id=IMAGE_MODEL,
@@ -220,10 +221,6 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         monkeypatch.setattr(
             "kadan.api.pet_jobs.prepare_base", lambda raw: b"canonical-base"
         )
-        monkeypatch.setattr(
-            "kadan.api.pet_jobs.source_strip",
-            lambda base, count: base + str(count).encode(),
-        )
         monkeypatch.setattr("kadan.api.pet_jobs.extract_row", lambda raw, row: None)
         monkeypatch.setattr(
             "kadan.api.pet_jobs.assemble_atlas", lambda strips: b"webp-atlas"
@@ -234,7 +231,8 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         assert saved.completed_steps == 12
         assert len(saved.steps) == 12
         assert len(sources) == 12 and sources[0] is None
-        assert all(source.startswith(b"canonical-base") for source in sources[1:])
+        assert all(source == b"canonical-base" for source in sources[1:])
+        assert all(step.strength is None for step in saved.steps)
         assert saved.manifest.base_asset_id == saved.steps[0].output_asset_id
         assert assets[saved.manifest.atlas_asset_id] == b"webp-atlas"
         assert not any(call[2].endswith("/pet") for call in services.calls)
@@ -310,5 +308,37 @@ def test_malformed_cleanup_response_does_not_claim_stopped():
         )
         with pytest.raises(ServiceError, match="did not confirm"):
             await pets.stop_request(uuid4())
+
+    asyncio.run(run())
+
+
+def test_row_request_uses_untiled_reference_and_independent_output_dimensions():
+    async def run():
+        services = Storage()
+        response = SimpleNamespace(
+            is_success=True,
+            json=lambda: {
+                "image": {
+                    "seeds": [7],
+                    "images_base64": [base64.b64encode(PNG).decode()],
+                    "mime_type": "image/png",
+                }
+            },
+        )
+        services.client.post = AsyncMock(return_value=response)
+        pets = PetJobs(services)
+        row = ROWS[1]
+        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, row)
+        request = services.client.post.call_args.kwargs["json"]
+        assert request["mode"] == "reference"
+        assert (
+            request["image"]
+            == "data:image/png;base64," + base64.b64encode(PNG).decode()
+        )
+        assert (request["width"], request["height"]) == (
+            SOURCE_CELL[0] * row.frame_count,
+            SOURCE_CELL[1],
+        )
+        assert "strength" not in request and "mask" not in request
 
     asyncio.run(run())

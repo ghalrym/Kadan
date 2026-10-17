@@ -17,12 +17,13 @@ from pydantic import TypeAdapter, ValidationError
 from .config import ServiceError
 from .pet_artwork import (
     ROWS,
+    SOURCE_CELL,
+    PetRow,
     assemble_atlas,
     base_prompt,
     extract_row,
     prepare_base,
     row_prompt,
-    source_strip,
 )
 from .pydantic_models.pets import (
     GeneratedImage,
@@ -379,7 +380,12 @@ class PetJobs:
         return asset.id
 
     async def image(
-        self, request_id: UUID, prompt: str, source: bytes | None, model_id: str | None
+        self,
+        request_id: UUID,
+        prompt: str,
+        source: bytes | None,
+        model_id: str | None,
+        row: PetRow | None = None,
     ) -> GeneratedImage:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -390,9 +396,13 @@ class PetJobs:
         if model_id:
             body["model_id"] = model_id
         if source is not None:
+            if row is None:
+                raise ValueError("A pet reference edit requires an animation row")
             body.update(
                 image="data:image/png;base64," + base64.b64encode(source).decode(),
-                strength=0.65,
+                mode="reference",
+                width=SOURCE_CELL[0] * row.frame_count,
+                height=SOURCE_CELL[1],
             )
         response = await self.services.client.post(
             self.services.settings.hikari_url
@@ -439,11 +449,7 @@ class PetJobs:
             row = ROWS[index - 1] if index else None
             prompt = row_prompt(job.prompt, row) if row else base_prompt(job.prompt)
             source = (
-                await asyncio.to_thread(
-                    source_strip,
-                    await self.content(job.agent_key, job.steps[0].output_asset_id),
-                    row.frame_count,
-                )
+                await self.content(job.agent_key, job.steps[0].output_asset_id)
                 if row
                 else None
             )
@@ -483,6 +489,7 @@ class PetJobs:
                     prompt,
                     source,
                     job.steps[0].model_id if job.steps else None,
+                    row,
                 )
                 raw = base64.b64decode(generation.images_base64[0], validate=True)
                 metadata = generation.model_dump(exclude={"images_base64"})
@@ -509,7 +516,6 @@ class PetJobs:
                 request_id=request_id,
                 model_id=generation.model_id,
                 seed=generation.seeds[0],
-                strength=0.65 if row else None,
                 meta=generation.meta,
             )
             job = await self.owned_update(

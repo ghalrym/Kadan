@@ -1495,9 +1495,13 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   count?: 1 | 2 | 4
   /**
+   * Height
+   */
+  height?: number | null
+  /**
    * Image
    *
-   * PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.
+   * PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Reference inputs must contain at least 65,536 pixels. Source mode uses the source dimensions; reference mode accepts an independent target width and height.
    */
   image: string
   /**
@@ -1506,6 +1510,12 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    * Opaque PNG matching the source size. Black preserves pixels, white edits them; gray blends.
    */
   mask?: string | null
+  /**
+   * Mode
+   *
+   * Source edits noise the input image. Reference edits generate a new image conditioned on the reference character and appearance.
+   */
+  mode?: 'source' | 'reference'
   /**
    * Model Id
    */
@@ -1528,6 +1538,10 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    * Image-to-image noise strength. Zero preserves the source; one regenerates the editable area from noise. Describe the desired result in prompt.
    */
   strength?: number
+  /**
+   * Width
+   */
+  width?: number | null
 }
 
 /**

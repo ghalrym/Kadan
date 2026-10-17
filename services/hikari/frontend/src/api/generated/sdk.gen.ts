@@ -377,7 +377,7 @@ export const listImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Submit source-conditioned image-to-image editing to the shared worker.
+ * Submit source or reference image editing to the shared worker.
  */
 export const editImages = <ThrowOnError extends boolean = false>(
   options: Options<EditImagesData, ThrowOnError>,

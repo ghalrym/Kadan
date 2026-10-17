@@ -194,7 +194,7 @@ def row_prompt(description: str, row: PetRow) -> str:
         f"Cell {i + 1}: {pose}." for i, pose in enumerate(row.poses)
     )
     return (
-        f"Edit this exact {row.frame_count}-cell horizontal reference strip into animation poses for "
+        f"Use the reference character to generate a {row.frame_count}-cell horizontal animation strip for "
         f"the same character ({description.strip()}). Every cell is exactly 384x416 pixels. "
         "Keep the reference character's identity, proportions, colors, costume, and requested art style "
         "in every frame. Generate genuine new articulated poses; do not merely copy, translate, rotate, "
@@ -277,17 +277,6 @@ def prepare_base(png: bytes) -> bytes:
         character, ((SOURCE_CELL[0] - character.width) // 2, 368 - character.height)
     )
     return _encode(canonical)
-
-
-def source_strip(base_png: bytes, count: int) -> bytes:
-    if not 1 <= count <= COLUMNS:
-        raise ValueError("A source strip needs between one and eight cells")
-    base = _png(base_png, SOURCE_CELL)
-    _bounds(base)
-    strip = Image.new("RGB", (SOURCE_CELL[0] * count, SOURCE_CELL[1]), BACKGROUND)
-    for column in range(count):
-        strip.paste(base, (column * SOURCE_CELL[0], 0), base)
-    return _encode(strip)
 
 
 def extract_row(png: bytes, row: PetRow) -> list[Image.Image]:

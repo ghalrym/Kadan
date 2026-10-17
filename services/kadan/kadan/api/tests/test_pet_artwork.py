@@ -11,7 +11,6 @@ from kadan.api.pet_artwork import (
     assemble_atlas,
     extract_row,
     prepare_base,
-    source_strip,
 )
 
 
@@ -49,17 +48,6 @@ def test_canonical_reference_has_transparent_margins_and_shared_floor():
     assert base.getpixel((0, 0))[3] == 0
     assert base.getchannel("A").getbbox()[3] == 368
     assert base.getpixel((192, 164)) == (*BACKGROUND, 255)
-
-
-def test_source_strip_conditions_every_cell_on_same_base():
-    canonical = prepare_base(png(character()))
-    strip = Image.open(BytesIO(source_strip(canonical, 8)))
-    assert strip.size == (3072, 416)
-    assert strip.getpixel((0, 0)) == BACKGROUND
-    assert (
-        strip.crop((0, 0, 384, 416)).tobytes()
-        == strip.crop((2688, 0, 3072, 416)).tobytes()
-    )
 
 
 def test_extraction_preserves_generated_cell_positions():

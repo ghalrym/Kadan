@@ -59,13 +59,34 @@ void Generator::validate(const ImageRequest& request) {
         "image_request_bounds"
     );
     const auto pixels = request.width * request.height;
+    const auto source_width =
+        request.source_width ? request.source_width : request.width;
+    const auto source_height =
+        request.source_height ? request.source_height : request.height;
+    need(
+        source_width >= 32 && source_height >= 32 && source_width <= 3072
+            && source_height <= 3072 && source_width % 32 == 0
+            && source_height % 32 == 0 && source_width * source_height <= 4608 * 1024,
+        "image_source_bounds"
+    );
     need(
         std::isfinite(request.strength) && request.strength >= 0
             && request.strength <= 1
-            && (request.source.empty() || request.source.size() == pixels * 4)
+            && (request.source.empty()
+                || request.source.size() == source_width * source_height * 4)
             && (request.mask.empty()
                 || (!request.source.empty() && request.mask.size() == pixels)),
         "image_edit_bounds"
+    );
+    need(
+        request.reference
+            ? !request.source.empty() && request.mask.empty()
+            : source_width == request.width && source_height == request.height,
+        "image_reference_bounds"
+    );
+    need(
+        !request.reference || source_width * source_height >= 65536,
+        "image_reference_minimum_65536_pixels"
     );
 }
 
