@@ -898,7 +898,7 @@
         "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": "qwen-tts-1.7b-custom",
-        "transcription": null,
+        "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
       }
     },
@@ -912,7 +912,7 @@
         "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": "qwen-tts-1.7b-custom",
-        "transcription": null,
+        "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
       }
     },
@@ -926,7 +926,7 @@
         "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": "qwen-tts-1.7b-custom",
-        "transcription": null,
+        "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
       }
     },
@@ -940,7 +940,7 @@
         "image": "qwen-image-2.1-turbo",
         "video": null,
         "speech": "qwen-tts-1.7b-custom",
-        "transcription": null,
+        "transcription": "whisper-medium",
         "formatting": "superwhisper-s1-mini"
       }
     }

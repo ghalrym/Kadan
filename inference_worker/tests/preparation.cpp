@@ -108,6 +108,8 @@ InferenceRequest request(
 void pinned_catalog_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
+    // Without a saved choice transcription uses the tiers' Whisper medium.
+    assert(store.whisper_selected() == "medium");
     assert(store.whisper_model("large") == "large-v3");
     store.select_whisper("turbo");
     assert(store.whisper_selected() == "large-v3-turbo");
@@ -304,6 +306,7 @@ void checkpoint_catalog_units() {
         assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
         assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
         assert(hardware.models.at("speech") == "qwen-tts-1.7b-custom");
+        assert(hardware.models.at("transcription") == "whisper-medium");
         assert(!hardware.models.at("video"));
         const auto& model = store.entry(id);
         assert(
