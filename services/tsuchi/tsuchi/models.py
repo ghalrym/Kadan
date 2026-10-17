@@ -333,6 +333,7 @@ class PetManifest(Model):
 
 
 class PetStep(Model):
+    method: Literal["generated", "canonical"] = "generated"
     name: str = Field(min_length=1, max_length=100)
     source_asset_id: UUID | None = None
     output_asset_id: UUID
@@ -346,6 +347,18 @@ class PetStep(Model):
     meta: str = Field(default="", max_length=2000000)
 
 
+class PetRejection(Model):
+    step: PetStep
+    reason: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Describe why the frame needs repair")
+        return value.strip()
+
+
 class PetState(Model):
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
@@ -354,6 +367,8 @@ class PetState(Model):
     error: str | None = Field(default=None, max_length=10000)
     cancel_requested: bool = False
     steps: list[PetStep] = Field(default_factory=list, max_length=74)
+    parent_pet_id: UUID | None = None
+    rejections: list[PetRejection] = Field(default_factory=list)
     manifest: PetManifest | None = None
     pending_step_name: str | None = Field(default=None, max_length=100)
     pending_request_id: UUID | None = None
@@ -372,23 +387,37 @@ class PetState(Model):
     def valid_progress(self) -> Self:
         if self.completed_steps != len(self.steps):
             raise ValueError("Completed steps must match persisted step outputs")
-        if [step.name for step in self.steps] != list(
-            PET_STEP_NAMES[: len(self.steps)]
+        names = [step.name for step in self.steps]
+        if names != [name for name in PET_STEP_NAMES if name in names] or (
+            names and names[0] != "base"
         ):
             raise ValueError("Pet steps must follow the canonical creation order")
         if len({step.output_asset_id for step in self.steps}) != len(self.steps):
             raise ValueError("Each pet step must have separate output artwork")
         if any(step.source_asset_id == step.output_asset_id for step in self.steps):
             raise ValueError("Source and output artwork must be separate assets")
-        image_ids = {step.output_asset_id for step in self.steps}
-        image_ids.update(step.raw_asset_id for step in self.steps)
+        history = [*self.steps, *(rejection.step for rejection in self.rejections)]
+        for step in history:
+            if step.name not in PET_STEP_NAMES:
+                raise ValueError("Pet history must reference canonical frames")
+            if step.method == "canonical" and (
+                step.name not in {"idle/0", "idle/5"}
+                or not self.steps
+                or step.source_asset_id != self.steps[0].output_asset_id
+                or step.output_asset_id == step.source_asset_id
+            ):
+                raise ValueError(
+                    "Canonical frames must copy the base into idle/0 or idle/5"
+                )
+        image_ids = {step.output_asset_id for step in history}
+        image_ids.update(step.raw_asset_id for step in history)
         image_ids.update(
-            step.source_asset_id for step in self.steps if step.source_asset_id
+            step.source_asset_id for step in history if step.source_asset_id
         )
-        provenance_ids = {step.provenance_asset_id for step in self.steps}
+        provenance_ids = {step.provenance_asset_id for step in history}
         if image_ids & provenance_ids:
             raise ValueError("Provenance and artwork must be separate assets")
-        if len(provenance_ids) != len(self.steps):
+        if len({step.provenance_asset_id for step in self.steps}) != len(self.steps):
             raise ValueError("Each pet step must have separate provenance")
         if any(step.raw_asset_id == step.output_asset_id for step in self.steps):
             raise ValueError("Raw and prepared artwork must be separate assets")
@@ -399,10 +428,8 @@ class PetState(Model):
         if self.pending_seed is not None and self.pending_request_id is None:
             raise ValueError("Pending seed requires a pending request")
         if self.pending_step_name is not None:
-            next_step = (
-                PET_STEP_NAMES[len(self.steps)]
-                if len(self.steps) < len(PET_STEP_NAMES)
-                else "atlas"
+            next_step = next(
+                (name for name in PET_STEP_NAMES if name not in names), "atlas"
             )
             if self.pending_step_name != next_step:
                 raise ValueError("Pending step must be the next unfinished step")
@@ -430,10 +457,11 @@ class PetState(Model):
         return self
 
     def asset_references(self) -> set[UUID]:
-        refs = {step.output_asset_id for step in self.steps}
-        refs.update(step.raw_asset_id for step in self.steps)
-        refs.update(step.provenance_asset_id for step in self.steps)
-        refs.update(step.source_asset_id for step in self.steps if step.source_asset_id)
+        history = [*self.steps, *(rejection.step for rejection in self.rejections)]
+        refs = {step.output_asset_id for step in history}
+        refs.update(step.raw_asset_id for step in history)
+        refs.update(step.provenance_asset_id for step in history)
+        refs.update(step.source_asset_id for step in history if step.source_asset_id)
         if self.manifest:
             refs.update((self.manifest.atlas_asset_id, self.manifest.base_asset_id))
         return refs

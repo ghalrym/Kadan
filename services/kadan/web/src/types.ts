@@ -102,6 +102,7 @@ export interface PetManifest {
 }
 export interface PetStep {
   name: string;
+  method: "generated" | "canonical";
   source_asset_id: string | null;
   output_asset_id: string;
   raw_asset_id: string;
@@ -122,6 +123,8 @@ export interface PetJob {
   completed_steps: number;
   total_steps: 74;
   steps: PetStep[];
+  rejections: { step: PetStep; reason: string }[];
+  parent_pet_id?: string | null;
   pending_step_name: string | null;
   pending_request_id: string | null;
   pending_seed: number | null;

@@ -1710,6 +1710,9 @@ dialog::backdrop {
 .pet-editor .quiet, .pet-editor .field-hint, .pet-editor .error { margin: 0; }
 .pet-editor > .error, .pet-editor > .banner { margin-top: 16px; }
 .pet-preview { display: grid; place-items: center; min-height: 240px; padding: 16px; }
+.pet-repair { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+.pet-repair textarea { width: 100%; resize: vertical; }
+.pet-repair-image { justify-self: center; object-fit: contain; }
 .pet-reset { margin-top: 24px; color: var(--muted); }
 .pet-edit-link { margin-top: 8px; color: var(--muted); font-size: 12px; }
 @media (max-width: 760px) {

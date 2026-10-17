@@ -29,15 +29,21 @@ The built-in plugin exposes `pet_create`, `pet_status`, `pet_cancel` and
 `pet_resume`, scoped to the current agent. It has no activation tool. Retain the
 creation UUID to check or resume the same job after an ambiguous response.
 
-Kadan generates a canonical base through Hikari, then conditions each pose strip
-on that same saved character through Hikari's existing SDEdit image-edit API.
-Kadan removes the chroma background, extracts fixed cells and validates a v2
-1536x2288 atlas. It never substitutes repeated or warped still frames for failed
-generation. SDEdit is source conditioning, not Qwen's separate reference-image
-attention implementation; identity, articulation and directional accuracy still
-need real-model visual validation. The preview is the final quality decision.
+Kadan generates a canonical base through Hikari, then generates each articulated
+pose on its own 384x416 canvas using Hikari's native reference-image conditioning.
+The two neutral idle endpoints reuse the canonical artwork with explicit provenance.
+Kadan removes the chroma background and packs validated cells into a 1536x2288 v2
+atlas without fitting each silhouette independently. Structural checks do not prove
+identity, articulation or gaze quality; the preview is the final quality decision.
 
-Tsuchi persists the base, source/generated strips, generation settings and seeds,
+For a completed inconsistent frame, choose it under **Repair a frame**, describe
+what needs fixing and choose **Regenerate frame**. This creates a revision retaining
+every other saved frame, the rejected artwork and its provenance. The correction
+reaches that frame's generation prompt and the retry uses a different seed. The
+previous candidate and active selection remain unchanged. Neutral idle repairs use
+the canonical base; already canonical endpoints do not need regeneration.
+
+Tsuchi persists the base, individual raw/prepared frames, generation settings and seeds,
 atlas, typed manifest, and versioned job records. A worker lease prevents another
 coordinator from taking live work. Cancellation waits for Hikari cleanup;
 unconfirmed cleanup remains visible. Expired work becomes interrupted and needs
@@ -47,7 +53,7 @@ referenced artwork to trash clears its selection in Tsuchi.
 
 API: under `/api/agents/{key}`, `GET/POST /pets`, `GET /pets/{id}`, and
 `POST /pets/{id}/cancel` or `/pets/{id}/resume` manage candidates. Creation accepts a caller
-UUID and prompt and returns immediately with HTTP 202. `GET/PUT /api/agents/{key}/pet` reads or explicitly selects a candidate with
+UUID and prompt and returns immediately with HTTP 202. `POST /pets/{id}/revisions` accepts `{id, expected_version, frame_names, reason}` and returns a queued revision, preserving unrejected frames. `GET/PUT /api/agents/{key}/pet` reads or explicitly selects a candidate with
 `{ "pet_id": "candidate-uuid" }`; `{ "pet_id": null }` resets selection. Generation settings use the existing
 Hikari model; all inference stays in its native worker. No additional model
 runtime is installed by this feature.

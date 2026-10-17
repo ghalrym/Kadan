@@ -44,6 +44,20 @@ class PetCreate(Model):
         return value.strip()
 
 
+class PetRevision(Model):
+    id: UUID
+    expected_version: int = Field(ge=1)
+    frame_names: list[str] = Field(min_length=1, max_length=73)
+    reason: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Describe why the frames need repair")
+        return value.strip()
+
+
 class PetUpdate(PetState):
     expected_version: int = Field(ge=1)
     worker_id: UUID | None = None
@@ -88,6 +102,19 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents/{key}/pets", response_model=PetJob, status_code=201)
     def create_pet(key: AgentKey, value: PetCreate):
         return repository.create_pet(key, value.id, value.prompt)
+
+    @router.post(
+        "/agents/{key}/pets/{pet_id}/revisions", response_model=PetJob, status_code=201
+    )
+    def revise_pet(key: AgentKey, pet_id: UUID, value: PetRevision):
+        return repository.revise_pet(
+            key,
+            pet_id,
+            value.id,
+            value.expected_version,
+            value.frame_names,
+            value.reason,
+        )
 
     @router.get("/agents/{key}/pets/{pet_id}", response_model=PetJob)
     def get_pet(key: AgentKey, pet_id: UUID):

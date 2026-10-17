@@ -1,5 +1,14 @@
 import type { ChatEvent, Resource } from "./types.ts";
 
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function api<T>(
   path: string,
   body?: unknown,
@@ -17,10 +26,11 @@ export async function api<T>(
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(
+    throw new ApiError(
       typeof error.detail === "string"
         ? error.detail
         : `Request failed (${response.status}).`,
+      response.status,
     );
   }
   return response.json();

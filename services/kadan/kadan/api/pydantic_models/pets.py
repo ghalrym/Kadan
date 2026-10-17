@@ -30,6 +30,7 @@ class PetManifest(BaseModel):
 
 class PetStep(BaseModel):
     name: str
+    method: Literal["generated", "canonical"] = "generated"
     source_asset_id: UUID | None = None
     output_asset_id: UUID
     raw_asset_id: UUID
@@ -42,6 +43,11 @@ class PetStep(BaseModel):
     meta: str = ""
 
 
+class PetRejection(BaseModel):
+    step: PetStep
+    reason: str
+
+
 class PetState(BaseModel):
     status: Literal[
         "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
@@ -52,6 +58,8 @@ class PetState(BaseModel):
     error: str | None = None
     cancel_requested: bool = False
     steps: list[PetStep] = Field(default_factory=list)
+    rejections: list[PetRejection] = Field(default_factory=list)
+    parent_pet_id: UUID | None = None
     manifest: PetManifest | None = None
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None

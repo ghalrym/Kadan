@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -235,9 +236,19 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         assert saved.status == "ready"
         assert saved.completed_steps == 74
         assert len(saved.steps) == 74
-        assert len(sources) == 74 and sources[0] is None
+        assert len(sources) == 72 and sources[0] is None
         assert all(source == b"canonical-base" for source in sources[1:])
-        assert seeds == [None] + [1] * 73
+        assert seeds == [None] + [1] * 71
+        for step in saved.steps:
+            if step.name in {"idle/0", "idle/5"}:
+                assert step.method == "canonical"
+                assert assets[step.output_asset_id] == b"canonical-base"
+                provenance = json.loads(assets[step.provenance_asset_id])
+                assert json.loads(provenance["meta"])["source_request_id"] == str(
+                    saved.steps[0].request_id
+                )
+            else:
+                assert step.method == "generated"
         assert all(step.strength is None for step in saved.steps)
         assert all(step.raw_asset_id in assets for step in saved.steps)
         assert all(step.provenance_asset_id in assets for step in saved.steps)
@@ -390,7 +401,7 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
             nonlocal cancelled
             requests.append(request_id)
             if (
-                len(requests) == 4
+                len(requests) == 3
                 and cancel_phase == "during_request"
                 and not cancelled
             ):
@@ -426,10 +437,14 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
         assert finished.status == "ready"
         assert finished.steps[:3] == saved_steps
         assert all(assets[asset_id] == data for asset_id, data in saved_bytes.items())
-        assert len(requests) == (75 if cancel_phase == "during_request" else 74)
+        assert len(requests) == (73 if cancel_phase == "during_request" else 72)
         if cancel_phase == "after_output":
             assert finished.steps[3].request_id == stopped.pending_request_id
-        assert all(requests.count(step.request_id) == 1 for step in saved_steps)
+        assert all(
+            requests.count(step.request_id) == 1
+            for step in saved_steps
+            if step.method == "generated"
+        )
         assert not any(call[2].endswith("/pet") for call in services.calls)
 
     asyncio.run(run())
@@ -446,7 +461,12 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
         outputs = [uuid4() for _ in range(6)]
         job = SimpleNamespace(
             agent_key=KEY,
-            steps=[SimpleNamespace(output_asset_id=asset) for asset in outputs],
+            steps=[
+                SimpleNamespace(name=name, output_asset_id=asset)
+                for name, asset in zip(
+                    ["base", *[f"idle/{i}" for i in range(5)]], outputs, strict=True
+                )
+            ],
         )
         pets.content = AsyncMock(
             side_effect=[b"one", b"two", b"three", b"four", b"five"]
@@ -463,7 +483,7 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
         monkeypatch.setattr("kadan.api.pet_jobs.validate_row", reject_repeated)
         with pytest.raises(ValueError, match="repeated row"):
             await pets.prepare_output(job, PNG, ROWS[0], 5)
-        assert seen == [[b"one", b"two", b"three", b"four", b"five", b"six"]]
+        assert seen == [[b"one", b"two", b"three", b"four", b"five", PNG]]
         assert [call.args[1] for call in pets.content.call_args_list] == outputs[1:]
 
     asyncio.run(run())
@@ -482,13 +502,14 @@ def test_rejected_saved_frame_persists_new_seed_before_retry():
             model_id=IMAGE_MODEL,
             seed=2**32 - 1,
         )
+        neutral = base.model_copy(update={"name": "idle/0", "output_asset_id": uuid4()})
         old_request = uuid4()
         job = await pets.save(
             job,
             worker=True,
-            steps=[base],
-            completed_steps=1,
-            pending_step_name="idle/0",
+            steps=[base, neutral],
+            completed_steps=2,
+            pending_step_name="idle/1",
             pending_request_id=old_request,
             pending_seed=base.seed,
         )
@@ -511,11 +532,71 @@ def test_rejected_saved_frame_persists_new_seed_before_retry():
             assert request_id != old_request
             assert persisted.pending_request_id == request_id
             assert seed == persisted.pending_seed == 0
-            assert persisted.steps == [base]
+            assert persisted.steps == [base, neutral]
             raise ServiceError("stop after observing submitted retry")
 
         pets.image = image
         with pytest.raises(ServiceError, match="stop after"):
             await pets.generate(job)
+
+    asyncio.run(run())
+
+
+def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+
+    async def run():
+        pets, services, job = await setup_running()
+        names = [
+            "base",
+            *(f"{row.name}/{i}" for row in ROWS for i in range(row.frame_count)),
+        ]
+        previous = [
+            PetStep(
+                name=name,
+                output_asset_id=uuid4(),
+                raw_asset_id=uuid4(),
+                provenance_asset_id=uuid4(),
+                prompt="fox",
+                request_id=uuid4(),
+                model_id=IMAGE_MODEL,
+                seed=7,
+            )
+            for name in names
+        ]
+        rejected = previous[3]
+        retained = [step for step in previous if step != rejected]
+        job = await pets.save(
+            job,
+            worker=True,
+            steps=retained,
+            completed_steps=73,
+            rejections=[{"step": rejected.model_dump(), "reason": "wrong eyelids"}],
+        )
+        pets.content = AsyncMock(return_value=PNG)
+        pets.prepare_output = AsyncMock(return_value=PNG)
+        pets.upload = AsyncMock()
+        pets.image = AsyncMock(
+            return_value=GeneratedImage(
+                model_id=IMAGE_MODEL,
+                seeds=[8],
+                images_base64=[base64.b64encode(PNG).decode()],
+                mime_type="image/png",
+            )
+        )
+        await pets.generate(job)
+        saved = services.jobs[job.id]
+        assert saved.status == "ready"
+        assert [step.name for step in saved.steps] == names
+        assert [step for step in saved.steps if step.name != rejected.name] == retained
+        assert saved.rejections[0].step == rejected
+        assert saved.steps[3].seed == 8
+        pets.image.assert_awaited_once()
+        assert pets.image.await_args.args[-1] == 8
+        assert "wrong eyelids" in pets.image.await_args.args[1]
 
     asyncio.run(run())

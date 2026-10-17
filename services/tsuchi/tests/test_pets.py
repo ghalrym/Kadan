@@ -675,3 +675,198 @@ def test_cancellation_and_expired_recovery_cannot_change_pending_seed(
     )
     assert interrupted.pending_seed == 42
     assert interrupted.pending_request_id == pet.pending_request_id
+
+
+def test_revision_keeps_other_frames_history_and_selected_original(repository):
+    original = ready_pet(repository)
+    repository.select_pet("alpha", original.id)
+    revision_id = uuid4()
+    repaired = repository.revise_pet(
+        "alpha",
+        original.id,
+        revision_id,
+        original.version,
+        ["idle/2", "running-left/3"],
+        "Clipped artwork",
+    )
+    assert repaired.status == "queued"
+    assert repaired.parent_pet_id == original.id
+    assert repaired.manifest is None
+    assert repaired.pending_request_id is None
+    assert repaired.steps == [
+        step for step in original.steps if step.name not in {"idle/2", "running-left/3"}
+    ]
+    assert [item.step.name for item in repaired.rejections] == [
+        "idle/2",
+        "running-left/3",
+    ]
+    assert all(item.reason == "Clipped artwork" for item in repaired.rejections)
+    assert (
+        original.asset_references() - {original.manifest.atlas_asset_id}
+        <= repaired.asset_references()
+    )
+    assert repository.get_pet("alpha", original.id) == original
+    assert repository.selected_pet("alpha") == original
+    assert (
+        repository.revise_pet(
+            "alpha",
+            original.id,
+            revision_id,
+            original.version,
+            ["running-left/3", "idle/2"],
+            "Clipped artwork",
+        )
+        == repaired
+    )
+    with pytest.raises(StorageError, match="already in use"):
+        repository.revise_pet(
+            "alpha",
+            original.id,
+            revision_id,
+            original.version,
+            ["idle/2"],
+            "Clipped artwork",
+        )
+    active = claim(repository, repaired)
+    next_request = uuid4()
+    active = repository.update_pet(
+        "alpha",
+        active.id,
+        state(
+            active,
+            pending_step_name="idle/2",
+            pending_request_id=next_request,
+            pending_seed=43,
+        ),
+        active.version,
+        active.owner_id,
+    )
+    replacement = generation_step(repository, "idle/2")
+    completed = sorted(
+        [*active.steps, replacement], key=lambda step: PET_STEP_NAMES.index(step.name)
+    )
+    active = repository.update_pet(
+        "alpha",
+        active.id,
+        state(
+            active,
+            steps=completed,
+            completed_steps=73,
+            pending_step_name=None,
+            pending_request_id=None,
+            pending_seed=None,
+        ),
+        active.version,
+        active.owner_id,
+    )
+    assert active.steps[3] == replacement
+    assert all(step in active.steps for step in repaired.steps)
+    assert active.rejections == repaired.rejections
+    with repository.connect() as db:
+        exported = repository.export_manifest(db, "alpha")
+    assert active in exported.pet_jobs
+    assert active.asset_references() <= {asset.id for asset in exported.assets}
+    stopped = repository.update_pet(
+        "alpha",
+        active.id,
+        state(active, status="failed", owner_id=None, lease_expires_at=None),
+        active.version,
+        active.owner_id,
+    )
+    second = repository.revise_pet(
+        "alpha", stopped.id, uuid4(), stopped.version, ["idle/2"], "Wrong pose"
+    )
+    assert second.rejections[:2] == repaired.rejections
+    assert second.rejections[-1].step == replacement
+    assert repository.selected_pet("alpha") == original
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["active", "namespace", "version", "base", "missing", "duplicate", "blank"],
+)
+def test_revision_rejects_invalid_source_or_request(repository, invalid):
+    original = ready_pet(repository)
+    pet_id, key, version = original.id, "alpha", original.version
+    names, reason = ["idle/2"], "Wrong pose"
+    if invalid == "active":
+        active = repository.create_pet("alpha", uuid4(), "Fox")
+        pet_id, version = active.id, active.version
+    elif invalid == "namespace":
+        key = "beta"
+    elif invalid == "version":
+        version -= 1
+    elif invalid == "base":
+        names = ["base"]
+    elif invalid == "missing":
+        names = ["idle/99"]
+    elif invalid == "duplicate":
+        names = ["idle/2", "idle/2"]
+    else:
+        reason = "  "
+    with pytest.raises(StorageError):
+        repository.revise_pet(key, pet_id, uuid4(), version, names, reason)
+    assert repository.get_pet("alpha", original.id) == original
+
+
+def test_worker_cannot_rewrite_rejection_history(repository):
+    original = ready_pet(repository)
+    revision = repository.revise_pet(
+        "alpha", original.id, uuid4(), original.version, ["idle/2"], "Wrong pose"
+    )
+    active = claim(repository, revision)
+    with pytest.raises(StorageError, match="history is immutable"):
+        repository.update_pet(
+            "alpha",
+            active.id,
+            state(active, rejections=[]),
+            active.version,
+            active.owner_id,
+        )
+    with pytest.raises(StorageError, match="history is immutable"):
+        repository.update_pet(
+            "alpha",
+            active.id,
+            state(active, parent_pet_id=None),
+            active.version,
+            active.owner_id,
+        )
+
+
+@pytest.mark.parametrize("field", ["raw_asset_id", "provenance_asset_id"])
+def test_rejected_artwork_remains_validated_dependency(repository, field):
+    original = ready_pet(repository)
+    revision = repository.revise_pet(
+        "alpha", original.id, uuid4(), original.version, ["idle/2"], "Wrong pose"
+    )
+    active = claim(repository, revision)
+    stopped = repository.update_pet(
+        "alpha",
+        active.id,
+        state(active, status="failed", owner_id=None, lease_expires_at=None),
+        active.version,
+        active.owner_id,
+    )
+    asset_id = getattr(stopped.rejections[0].step, field)
+    repository.trash_asset("alpha", asset_id, 1)
+    with pytest.raises(StorageError, match="active"):
+        repository.revise_pet(
+            "alpha", stopped.id, uuid4(), stopped.version, ["idle/3"], "Wrong pose"
+        )
+
+
+def test_canonical_frames_require_base_and_idle_endpoints(repository):
+    base = generation_step(repository, "base")
+    frame = generation_step(repository, "idle/0").model_copy(
+        update={"method": "canonical", "source_asset_id": base.output_asset_id}
+    )
+    pet = PetState(steps=[base, frame], completed_steps=2)
+    assert pet.steps[1].method == "canonical"
+    for invalid in [
+        frame.model_copy(update={"name": "idle/1"}),
+        frame.model_copy(update={"source_asset_id": uuid4()}),
+    ]:
+        with pytest.raises(ValidationError, match="Canonical frames"):
+            PetState(steps=[base, invalid], completed_steps=2)
+    with pytest.raises(ValidationError, match="canonical creation order"):
+        PetState(steps=[frame], completed_steps=1)

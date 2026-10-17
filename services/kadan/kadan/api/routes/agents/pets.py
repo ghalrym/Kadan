@@ -20,6 +20,23 @@ class SelectPet(BaseModel):
     pet_id: UUID | None
 
 
+class RevisePet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    expected_version: int = Field(ge=1)
+    frame_names: list[str] = Field(min_length=1, max_length=73)
+    reason: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+
+
+@router.post("/api/agents/{key}/pets/{pet_id}/revisions", status_code=202)
+async def revise_pet(
+    key: AgentKey, pet_id: UUID, value: RevisePet, request: Request
+) -> PetJob:
+    return await request.app.state.services.pets.revise(
+        key, pet_id, value.id, value.expected_version, value.frame_names, value.reason
+    )
+
+
 @router.get("/api/agents/{key}/pets")
 async def list_pets(key: AgentKey, request: Request) -> list[PetJob]:
     return await request.app.state.services.pets.list(key)

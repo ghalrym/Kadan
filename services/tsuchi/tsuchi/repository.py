@@ -18,6 +18,7 @@ from .models import (
     Message,
     Metadata,
     PetJob,
+    PetRejection,
     PetState,
     Resource,
     ResourceInput,
@@ -215,6 +216,74 @@ class Repository:
             self._save_pet(db, pet)
         return pet
 
+    def revise_pet(
+        self,
+        key: str,
+        pet_id: UUID,
+        revision_id: UUID,
+        expected_version: int,
+        frame_names: list[str],
+        reason: str,
+    ) -> PetJob:
+        reason = reason.strip()
+        if not reason or len(reason) > 10000:
+            raise StorageError("Describe why the frames need repair")
+        if (
+            not frame_names
+            or len(set(frame_names)) != len(frame_names)
+            or "base" in frame_names
+        ):
+            raise StorageError(
+                "Choose distinct completed frames to repair; the base cannot be replaced"
+            )
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            source = self._pet(db, key, pet_id)
+            self._check_version(source, expected_version)
+            if source.status in {"queued", "running", "cancelling"}:
+                raise StorageError("Stop pet creation before repairing frames", 409)
+            rejected_names = set(frame_names)
+            if not rejected_names <= {step.name for step in source.steps}:
+                raise StorageError("Only completed frames can be repaired")
+            rejections = [
+                *source.rejections,
+                *(
+                    PetRejection(step=step, reason=reason)
+                    for step in source.steps
+                    if step.name in rejected_names
+                ),
+            ]
+            existing = db.execute(
+                "SELECT data FROM pet_jobs WHERE id = ?", (str(revision_id),)
+            ).fetchone()
+            if existing is not None:
+                current = PetJob.model_validate_json(existing[0])
+                if (
+                    current.agent_key == key
+                    and current.parent_pet_id == source.id
+                    and current.rejections == rejections
+                    and current.prompt == source.prompt
+                ):
+                    return current
+                raise StorageError("This pet job ID is already in use", 409)
+            now = utc_now()
+            steps = [step for step in source.steps if step.name not in rejected_names]
+            revision = PetJob(
+                id=revision_id,
+                agent_key=key,
+                prompt=source.prompt,
+                parent_pet_id=source.id,
+                rejections=rejections,
+                steps=steps,
+                completed_steps=len(steps),
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._validate_pet_assets(db, key, revision)
+            self._save_pet(db, revision)
+            return revision
+
     def get_pet(self, key: str, pet_id: UUID) -> PetJob:
         with self.connect() as db:
             self._agent(db, key)
@@ -243,7 +312,10 @@ class Repository:
     def _validate_pet_assets(
         self, db: sqlite3.Connection, key: str, pet: PetState
     ) -> None:
-        provenance_ids = {step.provenance_asset_id for step in pet.steps}
+        provenance_ids = {
+            step.provenance_asset_id
+            for step in [*pet.steps, *(rejection.step for rejection in pet.rejections)]
+        }
         for asset_id in provenance_ids:
             asset = self._asset(db, key, asset_id)
             if asset.deleted_at or asset.media_type != "application/json":
@@ -287,8 +359,14 @@ class Repository:
             }
             if value.status not in transitions[current.status]:
                 raise StorageError("Invalid pet job state transition", 409)
-            if value.steps[: len(current.steps)] != current.steps:
+            updated_steps = {step.name: step for step in value.steps}
+            if any(updated_steps.get(step.name) != step for step in current.steps):
                 raise StorageError("Completed pet steps are immutable", 409)
+            if (
+                value.parent_pet_id != current.parent_pet_id
+                or value.rejections != current.rejections
+            ):
+                raise StorageError("Pet revision history is immutable", 409)
             if len(value.steps) > len(current.steps) + 1:
                 raise StorageError(
                     "Pet progress must persist one completed step at a time", 409

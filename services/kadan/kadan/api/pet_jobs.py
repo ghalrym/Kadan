@@ -107,6 +107,30 @@ class PetJobs:
         self.wakeup.set()
         return job
 
+    async def revise(
+        self,
+        key: str,
+        pet_id: UUID,
+        revision_id: UUID,
+        expected_version: int,
+        frame_names: list[str],
+        reason: str,
+    ) -> PetJob:
+        value = await self.services.json_request(
+            "Tsuchi",
+            "POST",
+            self.path(key, pet_id) + "/revisions",
+            json={
+                "id": str(revision_id),
+                "expected_version": expected_version,
+                "frame_names": frame_names,
+                "reason": reason,
+            },
+        )
+        job = self.checked(value, key, revision_id)
+        self.wakeup.set()
+        return job
+
     async def selected(self, key: str) -> PetJob | None:
         self.path(key)
         value = await self.services.json_request(
@@ -450,23 +474,34 @@ class PetJobs:
         if row is None:
             return await asyncio.to_thread(prepare_base, raw)
         output = await asyncio.to_thread(prepare_frame, raw, row, frame)
-        if frame == row.frame_count - 1:
-            previous = [
-                await self.content(job.agent_key, step.output_asset_id)
-                for step in job.steps[-frame:]
+        if row.name == "idle" and frame in {0, 5}:
+            # These poses are the canonical neutral artwork, validated but unaltered.
+            output = raw
+        saved = {step.name: step for step in job.steps}
+        names = [frame_name(row, index) for index in range(row.frame_count)]
+        if all(name in saved for name in names if name != frame_name(row, frame)):
+            complete = [
+                output
+                if index == frame
+                else await self.content(job.agent_key, saved[name].output_asset_id)
+                for index, name in enumerate(names)
             ]
-            await asyncio.to_thread(validate_row, row, [*previous, output])
+            await asyncio.to_thread(validate_row, row, complete)
         return output
 
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
-        for index, item in enumerate([None, *frames]):
-            if index < len(job.steps):
-                continue
+        order = ["base", *(frame_name(row, frame) for row, frame in frames)]
+        for item in [None, *frames]:
             row, frame = item if item is not None else (None, 0)
             name = frame_name(row, frame) if row is not None else "base"
+            if any(step.name == name for step in job.steps):
+                continue
+            canonical = name in {"idle/0", "idle/5"}
             prompt = (
-                frame_prompt(job.prompt, row, frame)
+                "Reuse the canonical neutral artwork without altering its pose."
+                if canonical
+                else frame_prompt(job.prompt, row, frame)
                 if row is not None
                 else base_prompt(job.prompt)
             )
@@ -483,9 +518,21 @@ class PetJobs:
                 if row is not None
                 else None
             )
+            rejected = next(
+                (
+                    entry
+                    for entry in reversed(job.rejections)
+                    if entry.step.name == name
+                ),
+                None,
+            )
+            if rejected and not canonical:
+                prompt += f" Correction requested for this frame: {rejected.reason}"
+            if rejected and not job.pending_request_id and not canonical:
+                seed = ((rejected.step.seed or 0) + 1) % 2**32
             recovered = (
                 await self.saved_generation(job, job.pending_request_id)
-                if job.pending_request_id
+                if job.pending_request_id and not canonical
                 else None
             )
             if recovered:
@@ -516,13 +563,28 @@ class PetJobs:
                     lease_expires_at=datetime.now(UTC)
                     + timedelta(seconds=LEASE_SECONDS),
                 )
-                generation = await self.image(
-                    request_id,
-                    prompt,
-                    source,
-                    job.steps[0].model_id if job.steps else None,
-                    seed,
-                )
+                if canonical:
+                    generation = GeneratedImage(
+                        model_id=job.steps[0].model_id,
+                        seeds=[job.steps[0].seed or 0],
+                        images_base64=[base64.b64encode(source).decode()],
+                        mime_type="image/png",
+                        meta=json.dumps(
+                            {
+                                "method": "canonical",
+                                "source_asset_id": str(source_id),
+                                "source_request_id": str(job.steps[0].request_id),
+                            }
+                        ),
+                    )
+                else:
+                    generation = await self.image(
+                        request_id,
+                        prompt,
+                        source,
+                        job.steps[0].model_id if job.steps else None,
+                        seed,
+                    )
                 raw = base64.b64decode(generation.images_base64[0], validate=True)
                 metadata = generation.model_dump(exclude={"images_base64"})
                 await self.upload(
@@ -541,6 +603,7 @@ class PetJobs:
             await self.upload(job, output_id, name, output, "image/png")
             step = PetStep(
                 name=name,
+                method="canonical" if canonical else "generated",
                 source_asset_id=source_id if row else uuid5(request_id, "raw"),
                 output_asset_id=output_id,
                 raw_asset_id=uuid5(request_id, "raw"),
@@ -553,8 +616,10 @@ class PetJobs:
             )
             job = await self.owned_update(
                 job,
-                steps=[*job.steps, step],
-                completed_steps=index + 1,
+                steps=sorted(
+                    [*job.steps, step], key=lambda saved: order.index(saved.name)
+                ),
+                completed_steps=len(job.steps) + 1,
                 pending_step_name=None,
                 pending_request_id=None,
                 pending_seed=None,
