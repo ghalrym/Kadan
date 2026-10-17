@@ -38,6 +38,8 @@ def snapshot(tier=None):
                 checkpoint("qwen3.8-27b-q4-k-m", "llm", "downloading"),
                 checkpoint("superwhisper-s1-mini", "formatting", "complete"),
                 checkpoint("qwen-image-2.1-turbo", "image"),
+                checkpoint("qwen-tts-1.7b-custom", "speech"),
+                checkpoint("whisper-medium", "transcription"),
             ],
             "tiers": [
                 {
@@ -50,8 +52,8 @@ def snapshot(tier=None):
                         "llm": "qwen3.8-27b-q4-k-m",
                         "image": "qwen-image-2.1-turbo",
                         "video": None,
-                        "speech": None,
-                        "transcription": None,
+                        "speech": "qwen-tts-1.7b-custom",
+                        "transcription": "whisper-medium",
                         "formatting": "superwhisper-s1-mini",
                     },
                 }
@@ -81,6 +83,8 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(models["formatting"].status, "complete")
         self.assertEqual(models["image"].id, "qwen-image-2.1-turbo")
+        self.assertEqual(models["speech"].id, "qwen-tts-1.7b-custom")
+        self.assertEqual(models["transcription"].id, "whisper-medium")
         self.assertIsNone(models["video"])
         self.assertEqual(tier.video_defaults.duration, 5)
         self.assertEqual(tier.video_defaults.resolution, "480p")

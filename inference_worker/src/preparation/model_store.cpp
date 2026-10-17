@@ -853,13 +853,8 @@ std::string ModelStore::whisper_selected() const {
                                .get<std::string>();
         return whisper_model(model);
     }
-    // Match the catalogue order used by the Settings selector.
-    std::set<std::string> names;
-    for (const auto& model : catalog_)
-        if (model.kind == "transcription")
-            names.insert(model.id.substr(8));
-    preparation_check(!names.empty(), "No Whisper checkpoint registered", 422);
-    return *names.begin();
+    // Every hardware tier downloads Whisper medium for transcription.
+    return whisper_model("medium");
 }
 
 Json ModelStore::context(const std::string& model) const {
