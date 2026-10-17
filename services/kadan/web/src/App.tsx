@@ -1,22 +1,70 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
-  ArrowUpRight,
-  Check,
-  ChevronDown,
+  BookUser,
   FolderOpen,
   Menu,
-  MessageSquare,
   Plus,
   RefreshCw,
-  Settings2,
   SquarePen,
   X,
 } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
 import type { Agent, Resource, Status } from "./types";
-import Chat from "./Chat";
+import Chat, { type Opening } from "./Chat";
+import Home from "./Home";
 import Workspace from "./Workspace";
 import Personas from "./Personas";
+import Hatch from "./Hatch";
+import Pet, { agentPet, useMood } from "./Pet";
+import { agentHue } from "./pet";
+
+/** Animate a view change, letting the agent's pet glide between layouts. */
+function transition(update: () => void) {
+  if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches)
+    return update();
+  document.startViewTransition(() => flushSync(update));
+}
+
+function ago(value: string) {
+  const minutes = Math.round((Date.now() - new Date(value).getTime()) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)}h`;
+  if (minutes < 10080) return `${Math.round(minutes / 1440)}d`;
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function RosterPet({
+  agent,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  agent: Agent;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  const [mood, react] = useMood("idle");
+  return (
+    <button
+      className={`roster-pet ${selected ? "selected" : ""}`}
+      style={{ "--agent-h": agentHue(agent.key) } as React.CSSProperties}
+      aria-pressed={selected}
+      aria-label={agent.name}
+      title={agent.name}
+      disabled={disabled}
+      onPointerEnter={() => react("waving")}
+      onClick={() => {
+        react("jumping");
+        onSelect();
+      }}
+    >
+      <Pet sheet={agentPet(agent.key)} state={mood} size={48} look />
+    </button>
+  );
+}
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -24,28 +72,27 @@ export default function App() {
   const [threads, setThreads] = useState<Resource[]>([]);
   const [personas, setPersonas] = useState<Resource[]>([]);
   const [thread, setThread] = useState<Resource | null>(null);
+  const [opening, setOpening] = useState<Opening | null>(null);
   const [view, setView] = useState<"chat" | "workspace" | "personas">("chat");
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [mobile, setMobile] = useState(() => matchMedia("(max-width: 700px)").matches);
+  const [mobile, setMobile] = useState(() => matchMedia("(max-width: 760px)").matches);
   const navigation = useRef<HTMLElement>(null);
   const openNavigation = useRef<HTMLButtonElement>(null);
   const closeNavigation = useRef<HTMLButtonElement>(null);
   const [creating, setCreating] = useState(false);
-  const [agentError, setAgentError] = useState("");
-  const [savingAgent, setSavingAgent] = useState(false);
+  const [hatched, setHatched] = useState("");
   const [creatingThread, setCreatingThread] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const activeAgent = useRef(key);
   activeAgent.current = key;
-  const dialog = useRef<HTMLDialogElement>(null);
   const selectedAgent = agents.find((agent) => agent.key === key);
 
   useEffect(() => {
-    const query = matchMedia("(max-width: 700px)");
+    const query = matchMedia("(max-width: 760px)");
     const changed = () => {
       const focused = document.activeElement;
       if (query.matches && navigation.current?.contains(focused)) {
@@ -63,7 +110,7 @@ export default function App() {
     if (!menu || !mobile) return;
     closeNavigation.current?.focus();
     return () => {
-      if (matchMedia("(max-width: 700px)").matches) openNavigation.current?.focus();
+      if (matchMedia("(max-width: 760px)").matches) openNavigation.current?.focus();
       else document.getElementById("main")?.focus();
     };
   }, [menu, mobile]);
@@ -115,6 +162,7 @@ export default function App() {
     setThread(null);
     setThreads([]);
     setPersonas([]);
+    setOpening(null);
     setError("");
   }, [key]);
   useEffect(() => {
@@ -146,10 +194,6 @@ export default function App() {
       current = false;
     };
   }, [key, resourceRevision]);
-  useEffect(() => {
-    if (creating) dialog.current?.showModal();
-    else dialog.current?.close();
-  }, [creating]);
 
   function updateThread(value: Resource) {
     if (value.agent_key !== activeAgent.current) return;
@@ -158,20 +202,34 @@ export default function App() {
     );
     setThreads((rows) => [value, ...rows.filter((row) => row.id !== value.id)]);
   }
+  function show(next: typeof view) {
+    setMenu(false);
+    transition(() => setView(next));
+  }
   async function openThread(value: Resource) {
     setError("");
     setMenu(false);
-    setView("chat");
     setBusy(true);
     try {
-      setThread(await api<Resource>(`${agentPath(key)}/resources/${value.id}`));
+      const loaded = await api<Resource>(`${agentPath(key)}/resources/${value.id}`);
+      transition(() => {
+        setView("chat");
+        setThread(loaded);
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-  async function createThread() {
+  function goHome() {
+    setMenu(false);
+    transition(() => {
+      setView("chat");
+      setThread(null);
+    });
+  }
+  async function createThread(first: Opening) {
     if (!key || creatingThread || busy || loading) return;
     setCreatingThread(true);
     setError("");
@@ -180,9 +238,12 @@ export default function App() {
         kind: "conversation",
         title: `Thread · ${new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
       });
-      setThread(value);
-      updateThread(value);
-      setView("chat");
+      transition(() => {
+        setOpening(first);
+        setThread(value);
+        updateThread(value);
+        setView("chat");
+      });
       setMenu(false);
     } catch (e) {
       setError((e as Error).message);
@@ -190,29 +251,10 @@ export default function App() {
       setCreatingThread(false);
     }
   }
-  async function createAgent(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    setSavingAgent(true);
-    setAgentError("");
-    try {
-      const agent = await api<Agent>("/agents", {
-        name: data.get("name"),
-        key: data.get("key"),
-      });
-      setAgents((rows) => [...rows, agent]);
-      setKey(agent.key);
-      setView("chat");
-      setCreating(false);
-    } catch (e) {
-      setAgentError((e as Error).message);
-    } finally {
-      setSavingAgent(false);
-    }
-  }
   const disabled = busy || creatingThread || loading;
+  const hue = key ? agentHue(key) : 252;
   return (
-    <div className="app">
+    <div className="app" style={{ "--agent-h": hue } as React.CSSProperties}>
       <a className="skip-link" href="#main" inert={mobile && menu}>
         Skip to content
       </a>
@@ -253,134 +295,133 @@ export default function App() {
         className={`sidebar ${menu ? "is-open" : ""}`}
         aria-label="Navigation"
       >
-        <div className="brand">
-          <span className="brand-mark">
-            <span />
-            <span />
-            <span />
+        <div className="rail">
+          <span className="logo" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
           </span>
-          <strong>Kadan</strong>
-          <button
-            className="icon mobile-only"
-            aria-label="Close navigation"
-            ref={closeNavigation}
-            onClick={() => setMenu(false)}
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <div className="agent-control">
-          <label className="sr-only" htmlFor="agent">
-            Agent
-          </label>
-          <select
-            id="agent"
-            value={key}
-            disabled={disabled || !agents.length}
-            onChange={(event) => setKey(event.target.value)}
-          >
-            {!agents.length && <option value="">No agents</option>}
+          <nav className="roster" aria-label="Agents">
             {agents.map((agent) => (
-              <option value={agent.key} key={agent.key}>
-                {agent.name}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={14} className="select-chevron" />
-          <button
-            className="icon"
-            aria-label="Create agent"
-            disabled={disabled}
-            onClick={() => {
-              setAgentError("");
-              setCreating(true);
-            }}
-          >
-            <Plus size={18} />
-          </button>
-        </div>
-        <button
-          className="nav-button new-thread"
-          disabled={disabled || !key}
-          onClick={() => void createThread()}
-        >
-          <SquarePen size={17} />
-          {creatingThread ? "Creating thread…" : "New thread"}
-        </button>
-        <nav aria-label="Agent views">
-          <button
-            className={`nav-button ${view === "workspace" ? "selected" : ""}`}
-            disabled={!key || disabled}
-            onClick={() => {
-              setView("workspace");
-              setMenu(false);
-            }}
-          >
-            <FolderOpen size={17} />
-            Workspace
-          </button>
-          <button
-            className={`nav-button ${view === "personas" ? "selected" : ""}`}
-            disabled={!key || disabled}
-            onClick={() => {
-              setView("personas");
-              setMenu(false);
-            }}
-          >
-            <Settings2 size={17} />
-            Personas
-          </button>
-        </nav>
-        <div className="thread-list" aria-label="Threads">
-          {loading && key ? (
-            <p className="quiet loading">Loading threads…</p>
-          ) : threads.length === 0 ? (
-            <p className="quiet empty-sidebar">No threads yet</p>
-          ) : (
-            threads.map((item) => (
-              <button
-                title={item.title}
-                key={item.id}
+              <RosterPet
+                key={agent.key}
+                agent={agent}
+                selected={agent.key === key}
                 disabled={disabled}
-                className={`thread-button ${view === "chat" && thread?.id === item.id ? "selected" : ""}`}
-                onClick={() => void openThread(item)}
-              >
-                <MessageSquare size={15} />
-                <span>{item.title}</span>
-              </button>
-            ))
-          )}
+                onSelect={() => {
+                  if (agent.key !== key) transition(() => setKey(agent.key));
+                  else goHome();
+                }}
+              />
+            ))}
+            <button
+              className="roster-add"
+              aria-label="Hatch agent"
+              title="Hatch agent"
+              disabled={disabled}
+              onClick={() => setCreating(true)}
+            >
+              <Plus size={20} />
+            </button>
+          </nav>
+          <div className="services">
+            <a
+              href={status?.tsuchi.browser_url ?? undefined}
+              aria-disabled={!status?.tsuchi.browser_url}
+              target="_blank"
+              rel="noreferrer"
+              title={`Tsuchi · ${status?.tsuchi.message ?? "Checking"}`}
+            >
+              <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
+              <span className="sr-only">
+                Tsuchi {status?.tsuchi.state === "ready" ? "connected" : "unavailable"}
+              </span>
+            </a>
+            <a
+              href={status?.hikari.settings_url ?? undefined}
+              aria-disabled={!status?.hikari.settings_url}
+              target="_blank"
+              rel="noreferrer"
+              title={`Hikari · ${status?.hikari.message ?? "Checking"}`}
+            >
+              <span
+                className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
+              />
+              <span className="sr-only">
+                Hikari {status?.hikari.state === "ready" ? "ready" : "needs attention"}
+              </span>
+            </a>
+          </div>
         </div>
-        <div className="sidebar-bottom">
-          <a href={status?.tsuchi.browser_url ?? undefined} aria-disabled={!status?.tsuchi.browser_url} target="_blank" rel="noreferrer">
-            <span
-              className={`status-dot ${status?.tsuchi.state === "ready" ? "ready" : ""}`}
-            />
-            <span>Tsuchi</span>
-            <span className="quiet">
-              {status?.tsuchi.state === "ready" ? "Connected" : "Unavailable"}
-            </span>
-            <ArrowUpRight size={14} />
-          </a>
-          <a
-            href={status?.hikari.settings_url ?? undefined}
-            aria-disabled={!status?.hikari.settings_url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <span
-              className={`status-dot ${status?.hikari.state === "ready" ? "ready" : ""}`}
-            />
-            <span>Hikari</span>
-            <span className="quiet">
-              {status?.hikari.state === "ready"
-                ? "Ready"
-                : status?.hikari.state === "tier_required"
-                  ? "Choose tier"
-                  : "Unavailable"}
-            </span>
-            <ArrowUpRight size={14} />
-          </a>
+        <div className="panel">
+          <header className="panel-head">
+            <button className="agent-title" disabled={!key} onClick={goHome}>
+              <strong>{selectedAgent?.name || "Kadan"}</strong>
+              {selectedAgent && <code>{selectedAgent.key}</code>}
+            </button>
+            <button
+              className="icon mobile-only"
+              aria-label="Close navigation"
+              ref={closeNavigation}
+              onClick={() => setMenu(false)}
+            >
+              <X size={18} />
+            </button>
+          </header>
+          <nav className="panel-nav" aria-label="Agent views">
+            <button
+              className={key && view === "chat" && !thread ? "selected" : ""}
+              disabled={disabled || !key}
+              onClick={goHome}
+            >
+              <SquarePen size={17} />
+              New thread
+            </button>
+            <button
+              className={view === "workspace" ? "selected" : ""}
+              disabled={!key || disabled}
+              onClick={() => show("workspace")}
+            >
+              <FolderOpen size={17} />
+              Workspace
+            </button>
+            <button
+              className={view === "personas" ? "selected" : ""}
+              disabled={!key || disabled}
+              onClick={() => show("personas")}
+            >
+              <BookUser size={17} />
+              Personas
+            </button>
+          </nav>
+          <div className="thread-list" aria-label="Threads" role="group">
+            <h3>Threads</h3>
+            {loading && key ? (
+              <div className="skeleton" role="status">
+                <span className="sr-only">Loading threads</span>
+                <i />
+                <i />
+                <i />
+              </div>
+            ) : threads.length === 0 ? (
+              <p className="quiet">None yet</p>
+            ) : (
+              threads.map((item, index) => (
+                <button
+                  title={item.title}
+                  key={item.id}
+                  disabled={disabled}
+                  style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
+                  className={`thread ${view === "chat" && thread?.id === item.id ? "selected" : ""}`}
+                  onClick={() => void openThread(item)}
+                >
+                  <span>{item.title}</span>
+                  <time dateTime={item.updated_at}>{ago(item.updated_at)}</time>
+                </button>
+              ))
+            )}
+          </div>
         </div>
       </aside>
       <main id="main" tabIndex={-1} inert={mobile && menu}>
@@ -395,31 +436,28 @@ export default function App() {
           >
             <Menu size={20} />
           </button>
-          <div className="breadcrumb">
-            <span>{selectedAgent?.name || "Kadan"}</span>
-            <span className="separator">/</span>
-            <h1>
-              {view === "workspace"
-                ? "Workspace"
-                : view === "personas"
-                  ? "Personas"
-                  : thread?.title || "Threads"}
-            </h1>
-          </div>
+          <h1>
+            {view === "workspace"
+              ? "Workspace"
+              : view === "personas"
+                ? "Personas"
+                : thread?.title || selectedAgent?.name || "Kadan"}
+          </h1>
           <button
-            className="icon refresh"
+            className="icon"
             aria-label="Refresh services and agents"
+            title="Refresh"
             disabled={disabled}
             onClick={() => {
               void refreshAgents();
               void refreshStatus();
             }}
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={16} className={loading ? "spin" : ""} />
           </button>
         </header>
         {error && (
-          <div className="error banner" role="alert">
+          <div className="banner" role="alert">
             {error}
             <button disabled={disabled} onClick={() => void refreshAgents()}>
               Retry
@@ -428,17 +466,20 @@ export default function App() {
         )}
         {loading && !key ? (
           <div className="center-empty" role="status">
-            Loading agents…
+            <span className="sr-only">Loading agents</span>
+            <span className="loader" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
           </div>
         ) : !key ? (
           <div className="center-empty">
-            <div className="empty-icon">
-              <MessageSquare size={28} />
-            </div>
+            <Pet sheet={agentPet("kadan")} state="waiting" size={144} look grounded className="hero-pet" />
             <h2>No agents yet</h2>
             <button className="primary" onClick={() => setCreating(true)}>
               <Plus size={16} />
-              Create agent
+              Hatch agent
             </button>
           </div>
         ) : view === "workspace" ? (
@@ -458,102 +499,46 @@ export default function App() {
           <Chat
             key={`${key}:${thread.id}`}
             agentKey={key}
+            agentName={selectedAgent?.name || key}
             thread={thread}
             personas={personas}
             status={status}
+            opening={opening}
+            onOpened={() => setOpening(null)}
             onChange={updateThread}
             onBusy={setBusy}
             blocked={loading}
             refreshStatus={refreshStatus}
           />
         ) : (
-          <div className="center-empty">
-            <div className="empty-icon">
-              <MessageSquare size={28} />
-            </div>
-            <h2>No thread selected</h2>
-            <button
-              className="primary"
-              onClick={() => void createThread()}
-              disabled={disabled}
-            >
-              <SquarePen size={16} />
-              New thread
-            </button>
-          </div>
+          <Home
+            key={key}
+            agentKey={key}
+            agentName={selectedAgent?.name || key}
+            entrance={hatched === key ? "jumping" : "waving"}
+            personas={personas}
+            status={status}
+            disabled={disabled}
+            onStart={(first) => void createThread(first)}
+          />
         )}
       </main>
-      <dialog
-        ref={dialog}
+      <Hatch
+        open={creating}
         onClose={() => {
+          setCreating(false);
           if (mobile && !menu) openNavigation.current?.focus();
         }}
-        onCancel={(event) => {
-          if (savingAgent) event.preventDefault();
-          else setCreating(false);
+        onHatched={(agent) => {
+          setAgents((rows) => [...rows, agent]);
+          setHatched(agent.key);
+          setCreating(false);
+          transition(() => {
+            setKey(agent.key);
+            setView("chat");
+          });
         }}
-        aria-labelledby="create-agent-title"
-      >
-        <form onSubmit={createAgent}>
-          <div className="dialog-header">
-            <h2 id="create-agent-title">Create agent</h2>
-            <button
-              type="button"
-              className="icon"
-              aria-label="Close"
-              disabled={savingAgent}
-              onClick={() => setCreating(false)}
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <label>
-            Name
-            <input
-              name="name"
-              autoFocus
-              required
-              maxLength={120}
-              placeholder="Research"
-            />
-          </label>
-          <label>
-            Agent key
-            <input
-              name="key"
-              required
-              pattern="[a-z0-9][a-z0-9_-]{0,63}"
-              maxLength={64}
-              placeholder="research"
-              autoCapitalize="none"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <p className="field-hint">
-            Lowercase letters, numbers, hyphens and underscores. The key cannot
-            be changed after creation.
-          </p>
-          {agentError && (
-            <p className="error" role="alert">
-              {agentError}
-            </p>
-          )}
-          <div className="form-actions">
-            <button
-              type="button"
-              disabled={savingAgent}
-              onClick={() => setCreating(false)}
-            >
-              Cancel
-            </button>
-            <button className="primary" disabled={savingAgent}>
-              <Check size={16} />
-              {savingAgent ? "Creating…" : "Create agent"}
-            </button>
-          </div>
-        </form>
-      </dialog>
+      />
     </div>
   );
 }

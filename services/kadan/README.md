@@ -9,6 +9,7 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Save a note without inference, or stream a response through Hikari's `/v1/chat/completions` API when the selected language model is available.
 - Search memories and Spaces by text, browse Space children, and search file metadata or download a file.
 - See actionable storage, tier, download and inference availability states, with links to the supporting operator interfaces.
+- Each agent has an animated pet that reacts to thread activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
 
 A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending message IDs and drafts stay in browser session storage so an uncertain save can be reconciled after reload.
 
