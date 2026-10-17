@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kadan"
+version = "0.1.0"
+description = "Local conversation coordinator for Tsuchi and Hikari"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.143,<1",
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2.16,<3",
+  "uvicorn>=0.54,<1",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10"]
+
+[tool.setuptools.packages.find]
+include = ["kadan*"]
+
+[tool.pytest.ini_options]
+testpaths = ["kadan/api/tests"]
+addopts = "-q"
