@@ -200,9 +200,16 @@ def frame_prompt(description: str, row: PetRow, index: int) -> str:
     direction = ""
     if row.name in {"running-right", "running-left"}:
         direction = f"Entire body facing {row.name.removeprefix('running-')}, in a running stride. "
+    grounding = (
+        "Keep both legs straight and both feet flat at the same standing level as the reference. "
+        "Do not bend, cross or lift the legs, stand on tiptoe, crouch or float; only the requested "
+        "upper-body, arm, head and eye movement changes. "
+        if row.name not in {"running-right", "running-left", "jumping"}
+        else ""
+    )
     return (
         f"Use the reference to draw exactly ONE full-body character ({description.strip()}) "
-        f"in exactly ONE animation pose: {direction}{row.poses[index]}. "
+        f"in exactly ONE animation pose: {direction}{row.poses[index]}. {grounding}"
         "This is a single 384x416 image, not a sprite sheet or sequence. Keep the reference "
         "character's identity, body proportions, colors, markings, costume and art style. "
         "Generate a genuine articulated pose, with the required limb, face and head changes; "

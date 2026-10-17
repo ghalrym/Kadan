@@ -387,6 +387,7 @@ class PetJobs:
         prompt: str,
         source: bytes | None,
         model_id: str | None,
+        seed: int | None = None,
     ) -> GeneratedImage:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -402,6 +403,7 @@ class PetJobs:
                 mode="reference",
                 width=SOURCE_CELL[0],
                 height=SOURCE_CELL[1],
+                seed=seed,
             )
         response = await self.services.client.post(
             self.services.settings.hikari_url
@@ -507,6 +509,7 @@ class PetJobs:
                     prompt,
                     source,
                     job.steps[0].model_id if job.steps else None,
+                    job.steps[0].seed if job.steps else None,
                 )
                 raw = base64.b64decode(generation.images_base64[0], validate=True)
                 metadata = generation.model_dump(exclude={"images_base64"})

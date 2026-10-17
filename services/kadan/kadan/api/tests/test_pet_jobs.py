@@ -198,6 +198,7 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         pets, services, job = await setup_running()
         assets = {}
         sources = []
+        seeds = []
 
         async def upload(job, asset_id, label, data, media_type):
             assets[asset_id] = data
@@ -206,8 +207,9 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         async def content(key, asset_id):
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id):
+        async def image(request_id, prompt, source, model_id, seed=None):
             sources.append(source)
+            seeds.append(seed)
             return GeneratedImage(
                 model_id=IMAGE_MODEL,
                 seeds=[1],
@@ -235,6 +237,7 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         assert len(saved.steps) == 74
         assert len(sources) == 74 and sources[0] is None
         assert all(source == b"canonical-base" for source in sources[1:])
+        assert seeds == [None] + [1] * 73
         assert all(step.strength is None for step in saved.steps)
         assert all(step.raw_asset_id in assets for step in saved.steps)
         assert all(step.provenance_asset_id in assets for step in saved.steps)
@@ -333,9 +336,10 @@ def test_frame_request_uses_untiled_reference_and_one_fixed_canvas():
         )
         services.client.post = AsyncMock(return_value=response)
         pets = PetJobs(services)
-        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL)
+        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, 42)
         request = services.client.post.call_args.kwargs["json"]
         assert request["mode"] == "reference"
+        assert request["seed"] == 42
         assert (
             request["image"]
             == "data:image/png;base64," + base64.b64encode(PNG).decode()
@@ -382,7 +386,7 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
                 raise ServiceError("Missing", 404)
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id):
+        async def image(request_id, prompt, source, model_id, seed=None):
             nonlocal cancelled
             requests.append(request_id)
             if (
