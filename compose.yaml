@@ -65,23 +65,64 @@ services:
       start_period: 5s
 
   frontend:
-    image: node:24-bookworm-slim
-    working_dir: /app
+    build:
+      context: ./frontend
     init: true
     ports:
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tsuchi:
+    build:
+      context: ./services/tsuchi
+    init: true
+    ports:
+      - "127.0.0.1:${TSUCHI_PORT:-8620}:8000"
     environment:
-      WATCH_POLLING: "true"
-      API_PROXY_TARGET: "http://api:8000"
+      TSUCHI_DATA_DIR: /data
+      TSUCHI_STATIC_DIR: /app/web/dist
+      TSUCHI_MAX_UPLOAD_BYTES: ${TSUCHI_MAX_UPLOAD_BYTES:-104857600}
+      TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi"]'
     volumes:
-      - ./frontend:/app
-      - frontend_node_modules:/app/node_modules
-    command:
-      - sh
-      - -c
-      - npm ci && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
+      - tsuchi_data:/data
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  kadan:
+    build:
+      context: ./services/kadan
+    init: true
+    ports:
+      - "127.0.0.1:${KADAN_PORT:-8630}:8630"
+    environment:
+      KADAN_TSUCHI_URL: http://tsuchi:8000
+      KADAN_HIKARI_URL: http://api:8000
+      KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
+      KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
+      KADAN_FRONTEND_DIRECTORY: /app/web/dist
+    depends_on:
+      tsuchi:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
 
 volumes:
   model_data:
   postgres_data:
   frontend_node_modules:
+  tsuchi_data:
+    # Reuse the standalone Tsuchi store when the owner switches to combined Compose.
+    name: ${TSUCHI_DATA_VOLUME:-tsuchi_tsuchi_data}
