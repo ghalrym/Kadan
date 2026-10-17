@@ -21,9 +21,9 @@ jobs:
       - name: Install worker preparation headers
         run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libcurl4-openssl-dev libssl-dev libarchive-dev libpng-dev
       - name: Install tooling dependencies
-        run: python3 -m pip install -r bin/requirements.txt
+        run: python3 -m pip install -r services/hikari/bin/requirements.txt
       - name: Run inference worker unit checks
-        run: python3 bin/hikari.py check inference-worker --build-dir /tmp/kadan-inference-worker --sanitize
+        run: python3 services/hikari/bin/hikari.py check inference-worker --build-dir /tmp/kadan-inference-worker --sanitize
   cpp-format:
     name: C++ format
     runs-on: ubuntu-latest
@@ -34,11 +34,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: services/hikari/requirements-dev.txt
       - name: Install pinned LLVM tools
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r services/hikari/requirements-dev.txt
       - name: Check C++ formatting
-        run: python bin/hikari.py check cpp-format
+        run: python services/hikari/bin/hikari.py check cpp-format
   cpp-lint:
     name: C++ lint
     runs-on: ubuntu-latest
@@ -51,11 +51,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: services/hikari/requirements-dev.txt
       - name: Install pinned LLVM tools
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r services/hikari/requirements-dev.txt
       - name: Run clang-tidy
-        run: python bin/hikari.py check cpp-lint --build-dir /tmp/kadan-lint
+        run: python services/hikari/bin/hikari.py check cpp-lint --build-dir /tmp/kadan-lint
       - name: Run tokenizer and H3 inventory unit tests
         run: |
           cmake --build /tmp/kadan-lint --target text-tokenizer-tests h3-inventory-tests --parallel 2

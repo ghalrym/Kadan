@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     @classmethod
     def local_service_url(cls, value: str, info: ValidationInfo) -> str:
         internal_origins = {
-            "tsuchi_url": "http://tsuchi:8000",
-            "hikari_url": "http://api:8000",
+            "tsuchi_url": "http://tsuchi-api:8000",
+            "hikari_url": "http://hikari-api:8000",
         }
         origin = value.removesuffix("/")
         if origin == internal_origins.get(info.field_name):

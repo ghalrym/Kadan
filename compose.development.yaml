@@ -1,23 +1,23 @@
 services:
-  migrate:
+  hikari-migrate:
     image: kadan-dev:local
 
-  api:
+  hikari-api:
     image: kadan-dev:local
     command: [python, -m, uvicorn, api.server:app, --host, 0.0.0.0, --port, "8000", --reload, --reload-dir, /app/api]
     environment:
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
-      - ./api:/app/api:ro
+      - ./services/hikari/api:/app/api:ro
 
-  frontend:
+  hikari-frontend:
     build:
       target: development
     environment:
       WATCH_POLLING: "true"
-      API_PROXY_TARGET: http://api:8000
+      API_PROXY_TARGET: http://hikari-api:8000
     volumes:
-      - ./frontend:/app
+      - ./services/hikari/frontend:/app
       - frontend_node_modules:/app/node_modules
     command: [sh, -c, "npm ci && exec npm run dev -- --host 0.0.0.0 --port 8080 --strictPort"]
     healthcheck:

@@ -2,7 +2,7 @@
 name: kadan
 
 services:
-  postgres:
+  hikari-postgres:
     image: postgres:18
     environment: &postgres_environment
       POSTGRES_DB: ${POSTGRES_DB:-kadan}
@@ -17,24 +17,24 @@ services:
       retries: 10
       start_period: 10s
 
-  migrate:
+  hikari-migrate:
     build:
-      context: .
+      context: ./services/hikari
       dockerfile: api/Dockerfile
     environment: &database_environment
       <<: *postgres_environment
-      POSTGRES_HOST: postgres
+      POSTGRES_HOST: hikari-postgres
       POSTGRES_PORT: "5432"
     command: ["alembic", "-c", "api/alembic.ini", "upgrade", "head"]
     depends_on:
-      postgres:
+      hikari-postgres:
         condition: service_healthy
     restart: "no"
 
-  api:
+  hikari-api:
     stop_grace_period: 5m
     build:
-      context: .
+      context: ./services/hikari
       dockerfile: api/Dockerfile
     init: true
     environment:
@@ -51,9 +51,9 @@ services:
     volumes:
       - model_data:/var/lib/kadan/models
     depends_on:
-      postgres:
+      hikari-postgres:
         condition: service_healthy
-      migrate:
+      hikari-migrate:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
@@ -64,28 +64,25 @@ services:
       retries: 3
       start_period: 5s
 
-  frontend:
+  hikari-frontend:
     build:
-      context: ./frontend
+      context: ./services/hikari/frontend
     init: true
     ports:
       - "127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}:8080"
     depends_on:
-      api:
+      hikari-api:
         condition: service_healthy
     restart: unless-stopped
 
-  tsuchi:
+  tsuchi-api:
     build:
       context: ./services/tsuchi
     init: true
-    ports:
-      - "127.0.0.1:${TSUCHI_PORT:-8620}:8000"
     environment:
       TSUCHI_DATA_DIR: /data
-      TSUCHI_STATIC_DIR: /app/web/dist
       TSUCHI_MAX_UPLOAD_BYTES: ${TSUCHI_MAX_UPLOAD_BYTES:-104857600}
-      TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi"]'
+      TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi-api"]'
     volumes:
       - tsuchi_data:/data
     tmpfs:
@@ -95,28 +92,47 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
-  kadan:
+  tsuchi-frontend:
+    build:
+      context: ./services/tsuchi/web
+    init: true
+    ports:
+      - "127.0.0.1:${TSUCHI_PORT:-8620}:8080"
+    depends_on:
+      tsuchi-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  kadan-api:
     build:
       context: ./services/kadan
     init: true
-    ports:
-      - "127.0.0.1:${KADAN_PORT:-8630}:8630"
     environment:
-      KADAN_TSUCHI_URL: http://tsuchi:8000
-      KADAN_HIKARI_URL: http://api:8000
+      KADAN_TSUCHI_URL: http://tsuchi-api:8000
+      KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
-      KADAN_FRONTEND_DIRECTORY: /app/web/dist
     depends_on:
-      tsuchi:
+      tsuchi-api:
         condition: service_healthy
-      api:
+      hikari-api:
         condition: service_healthy
     tmpfs:
       - /tmp:size=64m,mode=1777
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  kadan-frontend:
+    build:
+      context: ./services/kadan/web
+    init: true
+    ports:
+      - "127.0.0.1:${KADAN_PORT:-8630}:8080"
+    depends_on:
+      kadan-api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

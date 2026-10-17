@@ -61,7 +61,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        service: [kadan, tsuchi, frontend]
+        service: [kadan-api, kadan-frontend, tsuchi-api, tsuchi-frontend, hikari-frontend]
     steps:
       - uses: actions/checkout@v7
       - run: docker compose build ${{ matrix.service }}
