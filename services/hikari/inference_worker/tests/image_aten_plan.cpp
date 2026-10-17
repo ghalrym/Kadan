@@ -76,6 +76,59 @@ void tile_geometry_units() {
     check(rejected);
 }
 
+void reference_budget_units() {
+    using namespace kadan;
+    using namespace kadan::image;
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    constexpr Bytes points = 24 * 26, vision_tokens = points / 4, text_tokens = 100;
+    const auto vision = aten_stage_workspace(
+        AtenImageStage::vision, points, 0, false, points, vision_tokens
+    );
+    check(vision > 2 * gib && vision < 3 * gib);
+    const auto plan = aten_stage_plan(
+        Snapshot{{32 * gib, 8 * gib}, {0, 0}, 0},
+        {0},
+        1152776672ULL,
+        4608ULL * 4096 * 2,
+        vision
+    );
+    check(!plan.stream_weights && plan.device_bytes < 8 * gib);
+    const auto plain =
+        aten_stage_workspace(AtenImageStage::denoiser, points, text_tokens);
+    const auto reference = aten_stage_workspace(
+        AtenImageStage::denoiser, points, text_tokens, false, points, vision_tokens
+    );
+    // 624 reference cells alone retain 312 MiB of K/V, beyond projection work.
+    check(reference - plain > 312ULL * 1024 * 1024);
+    check(reference - plain < 512ULL * 1024 * 1024);
+    check(
+        aten_stage_workspace(AtenImageStage::denoiser, points, text_tokens * 2) - plain
+        >= text_tokens * 32 * 2 * 4096 * 2
+    );
+    Snapshot constrained{{32 * gib, plain}, {0, 0}, 0};
+    check(aten_stage_device(constrained, {0}, plain) == 0);
+    bool rejected = false;
+    try {
+        (void)aten_stage_device(constrained, {0}, reference);
+    } catch (const ResourceExhausted&) {
+        rejected = true;
+    }
+    check(rejected);
+    const auto host =
+        aten_reference_host_bytes(points, vision_tokens, text_tokens + vision_tokens);
+    check(
+        host
+        == points * 64 * 4
+               + (4 * vision_tokens + text_tokens + vision_tokens) * 4096 * 4
+    );
+    check(host < 16 * 1024 * 1024);
+    Resources ledger({host, 8 * gib});
+    const auto retained = ledger.reserve(Workload::image, {host, 0});
+    check(ledger.snapshot().used[0] == host);
+    ledger.released(retained);
+    check(ledger.snapshot().used == Footprint({0, 0}));
+}
+
 void vae_budget_units() {
     using namespace kadan;
     using namespace kadan::image;
@@ -132,6 +185,7 @@ int main() {
     try {
         tile_geometry_units();
         vae_budget_units();
+        reference_budget_units();
         using namespace kadan;
         using namespace kadan::image;
         constexpr Bytes gib = 1024ULL * 1024 * 1024;

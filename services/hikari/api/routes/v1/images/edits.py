@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.pydantic_models.inference_task import ImageModel
 from api.pydantic_models.media import ImageSet
@@ -24,8 +24,14 @@ class ImageRequest(BaseModel):
         min_length=1,
         max_length=4 * ((20 * 1024**2 + 2) // 3) + 22,
         pattern=r"^data:image/png;base64,",
-        description="PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.",
+        description="PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Reference inputs must contain at least 65,536 pixels. Source mode uses the source dimensions; reference mode accepts an independent target width and height.",
     )
+    mode: Literal["source", "reference"] = Field(
+        default="source",
+        description="Source edits noise the input image. Reference edits generate a new image conditioned on the reference character and appearance.",
+    )
+    width: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
+    height: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
     mask: str | None = Field(
         default=None,
         max_length=4 * ((20 * 1024**2 + 2) // 3) + 22,
@@ -38,6 +44,21 @@ class ImageRequest(BaseModel):
         le=1,
         description="Image-to-image noise strength. Zero preserves the source; one regenerates the editable area from noise. Describe the desired result in prompt.",
     )
+
+    @model_validator(mode="after")
+    def validate_edit_mode(self):
+        if (self.width is None) != (self.height is None):
+            raise ValueError(
+                "Reference output width and height must be supplied together"
+            )
+        if self.mode == "reference":
+            if self.mask is not None or "strength" in self.model_fields_set:
+                raise ValueError("Reference editing does not accept a mask or strength")
+        elif self.width is not None:
+            raise ValueError("Output dimensions can only be set for reference editing")
+        if self.width is not None and self.width * self.height > 4_718_592:
+            raise ValueError("Reference output may contain at most 4,718,592 pixels")
+        return self
 
 
 class ImageResponse(BaseModel):
@@ -54,7 +75,7 @@ async def create_image(
     request: Request,
     x_kadan_request_id: Annotated[UUID | None, Header()] = None,
 ) -> ImageResponse:
-    """Submit source-conditioned image-to-image editing to the shared worker."""
+    """Submit source or reference image editing to the shared worker."""
     return await infer(
         request,
         inference.submit(

@@ -71,6 +71,23 @@
         "title": "CacheUsage",
         "type": "object"
       },
+      "CancellationResponse": {
+        "properties": {
+          "status": {
+            "enum": [
+              "cancelled",
+              "not_active"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "CancellationResponse",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
           "meta": {
@@ -2629,8 +2646,22 @@
             "title": "Count",
             "type": "integer"
           },
+          "height": {
+            "anyOf": [
+              {
+                "maximum": 3072.0,
+                "minimum": 32.0,
+                "multipleOf": 32.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
           "image": {
-            "description": "PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Output uses the source dimensions.",
+            "description": "PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Reference inputs must contain at least 65,536 pixels. Source mode uses the source dimensions; reference mode accepts an independent target width and height.",
             "maxLength": 27962050,
             "minLength": 1,
             "pattern": "^data:image/png;base64,",
@@ -2650,6 +2681,16 @@
             ],
             "description": "Opaque PNG matching the source size. Black preserves pixels, white edits them; gray blends.",
             "title": "Mask"
+          },
+          "mode": {
+            "default": "source",
+            "description": "Source edits noise the input image. Reference edits generate a new image conditioned on the reference character and appearance.",
+            "enum": [
+              "source",
+              "reference"
+            ],
+            "title": "Mode",
+            "type": "string"
           },
           "model_id": {
             "anyOf": [
@@ -2697,6 +2738,20 @@
             "minimum": 0.0,
             "title": "Strength",
             "type": "number"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "maximum": 3072.0,
+                "minimum": 32.0,
+                "multipleOf": 32.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
           }
         },
         "required": [
@@ -3267,7 +3322,7 @@
     },
     "/v1/images/edits": {
       "post": {
-        "description": "Submit source-conditioned image-to-image editing to the shared worker.",
+        "description": "Submit source or reference image editing to the shared worker.",
         "operationId": "editImages",
         "parameters": [
           {
@@ -3388,6 +3443,50 @@
           }
         },
         "summary": "Create Image",
+        "tags": [
+          "Images"
+        ]
+      }
+    },
+    "/v1/images/requests/{request_id}/cancel": {
+      "post": {
+        "description": "Join an active image request's cleanup before acknowledging cancellation.\n\nAn absent request has no recoverable result here. Callers must distinguish\nthat from a confirmed cancellation and reconcile their durable output first.",
+        "operationId": "cancelImageRequest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancellationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Image Request",
         "tags": [
           "Images"
         ]

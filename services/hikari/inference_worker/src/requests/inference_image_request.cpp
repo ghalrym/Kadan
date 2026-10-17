@@ -29,11 +29,33 @@ void prepare_input(
     preparation_check(
         !input.mask || input.image, "Image mask requires a source image", 422
     );
+    preparation_check(
+        !input.reference || (input.image && !input.mask),
+        "Reference editing requires an image without a mask",
+        422
+    );
     if (input.image) {
         input.source = prepare_image_upload(*input.image);
         input.image.reset();
-        input.width = input.source->width;
-        input.height = input.source->height;
+        input.source_width = input.source->width;
+        input.source_height = input.source->height;
+        preparation_check(
+            !input.reference || input.source_width * input.source_height >= 65536,
+            "Reference image must contain at least 65,536 pixels",
+            422
+        );
+        if (!input.reference || !input.width) {
+            input.width = input.source_width;
+            input.height = input.source_height;
+        }
+        preparation_check(
+            input.width >= 32 && input.height >= 32 && input.width <= 3072
+                && input.height <= 3072 && input.width % 32 == 0
+                && input.height % 32 == 0
+                && std::size_t(input.width) * input.height <= 4608 * 1024,
+            "Invalid image output dimensions",
+            422
+        );
         if (input.mask) {
             input.edit_mask = prepare_image_upload(*input.mask);
             input.mask.reset();
@@ -114,8 +136,9 @@ Json present_image(
           {"meta",
            std::to_string(input.width) + "×" + std::to_string(input.height) + " · "
                + std::to_string(
-                   input.source ? image::edit_steps(input.steps, input.strength)
-                                : input.steps
+                   input.source && !input.reference
+                       ? image::edit_steps(input.steps, input.strength)
+                       : input.steps
                )
                + " steps"},
           {"images_base64", images},

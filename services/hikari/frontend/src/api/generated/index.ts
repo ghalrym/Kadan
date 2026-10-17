@@ -2,6 +2,7 @@
 
 export {
   cancelDownloadV1ModelsModelIdDownloadDelete,
+  cancelImageRequest,
   cancelVideo,
   configureContextV1ModelsModelIdContextPut,
   createCompletion,
@@ -44,6 +45,12 @@ export type {
   CancelDownloadV1ModelsModelIdDownloadDeleteErrors,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponse,
   CancelDownloadV1ModelsModelIdDownloadDeleteResponses,
+  CancelImageRequestData,
+  CancelImageRequestError,
+  CancelImageRequestErrors,
+  CancelImageRequestResponse,
+  CancelImageRequestResponses,
+  CancellationResponse,
   CancelVideoData,
   CancelVideoError,
   CancelVideoErrors,

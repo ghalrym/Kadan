@@ -1,7 +1,9 @@
 from urllib.parse import urlsplit
 
-from pydantic import ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .pydantic_models.plugins import PluginManifest, builtin_plugin
 
 
 class Settings(BaseSettings):
@@ -15,6 +17,9 @@ class Settings(BaseSettings):
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
     hikari_browser_url: str = "http://127.0.0.1:8088"
     frontend_directory: str = "web/dist"
+    plugins: list[PluginManifest] = Field(
+        default_factory=lambda: [builtin_plugin()], max_length=16
+    )
 
     @field_validator(
         "tsuchi_url", "hikari_url", "tsuchi_browser_url", "hikari_browser_url"

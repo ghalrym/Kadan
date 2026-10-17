@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   BookUser,
   FolderOpen,
   Menu,
   Plus,
+  Palette,
   RefreshCw,
   SquarePen,
   X,
 } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
-import type { Agent, Resource, Status } from "./types";
+import type { Agent, PetJob, Resource, Status } from "./types";
 import Chat, { type Opening } from "./Chat";
 import Home from "./Home";
 import Workspace from "./Workspace";
@@ -18,6 +19,8 @@ import Personas from "./Personas";
 import Hatch from "./Hatch";
 import Pet, { agentPet, useMood } from "./Pet";
 import { agentHue } from "./pet";
+import PetEditor from "./PetEditor";
+import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
 function transition(update: () => void) {
@@ -47,6 +50,7 @@ function RosterPet({
   onSelect: () => void;
 }) {
   const [mood, react] = useMood("idle");
+  const sheet = useAgentPet(agent.key);
   return (
     <button
       className={`roster-pet ${selected ? "selected" : ""}`}
@@ -61,13 +65,17 @@ function RosterPet({
         onSelect();
       }}
     >
-      <Pet sheet={agentPet(agent.key)} state={mood} size={48} look />
+      <Pet sheet={sheet} state={mood} size={48} look />
     </button>
   );
 }
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [pets, setPets] = useState<Record<string, PetJob | null>>({});
+  const [editingPet, setEditingPet] = useState(false);
+  const petSelectionRevision = useRef<Record<string, number>>({});
+  const pendingPetSelection = useRef<Record<string, number>>({});
   const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
   const [threads, setThreads] = useState<Resource[]>([]);
   const [personas, setPersonas] = useState<Resource[]>([]);
@@ -90,6 +98,41 @@ export default function App() {
   const activeAgent = useRef(key);
   activeAgent.current = key;
   const selectedAgent = agents.find((agent) => agent.key === key);
+
+  const refreshPetSelection = useCallback(async (agentKey: string) => {
+    if (pendingPetSelection.current[agentKey]) return;
+    const revision = petSelectionRevision.current[agentKey] ?? 0;
+    const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
+    if (revision === (petSelectionRevision.current[agentKey] ?? 0) && !pendingPetSelection.current[agentKey]) {
+      setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
+        ? rows : { ...rows, [agentKey]: pet });
+    }
+  }, []);
+
+  const selectPet = useCallback(async (agentKey: string, id: string | null) => {
+    const revision = (petSelectionRevision.current[agentKey] ?? 0) + 1;
+    petSelectionRevision.current[agentKey] = revision;
+    pendingPetSelection.current[agentKey] = revision;
+    const apply = (pet: PetJob | null) => {
+      if (revision === petSelectionRevision.current[agentKey]) {
+        setPets((rows) => ({ ...rows, [agentKey]: pet }));
+      }
+    };
+    try {
+      try {
+        apply(await api<PetJob | null>(`${agentPath(agentKey)}/pet`, { pet_id: id }, "PUT"));
+      } catch (error) {
+        // The write may have committed even when its response never arrived.
+        const saved = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
+        apply(saved);
+        if ((saved?.id ?? null) !== id) throw error;
+      }
+    } finally {
+      if (pendingPetSelection.current[agentKey] === revision) delete pendingPetSelection.current[agentKey];
+    }
+  }, []);
+  const refreshEditedPet = useCallback(() => refreshPetSelection(key), [key, refreshPetSelection]);
+
 
   useEffect(() => {
     const query = matchMedia("(max-width: 760px)");
@@ -158,6 +201,17 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
+    let current = true;
+    for (const agent of agents) {
+      refreshPetSelection(agent.key)
+        .catch((error: Error) => {
+          if (current) setError(`Could not load ${agent.name}’s selected pet: ${error.message}`);
+        });
+    }
+    return () => { current = false; };
+  }, [agents, refreshPetSelection]);
+  useEffect(() => {
+    setEditingPet(false);
     localStorage.setItem("kadan.agent", key);
     setThread(null);
     setThreads([]);
@@ -254,6 +308,7 @@ export default function App() {
   const disabled = busy || creatingThread || loading;
   const hue = key ? agentHue(key) : 252;
   return (
+    <PetContext.Provider value={pets}>
     <div className="app" style={{ "--agent-h": hue } as React.CSSProperties}>
       <a className="skip-link" href="#main" inert={mobile && menu}>
         Skip to content
@@ -370,6 +425,10 @@ export default function App() {
             </button>
           </header>
           <nav className="panel-nav" aria-label="Agent views">
+            <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
+              <Palette size={17} />
+              Edit pet
+            </button>
             <button
               className={key && view === "chat" && !thread ? "selected" : ""}
               disabled={disabled || !key}
@@ -520,9 +579,19 @@ export default function App() {
             status={status}
             disabled={disabled}
             onStart={(first) => void createThread(first)}
+            onEditPet={() => setEditingPet(true)}
           />
         )}
       </main>
+      {editingPet && selectedAgent && <PetEditor
+        key={key}
+        agentKey={key}
+        agentName={selectedAgent.name}
+        selected={pets[key] ?? null}
+        onSelect={(id) => selectPet(key, id)}
+        onRefreshSelection={refreshEditedPet}
+        onClose={() => setEditingPet(false)}
+      />}
       <Hatch
         open={creating}
         onClose={() => {
@@ -540,5 +609,6 @@ export default function App() {
         }}
       />
     </div>
+    </PetContext.Provider>
   );
 }

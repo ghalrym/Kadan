@@ -1400,6 +1400,89 @@ void job_units() {
         assert(meta.find("8 steps") != std::string::npos);
         files.cleanup("turbo");
     }
+    const std::string small_source_png =
+        "data:image/"
+        "png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAABACAYAAAB7jnWuAAAAP0lEQVR4nO3OMQEAAAjDsIF/"
+        "z0MGT2qgmbbNY/"
+        "s5BwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEiSA61CBHwO9WIDAAAAAElFTkSuQmCC";
+    const std::string source_png =
+        "data:image/"
+        "png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAADHUlEQVR4nO3UMQEAIAzAMMC/"
+        "5yFjRxMFvXpnZg6Q9LYDgD0GAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEG"
+        "AGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAGEGAG"
+        "EGAGEGAGEGAGEGAGEGAGEGAGEfHrAF/LZ/lzEAAAAASUVORK5CYII=";
+    for (bool explicit_size : {false, true}) {
+        Json body = {
+            {"feature", "image"},
+            {"prompt", "fox jumping"},
+            {"image", source_png},
+            {"mode", "reference"},
+            {"count", 1}
+        };
+        if (explicit_size) {
+            body["width"] = 384;
+            body["height"] = 416;
+        }
+        auto reference = request("reference-image", body);
+        prepare_task(reference, store, files, running);
+        const auto& input = std::get<ImageRequest>(reference.input);
+        assert(
+            input.reference && input.source_width == 256 && input.source_height == 256
+        );
+        assert(input.width == (explicit_size ? 384u : 256u));
+        assert(input.height == (explicit_size ? 416u : 256u));
+        assert(input.steps == 8);
+        bytes(jobs / "reference-image/one.png", "image-one");
+        const auto meta = present_image(reference, {jobs / "reference-image/one.png"})
+                              .at("image")
+                              .at("meta")
+                              .get<std::string>();
+        assert(meta.find("8 steps") != std::string::npos);
+        files.cleanup("reference-image");
+    }
+    rejects([&] {
+        auto small = request(
+            "small-reference",
+            {{"feature", "image"},
+             {"prompt", "fox"},
+             {"image", small_source_png},
+             {"mode", "reference"}}
+        );
+        prepare_task(small, store, files, running);
+    });
+    for (const auto& invalid : std::vector<Json>{
+             {{"mode", "unknown"}},
+             {{"mode", "reference"}, {"strength", .65}},
+             {{"mode", "reference"}, {"mask", source_png}},
+             {{"mode", "reference"}, {"width", 384}},
+             {{"mode", "reference"}, {"width", 0}, {"height", 416}},
+             {{"mode", "reference"}, {"width", 385}, {"height", 416}},
+             {{"mode", "reference"}, {"width", 3072}, {"height", 3072}},
+             {{"width", 384}, {"height", 416}}
+         }) {
+        Json body = {{"feature", "image"}, {"prompt", "fox"}, {"image", source_png}};
+        body.update(invalid);
+        rejects([&] { request("invalid-reference", body); });
+    }
+    rejects([&] {
+        request(
+            "missing-reference",
+            {{"feature", "image"}, {"prompt", "fox"}, {"mode", "reference"}}
+        );
+    });
     auto unsupported = request(
         "unsupported-image",
         {{"feature", "image"}, {"model_id", "small"}, {"prompt", "mountain"}}

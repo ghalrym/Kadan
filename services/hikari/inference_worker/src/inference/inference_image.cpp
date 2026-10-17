@@ -1,5 +1,6 @@
 #include <filesystem>
 
+#include "kadan/image_aten_plan.hpp"
 #include "kadan/image_edit.hpp"
 #include "kadan/image_generation.hpp"
 #include "kadan/image_upload.hpp"
@@ -63,21 +64,30 @@ public:
             *input.seed,
             {},
             {},
-            input.strength
+            input.strength,
+            input.reference,
+            input.source_width,
+            input.source_height
         };
-        image::Generator::validate(request_);
         count_ = input.count;
         require(count_ == 1 || count_ == 2 || count_ == 4, "image_count");
         output_ = request.workspace.string();
-        const Bytes bytes =
-            8 * 1024 * 1024
-            + (input.source ? 96 : 64) * request_.height * request_.width;
+        Bytes bytes =
+            8 * 1024 * 1024 + 64 * request_.height * request_.width
+            + (input.source ? 32 * request_.source_height * request_.source_width : 0);
+        if (input.reference) {
+            const auto points =
+                request_.source_width / 16 * (request_.source_height / 16);
+            // Tokenization happens in model preparation; admit its full supported
+            // prompt capacity plus retained visual features and reference latents.
+            bytes += image::aten_reference_host_bytes(points, points / 4, 8192);
+        }
         if (bytes > available[0])
             throw AdmissionWait("image_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::image, bytes);
         if (input.source) {
-            const auto pixels = request_.width * request_.height;
+            const auto pixels = request_.source_width * request_.source_height;
             std::vector<std::uint8_t> rgba(pixels * 4);
             source_.resize(pixels * 4);
             decode_image_upload(*input.source, rgba, source_);
@@ -89,6 +99,7 @@ public:
             request_.mask = mask_;
             check_cancel(cancel);
         }
+        image::Generator::validate(request_);
         model_->prepare(request_, cancel);
     }
 

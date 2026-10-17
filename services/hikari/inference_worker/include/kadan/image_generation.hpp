@@ -17,9 +17,11 @@ struct ImageRequest {
     std::uint64_t seed = 0;
     std::span<const float> source, mask;
     float strength = .65f;
+    bool reference = false;
+    std::size_t source_width = 0, source_height = 0;
 };
 
-// Checkpoint-specific text-to-image and source-latent image-to-image pipeline.
+// Checkpoint-specific generation, source-latent edits and reference conditioning.
 // Source/mask buffers remain caller-owned and admitted throughout the request.
 class Generator {
 public:

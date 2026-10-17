@@ -38,6 +38,7 @@ docker compose stop
 | Images | Verified PNG/JPEG/WebP/GIF files, original bytes and metadata |
 | Attachments | Audio, video, PDF, and general files, with original filenames and SHA-256 checksums |
 | Conversations | Ordered messages with roles, timestamps, attachments, sources, and stored-resource links |
+| Pets | Creation jobs, generation provenance, v2 atlas manifests, and explicit agent selection |
 
 The image library stores generated images supplied by Hikari, Kadan, or the owner. Tsuchi does not generate them. Images referenced by decks stay separate assets. Slide layouts are `title`, `text`, `split`, and `image`; decks remain editable in the UI and JSON export. This is a defined v1 format, not full ChatGPT feature parity or PowerPoint round-trip support.
 
@@ -144,7 +145,7 @@ Local single-owner storage service. FastAPI + Pydantic, SQLite FTS5, file blobs,
 - `GET /api/health` => `{status:"ok", version:"0.1.0"}`
 - `GET /api/agents` => Agent[]
 - `POST /api/agents` body `{key, name}` => Agent (201)
-- Agent: `{key,name,created_at}`. No agent delete in v1.
+- Agent: `{key,name,created_at,selected_pet_id:string|null}`. No agent delete in v1.
 - `GET /api/agents/{key}/stats` => `{resources:{persona:number,memory:number,space:number,deck:number,conversation:number},assets:number,images:number,trashed_resources:number,trashed_assets:number,storage_bytes:number,database_bytes:number,revisions:number}`. Counts exclude trash unless named otherwise. Storage bytes include retained files in trash. Database bytes are global, not agent-specific.
 - `GET /api/agents/{key}/activity?limit=50` => `{id,action,entity_type,entity_id,title,created_at}`[]. Newest first.
 
@@ -171,7 +172,7 @@ Deck: `{schema_version:1,width:1920,height:1080,slides:Slide[]}`. Slide: `{id:st
 ### Assets
 
 - `GET /api/agents/{key}/assets?images=false&trash=false&q=term` => Asset[]. `images=true` restricts to safe raster image formats.
-- `POST /api/agents/{key}/assets` multipart `file`, optional `title`, `tags` JSON string array, `sources` JSON SourceLink array => Asset (201). 100 MiB upload limit by default. Safe generated UUID disk path; original filename retained as metadata only.
+- `POST /api/agents/{key}/assets` multipart `file`, optional `asset_id` UUID, `title`, `tags` JSON string array, `sources` JSON SourceLink array => Asset (201). 100 MiB upload limit by default. Immutable UUID disk path; original filename retained as metadata only. Replaying an upload with the same `asset_id`, bytes and metadata returns the original asset. Conflicting content, another namespace or a trashed asset returns 409. A retry can finish registration if a crash left the immutable blob before its database record.
 - `GET /api/agents/{key}/assets/{id}` => Asset.
 - `GET /api/agents/{key}/assets/{id}/content` => file. Verified PNG/JPEG/GIF/WebP images and parsed WAV audio may be inline; all others force attachment, including other audio/video, SVG, HTML, and PDF. `download=true` forces attachment.
 - `PUT /api/agents/{key}/assets/{id}` `{title,tags,sources,expected_version}` => Asset. Binary bytes immutable; upload a new asset to replace.
@@ -180,7 +181,21 @@ Deck: `{schema_version:1,width:1920,height:1080,slides:Slide[]}`. Slide: `{id:st
 
 Asset: `{id,agent_key,title,filename,media_type,size_bytes,sha256,is_image:boolean,tags,sources,version,created_at,updated_at,deleted_at}`.
 
+### Pets
+
+- `POST /api/agents/{key}/pets` `{id,prompt}` => queued PetJob. Same ID and prompt are idempotent; another namespace or prompt conflicts.
+- `GET /api/agents/{key}/pets` => all candidates/jobs, newest first.
+- `GET /api/agents/{key}/pets/{id}` => PetJob.
+- `PUT /api/agents/{key}/pets/{id}` => PetJob. Supply full mutable state, `expected_version`, and `worker_id` for worker updates. Job identity and prompt cannot change.
+- `GET /api/pet-jobs` => queued, running and cancelling jobs across namespaces for the local coordinator.
+- `GET /api/agents/{key}/pet` => selected PetJob or null.
+- `PUT /api/agents/{key}/pet` `{pet_id:UUID|null}` => selected PetJob or null. Only ready candidates with active same-namespace raster assets may be selected. Creation and updates never select a candidate.
+
+Jobs retain ordered completed steps and their source/output asset IDs, prompts, model IDs, request IDs, seeds, edit strengths and response metadata. A pending step/request pair is persisted before inference. Ready candidates require all 12 outputs (base, nine animation strips and two look strips) and a v2 manifest for an 8-by-11 atlas with 192-by-208 cells. Artwork remains in the asset store; the manifest and provenance live in SQLite and exports.
+
+Queued jobs are claimed atomically with a worker UUID and a lease expiring within five minutes. Worker updates require that live owner and the current version. Heartbeats extend the lease; stale workers cannot publish results. Cancellation is sticky until explicit resume. Expired running jobs can be marked interrupted, preserving their completed and pending steps; resuming a failed, cancelled or interrupted job explicitly returns it to queued. Moving any selected pet dependency to trash clears selection. Restoring artwork does not automatically reselect it.
+
 ### Export
 
-- `GET /api/agents/{key}/export` => ZIP with `manifest.json` (agent, resources including trash, versions, assets including trash, activity) and `files/{asset UUID}` binary data. Namespace-scoped, consistent read snapshot. No credentials. All generated exports cleaned up.
+- `GET /api/agents/{key}/export` => ZIP with `manifest.json` (agent, resources including trash, versions, assets including trash, pet jobs and selection, activity) and `files/{asset UUID}` binary data. Namespace-scoped, consistent read snapshot. No credentials. All generated exports cleaned up.
 - Full-volume backup/restore instructions in README using stopped service and volume copy. No destructive overwrite endpoint.

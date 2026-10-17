@@ -48,11 +48,27 @@ class ImageTask(TaskInput):
     image: str | None = None
     mask: str | None = None
     strength: float = Field(default=0.65, ge=0, le=1)
+    mode: Literal["source", "reference"] = "source"
+    width: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
+    height: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
 
     @model_validator(mode="after")
-    def mask_requires_image(self):
+    def validate_edit_mode(self):
         if self.mask is not None and self.image is None:
             raise ValueError("An image mask requires a source image")
+        if (self.width is None) != (self.height is None):
+            raise ValueError(
+                "Reference output width and height must be supplied together"
+            )
+        if self.mode == "reference":
+            if self.image is None:
+                raise ValueError("Reference editing requires an image")
+            if self.mask is not None or "strength" in self.model_fields_set:
+                raise ValueError("Reference editing does not accept a mask or strength")
+        elif self.width is not None:
+            raise ValueError("Output dimensions can only be set for reference editing")
+        if self.width is not None and self.width * self.height > 4_718_592:
+            raise ValueError("Reference output may contain at most 4,718,592 pixels")
         return self
 
 

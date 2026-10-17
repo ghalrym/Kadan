@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { hatchlingSheet } from "./hatchling";
 import {
   CELL_RATIO,
@@ -20,18 +20,31 @@ export function agentPet(key: string): PetSheet {
 }
 
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+const subscribeMotion = (notify: () => void) => {
+  reducedMotion.addEventListener("change", notify);
+  return () => reducedMotion.removeEventListener("change", notify);
+};
+const motionSnapshot = () => reducedMotion.matches;
 
 // One shared pointer listener feeds every pet that follows the cursor.
-const lookers = new Set<(x: number, y: number) => void>();
+const lookers = new Set<{ follow: (x: number, y: number) => void; stop: () => void }>();
 let lastMove = 0;
 addEventListener(
   "pointermove",
   (event) => {
+    if (event.pointerType !== "mouse") return;
     lastMove = performance.now();
-    for (const look of lookers) look(event.clientX, event.clientY);
+    for (const look of lookers) look.follow(event.clientX, event.clientY);
   },
   { passive: true },
 );
+const stopLooking = () => {
+  for (const look of lookers) look.stop();
+};
+addEventListener("blur", stopLooking);
+addEventListener("pointerout", (event) => {
+  if (event.pointerType === "mouse" && event.relatedTarget === null) stopLooking();
+});
 const LOOK_HOLD_MS = 2400;
 
 interface Props {
@@ -40,6 +53,8 @@ interface Props {
   /** Display width in CSS pixels. Hatchlings stay crisp at multiples of 48. */
   size?: number;
   look?: boolean;
+  /** Explicit look pose for reviewing a candidate atlas. */
+  lookDirection?: number;
   /** Draw a ground shadow that reacts to jumps. */
   grounded?: boolean;
   className?: string;
@@ -50,12 +65,14 @@ export default function Pet({
   state = "idle",
   size = 96,
   look = false,
+  lookDirection,
   grounded = false,
   className = "",
 }: Props) {
   const element = useRef<HTMLSpanElement>(null);
   const looking = useRef(false);
-  const { row, durations } = ROWS[state];
+  const reduceMotion = useSyncExternalStore(subscribeMotion, motionSnapshot);
+  const { row, durations } = sheet.animations?.find((animation) => animation.name === state) ?? ROWS[state];
 
   useEffect(() => {
     const node = element.current;
@@ -63,7 +80,12 @@ export default function Pet({
     const show = (column: number) => {
       if (!looking.current) node.style.backgroundPosition = cellPosition(row, column, sheet.version);
     };
-    if (reducedMotion.matches) {
+    if (lookDirection !== undefined && sheet.version === 2) {
+      const cell = lookCell(lookDirection);
+      node.style.backgroundPosition = cellPosition(cell.row, cell.column, sheet.version);
+      return;
+    }
+    if (reduceMotion) {
       show(0);
       return;
     }
@@ -78,14 +100,16 @@ export default function Pet({
     };
     advance();
     return () => clearTimeout(timer);
-  }, [row, durations, sheet.version]);
+  }, [row, durations, sheet.version, reduceMotion, lookDirection]);
 
   useEffect(() => {
     const node = element.current;
-    if (!node || !look || sheet.version !== 2 || state !== "idle" || reducedMotion.matches) return;
+    if (!node || !look || sheet.version !== 2 || state !== "idle" || reduceMotion || lookDirection !== undefined) return;
     let pending = 0;
     let release = 0;
     const stop = () => {
+      cancelAnimationFrame(pending);
+      clearTimeout(release);
       looking.current = false;
       node.style.backgroundPosition = cellPosition(row, 0, sheet.version);
     };
@@ -106,14 +130,13 @@ export default function Pet({
         }, LOOK_HOLD_MS);
       });
     };
-    lookers.add(follow);
+    const looker = { follow, stop };
+    lookers.add(looker);
     return () => {
-      lookers.delete(follow);
-      cancelAnimationFrame(pending);
-      clearTimeout(release);
-      looking.current = false;
+      lookers.delete(looker);
+      stop();
     };
-  }, [look, state, row, sheet.version]);
+  }, [look, state, row, sheet.version, reduceMotion, lookDirection]);
 
   return (
     <span

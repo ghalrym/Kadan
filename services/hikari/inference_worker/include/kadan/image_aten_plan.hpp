@@ -6,6 +6,7 @@
 
 namespace kadan::image {
 enum class AtenImageStage {
+    vision,
     text,
     denoiser,
     vae,
@@ -83,17 +84,47 @@ inline AtenStagePlan aten_stage_plan(
     }
 }
 
+// These CPU tensors survive component unloading; reserve them independently of
+// each sequential stage's temporary weights and device workspace. Vision tokens
+// are the merged 2x2 patch tokens, and text tokens include their image slots.
+inline Bytes aten_reference_host_bytes(
+    Bytes reference_points, Bytes vision_tokens, Bytes text_tokens
+) {
+    return reference_points * 64 * 4 + vision_tokens * 4096 * 4 * 4
+           + text_tokens * 4096 * 4;
+}
+
 inline Bytes aten_stage_workspace(
-    AtenImageStage stage, Bytes points, Bytes tokens, bool editing = false
+    AtenImageStage stage,
+    Bytes points,
+    Bytes tokens,
+    bool editing = false,
+    Bytes reference_points = 0,
+    Bytes vision_tokens = 0
 ) {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    if (stage == AtenImageStage::vision) {
+        const auto patches = vision_tokens * 4;
+        // Two RGB frames per 16x16 patch; FP32 attention/residual work and MLP
+        // intermediates; final merger plus three retained DeepStack outputs.
+        return 2 * gib + patches * (2 * 3 * 16 * 16 + 16 * 1152 + 4 * 4304) * 4
+               + vision_tokens * 4096 * 4 * 4;
+    }
     if (stage == AtenImageStage::text)
         return 2 * gib + tokens * 4096 * 4 * 16;
     if (stage == AtenImageStage::denoiser) {
         // Source/noise, two mask vectors, and the largest simultaneous mask
         // restoration intermediates are additional to the generation envelope.
         const auto edit_buffers = editing ? points * (8 * 64 + 2) * 4 : 0;
-        return 2 * gib + (points + tokens) * 4096 * 2 * 20 + edit_buffers;
+        // Prefix cache is retained across all 32 blocks: one BF16 K and V per
+        // block, separate from the twenty live projection/MLP work vectors.
+        // Denoiser text tokens exclude the visual slots replaced by VAE tokens.
+        const auto prefix = tokens + reference_points;
+        const auto prefix_cache = prefix * 32 * 2 * 4096 * 2;
+        const auto text_attention_mask = reference_points ? tokens * prefix : 0;
+        const auto reference_latent = reference_points * 64 * 4;
+        return 2 * gib + (points + prefix) * 4096 * 2 * 20 + prefix_cache + edit_buffers
+               + reference_latent + text_attention_mask;
     }
     if (stage == AtenImageStage::vae_encoder) {
         // The first block retains the 96-channel full-resolution shortcut while

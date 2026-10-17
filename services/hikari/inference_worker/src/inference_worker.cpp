@@ -333,8 +333,9 @@ int serve(const char* lock_path) {
         };
         if (const auto* image = std::get_if<ImageRequest>(&request.input))
             prepared["total"] =
-                image->source ? kadan::image::edit_steps(image->steps, image->strength)
-                              : image->steps;
+                image->source && !image->reference
+                    ? kadan::image::edit_steps(image->steps, image->strength)
+                    : image->steps;
         output.send(prepared);
     };
     InferenceOwner owner(

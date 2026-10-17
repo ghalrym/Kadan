@@ -66,3 +66,52 @@ class ImageEditTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(task.input.strength, 0)
         self.assertNotIn("model_id", task.model_dump(mode="json")["input"])
+
+    def test_reference_dimensions_survive_task_serialization(self):
+        body = edits.ImageRequest(
+            prompt="The same fox jumping",
+            image="data:image/png;base64,cG5n",
+            mode="reference",
+            width=1920,
+            height=416,
+            count=1,
+        )
+        task = InferenceTask(
+            input={"feature": "image", **body.model_dump(exclude_unset=True)}
+        )
+        restored = InferenceTask.model_validate_json(task.model_dump_json())
+        self.assertEqual(restored.input.mode, "reference")
+        self.assertEqual((restored.input.width, restored.input.height), (1920, 416))
+        self.assertNotIn("strength", restored.model_dump(mode="json")["input"])
+
+    def test_reference_rejects_source_edit_controls_and_invalid_target(self):
+        for values in (
+            {"mask": "data:image/png;base64,cG5n"},
+            {"strength": 0.65},
+            {"width": 384},
+            {"width": 0, "height": 416},
+            {"width": 385, "height": 416},
+            {"width": 3072, "height": 3072},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                edits.ImageRequest(
+                    prompt="fox",
+                    image="data:image/png;base64,cG5n",
+                    mode="reference",
+                    **values,
+                )
+        with self.assertRaises(ValidationError):
+            edits.ImageRequest(
+                prompt="fox", image="data:image/png;base64,cG5n", width=384, height=416
+            )
+        with self.assertRaises(ValidationError):
+            InferenceTask(
+                input={"feature": "image", "prompt": "fox", "mode": "reference"}
+            )
+
+    def test_reference_defaults_to_source_dimensions(self):
+        body = edits.ImageRequest(
+            prompt="fox", image="data:image/png;base64,cG5n", mode="reference"
+        )
+        self.assertIsNone(body.width)
+        self.assertIsNone(body.height)

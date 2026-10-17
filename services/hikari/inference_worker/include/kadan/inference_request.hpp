@@ -53,6 +53,8 @@ struct ImageRequest {
     std::optional<std::string> image, mask;
     std::optional<ImageUpload> source, edit_mask;
     float strength = .65f;
+    bool reference = false;
+    std::size_t source_width = 0, source_height = 0;
 };
 
 struct ChoiceOption {

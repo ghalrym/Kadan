@@ -61,6 +61,40 @@ InferenceRequest parse_request(const Json& envelope) {
         input.image = optional<std::string>(body, "image");
         input.mask = optional<std::string>(body, "mask");
         input.strength = body.value("strength", .65f);
+        const auto mode = body.value("mode", "source");
+        preparation_check(
+            mode == "source" || mode == "reference", "Invalid image edit mode", 422
+        );
+        input.reference = mode == "reference";
+        const auto width = optional<unsigned>(body, "width");
+        const auto height = optional<unsigned>(body, "height");
+        preparation_check(
+            width.has_value() == height.has_value(),
+            "Image output dimensions must be supplied together",
+            422
+        );
+        preparation_check(
+            !width || input.reference,
+            "Output dimensions require reference editing",
+            422
+        );
+        preparation_check(
+            !input.reference
+                || (input.image && !input.mask && !body.contains("strength")),
+            "Reference editing requires an image and does not accept a mask or "
+            "strength",
+            422
+        );
+        preparation_check(
+            !width
+                || (*width >= 32 && *height >= 32 && *width <= 3072 && *height <= 3072
+                    && *width % 32 == 0 && *height % 32 == 0
+                    && std::size_t(*width) * *height <= 4608 * 1024),
+            "Invalid image output dimensions",
+            422
+        );
+        input.width = width.value_or(0);
+        input.height = height.value_or(0);
         request.input = std::move(input);
         request.workload = Workload::image;
     } else if (feature == "decisions") {
