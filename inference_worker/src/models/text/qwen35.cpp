@@ -2,6 +2,7 @@
 // 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209. Text only; MTP is not executed.
 #include <cmath>
 #include <string>
+#include <variant>
 
 #include "gguf_model.hpp"
 #include "qwen_layers.hpp"
@@ -69,6 +70,11 @@ template <class Metadata> void validate(const Metadata& m) {
     );
 }
 
+struct Layer {
+    Vec norm, post_norm;
+    std::variant<DeltaNetLayer, AttentionLayer> attention;
+};
+
 class Qwen35 final : public Model {
 public:
     Qwen35(const GgufWeights& weights, DenseCompute& compute, std::size_t context)
@@ -77,12 +83,21 @@ public:
         need(context && context <= context_length, "qwen35_context");
         for (std::size_t i = 0; i < layers; ++i) {
             const auto p = prefix(i);
-            norms_.push_back(w_.read(p + "attn_norm.weight"));
-            post_norms_.push_back(w_.read(p + "post_attention_norm.weight"));
-            if (full_attention(i))
-                attention_.emplace_back(w_, p, attention_spec, context);
-            else
-                delta_.emplace_back(w_, p, delta_spec);
+            layers_.push_back(
+                {w_.read(p + "attn_norm.weight"),
+                 w_.read(p + "post_attention_norm.weight"),
+                 full_attention(i)
+                     ? std::variant<DeltaNetLayer, AttentionLayer>(
+                           std::in_place_type<AttentionLayer>,
+                           w_,
+                           p,
+                           attention_spec,
+                           context
+                       )
+                     : std::variant<DeltaNetLayer, AttentionLayer>(
+                           std::in_place_type<DeltaNetLayer>, w_, p, delta_spec
+                       )}
+            );
         }
     }
 
@@ -95,8 +110,9 @@ public:
     }
 
     void reset() override {
-        for (auto& layer : delta_)
-            layer.reset();
+        for (auto& layer : layers_)
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                delta->reset();
     }
 
     Vec forward(
@@ -118,19 +134,20 @@ public:
                 std::span(x).subspan(row * hidden, hidden)
             );
         }
-        std::size_t next_delta = 0, next_attention = 0;
         for (std::size_t i = 0; i < layers; ++i) {
             const auto p = prefix(i);
+            auto& layer = layers_[i];
             Vec h = x;
-            rms_norm(h, norms_[i], eps);
+            rms_norm(h, layer.norm, eps);
+            auto* attention = std::get_if<AttentionLayer>(&layer.attention);
             const auto mixed =
-                full_attention(i)
-                    ? attention_[next_attention++].forward(compute_, w_, h, position)
-                    : delta_[next_delta++].forward(compute_, w_, h);
+                attention
+                    ? attention->forward(compute_, w_, h, position)
+                    : std::get<DeltaNetLayer>(layer.attention).forward(compute_, w_, h);
             for (std::size_t j = 0; j < x.size(); ++j)
                 x[j] += mixed[j];
             h = x;
-            rms_norm(h, post_norms_[i], eps);
+            rms_norm(h, layer.post_norm, eps);
             auto gate = w_.project(compute_, p + "ffn_gate.weight", h);
             const auto up = w_.project(compute_, p + "ffn_up.weight", h);
             for (std::size_t j = 0; j < gate.size(); ++j)
@@ -153,9 +170,7 @@ private:
     DenseCompute& compute_;
     std::size_t context_;
     Vec output_norm_;
-    std::vector<Vec> norms_, post_norms_;
-    std::vector<DeltaNetLayer> delta_;
-    std::vector<AttentionLayer> attention_;
+    std::vector<Layer> layers_;
 };
 }  // namespace
 

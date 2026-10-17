@@ -4,6 +4,7 @@ import {
   downloadState,
   fetchSettings,
   licenseNotices,
+  tierCanDownload,
   tierComplete,
   tierDownloading,
   tierProgress,
@@ -253,7 +254,6 @@ export default function SettingsPage() {
   }
 
   const notices = confirmTier ? licenseNotices(confirmTier) : []
-  const failed = selected?.models.some(({ model }) => downloadState(model) === 'failed')
 
   return (
     <div className="scroll-page">
@@ -299,9 +299,9 @@ export default function SettingsPage() {
         >
           <DownloadProgress tier={selected} />
           <div className="tier-dialog-actions">
-            {failed && !downloading && (
+            {tierCanDownload(selected) && (
               <button type="button" className="button" disabled={submitting} onClick={() => void confirm(selected)}>
-                Retry downloads
+                Resume downloads
               </button>
             )}
             <button

@@ -791,7 +791,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
 std::optional<std::string> ModelStore::tier() const {
     if (!fs::is_regular_file(root_ / "tier.json"))
         return std::nullopt;
-    const auto id = read_document(root_ / "tier.json").at("tier").get<std::string>();
+    auto id = read_document(root_ / "tier.json").at("tier").get<std::string>();
     hardware_tier(id);
     return id;
 }

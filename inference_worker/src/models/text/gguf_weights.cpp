@@ -147,6 +147,7 @@ void GgufWeights::place(
     decision = placement_.use(key, bytes);
     if (!decision.device_evicted.empty()) {
         std::vector<WeightIdentity> released;
+        released.reserve(decision.device_evicted.size());
         for (const auto& slice : decision.device_evicted)
             released.push_back(gguf_->identity(slice.tensor, slice.expert));
         compute.release_weights(released);
@@ -224,10 +225,13 @@ Vec GgufWeights::project(
             else
                 gguf_->read_packed_rows(name, expert, first, destination, *cancel_);
         };
+        const auto encoding = gguf::encoding(tensor.type);
+        if (!encoding)
+            throw std::runtime_error("gguf_text_encoding_unsupported");
         // Slices without device residency stream without displacing hot tiles.
         result = compute.dense_gguf_source(
             identity,
-            *gguf::encoding(tensor.type),
+            *encoding,
             reader,
             {},
             input,

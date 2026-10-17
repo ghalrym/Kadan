@@ -79,6 +79,10 @@ export function tierDownloading(tier: TierSetting): boolean {
   })
 }
 
+export function tierCanDownload(tier: TierSetting): boolean {
+  return !tierDownloading(tier) && !tierComplete(tier)
+}
+
 export function tierComplete(tier: TierSetting): boolean {
   return assigned(tier).every((model) => model.status === 'complete')
 }

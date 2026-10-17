@@ -1072,6 +1072,7 @@ std::string qwen35_metadata(bool valid) {
     w.f32("qwen35.attention.layer_norm_rms_epsilon", 1e-6f);
     w.integers("qwen35.rope.dimension_sections", {11, 11, 10, 0});
     std::vector<bool> recurrent;
+    recurrent.reserve(64);
     for (unsigned i = 0; i < 64; ++i)
         recurrent.push_back((i + 1) % 4 != 0);
     w.booleans("qwen35.attention.recurrent_layers", recurrent);

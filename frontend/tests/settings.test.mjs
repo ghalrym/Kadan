@@ -81,3 +81,28 @@ test('API details and missing responses become actionable errors', async () => {
   const offline = await settingsApi(null, null)
   await assert.rejects(offline.api.fetchSettings(new AbortController().signal), /Cannot reach the settings API/)
 })
+
+
+test('incomplete idle tier downloads can resume after a worker restart', async () => {
+  const { api, calls } = await settingsApi()
+  const selected = tier({
+    llm: checkpoint('language'),
+    formatting: checkpoint('formatter', { status: 'complete' }),
+    image: null,
+  })
+  assert.equal(api.tierCanDownload(selected), true)
+  await api.chooseTier(selected.id, new AbortController().signal)
+  assert.deepEqual(calls[0].args.body, { tier: selected.id, license_acknowledged: true })
+})
+
+test('download recovery is available for failed or cancelled tiers but not active or complete ones', async () => {
+  const { api } = await settingsApi()
+  for (const status of ['failed', 'cancelled'])
+    assert.equal(api.tierCanDownload(tier({ llm: checkpoint('language', { status }) })), true)
+  for (const status of ['downloading', 'cancelling', 'complete'])
+    assert.equal(api.tierCanDownload(tier({ llm: checkpoint('language', { status }) })), false)
+  assert.equal(api.tierCanDownload(tier({
+    llm: checkpoint('language'),
+    formatting: checkpoint('formatter', { status: 'downloading' }),
+  })), false)
+})
