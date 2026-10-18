@@ -483,3 +483,33 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     assert result.hikari.state == ("unavailable" if unavailable else "tier_required")
     assert result.tsuchi.browser_url == "http://localhost:18620"
     assert result.hikari.settings_url == "http://localhost:18088/settings"
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "state"),
+    [
+        (
+            httpx.Response(200, json={"state": "loading", "model_id": "test-model"}),
+            "loading",
+        ),
+        (
+            httpx.Response(200, json={"state": "ready", "model_id": "test-model"}),
+            "ready",
+        ),
+        (httpx.Response(200, json={"state": "ready", "model_id": "other"}), "unloaded"),
+        (httpx.Response(200, json={"state": "unloaded", "model_id": None}), "unloaded"),
+        (httpx.Response(503, json={"detail": "Busy"}), None),
+        (httpx.Response(200, json={"state": "warming"}), None),
+    ],
+)
+def test_status_reports_whether_the_selected_model_is_loaded(lifecycle, state):
+    boundary = Boundary()
+
+    def transport(request):
+        if request.url.path == "/model-lifecycle":
+            return lifecycle
+        return boundary(request)
+
+    status = run(transport, lambda service: service.status())
+    assert status.hikari.state == "ready"
+    assert status.hikari.model_state == state

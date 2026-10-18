@@ -14,6 +14,11 @@ from .pydantic_models.resources import Message, Resource
 if TYPE_CHECKING:
     from .services import LocalServices
 
+# Hikari serves one request at a time and loads models on demand, so a reply can
+# wait minutes behind a model load or another job. There is no read deadline:
+# a stopped reply disconnects, which cancels the work in Hikari.
+INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
+
 MAX_TOOL_CALLS = 8
 MAX_ACTION_BYTES = 100000
 MAX_CONTEXT_CHARACTERS = 48000
@@ -125,7 +130,7 @@ async def choose_action(
             "model": model_id,
             "stream": False,
         },
-        timeout=httpx.Timeout(120, connect=3),
+        timeout=INFERENCE_TIMEOUT,
     ) as response:
         if not response.is_success:
             raise ServiceError(

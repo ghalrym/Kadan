@@ -1,75 +1,77 @@
-from io import BytesIO
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, sentinel
 from uuid import UUID
 
-from fastapi.testclient import TestClient
-from PIL import Image
+import pytest
+from fastapi import Request
 
-from kadan.api.config import Settings
-from kadan.api.server import create_app
+from kadan.api.config import ServiceError
+from kadan.api.pet_import import ImportedPet
+from kadan.api.routes.agents import pets
 
 PET_ID = UUID("10000000-0000-4000-8000-00000000000a")
 
 
-def client(import_atlas):
-    app = create_app(Settings(allowed_hosts=["testserver"]))
-    # Without entering the lifespan, no queue worker or upstream client starts.
-    app.state.services = SimpleNamespace(
-        pets=SimpleNamespace(import_atlas=import_atlas)
-    )
-    return TestClient(app)
-
-
-def webp(rows=11):
-    output = BytesIO()
-    image = Image.new("RGBA", (1536, rows * 208))
-    image.paste((10, 200, 90, 255), (50, 50, 120, 160))
-    image.save(output, format="WEBP", lossless=True)
-    return output.getvalue()
-
-
-def test_import_route_names_candidate_and_passes_validated_atlas():
-    import_atlas = AsyncMock(
-        return_value={
-            "id": str(PET_ID),
-            "agent_key": "andrew",
-            "prompt": "Ember",
-            "origin": "imported",
-            "status": "ready",
-            "version": 1,
-            "created_at": "2026-10-17T00:00:00Z",
-            "updated_at": "2026-10-17T00:00:00Z",
+def request(import_atlas):
+    return Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(
+                state=SimpleNamespace(
+                    services=SimpleNamespace(
+                        pets=SimpleNamespace(import_atlas=import_atlas)
+                    )
+                )
+            ),
         }
     )
-    response = client(import_atlas).post(
-        "/api/agents/andrew/pets/imports",
-        data={"id": str(PET_ID), "name": " Ember "},
-        files=[
-            (
-                "files",
-                (
-                    "pet.json",
-                    b'{"displayName": "Fox", "description": "Small"}',
-                    "application/json",
-                ),
-            ),
-            ("files", ("spritesheet.webp", webp(9), "image/webp")),
-        ],
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_prompt"),
+    [(" Ember ", "Ember\nSmall"), ("  ", "Fox\nSmall")],
+)
+def test_import_route_names_candidate_and_passes_validated_atlas(
+    monkeypatch, name, expected_prompt
+):
+    import_atlas = AsyncMock(return_value=sentinel.saved_pet)
+    upload = SimpleNamespace(
+        filename="pet.zip", read=AsyncMock(return_value=b"uploaded package")
     )
-    assert response.status_code == 201
-    key, pet_id, prompt, atlas, version = import_atlas.await_args.args
-    assert (key, pet_id, prompt, version) == ("andrew", PET_ID, "Ember\nSmall", 1)
-    assert atlas.startswith(b"RIFF")
+    parse_package = AsyncMock(
+        return_value=ImportedPet(
+            name="Fox", description="Small", sprite_version=1, atlas=b"validated atlas"
+        )
+    )
+    monkeypatch.setattr(pets.asyncio, "to_thread", parse_package)
+
+    result = asyncio.run(
+        pets.import_pet("andrew", request(import_atlas), PET_ID, [upload], name)
+    )
+
+    assert result is sentinel.saved_pet
+    upload.read.assert_awaited_once_with(pets.MAX_FILE_BYTES + 1)
+    parse_package.assert_awaited_once_with(
+        pets.read_package, [("pet.zip", b"uploaded package")]
+    )
+    import_atlas.assert_awaited_once_with(
+        "andrew", PET_ID, expected_prompt, b"validated atlas", 1
+    )
 
 
-def test_import_route_rejects_invalid_package_before_storage():
+def test_import_route_rejects_invalid_package_before_storage(monkeypatch):
     import_atlas = AsyncMock()
-    response = client(import_atlas).post(
-        "/api/agents/andrew/pets/imports",
-        data={"id": str(PET_ID)},
-        files=[("files", ("pet.json", b"{}", "application/json"))],
-    )
-    assert response.status_code == 422
-    assert "spritesheet" in response.json()["detail"]
+    upload = SimpleNamespace(filename="pet.json", read=AsyncMock(return_value=b"{}"))
+    error = ValueError("Add the pet's spritesheet")
+    parse_package = AsyncMock(side_effect=error)
+    monkeypatch.setattr(pets.asyncio, "to_thread", parse_package)
+
+    with pytest.raises(ServiceError, match="Add the pet's spritesheet") as raised:
+        asyncio.run(pets.import_pet("andrew", request(import_atlas), PET_ID, [upload]))
+
+    assert raised.value.status == 422
+    assert raised.value.code == "invalid_pet_package"
+    assert raised.value.__cause__ is error
+    parse_package.assert_awaited_once_with(pets.read_package, [("pet.json", b"{}")])
     import_atlas.assert_not_awaited()
