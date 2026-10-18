@@ -17,6 +17,11 @@ class InferenceState(BaseModel):
     message: str
     tier: str | None = None
     model_id: str | None = None
+    # Whether the language model is resident; null when Hikari did not report it.
+    model_state: (
+        Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
+        | None
+    ) = None
     settings_url: str
 
 
