@@ -194,7 +194,9 @@ class InferenceWorker:
             await self.close()
             raise
 
-    async def _start_process(self, executable: Path, environment: dict[str, str] | None):
+    async def _start_process(
+        self, executable: Path, environment: dict[str, str] | None
+    ):
         self.process = await asyncio.create_subprocess_exec(
             str(executable),
             str(self.root / "worker.lock"),

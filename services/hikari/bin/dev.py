@@ -115,6 +115,10 @@ def start(env: dict[str, str]) -> subprocess.Popen:
             "0.0.0.0",
             "--port",
             "8000",
+            # Reach lifespan shutdown even when an inference response is stalled.
+            # The worker then has its separate cancellation/cleanup deadline.
+            "--timeout-graceful-shutdown",
+            "5",
             "--reload",
             "--reload-dir",
             str(ROOT / "api"),

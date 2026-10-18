@@ -35,6 +35,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-aten-plan-tests",
     "image-aten-performance-tests",
     "image-batch-performance-tests",
+    "image-batch-monitor-tests",
+    "image-pool-memory-tests",
     "image-weight-cache-tests",
     "image-timing-tests",
     "image-decoder-input-tests",

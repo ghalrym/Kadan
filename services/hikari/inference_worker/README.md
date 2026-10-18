@@ -305,42 +305,49 @@ also bounded by current physical availability. External processes can still
 allocate after that probe; physical allocation failures remain possible and are
 reported without replaying inference that has already started.
 
-Placement first tries one GPU with half its capacity, leaving room for another
-small resident model. Load or preparation pressure retries the full device and
-then multiple devices. Host budgets initially share global capacity across at
-least two resident slots, in proportion to assigned GPUs; a full-host sequential
-fallback is available. Images retain their existing planner over all assigned
-idle GPUs. Device indices and asymmetric
-budgets support the ledger's existing limit of 64 GPUs, including one-GPU systems.
+Placement first tries one GPU with a bounded share of its available memory.
+Load or preparation pressure grows that share geometrically, then tries larger
+GPU subsets. This applies to images as well as native workloads. Admission clips
+new allowances to both the shared ledger and a fresh physical-memory probe;
+full-budget requests wait for resources rather than overcommitting other queues.
+Device indices and asymmetric budgets support one through 64 GPUs.
 
-Distinct resident engines execute on separate threads when their GPU assignments
-are disjoint and their memory allowances fit. Their native CUDA device threads
-own separate per-thread streams, cuBLAS handles, and workspaces. Retirement never
-resets a device shared by other resident engines. One execution at a time uses a
-given GPU, and each workload queue has at most one active batch. Image preparation
-and execution are exclusive so process-wide host RSS measurements remain
-attributable to the image batch. Other workloads can overlap on disjoint GPU sets;
-a single GPU uses sequential execution while retaining models when their planned
-budgets fit.
+Distinct resident engines execute on separate threads and may share a GPU when
+both backends declare isolated execution, the device supports concurrent kernels,
+and their complete memory allowances fit. The worker bounds active contexts by
+the seven workload queues; CUDA schedules kernels against the device's execution
+resources. This is capability-based admission, not a measured utilization model.
+A backend without isolated execution, a device without concurrent-kernel support,
+or an insufficient memory allowance falls back to sequential execution. Each
+mutable engine and each workload queue still has at most one active batch.
 
-These are conservative boundaries of the first scheduler increment, not a complete
-implementation of the agreed resource-based concurrency scope. Same-GPU overlap
-still needs backend overlap capabilities and bounded execution admission alongside
-the atomic memory allowance. Distinct resident engines already own separate native
-streams and buffers, but one mutable engine must remain exclusive unless its
-request state is separated further. GPU ownership alone currently blocks admission
-even when memory remains; there is no finer compute-capacity policy yet.
+Native engines own their CUDA threads, per-thread streams, cuBLAS handles and
+workspaces. Media launchers reserve library overhead before creating handles;
+device-wide free-memory changes are not used to attribute their allocations.
+Retirement never resets a device shared by other resident engines.
 
-Image overlap remains implementation work, including on disjoint GPUs. It needs
-placement over a feasible GPU subset, bounded allowances instead of all remaining
-device capacity, and owned allocation accounting or isolated calibration windows
-that exclude other workloads' RSS changes. The ATen backend also changes global
-arithmetic settings and per-device allocator limits and peaks, synchronizes whole
-devices, and clears shared workspaces and caches. Those ATen controls do not by
-themselves govern native chat/TTS handles, but same-device ATen overlap needs
-explicit stream/completion ownership and cleanup that tolerates other owners.
-Removing scheduler gates alone would not make overlap safe. LLM-to-TTS streaming
-remains intentionally deferred to a later feature.
+Images own nonblocking streams and capped private ATen allocation pools: retained
+weight banks and temporary stage allocations have separate lifetimes. Pool segment
+allocations cannot exceed their reservations. Cleanup synchronizes and clears only
+the owner's streams, workspaces and pools, without changing another engine's
+allocator limits or peaks. Image arithmetic settings are initialized once. The
+worker keeps permanent headroom for the shared CUDA primary context and ATen
+handle pool, whose lifetime extends beyond an individual model. Allocator calls
+may still serialize portions of execution; overlap is not a throughput guarantee.
+
+Image cohort, deadline, ordered-prefix and capacity-advice batching remain in
+place. A shared activity epoch detects any overlapping preparation, execution or
+cleanup, including activity that starts and finishes between RSS samples. Only
+isolated, uncancelled batches update host-memory, lane-time and weight-load
+calibration; contaminated batches retain previous valid observations and use the
+conservative native plans. Reported image allocation peaks explicitly identify
+when private-pool reserved peaks are conservative upper bounds.
+
+The API closes worker input before joining individual jobs, cancelling every
+native queue together. Concurrent shutdown callers share teardown and reaping,
+including when shutdown races process creation. Development reload limits HTTP
+request draining before lifespan cleanup and waits for the old API to exit before
+starting its replacement. LLM-to-TTS streaming remains a later feature.
 
 The API remains transport to this process. Request-scoped callbacks keep streamed
 content and progress attached to the right job; memory events include
