@@ -134,7 +134,10 @@ public:
     // Wall time spent in projections and attention, and bytes projected from
     // slices without device residency, since the previous take_timing().
     struct Timing {
-        double projection = 0, attention = 0;
+        // projection = prepare (placement and job setup) + device + host wait
+        // + the per-matrix fallback and checks.
+        double projection = 0, attention = 0, prepare = 0, device = 0, host_wait = 0,
+               recurrent = 0;
         std::size_t projections = 0, batches = 0;
         Bytes streamed = 0, host = 0;
     };
@@ -145,6 +148,11 @@ public:
 
     void add_attention(double seconds) const {
         timing_.attention += seconds;
+    }
+
+    // Host time of linear-attention recurrences (convolution and delta rule).
+    void add_recurrent(double seconds) const {
+        timing_.recurrent += seconds;
     }
 
     // body(i) for every i < count on the shared host workers.
@@ -253,6 +261,12 @@ public:
     virtual ~Model() = default;
     virtual std::size_t vocabulary() const = 0;
     virtual bool eos(unsigned token) const = 0;
+
+    // Device bytes of the KV caches that attend_cached mirrors at full context.
+    virtual std::size_t device_state_bytes() const {
+        return 0;
+    }
+
     virtual void reset() = 0;
     // Rows at positions position..position+tokens.size()-1. Returns the last
     // row's logits when requested, else an empty vector.

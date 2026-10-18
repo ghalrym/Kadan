@@ -435,6 +435,8 @@ std::vector<Vec> GgufWeights::project(
         });
         join.workers = workers_.get();
     }
+    const auto prepared_at = std::chrono::steady_clock::now();
+    timing_.prepare += std::chrono::duration<double>(prepared_at - started).count();
     std::vector<DenseCompute::GgufBatchJob> jobs;
     std::vector<std::size_t> batched;
     for (std::size_t i = 0; i < requests.size(); ++i) {
@@ -459,6 +461,10 @@ std::vector<Vec> GgufWeights::project(
     if (!jobs.empty()) {
         const auto device_started = std::chrono::steady_clock::now();
         const auto result = compute.dense_gguf_batch(jobs, *cancel_);
+        timing_.device += std::chrono::duration<double>(
+                              std::chrono::steady_clock::now() - device_started
+        )
+                              .count();
         if (result != ProjectionResult::unsupported) {
             for (const auto i : batched) {
                 need(
@@ -481,7 +487,11 @@ std::vector<Vec> GgufWeights::project(
     }
     if (join.workers) {
         join.workers = nullptr;
+        const auto waiting = std::chrono::steady_clock::now();
         workers_->wait();
+        timing_.host_wait +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - waiting)
+                .count();
         for (const auto& h : host) {
             need(
                 std::all_of(

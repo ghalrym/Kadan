@@ -190,6 +190,11 @@ public:
         return vocabulary_size;
     }
 
+    std::size_t device_state_bytes() const override {
+        return 12 * AttentionLayer::state_bytes(attention_spec, context_)
+               + 36 * DeltaNetLayer::device_bytes(delta_spec);
+    }
+
     bool eos(unsigned token) const override {
         return token == 248046 || token == 248044;
     }

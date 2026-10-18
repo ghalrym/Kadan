@@ -60,7 +60,8 @@ public:
 
     // Work since the previous call, and current weight residency.
     struct Timing {
-        double projection_seconds, attention_seconds;
+        double projection_seconds, attention_seconds, prepare_seconds, device_seconds,
+            host_wait_seconds, recurrent_seconds;
         std::size_t projections, batches;
         std::uint64_t streamed_bytes, host_bytes, packed_bytes, device_bytes, ram_bytes;
         std::size_t device_slices, ram_slices;
