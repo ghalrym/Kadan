@@ -3,6 +3,18 @@
 Cleans up Whisper transcripts with S1-mini by Superwhisper into semi-formal
 prose. It is optional per request and saved as a setting.
 
+## Program and container
+
+- Its own program, `kadan-worker-formatting`, built from
+  `services/hikari/inference_worker/workers/formatting/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/formatting/Dockerfile`: no CUDA; OpenBLAS.
+- Its own Compose service, `hikari-worker-formatting` (CPU only). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - Formatting of transcripts after the transcription worker, when enabled.

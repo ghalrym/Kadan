@@ -76,17 +76,23 @@ target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nl
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-# The worker's WebSocket transport to the API, and the per-machine host that
-# routes API commands to one owner per inference type.
+# Shared by every worker program: the WebSocket transport to the API, the
+# worker contract (one inference lane plus a store lane), and the runtime that
+# connects them. Each program under workers/ adds only its own engine.
 add_library(kadan_transport src/transport/websocket.cpp)
 target_include_directories(kadan_transport PUBLIC include)
 target_compile_features(kadan_transport PUBLIC cxx_std_20)
 target_link_libraries(kadan_transport PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(kadan_transport PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-add_library(kadan_machine_host src/machine_host.cpp)
-target_link_libraries(kadan_machine_host PUBLIC kadan_resources PRIVATE kadan_preparation)
-target_compile_options(kadan_machine_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_library(kadan_worker_host src/worker/worker_host.cpp)
+target_link_libraries(kadan_worker_host PUBLIC kadan_resources PRIVATE kadan_preparation)
+target_compile_options(kadan_worker_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_library(kadan_worker_runtime src/worker/worker_runtime.cpp)
+target_link_libraries(kadan_worker_runtime PUBLIC kadan_worker_host kadan_preparation
+  PRIVATE kadan_transport ${CMAKE_DL_LIBS})
+target_compile_options(kadan_worker_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_library(kadan_media_residency src/media/media_residency.cpp)
 target_link_libraries(kadan_media_residency PUBLIC kadan_resources)
@@ -259,7 +265,7 @@ if(KADAN_ENABLE_WHISPER_BLAS)
   target_link_libraries(kadan_s1_mini PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()
 
-if(KADAN_ENABLE_IMAGE_GENERATION OR KADAN_ENABLE_H3_GENERATION OR KADAN_ENABLE_TTS_WORKER OR BUILD_TESTING)
+# The text tokenizer and transcript formatter serve several worker programs.
 find_package(nlohmann_json 3.10 REQUIRED)
 target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
@@ -270,7 +276,6 @@ target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -We
 add_library(kadan_transcription_formatting src/inference/inference_transcription_formatting.cpp)
 target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
 target_compile_options(kadan_transcription_formatting PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
   # Avoid Torch's native GPU probing and keep toolkit/library versions coherent.
@@ -452,9 +457,9 @@ if(BUILD_TESTING)
   add_executable(websocket-tests tests/websocket.cpp)
   target_link_libraries(websocket-tests PRIVATE kadan_transport)
   add_test(NAME websocket COMMAND websocket-tests)
-  add_executable(machine-host-tests tests/machine_host.cpp)
-  target_link_libraries(machine-host-tests PRIVATE kadan_machine_host kadan_preparation)
-  add_test(NAME machine-host COMMAND machine-host-tests)
+  add_executable(worker-host-tests tests/worker_host.cpp)
+  target_link_libraries(worker-host-tests PRIVATE kadan_worker_host kadan_preparation)
+  add_test(NAME worker-host COMMAND worker-host-tests)
   if(TARGET kadan_h3_generation)
     add_executable(h3-inventory-tests tests/h3_inventory.cpp)
     target_link_libraries(h3-inventory-tests PRIVATE kadan_h3_generation)
@@ -462,28 +467,74 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION AND KADAN_ENABLE_TTS_WORKER AND KADAN_ENABLE_IMAGE_GENERATION)
-  add_executable(kadan-inference-worker src/inference_worker.cpp src/inference/inference_chat.cpp
-    src/inference/inference_decision.cpp src/inference/inference_image.cpp src/inference/inference_video.cpp
-    src/inference/inference_whisper.cpp src/inference/inference_speech.cpp)
-  target_compile_definitions(kadan-inference-worker PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-inference-worker PRIVATE kadan_gguf_text
-    kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
-    kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
-    kadan_transcription_formatting kadan_preparation kadan_machine_host kadan_transport
-    nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
-  install(TARGETS kadan-inference-worker
+# One program per inference type. Each links only its own engine and installs
+# as its own component, so each container image carries one worker.
+function(kadan_install_worker target)
+  install(TARGETS ${target}
     RUNTIME_DEPENDENCIES
       PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
       POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
-    RUNTIME DESTINATION libexec COMPONENT inference-runtime
-    LIBRARY DESTINATION lib COMPONENT inference-runtime)
-  install(FILES catalog.json DESTINATION share/kadan COMPONENT inference-runtime)
+    RUNTIME DESTINATION libexec COMPONENT ${target}
+    LIBRARY DESTINATION lib COMPONENT ${target})
+  install(FILES catalog.json DESTINATION share/kadan COMPONENT ${target})
   install(FILES "${kadan_ggml_SOURCE_DIR}/LICENSE"
-    DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT inference-runtime)
-  install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT inference-runtime)
-  install(PROGRAMS packaging/run_inference_worker.sh DESTINATION bin
-    RENAME kadan-inference-worker COMPONENT inference-runtime)
+    DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT ${target})
+  install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT ${target})
+  install(PROGRAMS packaging/run_worker.sh DESTINATION bin RENAME ${target} COMPONENT ${target})
+endfunction()
+
+if(KADAN_ENABLE_CUDA)
+  add_executable(kadan-worker-llm workers/llm/main.cpp src/inference/inference_chat.cpp)
+  target_compile_definitions(kadan-worker-llm PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker-llm PRIVATE kadan_worker_runtime kadan_gguf_text
+    kadan_text_tokenizer kadan_h3_cuda)
+  kadan_install_worker(kadan-worker-llm)
+endif()
+
+if(KADAN_ENABLE_DECISIONS)
+  add_executable(kadan-worker-decision workers/decision/main.cpp
+    src/inference/inference_decision.cpp)
+  target_link_libraries(kadan-worker-decision PRIVATE kadan_worker_runtime
+    kadan_decision_executor)
+  kadan_install_worker(kadan-worker-decision)
+endif()
+
+if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_TTS_WORKER)
+  add_executable(kadan-worker-tts workers/tts/main.cpp src/inference/inference_speech.cpp)
+  target_compile_definitions(kadan-worker-tts PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker-tts PRIVATE kadan_worker_runtime kadan_tts_generator
+    kadan_tts_audio kadan_text_tokenizer kadan_h3_cuda)
+  kadan_install_worker(kadan-worker-tts)
+endif()
+
+if(KADAN_ENABLE_CUDA)
+  add_executable(kadan-worker-speech workers/speech/main.cpp
+    src/inference/inference_whisper.cpp)
+  target_compile_definitions(kadan-worker-speech PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker-speech PRIVATE kadan_worker_runtime kadan_whisper
+    kadan_stt kadan_h3_cuda)
+  kadan_install_worker(kadan-worker-speech)
+endif()
+
+add_executable(kadan-worker-formatting workers/formatting/main.cpp)
+target_link_libraries(kadan-worker-formatting PRIVATE kadan_worker_runtime
+  kadan_transcription_formatting)
+kadan_install_worker(kadan-worker-formatting)
+
+if(KADAN_ENABLE_IMAGE_GENERATION)
+  add_executable(kadan-worker-image workers/image/main.cpp src/inference/inference_image.cpp)
+  target_compile_definitions(kadan-worker-image PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker-image PRIVATE kadan_worker_runtime
+    kadan_image_generation kadan_h3_cuda)
+  kadan_install_worker(kadan-worker-image)
+endif()
+
+if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_H3_GENERATION)
+  add_executable(kadan-worker-video workers/video/main.cpp src/inference/inference_video.cpp)
+  target_compile_definitions(kadan-worker-video PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker-video PRIVATE kadan_worker_runtime
+    kadan_h3_generation kadan_h3_profile kadan_h3_cuda)
+  kadan_install_worker(kadan-worker-video)
 endif()
 
 if(BUILD_TESTING)

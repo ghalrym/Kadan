@@ -31,7 +31,9 @@ app.add_typer(
     profiling.app, name="profile", help="Collect and summarize CUDA profiling data."
 )
 app.add_typer(
-    dev.app, name="dev", help="Serve the API with the worker rebuilt on source edits."
+    dev.app,
+    name="dev",
+    help="Serve the API, or run one worker program rebuilt on source edits.",
 )
 app.add_typer(checks.app, name="check", help="Run formatting, builds, and unit checks.")
 app.add_typer(

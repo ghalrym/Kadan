@@ -31,6 +31,7 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # The API coordinates every worker's memory; it runs no inference itself.
   hikari-api:
     stop_grace_period: 5m
     build:
@@ -39,19 +40,8 @@ services:
     init: true
     environment:
       <<: *database_environment
-      KADAN_MODEL_DIR: /var/lib/kadan/models
-      KADAN_INFERENCE_WORKER: /opt/kadan/bin/kadan-inference-worker
-      # Worker machines, including the API's own, authenticate with this token.
+      # Every worker container authenticates with this token.
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - model_data:/var/lib/kadan/models
     depends_on:
       hikari-postgres:
         condition: service_healthy
@@ -65,6 +55,169 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  # Language worker: the tier's mixture-of-experts model for chat.
+  hikari-worker-llm:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/llm/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-llm]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Decisions worker: Laya on the CPU.
+  hikari-worker-decision:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/decision/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-decision]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    # CPU only: no GPU reservation.
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Speech synthesis worker.
+  hikari-worker-tts:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/tts/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-tts]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Transcription worker: native Whisper.
+  hikari-worker-speech:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/speech/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-speech]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Transcript formatting worker: S1-mini on the CPU.
+  hikari-worker-formatting:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/formatting/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-formatting]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    # CPU only: no GPU reservation.
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Image worker: Qwen Image.
+  hikari-worker-image:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/image/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-image]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+  # Video worker: H3 video with audio.
+  hikari-worker-video:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/video/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-video]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
 
   hikari-frontend:
     build:

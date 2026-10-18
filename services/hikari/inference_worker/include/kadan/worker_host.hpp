@@ -11,9 +11,10 @@
 
 #include "kadan/inference_owner.hpp"
 
-// One native process per machine. It hosts a worker per inference type, each
-// with its own owner, queue and API-granted budget, and routes API commands to
-// them. Transport, engines and preparation are injected.
+// One worker program's command handling: one inference type, its owner and
+// queue, and the API-granted budget, plus a store lane for downloads and
+// settings so they never wait for a budget. Transport, engine and preparation
+// are injected by the program.
 namespace kadan::serving {
 // Per-worker callbacks into the transport. Each worker's owner thread is the
 // only writer of `active`, so engine progress needs no lock.
@@ -37,14 +38,12 @@ struct WorkerChannel {
 
 struct WorkerSpec {
     std::string name;
-    std::optional<Workload> workload;  // Empty for the model store worker.
+    std::optional<Workload> workload;  // Empty for the store lane.
 };
 
-// Every inference type, plus "store" for downloads and settings.
-std::vector<WorkerSpec> worker_specs(const std::vector<std::string>& names);
 const char* worker_name(Workload workload);
 
-class MachineHost {
+class WorkerHost {
 public:
     using Send = std::function<void(const Json&)>;
     using Factory = std::function<std::unique_ptr<InferenceEngine>(
@@ -71,23 +70,23 @@ public:
         std::function<void(const std::string&)> cleanup;
     };
 
-    MachineHost(std::vector<WorkerSpec> specs, std::size_t devices, Hooks hooks);
-    ~MachineHost();
+    WorkerHost(Workload workload, std::size_t devices, Hooks hooks);
+    ~WorkerHost();
 
     // Handles one API command; failures are reported to the API, never thrown.
     void handle(const std::string& line);
-    // Runs each worker on its own thread until stop().
+    // Runs the inference and store lanes on their own threads until stop().
     void start();
     // Cancels every job, retires them, releases engines and joins threads.
     void stop();
-    // For tests and shutdown: advances each worker once on the caller's thread.
+    // For tests: advances each lane once on the caller's thread.
     bool advance_all();
 
     bool stopping() const {
         return stopping_.load();
     }
 
-    // Set when a worker thread failed in a way that poisons its owner.
+    // Set when a lane failed in a way that poisons its owner.
     std::optional<std::string> failure() const;
     Json status() const;
 

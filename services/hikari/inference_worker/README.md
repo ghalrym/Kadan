@@ -1,9 +1,11 @@
 # Inference worker
 
-The API uses one `kadan-inference-worker` process for chat, Decisions, image,
-video, transcription and speech. It owns the FIFO, checkpoint acquisition,
-input preparation, engine lifecycle, result packaging and workspace cleanup.
-The API submits serialized Pydantic tasks and relays events and results.
+Each inference type is its own program under `workers/<type>/`: language,
+decisions, speech synthesis, transcription, formatting, image and video. Each
+links only its own engine plus the shared worker runtime, and owns its queue,
+checkpoint acquisition, input preparation, engine lifecycle, result packaging
+and workspace cleanup. The API submits serialized Pydantic tasks, grants each
+worker its memory budget, and relays events and results.
 
 ## Image batches
 

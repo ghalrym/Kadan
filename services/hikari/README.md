@@ -10,14 +10,21 @@ Commands below run from the repository root.
 
 ## Runtime ownership
 
-Each machine runs one `kadan-inference-worker` C++ process. It hosts a worker per
-inference type (language, decisions, speech, transcription, formatting, image,
-video), each with its own engine, queue and memory budget, plus a store worker
-for downloads and settings. The process connects out to the API's `/v1/workers`
-WebSocket with `Authorization: Bearer $HIKARI_WORKER_TOKEN` and exits when that
-connection drops, so a supervisor restarts it.
+Each inference type is its own C++ program in its own container:
+`kadan-worker-llm`, `-decision`, `-tts`, `-speech`, `-formatting`, `-image` and
+`-video` (sources and Dockerfiles in `inference_worker/workers/<type>/`). A
+program links only its own engine; they share the worker runtime library (the
+API contract, WebSocket client and model store). Each container connects out to
+the API's `/v1/workers` WebSocket with `Authorization: Bearer
+$HIKARI_WORKER_TOKEN`, handles its own type's jobs and its models' downloads,
+and exits when that connection drops so its restart policy starts a fresh one.
+Containers scale (`docker compose up --scale hikari-worker-image=2`) and run on
+other computers.
 
-The API decides which workers hold memory. A worker pulls jobs only while it has
+The API decides which workers hold memory. Workers on one computer share its
+RAM and GPUs: the API keeps one ledger per computer (by kernel boot ID) and
+counts each GPU once (by UUID), whichever containers see it. A worker pulls jobs
+only while it has
 a budget of host RAM and per-GPU VRAM; its engine never exceeds that budget. A
 budget may span several GPUs, each holding at least that worker's per-GPU floor.
 When a worker has queued jobs and no room, the API shrinks or offloads idle
@@ -36,43 +43,41 @@ also loses its learned batch sizes. Each shrink or growth therefore costs one
 reload. Throughput and overlap between workers have not been measured.
 
 The Python API validates requests, serializes a typed Pydantic inference task,
-and routes it to a machine that runs that worker, preferring one where it is
-already loaded. It manages waiting responses, SSE streams, job status and
-cancellation. Settings and downloads go to every machine; a machine that
-connects later receives the first machine's settings. If a machine disconnects,
-its waiting jobs move to another machine and its running jobs fail. The worker
+and routes it to a worker of that type, preferring one where it is already
+loaded. It manages waiting responses, SSE streams, job status and cancellation.
+Settings go to every worker, and a download to one worker of the checkpoint's
+type on each computer; a worker that connects later receives the first worker's
+settings. If a worker disconnects, its waiting jobs move to another worker of
+the same type and its running jobs fail. The worker
 acquires checkpoints, prepares inputs and model assets, executes the task,
 packages results (including finished videos, which travel inline) and removes
 its workspace. Compatible adjacent image requests may be prepared together for
 one memory-admitted batch. Checkpoint conversion, downloads, media serialization
-and execution all run in the C++ worker. It never invokes Python. Video encoding
-uses FFmpeg as a codec.
+and execution all run in the C++ workers. They never invoke Python. Video
+encoding uses FFmpeg as a codec, so only the video image carries it; the
+decisions and formatting images carry no CUDA.
 
-The API starts its own machine's worker process (set `HIKARI_LOCAL_WORKER=0` to
-use only remote machines) without loading a model or running inference.
-Settings saves a hardware tier, which selects its language model and queues its
+The API runs no inference and needs no GPU. Workers start without loading a
+model. Settings saves a hardware tier, which selects its language model and queues its
 downloads; requests load the tier's model on demand. Changing tiers unloads a
 resident language model of the previous tier. The tier persists;
 chat conversations stay in the browser. Native prefix reuse is currently unavailable.
 HTTP request observations and native reservations are distinct from measured
 system memory.
 
-### Another worker machine
+### Workers on another computer
 
-Run the worker image on a GPU machine that can reach the API, with the same
-token and its own model volume. Set `HIKARI_WORKER_WORKLOADS` (for example
-`image,video`) to host only some workers and `HIKARI_WORKER_MACHINE` to name the
-machine:
+`compose.worker.yaml` holds the same worker services for a computer other than
+the API's. Start only the workers that computer should run, pointed at the API
+with the same token; they use that computer's own model volume:
 
 ```sh
-docker run -d --restart unless-stopped --gpus all \
-  -e HIKARI_WORKER_TOKEN=... -v hikari_models:/var/lib/kadan/models \
-  kadan-hikari-api /opt/kadan/bin/kadan-inference-worker \
-  /var/lib/kadan/models/inference/worker.lock ws://API_HOST:8000/v1/workers
+HIKARI_API_URL=ws://API_HOST:8000/v1/workers HIKARI_WORKER_TOKEN=... \
+  docker compose -f compose.worker.yaml up -d hikari-worker-image hikari-worker-video
 ```
 
 Compose publishes the API on `127.0.0.1` only; expose it on a reachable address
-(behind TLS for `wss://`) before connecting remote machines.
+(behind TLS for `wss://`) before connecting remote workers.
 
 ## Supported native capabilities
 
@@ -122,11 +127,12 @@ event followed by `[DONE]`, without a successful terminal choice.
 
 ## Native installation
 
-For a separately built native installation, use the build dependencies and CMake
-options in `api/Dockerfile`, install the `inference-runtime` component, and set
-`HIKARI_INFERENCE_WORKER` to its installed `bin/kadan-inference-worker` wrapper.
-Install `api/requirements.txt` in a virtual environment and set `HIKARI_MODEL_DIR`
-to writable checkpoint storage before starting one Uvicorn worker.
+For a separately built native worker, use the build dependencies and CMake
+options in its `inference_worker/workers/<type>/Dockerfile`, install its
+`kadan-worker-<type>` component, and run `bin/kadan-worker-<type>` with
+`HIKARI_API_URL`, `HIKARI_WORKER_TOKEN` and `KADAN_MODEL_DIR` (writable checkpoint
+storage) set. Install `api/requirements.txt` in a virtual environment with the
+same `HIKARI_WORKER_TOKEN` before starting one Uvicorn worker for the API.
 `API_PROXY_TARGET` selects the Vite development proxy destination; the production
 frontend reaches the Compose `hikari-api` service.
 
