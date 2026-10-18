@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -127,6 +128,7 @@ private:
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
+    mutable std::recursive_mutex settings_mutex_;
 };
 
 // Converts checkpoint containers and tokenizer metadata only; never runs a model.

@@ -145,6 +145,12 @@ class InferenceService:
         raise InferenceFailure("No active download for this model.", 409)
 
     def _observe(self, job, event):
+        if event.memory is not None and self.state in ("ready", "offloaded"):
+            self.state = (
+                "ready"
+                if self.model_id in event.memory.resident_models
+                else "offloaded"
+            )
         if job.request.feature == "models":
             observation = self.downloads.setdefault(
                 job.request.input.model_id, DownloadObservation()
@@ -167,7 +173,7 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        if event.context is not None:
+        if feature == "llm" and event.context is not None:
             self.context = event.context
         if feature == "llm" and event.model is not None:
             self.model_id = event.model
@@ -212,7 +218,16 @@ class InferenceService:
         elif event.state in ("succeeded", "failed", "cancelled", "rejected"):
             job.progress = None
             if self.progress and self.progress.job_id == job.request.id:
-                self.progress = None
+                self.progress = max(
+                    (
+                        other.progress
+                        for other in self.worker.jobs.values()
+                        if other.progress is not None
+                        and other.progress.stage != "queued"
+                    ),
+                    key=lambda progress: progress.observed_unix_ns,
+                    default=None,
+                )
         if event.state == "loading":
             if feature == "llm":
                 self.model_id, self.state, self.error = (
@@ -220,8 +235,6 @@ class InferenceService:
                     "loading",
                     None,
                 )
-            elif self.state == "ready":
-                self.state = "offloaded"
         if feature == "llm":
             if event.state == "succeeded":
                 self.state = (

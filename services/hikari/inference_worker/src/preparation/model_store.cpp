@@ -802,6 +802,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
 }
 
 std::optional<std::string> ModelStore::tier() const {
+    std::lock_guard guard(settings_mutex_);
     if (!fs::is_regular_file(root_ / "tier.json"))
         return std::nullopt;
     auto id = read_document(root_ / "tier.json").at("tier").get<std::string>();
@@ -817,12 +818,14 @@ const HardwareTier& ModelStore::hardware_tier(const std::string& id) const {
 }
 
 void ModelStore::select_tier(const std::string& id) {
+    std::lock_guard guard(settings_mutex_);
     hardware_tier(id);
     fs::create_directories(root_);
     atomic_document(root_ / "tier.json", {{"tier", id}});
 }
 
 std::string ModelStore::selected() const {
+    std::lock_guard guard(settings_mutex_);
     std::optional<std::string> id;
     try {
         id = tier();
@@ -848,6 +851,7 @@ std::string ModelStore::whisper_model(const std::string& name) const {
 }
 
 std::string ModelStore::whisper_selected() const {
+    std::lock_guard guard(settings_mutex_);
     if (fs::is_regular_file(root_ / "whisper-selection.json")) {
         const auto model = read_document(root_ / "whisper-selection.json")
                                .at("model")
@@ -859,12 +863,14 @@ std::string ModelStore::whisper_selected() const {
 }
 
 Json ModelStore::context(const std::string& model) const {
+    std::lock_guard guard(settings_mutex_);
     if (!fs::exists(root_ / "context.json"))
         return 65536;
     return read_document(root_ / "context.json").value(model, Json(65536));
 }
 
 void ModelStore::set_context(const std::string& model, const Json& value) {
+    std::lock_guard guard(settings_mutex_);
     preparation_check(
         entry(model).kind == "llm", "This checkpoint is not a language model", 422
     );
@@ -889,17 +895,20 @@ void ModelStore::set_context(const std::string& model, const Json& value) {
 }
 
 void ModelStore::select_whisper(const std::string& name) {
+    std::lock_guard guard(settings_mutex_);
     const auto model = whisper_model(name);
     fs::create_directories(root_);
     atomic_document(root_ / "whisper-selection.json", {{"model", model}});
 }
 
 bool ModelStore::whisper_formatting() const {
+    std::lock_guard guard(settings_mutex_);
     const auto path = root_ / "whisper-formatting.json";
     return !fs::exists(path) || read_document(path).at("enabled").get<bool>();
 }
 
 void ModelStore::set_whisper_formatting(bool enabled) {
+    std::lock_guard guard(settings_mutex_);
     fs::create_directories(root_);
     atomic_document(root_ / "whisper-formatting.json", {{"enabled", enabled}});
 }
@@ -916,6 +925,7 @@ Json ModelStore::architecture_context(const std::string& model) const {
 }
 
 Json ModelStore::status() const {
+    std::lock_guard guard(settings_mutex_);
     Json models = Json::array();
     for (const auto& item : catalog_) {
         const auto id = item.id;

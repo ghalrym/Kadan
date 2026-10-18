@@ -2,6 +2,7 @@
 
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
+#include "kadan/speech_memory.hpp"
 #include "kadan/stt.hpp"
 #include "kadan/whisper.hpp"
 #include "kadan/whisper_tokens.hpp"
@@ -92,7 +93,15 @@ public:
                 * (samples_ + dimensions_.mels * 3000
                    + dimensions_.audio_context * dimensions_.audio_state + max_tokens_)
             + stt::WhisperTokens::max_text_bytes;
-        if (available[0] < scratch)
+        const auto execution = whisper_execution_host_bytes(
+            dimensions_, tokens_->prompt().size(), max_tokens_, compute_->devices.size()
+        );
+        if (!speech_request_fits(
+                resources_->snapshot(),
+                available,
+                speech_memory::sum({scratch, execution}),
+                compute_->devices
+            ))
             throw AdmissionWait("whisper_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::speech, scratch);

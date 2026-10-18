@@ -23,6 +23,12 @@ inline ComputePlan media_plan(
     const Footprint& available,
     Bytes minimum = compute_context_bytes + 2ULL * 1024 * 1024 * 1024
 ) {
+    if (available.empty() || available.size() > Resources::max_devices + 1
+        || !available[0] || minimum < compute_context_bytes)
+        throw std::invalid_argument("compute_available_budget");
+    // The shared scheduler masks devices outside this engine's placement. Keep
+    // that assignment: model pinning can require several devices even when each
+    // individual device has enough workspace headroom.
     ComputePlan plan{available, {}};
     for (std::size_t i = 1; i < available.size(); ++i)
         if (available[i] >= minimum)

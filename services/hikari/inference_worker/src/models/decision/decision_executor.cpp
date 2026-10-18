@@ -16,8 +16,7 @@
 
 namespace kadan::decision {
 namespace {
-constexpr Bytes MiB = 1024 * 1024, metadata_bytes = 128 * MiB,
-                scratch_bytes = 256 * MiB;
+constexpr Bytes MiB = 1024 * 1024, metadata_bytes = 128 * MiB;
 
 Footprint host(const std::shared_ptr<Resources>& r, Bytes bytes) {
     auto f = r->snapshot().capacity;
@@ -588,7 +587,7 @@ std::vector<serving::DecisionAnswer> Executor::execute(
     Pin pin(resources_, resident_);
     std::unique_ptr<Reservation> scratch;
     if (!borrowed_)
-        scratch = std::make_unique<Reservation>(resources_, scratch_bytes);
+        scratch = std::make_unique<Reservation>(resources_, request_memory_bytes);
     const auto& state = request.state;
     const auto& questions = request.questions;
     check(!state.empty() && state.size() <= 65536, "decision_state");

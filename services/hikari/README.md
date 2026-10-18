@@ -10,18 +10,21 @@ Commands below run from the repository root.
 
 ## Runtime ownership
 
-One long-lived `kadan-inference-worker` C++ process owns the bounded FIFO,
-model lifecycle, placement, memory reservations and all six inference engines.
-Each engine runs in that process and shares its resource ledger. Switching
-engines releases the previous engine before measuring available memory and
-admitting the next request. Temporary resource pressure retains the queue head;
-cancellation waits for owned work and cleanup before advancing it.
+One long-lived `kadan-inference-worker` C++ process owns bounded workload queues,
+model lifecycle, placement, and one shared host/GPU memory ledger. Idle models
+remain resident when budgets fit. Distinct engines can execute concurrently on
+disjoint GPU assignments; a single GPU executes sequentially, and image batches
+remain exclusive to preserve their calibration. Execution allowances protect
+weights, KV caches, activations, and workspaces before dispatch. Resource waits
+retain each workload's FIFO head, with bounded bypass across workloads. Cancellation
+waits for owned execution and cleanup before terminal delivery. See the native
+worker's [scheduling contract](inference_worker/README.md#shared-scheduling-and-residency).
 
 The Python API validates requests, serializes a typed Pydantic inference task,
 and submits it to the worker. It manages waiting responses, SSE streams, job
 status and cancellation. The worker acquires checkpoints, prepares inputs and
 model assets, executes the task, packages results and removes its workspace.
-Preparation starts at the FIFO head; compatible adjacent image requests may be
+Preparation starts at each workload queue head; compatible adjacent image requests may be
 prepared together for one memory-admitted batch. Checkpoint conversion, downloads, media serialization and execution all run
 in the C++ worker. It never invokes Python. Video encoding uses FFmpeg as a codec.
 
@@ -109,7 +112,7 @@ group and command supports `--help` with its arguments and options.
 | `native build` | Compile CPU-only checkpoint inspectors and metadata planners. |
 | `native --help` | List checkpoint inspection and weight-cache replay commands. |
 | `infer chat` / `infer image` / `infer video` | Submit a JSON request file through the live API to its worker queue. |
-| `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
+| `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same worker. |
 | `infer video-status` / `infer video-cancel` / `infer video-download` | Inspect, cancel, or download a server-owned video job. |
 | `profile build` / `profile phase` | Build the profiler and mark phases on an already instrumented live worker. |
 | `profile symbols` / `profile summarize` | Extract executable symbols and summarize captured phase measurements. |
@@ -263,7 +266,7 @@ Turbo text-to-image uses the accepted ATen execution path described below.
 
 ### C++ ATen image execution
 
-C++ ATen is the supported image execution path in the existing serial worker.
+C++ ATen is the supported image execution path in the shared worker with exclusive image execution.
 Image generation requires CUDA; there is no CPU or custom resident image backend
 fallback. API queueing, cancellation, image count, prompt validation, seed
 progression and PNG publication remain owned by the same worker and memory ledger.

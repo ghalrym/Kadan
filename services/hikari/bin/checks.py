@@ -50,6 +50,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "packed-read-team-tests",
     "device-weight-trace-tests",
     "inference-owner-tests",
+    "inference-scheduler-tests",
+    "speech-memory-tests",
     "preparation-tests",
     "s1-mini-metadata-tests",
     "text-tokenizer-tests",

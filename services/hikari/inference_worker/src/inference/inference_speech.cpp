@@ -5,6 +5,7 @@
 
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
+#include "kadan/speech_memory.hpp"
 #include "kadan/text_tokenizer.hpp"
 #include "kadan/tts_audio.hpp"
 #include "kadan/tts_controls.hpp"
@@ -113,13 +114,29 @@ public:
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::tts, scratch);
         const auto& input = std::get<SpeechRequest>(request.input);
-        script_ = input.script;
-        instruction_ = input.instruction;
         require(
-            !script_.empty() && script_.size() <= 32000 && instruction_.size() <= 8000,
+            !input.script.empty() && input.script.size() <= 32000
+                && input.instruction.size() <= 8000,
             "speech_request_bounds"
         );
         voice_ = controls_->resolve(input.speaker, input.language);
+        token_count_ = tokenizer_->encode(input.script, tokens_, cancel);
+        instruction_count_ = 0;
+        if (!input.instruction.empty())
+            instruction_count_ = tokenizer_->encode(
+                "<|im_start|>user\n" + input.instruction + "<|im_end|>\n",
+                instruction_tokens_,
+                cancel
+            );
+        const auto execution = speech_execution_host_bytes(
+            {}, {}, token_count_, instruction_count_, 300, compute_->devices.size()
+        );
+        auto remaining = available;
+        remaining[0] -= scratch;
+        if (!speech_request_fits(
+                resources_->snapshot(), remaining, execution, compute_->devices
+            ))
+            throw AdmissionWait("speech_request_headroom");
         output_ = (request.workspace / "audio.wav").string();
     }
 
@@ -128,25 +145,16 @@ public:
         if (request.operation == Operation::load)
             return Json::object();
         {
-            std::array<std::uint32_t, 2048> tokens, instruction;
-            const auto count = tokenizer_->encode(script_, tokens, cancel);
-            std::size_t instruction_count = 0;
-            if (!instruction_.empty())
-                instruction_count = tokenizer_->encode(
-                    "<|im_start|>user\n" + instruction_ + "<|im_end|>\n",
-                    instruction,
-                    cancel
-                );
             std::vector<std::uint32_t> codes(300 * 16);
             const auto generated = generator_->generate(
-                std::span(tokens).first(count),
+                std::span(tokens_).first(token_count_),
                 voice_,
                 codes,
                 cancel,
                 progress_,
                 2,
                 1.05f,
-                std::span(instruction).first(instruction_count)
+                std::span(instruction_tokens_).first(instruction_count_)
             );
             require(
                 generated.stopped && generated.frames > 0, "tts_incomplete_generation"
@@ -184,7 +192,9 @@ private:
     std::unique_ptr<tts::CodeGenerator> generator_;
     std::unique_ptr<tts::AudioDecoder> decoder_;
     tts::VoicePrompt voice_;
-    std::string script_, instruction_, output_;
+    std::array<std::uint32_t, 2048> tokens_, instruction_tokens_;
+    std::size_t token_count_ = 0, instruction_count_ = 0;
+    std::string output_;
 };
 }  // namespace
 

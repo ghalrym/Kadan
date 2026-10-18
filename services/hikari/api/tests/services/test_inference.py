@@ -309,6 +309,92 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(service.worker.jobs)
 
 
+class ConcurrentObservationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_other_workload_load_preserves_resident_chat(self):
+        service = InferenceService()
+        service.state, service.model_id = "ready", "chat-model"
+        service.context = {"effective": 4096}
+        job = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "test"}), False
+        )
+        service._observe(
+            job,
+            WorkerEvent(
+                id=job.request.id,
+                state="loading",
+                context={"effective": 100},
+                memory={
+                    "capacity": [100],
+                    "used": [20],
+                    "residents": 3,
+                    "resident_models": ["chat-model", "image-model"],
+                },
+            ),
+        )
+        self.assertEqual(service.state, "ready")
+        self.assertEqual(service.model_id, "chat-model")
+        self.assertEqual(service.context, {"effective": 4096})
+
+    async def test_worker_residency_observation_reports_chat_eviction(self):
+        service = InferenceService()
+        service.state, service.model_id = "ready", "chat-model"
+        job = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "test"}), False
+        )
+        for residents, expected in (
+            (["image-model"], "offloaded"),
+            (["chat-model", "image-model"], "ready"),
+        ):
+            service._observe(
+                job,
+                WorkerEvent(
+                    id=job.request.id,
+                    state="running",
+                    memory={
+                        "capacity": [100],
+                        "used": [20],
+                        "residents": 3,
+                        "resident_models": residents,
+                    },
+                ),
+            )
+            self.assertEqual(service.state, expected)
+
+    async def test_terminal_job_restores_other_running_jobs_progress(self):
+        for terminal in ("succeeded", "failed", "cancelled", "rejected"):
+            with self.subTest(terminal=terminal):
+                service = InferenceService()
+                first, second, queued = [
+                    InferenceJob(
+                        InferenceTask(input={"feature": "image", "prompt": prompt}),
+                        False,
+                    )
+                    for prompt in ("a", "b", "queued")
+                ]
+                for job in (first, second, queued):
+                    service.worker.jobs[job.request.id] = job
+                for job, step in ((first, 2), (second, 7)):
+                    service._observe(
+                        job,
+                        WorkerEvent(
+                            id=job.request.id,
+                            state="progress",
+                            phase="step_completed",
+                            value=step,
+                        ),
+                    )
+                service._observe(queued, WorkerEvent(state="queued"))
+                self.assertEqual(first.progress.image.steps_completed, 2)
+                self.assertEqual(second.progress.image.steps_completed, 7)
+                self.assertEqual(service.progress.job_id, second.request.id)
+                service._observe(second, WorkerEvent(state=terminal))
+                self.assertIsNone(second.progress)
+                self.assertEqual(service.progress.job_id, first.request.id)
+                self.assertEqual(service.progress.image.steps_completed, 2)
+                service._observe(first, WorkerEvent(state="succeeded"))
+                self.assertIsNone(service.progress)
+
+
 class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepared_image_uses_worker_step_total(self):
         for model, requested_steps, prepared_steps in (

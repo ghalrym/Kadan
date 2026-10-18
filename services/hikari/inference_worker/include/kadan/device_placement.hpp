@@ -10,6 +10,34 @@
 #include "kadan/resources.hpp"
 
 namespace kadan {
+inline int device_index(std::string_view value) {
+    int device = -1;
+    const auto parsed =
+        std::from_chars(value.data(), value.data() + value.size(), device);
+    if (value.empty() || parsed.ec != std::errc{}
+        || parsed.ptr != value.data() + value.size() || device < 0
+        || std::size_t(device) >= Resources::max_devices)
+        throw std::invalid_argument("compute_devices");
+    return device;
+}
+
+inline std::vector<int> compute_devices(std::string_view selection) {
+    std::vector<int> devices;
+    while (!selection.empty()) {
+        const auto comma = selection.find(',');
+        const int device = device_index(selection.substr(0, comma));
+        if (std::find(devices.begin(), devices.end(), device) != devices.end())
+            throw std::invalid_argument("compute_devices");
+        devices.push_back(device);
+        if (comma == std::string_view::npos)
+            break;
+        selection.remove_prefix(comma + 1);
+        if (selection.empty())
+            throw std::invalid_argument("compute_devices");
+    }
+    return devices;
+}
+
 // Budgets are indexed by physical device, independent of selection order.
 inline Footprint device_budgets(
     std::span<const int> devices,
@@ -17,13 +45,19 @@ inline Footprint device_budgets(
     std::string_view indexed,
     Bytes minimum
 ) {
-    Footprint result(3);
-    std::vector<bool> seen(3);
+    std::size_t slots = 1;
+    for (int device : devices) {
+        if (device < 0 || std::size_t(device) >= Resources::max_devices)
+            throw std::invalid_argument("compute_devices");
+        slots = std::max(slots, std::size_t(device) + 2);
+    }
+    Footprint result(slots);
+    std::vector<bool> seen(slots);
     auto parse = [&](std::string_view value) {
         Bytes bytes = 0;
         auto p = std::from_chars(value.data(), value.data() + value.size(), bytes);
         if (value.empty() || p.ec != std::errc{} || p.ptr != value.data() + value.size()
-            || bytes < minimum || bytes > 24ULL * 1024 * 1024 * 1024)
+            || bytes < minimum)
             throw std::invalid_argument("device_budget");
         return bytes;
     };
@@ -36,14 +70,15 @@ inline Footprint device_budgets(
     while (!indexed.empty()) {
         const auto comma = indexed.find(',');
         const auto item = indexed.substr(0, comma);
-        if (item.size() < 3 || item[1] != ':' || (item[0] != '0' && item[0] != '1'))
+        const auto colon = item.find(':');
+        if (colon == std::string_view::npos)
             throw std::invalid_argument("device_budget_mapping");
-        const int d = item[0] - '0';
-        if (seen[d + 1]
-            || std::find(devices.begin(), devices.end(), d) == devices.end())
+        const int d = device_index(item.substr(0, colon));
+        if (std::find(devices.begin(), devices.end(), d) == devices.end()
+            || seen[std::size_t(d) + 1])
             throw std::invalid_argument("device_budget_mapping");
         seen[d + 1] = true;
-        result[d + 1] = parse(item.substr(2));
+        result[d + 1] = parse(item.substr(colon + 1));
         if (comma == std::string_view::npos)
             break;
         indexed.remove_prefix(comma + 1);

@@ -4,12 +4,14 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include <array>
+#include <barrier>
 #include <bit>
 #include <cassert>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <unistd.h>
 
 #include "kadan/chat_prompt.hpp"
@@ -1225,6 +1227,44 @@ void gguf_acquisition_units() {
     assert(reopened.tier() == "pro");
 }
 
+void concurrent_context_settings_units() {
+    Directory tmp;
+    const auto data = tmp.path / "data", root = tmp.path / "models";
+    Json models = Json::array();
+    for (const auto* id : {"first", "second"}) {
+        auto model = entry(id, Json::array());
+        model["kind"] = "llm";
+        models.push_back(std::move(model));
+    }
+    catalog(data, models);
+    ModelStore store(root, data);
+    std::barrier changed(3);
+    std::exception_ptr first_error, second_error;
+    auto write = [&](const char* id, std::exception_ptr& error) {
+        for (int value = 1; value <= 32; ++value) {
+            changed.arrive_and_wait();
+            try {
+                store.set_context(id, value);
+            } catch (...) {
+                error = std::current_exception();
+            }
+            changed.arrive_and_wait();
+        }
+    };
+    std::thread first([&] { write("first", first_error); });
+    std::thread second([&] { write("second", second_error); });
+    bool preserved = true;
+    for (int value = 1; value <= 32; ++value) {
+        changed.arrive_and_wait();
+        changed.arrive_and_wait();
+        preserved = preserved && store.context("first") == value
+                    && store.context("second") == value;
+    }
+    first.join();
+    second.join();
+    assert(!first_error && !second_error && preserved);
+}
+
 void job_units() {
     Directory tmp;
     const auto data = tmp.path / "data", root = tmp.path / "models",
@@ -1723,6 +1763,7 @@ int main() {
     single_file_acquisition_units();
     upstream_manifest_units();
     gguf_acquisition_units();
+    concurrent_context_settings_units();
     job_units();
     whisper_conversion_units();
     tokenizer_asset_units();

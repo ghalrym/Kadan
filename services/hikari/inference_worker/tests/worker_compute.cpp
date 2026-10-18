@@ -1,11 +1,10 @@
-#include "kadan/worker_compute.hpp"
-
 #include <bit>
 #include <cmath>
 #include <iostream>
 #include <limits>
 
 #include "kadan/image_attention.hpp"
+#include "kadan/inference_engines.hpp"
 #include "kadan/video_progress.hpp"
 #include "kadan/weight_progress.hpp"
 using namespace kadan;
@@ -706,17 +705,50 @@ int main() {
     check(reverse.devices == std::vector<int>({1, 0}));
     auto second = compute_plan(1024, "1", budget, true);
     check(second.capacity[1] == 0 && second.capacity[2] == std::stoull(budget));
-    for (auto devices : {"0,0", "2", "-1", "0,1,2", "cpu", "0,"})
+    for (auto devices :
+         {"0,0",
+          "-1",
+          "0,2,0",
+          "cpu",
+          "0,",
+          ",0",
+          "1,,2",
+          "64",
+          "2147483647",
+          "2147483648"})
         fails([&] { compute_plan(1024, devices, budget, true); });
     for (auto bytes :
-         {"",
-          "0",
-          "268435456",
-          "-1",
-          "99999999999999999999999999",
-          "30000000000",
-          "536870912x"})
+         {"", "0", "268435456", "-1", "99999999999999999999999999", "536870912x"})
         fails([&] { compute_plan(1024, "0,1", bytes, true); });
+    // Device identity, count and budget are independent of this server's GPUs.
+    auto many = compute_plan(1024, "2,0,12", "85899345920", true);
+    check(many.devices == std::vector<int>({2, 0, 12}));
+    check(many.capacity.size() == 14 && many.capacity[13] == 85899345920ULL);
+    check(many.capacity[2] == 0 && many.capacity[3] == 85899345920ULL);
+    const auto mapped = compute_plan(
+        1024, "12,3,0", "", true, "3:4294967296,12:85899345920,0:34359738368"
+    );
+    check(mapped.capacity[13] == 85899345920ULL);
+    check(mapped.capacity[4] == 4294967296ULL);
+    check(mapped.capacity[1] == 34359738368ULL);
+    check(mapped.capacity[2] == 0);
+    for (auto mapping : {"12:4294967296,12:4294967296", "12:", "12:4294967296,"})
+        fails([&] { compute_plan(1024, "12", "", true, mapping); });
+    const auto assigned =
+        serving::media_plan({1024, 0, 4294967296ULL, 0, 8589934592ULL});
+    check(assigned.devices == std::vector<int>({1, 3}));
+    check(assigned.capacity[1] == 0 && assigned.capacity[3] == 0);
+    const auto single = serving::media_plan({1024, 0, 4294967296ULL});
+    check(single.devices == std::vector<int>({1}));
+    fails([] { serving::media_plan({}); });
+    fails([] { serving::media_plan({0, 4294967296ULL}); });
+    bool waits = false;
+    try {
+        serving::media_plan({1024, 0, compute_context_bytes});
+    } catch (const serving::AdmissionWait&) {
+        waits = true;
+    }
+    check(waits);
     fails([&] { compute_plan(1024, "0,1", budget, false); });
     fails([&] { compute_plan(0, "", "", true); });
     WorkerCompute owned(cpu, Workload::image);

@@ -24,6 +24,7 @@ public:
     // An optional FIFO-owned envelope covers model, scratch and publication.
     // The queue, not this executor, acknowledges and releases that envelope.
     static constexpr Bytes envelope_bytes = 3ULL * 1024 * 1024 * 1024;
+    static constexpr Bytes request_memory_bytes = 256ULL * 1024 * 1024;
     void load(
         const std::string& root,
         const std::atomic_bool& cancel,

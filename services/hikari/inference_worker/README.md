@@ -1,7 +1,7 @@
 # Inference worker
 
 The API uses one `kadan-inference-worker` process for chat, Decisions, image,
-video, transcription and speech. It owns the FIFO, checkpoint acquisition,
+video, transcription and speech. It owns the workload queues, checkpoint acquisition,
 input preparation, engine lifecycle, result packaging and workspace cleanup.
 The API submits serialized Pydantic tasks and relays events and results.
 
@@ -65,7 +65,7 @@ Private headers live beside their implementations. Public headers remain under
 ## Request handling
 
 `src/requests/inference_request.cpp` decodes the transport envelope into named C++ requests;
-`include/kadan/inference_owner.hpp` processes the queue head. Each modality's
+`include/kadan/inference_owner.hpp` schedules workload queue heads. Each modality's
 `src/requests/inference_*_request.cpp` owns its preparation and response formatting alongside
 its engine. Chat messages, transcription PCM and typed decision results pass directly
 in memory. Decision answers are formatted as JSON once for the response.
@@ -78,7 +78,7 @@ the API serves those snapshots, observes download progress and forwards cancella
 Settings changes use typed queue tasks.
 `src/preparation/whisper_export.cpp` and `src/preparation/tokenizer_assets.cpp` convert checkpoint metadata
 in C++. The worker never starts a Python interpreter.
-Cancellation finishes owned work and releases the workspace before the next job.
+Cancellation finishes owned work and releases its workspace before terminal delivery.
 
 ## Image execution
 
@@ -123,7 +123,7 @@ the Qwen3-TTS 1.7B CustomVoice speech model, Whisper medium for transcription
 (also the default without a saved Whisper choice) and the S1-mini formatter.
 Choosing a tier persists `tier.json` in the model store and selects its language
 and image models; the API then queues the tier's incomplete downloads through
-the existing FIFO.
+the worker queues.
 
 | Tier | Hardware | Catalog ID | Checkpoint | Download bytes |
 | --- | --- | --- | --- | --- |
@@ -269,3 +269,67 @@ protection or preserving residency across existing retirement boundaries.
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/hikari.py infer` to submit requests through the live API and its
 existing queue. There are no standalone model execution tools.
+
+## Shared scheduling and residency
+
+One worker process owns seven FIFO queues: chat, images, video, transcription,
+transcription formatting, speech synthesis, and decisions. The scheduler selects
+queue heads in round-robin order. Compatible image requests still collect into
+one batch with the existing capacity advice, cohort target, deadline, and ordered
+prefix rules. A resource-blocked head can be bypassed seven times before new
+admissions pause to let active executions drain. An impossible request then yields
+again instead of permanently blocking other workloads.
+
+Every engine has an isolated accounting scope backed by one atomic host/GPU
+ledger. Before loading and preparing a request, the scheduler reserves an entire
+execution allowance. That allowance includes retained weights and room for lazy
+KV, activation, and execution-workspace allocations; individual allocations draw
+from it rather than adding a second charge. This is a conservative capacity bound,
+not a measured peak-memory prediction. Idle engines return unused allowance while
+retaining their weights and contexts. Reuse reacquires the original allowance;
+idle peers can be evicted if needed. Active engines cannot be evicted. Physical
+cleanup must succeed before reservations are released; uncertain cleanup stops
+new admissions.
+
+Speech and transcription also preflight conservative host peaks for KV caches,
+activations, waveform output, and checkpoint staging before execution. They
+currently require a 2 GiB execution workspace on each selected GPU. Very small
+GPU budgets can therefore wait even where a smaller adaptive workspace might
+eventually work; that profile is not supported by this admission policy yet.
+
+Admission uses physical host and GPU availability with the worker's existing
+1 GiB host and 512 MiB per-GPU margins. The ledger's capacity stays fixed while
+allocations or allowances exist, so a fresh free-memory probe cannot double-count
+pending allocations or revoke another request's workspace. New allowances are
+also bounded by current physical availability. External processes can still
+allocate after that probe; physical allocation failures remain possible and are
+reported without replaying inference that has already started.
+
+Placement first tries one GPU with half its capacity, leaving room for another
+small resident model. Load or preparation pressure retries the full device and
+then multiple devices. Host budgets initially share global capacity across at
+least two resident slots, in proportion to assigned GPUs; a full-host sequential
+fallback is available. Images retain their existing planner over all assigned
+idle GPUs. Device indices and asymmetric
+budgets support the ledger's existing limit of 64 GPUs, including one-GPU systems.
+
+Distinct resident engines execute on separate threads when their GPU assignments
+are disjoint and their memory allowances fit. Their native CUDA device threads
+own separate per-thread streams, cuBLAS handles, and workspaces. Retirement never
+resets a device shared by other resident engines. One execution at a time uses a
+given GPU, and each workload queue has at most one active batch. Image preparation
+and execution are exclusive because ATen settings and host RSS
+measurements are process-wide. Other workloads can overlap on disjoint GPU sets;
+a single GPU uses sequential execution while retaining models when their planned
+budgets fit. Same-GPU execution overlap and LLM-to-TTS streaming are
+outside this change.
+
+The API remains transport to this process. Request-scoped callbacks keep streamed
+content and progress attached to the right job; memory events include
+`resident_models`. Memory `used` reports globally charged reservations, including
+unmaterialized execution allowance, rather than measured allocator occupancy.
+
+CPU unit tests use fake engines and allocation owners to verify admission,
+concurrent execution, cancellation, cleanup, residency, queue fairness, and
+shutdown. They never run inference. GPU execution and performance require separate
+owner-run validation; this scheduler makes no measured throughput claim.

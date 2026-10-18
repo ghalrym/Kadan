@@ -44,7 +44,8 @@ public:
         f.seekg(0);
         f.read(data.data(), data.size());
         need(bool(f));
-        const auto root = nlohmann::json::parse(data), j = root.at("talker_config");
+        const auto root = nlohmann::json::parse(data);
+        const auto& j = root.at("talker_config");
         prompt_.think = id(j.at("codec_think_id"));
         prompt_.think_bos = id(j.at("codec_think_bos_id"));
         prompt_.think_eos = id(j.at("codec_think_eos_id"));

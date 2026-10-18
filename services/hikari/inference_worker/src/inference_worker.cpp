@@ -229,14 +229,14 @@ int serve(const char* lock_path) {
     JobWorkspace files(std::filesystem::path(lock_path).parent_path() / "jobs");
     PhysicalMemory memory;
     Output output;
-    std::string active;
+    std::string preparing_id;
     ModelStore store(
         std::filesystem::path(lock_path).parent_path().parent_path(),
         worker_data_directory(),
         {},
         [&](const std::string& model, std::uint64_t downloaded, std::uint64_t total) {
             output.send(
-                {{"id", active},
+                {{"id", preparing_id},
                  {"state", "progress"},
                  {"phase", "download"},
                  {"model", model},
@@ -245,15 +245,22 @@ int serve(const char* lock_path) {
             );
         }
     );
-    auto progress = [&](const char* phase, std::size_t value) {
-        output.send(
-            {{"id", active}, {"state", "progress"}, {"phase", phase}, {"value", value}}
-        );
-    };
-    auto content = [&](const std::string& text) {
-        output.send({{"id", active}, {"state", "content"}, {"content", text}});
-    };
-    auto factory = [&](Workload kind, std::shared_ptr<Resources> resources) {
+    auto factory = [&](Workload kind,
+                       std::shared_ptr<Resources> resources,
+                       std::shared_ptr<ExecutionContext> context) {
+        auto progress = [&, context](const char* phase, std::size_t value) {
+            output.send(
+                {{"id", context->request_id},
+                 {"state", "progress"},
+                 {"phase", phase},
+                 {"value", value}}
+            );
+        };
+        auto content = [&, context](const std::string& text) {
+            output.send(
+                {{"id", context->request_id}, {"state", "content"}, {"content", text}}
+            );
+        };
         switch (kind) {
         case Workload::llm:
             return chat_engine(resources, progress, content, store);
@@ -290,7 +297,6 @@ int serve(const char* lock_path) {
             output.send({{"id", id}, {"state", "queued"}});
             return;
         }
-        active = id;
         Json message{{"id", id}, {"state", state_name(state)}};
         if (state == JobState::succeeded) {
             message["result"] = result;
@@ -307,16 +313,17 @@ int serve(const char* lock_path) {
         message["memory"] = {
             {"capacity", snapshot.capacity},
             {"used", snapshot.used},
-            {"residents", snapshot.residents}
+            {"residents", snapshot.residents},
+            {"resident_models", owner_pointer->resident_models()}
         };
         output.send(message);
     };
     auto capacity = memory.probe();
-    // The ceiling is the machine shape, not its startup free memory. Each new
-    // engine obtains a fresh physical measurement after the old engine closes.
+    // Refresh physical availability at admission. Every resident engine charges
+    // the same ledger, including request state and execution workspaces.
     std::fill(capacity.begin(), capacity.end(), std::numeric_limits<Bytes>::max());
     auto prepare = [&](InferenceRequest& request, const std::atomic_bool& cancel) {
-        active = request.id;
+        preparing_id = request.id;
         prepare_task(request, store, files, cancel);
         Json context = nullptr;
         if (request.context) {
@@ -347,7 +354,7 @@ int serve(const char* lock_path) {
     );
     owner_pointer = &owner;
     output.send({{"state", "models"}, {"models", store.status()}});
-    output.send({{"state", "ready"}, {"protocol", 2}, {"pid", getpid()}});
+    output.send({{"state", "ready"}, {"protocol", 3}, {"pid", getpid()}});
     std::thread reader([&] { read_requests(owner, output); });
     try {
         while (!stopping.load()) {

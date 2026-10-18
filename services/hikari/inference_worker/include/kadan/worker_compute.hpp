@@ -37,20 +37,11 @@ inline ComputePlan compute_plan(
         return p;
     if (!available)
         throw std::invalid_argument("compute_cuda_not_built");
-    if (selection == "0")
-        p.devices = {0};
-    else if (selection == "1")
-        p.devices = {1};
-    else if (selection == "0,1")
-        p.devices = {0, 1};
-    else if (selection == "1,0")
-        p.devices = {1, 0};
-    else
-        throw std::invalid_argument("compute_devices");
+    p.devices = compute_devices(selection);
     auto budgets = device_budgets(
         p.devices, budget, indexed, compute_context_bytes + 16 * 1024 * 1024
     );
-    p.capacity.resize(3);
+    p.capacity.resize(budgets.size());
     for (int device : p.devices)
         p.capacity[device + 1] = budgets[device + 1];
     return p;

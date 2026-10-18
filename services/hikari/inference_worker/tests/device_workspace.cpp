@@ -537,6 +537,29 @@ void persistent_threads_and_cancel() {
     check(r.snapshot().residents == 0 && a->threads.size() == 1);
 }
 
+void resident_context_cleanup_is_isolated() {
+    Resources resources({1024, 1024});
+    auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
+    {
+        DeviceThread first(resources, 0, Workload::image, fake(resources, a)),
+            second(resources, 0, Workload::tts, fake(resources, b));
+        first.submit_work([](DeviceWorkspace& w) { w.ensure(128); }).get();
+        second.submit_work([](DeviceWorkspace& w) { w.ensure(256); }).get();
+        check(resources.snapshot().used == Footprint({0, 384}));
+        first.submit([](DeviceWorkspace& w) { w.reset(); }).get();
+        // One engine's cleanup acknowledges only its own allocations/handle.
+        check(resources.snapshot().used == Footprint({0, 256}));
+        check(!a->allocated && !a->handle && a->resets == 1);
+        check(b->allocated == 256 && b->handle && b->resets == 0);
+        second.submit_work([](DeviceWorkspace& w) { w.ensure(128); }).get();
+        check(b->allocations == 1 && b->creates == 1);
+        check(a->threads.size() == 1 && b->threads.size() == 1);
+        check(*a->threads.begin() != *b->threads.begin());
+    }
+    check(resources.snapshot().used == Footprint({0, 0}));
+    check(b->resets == 1);
+}
+
 void projection_status_lifecycle() {
     Resources r({1024, 1024, 1024});
     auto a = std::make_shared<Counters>(), b = std::make_shared<Counters>();
@@ -756,6 +779,7 @@ int main() {
     uncertain_cleanup_stays_charged();
     reset_failure_keeps_context_accounting();
     persistent_threads_and_cancel();
+    resident_context_cleanup_is_isolated();
     projection_status_lifecycle();
     selection_failure_never_uses_default_device();
     destruction_does_not_acknowledge_failed_cleanup();

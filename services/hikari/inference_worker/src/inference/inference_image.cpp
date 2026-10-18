@@ -379,7 +379,7 @@ public:
                     rgba[index].resize(
                         requests[index].height * requests[index].width * 4
                     );
-                    output.push_back(rgba[index]);
+                    output.emplace_back(rgba[index]);
                     const auto owner = owners[index];
                     if (!batch[owner.request].cancel->load())
                         request_progress_(
@@ -493,7 +493,10 @@ public:
                 host_peak_.reset();
                 if (start < images_.size() && !cancel_.load()) {
                     auto available = probe_();
-                    resources_->refresh_available(available);
+                    const auto state = resources_->snapshot();
+                    for (std::size_t i = 0; i < available.size(); ++i)
+                        available[i] =
+                            std::min(available[i], state.capacity[i] - state.used[i]);
                     batch_capacity(*batch[owners[0].request].request, available);
                 }
             }

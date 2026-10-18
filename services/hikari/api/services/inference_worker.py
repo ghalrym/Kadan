@@ -54,6 +54,7 @@ class WorkerMemory(BaseModel):
     capacity: list[int]
     used: list[int]
     residents: int
+    resident_models: list[str]
 
 
 class WorkerEvent(BaseModel):
@@ -282,7 +283,7 @@ class InferenceWorker:
                     self.models = event.models
                     continue
                 if event.state == "ready":
-                    if event.protocol != 2 or self.ready.done():
+                    if event.protocol != 3 or self.ready.done():
                         raise RuntimeError("Invalid worker readiness response")
                     self.ready.set_result(event.pid)
                     continue

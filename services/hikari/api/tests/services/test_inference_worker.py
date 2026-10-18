@@ -356,6 +356,91 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.image_progress.steps_completed, 1)
 
 
+class ConcurrentWorkerEventsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_readiness_requires_residency_protocol(self):
+        for protocol in (2, 3):
+            with self.subTest(protocol=protocol):
+                worker = InferenceWorker(Path("/unused"))
+                worker.closing = True
+                worker.ready = asyncio.get_running_loop().create_future()
+                stdout = asyncio.StreamReader()
+                stdout.feed_data(
+                    (
+                        json.dumps({"state": "ready", "protocol": protocol, "pid": 123})
+                        + "\n"
+                    ).encode()
+                )
+                stdout.feed_eof()
+                worker.process = SimpleNamespace(
+                    stdout=stdout,
+                    pid=123,
+                    returncode=0,
+                    wait=AsyncMock(return_value=0),
+                )
+                await worker._read()
+                if protocol == 3:
+                    self.assertEqual(await worker.ready, 123)
+                    self.assertIsNone(worker.last_exit.protocol_error)
+                else:
+                    with self.assertRaisesRegex(
+                        Exception, "Invalid worker readiness response"
+                    ):
+                        await worker.ready
+
+    async def test_interleaved_events_route_to_their_job_ids(self):
+        observed = []
+        worker = InferenceWorker(
+            Path("/unused"), lambda job, event: observed.append((job.request.id, event))
+        )
+        worker.closing = True
+        worker.ready = asyncio.get_running_loop().create_future()
+        worker.ready.set_result(123)
+        first, second = [
+            InferenceJob(
+                InferenceTask(
+                    operation="completion",
+                    input={
+                        "feature": "llm",
+                        "messages": [{"role": "user", "text": text}],
+                    },
+                ),
+                True,
+            )
+            for text in ("first", "second")
+        ]
+        for job in (first, second):
+            worker.jobs[job.request.id] = job
+        stdout = asyncio.StreamReader()
+        for job, event in (
+            (first, {"state": "running"}),
+            (second, {"state": "running"}),
+            (second, {"state": "content", "content": "second chunk"}),
+            (first, {"state": "content", "content": "first chunk"}),
+            (second, {"state": "progress", "phase": "decode_token", "value": 2}),
+            (first, {"state": "progress", "phase": "decode_token", "value": 1}),
+            (second, {"state": "succeeded", "result": {"text": "second result"}}),
+            (first, {"state": "succeeded", "result": {"text": "first result"}}),
+        ):
+            stdout.feed_data(
+                (json.dumps({"id": job.request.id, **event}) + "\n").encode()
+            )
+        stdout.feed_eof()
+        worker.process = SimpleNamespace(
+            stdout=stdout, pid=123, returncode=0, wait=AsyncMock(return_value=0)
+        )
+        await worker._read()
+        for job, name, value in ((first, "first", 1), (second, "second", 2)):
+            self.assertEqual(await job.result, {"text": f"{name} result"})
+            self.assertEqual(job.events.get_nowait(), {"content": f"{name} chunk"})
+            progress = [
+                event
+                for job_id, event in observed
+                if job_id == job.request.id and event.state == "progress"
+            ]
+            self.assertEqual([event.value for event in progress], [value])
+        self.assertIsNone(worker.last_exit.protocol_error)
+
+
 class WorkerExitTests(unittest.IsolatedAsyncioTestCase):
     async def exited_worker(self, returncode, *, ready=True, protocol=b""):
         worker = InferenceWorker(Path("/unused"))

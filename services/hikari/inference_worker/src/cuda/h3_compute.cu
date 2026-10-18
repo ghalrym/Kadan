@@ -1092,7 +1092,7 @@ private:
 
     void release_recurrent(Recurrent& r) {
         if (r.data) {
-            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cudaStreamSynchronize(cudaStreamPerThread));
             checked(cudaFree(r.data));
         }
         if (r.reservation) {
@@ -1105,7 +1105,7 @@ private:
 
     void release_mirror(KvMirror& m) {
         if (m.data) {
-            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cudaStreamSynchronize(cudaStreamPerThread));
             checked(cudaFree(m.data));
         }
         if (m.reservation) {
@@ -1175,7 +1175,7 @@ public:
     }
 
     void synchronize_weights() override {
-        checked(cudaStreamSynchronize(cudaStreamLegacy));
+        checked(cudaStreamSynchronize(cudaStreamPerThread));
     }
 
     void release_weights() override {
@@ -1229,7 +1229,7 @@ public:
 
     void configure_handle() override {
         checked(cublasSetMathMode(blas, CUBLAS_PEDANTIC_MATH));
-        checked(cublasSetStream(blas, cudaStreamLegacy));
+        checked(cublasSetStream(blas, cudaStreamPerThread));
     }
 
     void destroy_handle() override {
@@ -1238,15 +1238,14 @@ public:
     }
 
     void synchronize() override {
-        checked(cudaStreamSynchronize(cudaStreamLegacy));
+        checked(cudaStreamSynchronize(cudaStreamPerThread));
     }
 
     void reset() override {
         release_mirrors();
-        checked(cudaDeviceSynchronize());
-#ifndef KADAN_ATEN_RUNTIME
-        checked(cudaDeviceReset());
-#endif
+        // Each engine owns persistent device threads and their per-thread
+        // streams. Never reset the primary context shared by resident engines.
+        checked(cudaStreamSynchronize(cudaStreamPerThread));
     }
 
     template <class T> T* at(std::size_t offset) {
@@ -2104,7 +2103,7 @@ class Compute final : public H3Compute {
                     unsigned* decode_status = nullptr;
                     // Runs after every kernel that decodes the packed rows.
                     auto admit_packed = [&] {
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cudaStreamSynchronize(cudaStreamPerThread));
                         unsigned invalid = 0;
                         checked(cudaMemcpy(
                             &invalid,
@@ -2236,7 +2235,7 @@ class Compute final : public H3Compute {
                             // Mutually exclusive with INT8 rotation; reuse its larger
                             // scratch slice. The host boundary owns synchronization.
                             launch_bf16_projection(
-                                cudaStreamLegacy,
+                                cudaStreamPerThread,
                                 arena.blas,
                                 input_pointer,
                                 weight_pointer,
@@ -2360,7 +2359,7 @@ class Compute final : public H3Compute {
                             );
                             checked(cudaGetLastError());
                         }
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cudaStreamSynchronize(cudaStreamPerThread));
                         stop(cancel, failed);
                         if (convolution && !grouped)
                             checked(cudaMemcpy2D(
@@ -2688,8 +2687,9 @@ public:
                             unsigned(dim)
                         );
                         checked(cudaGetLastError());
-                        // The legacy stream orders all key tiles; this blocking copy
-                        // waits for the complete query tile before host consumption.
+                        // The owned thread stream orders all key tiles; this blocking
+                        // copy waits for the complete query tile before host
+                        // consumption.
                         checked(cudaMemcpy(
                             hy,
                             arena.at<void>(dy),
@@ -2981,7 +2981,7 @@ public:
                         activate
                     );
                     checked(cudaGetLastError());
-                    checked(cudaStreamSynchronize(cudaStreamLegacy));
+                    checked(cudaStreamSynchronize(cudaStreamPerThread));
                     unsigned invalid = 0;
                     checked(cudaMemcpy(
                         &invalid,
@@ -3089,7 +3089,7 @@ public:
                             count * in
                         );
                         checked(cudaGetLastError());
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cudaStreamSynchronize(cudaStreamPerThread));
                         stop(cancel, failed);
                     };
                 if (keep_input)
@@ -3176,7 +3176,7 @@ public:
                                 CUBLAS_COMPUTE_32F,
                                 CUBLAS_GEMM_DEFAULT
                             ));
-                            checked(cudaStreamSynchronize(cudaStreamLegacy));
+                            checked(cudaStreamSynchronize(cudaStreamPerThread));
                             stop(cancel, failed);
                         };
                         with_projection_math(
@@ -3566,7 +3566,7 @@ public:
                     arena.at<void>(next),
                     history_floats * sizeof(float),
                     cudaMemcpyDeviceToDevice,
-                    cudaStreamLegacy
+                    cudaStreamPerThread
                 ));
                 delta_l2_kernel<<<
                     dim3(unsigned(rows), unsigned(2 * step.key_heads)),
@@ -3723,7 +3723,10 @@ public:
                 require(l.bytes <= arena.scratch_limit, "h3_cuda_projection_scratch");
                 device_workspace.ensure(l.bytes);
                 checked(cudaMemsetAsync(
-                    arena.at<void>(weight_status), 0, sizeof(unsigned), cudaStreamLegacy
+                    arena.at<void>(weight_status),
+                    0,
+                    sizeof(unsigned),
+                    cudaStreamPerThread
                 ));
                 auto read_status = [&](std::size_t at) {
                     unsigned invalid = 0;
@@ -3955,13 +3958,13 @@ public:
                             host.data() + parity * half,
                             group.used,
                             cudaMemcpyHostToDevice,
-                            cudaStreamLegacy
+                            cudaStreamPerThread
                         ));
                         checked(cudaMemsetAsync(
                             statuses + group.first,
                             0,
                             (group.end - group.first) * sizeof(unsigned),
-                            cudaStreamLegacy
+                            cudaStreamPerThread
                         ));
                         launch_matvec(
                             group.launches, table_entries, arena.at<MatvecJob>(table)
@@ -3971,9 +3974,11 @@ public:
                             statuses + group.first,
                             (group.end - group.first) * sizeof(unsigned),
                             cudaMemcpyDeviceToHost,
-                            cudaStreamLegacy
+                            cudaStreamPerThread
                         ));
-                        checked(cudaEventRecord(events.done[parity], cudaStreamLegacy));
+                        checked(
+                            cudaEventRecord(events.done[parity], cudaStreamPerThread)
+                        );
                         // Group g is queued before g - 1 is checked, so uploads run
                         // back to back.
                         if (g)

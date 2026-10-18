@@ -27,10 +27,7 @@ struct FakeEngine : InferenceEngine {
 
     FakeEngine(FakeState& s, std::shared_ptr<Resources> r)
         : state(s), ledger(std::move(r)) {
-        if (state.ledger)
-            assert(state.ledger == ledger);
-        else
-            state.ledger = ledger;
+        state.ledger = ledger;
     }
 
     void load(
@@ -82,13 +79,23 @@ InferenceRequest request(std::string id, Workload workload = Workload::image) {
     return result;
 }
 
-void fifo_shares_ledger() {
+bool complete_one(InferenceOwner& owner) {
+    const auto before = owner.pending();
+    bool progressed = owner.advance();
+    while (owner.pending() == before && owner.executing()) {
+        owner.advance();
+        std::this_thread::yield();
+    }
+    return owner.pending() < before || progressed;
+}
+
+void workload_queues_share_ledger() {
     FakeState state;
     std::vector<std::tuple<std::string, JobState, Json>> replies;
     Footprint free{100, 80, 70};
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, std::shared_ptr<Resources> r) {
+        [&](auto, std::shared_ptr<Resources> r, auto) {
             return std::make_unique<FakeEngine>(state, r);
         },
         [&] { return free; },
@@ -102,21 +109,23 @@ void fifo_shares_ledger() {
         Workload::speech,
         Workload::tts
     };
-    for (std::size_t i = 0; i < 6; ++i)
-        owner.submit(request(std::to_string(i), workloads[i]));
     for (std::size_t i = 0; i < 6; ++i) {
-        assert(owner.advance());
+        owner.submit(request(std::to_string(i), workloads[i]));
+        assert(complete_one(owner));
         assert(std::get<0>(replies.back()) == std::to_string(i));
     }
+    assert(owner.snapshot().residents == 6);
     assert(owner.pending() == 0);
     owner.shutdown();
     assert(owner.snapshot().residents == 0);
-    // Reclaim overestimation cannot carry across handoff: the probe occurs after
-    // the actual previous engine cleanup, and only its measured free bytes enter
-    // load.
+    // Every new resident sees only remaining global capacity, scoped to its
+    // assigned device set; existing models survive unrelated queue work.
     assert(state.loads.size() == 6);
-    for (const auto& p : state.loads)
-        assert(p == free);
+    for (std::size_t i = 0; i < state.loads.size(); ++i) {
+        assert(state.loads[i][0] <= 100 - i * 10);
+        assert(state.loads[i][1] <= free[1]);
+        assert(state.loads[i][2] <= free[2]);
+    }
 }
 
 void admission_retries_head() {
@@ -127,7 +136,7 @@ void admission_retries_head() {
     replies.clear();
     InferenceOwner pending(
         {100, 100, 100},
-        [&](auto, std::shared_ptr<Resources> r) {
+        [&](auto, std::shared_ptr<Resources> r, auto) {
             return std::make_unique<FakeEngine>(retry, r);
         },
         [&] { return ++probes == 1 ? Footprint{100, 80, 70} : Footprint{100, 40, 30}; },
@@ -135,17 +144,17 @@ void admission_retries_head() {
     );
     pending.submit(request("head"));
     pending.submit(request("tail"));
-    assert(!pending.advance());
+    assert(!complete_one(pending));
     assert(pending.pending() == 2);
     assert(retry.events == std::vector<std::string>({"load:head", "close:head"}));
-    assert(pending.advance());
+    assert(complete_one(pending));
     assert(retry.loads.back() == Footprint({100, 40, 30}));
     assert(
         std::get<0>(replies.back()) == "head"
         && std::get<1>(replies.back()) == JobState::succeeded
     );
     assert(pending.cancel("tail"));
-    assert(pending.advance());
+    assert(complete_one(pending));
     assert(std::get<1>(replies.back()) == JobState::cancelled);
     pending.shutdown();
 }
@@ -154,19 +163,21 @@ void cleanup_failure_stops_owner() {
     FakeState broken;
     InferenceOwner quarantine(
         {100, 100, 100},
-        [&](auto, std::shared_ptr<Resources> r) {
+        [&](auto, std::shared_ptr<Resources> r, auto) {
             return std::make_unique<FakeEngine>(broken, r);
         },
         [] { return Footprint{100, 80, 70}; },
         [](auto, auto, auto) {}
     );
     quarantine.submit(request("first"));
-    assert(quarantine.advance());
+    assert(complete_one(quarantine));
     broken.fail_close = true;
-    quarantine.submit(request("second"));
+    auto unload = request("second");
+    unload.operation = Operation::unload;
+    quarantine.submit(unload);
     bool failed = false;
     try {
-        quarantine.advance();
+        complete_one(quarantine);
     } catch (const std::runtime_error&) {
         failed = true;
     }
@@ -174,7 +185,7 @@ void cleanup_failure_stops_owner() {
     assert(quarantine.pending() == 1 && quarantine.snapshot().residents == 1);
     failed = false;
     try {
-        quarantine.advance();
+        complete_one(quarantine);
     } catch (const std::runtime_error&) {
         failed = true;
     }
@@ -186,7 +197,7 @@ void reused_model_prepares_each_request() {
     FakeState same;
     InferenceOwner reusable(
         {100, 100, 100},
-        [&](auto, std::shared_ptr<Resources> r) {
+        [&](auto, std::shared_ptr<Resources> r, auto) {
             return std::make_unique<FakeEngine>(same, r);
         },
         [] { return Footprint{100, 80, 70}; },
@@ -198,8 +209,8 @@ void reused_model_prepares_each_request() {
     second.model = "same";
     reusable.submit(first);
     reusable.submit(second);
-    assert(reusable.advance());
-    assert(reusable.advance());
+    assert(complete_one(reusable));
+    assert(complete_one(reusable));
     assert(same.loads.size() == 1 && same.preparations == 2);
     reusable.shutdown();
 }
@@ -209,7 +220,7 @@ void terminal_delivery_never_replays() {
     FakeState delivery;
     InferenceOwner transport(
         {100, 100, 100},
-        [&](auto, std::shared_ptr<Resources> r) {
+        [&](auto, std::shared_ptr<Resources> r, auto) {
             return std::make_unique<FakeEngine>(delivery, r);
         },
         [] { return Footprint{100, 80, 70}; },
@@ -221,14 +232,14 @@ void terminal_delivery_never_replays() {
     transport.submit(request("once"));
     failed = false;
     try {
-        transport.advance();
+        complete_one(transport);
     } catch (const PublicationFailure&) {
         failed = true;
     }
     assert(failed && transport.pending() == 0);
     failed = false;
     try {
-        transport.advance();
+        complete_one(transport);
     } catch (const std::runtime_error&) {
         failed = true;
     }
@@ -243,30 +254,31 @@ void changed_configuration_reloads_and_gpu_pressure_reconciles() {
     Footprint free{100, 80, 70};
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto resources) {
+        [&](auto, auto resources, auto) {
             return std::make_unique<FakeEngine>(state, resources);
         },
         [&] { return free; },
         [](auto, auto, auto) {}
     );
-    auto first = request("first", Workload::decision);
+    auto first = request("first", Workload::llm);
     first.model = "same";
     first.configuration.context_limit = 8192;
     owner.submit(first);
-    assert(owner.advance());
+    assert(complete_one(owner));
     auto second = first;
     second.id = "second";
-    free[1] = 79;
+    free[1] = 39;
     owner.submit(second);
-    assert(owner.advance());
-    assert(state.loads.size() == 1);
-    assert(owner.snapshot().capacity[1] == 79);
+    assert(!complete_one(owner));
+    assert(complete_one(owner));
+    assert(state.loads.size() == 2);
+    assert(owner.snapshot().capacity[1] == 39);
     auto third = first;
     third.id = "third";
     third.configuration.context_limit = 65536;
     owner.submit(third);
-    assert(owner.advance());
-    assert(state.loads.size() == 2);
+    assert(complete_one(owner));
+    assert(state.loads.size() == 3);
     owner.shutdown();
 }
 
@@ -313,7 +325,7 @@ void resident_gpu_pressure_replans_before_execution() {
     std::vector<JobState> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) {
+        [&](auto, auto ledger, auto) {
             return std::make_unique<PlannedEngine>(state, ledger);
         },
         [&] { return free; },
@@ -322,15 +334,15 @@ void resident_gpu_pressure_replans_before_execution() {
     auto head = request("first");
     head.model = "same";
     owner.submit(head);
-    assert(owner.advance());
+    assert(complete_one(owner));
     free[1] = 40;
     head.id = "second";
     owner.submit(head);
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     assert(events.back() == JobState::waiting_for_resources);
     assert(owner.pending() == 1);
     assert(state.close_calls == 1);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
     assert(state.loads.size() == 2 && state.loads.back()[1] == 40);
     owner.shutdown();
@@ -374,7 +386,7 @@ void resident_load_recovers_scratch_capacity() {
     std::vector<JobState> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) {
+        [&](auto, auto ledger, auto) {
             return std::make_unique<ScratchEngine>(state, ledger);
         },
         [&] { return Footprint{++probes == 2 ? 5u : 100u, 80, 70}; },
@@ -384,14 +396,14 @@ void resident_load_recovers_scratch_capacity() {
     load.model = "same";
     load.operation = Operation::load;
     owner.submit(load);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
-    assert(owner.snapshot().capacity[0] == 15);
+    assert(owner.snapshot().capacity[0] == 100);
     auto completion = load;
     completion.id = "completion";
     completion.operation = Operation::completion;
     owner.submit(completion);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
     assert(state.loads.size() == 1);
     owner.shutdown();
@@ -404,7 +416,7 @@ void reservation_exhaustion_retries_only_before_execution() {
         Footprint free{15, 80, 70};
         InferenceOwner owner(
             {100, 100, 100},
-            [&](auto, auto ledger) {
+            [&](auto, auto ledger, auto) {
                 return std::make_unique<ScratchEngine>(state, ledger, during_execution);
             },
             [&] { return free; },
@@ -412,7 +424,7 @@ void reservation_exhaustion_retries_only_before_execution() {
         );
         owner.submit(request("head"));
         owner.submit(request("tail"));
-        assert(owner.advance() == during_execution);
+        assert(complete_one(owner) == during_execution);
         assert(owner.pending() == (during_execution ? 1u : 2u));
         assert(
             events.back()
@@ -420,14 +432,14 @@ void reservation_exhaustion_retries_only_before_execution() {
         );
         assert(state.close_calls == 1 && owner.snapshot().residents == 0);
         free[0] = 100;
-        assert(owner.advance());
+        assert(complete_one(owner));
         assert(events.back() == JobState::succeeded);
         assert(
             std::count(state.events.begin(), state.events.end(), "execute:head") == 1
         );
         if (!during_execution) {
             assert(owner.cancel("tail"));
-            assert(owner.advance());
+            assert(complete_one(owner));
         }
         owner.shutdown();
     }
@@ -439,7 +451,9 @@ void worker_prepares_only_the_fifo_head() {
     std::vector<JobState> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<FakeEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<FakeEngine>(state, ledger);
+        },
         [] { return Footprint{100, 100, 100}; },
         [&](auto, auto event, auto) { events.push_back(event); },
         32,
@@ -458,14 +472,14 @@ void worker_prepares_only_the_fifo_head() {
     }
     assert(prepared.empty());
     assert(owner.cancel("cancelled"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(prepared == std::vector<std::string>{"head"});
     assert(events.back() == JobState::succeeded);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::cancelled);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::failed);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
     assert((prepared == std::vector<std::string>{"head", "bad", "tail"}));
     assert(state.preparations == 2);
@@ -478,7 +492,9 @@ void cancellation_during_worker_preparation_never_executes() {
     InferenceOwner* current = nullptr;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<FakeEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<FakeEngine>(state, ledger);
+        },
         [] { return Footprint{100, 100, 100}; },
         [&](auto, auto event, auto) { events.push_back(event); },
         32,
@@ -491,7 +507,7 @@ void cancellation_during_worker_preparation_never_executes() {
     auto job = request("head");
     job.prepared = false;
     owner.submit(job);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(events.back() == JobState::cancelled);
     assert(state.events.empty());
     assert(owner.pending() == 0);
@@ -504,7 +520,9 @@ void download_uses_fifo_without_loading_engine() {
     std::vector<JobState> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<FakeEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<FakeEngine>(state, ledger);
+        },
         [] { return Footprint{100, 100, 100}; },
         [&](auto, auto event, auto) { events.push_back(event); },
         32,
@@ -518,10 +536,10 @@ void download_uses_fifo_without_loading_engine() {
     download.prepared = false;
     owner.submit(download);
     owner.submit(request("inference"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(prepared == std::vector<std::string>{"download"});
     assert(state.loads.empty() && events.back() == JobState::succeeded);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(state.loads.size() == 1);
     owner.shutdown();
 }
@@ -547,7 +565,7 @@ void acceptance_precedes_fast_completion() {
         );
         std::thread executor([&] {
             while (!finished.load()) {
-                owner.advance();
+                complete_one(owner);
                 std::this_thread::yield();
             }
         });
@@ -591,7 +609,7 @@ void failed_acceptance_never_runs() {
         rejected = true;
     }
     assert(rejected && owner.pending() == 0);
-    assert(!owner.advance() && !prepared);
+    assert(!complete_one(owner) && !prepared);
     owner.shutdown();
 }
 
@@ -601,7 +619,7 @@ void invalid_engine_input_preserves_status_and_releases_memory() {
     Json failure;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto resources) {
+        [&](auto, auto resources, auto) {
             return std::make_unique<FakeEngine>(state, resources);
         },
         [] { return Footprint{100, 80, 70}; },
@@ -611,7 +629,7 @@ void invalid_engine_input_preserves_status_and_releases_memory() {
         }
     );
     owner.submit(request("invalid-upload"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         failure.at("status_code") == 422
         && failure.at("error") == "Image mask must be opaque"
@@ -725,7 +743,7 @@ void throughput_target_controls_collection_and_advice() {
     const auto now = std::chrono::steady_clock::time_point{};
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) {
+        [&](auto, auto ledger, auto) {
             return std::make_unique<ThroughputEngine>(
                 state, ledger, performance, plans
             );
@@ -741,15 +759,15 @@ void throughput_target_controls_collection_and_advice() {
     );
     owner.submit(image_request("a"));
     owner.submit(image_request("b"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((hints == std::vector<std::size_t>{3, 3}));
     owner.submit(image_request("c"));
     owner.submit(image_request("d"));
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     // A bank-displacing third image no longer pays. Collection must immediately
     // execute the selected pair, without waiting for the ten-second deadline.
     plans[2].cost.loading_seconds = 30;
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (state.batches == std::vector<std::vector<std::string>>{{"a", "b"}, {"c", "d"}})
     );
@@ -779,7 +797,7 @@ void image_capacity_hint_uses_successful_measurement_and_fresh_pressure() {
             };
             InferenceOwner owner(
                 Footprint(devices + 1, 100),
-                [&](auto, auto ledger) {
+                [&](auto, auto ledger, auto) {
                     return std::make_unique<BatchEngine>(state, ledger);
                 },
                 [&] {
@@ -793,7 +811,7 @@ void image_capacity_hint_uses_successful_measurement_and_fresh_pressure() {
                 }
             );
             owner.submit(image_request("capacity", 42));
-            assert(owner.advance());
+            assert(complete_one(owner));
             assert(delivered.at("image").at("seed") == 42);
             if (mode == 2)
                 assert(!delivered.contains("next_batch_capacity"));
@@ -822,7 +840,7 @@ void cancellation_during_capacity_probe_cleans_up_before_terminals() {
             };
             InferenceOwner owner(
                 {100, 100, 100},
-                [&](auto, auto ledger) {
+                [&](auto, auto ledger, auto) {
                     return std::make_unique<BatchEngine>(state, ledger);
                 },
                 [&] {
@@ -852,7 +870,7 @@ void cancellation_during_capacity_probe_cleans_up_before_terminals() {
             owner.submit(image_request("second", 91));
             bool cleanup_failed = false;
             try {
-                assert(owner.advance());
+                assert(complete_one(owner));
             } catch (const CleanupFailure&) {
                 cleanup_failed = true;
             }
@@ -882,20 +900,22 @@ void later_candidate_pressure_does_not_block_the_admissible_head() {
     std::vector<std::pair<std::string, JobState>> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, auto) { events.emplace_back(id, event); }
     );
     owner.submit(image_request("head"));
     owner.submit(image_request("blocked"));
     owner.submit(image_request("tail"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((state.batches == std::vector<std::vector<std::string>>{{"head"}}));
     assert(
         (events.back() == std::pair<std::string, JobState>{"head", JobState::succeeded})
     );
     assert(owner.pending() == 2);
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     assert((
         events.back()
         == std::pair<std::string, JobState>{"blocked", JobState::waiting_for_resources}
@@ -903,7 +923,7 @@ void later_candidate_pressure_does_not_block_the_admissible_head() {
     assert(owner.pending() == 2 && owner.snapshot().residents == 0);
     assert(state.batches.size() == 1);
     state.blocked_preparation.clear();
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((state.batches.back() == std::vector<std::string>{"blocked", "tail"}));
     assert(owner.pending() == 0);
     owner.shutdown();
@@ -914,7 +934,9 @@ void full_image_batch_launches_without_waiting_and_preserves_seeds() {
     std::vector<std::pair<std::string, Json>> results;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, auto value) {
             if (event == JobState::succeeded)
@@ -923,7 +945,7 @@ void full_image_batch_launches_without_waiting_and_preserves_seeds() {
     );
     owner.submit(image_request("pose-a", 42));
     owner.submit(image_request("pose-b", 91));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (state.batches == std::vector<std::vector<std::string>>{{"pose-a", "pose-b"}})
     );
@@ -940,7 +962,9 @@ void image_collection_deadline_uses_oldest_submission() {
     auto now = std::chrono::steady_clock::time_point{};
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [](auto, auto, auto) {},
         32,
@@ -948,11 +972,11 @@ void image_collection_deadline_uses_oldest_submission() {
         [&] { return now; }
     );
     owner.submit(image_request("oldest"));
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     now += std::chrono::seconds(9);
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     now += std::chrono::seconds(1);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((state.batches == std::vector<std::vector<std::string>>{{"oldest"}}));
     owner.shutdown();
 }
@@ -975,7 +999,7 @@ void cohort_target_only_shortens_collection_waiting() {
         const auto now = std::chrono::steady_clock::time_point{};
         InferenceOwner owner(
             {100, 100, 100},
-            [&](auto, auto ledger) {
+            [&](auto, auto ledger, auto) {
                 return std::make_unique<BatchEngine>(state, ledger);
             },
             [] { return Footprint{100, 80, 70}; },
@@ -997,7 +1021,7 @@ void cohort_target_only_shortens_collection_waiting() {
         }
         // The clock never advances: an available cohort launches immediately,
         // but its hint neither caps the prefix nor replaces capacity advice.
-        assert(owner.advance());
+        assert(complete_one(owner));
         assert(state.batches.front().size() == test.expected);
         assert(owner.pending() == test.queued - test.expected);
         for (unsigned i = 0; i < test.expected; ++i) {
@@ -1015,7 +1039,7 @@ void incomplete_cohort_keeps_deadline_and_fifo_barriers() {
         auto now = std::chrono::steady_clock::time_point{};
         InferenceOwner owner(
             {100, 100, 100},
-            [&](auto, auto ledger) {
+            [&](auto, auto ledger, auto) {
                 return std::make_unique<BatchEngine>(state, ledger);
             },
             [] { return Footprint{100, 80, 70}; },
@@ -1033,15 +1057,15 @@ void incomplete_cohort_keeps_deadline_and_fifo_barriers() {
         owner.submit(second);
         if (incompatible) {
             owner.submit(image_request("third"));
-            assert(owner.advance());
+            assert(complete_one(owner));
             assert((state.batches.front() == std::vector<std::string>{"head"}));
             assert(owner.pending() == 2);
         } else {
-            assert(!owner.advance());
+            assert(!complete_one(owner));
             now += std::chrono::seconds(9);
-            assert(!owner.advance());
+            assert(!complete_one(owner));
             now += std::chrono::seconds(1);
-            assert(owner.advance());
+            assert(complete_one(owner));
             assert(
                 (state.batches.front() == std::vector<std::string>{"head", "second"})
             );
@@ -1055,7 +1079,9 @@ void incompatible_image_head_is_not_overtaken() {
     BatchState state;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [](auto, auto, auto) {}
     );
@@ -1064,8 +1090,8 @@ void incompatible_image_head_is_not_overtaken() {
     std::get<ImageRequest>(incompatible.input).width = 512;
     owner.submit(incompatible);
     owner.submit(image_request("third"));
-    assert(owner.advance());
-    assert(owner.advance());
+    assert(complete_one(owner));
+    assert(complete_one(owner));
     assert(
         (state.batches
          == std::vector<std::vector<std::string>>{{"first"}, {"different-shape"}})
@@ -1080,7 +1106,9 @@ void cancellation_does_not_cancel_a_batch_sibling() {
     std::vector<std::pair<std::string, JobState>> terminal;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, auto result) {
             if (event == JobState::succeeded)
@@ -1094,7 +1122,7 @@ void cancellation_does_not_cancel_a_batch_sibling() {
     };
     owner.submit(image_request("first"));
     owner.submit(image_request("second"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (terminal
          == std::vector<std::pair<std::string, JobState>>{
@@ -1111,7 +1139,9 @@ void failed_batch_preserves_the_waiting_queue() {
     std::vector<std::string> failed;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, auto) {
             if (event == JobState::failed)
@@ -1121,11 +1151,11 @@ void failed_batch_preserves_the_waiting_queue() {
     owner.submit(image_request("first"));
     owner.submit(image_request("second"));
     owner.submit(image_request("later"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((failed == std::vector<std::string>{"first", "second"}));
     assert(owner.pending() == 1 && owner.snapshot().residents == 0);
     assert(owner.cancel("later"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     owner.shutdown();
 }
 
@@ -1134,15 +1164,18 @@ void physical_pressure_reduces_batch_before_launch() {
     Footprint available{100, 80, 70};
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [&] { return available; },
         [](auto, auto, auto) {}
     );
     owner.submit(image_request("first"));
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     owner.submit(image_request("second"));
     available[2] = 20;
-    assert(owner.advance());
+    assert(!complete_one(owner));
+    assert(complete_one(owner));
     assert((state.batches == std::vector<std::vector<std::string>>{{"first"}}));
     owner.shutdown();
 }
@@ -1170,7 +1203,9 @@ void image_batch_counts_images_and_does_not_split_fifo_requests() {
     state.capacity = 4;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [](auto, auto, auto) {}
     );
@@ -1179,7 +1214,7 @@ void image_batch_counts_images_and_does_not_split_fifo_requests() {
     std::get<ImageRequest>(second.input).count = 2;
     owner.submit(first);
     owner.submit(second);
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (state.batches
          == std::vector<std::vector<std::string>>{{"two-images", "another-two"}})
@@ -1189,9 +1224,9 @@ void image_batch_counts_images_and_does_not_split_fifo_requests() {
     std::get<ImageRequest>(four.input).count = 4;
     owner.submit(four);
     owner.submit(image_request("later-small"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((state.batches.back() == std::vector<std::string>{"one-image"}));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert((state.batches.back() == std::vector<std::string>{"four-images"}));
     owner.shutdown();
 }
@@ -1201,21 +1236,23 @@ void cancelled_collection_head_unblocks_next_request() {
     std::vector<std::pair<std::string, JobState>> events;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, auto) { events.emplace_back(id, event); }
     );
     owner.submit(image_request("cancelled"));
-    assert(!owner.advance());
+    assert(!complete_one(owner));
     assert(owner.cancel("cancelled"));
     owner.submit(image_request("first"));
     owner.submit(image_request("second"));
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (events.back()
          == std::pair<std::string, JobState>{"cancelled", JobState::cancelled})
     );
-    assert(owner.advance());
+    assert(complete_one(owner));
     assert(
         (state.batches == std::vector<std::vector<std::string>>{{"first", "second"}})
     );
@@ -1244,7 +1281,9 @@ void failed_candidate_does_not_change_head_error_status() {
     std::vector<std::pair<std::string, Json>> failures;
     InferenceOwner owner(
         {100, 100, 100},
-        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [&](auto, auto ledger, auto) {
+            return std::make_unique<BatchEngine>(state, ledger);
+        },
         [] { return Footprint{100, 80, 70}; },
         [&](auto id, auto event, const auto& value) {
             if (event == JobState::failed)
@@ -1257,8 +1296,8 @@ void failed_candidate_does_not_change_head_error_status() {
     auto candidate = image_request("candidate");
     candidate.prepared = false;
     owner.submit(candidate);
-    assert(owner.advance());
-    assert(owner.advance());
+    assert(complete_one(owner));
+    assert(complete_one(owner));
     assert(failures.size() == 2);
     assert(failures[0].first == "head" && failures[0].second.at("status_code") == 502);
     assert(
@@ -1327,7 +1366,7 @@ int main() {
     refreshed_reservations_never_create_physical_capacity();
     changed_configuration_reloads_and_gpu_pressure_reconciles();
     download_uses_fifo_without_loading_engine();
-    fifo_shares_ledger();
+    workload_queues_share_ledger();
     admission_retries_head();
     cleanup_failure_stops_owner();
     reused_model_prepares_each_request();

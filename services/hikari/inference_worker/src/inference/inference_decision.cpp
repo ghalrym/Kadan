@@ -25,9 +25,17 @@ public:
     }
 
     void prepare(
-        const InferenceRequest&, const Footprint&, const std::atomic_bool& cancel
+        const InferenceRequest& request,
+        const Footprint& available,
+        const std::atomic_bool& cancel
     ) override {
         check_cancel(cancel);
+        if (request.operation == Operation::load)
+            return;
+        const auto scope = resources_->snapshot();
+        if (decision::Executor::request_memory_bytes
+            > std::min(available[0], scope.capacity[0] - scope.used[0]))
+            throw AdmissionWait("decision_request_headroom");
     }
 
     Json
