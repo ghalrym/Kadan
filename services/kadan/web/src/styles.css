@@ -776,8 +776,7 @@ main:focus {
   background: var(--raised);
   border: 1px solid var(--line-strong);
 }
-.message.system .body,
-.message.tool .body {
+.message.system .body {
   padding: 10px 14px;
   border-left: 2px solid var(--line-strong);
   color: var(--muted);
@@ -1624,130 +1623,6 @@ dialog::backdrop {
   }
   .home-stage h2 {
     font-size: 22px;
-  }
-}
-
-/* Plugin selection and persisted tool activity share the composer tokens. */
-.plugin-controls {
-  margin-top: 8px;
-}
-.plugin-options {
-  margin-top: 8px;
-  max-height: 280px;
-  overflow-y: auto;
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-.plugin-option {
-  padding: 8px 0;
-}
-.plugin-option > label {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-  cursor: pointer;
-}
-.plugin-option input {
-  width: 16px;
-  height: 16px;
-  min-height: 16px;
-  flex-shrink: 0;
-  margin: 3px 0;
-  accent-color: var(--accent);
-}
-.plugin-option label > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.plugin-option label > span > span {
-  display: block;
-}
-.plugin-option label:has(input:disabled) {
-  cursor: default;
-  opacity: 0.6;
-}
-.plugin-details {
-  margin: 8px 0 0 24px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.plugin-details summary {
-  padding: 4px 0;
-}
-.plugin-details p {
-  margin: 8px 0;
-  white-space: pre-wrap;
-}
-.plugin-error {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--error);
-}
-.tool-activity {
-  margin: 12px 0;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  color: var(--muted);
-  font-size: 12px;
-}
-.tool-activity > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px;
-}
-.tool-activity > summary:hover,
-.plugin-details summary:hover {
-  color: var(--text);
-}
-.tool-activity > summary strong {
-  overflow-wrap: anywhere;
-  min-width: 0;
-  color: var(--text);
-}
-.tool-activity > summary span {
-  margin-left: auto;
-}
-.tool-activity[open] .tool-chevron {
-  transform: rotate(180deg);
-}
-.tool-activity.error > summary span,
-.tool-unavailable {
-  color: var(--error);
-}
-.tool-activity > .field-hint,
-.tool-activity dl {
-  margin: 0 12px 12px;
-}
-.tool-activity dt {
-  margin-top: 8px;
-}
-.tool-activity dd {
-  margin: 4px 0 0;
-}
-.tool-activity pre,
-.plugin-details pre {
-  margin: 0;
-  padding: 8px;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  font: 12px / 1.5 var(--mono);
-}
-@media (max-width: 600px) {
-  .plugin-controls > button,
-  .plugin-option > label,
-  .tool-activity > summary,
-  .plugin-details summary {
-    min-height: 44px;
   }
 }
 

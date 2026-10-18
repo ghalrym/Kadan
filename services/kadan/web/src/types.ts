@@ -53,28 +53,9 @@ export interface Status {
     settings_url: string | null;
   };
 }
-export interface Plugin {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  skills: { name: string; description: string; instructions: string }[];
-  setup: { instructions: string };
-}
-export interface ToolExecution {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  status: "started" | "completed" | "error";
-  result?: Record<string, unknown> | null;
-}
 export type ChatEvent =
   | { event: "user_saved"; data: { conversation: Resource } }
   | { event: "status"; data: { message: string } }
-  | {
-      event: "tool_started" | "tool_finished";
-      data: { conversation: Resource; execution: ToolExecution };
-    }
   | { event: "delta"; data: { content: string } }
   | {
       event: "done";

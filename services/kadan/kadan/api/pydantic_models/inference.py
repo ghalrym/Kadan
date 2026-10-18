@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .resources import Message, Resource
 
@@ -43,4 +43,3 @@ class PreparedChat(BaseModel):
     user_message: Message
     messages: list[CompletionMessage]
     model_id: str
-    plugin_ids: list[str] = Field(default_factory=list)

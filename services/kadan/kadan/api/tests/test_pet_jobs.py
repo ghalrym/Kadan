@@ -9,7 +9,6 @@ from uuid import UUID, uuid4, uuid5
 
 import pytest
 
-from kadan.api.builtin_mcp import BuiltinTools
 from kadan.api.config import ServiceError
 from kadan.api.pet_artwork import ROWS, SOURCE_CELL
 from kadan.api.pet_jobs import IMAGE_MODEL, PetJobs
@@ -302,28 +301,6 @@ def test_cross_agent_job_response_is_rejected():
     )
     with pytest.raises(ServiceError, match="invalid pet job"):
         PetJobs.checked(job.model_dump(), KEY, PET_ID)
-
-
-@pytest.mark.parametrize("action", ["create", "status", "cancel", "resume"])
-def test_pet_tools_call_only_the_bound_agent_operation(action):
-    async def run():
-        pets, services, job = await setup_running()
-        services.pets = pets
-        method = "get" if action == "status" else action
-        operation = AsyncMock(return_value=job)
-        setattr(pets, method, operation)
-        tool = BuiltinTools(services, KEY)
-        result = await tool.pet(
-            action, PET_ID, "An owl" if action == "create" else None
-        )
-        if action == "create":
-            operation.assert_awaited_once_with(KEY, PET_ID, "An owl")
-        else:
-            operation.assert_awaited_once_with(KEY, PET_ID)
-        assert result["status"] == "running"
-        assert "Only the user" in result["next_action"]
-
-    asyncio.run(run())
 
 
 def test_malformed_cleanup_response_does_not_claim_stopped():
