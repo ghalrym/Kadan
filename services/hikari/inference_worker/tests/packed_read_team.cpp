@@ -316,12 +316,22 @@ void items_run_once_across_lanes() {
     for (int round = 0; round < 20; ++round) {
         std::vector<std::atomic<int>> seen(57);
         std::mutex mutex;
+        std::condition_variable condition;
         std::set<std::thread::id> lanes;
+        bool timed_out = false;
         team.each(seen.size(), [&](std::size_t i) {
             ++seen[i];
-            std::this_thread::sleep_for(100us);
-            std::lock_guard lock(mutex);
+            std::unique_lock lock(mutex);
             lanes.insert(std::this_thread::get_id());
+            condition.notify_all();
+            // Require overlapping lanes; the timeout only bounds a broken team.
+            if (!condition.wait_for(lock, 5s, [&] {
+                    return lanes.size() > 1 || timed_out;
+                })) {
+                timed_out = true;
+                condition.notify_all();
+            }
+            check(!timed_out, "packed_items_parallel_timeout");
         });
         for (const auto& count : seen)
             check(count == 1, "packed_items_once");

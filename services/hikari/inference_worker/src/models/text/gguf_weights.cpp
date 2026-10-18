@@ -525,11 +525,14 @@ std::vector<Vec> GgufWeights::project(
                 output,
                 *cancel_
             );
-        } else
+        } else {
+            const auto encoding = gguf::encoding(p.tensor->type);
+            if (!encoding)
+                throw std::runtime_error("gguf_text_encoding");
             // Slices without device residency stream without displacing hot tiles.
             result = compute.dense_gguf_source(
                 p.identity,
-                *gguf::encoding(p.tensor->type),
+                *encoding,
                 p.source,
                 {},
                 request.input,
@@ -540,6 +543,7 @@ std::vector<Vec> GgufWeights::project(
                 false,
                 p.device
             );
+        }
         need(result != ProjectionResult::unsupported, "gguf_text_cuda_required");
         need(projection_output_finite(result, output), "gguf_text_nonfinite");
     }
