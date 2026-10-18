@@ -1,4 +1,15 @@
-import type { RequestRecord } from './generated/types.gen'
+import type { ChatMessage, RequestRecord } from './generated/types.gen'
+
+export function chatPendingStatus(
+  pending: boolean,
+  messages: Pick<ChatMessage, 'role' | 'text'>[],
+) {
+  if (!pending) return null
+  const latest = messages.at(-1)
+  return latest?.role === 'assistant' && latest.text.length > 0
+    ? 'Receiving response…'
+    : 'Waiting for the chat API…'
+}
 
 export function requestStatus(request: RequestRecord) {
   if (request.type === 'Video' && request.status === 202) {

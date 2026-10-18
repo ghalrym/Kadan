@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamChat, type ConversationMessage } from '../api/chat'
+import { chatPendingStatus } from '../api/requestStatus'
 
 /** Keep tab-local conversation history and one cancellable request with explicit retry. */
 export default function ChatPage() {
@@ -126,7 +127,7 @@ export default function ChatPage() {
               )}
             </article>
           ))}
-          {pending && <p role="status">Waiting for the chat API…</p>}
+          {pending && <p role="status">{chatPendingStatus(pending, messages)}</p>}
           <div ref={historyEnd} />
         </div>
       </div>

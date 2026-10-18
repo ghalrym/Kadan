@@ -343,6 +343,60 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConcurrentObservationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_model_is_ready_before_generation_finishes(self):
+        service = InferenceService()
+        job = InferenceJob(
+            InferenceTask(
+                operation="completion",
+                input={
+                    "feature": "llm",
+                    "messages": [{"role": "user", "text": "test"}],
+                },
+            ),
+            True,
+        )
+        service._observe(job, WorkerEvent(state="loading", model="chat-model"))
+        service._observe(job, WorkerEvent(state="progress", phase="weights"))
+        self.assertEqual(service.state, "loading")
+
+        service._observe(job, WorkerEvent(state="running", model="chat-model"))
+        service._observe(job, WorkerEvent(state="progress", phase="decode"))
+        service._observe(job, WorkerEvent(state="content", content="Hello"))
+        self.assertEqual(service.state, "ready")
+        self.assertEqual(service.model_id, "chat-model")
+        self.assertIsNone(service.error)
+        self.assertFalse(job.result.done())
+
+    async def test_chat_failure_and_cancellation_remain_errors_until_next_execution(
+        self,
+    ):
+        for terminal in ("failed", "cancelled"):
+            with self.subTest(terminal=terminal):
+                service = InferenceService()
+                job = InferenceJob(
+                    InferenceTask(input={"feature": "llm", "messages": []}), False
+                )
+                service._observe(job, WorkerEvent(state="running", model="chat-model"))
+                service._observe(job, WorkerEvent(state=terminal, error="Stopped"))
+                self.assertEqual(service.state, "error")
+                self.assertEqual(service.error, "Stopped")
+                service._observe(job, WorkerEvent(state="running", model="chat-model"))
+                self.assertEqual(service.state, "ready")
+                self.assertIsNone(service.error)
+
+    async def test_chat_unload_still_clears_model_and_context(self):
+        service = InferenceService()
+        service.state, service.model_id = "ready", "chat-model"
+        service.context = {"effective": 4096}
+        job = InferenceJob(
+            InferenceTask(operation="unload", input={"feature": "llm", "messages": []}),
+            False,
+        )
+        service._observe(job, WorkerEvent(state="succeeded"))
+        self.assertEqual(service.state, "unloaded")
+        self.assertIsNone(service.model_id)
+        self.assertEqual(service.context, {})
+
     async def test_other_workload_load_preserves_resident_chat(self):
         service = InferenceService()
         service.state, service.model_id = "ready", "chat-model"

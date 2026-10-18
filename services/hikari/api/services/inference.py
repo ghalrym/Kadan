@@ -239,7 +239,9 @@ class InferenceService:
                     None,
                 )
         if feature == "llm":
-            if event.state == "succeeded":
+            if event.state == "running" and job.request.operation != "unload":
+                self.state, self.error = "ready", None
+            elif event.state == "succeeded":
                 self.state = (
                     "unloaded" if job.request.operation == "unload" else "ready"
                 )
