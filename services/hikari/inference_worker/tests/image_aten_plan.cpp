@@ -274,7 +274,7 @@ void heterogeneous_denoiser_units() {
     // Sparse CUDA IDs and independent background usage must survive placement.
     Snapshot three{Footprint(7), Footprint(7), 0};
     three.capacity[0] = 64 * gib;
-    for (const auto [device, images] :
+    for (const auto& [device, images] :
          {std::pair{1, 1}, std::pair{3, 2}, std::pair{5, 5}}) {
         three.used[device + 1] = device * gib;
         three.capacity[device + 1] =
