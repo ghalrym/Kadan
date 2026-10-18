@@ -92,13 +92,14 @@ export type ChatEvent =
 
 export interface PetManifest {
   schema_version: 1;
-  sprite_version: 2;
+  sprite_version: 1 | 2;
   atlas_asset_id: string;
-  base_asset_id: string;
+  /** Null for imported pets, which have no generated base artwork. */
+  base_asset_id: string | null;
   cell_width: 192;
   cell_height: 208;
   columns: 8;
-  rows: 11;
+  rows: 9 | 11;
   pixelated: boolean;
   animations: { name: import("./pet").PetState; row: number; durations: number[] }[];
 }
@@ -120,6 +121,7 @@ export interface PetJob {
   id: string;
   agent_key: string;
   prompt: string;
+  origin: "generated" | "imported";
   status: "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "failed" | "ready";
   stage: string;
   completed_steps: number;

@@ -1,6 +1,8 @@
 import io
 import sqlite3
+from contextlib import nullcontext
 from datetime import timedelta
+from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -13,6 +15,7 @@ from tsuchi.models import (
     Asset,
     Metadata,
     PetAnimation,
+    PetJob,
     PetManifest,
     PetState,
     PetStep,
@@ -1008,3 +1011,202 @@ def test_pending_cohort_rejects_invalid_members(repository, invalid):
 def test_additional_pending_frames_require_a_primary_request():
     with pytest.raises(ValidationError, match="primary"):
         PetState(additional_pending_frames=[{"name": "idle/2", "request_id": uuid4()}])
+
+
+def imported_manifest(atlas_id, sprite_version=2):
+    return PetManifest(
+        atlas_asset_id=atlas_id,
+        sprite_version=sprite_version,
+        rows=11 if sprite_version == 2 else 9,
+        animations=[
+            PetAnimation(name=name, row=row, durations=[100] * 4)
+            for row, name in enumerate(PET_ANIMATIONS)
+        ],
+    )
+
+
+@pytest.fixture
+def imported_pet():
+    now = utc_now()
+    return PetJob(
+        id=uuid4(),
+        agent_key="alpha",
+        prompt="Copper fox",
+        origin="imported",
+        status="ready",
+        stage="Imported",
+        manifest=imported_manifest(uuid4()),
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.fixture
+def imported_repository(tmp_path, monkeypatch, imported_pet):
+    repository = Repository(tmp_path)
+    db = MagicMock(spec=sqlite3.Connection)
+    db.execute.return_value.fetchone.return_value = None
+    monkeypatch.setattr(repository, "connect", Mock(return_value=nullcontext(db)))
+    monkeypatch.setattr(repository, "_agent", Mock())
+    monkeypatch.setattr(repository, "_pet", Mock(return_value=imported_pet))
+    monkeypatch.setattr(repository, "_save_pet", Mock())
+    monkeypatch.setattr(
+        repository,
+        "_asset",
+        Mock(
+            return_value=Asset(
+                id=imported_pet.manifest.atlas_asset_id,
+                agent_key="alpha",
+                title="Atlas",
+                filename="pet.png",
+                media_type="image/png",
+                size_bytes=10,
+                sha256="digest",
+                is_image=True,
+                version=1,
+                created_at=imported_pet.created_at,
+                updated_at=imported_pet.updated_at,
+            )
+        ),
+    )
+    return repository, db
+
+
+@pytest.mark.parametrize("sprite_version", [1, 2])
+def test_imported_pet_is_saved_ready(imported_repository, imported_pet, sprite_version):
+    repository, db = imported_repository
+    manifest = imported_manifest(imported_pet.manifest.atlas_asset_id, sprite_version)
+    pet = repository.import_pet("alpha", imported_pet.id, "Copper fox", manifest)
+    assert (pet.origin, pet.status, pet.steps, pet.manifest) == (
+        "imported",
+        "ready",
+        [],
+        manifest,
+    )
+    assert (pet.id, pet.agent_key, pet.prompt, pet.version) == (
+        imported_pet.id,
+        "alpha",
+        "Copper fox",
+        1,
+    )
+    assert pet.asset_references() == {manifest.atlas_asset_id}
+    repository._asset.assert_called_once_with(db, "alpha", manifest.atlas_asset_id)
+    repository._save_pet.assert_called_once_with(db, pet)
+
+
+def test_imported_pet_is_idempotent(imported_repository, imported_pet):
+    repository, db = imported_repository
+    db.execute.return_value.fetchone.return_value = (imported_pet.model_dump_json(),)
+    assert (
+        repository.import_pet(
+            "alpha", imported_pet.id, imported_pet.prompt, imported_pet.manifest
+        )
+        == imported_pet
+    )
+    repository._save_pet.assert_not_called()
+
+
+@pytest.mark.parametrize("conflict", ["agent", "prompt", "manifest"])
+def test_imported_pet_rejects_id_conflicts(imported_repository, imported_pet, conflict):
+    repository, db = imported_repository
+    db.execute.return_value.fetchone.return_value = (imported_pet.model_dump_json(),)
+    with pytest.raises(StorageError, match="already in use"):
+        repository.import_pet(
+            "beta" if conflict == "agent" else "alpha",
+            imported_pet.id,
+            "Another fox" if conflict == "prompt" else imported_pet.prompt,
+            imported_manifest(uuid4())
+            if conflict == "manifest"
+            else imported_pet.manifest,
+        )
+    repository._save_pet.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid", ["other_agent", "not_image", "deleted"])
+def test_imported_pet_requires_same_agent_raster_atlas(
+    imported_repository, imported_pet, invalid
+):
+    repository, db = imported_repository
+    if invalid == "other_agent":
+        repository._asset.side_effect = StorageError(
+            "Asset not found in this namespace", 404
+        )
+        message = "not found in this namespace"
+    else:
+        changes = (
+            {"is_image": False, "media_type": "text/plain"}
+            if invalid == "not_image"
+            else {"deleted_at": utc_now()}
+        )
+        repository._asset.return_value = repository._asset.return_value.model_copy(
+            update=changes
+        )
+        message = "active raster images"
+    with pytest.raises(StorageError, match=message):
+        repository.import_pet(
+            "alpha", imported_pet.id, imported_pet.prompt, imported_pet.manifest
+        )
+    repository._asset.assert_called_once_with(
+        db, "alpha", imported_pet.manifest.atlas_asset_id
+    )
+    repository._save_pet.assert_not_called()
+
+
+def test_imported_pet_can_be_selected(imported_repository, imported_pet):
+    repository, db = imported_repository
+    assert repository.select_pet("alpha", imported_pet.id) == imported_pet
+    repository._asset.assert_called_once_with(
+        db, "alpha", imported_pet.manifest.atlas_asset_id
+    )
+    db.execute.assert_called_once_with(
+        "UPDATE agents SET selected_pet_id = ? WHERE key = ?",
+        (str(imported_pet.id), "alpha"),
+    )
+
+
+def test_imported_pet_cannot_be_resumed(imported_repository, imported_pet):
+    repository, _ = imported_repository
+    with pytest.raises(StorageError, match="transition"):
+        repository.update_pet(
+            "alpha",
+            imported_pet.id,
+            state(
+                imported_pet,
+                origin="generated",
+                status="queued",
+                manifest=None,
+                stage="q",
+            ),
+            1,
+        )
+    repository._save_pet.assert_not_called()
+
+
+def test_imported_pet_cannot_be_revised(imported_repository, imported_pet):
+    repository, _ = imported_repository
+    with pytest.raises(StorageError, match="completed frames"):
+        repository.revise_pet(
+            "alpha", imported_pet.id, uuid4(), 1, ["idle/1"], "Fix it"
+        )
+    repository._save_pet.assert_not_called()
+
+
+def test_imported_pet_cannot_carry_generation_history():
+    with pytest.raises(ValidationError, match="Imported pets"):
+        PetState(origin="imported", status="ready", manifest=None)
+    with pytest.raises(ValidationError, match="Imported pets"):
+        PetState(
+            origin="imported",
+            status="ready",
+            manifest=imported_manifest(uuid4()).model_copy(
+                update={"base_asset_id": uuid4()}
+            ),
+        )
+
+
+def test_manifest_rows_match_sprite_version():
+    with pytest.raises(ValidationError, match="9 rows"):
+        PetManifest.model_validate(
+            {**imported_manifest(uuid4()).model_dump(), "sprite_version": 1}
+        )
