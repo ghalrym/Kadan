@@ -28,6 +28,23 @@ RUN set -eu; cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release
          if [ -d "$p/licenses" ]; then cp -r "$p/licenses" "/out/share/kadan/licenses/$(basename "$p")"; fi; \
        done
 
+# Development keeps the toolchain and worker build tree so `hikari.py dev serve`
+# rebuilds the worker incrementally from mounted source.
+FROM worker-build AS development
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN cp -a /out /opt/kadan
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY api/requirements*.txt /app/
+COPY bin/requirements.txt /app/bin/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r bin/requirements.txt
+COPY api/ /app/api
+COPY bin/*.py /app/bin/
+EXPOSE 8000
+CMD ["python", "bin/hikari.py", "dev", "serve"]
+
+# The release image is last so it stays the default build target.
 FROM python:3.12-slim-bookworm
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

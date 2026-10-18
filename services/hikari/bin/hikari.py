@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """The entry point for Hikari developer tooling."""
 
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import typer
 
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, generate, inference, native, profiling, publishing
+from bin import assets, checks, dev, generate, inference, native, profiling, publishing
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -29,6 +29,9 @@ app.add_typer(
 )
 app.add_typer(
     profiling.app, name="profile", help="Collect and summarize CUDA profiling data."
+)
+app.add_typer(
+    dev.app, name="dev", help="Serve the API with the worker rebuilt on source edits."
 )
 app.add_typer(checks.app, name="check", help="Run formatting, builds, and unit checks.")
 app.add_typer(

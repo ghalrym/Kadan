@@ -3,12 +3,21 @@ services:
     image: kadan-dev:local
 
   hikari-api:
-    image: kadan-dev:local
-    command: [python, -m, uvicorn, api.server:app, --host, 0.0.0.0, --port, "8000", --reload, --reload-dir, /app/api]
+    # The development stage rebuilds the inference worker from the source mount.
+    image: kadan-hikari-dev:local
+    build:
+      target: development
     environment:
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ./services/hikari/api:/app/api:ro
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from the image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_build:/build
+    healthcheck:
+      # A worker rebuild can precede the API's first start.
+      start_period: 30m
 
   hikari-frontend:
     build:
@@ -75,3 +84,4 @@ services:
 volumes:
   tsuchi_frontend_node_modules:
   kadan_frontend_node_modules:
+  hikari_worker_build:
