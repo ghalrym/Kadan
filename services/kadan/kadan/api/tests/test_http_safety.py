@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from kadan.api.http_safety import LocalRequestSafety, same_origin
+from kadan.api.http_safety import LocalRequestSafety, body_limit, same_origin
 
 
 @pytest.mark.parametrize(
@@ -91,3 +91,9 @@ def test_lan_writes_require_an_allowed_host_and_same_origin(host, origin, expect
         )
     )
     assert sent[0]["status"] == expected
+
+
+def test_only_pet_imports_accept_large_bodies():
+    assert body_limit("/api/agents/a1/pets/imports") == 64 * 1024 * 1024
+    for path in ("/api/agents/a1/pets", "/api/agents/a1/pets/imports/x", "/api/x"):
+        assert body_limit(path) == 1024 * 1024

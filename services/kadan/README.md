@@ -57,7 +57,9 @@ submitting another request. A failed job never changes the current pet. Moving
 referenced artwork to trash clears its selection in Tsuchi.
 
 API: under `/api/agents/{key}`, `GET/POST /pets`, `GET /pets/{id}`, and
-`POST /pets/{id}/cancel` or `/pets/{id}/resume` manage candidates. Creation accepts a caller
+`POST /pets/{id}/cancel` or `/pets/{id}/resume` manage candidates. `POST /pets/imports`
+takes multipart `id` (caller UUID), optional `name` and `files` (one zip, or a
+spritesheet with an optional `pet.json`) and returns the ready candidate with HTTP 201. Creation accepts a caller
 UUID and prompt and returns immediately with HTTP 202. `POST /pets/{id}/revisions` accepts `{id, expected_version, frame_names, reason}` and returns a queued revision, preserving unrejected frames. `GET/PUT /api/agents/{key}/pet` reads or explicitly selects a candidate with
 `{ "pet_id": "candidate-uuid" }`; `{ "pet_id": null }` resets selection. Generation settings use the existing
 Hikari model; all inference stays in its native worker. No additional model
