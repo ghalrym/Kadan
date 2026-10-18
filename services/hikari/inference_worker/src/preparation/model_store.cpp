@@ -355,6 +355,7 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
         return found->get<std::string>();
     };
     entry.display_name = optional_text("display_name");
+    entry.short_name = optional_text("short_name");
     entry.license_url = optional_text("license_url");
     entry.license_notice = optional_text("license_notice");
     entry.asset_url = optional_text("asset_url").value_or("");
@@ -929,6 +930,7 @@ Json ModelStore::status() const {
             {"estimated_bytes", item.estimated_bytes},
             {"kind", item.kind},
             {"display_name", text(item.display_name)},
+            {"short_name", text(item.short_name)},
             {"license_url", text(item.license_url)},
             {"license_notice", text(item.license_notice)},
             {"inference_available", item.inference_available}

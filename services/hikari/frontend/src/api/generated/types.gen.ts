@@ -154,6 +154,10 @@ export type CheckpointStatus = {
    */
   revision: string
   /**
+   * Short Name
+   */
+  short_name?: string | null
+  /**
    * Status
    */
   status:
