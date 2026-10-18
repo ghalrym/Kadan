@@ -21,17 +21,17 @@ NOW = datetime(2026, 10, 17, tzinfo=UTC)
 
 
 def resource(kind="conversation", messages=None, **changes):
-    return Resource(
-        id=PERSONA_ID if kind == "persona" else CONVERSATION_ID,
-        agent_key="test",
-        kind=kind,
-        title="Test",
-        version=1,
-        created_at=NOW,
-        updated_at=NOW,
-        messages=messages or [],
-        **changes,
-    )
+    fields = {
+        "id": PERSONA_ID if kind == "persona" else CONVERSATION_ID,
+        "agent_key": "test",
+        "kind": kind,
+        "title": "Test",
+        "version": 1,
+        "created_at": NOW,
+        "updated_at": NOW,
+        "messages": messages or [],
+    }
+    return Resource(**{**fields, **changes})
 
 
 def ready_settings(status="complete", available=True):
@@ -337,20 +337,135 @@ def test_no_persona_is_an_explicit_request_and_replays_existing_text():
     assert not any(path.endswith(str(PERSONA_ID)) for _, path in boundary.requests)
 
 
-@pytest.mark.parametrize(
-    "messages",
-    [
-        [Message(role="assistant", content="")],
-        [Message(role="user", content="x" * 48000)],
-        [Message(role="user", content="x") for _ in range(100)],
-    ],
-)
-def test_unsupported_history_is_rejected_without_truncating(messages):
-    current = resource(messages=messages)
+def exchanges(count, size=1):
+    return [
+        Message(role=role, content=f"{role} {index} " + "x" * size)
+        for index in range(count)
+        for role in ("user", "assistant")
+    ]
+
+
+def test_long_chain_replays_only_recent_history_without_changing_it():
+    current = resource(messages=exchanges(60))
     before = deepcopy(current)
-    with pytest.raises(ServiceError):
-        completion_messages(current, None, Message(role="user", content="Next"))
+    messages = completion_messages(current, None, Message(role="user", content="Next"))
+    assert len(messages) <= 100
+    assert messages[0].role == "user"
+    assert messages[-2].content == current.messages[-1].content
+    assert messages[-1].content == "Next"
     assert current == before
+
+
+def test_window_start_holds_still_while_the_chain_grows():
+    def first(count):
+        current = resource(messages=exchanges(count))
+        return completion_messages(current, None, Message(role="user", content="Next"))[
+            0
+        ].content
+
+    assert len({first(count) for count in range(50, 60)}) <= 2
+    assert first(50) == first(51)
+
+
+def test_character_budget_trims_oldest_history_and_keeps_persona():
+    current = resource(messages=exchanges(10, size=6000))
+    persona = resource("persona", markdown="Be precise.")
+    messages = completion_messages(
+        current, persona, Message(role="user", content="Next")
+    )
+    assert messages[0].content == "Be precise."
+    assert messages[1].role == "user"
+    assert sum(len(message.content) for message in messages) <= 48000
+    assert messages[-2].content == current.messages[-1].content
+
+
+def test_oversized_newest_message_is_dropped_instead_of_blocking_the_chain():
+    current = resource(
+        messages=[
+            Message(role="user", content="Old"),
+            Message(role="assistant", content="x" * 48000),
+        ]
+    )
+    messages = completion_messages(current, None, Message(role="user", content="Next"))
+    assert [message.content for message in messages] == ["Next"]
+
+
+def test_empty_saved_messages_are_skipped():
+    current = resource(
+        messages=[
+            Message(role="user", content="Earlier"),
+            Message(role="assistant", content=""),
+        ]
+    )
+    messages = completion_messages(current, None, Message(role="user", content="Next"))
+    assert [message.content for message in messages] == ["Earlier", "Next"]
+
+
+def test_persona_and_message_over_budget_are_rejected():
+    persona = resource("persona", markdown="x" * 40000)
+    with pytest.raises(ServiceError) as error:
+        completion_messages(
+            resource(), persona, Message(role="user", content="y" * 9000)
+        )
+    assert error.value.code == "prompt_too_large"
+
+
+class ChainBoundary:
+    def __init__(self, rows):
+        self.rows = rows
+        self.created = []
+
+    def __call__(self, request):
+        assert request.url.path == "/api/agents/test/resources"
+        if request.method == "GET":
+            assert request.url.params["kind"] == "conversation"
+            return httpx.Response(
+                200,
+                json=[
+                    row.model_dump(mode="json")
+                    for row in self.rows[
+                        int(request.url.params["offset"]) : int(
+                            request.url.params["offset"]
+                        )
+                        + 200
+                    ]
+                ],
+            )
+        body = json.loads(request.content)
+        assert body == {"kind": "conversation", "title": "Chain"}
+        created = resource(id=UUID(int=len(self.created) + 1), title=body["title"])
+        self.created.append(created)
+        self.rows.append(created)
+        return httpx.Response(201, json=created.model_dump(mode="json"))
+
+
+def test_chain_is_created_once_for_concurrent_first_use():
+    boundary = ChainBoundary([])
+
+    async def operation(service):
+        return await asyncio.gather(*(service.chain("test") for _ in range(3)))
+
+    chains = run(boundary, operation)
+    assert len(boundary.created) == 1
+    assert {chain.id for chain in chains} == {boundary.created[0].id}
+
+
+def test_chain_reuses_the_oldest_conversation():
+    older = resource(id=UUID(int=7), created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    newer = resource(id=UUID(int=8))
+    boundary = ChainBoundary([newer, older])
+    assert run(boundary, lambda service: service.chain("test")).id == older.id
+    assert boundary.created == []
+
+
+def test_chain_finds_oldest_beyond_first_page_and_after_reordering():
+    older = resource(id=UUID(int=999), created_at=datetime(2025, 1, 1, tzinfo=UTC))
+    rows = [resource(id=UUID(int=index + 1)) for index in range(400)]
+    boundary = ChainBoundary([*rows, older])
+    assert run(boundary, lambda service: service.chain("test")).id == older.id
+    boundary.rows = [older, *reversed(rows)]
+    assert run(boundary, lambda service: service.chain("test")).id == older.id
+    assert boundary.created == []
 
 
 def test_edit_persona_preserves_existing_metadata():

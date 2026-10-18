@@ -450,81 +450,24 @@ svg {
   flex-direction: column;
   gap: 2px;
 }
-.panel-nav button,
-.thread {
+.panel-nav button {
   justify-content: flex-start;
   width: 100%;
   color: var(--muted);
   font-weight: 500;
 }
-.panel-nav button:hover:not(:disabled),
-.thread:hover:not(:disabled) {
+.panel-nav button:hover:not(:disabled) {
   color: var(--text);
 }
-.panel-nav button.selected,
-.thread.selected {
+.panel-nav button.selected {
   background: var(--accent-soft);
   color: var(--text);
 }
 .panel-nav button.selected svg {
   color: var(--accent);
 }
-.panel-nav button:active:not(:disabled),
-.thread:active:not(:disabled) {
+.panel-nav button:active:not(:disabled) {
   transform: scale(0.98);
-}
-.thread-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line-strong) transparent;
-}
-.thread-list h3 {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--faint);
-  padding: 0 10px 6px;
-}
-.thread-list .quiet {
-  padding: 4px 10px;
-  color: var(--faint);
-}
-.thread {
-  position: relative;
-  min-height: 34px;
-  padding: 6px 10px;
-  animation: rise 360ms var(--out) backwards;
-  animation-delay: calc(var(--i) * 22ms);
-}
-.thread span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.thread time {
-  font-size: 11px;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-.thread.selected::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 9px;
-  bottom: 9px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
-  animation: grow 300ms var(--spring);
 }
 .skeleton {
   display: flex;
@@ -605,34 +548,27 @@ main:focus {
   padding: 24px;
   animation: rise 420ms var(--out);
 }
-.loader,
-.thinking {
+.loader {
   display: inline-flex;
   gap: 5px;
 }
-.loader i,
-.thinking i {
+.loader i {
   width: 7px;
   height: 7px;
   border-radius: 999px;
   background: var(--accent);
   animation: hop 1s var(--out) infinite;
 }
-.loader i:nth-child(2),
-.thinking i:nth-child(2) {
+.loader i:nth-child(2) {
   animation-delay: 120ms;
 }
-.loader i:nth-child(3),
-.thinking i:nth-child(3) {
+.loader i:nth-child(3) {
   animation-delay: 240ms;
 }
 
-/* Home */
-.home {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/* An agent with no messages yet greets from the middle of the chat. */
+.messages-inner.is-empty {
+  min-height: 100%;
   justify-content: center;
   padding-bottom: 12vh;
 }
@@ -755,30 +691,83 @@ main:focus {
   padding: 124px 24px 112px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 2px;
+}
+.earlier {
+  align-self: center;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Gaps over four hours read as a fresh start, so they carry the time. */
+.time-break {
+  margin: 22px 0 10px;
+  text-align: center;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.time-break:first-child,
+.earlier + .time-break {
+  margin-top: 0;
 }
 .message {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
   animation: rise 360ms var(--out);
 }
+.message.first {
+  margin-top: 10px;
+}
+.time-break + .message.first {
+  margin-top: 0;
+}
 .message .body {
   min-width: 0;
+  max-width: min(82%, 600px);
+  padding: 8px 14px;
+  border-radius: 6px 20px 20px 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+.message.first .body {
+  border-top-left-radius: 20px;
+}
+.message.last .body {
+  border-bottom-left-radius: 20px;
 }
 .message.user {
   align-items: flex-end;
 }
 .message.user .body {
-  max-width: min(82%, 600px);
-  padding: 9px 15px;
-  border-radius: 20px 20px 6px 20px;
-  background: var(--raised);
-  border: 1px solid var(--line-strong);
+  border-radius: 20px 6px 6px 20px;
+  background: var(--accent-strong);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+.message.user.first .body {
+  border-top-right-radius: 20px;
+}
+.message.user.last .body {
+  border-bottom-right-radius: 20px;
+}
+.message.user .markdown a,
+.message.user .markdown code {
+  color: inherit;
+}
+.message.sending .body {
+  opacity: 0.6;
 }
 .message.system .body {
+  max-width: none;
   padding: 10px 14px;
+  border: 0;
   border-left: 2px solid var(--line-strong);
+  border-radius: 0;
+  background: none;
   color: var(--muted);
 }
 .message .role {
@@ -793,17 +782,19 @@ main:focus {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  min-height: 16px;
   font-size: 11px;
   color: var(--faint);
 }
-.message footer time {
-  opacity: 0;
-  transition: opacity 200ms;
+.receipt {
+  align-self: flex-end;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+  animation: fade 200ms;
 }
-.message:hover footer time,
-.message:focus-within footer time {
-  opacity: 1;
+.receipt.read {
+  color: var(--muted);
 }
 .tag {
   display: inline-flex;
@@ -821,32 +812,36 @@ main:focus {
   color: var(--warn);
   border-color: #f3c46b40;
 }
-.message.streaming .markdown > :last-child::after {
-  content: "";
-  display: inline-block;
-  width: 8px;
-  height: 1em;
-  margin-left: 3px;
-  border-radius: 2px;
-  vertical-align: -0.15em;
-  background: var(--accent);
-  animation: blink 900ms steps(2) infinite;
-}
 .message.unsaved .body {
-  border-left: 2px dashed #f3c46b66;
-  padding-left: 14px;
+  border-style: dashed;
+  border-color: #f3c46b66;
 }
-.thinking {
-  padding: 8px 0;
-  animation: rise 300ms var(--out);
+.typing {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 13px 15px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  animation: pop 260ms var(--spring);
 }
-.thinking-label {
-  order: 1;
-  margin-left: 6px;
-  color: var(--muted);
-  font-size: 12px;
+.typing i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--muted);
+  animation: hop 1s var(--out) infinite;
+}
+.typing i:nth-child(2) {
+  animation-delay: 120ms;
+}
+.typing i:nth-child(3) {
+  animation-delay: 240ms;
 }
 .notice {
+  margin-top: 10px;
   color: var(--muted);
   font-size: 12px;
   text-align: center;

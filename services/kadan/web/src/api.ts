@@ -104,7 +104,7 @@ export async function readEvents(
     }
     if (!finished)
       throw new Error(
-        "The response was interrupted. Reload the thread to check what was saved.",
+        "The response was interrupted. Reload to check what was saved.",
       );
   } finally {
     reader.releaseLock();

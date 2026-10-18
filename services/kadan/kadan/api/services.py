@@ -26,6 +26,11 @@ from .routes.status import InferenceState, ServiceState, Status
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 MAX_PROMPT_MESSAGES = 100
 MAX_PROMPT_CHARACTERS = 48000
+# The chain never ends, so the prompt replays only its recent history. The window
+# opens on a multiple of this many messages so its start, and the prompt prefix,
+# stays put for many turns instead of sliding every message.
+PROMPT_WINDOW_STEP = 20
+CHAIN_TITLE = "Chain"
 MAX_REPLY_CHARACTERS = 1000000
 
 
@@ -45,6 +50,7 @@ class LocalServices:
         self.client = client
         self.settings = settings
         self.pets = PetJobs(self)
+        self.chain_locks: dict[str, asyncio.Lock] = {}
 
     async def json_request(self, service: str, method: str, path: str, **kwargs):
         base = (
@@ -74,6 +80,43 @@ class LocalServices:
             "Tsuchi", "GET", f"/api/agents/{key}/resources/{resource_id}"
         )
         return parse_resource(value)
+
+    async def chain(self, key: str) -> Resource:
+        # Tsuchi assigns resource IDs, so serialize first use to create one chain.
+        async with self.chain_locks.setdefault(key, asyncio.Lock()):
+            oldest = None
+            offset = 0
+            while True:
+                rows = await self.json_request(
+                    "Tsuchi",
+                    "GET",
+                    f"/api/agents/{key}/resources",
+                    params={
+                        "kind": "conversation",
+                        "trash": "false",
+                        "limit": 200,
+                        "offset": offset,
+                    },
+                )
+                for row in rows:
+                    candidate = parse_resource(row)
+                    if oldest is None or (candidate.created_at, str(candidate.id)) < (
+                        oldest.created_at,
+                        str(oldest.id),
+                    ):
+                        oldest = candidate
+                if len(rows) < 200:
+                    break
+                offset += len(rows)
+            if oldest is not None:
+                return oldest
+            value = await self.json_request(
+                "Tsuchi",
+                "POST",
+                f"/api/agents/{key}/resources",
+                json={"kind": "conversation", "title": CHAIN_TITLE},
+            )
+            return parse_resource(value)
 
     async def inference_status(self) -> InferenceState:
         settings_url = self.settings.hikari_browser_url + "/settings"
@@ -455,30 +498,45 @@ def require_active(
 def completion_messages(
     conversation: Resource, persona: Resource | None, user: Message
 ) -> list[CompletionMessage]:
-    messages = []
-    if persona and persona.markdown.strip():
-        messages.append(CompletionMessage(role="system", content=persona.markdown))
-    for message in [*conversation.messages, user]:
-        if message.role == "tool":
-            # Tool activity from the retired plugin system is history, not prompt.
-            continue
-        if not message.content.strip():
-            raise ServiceError(
-                "This conversation contains an empty message that Hikari cannot replay. Start a new conversation.",
-                422,
-                "unsupported_history",
-            )
-        messages.append(CompletionMessage(role=message.role, content=message.content))
-    if (
-        len(messages) > MAX_PROMPT_MESSAGES
-        or sum(len(message.content) for message in messages) > MAX_PROMPT_CHARACTERS
-    ):
+    system = (
+        [CompletionMessage(role="system", content=persona.markdown)]
+        if persona and persona.markdown.strip()
+        else []
+    )
+    request = CompletionMessage(role="user", content=user.content)
+    budget = MAX_PROMPT_CHARACTERS - sum(
+        len(message.content) for message in [*system, request]
+    )
+    if budget < 0:
         raise ServiceError(
-            "This conversation exceeds Kadan's 100-message or 48,000-character chat limit. Start a new conversation. Saved history is unchanged.",
+            "The persona and this message exceed Kadan's 48,000-character chat limit. Shorten one of them.",
             422,
-            "history_too_large",
+            "prompt_too_large",
         )
-    return messages
+    # Tool activity from the retired plugin system is history, not prompt.
+    history = [
+        CompletionMessage(role=message.role, content=message.content)
+        for message in conversation.messages
+        if message.role != "tool" and message.content.strip()
+    ]
+    room = MAX_PROMPT_MESSAGES - len(system) - 1
+    suffix = [0] * (len(history) + 1)
+    for index in range(len(history) - 1, -1, -1):
+        suffix[index] = suffix[index + 1] + len(history[index].content)
+
+    def fits(start: int) -> bool:
+        return len(history) - start <= room and suffix[start] <= budget
+
+    start = next(
+        (index for index in range(0, len(history), PROMPT_WINDOW_STEP) if fits(index)),
+        None,
+    )
+    if start is None:
+        start = next(index for index in range(len(history) + 1) if fits(index))
+    # Open the window on the user's side of an exchange.
+    while start < len(history) and history[start].role == "assistant":
+        start += 1
+    return [*system, *history[start:], request]
 
 
 def event(name: str, data: dict) -> str:

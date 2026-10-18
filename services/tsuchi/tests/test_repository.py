@@ -1,13 +1,14 @@
+from contextlib import nullcontext
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-
 from tsuchi.config import StorageError
 from tsuchi.models import (
-    MAX_CONVERSATION_MESSAGES,
     AgentInput,
     Asset,
     ConversationContent,
+    ConversationResource,
     Deck,
     DeckContent,
     ExportManifest,
@@ -267,25 +268,47 @@ def test_append_message_is_unique_and_versioned(repository):
         repository.append_message("alpha", conversation.id, message, updated.version)
 
 
-def test_append_message_at_capacity_returns_a_domain_error(repository, monkeypatch):
-    conversation = repository.create_resource(
-        "alpha", ConversationContent(kind="conversation", title="Chat")
+def test_append_messages_beyond_former_capacity_preserves_history():
+    now = utc_now()
+    history = [
+        Message(id=uuid4(), role="user", content=str(index), created_at=now)
+        for index in range(9999)
+    ]
+    conversation = ConversationResource(
+        kind="conversation",
+        title="Chain",
+        id=uuid4(),
+        agent_key="alpha",
+        version=1,
+        created_at=now,
+        updated_at=now,
+        messages=history,
     )
-    existing = Message(
-        id=uuid4(), role="user", content="Existing", created_at=utc_now()
-    )
-    full_conversation = conversation.model_copy(
-        update={"messages": [existing] * MAX_CONVERSATION_MESSAGES}
-    )
-    monkeypatch.setattr(repository, "_resource", lambda *args: full_conversation)
-    message = Message(
-        id=uuid4(), role="assistant", content="Extra", created_at=utc_now()
-    )
-    with pytest.raises(StorageError, match="maximum of 10000 messages") as error:
-        repository.append_message(
-            "alpha", conversation.id, message, conversation.version
+    repository = Mock(spec=Repository)
+    repository.connect.side_effect = lambda **kwargs: nullcontext(None)
+    repository._resource.side_effect = lambda *args: conversation
+
+    def update(db, key, current, value, expected_version, action):
+        assert expected_version == current.version
+        return ConversationResource(
+            **value.model_dump(),
+            id=current.id,
+            agent_key=key,
+            version=current.version + 1,
+            created_at=now,
+            updated_at=now,
         )
-    assert error.value.status_code == 409
+
+    repository._update_resource.side_effect = update
+    for role in ("user", "assistant", "user"):
+        message = Message(id=uuid4(), role=role, content="Next", created_at=now)
+        conversation = Repository.append_message(
+            repository, "alpha", conversation.id, message, conversation.version
+        )
+        assert conversation.messages[-1] == message
+    assert len(conversation.messages) == 10002
+    assert conversation.messages[:9999] == history
+    assert conversation.version == 4
 
 
 def test_export_manifest_includes_trash_and_revisions_only_for_selected_agent(

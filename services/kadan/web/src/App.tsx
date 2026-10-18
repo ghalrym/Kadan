@@ -4,16 +4,15 @@ import {
   BookUser,
   FolderOpen,
   Menu,
+  MessageCircle,
   Plus,
   Palette,
   RefreshCw,
-  SquarePen,
   X,
 } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
 import type { Agent, PetJob, Resource, Status } from "./types";
-import Chat, { type Opening } from "./Chat";
-import Home from "./Home";
+import Chat from "./Chat";
 import Workspace from "./Workspace";
 import Personas from "./Personas";
 import Hatch from "./Hatch";
@@ -27,15 +26,6 @@ function transition(update: () => void) {
   if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches)
     return update();
   document.startViewTransition(() => flushSync(update));
-}
-
-function ago(value: string) {
-  const minutes = Math.round((Date.now() - new Date(value).getTime()) / 60000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 1440) return `${Math.round(minutes / 60)}h`;
-  if (minutes < 10080) return `${Math.round(minutes / 1440)}d`;
-  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function RosterPet({
@@ -77,10 +67,9 @@ export default function App() {
   const petSelectionRevision = useRef<Record<string, number>>({});
   const pendingPetSelection = useRef<Record<string, number>>({});
   const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
-  const [threads, setThreads] = useState<Resource[]>([]);
   const [personas, setPersonas] = useState<Resource[]>([]);
-  const [thread, setThread] = useState<Resource | null>(null);
-  const [opening, setOpening] = useState<Opening | null>(null);
+  // Each agent has one continuous conversation rather than separate threads.
+  const [chain, setChain] = useState<Resource | null>(null);
   const [view, setView] = useState<"chat" | "workspace" | "personas">("chat");
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
@@ -93,7 +82,6 @@ export default function App() {
   const closeNavigation = useRef<HTMLButtonElement>(null);
   const [creating, setCreating] = useState(false);
   const [hatched, setHatched] = useState("");
-  const [creatingThread, setCreatingThread] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const activeAgent = useRef(key);
   activeAgent.current = key;
@@ -213,10 +201,8 @@ export default function App() {
   useEffect(() => {
     setEditingPet(false);
     localStorage.setItem("kadan.agent", key);
-    setThread(null);
-    setThreads([]);
+    setChain(null);
     setPersonas([]);
-    setOpening(null);
     setError("");
   }, [key]);
   useEffect(() => {
@@ -224,18 +210,13 @@ export default function App() {
     let current = true;
     setLoading(true);
     Promise.all([
-      allResources(key, "conversation"),
+      api<Resource>(`${agentPath(key)}/chain`),
       allResources(key, "persona"),
     ])
-      .then(([conversations, profiles]) => {
+      .then(([conversation, profiles]) => {
         if (current) {
-          setThreads(conversations);
+          setChain(conversation);
           setPersonas(profiles);
-          setThread((current) =>
-            current
-              ? conversations.find((item) => item.id === current.id) || null
-              : null,
-          );
         }
       })
       .catch((e) => {
@@ -249,63 +230,14 @@ export default function App() {
     };
   }, [key, resourceRevision]);
 
-  function updateThread(value: Resource) {
-    if (value.agent_key !== activeAgent.current) return;
-    setThread((current) =>
-      current && current.id !== value.id ? current : value,
-    );
-    setThreads((rows) => [value, ...rows.filter((row) => row.id !== value.id)]);
+  function updateChain(value: Resource) {
+    if (value.agent_key === activeAgent.current) setChain(value);
   }
   function show(next: typeof view) {
     setMenu(false);
     transition(() => setView(next));
   }
-  async function openThread(value: Resource) {
-    setError("");
-    setMenu(false);
-    setBusy(true);
-    try {
-      const loaded = await api<Resource>(`${agentPath(key)}/resources/${value.id}`);
-      transition(() => {
-        setView("chat");
-        setThread(loaded);
-      });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  function goHome() {
-    setMenu(false);
-    transition(() => {
-      setView("chat");
-      setThread(null);
-    });
-  }
-  async function createThread(first: Opening) {
-    if (!key || creatingThread || busy || loading) return;
-    setCreatingThread(true);
-    setError("");
-    try {
-      const value = await api<Resource>(`${agentPath(key)}/resources`, {
-        kind: "conversation",
-        title: `Thread · ${new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
-      });
-      transition(() => {
-        setOpening(first);
-        setThread(value);
-        updateThread(value);
-        setView("chat");
-      });
-      setMenu(false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setCreatingThread(false);
-    }
-  }
-  const disabled = busy || creatingThread || loading;
+  const disabled = busy || loading;
   const hue = key ? agentHue(key) : 252;
   return (
     <PetContext.Provider value={pets}>
@@ -366,7 +298,7 @@ export default function App() {
                 disabled={disabled}
                 onSelect={() => {
                   if (agent.key !== key) transition(() => setKey(agent.key));
-                  else goHome();
+                  else show("chat");
                 }}
               />
             ))}
@@ -411,7 +343,7 @@ export default function App() {
         </div>
         <div className="panel">
           <header className="panel-head">
-            <button className="agent-title" disabled={!key} onClick={goHome}>
+            <button className="agent-title" disabled={!key} onClick={() => show("chat")}>
               <strong>{selectedAgent?.name || "Kadan"}</strong>
               {selectedAgent && <code>{selectedAgent.key}</code>}
             </button>
@@ -430,12 +362,12 @@ export default function App() {
               Edit pet
             </button>
             <button
-              className={key && view === "chat" && !thread ? "selected" : ""}
-              disabled={disabled || !key}
-              onClick={goHome}
+              className={key && view === "chat" ? "selected" : ""}
+              disabled={!key}
+              onClick={() => show("chat")}
             >
-              <SquarePen size={17} />
-              New thread
+              <MessageCircle size={17} />
+              Messages
             </button>
             <button
               className={view === "workspace" ? "selected" : ""}
@@ -454,33 +386,6 @@ export default function App() {
               Personas
             </button>
           </nav>
-          <div className="thread-list" aria-label="Threads" role="group">
-            <h3>Threads</h3>
-            {loading && key ? (
-              <div className="skeleton" role="status">
-                <span className="sr-only">Loading threads</span>
-                <i />
-                <i />
-                <i />
-              </div>
-            ) : threads.length === 0 ? (
-              <p className="quiet">None yet</p>
-            ) : (
-              threads.map((item, index) => (
-                <button
-                  title={item.title}
-                  key={item.id}
-                  disabled={disabled}
-                  style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
-                  className={`thread ${view === "chat" && thread?.id === item.id ? "selected" : ""}`}
-                  onClick={() => void openThread(item)}
-                >
-                  <span>{item.title}</span>
-                  <time dateTime={item.updated_at}>{ago(item.updated_at)}</time>
-                </button>
-              ))
-            )}
-          </div>
         </div>
       </aside>
       <main id="main" tabIndex={-1} inert={mobile && menu}>
@@ -500,7 +405,7 @@ export default function App() {
               ? "Workspace"
               : view === "personas"
                 ? "Personas"
-                : thread?.title || selectedAgent?.name || "Kadan"}
+                : selectedAgent?.name || "Kadan"}
           </h1>
           <button
             className="icon"
@@ -554,33 +459,30 @@ export default function App() {
             onBusy={setBusy}
             blocked={loading}
           />
-        ) : thread ? (
+        ) : chain ? (
           <Chat
-            key={`${key}:${thread.id}`}
+            key={key}
             agentKey={key}
             agentName={selectedAgent?.name || key}
-            thread={thread}
+            chain={chain}
             personas={personas}
             status={status}
-            opening={opening}
-            onOpened={() => setOpening(null)}
-            onChange={updateThread}
+            entrance={hatched === key ? "jumping" : "waving"}
+            onChange={updateChain}
             onBusy={setBusy}
+            onEditPet={() => setEditingPet(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
           />
         ) : (
-          <Home
-            key={key}
-            agentKey={key}
-            agentName={selectedAgent?.name || key}
-            entrance={hatched === key ? "jumping" : "waving"}
-            personas={personas}
-            status={status}
-            disabled={disabled}
-            onStart={(first) => void createThread(first)}
-            onEditPet={() => setEditingPet(true)}
-          />
+          <div className="center-empty" role="status">
+            <span className="sr-only">Loading messages</span>
+            <span className="loader" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </div>
         )}
       </main>
       {editingPet && selectedAgent && <PetEditor

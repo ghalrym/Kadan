@@ -8,7 +8,7 @@ from kadan.api.routes.agents.resources import PersonaUpdate, ResourceCreate
     ("model", "body"),
     [
         (ResourceCreate, {"kind": "memory", "title": "Unsupported write"}),
-        (ResourceCreate, {"kind": "conversation", "title": "No tools", "messages": []}),
+        (ResourceCreate, {"kind": "conversation", "title": "Second thread"}),
         (PersonaUpdate, {"title": " ", "markdown": "x", "expected_version": 1}),
     ],
 )
