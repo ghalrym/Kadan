@@ -775,6 +775,19 @@ int main() {
         failed && context->releases == calls
         && parked.resources->snapshot().used[1] == 640
     );
+    // Explicit image-cache reservations survive idle, but cannot disappear from
+    // accounting or permit park before their physical retirement.
+    parked.idle({0, 128});
+    for (const Footprint& incorrect : {Footprint{0, 127}, Footprint{0, 129}}) {
+        bool rejected = false;
+        try {
+            parked.idle(incorrect);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        check(rejected && parked.resources->snapshot().used[1] == 640);
+    }
+    fails([&] { parked.idle({128}); });
     parked.resources->released(active);
     parked.park();
     check(parked.resources->snapshot().residents == 0);

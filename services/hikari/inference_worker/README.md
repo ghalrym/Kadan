@@ -101,7 +101,11 @@ have been removed. Shared media sessions, projection kernels and decoder-boundar
 utilities remain for their other callers and component unit tests.
 
 `KADAN_ATEN_IMAGE_TIMING` stderr records report synchronized component loading,
-generation and unloading. The API relays bounded timing lines to its logs.
+generation and unloading. `KADAN_ATEN_IMAGE_CACHE` records distinguish retained
+host payload hits/source reads from device bank hits, uploads and evictions.
+Idle cached weights remain charged to the shared ledger; the existing owner
+reclaims the model before a competing workload. The API relays bounded timing
+and cache lines to its logs.
 Resident timing utilities and their unit checks remain available for component
 analysis, but `KADAN_IMAGE_TIMING` no longer selects timing in the image worker.
 

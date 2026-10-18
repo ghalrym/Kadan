@@ -1,0 +1,288 @@
+// Timing/admission policy only; no model forwards or device calls.
+#include "kadan/image_aten_performance.hpp"
+
+#include <array>
+#include <iostream>
+#include <limits>
+#include <source_location>
+
+namespace {
+using namespace kadan::image;
+
+void check(bool value, std::source_location at = std::source_location::current()) {
+    if (!value)
+        throw std::runtime_error(
+            "image_aten_performance_test:" + std::to_string(at.line())
+        );
+}
+
+std::vector<AtenDenoiserLane> single(std::size_t images, bool streaming = false) {
+    return {{0, images, {0, streaming, false, 100, 200}}};
+}
+
+std::vector<AtenDenoiserLane> parallel(std::size_t images) {
+    return {
+        {0, (images + 1) / 2, {0, false, false, 100, 200}},
+        {(images + 1) / 2, images / 2, {1, false, false, 100, 200}}
+    };
+}
+
+constexpr AtenDenoiserWorkload workload{624, 128, 256, 8, false};
+
+void loading_and_amortization() {
+    AtenDenoiserPerformance policy;
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    policy.observe(workload, baseline);
+    // Repeated admission never consumes the probe before execution succeeds.
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 2);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 2);
+    const std::array costly{
+        AtenDenoiserMeasurement{0, 1, false, 5, 2},
+        AtenDenoiserMeasurement{1, 1, true, 3, 2}
+    };
+    policy.observe(workload, costly);
+    // Faster resident computation alone does not justify the replication cost.
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    // A larger batch can amortize measured fixed loading costs.
+    check(policy.choose_candidates(workload, {single(4), parallel(4)}).size() == 2);
+    const std::array slow_second{
+        AtenDenoiserMeasurement{0, 1, false, 5, 2},
+        AtenDenoiserMeasurement{1, 1, true, 3, 10}
+    };
+    policy.observe(workload, slow_second);
+    check(policy.choose_candidates(workload, {single(4), parallel(4)}).size() == 1);
+}
+
+void separate_loading_regimes_and_shapes() {
+    AtenDenoiserPerformance policy;
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    const std::array costly{
+        AtenDenoiserMeasurement{0, 1, false, 5, 2},
+        AtenDenoiserMeasurement{1, 1, true, 3, 2}
+    };
+    policy.observe(workload, baseline);
+    policy.observe(workload, costly);
+    auto warm = workload;
+    warm.weights_cached = true;
+    check(policy.choose_candidates(warm, {single(2), parallel(2)}).size() == 1);
+    const std::array warm_baseline{AtenDenoiserMeasurement{0, 2, false, 1, 4}};
+    const std::array warm_parallel{
+        AtenDenoiserMeasurement{0, 1, false, 1, 2},
+        AtenDenoiserMeasurement{1, 1, true, 1, 2}
+    };
+    policy.observe(warm, warm_baseline);
+    check(policy.choose_candidates(warm, {single(2), parallel(2)}).size() == 2);
+    policy.observe(warm, warm_parallel);
+    check(policy.choose_candidates(warm, {single(2), parallel(2)}).size() == 2);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    auto different = warm;
+    ++different.steps;
+    check(policy.choose_candidates(different, {single(2), parallel(2)}).size() == 1);
+    different = warm;
+    ++different.tokens;
+    check(policy.choose_candidates(different, {single(2), parallel(2)}).size() == 1);
+    different = warm;
+    ++different.points;
+    check(policy.choose_candidates(different, {single(2), parallel(2)}).size() == 1);
+    different = warm;
+    ++different.reference_points;
+    check(policy.choose_candidates(different, {single(2), parallel(2)}).size() == 1);
+}
+
+void retained_banks_and_reload_cost() {
+    AtenDenoiserPerformance policy;
+    auto retained = workload;
+    retained.weights_cached = true;
+    retained.gpu_weights_cached = true;
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    const std::array split{
+        AtenDenoiserMeasurement{0, 1, false, 5, 2},
+        AtenDenoiserMeasurement{1, 1, true, 3, 2}
+    };
+    policy.observe(retained, baseline);
+    policy.observe(retained, split);
+    // Current bank residency overrides older upload/copy timings.
+    const AtenDenoiserCost single_hit{{0}, 0};
+    const AtenDenoiserCost both_hit{{0, 0}, 0};
+    check(
+        policy
+            .choose_candidates(
+                retained, {single(2), parallel(2)}, {single_hit, both_hit}
+            )
+            .size()
+        == 2
+    );
+    // Evicting the text bank costs more on the next batch than denoising saves.
+    const AtenDenoiserCost evicts_text{{0, 0}, 3};
+    check(
+        policy
+            .choose_candidates(
+                retained, {single(2), parallel(2)}, {single_hit, evicts_text}
+            )
+            .size()
+        == 1
+    );
+    check(
+        policy
+            .choose_candidates(
+                retained, {single(4), parallel(4)}, {single_hit, evicts_text}
+            )
+            .size()
+        == 2
+    );
+    // A known miss must override an earlier retained-bank hit as well.
+    const AtenDenoiserCost second_miss{{0, 5}, 0};
+    check(
+        policy
+            .choose_candidates(
+                retained, {single(2), parallel(2)}, {single_hit, second_miss}
+            )
+            .size()
+        == 1
+    );
+    // Compute timing can come from a replica when its current load cost is known.
+    auto second_device = single(2);
+    second_device.front().stage.device = 1;
+    check(
+        policy
+            .choose_candidates(
+                retained, {second_device, parallel(2)}, {single_hit, both_hit}
+            )
+            .size()
+        == 2
+    );
+    auto host_only = retained;
+    host_only.gpu_weights_cached = false;
+    check(
+        policy
+            .choose_candidates(
+                host_only, {single(2), parallel(2)}, {single_hit, both_hit}
+            )
+            .size()
+        == 1
+    );
+    const AtenDenoiserCost missing_override{{0}, 0};
+    const AtenDenoiserCost invalid_penalty{{0, 0}, -1};
+    const AtenDenoiserCost invalid_load{
+        {0, std::numeric_limits<double>::infinity()}, 0
+    };
+    for (const auto& invalid : {missing_override, invalid_penalty, invalid_load})
+        check(
+            policy
+                .choose_candidates(
+                    retained, {single(2), parallel(2)}, {single_hit, invalid}
+                )
+                .size()
+            == 1
+        );
+}
+
+void memory_and_incomplete_observations() {
+    AtenDenoiserPerformance policy;
+    check(policy.choose_candidates(workload, {{}, parallel(2)}).size() == 2);
+    check(
+        policy.choose_candidates(workload, {single(2, true), parallel(2)}).size() == 2
+    );
+    check(policy.choose_candidates(workload, {single(1), single(1)}).size() == 1);
+    const std::array invalid{AtenDenoiserMeasurement{
+        0, 2, false, 1, std::numeric_limits<double>::quiet_NaN()
+    }};
+    policy.observe(workload, invalid);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    policy.observe(workload, baseline);
+    const std::array incomplete{
+        AtenDenoiserMeasurement{0, 1, false, 1, 2},
+        AtenDenoiserMeasurement{1, 1, true, 1, 0}
+    };
+    policy.observe(workload, incomplete);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 2);
+}
+
+void heterogeneous_device_candidates() {
+    AtenDenoiserPerformance policy;
+    const std::vector<AtenDenoiserLane> three{
+        {0, 2, {0, false, false, 100, 200}},
+        {2, 2, {1, false, false, 100, 200}},
+        {4, 2, {2, false, false, 100, 200}}
+    };
+    const std::vector candidates{single(6), parallel(6), three};
+    check(policy.choose_candidates(workload, {single(6)}).size() == 1);
+    check(policy.choose_candidates(workload, candidates).size() == 1);
+    const std::array baseline{AtenDenoiserMeasurement{0, 6, false, 0.2, 6}};
+    policy.observe(workload, baseline);
+    check(policy.choose_candidates(workload, candidates).size() == 3);
+    const std::array slow_third{
+        AtenDenoiserMeasurement{0, 2, false, 0.2, 2},
+        AtenDenoiserMeasurement{1, 2, true, 0.2, 2},
+        AtenDenoiserMeasurement{2, 2, true, 0.2, 10}
+    };
+    policy.observe(workload, slow_third);
+    check(policy.choose_candidates(workload, candidates).size() == 2);
+    const std::array narrower{
+        AtenDenoiserMeasurement{0, 3, false, 0.2, 3},
+        AtenDenoiserMeasurement{1, 3, true, 0.2, 3}
+    };
+    policy.observe(workload, narrower);
+    // Running the chosen pair does not erase the slow third device's timing.
+    check(policy.choose_candidates(workload, candidates).size() == 2);
+    auto fast_third = slow_third;
+    fast_third[2].denoise_seconds = 2;
+    policy.observe(workload, fast_third);
+    check(policy.choose_candidates(workload, candidates).size() == 3);
+    check(policy.choose_candidates(workload, {single(6)}).size() == 1);
+    // A fourth device can be discovered, then excluded when its cost is high.
+    const std::vector<AtenDenoiserLane> four{
+        {0, 2, {0, false, false, 100, 200}},
+        {2, 2, {1, false, false, 100, 200}},
+        {4, 1, {2, false, false, 100, 200}},
+        {5, 1, {3, false, false, 100, 200}}
+    };
+    auto expanded = candidates;
+    expanded.push_back(four);
+    check(policy.choose_candidates(workload, expanded).size() == 4);
+    const std::array slow_fourth{
+        AtenDenoiserMeasurement{0, 2, false, 0.2, 2},
+        AtenDenoiserMeasurement{1, 2, true, 0.2, 2},
+        AtenDenoiserMeasurement{2, 1, true, 0.2, 1},
+        AtenDenoiserMeasurement{3, 1, true, 0.2, 20}
+    };
+    policy.observe(workload, slow_fourth);
+    check(policy.choose_candidates(workload, expanded).size() == 3);
+    // When memory excludes a single-device plan, discovery starts from two.
+    AtenDenoiserPerformance constrained;
+    check(constrained.choose_candidates(workload, {parallel(6), three}).size() == 2);
+    constrained.observe(workload, narrower);
+    check(constrained.choose_candidates(workload, {parallel(6), three}).size() == 3);
+}
+
+void bounded_history() {
+    AtenDenoiserPerformance policy;
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    for (std::size_t i = 0; i <= 64; ++i) {
+        auto shape = workload;
+        shape.steps += i;
+        policy.observe(shape, baseline);
+    }
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    auto latest = workload;
+    latest.steps += 64;
+    check(policy.choose_candidates(latest, {single(2), parallel(2)}).size() == 2);
+}
+}  // namespace
+
+int main() {
+    try {
+        loading_and_amortization();
+        separate_loading_regimes_and_shapes();
+        retained_banks_and_reload_cost();
+        memory_and_incomplete_observations();
+        heterogeneous_device_candidates();
+        bounded_history();
+        std::cout << "image ATen performance policy units passed\n";
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

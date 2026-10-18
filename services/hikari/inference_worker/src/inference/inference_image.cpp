@@ -181,8 +181,21 @@ public:
         const std::atomic_bool cancel{false};
         const auto planned =
             model_->admissible_batch_footprints(native_request(input), 32, cancel);
+        auto reusable = available;
+        const auto cached = model_->device_cache_memory().allocated;
+        const auto snapshot = resources_->snapshot();
+        for (std::size_t device = 1; device < reusable.size(); ++device)
+            reusable[device] += std::min(
+                cached.at(device),
+                snapshot.capacity[device] > reusable[device]
+                    ? snapshot.capacity[device] - reusable[device]
+                    : 0
+            );
+        // This is a batch-size projection, not admission credit. Cached GPU
+        // payloads already belong to this model; Stage must reuse or physically
+        // evict them and re-probe before admitting the selected execution plan.
         capacity_ = std::max<std::size_t>(
-            1, measured_[batch_shape(input)].capacity(available, planned)
+            1, measured_[batch_shape(input)].capacity(reusable, planned)
         );
         return capacity_;
     }
@@ -458,7 +471,7 @@ public:
             for (auto& output : outputs_)
                 output.fail_if_incomplete(error.what());
         }
-        compute_->idle();
+        compute_->idle(model_->device_cache_memory().reserved);
         for (std::size_t index = 0; index < batch.size(); ++index) {
             results[index].failure = outputs_[index].failure;
             if (batch[index].cancel->load() || !results[index].failure.is_null())

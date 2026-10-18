@@ -118,17 +118,22 @@ struct WorkerCompute {
         }
     }
 
-    void idle() const {
+    // An engine may own additional resident banks outside DenseCompute. They
+    // remain charged while idle; park still requires their prior retirement.
+    void idle(const Footprint& engine_weights = {}) const {
         if (media_activity->owners.load())
             throw std::runtime_error("compute_media_session_busy");
         if (compute)
             compute->release_scratch();
         const auto retained = compute ? compute->retained_weights() : Footprint{};
         const auto used = resources->snapshot().used;
+        if (!engine_weights.empty() && engine_weights.size() != used.size())
+            throw std::invalid_argument("compute_retained_shape");
         for (std::size_t i = 1; i < used.size(); ++i)
-            if (used[i]
-                != (context_handle ? context[i] : 0)
-                       + (retained.empty() ? 0 : retained.at(i)))
+            if ((engine_weights.empty() ? 0 : engine_weights[i]) > used[i]
+                || used[i] - (engine_weights.empty() ? 0 : engine_weights[i])
+                       != (context_handle ? context[i] : 0)
+                              + (retained.empty() ? 0 : retained.at(i)))
                 throw std::runtime_error("compute_device_cleanup_unconfirmed");
     }
 

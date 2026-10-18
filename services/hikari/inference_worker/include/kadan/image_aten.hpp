@@ -30,6 +30,7 @@ public:
         return measurement_;
     }
 
+    ImageDeviceCacheMemory device_cache_memory() const;
     void unload();
 
 private:
