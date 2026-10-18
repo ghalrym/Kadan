@@ -48,6 +48,12 @@ class PetRejection(BaseModel):
     reason: str
 
 
+class PetPendingFrame(BaseModel):
+    name: str
+    request_id: UUID
+    seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+
+
 class PetState(BaseModel):
     status: Literal[
         "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
@@ -66,11 +72,42 @@ class PetState(BaseModel):
     pending_step_name: str | None = None
     pending_request_id: UUID | None = None
     pending_seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+    # The primary pending fields identify the earliest unfinished frame. This list
+    # contains only the other members of its bounded concurrent cohort.
+    additional_pending_frames: list[PetPendingFrame] = Field(
+        default_factory=list, max_length=3
+    )
+
+    @property
+    def pending_images(self) -> list[PetPendingFrame]:
+        primary = (
+            [
+                PetPendingFrame(
+                    name=self.pending_step_name,
+                    request_id=self.pending_request_id,
+                    seed=self.pending_seed,
+                )
+            ]
+            if self.pending_request_id is not None
+            else []
+        )
+        return [*primary, *self.additional_pending_frames]
 
     @model_validator(mode="after")
-    def valid_pending_seed(self) -> Self:
+    def valid_pending_frames(self) -> Self:
+        if (self.pending_step_name is None) != (self.pending_request_id is None):
+            raise ValueError(
+                "Pending step name and request ID must be supplied together"
+            )
         if self.pending_seed is not None and self.pending_request_id is None:
             raise ValueError("Pending seed requires a pending request")
+        if self.additional_pending_frames and self.pending_request_id is None:
+            raise ValueError("Additional pending frames require a primary request")
+        pending = self.pending_images
+        if len({frame.name for frame in pending}) != len(pending) or len(
+            {frame.request_id for frame in pending}
+        ) != len(pending):
+            raise ValueError("Pending frames and request IDs must be unique")
         return self
 
 

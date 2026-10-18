@@ -359,6 +359,12 @@ class PetRejection(Model):
         return value.strip()
 
 
+class PetPendingFrame(Model):
+    name: str
+    request_id: UUID
+    seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+
+
 class PetState(Model):
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
@@ -373,8 +379,28 @@ class PetState(Model):
     pending_step_name: str | None = Field(default=None, max_length=100)
     pending_request_id: UUID | None = None
     pending_seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+    # The primary pending fields identify the earliest unfinished frame. This list
+    # contains only the other members of its bounded concurrent cohort.
+    additional_pending_frames: list[PetPendingFrame] = Field(
+        default_factory=list, max_length=3
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
+
+    @property
+    def pending_images(self) -> list[PetPendingFrame]:
+        primary = (
+            [
+                PetPendingFrame(
+                    name=self.pending_step_name,
+                    request_id=self.pending_request_id,
+                    seed=self.pending_seed,
+                )
+            ]
+            if self.pending_request_id is not None
+            else []
+        )
+        return [*primary, *self.additional_pending_frames]
 
     @field_validator("lease_expires_at")
     @classmethod
@@ -433,6 +459,24 @@ class PetState(Model):
             )
             if self.pending_step_name != next_step:
                 raise ValueError("Pending step must be the next unfinished step")
+        if self.additional_pending_frames and self.pending_request_id is None:
+            raise ValueError("Additional pending frames require a primary request")
+        pending = self.pending_images
+        pending_names = [frame.name for frame in pending]
+        if pending_names != [
+            name
+            for name in PET_STEP_NAMES
+            if name in pending_names and name not in names
+        ] or len({frame.request_id for frame in pending}) != len(pending):
+            raise ValueError(
+                "Pending frames must be distinct unfinished frames in order"
+            )
+        if self.additional_pending_frames and (
+            not self.steps
+            or "base" in pending_names
+            or any(name in {"idle/0", "idle/5"} for name in pending_names)
+        ):
+            raise ValueError("Only independent generated poses can share a cohort")
         if self.status in {"running", "cancelling"}:
             if self.owner_id is None or self.lease_expires_at is None:
                 raise ValueError("Running jobs require an owner and lease")

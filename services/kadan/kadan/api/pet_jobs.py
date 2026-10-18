@@ -32,6 +32,7 @@ from .pydantic_models.pets import (
     PetAsset,
     PetJob,
     PetManifest,
+    PetPendingFrame,
     PetState,
     PetStep,
 )
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_IMAGE_BYTES = 20 * 1024**2
 IMAGE_MODEL = "qwen-image-2.1-turbo"
+MAX_PENDING_FRAMES = 4
 TERMINAL = {"ready", "failed", "cancelled", "interrupted"}
 
 
@@ -188,9 +190,8 @@ class PetJobs:
                 raise ServiceError(
                     "Only a stopped pet job can be resumed.", 409, "pet_not_stopped"
                 )
-            # The old request is fenced before any new inference can be submitted.
-            if job.pending_request_id:
-                await self.stop_request(job.pending_request_id)
+            # All old requests are fenced before any new inference can be submitted.
+            await self.stop_pending(job)
             job = await self.save(
                 job, status="queued", stage="queued", cancel_requested=False, error=None
             )
@@ -211,8 +212,7 @@ class PetJobs:
                             job.lease_expires_at
                             and job.lease_expires_at <= datetime.now(UTC)
                         ):
-                            if job.pending_request_id:
-                                await self.stop_request(job.pending_request_id)
+                            await self.stop_pending(job)
                             await self.save(
                                 job,
                                 status="cancelled"
@@ -265,20 +265,45 @@ class PetJobs:
             except TimeoutError:
                 pass
 
+    async def owned_job(self, job: PetJob) -> PetJob:
+        current = await self.get(job.agent_key, job.id)
+        if (
+            current.owner_id != self.owner
+            or current.status != "running"
+            or current.cancel_requested
+        ):
+            raise ServiceError(
+                "Pet ownership changed or cancellation was requested.",
+                409,
+                "pet_lease_lost",
+            )
+        return current
+
     async def owned_update(self, job: PetJob, **changes: Any) -> PetJob:
         async with self.lock:
-            current = await self.get(job.agent_key, job.id)
-            if (
-                current.owner_id != self.owner
-                or current.status != "running"
-                or current.cancel_requested
-            ):
-                raise ServiceError(
-                    "Pet ownership changed or cancellation was requested.",
-                    409,
-                    "pet_lease_lost",
-                )
+            current = await self.owned_job(job)
             return await self.save(current, worker=True, **changes)
+
+    @staticmethod
+    def pending_state(frames: list[PetPendingFrame]) -> dict[str, Any]:
+        primary = frames[0] if frames else None
+        return {
+            "pending_step_name": primary.name if primary else None,
+            "pending_request_id": primary.request_id if primary else None,
+            "pending_seed": primary.seed if primary else None,
+            "additional_pending_frames": frames[1:],
+        }
+
+    async def stop_pending(self, job: PetJob) -> None:
+        # Attempt every cancellation even when one confirmation fails. Keep the
+        # durable cohort intact until all requests are confirmed stopped.
+        results = await asyncio.gather(
+            *(self.stop_request(frame.request_id) for frame in job.pending_images),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def heartbeat(self, job: PetJob, work: asyncio.Task) -> None:
         try:
@@ -305,8 +330,7 @@ class PetJobs:
                 async with self.lock:
                     current = await self.get(job.agent_key, job.id)
                     if current.owner_id == self.owner:
-                        if current.pending_request_id:
-                            await self.stop_request(current.pending_request_id)
+                        await self.stop_pending(current)
                         cancelled = current.cancel_requested
                         status = (
                             "cancelled"
@@ -477,6 +501,14 @@ class PetJobs:
         if row.name == "idle" and frame in {0, 5}:
             # These poses are the canonical neutral artwork, validated but unaltered.
             output = raw
+        await self.validate_completed_row(job, output, row, frame)
+        return output
+
+    async def validate_completed_row(
+        self, job: PetJob, output: bytes, row: PetRow | None, frame: int
+    ) -> None:
+        if row is None:
+            return
         saved = {step.name: step for step in job.steps}
         names = [frame_name(row, index) for index in range(row.frame_count)]
         if all(name in saved for name in names if name != frame_name(row, frame)):
@@ -487,143 +519,221 @@ class PetJobs:
                 for index, name in enumerate(names)
             ]
             await asyncio.to_thread(validate_row, row, complete)
-        return output
+
+    async def generate_frame(
+        self,
+        job: PetJob,
+        row: PetRow | None,
+        frame: int,
+        order: list[str],
+        recover: bool,
+    ) -> None:
+        name = frame_name(row, frame) if row is not None else "base"
+        canonical = name in {"idle/0", "idle/5"}
+        prompt = (
+            "Reuse the canonical neutral artwork without altering its pose."
+            if canonical
+            else frame_prompt(job.prompt, row, frame)
+            if row is not None
+            else base_prompt(job.prompt)
+        )
+        source_id = job.steps[0].output_asset_id if row is not None else None
+        source = (
+            await self.content(job.agent_key, source_id)
+            if source_id is not None
+            else None
+        )
+        pending = next(item for item in job.pending_images if item.name == name)
+        seed = pending.seed
+        rejected = next(
+            (entry for entry in reversed(job.rejections) if entry.step.name == name),
+            None,
+        )
+        if rejected and not canonical:
+            prompt += f" Correction requested for this frame: {rejected.reason}"
+        output = None
+        recovered = (
+            await self.saved_generation(job, pending.request_id)
+            if recover and not canonical
+            else None
+        )
+        if recovered:
+            try:
+                output = await self.prepare_output(job, recovered[0], row, frame)
+            except ValueError:
+                # Keep initial poses on shared noise, but let a rejected frame
+                # change on retry. Persist this choice before submitting it.
+                seed = (recovered[1].seeds[0] + 1) % 2**32
+                recovered = None
+        request_id = uuid4() if recover and not recovered else pending.request_id
+        async with self.lock:
+            current = await self.owned_job(job)
+            pending = PetPendingFrame(name=name, request_id=request_id, seed=seed)
+            job = await self.save(
+                current,
+                worker=True,
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS),
+                **self.pending_state(
+                    [
+                        pending if item.name == name else item
+                        for item in current.pending_images
+                    ]
+                ),
+            )
+        if recovered:
+            raw, generation = recovered
+        else:
+            if canonical:
+                generation = GeneratedImage(
+                    model_id=job.steps[0].model_id,
+                    seeds=[job.steps[0].seed or 0],
+                    images_base64=[base64.b64encode(source).decode()],
+                    mime_type="image/png",
+                    meta=json.dumps(
+                        {
+                            "method": "canonical",
+                            "source_asset_id": str(source_id),
+                            "source_request_id": str(job.steps[0].request_id),
+                        }
+                    ),
+                )
+            else:
+                generation = await self.image(
+                    request_id,
+                    prompt,
+                    source,
+                    job.steps[0].model_id if job.steps else None,
+                    seed,
+                )
+            raw = base64.b64decode(generation.images_base64[0], validate=True)
+            metadata = generation.model_dump(exclude={"images_base64"})
+            await self.upload(
+                job,
+                uuid5(request_id, "provenance"),
+                f"{name}-provenance",
+                json.dumps(metadata).encode(),
+                "application/json",
+            )
+            await self.upload(
+                job, uuid5(request_id, "raw"), f"{name}-raw", raw, "image/png"
+            )
+        output_id = uuid5(request_id, "output")
+        step = PetStep(
+            name=name,
+            method="canonical" if canonical else "generated",
+            source_asset_id=source_id if row else uuid5(request_id, "raw"),
+            output_asset_id=output_id,
+            raw_asset_id=uuid5(request_id, "raw"),
+            provenance_asset_id=uuid5(request_id, "provenance"),
+            prompt=prompt,
+            request_id=request_id,
+            model_id=generation.model_id,
+            seed=generation.seeds[0],
+            meta=generation.meta,
+        )
+        if output is None:
+            output = await self.prepare_output(job, raw, row, frame)
+        await self.upload(job, output_id, name, output, "image/png")
+        # Serialize row validation and checkpoint writes, so an out-of-order
+        # completion cannot replace another frame or miss the final row check.
+        async with self.lock:
+            current = await self.owned_job(job)
+            await self.validate_completed_row(current, output, row, frame)
+            await self.save(
+                current,
+                worker=True,
+                steps=sorted(
+                    [*current.steps, step], key=lambda saved: order.index(saved.name)
+                ),
+                completed_steps=len(current.steps) + 1,
+                **self.pending_state(
+                    [item for item in current.pending_images if item.name != name]
+                ),
+            )
 
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
+        items = [(None, 0), *frames]
         order = ["base", *(frame_name(row, frame) for row, frame in frames)]
-        for item in [None, *frames]:
-            row, frame = item if item is not None else (None, 0)
-            name = frame_name(row, frame) if row is not None else "base"
-            if any(step.name == name for step in job.steps):
-                continue
-            canonical = name in {"idle/0", "idle/5"}
-            prompt = (
-                "Reuse the canonical neutral artwork without altering its pose."
-                if canonical
-                else frame_prompt(job.prompt, row, frame)
-                if row is not None
-                else base_prompt(job.prompt)
-            )
-            source_id = job.steps[0].output_asset_id if row is not None else None
-            source = (
-                await self.content(job.agent_key, source_id)
-                if source_id is not None
-                else None
-            )
-            seed = (
-                job.pending_seed
-                if job.pending_request_id
-                else job.steps[0].seed
-                if row is not None
-                else None
-            )
-            rejected = next(
-                (
-                    entry
-                    for entry in reversed(job.rejections)
-                    if entry.step.name == name
-                ),
-                None,
-            )
-            if rejected and not canonical:
-                prompt += f" Correction requested for this frame: {rejected.reason}"
-            if rejected and not job.pending_request_id and not canonical:
-                seed = ((rejected.step.seed or 0) + 1) % 2**32
-            recovered = (
-                await self.saved_generation(job, job.pending_request_id)
-                if job.pending_request_id and not canonical
-                else None
-            )
-            if recovered:
-                try:
-                    output = await self.prepare_output(job, recovered[0], row, frame)
-                except ValueError:
-                    # Keep initial poses on shared noise, but let a rejected frame
-                    # change on retry. Persist this choice before submitting it.
-                    seed = (recovered[1].seeds[0] + 1) % 2**32
-                    recovered = None
-            request_id = job.pending_request_id if recovered else uuid4()
+        while True:
+            job = await self.owned_job(job)
+            completed = {step.name for step in job.steps}
+            remaining = [
+                item
+                for item, name in zip(items, order, strict=True)
+                if name not in completed
+            ]
+            if not remaining:
+                break
+            cohort = []
+            for row, frame in remaining:
+                name = frame_name(row, frame) if row is not None else "base"
+                independent = name not in {"base", "idle/0", "idle/5"}
+                if cohort and not independent:
+                    break
+                cohort.append((row, frame))
+                if not independent or len(cohort) == MAX_PENDING_FRAMES:
+                    break
+            previous = {item.name: item for item in job.pending_images}
+            pending = []
+            for row, frame in cohort:
+                name = frame_name(row, frame) if row is not None else "base"
+                seed = job.steps[0].seed if row is not None else None
+                rejection = next(
+                    (
+                        entry
+                        for entry in reversed(job.rejections)
+                        if entry.step.name == name
+                    ),
+                    None,
+                )
+                if rejection and name not in {"idle/0", "idle/5"}:
+                    seed = ((rejection.step.seed or 0) + 1) % 2**32
+                pending.append(
+                    previous.get(name)
+                    or PetPendingFrame(
+                        name=name,
+                        request_id=uuid4(),
+                        seed=seed,
+                    )
+                )
+            # Persist every member before any HTTP request is launched. Recovery
+            # can then fence all siblings even if this process disappears.
+            first_row, first_frame = cohort[0]
             job = await self.owned_update(
                 job,
                 stage=(
-                    f"Generating {row.name} frame {frame + 1}/{row.frame_count}"
-                    if row is not None
+                    f"Generating {first_row.name} frame {first_frame + 1}/{first_row.frame_count}"
+                    if first_row is not None
                     else "Generating base"
                 ),
-                pending_step_name=name,
-                pending_request_id=request_id,
-                pending_seed=seed,
+                **self.pending_state(pending),
             )
-            if recovered:
-                raw, generation = recovered
-            else:
-                job = await self.owned_update(
-                    job,
-                    lease_expires_at=datetime.now(UTC)
-                    + timedelta(seconds=LEASE_SECONDS),
-                )
-                if canonical:
-                    generation = GeneratedImage(
-                        model_id=job.steps[0].model_id,
-                        seeds=[job.steps[0].seed or 0],
-                        images_base64=[base64.b64encode(source).decode()],
-                        mime_type="image/png",
-                        meta=json.dumps(
-                            {
-                                "method": "canonical",
-                                "source_asset_id": str(source_id),
-                                "source_request_id": str(job.steps[0].request_id),
-                            }
-                        ),
+            tasks = [
+                asyncio.create_task(
+                    self.generate_frame(
+                        job,
+                        row,
+                        frame,
+                        order,
+                        (frame_name(row, frame) if row is not None else "base")
+                        in previous,
                     )
-                else:
-                    generation = await self.image(
-                        request_id,
-                        prompt,
-                        source,
-                        job.steps[0].model_id if job.steps else None,
-                        seed,
-                    )
-                raw = base64.b64decode(generation.images_base64[0], validate=True)
-                metadata = generation.model_dump(exclude={"images_base64"})
-                await self.upload(
-                    job,
-                    uuid5(request_id, "provenance"),
-                    f"{name}-provenance",
-                    json.dumps(metadata).encode(),
-                    "application/json",
                 )
-                await self.upload(
-                    job, uuid5(request_id, "raw"), f"{name}-raw", raw, "image/png"
-                )
-            output_id = uuid5(request_id, "output")
-            if not recovered:
-                output = await self.prepare_output(job, raw, row, frame)
-            await self.upload(job, output_id, name, output, "image/png")
-            step = PetStep(
-                name=name,
-                method="canonical" if canonical else "generated",
-                source_asset_id=source_id if row else uuid5(request_id, "raw"),
-                output_asset_id=output_id,
-                raw_asset_id=uuid5(request_id, "raw"),
-                provenance_asset_id=uuid5(request_id, "provenance"),
-                prompt=prompt,
-                request_id=request_id,
-                model_id=generation.model_id,
-                seed=generation.seeds[0],
-                meta=generation.meta,
-            )
-            job = await self.owned_update(
-                job,
-                steps=sorted(
-                    [*job.steps, step], key=lambda saved: order.index(saved.name)
-                ),
-                completed_steps=len(job.steps) + 1,
-                pending_step_name=None,
-                pending_request_id=None,
-                pending_seed=None,
-            )
+                for row, frame in cohort
+            ]
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            # A failed frame does not discard successful siblings. Stop before
+            # adding a new cohort; resume retries only the unfinished frames.
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
         job = await self.owned_update(job, stage="Validating and assembling animation")
         frames = {
             step.name: await self.content(job.agent_key, step.output_asset_id)
@@ -650,4 +760,5 @@ class PetJobs:
             pending_step_name=None,
             pending_request_id=None,
             pending_seed=None,
+            additional_pending_frames=[],
         )

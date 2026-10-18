@@ -579,6 +579,7 @@ def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
         )
         pets.content = AsyncMock(return_value=PNG)
         pets.prepare_output = AsyncMock(return_value=PNG)
+        pets.validate_completed_row = AsyncMock()
         pets.upload = AsyncMock()
         pets.image = AsyncMock(
             return_value=GeneratedImage(
@@ -598,5 +599,171 @@ def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
         pets.image.assert_awaited_once()
         assert pets.image.await_args.args[-1] == 8
         assert "wrong eyelids" in pets.image.await_args.args[1]
+
+    asyncio.run(run())
+
+
+def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch):
+    async def run():
+        pets, services, job = await setup_running()
+        base = PetStep(
+            name="base",
+            output_asset_id=uuid4(),
+            raw_asset_id=uuid4(),
+            provenance_asset_id=uuid4(),
+            prompt="owl",
+            request_id=uuid4(),
+            model_id=IMAGE_MODEL,
+            seed=42,
+        )
+        neutral = base.model_copy(update={"name": "idle/0", "output_asset_id": uuid4()})
+        job = await pets.owned_update(job, steps=[base, neutral], completed_steps=2)
+        pets.content = AsyncMock(return_value=PNG)
+        pets.prepare_output = AsyncMock(return_value=PNG)
+        pets.validate_completed_row = AsyncMock()
+        pets.upload = AsyncMock()
+        started = asyncio.Event()
+        checkpointed = asyncio.Event()
+        requests = {}
+        original_request = services.json_request
+
+        async def track_checkpoint(*args, **kwargs):
+            result = await original_request(*args, **kwargs)
+            if [step.name for step in services.jobs[job.id].steps] == [
+                "base",
+                "idle/0",
+                "idle/3",
+            ]:
+                checkpointed.set()
+            return result
+
+        services.json_request = track_checkpoint
+
+        async def image(request_id, prompt, source, model_id, seed=None):
+            pending = services.jobs[job.id].pending_images
+            assert len(pending) == 4
+            frame = next(item for item in pending if item.request_id == request_id)
+            assert frame.seed == seed == 42
+            assert source == PNG and model_id == IMAGE_MODEL
+            requests[frame.name] = asyncio.get_running_loop().create_future()
+            if len(requests) == 4:
+                started.set()
+            return await requests[frame.name]
+
+        pets.image = image
+        task = asyncio.create_task(pets.process(job))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        result = GeneratedImage(
+            model_id=IMAGE_MODEL,
+            seeds=[42],
+            images_base64=[base64.b64encode(PNG).decode()],
+            mime_type="image/png",
+        )
+        requests["idle/3"].set_result(result)
+        await asyncio.wait_for(checkpointed.wait(), timeout=2)
+        assert not task.done()
+        requests["idle/1"].set_exception(ServiceError("frame failed"))
+        requests["idle/4"].set_result(result)
+        requests["idle/2"].set_result(result)
+        await asyncio.wait_for(task, timeout=2)
+        failed = services.jobs[job.id]
+        assert failed.status == "failed"
+        assert [step.name for step in failed.steps] == [
+            "base",
+            "idle/0",
+            "idle/2",
+            "idle/3",
+            "idle/4",
+        ]
+        assert [item.name for item in failed.pending_images] == ["idle/1"]
+        assert failed.pending_seed == 42
+        assert len(requests) == 4
+        assert not any(call[2].endswith("/pet") for call in services.calls)
+
+        saved = deepcopy(failed.steps)
+        resumed = await pets.resume(KEY, job.id)
+        assert resumed.steps == saved
+        assert resumed.pending_images == failed.pending_images
+        assert (
+            services.calls[-2][2]
+            == f"/v1/images/requests/{failed.pending_request_id}/cancel"
+        )
+
+    asyncio.run(run())
+
+
+def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds():
+    async def run():
+        pets, services, job = await setup_running()
+        base = PetStep(
+            name="base",
+            output_asset_id=uuid4(),
+            raw_asset_id=uuid4(),
+            provenance_asset_id=uuid4(),
+            prompt="owl",
+            request_id=uuid4(),
+            model_id=IMAGE_MODEL,
+            seed=42,
+        )
+        neutral = base.model_copy(update={"name": "idle/0", "output_asset_id": uuid4()})
+        job = await pets.owned_update(job, steps=[base, neutral], completed_steps=2)
+        pets.content = AsyncMock(return_value=PNG)
+        started = asyncio.Event()
+        requests = []
+
+        async def image(request_id, *args):
+            requests.append(request_id)
+            if len(requests) == 4:
+                started.set()
+            await asyncio.Future()
+
+        pets.image = image
+        task = asyncio.create_task(pets.process(job))
+        pets.active_id, pets.active = job.id, task
+        await asyncio.wait_for(started.wait(), timeout=2)
+        pending = deepcopy(services.jobs[job.id].pending_images)
+        await pets.cancel(KEY, job.id)
+        await asyncio.wait_for(task, timeout=2)
+        cancelled = services.jobs[job.id]
+        assert cancelled.status == "cancelled"
+        assert cancelled.steps == [base, neutral]
+        assert cancelled.pending_images == pending
+        cancellations = [call[2] for call in services.calls if call[0] == "Hikari"]
+        assert set(cancellations) == {
+            f"/v1/images/requests/{request_id}/cancel" for request_id in requests
+        }
+        resumed = await pets.resume(KEY, job.id)
+        assert resumed.status == "queued"
+        assert resumed.steps == [base, neutral]
+        assert resumed.pending_images == pending
+        assert [frame.seed for frame in pending] == [42] * 4
+        assert len([call for call in services.calls if call[0] == "Hikari"]) == 8
+
+    asyncio.run(run())
+
+
+def test_failed_cohort_cleanup_attempts_every_request_before_refusing_resume():
+    async def run():
+        pets, services, job = await setup_running()
+        job = await pets.save(
+            job,
+            worker=True,
+            status="failed",
+            owner_id=None,
+            lease_expires_at=None,
+            pending_step_name="idle/1",
+            pending_request_id=uuid4(),
+            pending_seed=11,
+            additional_pending_frames=[
+                {"name": "idle/2", "request_id": uuid4(), "seed": 12},
+                {"name": "idle/3", "request_id": uuid4(), "seed": 13},
+            ],
+        )
+        pets.stop_request = AsyncMock(side_effect=[ServiceError("unknown"), None, None])
+        with pytest.raises(ServiceError, match="unknown"):
+            await pets.resume(KEY, job.id)
+        assert pets.stop_request.await_count == 3
+        assert services.jobs[job.id].status == "failed"
+        assert services.jobs[job.id].pending_images == job.pending_images
 
     asyncio.run(run())

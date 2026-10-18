@@ -870,3 +870,141 @@ def test_canonical_frames_require_base_and_idle_endpoints(repository):
             PetState(steps=[base, invalid], completed_steps=2)
     with pytest.raises(ValidationError, match="canonical creation order"):
         PetState(steps=[frame], completed_steps=1)
+
+
+def test_pending_cohort_supports_out_of_order_checkpoints_and_survives_resume(
+    repository,
+):
+    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    for name in ("base", "idle/0"):
+        pet = repository.update_pet(
+            "alpha",
+            pet.id,
+            state(
+                pet,
+                steps=[*pet.steps, generation_step(repository, name)],
+                completed_steps=len(pet.steps) + 1,
+            ),
+            pet.version,
+            pet.owner_id,
+        )
+    first, second, third = uuid4(), uuid4(), uuid4()
+    pet = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(
+            pet,
+            pending_step_name="idle/1",
+            pending_request_id=first,
+            pending_seed=10,
+            additional_pending_frames=[
+                {"name": "idle/2", "request_id": second, "seed": 11},
+                {"name": "idle/3", "request_id": third, "seed": 12},
+            ],
+        ),
+        pet.version,
+        pet.owner_id,
+    )
+    completed = generation_step(repository, "idle/3").model_copy(
+        update={"request_id": third}
+    )
+    pet = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(
+            pet,
+            steps=[*pet.steps, completed],
+            completed_steps=3,
+            additional_pending_frames=pet.additional_pending_frames[:1],
+        ),
+        pet.version,
+        pet.owner_id,
+    )
+    assert [frame.name for frame in pet.pending_images] == ["idle/1", "idle/2"]
+    assert pet.steps[-1] == completed
+    with pytest.raises(StorageError, match="Cancellation cannot modify"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(
+                pet,
+                status="cancelling",
+                cancel_requested=True,
+                additional_pending_frames=[],
+            ),
+            pet.version,
+        )
+    stopped = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(
+            pet,
+            status="cancelled",
+            cancel_requested=True,
+            owner_id=None,
+            lease_expires_at=None,
+        ),
+        pet.version,
+        pet.owner_id,
+    )
+    resumed = repository.update_pet(
+        "alpha",
+        pet.id,
+        state(stopped, status="queued", cancel_requested=False),
+        stopped.version,
+    )
+    reloaded = Repository(repository.data_dir).get_pet("alpha", pet.id)
+    assert reloaded == resumed
+    assert reloaded.pending_images == pet.pending_images
+    assert reloaded.steps == pet.steps
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "duplicate_name",
+        "duplicate_request",
+        "completed",
+        "unordered",
+        "canonical",
+        "oversized",
+    ],
+)
+def test_pending_cohort_rejects_invalid_members(repository, invalid):
+    base = generation_step(repository, "base")
+    neutral = generation_step(repository, "idle/0")
+    primary = uuid4()
+    pending = [
+        {"name": "idle/2", "request_id": uuid4(), "seed": 42},
+        {"name": "idle/3", "request_id": uuid4(), "seed": 42},
+    ]
+    if invalid == "duplicate_name":
+        pending[0]["name"] = "idle/1"
+    elif invalid == "duplicate_request":
+        pending[0]["request_id"] = primary
+    elif invalid == "completed":
+        pending[0]["name"] = "idle/0"
+    elif invalid == "unordered":
+        pending.reverse()
+    elif invalid == "canonical":
+        pending[1]["name"] = "idle/5"
+    else:
+        pending.extend(
+            [
+                {"name": "idle/4", "request_id": uuid4()},
+                {"name": "walk_right/0", "request_id": uuid4()},
+            ]
+        )
+    with pytest.raises(ValidationError):
+        PetState(
+            steps=[base, neutral],
+            completed_steps=2,
+            pending_step_name="idle/1",
+            pending_request_id=primary,
+            additional_pending_frames=pending,
+        )
+
+
+def test_additional_pending_frames_require_a_primary_request():
+    with pytest.raises(ValidationError, match="primary"):
+        PetState(additional_pending_frames=[{"name": "idle/2", "request_id": uuid4()}])

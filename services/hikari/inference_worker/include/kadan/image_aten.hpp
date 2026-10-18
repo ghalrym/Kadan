@@ -15,9 +15,28 @@ public:
         const std::atomic_bool&,
         const Generator::Hook&
     );
+    void prepare_batch(std::span<const ImageRequest>, const std::atomic_bool&);
+    void generate_batch(
+        std::span<const ImageRequest>,
+        std::span<const std::span<float>>,
+        const std::atomic_bool&,
+        const Generator::BatchHook&
+    );
+    std::vector<Footprint> admissible_batch_footprints(
+        const ImageRequest&, std::size_t, const std::atomic_bool&
+    );
+
+    const BatchMeasurement& last_batch_measurement() const {
+        return measurement_;
+    }
+
     void unload();
 
 private:
+    Footprint admission_footprint(
+        const ImageRequest&, std::size_t images, const std::atomic_bool&
+    );
+    BatchMeasurement measurement_;
     struct Impl;
     std::unique_ptr<Impl> model_;
     std::shared_ptr<Resources> resources_;

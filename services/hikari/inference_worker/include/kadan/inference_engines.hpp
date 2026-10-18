@@ -7,6 +7,8 @@
 namespace kadan::serving {
 using Json = nlohmann::json;
 using Progress = std::function<void(const char*, std::size_t)>;
+using RequestProgress =
+    std::function<void(const std::string&, const char*, std::size_t)>;
 
 inline void require(bool value, const char* message) {
     if (!value)
@@ -50,7 +52,9 @@ private:
 };
 
 std::unique_ptr<InferenceEngine> decision_engine(std::shared_ptr<Resources>, Progress);
-std::unique_ptr<InferenceEngine> image_engine(std::shared_ptr<Resources>, Progress);
+std::unique_ptr<InferenceEngine> image_engine(
+    std::shared_ptr<Resources>, Progress, RequestProgress, InferenceOwner::Probe
+);
 std::unique_ptr<InferenceEngine> video_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine>
     transcription_formatting_engine(std::shared_ptr<Resources>, Progress);

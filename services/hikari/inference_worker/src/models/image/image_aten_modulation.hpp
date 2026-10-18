@@ -21,9 +21,9 @@ struct AtenModulation {
 inline at::Tensor
 aten_modulated_norm(const at::Tensor& x, const at::Tensor& scale, std::int64_t prefix) {
     auto normalized = at::layer_norm(x.to(at::kFloat), {x.size(-1)}, {}, {}, 1e-6);
-    normalized.slice(0, prefix).mul_(scale[0]);
+    normalized.slice(-2, prefix).mul_(scale[0]);
     if (prefix)
-        normalized.slice(0, 0, prefix).mul_(scale[1]);
+        normalized.slice(-2, 0, prefix).mul_(scale[1]);
     return normalized.to(x.scalar_type());
 }
 
@@ -32,9 +32,9 @@ aten_modulated_norm(const at::Tensor& x, const at::Tensor& scale, std::int64_t p
 inline at::Tensor aten_gated_residual(
     at::Tensor x, const at::Tensor& delta, const at::Tensor& gate, std::int64_t prefix
 ) {
-    x.slice(0, prefix).addcmul_(delta.slice(0, prefix), gate[0]);
+    x.slice(-2, prefix).addcmul_(delta.slice(-2, prefix), gate[0]);
     if (prefix)
-        x.slice(0, 0, prefix).addcmul_(delta.slice(0, 0, prefix), gate[1]);
+        x.slice(-2, 0, prefix).addcmul_(delta.slice(-2, 0, prefix), gate[1]);
     return x;
 }
 }  // namespace kadan::image::detail

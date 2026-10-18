@@ -387,6 +387,7 @@ class Repository:
                     "pending_step_name",
                     "pending_request_id",
                     "pending_seed",
+                    "additional_pending_frames",
                     "owner_id",
                     "lease_expires_at",
                     "manifest",
@@ -408,6 +409,8 @@ class Repository:
                     or value.pending_step_name != current.pending_step_name
                     or value.pending_request_id != current.pending_request_id
                     or value.pending_seed != current.pending_seed
+                    or value.additional_pending_frames
+                    != current.additional_pending_frames
                 ):
                     raise StorageError(
                         "Recovery cannot modify completed or pending steps", 409
