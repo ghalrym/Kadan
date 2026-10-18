@@ -16,7 +16,7 @@ from .routes.agents.conversations.chat import ChatInput
 from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
-from .tool_loop import ToolTurn, tool_events, tool_history
+from .tool_loop import INFERENCE_TIMEOUT, ToolTurn, tool_events, tool_history
 
 MAX_PROMPT_MESSAGES = 100
 MAX_PROMPT_CHARACTERS = 48000
@@ -276,6 +276,7 @@ class LocalServices:
                     "stream": True,
                     "conversation_id": f"kadan:{key}:{saved.id}",
                 },
+                timeout=INFERENCE_TIMEOUT,
             ) as response:
                 if not response.is_success:
                     await response.aread()
