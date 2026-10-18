@@ -19,7 +19,9 @@ Selecting a tier and managing model downloads remain explicit actions in Hikari 
 
 ## Pet creation
 
-Open **Edit pet**, describe the character and art style, then choose **Create pet**.
+Open **Edit pet**. The left column lists **New pet**, the default **Hatchling** and
+every candidate with its progress; the right side previews the chosen one. Under
+**New pet**, **Describe** the character and art style, then choose **Create pet**.
 Creation runs independently of the dialog or MCP turn. The existing pet stays in
 use until the user previews the candidate and chooses **Use pet**. The preview
 plays all nine animation states and exposes all sixteen look directions. **Use
