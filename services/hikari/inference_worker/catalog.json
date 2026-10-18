@@ -878,8 +878,8 @@
       "id": "drama-3",
       "repo_id": "fishaudio/drama-3",
       "revision": "b2b5ee998034b2975720906c815e7fb0e9f007bd",
-      "license": "fish-audio-research-license",
-      "estimated_bytes": 41502454454,
+      "license": "fish-audio-community-license-1.0",
+      "estimated_bytes": 41502474139,
       "kind": "speech",
       "display_name": "Drama 3 FP8 (experimental)",
       "layout": "composite",
@@ -898,11 +898,12 @@
         "model-00008-of-00008.safetensors",
         "model.safetensors.index.json",
         "tokenizer.json",
-        "tokenizer_config.json"
+        "tokenizer_config.json",
+        "LICENSE"
       ],
       "weight_paths": [],
       "license_url": "https://huggingface.co/fishaudio/drama-3/blob/b2b5ee998034b2975720906c815e7fb0e9f007bd/LICENSE",
-      "license_notice": "Experimental Fish Audio research license. Review permitted uses before downloading. Native consumer-GPU performance is unverified.",
+      "license_notice": "Fish Audio Community License 1.0 applies to this checkpoint and its bundled codec. Review the linked terms before downloading. Native consumer-GPU performance is unverified.",
       "inference_available": true,
       "asset_url": null,
       "asset_name": null,
@@ -997,6 +998,13 @@
           "digest": "f6d3655491f93602f82a61a6ad6fa0658d737f63",
           "algorithm": "git-sha1",
           "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/tokenizer_config.json"
+        },
+        {
+          "name": "LICENSE",
+          "size": 19685,
+          "digest": "733a32442087acbda12ecafe8e71eb8ee5890c89b50ce7ac4ea3777faa3c823e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/LICENSE"
         }
       ]
     },
@@ -1004,8 +1012,8 @@
       "id": "drama-3-int4",
       "repo_id": "fishaudio/drama-3-int4",
       "revision": "a6f588691a13b6607cb09f9800556487ab7aa0fe",
-      "license": "fish-audio-research-license",
-      "estimated_bytes": 23999462445,
+      "license": "fish-audio-community-license-1.0",
+      "estimated_bytes": 23999482130,
       "kind": "speech",
       "display_name": "Drama 3 INT4 (experimental)",
       "layout": "composite",
@@ -1028,11 +1036,12 @@
         "model-00012-of-00012.safetensors",
         "model.safetensors.index.json",
         "tokenizer.json",
-        "tokenizer_config.json"
+        "tokenizer_config.json",
+        "LICENSE"
       ],
       "weight_paths": [],
       "license_url": "https://huggingface.co/fishaudio/drama-3-int4/blob/a6f588691a13b6607cb09f9800556487ab7aa0fe/LICENSE",
-      "license_notice": "Experimental Fish Audio research license. Review permitted uses before downloading. Native consumer-GPU performance is unverified. Native INT4 loading is unsupported.",
+      "license_notice": "Fish Audio Community License 1.0 applies to this checkpoint and its bundled codec. Review the linked terms before downloading. Native consumer-GPU performance is unverified. Native INT4 loading is unsupported.",
       "inference_available": false,
       "asset_url": null,
       "asset_name": null,
@@ -1155,6 +1164,13 @@
           "digest": "f6d3655491f93602f82a61a6ad6fa0658d737f63",
           "algorithm": "git-sha1",
           "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/tokenizer_config.json"
+        },
+        {
+          "name": "LICENSE",
+          "size": 19685,
+          "digest": "733a32442087acbda12ecafe8e71eb8ee5890c89b50ce7ac4ea3777faa3c823e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/LICENSE"
         }
       ]
     }
