@@ -41,7 +41,6 @@ struct ChatRequest {
     std::optional<std::string> model, conversation_id;
     bool context_supplied = false;
     std::optional<std::size_t> context_limit;
-    std::string architecture;
     std::size_t max_output_tokens = 256;
 };
 

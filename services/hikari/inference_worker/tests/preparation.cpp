@@ -297,8 +297,7 @@ void checkpoint_catalog_units() {
     const std::map<std::string, std::string> tiers{
         {"go", "qwen3.6-35b-a3b-q4-k-m"},
         {"plus", "qwen3.8-flash-next-ud-iq3-xxs"},
-        {"pro", "qwen3.8-flash-next-q3-k-xl"},
-        {"ultra", "glm-5.3-flash-q3-k-xl"}
+        {"pro", "qwen3.8-flash-next-q3-k-xl"}
     };
     for (const auto& [tier, id] : tiers) {
         const auto& hardware = store.hardware_tier(tier);
@@ -306,9 +305,7 @@ void checkpoint_catalog_units() {
         assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
         assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
         assert(hardware.models.at("video") == "h3-fl2va-int8-turbo");
-        assert(
-            hardware.video_defaults.duration == (tier == "go" || tier == "pro" ? 5 : 8)
-        );
+        assert(hardware.video_defaults.duration == (tier == "plus" ? 8 : 5));
         assert(
             hardware.video_defaults.resolution
             == (tier == "go" || tier == "plus" ? "480p" : "768p")
@@ -343,7 +340,7 @@ void checkpoint_catalog_units() {
           "qwen-image-2.1"})
         rejects([&] { store.entry(removed); });
     rejects([&] { store.hardware_tier("max"); });
-    assert(store.status().at("tiers").size() == 4);
+    assert(store.status().at("tiers").size() == 3);
     assert(store.status().at("selected_tier").is_null());
     assert(transfers == 0);
     assert(store.status().at("selected_model_id").is_null());
@@ -387,7 +384,7 @@ void typed_request_units() {
     );
     const auto& input = std::get<ChatRequest>(chat.input);
     assert(input.messages.size() == 1 && input.messages[0].text == "Hello");
-    assert(chat_prompt(input.messages, false, 4096).find("Hello") != std::string::npos);
+    assert(chat_prompt(input.messages, 4096).find("Hello") != std::string::npos);
     auto load = request("load", {{"feature", "llm"}}, "load");
     assert(!std::get<ChatRequest>(load.input).context_supplied);
     load = request("load", {{"feature", "llm"}, {"context_limit", nullptr}}, "load");

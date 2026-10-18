@@ -115,8 +115,7 @@ endif()
 # Native GGUF text models for the hardware tiers.
 add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
   src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
-  src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp
-  src/models/text/glm.cpp)
+  src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp)
 target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources
   PRIVATE ggml-base ggml-cpu)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

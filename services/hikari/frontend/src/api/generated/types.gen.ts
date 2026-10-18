@@ -748,7 +748,6 @@ export type ModelLoadRequest = {
     | 'qwen3.6-35b-a3b-q4-k-m'
     | 'qwen3.8-flash-next-ud-iq3-xxs'
     | 'qwen3.8-flash-next-q3-k-xl'
-    | 'glm-5.3-flash-q3-k-xl'
     | null
 }
 
@@ -1065,7 +1064,7 @@ export type SettingsRequest = {
   /**
    * Tier
    */
-  tier?: 'go' | 'plus' | 'pro' | 'ultra' | null
+  tier?: 'go' | 'plus' | 'pro' | null
   /**
    * Whisper Formatting
    */
@@ -1083,7 +1082,7 @@ export type SettingsResponse = {
    *
    * The selected hardware tier; null until the user chooses one.
    */
-  tier: 'go' | 'plus' | 'pro' | 'ultra' | null
+  tier: 'go' | 'plus' | 'pro' | null
   /**
    * Tiers
    */
@@ -1206,7 +1205,7 @@ export type TierSetting = {
   /**
    * Id
    */
-  id: 'go' | 'plus' | 'pro' | 'ultra'
+  id: 'go' | 'plus' | 'pro'
   /**
    * Models
    */
@@ -1497,6 +1496,12 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    */
   aspect?: '1:1' | '4:3' | '3:4' | '16:9'
   /**
+   * Batch Collection Target
+   *
+   * Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.
+   */
+  batch_collection_target?: number | null
+  /**
    * Count
    */
   count?: 1 | 2 | 4
@@ -1558,6 +1563,12 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Aspect
    */
   aspect?: '1:1' | '4:3' | '3:4' | '16:9'
+  /**
+   * Batch Collection Target
+   *
+   * Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.
+   */
+  batch_collection_target?: number | null
   /**
    * Count
    */

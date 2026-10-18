@@ -58,7 +58,6 @@ public:
     ) override {
         const auto& input = std::get<ChatRequest>(request.input);
         const auto root = request.configuration.checkpoint.string();
-        glm_ = input.architecture == "glm5_next";
         capacity_ = request.configuration.context_limit;
         require(capacity_ > 0 && capacity_ <= 1048576, "chat_context_limit");
         if (available[0] < 2ULL * 1024 * 1024 * 1024)
@@ -105,7 +104,7 @@ public:
         require(max_output_ > 0 && max_output_ <= 1024, "chat_output_limit");
         prompt_.resize(capacity_);
         const auto count = tokenizer_->encode(
-            chat_prompt(input.messages, glm_, byte_limit), prompt_, cancel, byte_limit
+            chat_prompt(input.messages, byte_limit), prompt_, cancel, byte_limit
         );
         prompt_.resize(count);
         prompt_tokens_ = count;
@@ -156,14 +155,8 @@ public:
             }
             progress_("decode_token", generated + 1);
             last = std::chrono::steady_clock::now();
-            if (!generated) {
+            if (!generated)
                 first = last;
-                // GLM's generation prompt already opened the reasoning block.
-                if (glm_) {
-                    text = "<think>";
-                    content_(text);
-                }
-            }
             pending += tokenizer_->decode(selected.id);
             auto chunk = utf8_chunk(pending);
             if (!chunk.empty()) {
@@ -233,7 +226,6 @@ private:
     std::unique_ptr<HostAllocation> request_memory_;
     std::vector<std::uint32_t> prompt_;
     std::size_t capacity_ = 8192, max_output_ = 256;
-    bool glm_ = false;
 };
 }  // namespace
 

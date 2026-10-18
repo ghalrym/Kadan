@@ -36,15 +36,13 @@ system memory.
 ## Supported native capabilities
 
 - Chat: one pinned GGUF mixture-of-experts checkpoint per hardware tier
-  (Qwen3.6 35B-A3B, Qwen3.8 Flash Next at two precisions and GLM-5.3 Flash),
-  with routed experts tiered across VRAM, RAM and disk;
-  text messages, JSON or streaming SSE responses. GLM reasoning streams inside `<think>…</think>` before the
-  answer. Context
-  admission uses the configured token capacity; it never silently truncates
-  history.
+  (Qwen3.6 35B-A3B and Qwen3.8 Flash Next at two precisions), with routed
+  experts tiered across VRAM, RAM and disk; text messages, JSON or streaming
+  SSE responses. Context admission uses the configured token capacity; it never
+  silently truncates history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
 - Images: Qwen Image generation. Editing is unavailable.
-- Video: H3 FL2VA INT8 + Turbo with audio across all four hardware tiers,
+- Video: H3 FL2VA INT8 + Turbo with audio across all three hardware tiers,
   480p/768p, 16:9/9:16/1:1, 24 fps and integer durations from 1–15 seconds.
   Omitted clip settings use the selected tier's defaults; explicit settings
   remain subject to actual memory admission. See [video defaults and memory

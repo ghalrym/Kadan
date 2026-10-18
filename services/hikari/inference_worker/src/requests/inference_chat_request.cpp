@@ -31,7 +31,6 @@ void prepare_input(
     );
     request.context = ContextLimits{configured, effective, supported};
     request.configuration.context_limit = effective;
-    input.architecture = config.at("model_type");
     preparation_check(
         request.operation == Operation::load || !input.messages.empty(),
         "Chat requires messages",
