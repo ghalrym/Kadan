@@ -34,8 +34,10 @@ from api.services.memory_scheduler import (
     Action,
     MachineLedger,
     Requirement,
+    needs_grant,
     plan_growth,
     plan_load,
+    releases,
 )
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -57,6 +59,27 @@ FEATURE_WORKERS = {
 
 # Jobs that have not started executing can move to another machine.
 REQUEUEABLE = (JobState.QUEUED, JobState.PREPARING, JobState.WAITING)
+
+# A release the worker never confirms is reread from its status after this.
+RELEASE_TIMEOUT = 60
+
+
+def gib(budget: list[int]) -> str:
+    return ", ".join(f"{value / GIB:.1f}" for value in budget)
+
+
+def settings(models: ModelStoreStatus) -> tuple:
+    """What a model store snapshot says that can change a memory requirement."""
+    return (
+        models.selected_tier,
+        models.selected_whisper,
+        models.whisper_formatting,
+        tuple(
+            sorted(
+                (model.id, model.status, model.context_limit) for model in models.models
+            )
+        ),
+    )
 
 
 def worker_token() -> str:
@@ -97,6 +120,7 @@ class Machine:
         self.models: ModelStoreStatus | None = None
         self.ready = asyncio.Event()
         self.controls: dict[str, asyncio.Future] = {}
+        self.preparing: asyncio.Task | None = None
         self.jobs: set[str] = set()
         self.write_lock = asyncio.Lock()
 
@@ -208,23 +232,34 @@ class WorkerHub:
     async def _dispatch(self, machine: Machine, message: dict):
         state = message.get("state")
         if state == "models":
-            machine.models = ModelStoreStatus.model_validate(message["models"])
+            models = ModelStoreStatus.model_validate(message["models"])
+            # Every finished job resends the store; only a change to settings
+            # or checkpoints can change what a worker needs.
+            if machine.models is None or settings(models) != settings(machine.models):
+                for slot in machine.ledger.workers.values():
+                    slot.requirement = None
+                self.wake.set()
+            machine.models = models
             if machine.name == self.primary:
                 self.models = machine.models
-            for slot in machine.ledger.workers.values():
-                slot.requirement = None
             return
         if state == "ready":
-            machine.ready.set()
-            self.connected.set()
-            await self._synchronize(machine)
-            self.wake.set()
+            # Routable only once its settings match the primary's.
+            machine.preparing = asyncio.create_task(self._prepare(machine))
             return
         if state == "worker":
             slot = machine.ledger.workers.get(message["worker"])
             if slot is not None:
                 slot.loaded = message["loaded"]
                 slot.budget = list(message["budget"])
+                slot.releasing = False
+                log.info(
+                    "%s %s on %s; budget %s GiB",
+                    message["worker"],
+                    message.get("event", "updated"),
+                    machine.name,
+                    gib(slot.budget),
+                )
             self.wake.set()
             return
         future = machine.controls.get(message.get("id", ""))
@@ -338,7 +373,7 @@ class WorkerHub:
         """Releases a worker's memory on every machine, e.g. after an unload."""
         for machine in tuple(self.machines.values()):
             slot = machine.ledger.workers.get(worker)
-            if slot is None or not slot.loaded:
+            if slot is None or not slot.loaded or slot.releasing:
                 continue
             action = Action("offload", worker)
             await self._apply(machine, [action])
@@ -427,6 +462,10 @@ class WorkerHub:
                 self.on_event(job, event)
             return
         if event.state == "waiting_for_resources" and job.state != JobState.WAITING:
+            # The grant may predate a change in what the worker needs.
+            if job.worker is not None:
+                machine.ledger.workers[job.worker].requirement = None
+                self.wake.set()
             log.warning(
                 "%s job %s waits for memory on %s: %s",
                 job.worker,
@@ -498,18 +537,33 @@ class WorkerHub:
                 tasks.append(
                     {
                         "feature": "model_context",
-                        "model": model.id,
-                        "limit": model.context_limit,
+                        "model_id": model.id,
+                        "context_limit": model.context_limit,
                     }
                 )
         for task in tasks:
-            message = InferenceTask(operation="configure", input=task).model_dump(
-                mode="json"
-            )
+            job = InferenceJob(InferenceTask(operation="configure", input=task), False)
+            job.machines.add(machine.name)
+            self.jobs[job.request.id] = job
+            machine.jobs.add(job.request.id)
             try:
-                await machine.send(message)
-            except Exception:
-                log.exception("Could not synchronize settings to %s", machine.name)
+                await machine.send(job.request.model_dump(mode="json"))
+                await asyncio.wait_for(asyncio.shield(job.result), 60)
+            finally:
+                machine.jobs.discard(job.request.id)
+                self.jobs.pop(job.request.id, None)
+
+    async def _prepare(self, machine: Machine):
+        """Synchronizes settings, then makes the machine routable."""
+        try:
+            await self._synchronize(machine)
+        except Exception:
+            log.exception("Could not synchronize settings to %s", machine.name)
+            await machine.websocket.close(code=1011)
+            return
+        machine.ready.set()
+        self.connected.set()
+        self.wake.set()
 
     # Scheduling
 
@@ -551,6 +605,15 @@ class WorkerHub:
 
     async def _apply(self, machine: Machine, actions: list[Action]) -> bool:
         for action in actions:
+            slot = machine.ledger.workers[action.worker]
+            release = releases(slot, action)
+            if release:
+                # Mark before sending: the worker may confirm the release before
+                # its reply to this command arrives. The old charge stays until
+                # its "worker" event updates the ledger and wakes planning. If
+                # the command fails, the timeout rereads the worker's state.
+                slot.releasing = True
+                slot.releasing_since = time.monotonic()
             if action.kind == "offload":
                 reply = await machine.control("offload", worker=action.worker)
             else:
@@ -558,7 +621,8 @@ class WorkerHub:
                     "load", worker=action.worker, budget=action.budget
                 )
             if not reply.get("ok"):
-                # The worker started a job in the meantime; plan again later.
+                # The worker started a job in the meantime; nothing changed.
+                slot.releasing = False
                 log.info(
                     "%s %s on %s refused: busy",
                     action.kind,
@@ -566,17 +630,18 @@ class WorkerHub:
                     machine.name,
                 )
                 return False
+            if release:
+                log.info(
+                    "%s %s on %s requested", action.kind, action.worker, machine.name
+                )
+                return False
             machine.ledger.apply(action)
             log.info(
-                "%s %s on %s%s",
+                "%s %s on %s with %s GiB",
                 action.kind,
                 action.worker,
                 machine.name,
-                ""
-                if action.budget is None
-                else " with "
-                + ", ".join(f"{value / GIB:.1f}" for value in action.budget)
-                + " GiB",
+                gib(action.budget),
             )
         return True
 
@@ -585,12 +650,13 @@ class WorkerHub:
     ):
         """Fails jobs that need more memory than the whole machine has."""
         host, device = (value / GIB for value in requirement.minimum)
+        devices = len(machine.ledger.capacity) - 1
         capacity = machine.ledger.capacity
         failure = InferenceFailure(
             f"{requirement.model or worker} needs at least {host:.1f} GiB RAM and "
-            f"{device:.1f} GiB on one GPU; {machine.name} has "
+            f"{device:.1f} GiB of VRAM; {machine.name} has "
             f"{capacity[0] / GIB:.1f} GiB RAM and "
-            f"{max(capacity[1:], default=0) / GIB:.1f} GiB on its largest GPU.",
+            f"{sum(capacity[1:]) / GIB:.1f} GiB free across {devices} GPU(s).",
             507,
         )
         log.warning("%s", failure)
@@ -601,14 +667,48 @@ class WorkerHub:
                     await machine.send({"id": job_id, "command": "cancel"})
                 self._fail(job, failure)
 
+    async def _resynchronize(self, machine: Machine):
+        """Rereads workers whose release was never confirmed.
+
+        A worker still cleaning up keeps its old charge. Otherwise it is charged
+        the larger of its budget and what its engine still holds, so memory is
+        never credited while allocations remain.
+        """
+        reply = await machine.control("status")
+        for worker in reply["workers"]:
+            slot = machine.ledger.workers.get(worker["worker"])
+            if slot is None or not slot.releasing:
+                continue
+            if worker.get("releasing"):
+                slot.releasing_since = time.monotonic()
+                continue
+            slot.loaded = worker["loaded"]
+            slot.budget = [
+                max(budget, used)
+                for budget, used in zip(worker["budget"], worker.get("used", []))
+            ] or list(worker["budget"])
+            slot.releasing = False
+
     async def _schedule(self, machine: Machine):
         ledger = machine.ledger
+        # Nothing is planned on top of memory that is still being released.
+        releasing = [slot for slot in ledger.workers.values() if slot.releasing]
+        if releasing:
+            if any(
+                time.monotonic() - slot.releasing_since > RELEASE_TIMEOUT
+                for slot in releasing
+            ):
+                log.warning(
+                    "Release on %s was not confirmed; rereading budgets", machine.name
+                )
+                await self._resynchronize(machine)
+            return
+        # Resident workers keep current requirements so they can shrink and grow.
+        for slot in ledger.workers.values():
+            if slot.requirement is None and (slot.loaded or slot.pending):
+                slot.requirement = await self._requirement(machine, slot.name)
         waiting = sorted(
-            (
-                slot
-                for slot in ledger.workers.values()
-                if slot.pending and not slot.loaded
-            ),
+            (slot for slot in ledger.workers.values() if needs_grant(ledger, slot)),
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
@@ -626,6 +726,8 @@ class WorkerHub:
                 await self._reject_unfittable(machine, slot.name, slot.requirement)
                 continue
             actions = plan_load(ledger, slot.name)
-            if actions is None or not await self._apply(machine, actions):
+            if actions is None:
                 continue
+            if not await self._apply(machine, actions):
+                return
         await self._apply(machine, plan_growth(ledger))

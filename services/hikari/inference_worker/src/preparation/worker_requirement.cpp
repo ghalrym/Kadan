@@ -34,7 +34,7 @@ std::string default_model(Workload workload, const ModelStore& store) {
     case Workload::formatting:
         return "superwhisper-s1-mini";
     case Workload::speech:
-        return store.whisper_selected();
+        return "whisper-" + store.whisper_selected();
     case Workload::image:
         return "qwen-image-2.1-turbo";
     case Workload::tts:
@@ -45,17 +45,22 @@ std::string default_model(Workload workload, const ModelStore& store) {
     throw std::invalid_argument("workload");
 }
 
+// Device amounts are for the whole workload on one GPU. Each further GPU it
+// spreads across needs another `device_floor` of its own (its compute context
+// and admission headroom); the rest divides between them.
 Json footprint(
     const std::string& model,
     Bytes host_min,
     Bytes host_pref,
     Bytes device_min,
-    Bytes device_pref
+    Bytes device_pref,
+    Bytes device_floor
 ) {
     return {
         {"model", model},
         {"minimum", {host_min, device_min}},
-        {"preferred", {host_pref, device_pref}}
+        {"preferred", {host_pref, device_pref}},
+        {"device_floor", device_floor}
     };
 }
 }  // namespace
@@ -65,7 +70,11 @@ Json worker_requirement(
     const std::optional<std::string>& requested,
     const ModelStore& store
 ) {
-    const auto model = requested ? *requested : default_model(workload, store);
+    // Transcription requests name a Whisper size; its catalog entry is prefixed.
+    const auto model = workload == Workload::speech && requested
+                           ? "whisper-" + store.whisper_model(*requested)
+                       : requested ? *requested
+                                   : default_model(workload, store);
     const auto& entry = store.entry(model);
     const Bytes weights = entry.estimated_bytes;
     // Minimums mirror each engine's own admission floor, so a granted budget
@@ -74,13 +83,18 @@ Json worker_requirement(
     switch (workload) {
     case Workload::decision:
         // Laya runs on the host only, inside a fixed envelope.
-        return footprint(model, decision_envelope, decision_envelope, 0, 0);
+        return footprint(model, decision_envelope, decision_envelope, 0, 0, 0);
     case Workload::formatting:
         // S1-mini runs on the host with its weights resident as floats.
-        return footprint(model, 2 * weights + gib, 2 * weights + gib, 0, 0);
+        return footprint(model, 2 * weights + gib, 2 * weights + gib, 0, 0, 0);
     case Workload::speech:
         return footprint(
-            model, gib, weights + gib, device_headroom, weights + device_headroom
+            model,
+            gib,
+            weights + gib,
+            device_headroom,
+            weights + device_headroom,
+            device_headroom
         );
     case Workload::tts:
         return footprint(
@@ -88,7 +102,8 @@ Json worker_requirement(
             2 * gib,
             weights + 2 * gib,
             device_headroom,
-            weights + device_headroom
+            weights + device_headroom,
+            device_headroom
         );
     case Workload::image:
         return footprint(
@@ -96,7 +111,8 @@ Json worker_requirement(
             image_host_floor,
             weights + image_host_floor,
             device_headroom,
-            weights + device_headroom
+            weights + device_headroom,
+            device_headroom
         );
     case Workload::video: {
         // The largest clip the API accepts bounds the host execution stage;
@@ -109,7 +125,8 @@ Json worker_requirement(
             stage,
             stage + 2 * weights,
             video_device_floor,
-            weights + video_device_floor
+            weights + video_device_floor,
+            video_device_floor
         );
     }
     case Workload::llm:
@@ -122,7 +139,8 @@ Json worker_requirement(
             text_host_headroom,
             weights + text_host_headroom,
             device_headroom,
-            weights + device_headroom
+            weights + device_headroom,
+            device_headroom
         );
     // The MoE engine pins non-expert weights and its context state in VRAM and
     // caches routed experts in whatever budget remains, so it runs on far less
@@ -153,7 +171,8 @@ Json worker_requirement(
         layout.host + text_host_headroom,
         layout.host + layout.packed + text_host_headroom,
         pinned + layout.host + device_headroom,
-        layout.packed + layout.host + device_headroom
+        layout.packed + layout.host + device_headroom,
+        device_headroom
     );
 }
 }  // namespace kadan::serving

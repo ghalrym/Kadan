@@ -2,6 +2,8 @@
 
 Budgets are footprints of [host RAM, device 0, device 1, ...] bytes. A worker's
 engine never exceeds its budget, so the ledger is the sum of granted budgets.
+VRAM is never pooled: every GPU a worker uses must hold that worker's own
+per-GPU floor, and only the rest of its device memory is divided between them.
 """
 
 from copy import deepcopy
@@ -29,8 +31,11 @@ GROWTH_THRESHOLD = GIB
 @dataclass
 class Requirement:
     model: str
-    minimum: tuple[int, int]  # (host, device)
+    # (host, device) for the whole workload on one GPU.
+    minimum: tuple[int, int]
     preferred: tuple[int, int]
+    # Each further GPU needs this much of its own (context and headroom).
+    device_floor: int = 0
 
     @classmethod
     def parse(cls, message: dict) -> "Requirement":
@@ -38,6 +43,7 @@ class Requirement:
             model=message["model"],
             minimum=tuple(message["minimum"]),
             preferred=tuple(message["preferred"]),
+            device_floor=message.get("device_floor", 0),
         )
 
 
@@ -50,6 +56,10 @@ class WorkerSlot:
     budget: list[int] = field(default_factory=list)
     last_used: float = 0.0
     requirement: Requirement | None = None
+    # A shrink or offload was sent; its old charge stays until the worker
+    # confirms the memory is physically free.
+    releasing: bool = False
+    releasing_since: float = 0.0
 
     @property
     def priority(self) -> int:
@@ -93,26 +103,49 @@ class MachineLedger:
                 free[index] -= value
         return free
 
-    def fit(self, requirement: Requirement, free: list[int]) -> list[int] | None:
-        """The largest budget up to preferred that meets the minimum, on one device."""
+    def fit(self, requirement: Requirement, free: list[float]) -> list[int] | None:
+        """The largest budget up to preferred that meets the minimum.
+
+        The workload may spread over several GPUs, roomiest first. Each GPU it
+        uses must have the per-GPU floor free; each extra GPU adds that floor to
+        the total. Among placements, the one holding the most of the workload
+        wins, and fewer GPUs win ties.
+        """
         (host_min, device_min), (host_pref, device_pref) = (
             requirement.minimum,
             requirement.preferred,
         )
+        floor = requirement.device_floor
         host = min(host_pref, free[0])
         if host < host_min:
             return None
-        best = None
-        for device in range(1, len(free)):
-            amount = min(device_pref, free[device])
-            if amount >= device_min and (best is None or amount > best[1]):
-                best = (device, amount)
         budget = [host] + [0] * (len(free) - 1)
         if device_min == 0 and device_pref == 0:
             return budget
+        order = sorted(range(1, len(free)), key=lambda index: -free[index])
+        best = None
+        for count in range(1, len(order) + 1):
+            devices = order[:count]
+            if free[devices[-1]] <= 0 or free[devices[-1]] < floor:
+                break
+            extra = floor * (count - 1)
+            available = sum(free[index] for index in devices)
+            if available < device_min + extra:
+                continue
+            amount = min(device_pref + extra, available)
+            if best is None or amount - extra > best[1] - floor * (len(best[0]) - 1):
+                best = (devices, amount)
         if best is None:
             return None
-        budget[best[0]] = best[1]
+        devices, amount = best
+        shares = {index: min(floor, free[index]) for index in devices}
+        remaining = amount - sum(shares.values())
+        for index in devices:
+            given = min(free[index] - shares[index], remaining)
+            shares[index] += given
+            remaining -= given
+        for index, share in shares.items():
+            budget[index] = int(share)
         return budget
 
     def apply(self, action: Action) -> None:
@@ -126,14 +159,38 @@ class MachineLedger:
 
 
 def _shrunk(slot: WorkerSlot) -> list[int] | None:
-    """A smaller budget at the worker's minimum, on the device it already uses."""
+    """A smaller budget at the worker's minimum, on the GPUs it already uses."""
     if slot.requirement is None:
         return None
     host_min, device_min = slot.requirement.minimum
-    budget = [min(slot.budget[0], host_min)]
-    for value in slot.budget[1:]:
-        budget.append(min(value, device_min) if value else 0)
+    floor = slot.requirement.device_floor
+    budget = [min(slot.budget[0], host_min)] + [0] * (len(slot.budget) - 1)
+    devices = sorted(
+        (index for index, value in enumerate(slot.budget[1:], 1) if value),
+        key=lambda index: -slot.budget[index],
+    )
+    remaining = device_min + floor * max(0, len(devices) - 1)
+    for index in devices:
+        budget[index] = min(slot.budget[index], floor)
+        remaining -= budget[index]
+    for index in devices:
+        given = max(0, min(slot.budget[index] - budget[index], remaining))
+        budget[index] += given
+        remaining -= given
     return budget if budget != slot.budget else None
+
+
+def _shrink_options(slot: WorkerSlot) -> list[list[int]]:
+    """Smaller budgets to try, least disruptive first: VRAM only, RAM only, both."""
+    shrunk = _shrunk(slot)
+    if shrunk is None:
+        return []
+    options = [[slot.budget[0], *shrunk[1:]], [shrunk[0], *slot.budget[1:]], shrunk]
+    unique = []
+    for option in options:
+        if option != slot.budget and option not in unique:
+            unique.append(option)
+    return unique
 
 
 def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
@@ -176,14 +233,14 @@ def _plan(
             if slot.name != target.name
             and slot.loaded
             and not slot.busy
+            and not slot.releasing
             and (slot.pending == 0 or slot.priority > target.priority)
         ),
         key=lambda slot: (-slot.priority, slot.last_used),
     )
     actions: list[Action] = []
     for slot in candidates:
-        shrunk = _shrunk(slot)
-        for option in ([shrunk] if shrunk is not None else []) + [None]:
+        for option in [*_shrink_options(slot), None]:
             released = slot.budget if option is None else option
             trial = list(free)
             for index, value in enumerate(slot.budget):
@@ -207,11 +264,17 @@ def plan_load(ledger: MachineLedger, name: str) -> list[Action] | None:
     by a strictly higher priority. Room comes from the lowest priority first,
     least recently used first, shrinking a flexible worker before offloading it.
     Higher-priority workers keep room for their minimum when the machine has it;
-    without it the worker still runs rather than waiting forever.
+    without it the worker still runs rather than waiting forever. A loaded
+    worker is re-granted as if its own budget were free.
     """
     target = ledger.workers[name]
     if target.requirement is None:
         return None
+    if target.loaded:
+        ledger = deepcopy(ledger)
+        target = ledger.workers[name]
+        target.budget = [0] * len(ledger.capacity)
+        target.loaded = False
     reserve = _reserve(ledger, target)
     planned = _plan(ledger, target, reserve)
     if planned is None and any(reserve):
@@ -219,14 +282,44 @@ def plan_load(ledger: MachineLedger, name: str) -> list[Action] | None:
     return planned
 
 
-def _grown(slot: WorkerSlot, free: list[float]) -> list[int]:
-    """The worker's budget grown into `free`, capped at its preference."""
-    host_pref, device_pref = slot.requirement.preferred
+def needs_grant(ledger: MachineLedger, slot: WorkerSlot) -> bool:
+    """Whether a worker with queued jobs lacks a budget meeting its minimum."""
+    if not slot.pending or slot.busy or slot.releasing:
+        return False
+    if not slot.loaded:
+        return True
+    return slot.requirement is not None and (
+        ledger.fit(slot.requirement, slot.budget) is None
+    )
+
+
+def _grown(ledger: MachineLedger, slot: WorkerSlot, free: list[float]) -> list[int]:
+    """The worker's budget grown into `free`, capped at its preference.
+
+    It may move onto more GPUs when that placement holds at least its current
+    share everywhere; otherwise it grows only on the GPUs it already uses. It
+    never shrinks anywhere, so growth needs no release before it is granted.
+    """
+    requirement = slot.requirement
+    available = [room + held for room, held in zip(free, slot.budget)]
+    candidate = ledger.fit(requirement, available)
+    if candidate is not None and all(
+        new >= old for new, old in zip(candidate, slot.budget)
+    ):
+        return candidate
+    host_pref, device_pref = requirement.preferred
     budget = list(slot.budget)
-    budget[0] = min(host_pref, slot.budget[0] + free[0])
-    for index, value in enumerate(slot.budget[1:], 1):
-        if value:
-            budget[index] = min(device_pref, value + free[index])
+    budget[0] = max(slot.budget[0], min(host_pref, available[0]))
+    devices = sorted(
+        (index for index, held in enumerate(slot.budget[1:], 1) if held),
+        key=lambda index: -free[index],
+    )
+    cap = device_pref + requirement.device_floor * max(0, len(devices) - 1)
+    remaining = max(0, cap - sum(slot.budget[index] for index in devices))
+    for index in devices:
+        given = max(0, min(free[index], remaining))
+        budget[index] += int(given)
+        remaining -= given
     return budget
 
 
@@ -234,47 +327,49 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
     """Let idle workers grow toward their preference once nothing is waiting.
 
     A worker may take free memory, and memory from idle lower-priority workers,
-    which shrink to their minimum (they stay loaded). Plans on a copy; the
+    which shrink toward their minimum (they stay loaded). Plans on a copy; the
     caller applies each action once the worker accepts it.
     """
     ledger = deepcopy(ledger)
-    if any(slot.pending and not slot.loaded for slot in ledger.workers.values()):
+    if any(needs_grant(ledger, slot) for slot in ledger.workers.values()):
         return []
     actions = []
     for slot in sorted(ledger.workers.values(), key=lambda slot: slot.priority):
-        if not slot.loaded or slot.busy or slot.requirement is None:
+        if not slot.loaded or slot.busy or slot.releasing or slot.requirement is None:
             continue
         # Growth never takes the room kept for the language tier.
         free = [
             value - kept for value, kept in zip(ledger.free(), _reserve(ledger, slot))
         ]
-        preferred = _grown(slot, [float("inf")] * len(free))
-        target = _grown(slot, free)
+        target = _grown(ledger, slot, free)
         donors = []
         for donor in sorted(
             ledger.workers.values(),
             key=lambda other: (-other.priority, other.last_used),
         ):
-            if target == preferred:
-                break
             shrunk = _shrunk(donor)
             if (
                 donor.priority <= slot.priority
                 or not donor.loaded
                 or donor.busy
                 or donor.pending
+                or donor.releasing
                 or shrunk is None
             ):
                 continue
-            # Give up only what the grower still lacks, down to the minimum.
-            short = [want - have for want, have in zip(preferred, target)]
+            # Give up only what the grower would actually take, down to the
+            # donor's minimum.
+            releasable = [old - floor for old, floor in zip(donor.budget, shrunk)]
+            ideal = _grown(
+                ledger, slot, [room + spare for room, spare in zip(free, releasable)]
+            )
             given = [
-                max(0, min(old - floor, need))
-                for old, floor, need in zip(donor.budget, shrunk, short)
+                max(0, min(spare, want - have))
+                for spare, want, have in zip(releasable, ideal, target)
             ]
             if not any(given):
                 continue
-            free = [value + amount for value, amount in zip(free, given)]
+            free = [room + amount for room, amount in zip(free, given)]
             donors.append(
                 Action(
                     "load",
@@ -282,7 +377,7 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
                     [old - amount for old, amount in zip(donor.budget, given)],
                 )
             )
-            target = _grown(slot, free)
+            target = _grown(ledger, slot, free)
         if not any(
             new - old >= GROWTH_THRESHOLD for new, old in zip(target, slot.budget)
         ):
@@ -291,3 +386,10 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
             ledger.apply(action)
             actions.append(action)
     return actions
+
+
+def releases(slot: WorkerSlot, action: Action) -> bool:
+    """Whether an action frees memory the worker holds, so it must be confirmed."""
+    if action.kind == "offload":
+        return True
+    return any(new < old for new, old in zip(action.budget, slot.budget))

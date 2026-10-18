@@ -193,6 +193,7 @@ Json MachineHost::worker_status(const Worker& worker) const {
         {"worker", worker.spec.name},
         {"loaded", status.loaded},
         {"busy", status.busy},
+        {"releasing", status.releasing},
         {"queued", status.queued},
         {"model", status.model.empty() ? Json(nullptr) : Json(status.model)},
         {"budget", status.budget},

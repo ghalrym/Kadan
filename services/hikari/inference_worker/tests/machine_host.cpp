@@ -161,6 +161,7 @@ void status_offload_and_requirement_replies() {
     assert(status["state"] == "status" && status["machine"]["name"] == "box");
     assert(status["workers"].size() == 3 && status["workers"][1]["worker"] == "llm");
     assert(status["workers"][1]["loaded"] == false);
+    assert(status["workers"][1]["releasing"] == false);
     harness.command(
         {{"id", id('f')}, {"command", "load"}, {"worker", "image"}, {"budget", {1, 1}}}
     );

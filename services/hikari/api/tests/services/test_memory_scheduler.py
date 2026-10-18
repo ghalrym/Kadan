@@ -92,11 +92,24 @@ class DisplacementTests(unittest.TestCase):
         machine = ledger(vram=(24,))
         load(machine, "llm", [40, 24], need=requirement(10, 6, 60, 40))
         machine.workers["image"].requirement = requirement(4, 14)
+        # Only VRAM is short, so the language model keeps its RAM.
+        self.assertEqual(
+            plan_load(machine, "image"),
+            [
+                Action("load", "llm", [40 * GIB, 6 * GIB]),
+                Action("load", "image", [4 * GIB, 14 * GIB]),
+            ],
+        )
+
+    def test_ram_only_shortage_shrinks_only_ram(self):
+        machine = ledger(ram=48, vram=(24,))
+        load(machine, "llm", [40, 6], need=requirement(10, 6, 60, 40))
+        machine.workers["image"].requirement = requirement(16, 4)
         self.assertEqual(
             plan_load(machine, "image"),
             [
                 Action("load", "llm", [10 * GIB, 6 * GIB]),
-                Action("load", "image", [4 * GIB, 14 * GIB]),
+                Action("load", "image", [16 * GIB, 4 * GIB]),
             ],
         )
 
@@ -227,3 +240,75 @@ class LanguagePriorityTests(unittest.TestCase):
                     machine, "image", [30, 18], need=requirement(16, 2, 40, 33), **state
                 )
                 self.assertEqual(plan_growth(machine), [])
+
+
+def spread(host_min, device_min, host_pref, device_pref, floor):
+    need = requirement(host_min, device_min, host_pref, device_pref)
+    need.device_floor = floor * GIB
+    return need
+
+
+class MultiGpuTests(unittest.TestCase):
+    def test_lone_workload_spreads_across_both_gpus(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        machine.workers["llm"].requirement = spread(10, 6, 30, 40, 2)
+        # 40 GiB preferred on one GPU, plus one extra floor for the second.
+        self.assertEqual(
+            plan_load(machine, "llm"),
+            [Action("load", "llm", [30 * GIB, 24 * GIB, 18 * GIB])],
+        )
+
+    def test_minimum_may_be_split_when_no_single_gpu_holds_it(self):
+        machine = ledger(ram=64, vram=(8, 8))
+        machine.workers["llm"].requirement = spread(10, 12, 30, 40, 2)
+        budget = plan_load(machine, "llm")[0].budget
+        self.assertEqual(budget, [30 * GIB, 8 * GIB, 8 * GIB])
+
+    def test_every_gpu_used_needs_its_own_floor(self):
+        machine = ledger(ram=64, vram=(10, 1))
+        machine.workers["llm"].requirement = spread(10, 10, 30, 40, 2)
+        self.assertEqual(
+            plan_load(machine, "llm"),
+            [Action("load", "llm", [30 * GIB, 10 * GIB, 0])],
+        )
+
+    def test_competing_single_gpu_workers_take_separate_gpus(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        load(machine, "llm", [10, 24, 0], need=spread(10, 6, 10, 20, 2))
+        machine.workers["image"].requirement = spread(4, 2, 4, 20, 2)
+        self.assertEqual(
+            plan_load(machine, "image"),
+            [Action("load", "image", [4 * GIB, 0, 20 * GIB])],
+        )
+
+    def test_shrink_keeps_a_floor_on_every_gpu_it_uses(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        load(machine, "llm", [30, 24, 18], need=spread(10, 6, 30, 40, 2))
+        machine.workers["video"].requirement = spread(4, 20, 4, 20, 3)
+        actions = plan_load(machine, "video")
+        self.assertEqual(
+            actions[0], Action("load", "llm", [30 * GIB, 6 * GIB, 2 * GIB])
+        )
+        self.assertEqual(actions[1].worker, "video")
+
+    def test_growth_can_add_a_gpu(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        load(machine, "llm", [30, 24, 0], need=spread(10, 6, 30, 40, 2))
+        self.assertEqual(
+            plan_growth(machine),
+            [Action("load", "llm", [30 * GIB, 24 * GIB, 18 * GIB])],
+        )
+
+    def test_growth_never_exceeds_the_preference_across_gpus(self):
+        # A roomier second GPU must not add a copy beside the current share.
+        machine = ledger(ram=64, vram=(21, 24))
+        load(machine, "llm", [30, 20, 0], need=spread(10, 6, 30, 20, 2))
+        self.assertEqual(plan_growth(machine), [])
+
+    def test_growth_in_place_stays_within_the_spread_preference(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        load(machine, "llm", [30, 10, 10], need=spread(10, 6, 30, 20, 2))
+        machine.workers["image"].loaded = True
+        machine.workers["image"].budget = [0, 0, 4 * GIB]
+        grown = plan_growth(machine)[0].budget
+        self.assertLessEqual(sum(grown[1:]), 22 * GIB)

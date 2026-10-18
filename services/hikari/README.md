@@ -18,12 +18,22 @@ WebSocket with `Authorization: Bearer $HIKARI_WORKER_TOKEN` and exits when that
 connection drops, so a supervisor restarts it.
 
 The API decides which workers hold memory. A worker pulls jobs only while it has
-a budget; its engine never exceeds that budget. When a worker has queued jobs
-and no room, the API shrinks or offloads idle workers in priority order (language
-and decisions, then speech, transcription and formatting, image, video; least
-recently used first). Busy workers are never touched, and a worker with queued
-jobs only yields to a higher priority. The language model's expert cache shrinks
-before the model is offloaded and grows back once nothing else waits.
+a budget of host RAM and per-GPU VRAM; its engine never exceeds that budget. A
+budget may span several GPUs, each holding at least that worker's per-GPU floor.
+When a worker has queued jobs and no room, the API shrinks or offloads idle
+workers in priority order (language and decisions, then speech, transcription
+and formatting, image, video; least recently used first). Busy workers are never
+touched, and a worker with queued jobs only yields to a higher priority. Other
+workers leave room for the language tier's minimum when the machine has it, and
+an idle lower-priority worker shrinks to its minimum so the language model can
+grow back. Memory from a shrink or offload is credited only after the worker
+reports it physically free.
+
+Changing a resident worker's budget, smaller or larger, closes its whole engine;
+the next request reloads it within the new budget. For the language model that
+is a full model load, not a resize of only the expert cache, and an image worker
+also loses its learned batch sizes. Each shrink or growth therefore costs one
+reload. Throughput and overlap between workers have not been measured.
 
 The Python API validates requests, serializes a typed Pydantic inference task,
 and routes it to a machine that runs that worker, preferring one where it is

@@ -131,7 +131,8 @@ private:
 
 // What a worker needs before the API grants its budget, from the catalog or,
 // for a downloaded language model, its GGUF plan. Reads metadata only.
-// {"model", "minimum": [host, device], "preferred": [host, device]}
+// {"model", "minimum": [host, device], "preferred": [host, device],
+//  "device_floor": per extra GPU}
 Json worker_requirement(
     Workload workload, const std::optional<std::string>& model, const ModelStore& store
 );

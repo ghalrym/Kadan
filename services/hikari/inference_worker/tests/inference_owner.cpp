@@ -1370,6 +1370,20 @@ void offload_refuses_while_busy_and_releases_when_idle() {
     owner.shutdown();
 }
 
+void shrink_is_acknowledged_even_without_an_engine() {
+    FakeState state;
+    std::vector<std::string> controls;
+    const auto held = offloaded_owner(state, {100, 80, 70}, controls);
+    auto& owner = *held;
+    assert(owner.load({50, 50, 50}));
+    assert(!owner.advance() && controls.empty());
+    assert(owner.load({20, 20, 20}));
+    assert(owner.status().releasing);
+    assert(owner.advance() && controls == std::vector<std::string>({"resized"}));
+    assert(!owner.status().releasing);
+    owner.shutdown();
+}
+
 void offloaded_owner_retires_a_cancelled_head() {
     FakeState state;
     std::vector<std::string> controls;
@@ -1397,6 +1411,7 @@ int main() {
     offloaded_owner_waits_for_a_budget();
     offload_refuses_while_busy_and_releases_when_idle();
     offloaded_owner_retires_a_cancelled_head();
+    shrink_is_acknowledged_even_without_an_engine();
     cohort_target_only_shortens_collection_waiting();
     incomplete_cohort_keeps_deadline_and_fifo_barriers();
     throughput_target_controls_collection_and_advice();

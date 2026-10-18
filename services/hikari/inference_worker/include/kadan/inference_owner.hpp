@@ -142,8 +142,10 @@ public:
         if (shrinks && executing_)
             return false;
         // A resident engine is rebuilt inside a changed budget before its next
-        // job; growth waits for the running job instead of being refused.
-        if (budget != ceiling_ && !model_.empty())
+        // job; growth waits for the running job instead of being refused. A
+        // shrink is always acknowledged once memory is physically free, so the
+        // API never credits memory an engine still holds.
+        if (shrinks || (budget != ceiling_ && !model_.empty()))
             release_requested_ = true;
         ceiling_ = std::move(budget);
         loaded_ = true;
@@ -168,7 +170,8 @@ public:
     }
 
     struct Status {
-        bool loaded, busy;
+        // `releasing`: a changed budget waits for the engine's cleanup.
+        bool loaded, busy, releasing;
         std::size_t queued;
         std::string model;
         Footprint budget;
@@ -178,7 +181,13 @@ public:
     Status status() const {
         std::lock_guard guard(mutex_);
         return {
-            loaded_, executing_, queue_.size(), model_, ceiling_, resources_->snapshot()
+            loaded_,
+            executing_,
+            release_requested_,
+            queue_.size(),
+            model_,
+            ceiling_,
+            resources_->snapshot()
         };
     }
 
