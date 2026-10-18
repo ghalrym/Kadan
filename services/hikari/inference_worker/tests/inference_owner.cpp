@@ -957,6 +957,100 @@ void image_collection_deadline_uses_oldest_submission() {
     owner.shutdown();
 }
 
+void cohort_target_only_shortens_collection_waiting() {
+    struct Case {
+        unsigned capacity, target, first_count, queued, expected;
+    };
+
+    for (const auto test :
+         {Case{5, 2, 1, 2, 2},
+          Case{5, 1, 1, 4, 4},
+          Case{2, 32, 1, 3, 2},
+          Case{5, 3, 2, 2, 2},
+          Case{1, 32, 1, 2, 1}}) {
+        BatchState state;
+        state.capacity = test.capacity;
+        state.image_results = true;
+        std::vector<unsigned> advice;
+        const auto now = std::chrono::steady_clock::time_point{};
+        InferenceOwner owner(
+            {100, 100, 100},
+            [&](auto, auto ledger) {
+                return std::make_unique<BatchEngine>(state, ledger);
+            },
+            [] { return Footprint{100, 80, 70}; },
+            [&](auto, auto event, auto value) {
+                if (event == JobState::succeeded)
+                    advice.push_back(value.at("next_batch_capacity"));
+            },
+            32,
+            {},
+            [&] { return now; }
+        );
+        for (unsigned i = 0; i < test.queued; ++i) {
+            auto request = image_request(std::to_string(i));
+            auto& image = std::get<ImageRequest>(request.input);
+            image.batch_collection_target = i == 0 ? test.target : i % 2 ? 1 : 32;
+            if (i == 0)
+                image.count = test.first_count;
+            owner.submit(request);
+        }
+        // The clock never advances: an available cohort launches immediately,
+        // but its hint neither caps the prefix nor replaces capacity advice.
+        assert(owner.advance());
+        assert(state.batches.front().size() == test.expected);
+        assert(owner.pending() == test.queued - test.expected);
+        for (unsigned i = 0; i < test.expected; ++i) {
+            assert(state.batches.front()[i] == std::to_string(i));
+            assert(advice[i] == test.capacity);
+        }
+        owner.shutdown();
+    }
+}
+
+void incomplete_cohort_keeps_deadline_and_fifo_barriers() {
+    for (const bool incompatible : {false, true}) {
+        BatchState state;
+        state.capacity = 5;
+        auto now = std::chrono::steady_clock::time_point{};
+        InferenceOwner owner(
+            {100, 100, 100},
+            [&](auto, auto ledger) {
+                return std::make_unique<BatchEngine>(state, ledger);
+            },
+            [] { return Footprint{100, 80, 70}; },
+            [](auto, auto, auto) {},
+            32,
+            {},
+            [&] { return now; }
+        );
+        auto head = image_request("head");
+        std::get<ImageRequest>(head.input).batch_collection_target = 3;
+        owner.submit(head);
+        auto second = image_request("second");
+        if (incompatible)
+            std::get<ImageRequest>(second.input).width = 512;
+        owner.submit(second);
+        if (incompatible) {
+            owner.submit(image_request("third"));
+            assert(owner.advance());
+            assert((state.batches.front() == std::vector<std::string>{"head"}));
+            assert(owner.pending() == 2);
+        } else {
+            assert(!owner.advance());
+            now += std::chrono::seconds(9);
+            assert(!owner.advance());
+            now += std::chrono::seconds(1);
+            assert(owner.advance());
+            assert(
+                (state.batches.front() == std::vector<std::string>{"head", "second"})
+            );
+            assert(owner.pending() == 0);
+        }
+        owner.shutdown();
+    }
+}
+
 void incompatible_image_head_is_not_overtaken() {
     BatchState state;
     InferenceOwner owner(
@@ -1204,6 +1298,8 @@ void image_memory_growth_is_measured_and_devices_are_independent() {
 }
 
 int main() {
+    cohort_target_only_shortens_collection_waiting();
+    incomplete_cohort_keeps_deadline_and_fifo_barriers();
     throughput_target_controls_collection_and_advice();
     image_capacity_hint_uses_successful_measurement_and_fresh_pressure();
     cancellation_during_capacity_probe_cleans_up_before_terminals();

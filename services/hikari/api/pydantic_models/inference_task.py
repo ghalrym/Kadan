@@ -43,6 +43,13 @@ class ImageTask(TaskInput):
     prompt: str
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
+    batch_collection_target: int | None = Field(
+        default=None,
+        ge=1,
+        le=32,
+        strict=True,
+        description="Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+    )
     seed: int | None = None
     steps: int = 50
     image: str | None = None

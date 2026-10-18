@@ -16,6 +16,7 @@ class ImageEditTests(unittest.IsolatedAsyncioTestCase):
             mask="data:image/png;base64,bWFzaw==",
             strength=0.4,
             count=1,
+            batch_collection_target=3,
         )
         request = object()
         result = {"image": {"mode": "Edit"}}
@@ -40,6 +41,7 @@ class ImageEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.input.image, body.image)
         self.assertEqual(restored.input.mask, body.mask)
         self.assertEqual(restored.input.strength, 0.4)
+        self.assertEqual(restored.input.batch_collection_target, 3)
 
     def test_rejects_non_upload_references_and_invalid_strength(self):
         for image in (

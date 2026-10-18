@@ -17,6 +17,13 @@ class ImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
+    batch_collection_target: int | None = Field(
+        default=None,
+        ge=1,
+        le=32,
+        strict=True,
+        description="Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+    )
     seed: int | None = Field(default=None, ge=0, le=2**64 - 1)
     model_id: ImageModel | None = None
     steps: int = Field(default=50, ge=2, le=100)
