@@ -1008,3 +1008,77 @@ def test_pending_cohort_rejects_invalid_members(repository, invalid):
 def test_additional_pending_frames_require_a_primary_request():
     with pytest.raises(ValidationError, match="primary"):
         PetState(additional_pending_frames=[{"name": "idle/2", "request_id": uuid4()}])
+
+def imported_manifest(atlas_id, sprite_version=2):
+    return PetManifest(
+        atlas_asset_id=atlas_id,
+        sprite_version=sprite_version,
+        rows=11 if sprite_version == 2 else 9,
+        animations=[
+            PetAnimation(name=name, row=row, durations=[100] * 4)
+            for row, name in enumerate(PET_ANIMATIONS)
+        ],
+    )
+
+
+@pytest.mark.parametrize("sprite_version", [1, 2])
+def test_imported_pet_is_ready_selectable_and_idempotent(repository, sprite_version):
+    pet_id = uuid4()
+    manifest = imported_manifest(artwork(repository).id, sprite_version)
+    pet = repository.import_pet("alpha", pet_id, "Copper fox", manifest)
+    assert (pet.origin, pet.status, pet.steps, pet.manifest) == (
+        "imported",
+        "ready",
+        [],
+        manifest,
+    )
+    assert repository.import_pet("alpha", pet_id, "Copper fox", manifest) == pet
+    with pytest.raises(StorageError, match="already in use"):
+        repository.import_pet("alpha", pet_id, "Another fox", manifest)
+    assert repository.active_pet_jobs() == []
+    assert repository.select_pet("alpha", pet.id) == pet
+    repository.trash_asset("alpha", manifest.atlas_asset_id, 1)
+    assert repository.selected_pet("alpha") is None
+
+
+@pytest.mark.parametrize("invalid", ["other_agent", "not_image"])
+def test_imported_pet_requires_same_agent_raster_atlas(repository, invalid):
+    atlas = (
+        artwork(repository, key="beta")
+        if invalid == "other_agent"
+        else artwork(repository, image=False)
+    )
+    with pytest.raises(StorageError):
+        repository.import_pet("alpha", uuid4(), "Fox", imported_manifest(atlas.id))
+
+
+def test_imported_pet_cannot_be_resumed_revised_or_carry_history(repository):
+    pet = repository.import_pet(
+        "alpha", uuid4(), "Fox", imported_manifest(artwork(repository).id)
+    )
+    with pytest.raises(StorageError, match="transition"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(pet, origin="generated", status="queued", manifest=None, stage="q"),
+            1,
+        )
+    with pytest.raises(StorageError, match="completed frames"):
+        repository.revise_pet("alpha", pet.id, uuid4(), 1, ["idle/1"], "Fix it")
+    with pytest.raises(ValidationError, match="Imported pets"):
+        PetState(origin="imported", status="ready", manifest=None)
+    with pytest.raises(ValidationError, match="Imported pets"):
+        PetState(
+            origin="imported",
+            status="ready",
+            manifest=imported_manifest(uuid4()).model_copy(
+                update={"base_asset_id": uuid4()}
+            ),
+        )
+
+
+def test_manifest_rows_match_sprite_version():
+    with pytest.raises(ValidationError, match="9 rows"):
+        PetManifest.model_validate(
+            {**imported_manifest(uuid4()).model_dump(), "sprite_version": 1}
+        )

@@ -311,13 +311,14 @@ class PetAnimation(Model):
 
 class PetManifest(Model):
     schema_version: Literal[1] = 1
-    sprite_version: Literal[2] = 2
+    sprite_version: Literal[1, 2] = 2
     atlas_asset_id: UUID
-    base_asset_id: UUID
+    # Imported atlases have no generated base artwork.
+    base_asset_id: UUID | None = None
     cell_width: Literal[192] = 192
     cell_height: Literal[208] = 208
     columns: Literal[8] = 8
-    rows: Literal[11] = 11
+    rows: Literal[9, 11] = 11
     pixelated: bool = False
     animations: list[PetAnimation] = Field(min_length=9, max_length=9)
 
@@ -327,6 +328,8 @@ class PetManifest(Model):
             zip(PET_ANIMATIONS, range(9), strict=True)
         ):
             raise ValueError("Pet animations must use the nine canonical atlas rows")
+        if self.rows != (11 if self.sprite_version == 2 else 9):
+            raise ValueError("v1 pet atlases have 9 rows and v2 atlases have 11")
         if self.atlas_asset_id == self.base_asset_id:
             raise ValueError("Pet atlas and base artwork must be separate assets")
         return self
@@ -366,6 +369,7 @@ class PetPendingFrame(Model):
 
 
 class PetState(Model):
+    origin: Literal["generated", "imported"] = "generated"
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
     completed_steps: int = Field(default=0, ge=0, le=74)
@@ -484,6 +488,21 @@ class PetState(Model):
             raise ValueError("Only running jobs can retain an owner or lease")
         if self.status in {"cancelling", "cancelled"} and not self.cancel_requested:
             raise ValueError("Cancellation states require a cancellation request")
+        if self.origin == "imported":
+            if (
+                self.status != "ready"
+                or self.steps
+                or self.rejections
+                or self.parent_pet_id is not None
+                or self.pending_step_name is not None
+                or self.cancel_requested
+                or self.manifest is None
+                or self.manifest.base_asset_id is not None
+            ):
+                raise ValueError(
+                    "Imported pets are ready atlases without generation history"
+                )
+            return self
         if self.status == "ready":
             if (
                 self.cancel_requested
@@ -492,6 +511,8 @@ class PetState(Model):
                 or self.pending_step_name is not None
             ):
                 raise ValueError("Ready pets require every step and an atlas manifest")
+            if self.manifest.sprite_version != 2:
+                raise ValueError("Generated pets use the v2 atlas")
             if self.manifest.base_asset_id != self.steps[0].output_asset_id:
                 raise ValueError("Manifest must reference the generated base artwork")
             if self.manifest.atlas_asset_id in image_ids | provenance_ids:
@@ -507,7 +528,9 @@ class PetState(Model):
         refs.update(step.provenance_asset_id for step in history)
         refs.update(step.source_asset_id for step in history if step.source_asset_id)
         if self.manifest:
-            refs.update((self.manifest.atlas_asset_id, self.manifest.base_asset_id))
+            refs.add(self.manifest.atlas_asset_id)
+            if self.manifest.base_asset_id:
+                refs.add(self.manifest.base_asset_id)
         return refs
 
 

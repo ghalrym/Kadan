@@ -18,6 +18,7 @@ from .models import (
     Message,
     Metadata,
     PetJob,
+    PetManifest,
     PetRejection,
     PetState,
     Resource,
@@ -216,6 +217,41 @@ class Repository:
             self._save_pet(db, pet)
         return pet
 
+    def import_pet(
+        self, key: str, pet_id: UUID, prompt: str, manifest: PetManifest
+    ) -> PetJob:
+        now = utc_now()
+        pet = PetJob(
+            id=pet_id,
+            agent_key=key,
+            prompt=prompt,
+            origin="imported",
+            status="ready",
+            stage="Imported",
+            manifest=manifest,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            row = db.execute(
+                "SELECT data FROM pet_jobs WHERE id = ?", (str(pet_id),)
+            ).fetchone()
+            if row is not None:
+                current = PetJob.model_validate_json(row[0])
+                if (
+                    current.agent_key == key
+                    and current.origin == "imported"
+                    and current.prompt == prompt
+                    and current.manifest == manifest
+                ):
+                    return current
+                raise StorageError("This pet job ID is already in use", 409)
+            self._validate_pet_assets(db, key, pet)
+            self._save_pet(db, pet)
+        return pet
+
     def revise_pet(
         self,
         key: str,
@@ -363,7 +399,8 @@ class Repository:
             if any(updated_steps.get(step.name) != step for step in current.steps):
                 raise StorageError("Completed pet steps are immutable", 409)
             if (
-                value.parent_pet_id != current.parent_pet_id
+                value.origin != current.origin
+                or value.parent_pet_id != current.parent_pet_id
                 or value.rejections != current.rejections
             ):
                 raise StorageError("Pet revision history is immutable", 409)
