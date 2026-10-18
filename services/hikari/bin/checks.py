@@ -54,6 +54,10 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "s1-mini-metadata-tests",
     "text-tokenizer-tests",
     "inference-worker-text-tests",
+    "drama-codec-tests",
+    "codec-export-tests",
+    "drama-prompt-tests",
+    "drama-model-tests",
 ]
 
 CPP_SUFFIXES = {".cpp", ".hpp", ".h", ".cu", ".cuh"}

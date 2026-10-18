@@ -40,6 +40,8 @@ InferenceRequest parse_request(const Json& envelope) {
     const auto feature = body.at("feature").get<std::string>();
     if (feature == "llm") {
         ChatRequest input;
+        input.expected_tier = optional<std::string>(body, "expected_tier");
+        input.require_installed = body.value("require_installed", false);
         input.model = optional<std::string>(body, "model_id");
         if (!input.model)
             input.model = optional<std::string>(body, "model");
@@ -138,7 +140,10 @@ InferenceRequest parse_request(const Json& envelope) {
         request.workload = Workload::decision;
     } else if (feature == "tts") {
         SpeechRequest input;
+        input.expected_tier = optional<std::string>(body, "expected_tier");
+        input.require_installed = body.value("require_installed", false);
         input.script = body.at("script");
+        input.stream = body.value("stream", false);
         input.model = body.value("model_id", input.model);
         input.language = body.value("language", input.language);
         input.speaker = body.at("voice").at("speaker");
@@ -147,6 +152,8 @@ InferenceRequest parse_request(const Json& envelope) {
         request.workload = Workload::tts;
     } else if (feature == "stt") {
         TranscriptionRequest input;
+        input.expected_tier = optional<std::string>(body, "expected_tier");
+        input.require_installed = body.value("require_installed", false);
         input.audio = body.at("audio");
         input.model = optional<std::string>(body, "model");
         input.language = optional<std::string>(body, "language");

@@ -24,6 +24,8 @@ class ChatTask(TaskInput):
     stream: bool = False
     conversation_id: str | None = None
     reuse_prefix: bool = True
+    expected_tier: TierId | None = None
+    require_installed: bool = False
 
 
 # One GGUF mixture-of-experts language model per hardware tier.
@@ -97,6 +99,9 @@ class SpeechTask(TaskInput):
     model_id: str = "qwen-tts-1.7b-custom"
     language: str = "Auto"
     voice: SpeechVoice
+    stream: bool = False
+    expected_tier: TierId | None = None
+    require_installed: bool = False
 
 
 class TranscriptionTask(TaskInput):
@@ -105,6 +110,8 @@ class TranscriptionTask(TaskInput):
     model: str | None = None
     language: str | None = None
     formatting: bool | None = None
+    expected_tier: TierId | None = None
+    require_installed: bool = False
 
 
 class TranscriptionFormattingTask(TaskInput):

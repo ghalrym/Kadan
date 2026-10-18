@@ -2,7 +2,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 from api.routes import health
 from api.routes.v1 import decisions, images, metrics, requests, settings, videos, models
-from api.routes.v1.audio import speech, transcriptions
+from api.routes.v1.audio import conversation, speech, transcriptions
 from api.routes.v1.chat import completions, messages
 from api.routes.v1.images import edits, generations as image_generations
 from api.routes.v1.images import requests as image_requests
@@ -43,6 +43,7 @@ for router in (
     video_generations.router,
     videos.router,
     speech.router,
+    conversation.router,
     transcriptions.router,
     metrics.router,
     requests.router,

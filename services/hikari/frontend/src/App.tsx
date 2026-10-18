@@ -11,6 +11,7 @@ import SettingsPage from './pages/SettingsPage'
 import SpeechToTextPage from './pages/SpeechToTextPage'
 import TextToSpeechPage from './pages/TextToSpeechPage'
 import VideoPage from './pages/VideoPage'
+import VoicePage from './pages/VoicePage'
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="video" element={<VideoPage />} />
           <Route path="tts" element={<TextToSpeechPage />} />
           <Route path="stt" element={<SpeechToTextPage />} />
+          <Route path="voice" element={<VoicePage />} />
           <Route path="api" element={<ApiAccessPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

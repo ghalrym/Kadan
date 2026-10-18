@@ -65,13 +65,14 @@ find_package(LibArchive REQUIRED)
 find_package(PNG REQUIRED)
 add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation/model_store.cpp
   src/preparation/gguf_assets.cpp
+  src/preparation/checkpoint_pickle.cpp src/preparation/codec_export.cpp
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
   src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
   src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE kadan_metadata kadan_gguf_text CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
+  PRIVATE kadan_metadata kadan_gguf_text kadan_drama_codec_schema CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
@@ -219,6 +220,14 @@ if(KADAN_ENABLE_WHISPER_BLAS)
   target_compile_definitions(kadan_whisper PRIVATE KADAN_WHISPER_BLAS=1)
   target_link_libraries(kadan_whisper PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()
+
+add_library(kadan_drama_codec_schema src/models/speech/drama_codec_schema.cpp)
+target_link_libraries(kadan_drama_codec_schema PUBLIC kadan_resources)
+target_compile_options(kadan_drama_codec_schema PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_library(kadan_drama src/models/speech/drama_model.cpp src/models/speech/drama_weights.cpp
+  src/models/speech/drama_codec.cpp)
+target_link_libraries(kadan_drama PUBLIC kadan_checkpoint kadan_resources kadan_drama_codec_schema PRIVATE kadan_metadata kadan_layer_math)
+target_compile_options(kadan_drama PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
 add_library(kadan_tts_audio src/models/speech/tts_audio.cpp)
 target_link_libraries(kadan_tts_audio PUBLIC kadan_checkpoint kadan_resources)
@@ -447,11 +456,11 @@ endif()
 if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION AND KADAN_ENABLE_TTS_WORKER AND KADAN_ENABLE_IMAGE_GENERATION)
   add_executable(kadan-inference-worker src/inference_worker.cpp src/inference/inference_chat.cpp
     src/inference/inference_decision.cpp src/inference/inference_image.cpp src/inference/inference_video.cpp
-    src/inference/inference_whisper.cpp src/inference/inference_speech.cpp)
+    src/inference/inference_whisper.cpp src/inference/inference_speech.cpp src/inference/inference_drama.cpp)
   target_compile_definitions(kadan-inference-worker PRIVATE KADAN_WORKER_CUDA=1)
   target_link_libraries(kadan-inference-worker PRIVATE kadan_gguf_text
     kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
-    kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
+    kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio kadan_drama
     kadan_transcription_formatting kadan_preparation nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
   install(TARGETS kadan-inference-worker
     RUNTIME_DEPENDENCIES
@@ -462,6 +471,7 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
   install(FILES catalog.json DESTINATION share/kadan COMPONENT inference-runtime)
   install(FILES "${kadan_ggml_SOURCE_DIR}/LICENSE"
     DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT inference-runtime)
+  install(DIRECTORY licenses/ DESTINATION share/kadan/licenses COMPONENT inference-runtime)
   install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT inference-runtime)
   install(PROGRAMS packaging/run_inference_worker.sh DESTINATION bin
     RENAME kadan-inference-worker COMPONENT inference-runtime)
@@ -488,4 +498,23 @@ endif()
 option(KADAN_BUILD_TOOLS "Build developer tools exposed by bin/kadan.py" OFF)
 if(KADAN_BUILD_TOOLS)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../bin" "${CMAKE_CURRENT_BINARY_DIR}/tools")
+endif()
+
+if(BUILD_TESTING)
+  add_executable(drama-codec-tests tests/drama_codec.cpp)
+  target_link_libraries(drama-codec-tests PRIVATE kadan_drama_codec_schema)
+  add_test(NAME drama-codec COMMAND drama-codec-tests)
+  add_executable(codec-export-tests tests/codec_export.cpp)
+  target_link_libraries(codec-export-tests PRIVATE kadan_preparation)
+  add_test(NAME codec-export COMMAND codec-export-tests)
+  add_executable(drama-prompt-tests tests/drama_prompt.cpp)
+  target_link_libraries(drama-prompt-tests PRIVATE kadan_resources)
+  add_test(NAME drama-prompt COMMAND drama-prompt-tests)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(drama-model-tests tests/drama_model.cpp)
+  target_link_libraries(drama-model-tests PRIVATE kadan_drama)
+  target_compile_options(drama-model-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME drama-model-metadata COMMAND drama-model-tests)
 endif()

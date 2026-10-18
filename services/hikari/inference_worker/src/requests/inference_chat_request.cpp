@@ -13,6 +13,21 @@ void prepare_input(
         "This checkpoint has no supported inference engine.",
         422
     );
+    preparation_check(
+        !input.expected_tier || store.tier() == input.expected_tier,
+        "The active hardware tier changed; restart the conversation.",
+        409
+    );
+    preparation_check(
+        !input.expected_tier || request.model == store.selected(),
+        "Conversation language model does not match the active tier.",
+        409
+    );
+    preparation_check(
+        !input.require_installed || store.complete(store.entry(request.model)),
+        "Install the conversation language model in Settings first.",
+        409
+    );
     request.configuration.checkpoint = store.acquire(request.model, cancel);
     const auto config = read_document(request.configuration.checkpoint / "config.json");
     const auto text = config.value("text_config", config);

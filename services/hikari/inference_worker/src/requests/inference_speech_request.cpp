@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 
+#include "kadan/drama_prompt.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -11,6 +13,66 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     request.model = input.model;
+    preparation_check(
+        !input.expected_tier || store.tier() == input.expected_tier,
+        "The active hardware tier changed; restart the conversation.",
+        409
+    );
+    const bool drama = input.model == "drama-3" || input.model == "drama-3-int4";
+    preparation_check(
+        !input.expected_tier || drama
+            || store.hardware_tier(*input.expected_tier).models.at("speech")
+                   == std::optional<std::string>(request.model),
+        "Conversation speech model does not match the active tier.",
+        409
+    );
+    preparation_check(
+        input.model != "drama-3-int4",
+        "Drama 3 INT4 native packed-weight decoding is not supported.",
+        422
+    );
+    const auto& entry = store.entry(request.model);
+    preparation_check(
+        !(input.require_installed || drama) || store.complete(entry),
+        "Install the speech checkpoint in Settings before starting a conversation.",
+        409
+    );
+    if (drama) {
+        preparation_check(
+            input.stream, "Drama 3 requires streamed speech output.", 422
+        );
+        preparation_check(
+            (input.speaker.empty() || input.speaker == "default")
+                && input.instruction.empty() && input.language == "Auto",
+            "Drama 3 currently supports the default voice without language or "
+            "instruction overrides.",
+            422
+        );
+        try {
+            (void)drama::prompt_segments(input.script);
+        } catch (const std::invalid_argument& error) {
+            throw RequestError(error.what(), 422);
+        }
+        // Never acquire here: conversation requests must not start downloads.
+        request.configuration.checkpoint =
+            store.root() / (entry.id + "-" + entry.revision);
+        input.tokenizer = request.configuration.checkpoint / "tokenizer.json";
+        const auto codec = std::find_if(
+            entry.manifest.begin(), entry.manifest.end(), [](const auto& file) {
+                return file.name == "codec.pth";
+            }
+        );
+        preparation_check(
+            codec != entry.manifest.end(), "Drama codec manifest missing"
+        );
+        export_drama_codec(
+            request.configuration.checkpoint / "codec.pth",
+            codec->digest,
+            request.configuration.checkpoint / "codec",
+            cancel
+        );
+        return;
+    }
     request.configuration.checkpoint = store.acquire(request.model, cancel);
     input.tokenizer =
         configured_path("KADAN_TTS_TOKENIZER", store.root() / "tts/tokenizer.json");

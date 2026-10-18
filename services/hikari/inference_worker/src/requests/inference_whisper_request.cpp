@@ -19,6 +19,24 @@ void prepare_input(
         "The Whisper checkpoint supports English.",
         422
     );
+    preparation_check(
+        !input.expected_tier || store.tier() == input.expected_tier,
+        "The active hardware tier changed; restart the conversation.",
+        409
+    );
+    if (input.expected_tier)
+        preparation_check(
+            store.hardware_tier(*input.expected_tier).models.at("transcription")
+                == std::optional<std::string>("whisper-" + request.model),
+            "Conversation transcription model does not match the active tier.",
+            409
+        );
+    preparation_check(
+        !input.require_installed
+            || store.complete(store.entry("whisper-" + request.model)),
+        "Install the conversation transcription model in Settings first.",
+        409
+    );
     const auto root = configured_path(
         "KADAN_WHISPER_MODEL_ROOT", store.root() / "whisper" / request.model
     );

@@ -331,6 +331,10 @@ class InferenceService:
             await await_cleanup(asyncio.create_task(self.cancel(job.request.id)))
             raise
 
+    async def open_speech_stream(self, body: BaseModel):
+        job, completion = await self._submit(body, "tts", "generate", streaming=True)
+        return InferenceStream(self, job, completion)
+
     async def _complete(self, job):
         try:
             result = await asyncio.shield(job.result)

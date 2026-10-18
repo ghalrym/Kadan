@@ -39,6 +39,8 @@ struct ChatMessage {
 struct ChatRequest {
     std::vector<ChatMessage> messages;
     std::optional<std::string> model, conversation_id;
+    std::optional<std::string> expected_tier;
+    bool require_installed = false;
     bool context_supplied = false;
     std::optional<std::size_t> context_limit;
     std::string architecture;
@@ -114,10 +116,14 @@ struct SpeechRequest {
     std::string script, model = "qwen-tts-1.7b-custom", language = "Auto";
     std::string speaker, instruction;
     std::filesystem::path tokenizer;
+    std::optional<std::string> expected_tier;
+    bool stream = false, require_installed = false;
 };
 
 struct TranscriptionRequest {
     std::string audio;
+    std::optional<std::string> expected_tier;
+    bool require_installed = false;
     std::optional<std::string> model, language;
     std::optional<bool> formatting;
     std::filesystem::path assets;

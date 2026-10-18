@@ -136,6 +136,12 @@ void export_whisper(
     const fs::path& destination,
     const std::atomic_bool& cancel
 );
+void export_drama_codec(
+    const fs::path& source,
+    const std::string& expected,
+    const fs::path& destination,
+    const std::atomic_bool& cancel
+);
 void export_whisper_assets(
     std::size_t vocabulary,
     const fs::path& data,

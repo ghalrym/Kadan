@@ -4,13 +4,11 @@ import time
 from typing import Literal
 from uuid import uuid4
 
-import anyio
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.pydantic_models.chat import ChatMessage
 from api.services.inference import inference
-from api.services.inference_http import infer
+from api.services.inference_http import OwnedStreamResponse, infer
 from api.services.inference_errors import InferenceFailure
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
@@ -74,25 +72,6 @@ class CompletionResponse(BaseModel):
     model: str
     choices: list[CompletionChoice]
     cache: CacheUsage | None = None
-
-
-class OwnedStreamResponse(StreamingResponse):
-    def __init__(self, content, owner):
-        super().__init__(
-            content,
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-        self.owner = owner
-
-    async def __call__(self, scope, receive, send):
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            # Starlette uses cancellation scopes on disconnect. Shield cleanup
-            # through the queue/native owner, including a disconnect before iteration.
-            with anyio.CancelScope(shield=True):
-                await self.owner.aclose()
 
 
 def event_frame(value):
