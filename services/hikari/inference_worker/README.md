@@ -318,11 +318,29 @@ are disjoint and their memory allowances fit. Their native CUDA device threads
 own separate per-thread streams, cuBLAS handles, and workspaces. Retirement never
 resets a device shared by other resident engines. One execution at a time uses a
 given GPU, and each workload queue has at most one active batch. Image preparation
-and execution are exclusive because ATen settings and host RSS
-measurements are process-wide. Other workloads can overlap on disjoint GPU sets;
+and execution are exclusive so process-wide host RSS measurements remain
+attributable to the image batch. Other workloads can overlap on disjoint GPU sets;
 a single GPU uses sequential execution while retaining models when their planned
-budgets fit. Same-GPU execution overlap and LLM-to-TTS streaming are
-outside this change.
+budgets fit.
+
+These are conservative boundaries of the first scheduler increment, not a complete
+implementation of the agreed resource-based concurrency scope. Same-GPU overlap
+still needs backend overlap capabilities and bounded execution admission alongside
+the atomic memory allowance. Distinct resident engines already own separate native
+streams and buffers, but one mutable engine must remain exclusive unless its
+request state is separated further. GPU ownership alone currently blocks admission
+even when memory remains; there is no finer compute-capacity policy yet.
+
+Image overlap remains implementation work, including on disjoint GPUs. It needs
+placement over a feasible GPU subset, bounded allowances instead of all remaining
+device capacity, and owned allocation accounting or isolated calibration windows
+that exclude other workloads' RSS changes. The ATen backend also changes global
+arithmetic settings and per-device allocator limits and peaks, synchronizes whole
+devices, and clears shared workspaces and caches. Those ATen controls do not by
+themselves govern native chat/TTS handles, but same-device ATen overlap needs
+explicit stream/completion ownership and cleanup that tolerates other owners.
+Removing scheduler gates alone would not make overlap safe. LLM-to-TTS streaming
+remains intentionally deferred to a later feature.
 
 The API remains transport to this process. Request-scoped callbacks keep streamed
 content and progress attached to the right job; memory events include
