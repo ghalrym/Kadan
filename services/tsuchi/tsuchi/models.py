@@ -382,7 +382,7 @@ class PetState(Model):
     # The primary pending fields identify the earliest unfinished frame. This list
     # contains only the other members of its bounded concurrent cohort.
     additional_pending_frames: list[PetPendingFrame] = Field(
-        default_factory=list, max_length=3
+        default_factory=list, max_length=31
     )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None

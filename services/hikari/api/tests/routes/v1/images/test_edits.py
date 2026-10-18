@@ -115,3 +115,22 @@ class ImageEditTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(body.width)
         self.assertIsNone(body.height)
+
+
+class ImageCapacityResponseTests(unittest.TestCase):
+    def test_optional_capacity_advice_survives_response_validation(self):
+        image = {
+            "id": "result",
+            "mode": "Generate",
+            "prompt": "otter",
+            "aspect": "square",
+            "seeds": [42],
+            "meta": "384×416",
+        }
+        self.assertIsNone(edits.ImageResponse(image=image).next_batch_capacity)
+        for capacity in (1, 5, 32):
+            result = edits.ImageResponse(image=image, next_batch_capacity=capacity)
+            self.assertEqual(result.model_dump()["next_batch_capacity"], capacity)
+        for capacity in (0, 33):
+            with self.assertRaises(ValidationError):
+                edits.ImageResponse(image=image, next_batch_capacity=capacity)

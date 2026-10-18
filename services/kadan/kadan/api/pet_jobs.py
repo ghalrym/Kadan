@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_IMAGE_BYTES = 20 * 1024**2
 IMAGE_MODEL = "qwen-image-2.1-turbo"
-MAX_PENDING_FRAMES = 4
+MAX_PENDING_FRAMES = 32
 TERMINAL = {"ready", "failed", "cancelled", "interrupted"}
 
 
@@ -467,8 +467,13 @@ class PetJobs:
                 response.status_code,
                 "pet_generation_failed",
             )
+        payload = response.json()
         result = GeneratedImage.model_validate(
-            {**response.json()["image"], "model_id": body["model_id"]}
+            {
+                **payload["image"],
+                "model_id": body["model_id"],
+                "next_batch_capacity": payload.get("next_batch_capacity"),
+            }
         )
         raw = base64.b64decode(result.images_base64[0], validate=True)
         if not raw.startswith(b"\x89PNG\r\n\x1a\n") or len(raw) > MAX_IMAGE_BYTES:
@@ -527,7 +532,7 @@ class PetJobs:
         frame: int,
         order: list[str],
         recover: bool,
-    ) -> None:
+    ) -> int | None:
         name = frame_name(row, frame) if row is not None else "base"
         canonical = name in {"idle/0", "idle/5"}
         prompt = (
@@ -651,10 +656,19 @@ class PetJobs:
                 ),
             )
 
+        return (
+            generation.next_batch_capacity
+            if row is not None and not canonical
+            else None
+        )
+
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
         items = [(None, 0), *frames]
         order = ["base", *(frame_name(row, frame) for row, frame in frames)]
+        # Base generation has a different canvas and no reference conditioning.
+        # Earn a reference-frame measurement before growing that producer window.
+        capacity = 1
         while True:
             job = await self.owned_job(job)
             completed = {step.name for step in job.steps}
@@ -665,6 +679,17 @@ class PetJobs:
             ]
             if not remaining:
                 break
+            previous = {item.name: item for item in job.pending_images}
+            if previous:
+                # Recovery must retain every fenced request, even when the new
+                # worker has not yet learned the old cohort's capacity.
+                remaining = [
+                    (row, frame)
+                    for row, frame in remaining
+                    if (frame_name(row, frame) if row is not None else "base")
+                    in previous
+                ]
+            cohort_limit = len(previous) if previous else capacity
             cohort = []
             for row, frame in remaining:
                 name = frame_name(row, frame) if row is not None else "base"
@@ -672,9 +697,8 @@ class PetJobs:
                 if cohort and not independent:
                     break
                 cohort.append((row, frame))
-                if not independent or len(cohort) == MAX_PENDING_FRAMES:
+                if not independent or len(cohort) == cohort_limit:
                     break
-            previous = {item.name: item for item in job.pending_images}
             pending = []
             for row, frame in cohort:
                 name = frame_name(row, frame) if row is not None else "base"
@@ -734,6 +758,14 @@ class PetJobs:
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
+            if first_row is not None and frame_name(first_row, first_frame) not in {
+                "idle/0",
+                "idle/5",
+            }:
+                # All members share the reference canvas. Use the conservative
+                # hint if pressure changed between sub-batches; missing advice
+                # returns to a singleton instead of guessing from GPU count.
+                capacity = min(MAX_PENDING_FRAMES, *(result or 1 for result in results))
         job = await self.owned_update(job, stage="Validating and assembling animation")
         frames = {
             step.name: await self.content(job.agent_key, step.output_asset_id)

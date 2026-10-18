@@ -38,7 +38,9 @@ struct FakeEngine : InferenceEngine {
         name = request.model;
         state.events.push_back("load:" + name);
         state.loads.push_back(free);
-        handle = ledger->reserve(request.workload, {10, 0, 0});
+        Footprint reservation(free.size());
+        reservation[0] = 10;
+        handle = ledger->reserve(request.workload, reservation);
         if (state.wait_once) {
             state.wait_once = false;
             throw AdmissionWait("physical_pressure");
@@ -625,7 +627,7 @@ struct BatchState : FakeState {
     std::size_t capacity = 2;
     std::vector<std::vector<std::string>> batches;
     std::function<void()> during_execution;
-    bool fail_batch = false;
+    bool fail_batch = false, image_results = false;
     std::string blocked_preparation;
 };
 
@@ -639,7 +641,13 @@ struct BatchEngine : FakeEngine {
     std::size_t
     batch_capacity(const InferenceRequest&, const Footprint& available) override {
         // Tests can inject physical pressure independently for either device.
-        return available[1] < 40 || available[2] < 40 ? 1 : batch_state.capacity;
+        return std::any_of(
+                   std::next(available.begin()),
+                   available.end(),
+                   [](auto free) { return free < 40; }
+               )
+                   ? 1
+                   : batch_state.capacity;
     }
 
     void prepare_batch(
@@ -656,8 +664,11 @@ struct BatchEngine : FakeEngine {
         std::vector<InferenceBatchResult> results;
         for (const auto& item : items) {
             ids.push_back(item.request->id);
+            const auto seed = std::get<ImageRequest>(item.request->input).seed.value();
             results.push_back(
-                {std::get<ImageRequest>(item.request->input).seed.value(), nullptr}
+                {batch_state.image_results ? Json{{"image", {{"seed", seed}}}}
+                                           : Json(seed),
+                 nullptr}
             );
         }
         batch_state.batches.push_back(ids);
@@ -680,6 +691,124 @@ InferenceRequest image_request(std::string id, std::uint64_t seed = 1) {
     image.count = 1;
     result.input = image;
     return result;
+}
+
+void image_capacity_hint_uses_successful_measurement_and_fresh_pressure() {
+    for (const auto devices : {1, 2, 3}) {
+        for (const auto mode : {0, 1, 2, 3}) {
+            BatchState state;
+            state.capacity = 1;
+            state.image_results = true;
+            bool executed = false;
+            Json delivered;
+            Footprint free(devices + 1, 100);
+            for (int device = 0; device < devices; ++device)
+                free[device + 1] = 80 - device * 10;
+            state.during_execution = [&] {
+                executed = true;
+                state.capacity = 5;
+                if (mode == 1)
+                    free.back() = 30;
+                if (mode == 3)
+                    state.capacity = 100;
+            };
+            InferenceOwner owner(
+                Footprint(devices + 1, 100),
+                [&](auto, auto ledger) {
+                    return std::make_unique<BatchEngine>(state, ledger);
+                },
+                [&] {
+                    if (executed && mode == 2)
+                        throw std::runtime_error("physical_probe_unavailable");
+                    return free;
+                },
+                [&](auto, auto event, auto value) {
+                    if (event == JobState::succeeded)
+                        delivered = value;
+                }
+            );
+            owner.submit(image_request("capacity", 42));
+            assert(owner.advance());
+            assert(delivered.at("image").at("seed") == 42);
+            if (mode == 2)
+                assert(!delivered.contains("next_batch_capacity"));
+            else
+                assert(
+                    delivered.at("next_batch_capacity")
+                    == (mode == 1   ? 1
+                        : mode == 3 ? 32
+                                    : 5)
+                );
+            assert(owner.pending() == 0);
+            owner.shutdown();
+        }
+    }
+}
+
+void cancellation_during_capacity_probe_cleans_up_before_terminals() {
+    for (const bool fail_probe : {false, true}) {
+        for (const bool fail_cleanup : {false, true}) {
+            BatchState state;
+            state.image_results = true;
+            bool executed = false, cancelled_in_probe = false;
+            std::vector<std::pair<std::string, JobState>> terminal;
+            state.during_execution = [&] {
+                executed = true;
+            };
+            InferenceOwner owner(
+                {100, 100, 100},
+                [&](auto, auto ledger) {
+                    return std::make_unique<BatchEngine>(state, ledger);
+                },
+                [&] {
+                    if (executed) {
+                        assert(owner.cancel("first"));
+                        cancelled_in_probe = true;
+                        state.fail_close = fail_cleanup;
+                        if (fail_probe)
+                            throw std::runtime_error("physical_probe_unavailable");
+                    }
+                    return Footprint{100, 80, 70};
+                },
+                [&](auto id, auto event, auto result) {
+                    if (event == JobState::succeeded || event == JobState::cancelled) {
+                        const auto snapshot = owner.snapshot();
+                        assert(snapshot.residents == 0);
+                        assert(snapshot.used == Footprint({0, 0, 0}));
+                        terminal.emplace_back(id, event);
+                    }
+                    if (event == JobState::succeeded) {
+                        assert(result.at("image").at("seed") == 91);
+                        assert(!result.contains("next_batch_capacity"));
+                    }
+                }
+            );
+            owner.submit(image_request("first", 42));
+            owner.submit(image_request("second", 91));
+            bool cleanup_failed = false;
+            try {
+                assert(owner.advance());
+            } catch (const CleanupFailure&) {
+                cleanup_failed = true;
+            }
+            assert(cancelled_in_probe);
+            assert(state.close_calls == 1);
+            assert(cleanup_failed == fail_cleanup);
+            if (fail_cleanup) {
+                assert(terminal.empty());
+                assert(owner.pending() == 2 && owner.snapshot().residents == 1);
+            } else {
+                assert(
+                    (terminal
+                     == std::vector<std::pair<std::string, JobState>>{
+                         {"first", JobState::cancelled}, {"second", JobState::succeeded}
+                     })
+                );
+                assert(owner.pending() == 0);
+                owner.shutdown();
+            }
+        }
+    }
 }
 
 void later_candidate_pressure_does_not_block_the_admissible_head() {
@@ -788,12 +917,15 @@ void incompatible_image_head_is_not_overtaken() {
 
 void cancellation_does_not_cancel_a_batch_sibling() {
     BatchState state;
+    state.image_results = true;
     std::vector<std::pair<std::string, JobState>> terminal;
     InferenceOwner owner(
         {100, 100, 100},
         [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
         [] { return Footprint{100, 80, 70}; },
-        [&](auto id, auto event, auto) {
+        [&](auto id, auto event, auto result) {
+            if (event == JobState::succeeded)
+                assert(!result.contains("next_batch_capacity"));
             if (event == JobState::succeeded || event == JobState::cancelled)
                 terminal.emplace_back(id, event);
         }
@@ -810,6 +942,7 @@ void cancellation_does_not_cancel_a_batch_sibling() {
              {"first", JobState::cancelled}, {"second", JobState::succeeded}
          })
     );
+    assert(state.close_calls == 1);
     owner.shutdown();
 }
 
@@ -1006,6 +1139,8 @@ void image_memory_growth_is_measured_and_devices_are_independent() {
 }
 
 int main() {
+    image_capacity_hint_uses_successful_measurement_and_fresh_pressure();
+    cancellation_during_capacity_probe_cleans_up_before_terminals();
     later_candidate_pressure_does_not_block_the_admissible_head();
     later_subbatch_failure_preserves_completed_request_outputs();
     failed_candidate_does_not_change_head_error_status();
