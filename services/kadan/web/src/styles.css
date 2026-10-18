@@ -1807,6 +1807,34 @@ dialog::backdrop {
 .pet-ideas .chip { height: auto; min-height: 30px; padding: 4px 12px; text-align: left; }
 .pet-editor .form-actions { margin: 0; flex-wrap: wrap; }
 .pet-editor .quiet, .pet-editor .field-hint, .pet-editor .error { margin: 0; }
+.pet-drop {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+  transition: border-color 160ms, background 160ms;
+}
+.pet-drop[hidden] { display: none; }
+.pet-drop.dragging { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.pet-drop p { margin: 0; }
+.pet-drop-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.pet-drop-actions button { border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); }
+.pet-import-files {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 4px 4px 12px;
+  border-radius: var(--r);
+  background: var(--surface);
+  font: 12px var(--mono);
+  overflow-wrap: anywhere;
+}
 .pet-stage { display: grid; gap: 12px; justify-items: center; }
 .pet-stage-dial {
   position: relative;
