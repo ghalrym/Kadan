@@ -84,15 +84,32 @@ class LocalServices:
     async def chain(self, key: str) -> Resource:
         # Tsuchi assigns resource IDs, so serialize first use to create one chain.
         async with self.chain_locks.setdefault(key, asyncio.Lock()):
-            rows = await self.json_request(
-                "Tsuchi",
-                "GET",
-                f"/api/agents/{key}/resources",
-                params={"kind": "conversation", "trash": "false", "limit": 200},
-            )
-            found = [parse_resource(row) for row in rows]
-            if found:
-                return min(found, key=lambda item: (item.created_at, str(item.id)))
+            oldest = None
+            offset = 0
+            while True:
+                rows = await self.json_request(
+                    "Tsuchi",
+                    "GET",
+                    f"/api/agents/{key}/resources",
+                    params={
+                        "kind": "conversation",
+                        "trash": "false",
+                        "limit": 200,
+                        "offset": offset,
+                    },
+                )
+                for row in rows:
+                    candidate = parse_resource(row)
+                    if oldest is None or (candidate.created_at, str(candidate.id)) < (
+                        oldest.created_at,
+                        str(oldest.id),
+                    ):
+                        oldest = candidate
+                if len(rows) < 200:
+                    break
+                offset += len(rows)
+            if oldest is not None:
+                return oldest
             value = await self.json_request(
                 "Tsuchi",
                 "POST",

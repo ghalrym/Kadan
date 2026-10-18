@@ -12,7 +12,7 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - See actionable storage, tier, download and inference availability states, with links to the supporting operator interfaces.
 - Each agent has an animated pet that reacts to chat activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
 
-A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending message IDs and drafts stay in browser session storage so an uncertain save can be reconciled after reload.
+A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending messages and drafts stay separately in browser session storage so an uncertain save can be reconciled after reload. An unsent message remains available to retry with its original ID and persona, or explicitly discard, while the next draft stays editable. Resolve that message before sending the next draft.
 
 Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The model has no tools: chat sends only the persona and conversation text to Hikari. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI. The workspace browser remains read-only. Files are searched by metadata, not their contents. Each request replays at most the latest 100 messages and 48,000 characters of the chain, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
 
@@ -85,7 +85,7 @@ Each message is one streamed completion: Kadan sends the optional persona as a
 system message, then the chain's recent user and assistant text. The chain never
 ends, so older messages drop out of the prompt: the replayed window opens on a
 multiple of 20 messages, so its start, and the prompt prefix, stays put for many
-turns. Saved history is never trimmed. There is no
+turns. Saved history is never trimmed. Tsuchi has no fixed message-count ceiling; the existing conversation record and version snapshots retain the complete history. Storage and load costs therefore grow with the chain. There is no
 planning step and the model cannot call tools. Conversations saved while the
 retired plugin system existed may contain `tool` messages; Kadan keeps them in
 Tsuchi but neither shows them nor sends them to the model.

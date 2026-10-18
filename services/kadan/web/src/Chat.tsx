@@ -8,6 +8,7 @@ import { agentPath, api, streamChat } from "./api";
 import type { PetState } from "./pet";
 import type { Message, Resource, Status } from "./types";
 import { randomUuid } from "./uuid";
+import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -22,23 +23,6 @@ interface Props {
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
-interface PendingMessage {
-  id: string;
-  content: string;
-}
-function pendingMessage(key: string): PendingMessage | null {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(key) || "null");
-    return value &&
-      typeof value.id === "string" &&
-      typeof value.content === "string"
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Messages further apart than this get a timestamp between them. */
 const BREAK_MS = 4 * 60 * 60 * 1000;
 /** Older messages render on request so a long chain opens quickly. */
@@ -81,15 +65,11 @@ export default function Chat({
   const petSheet = useAgentPet(agentKey);
   const draftKey = `kadan.draft.${agentKey}`;
   const pendingKey = `${draftKey}.pending`;
-  const pending = useRef<PendingMessage | null>(pendingMessage(pendingKey));
-  const [draft, setDraft] = useState(() => {
-    const saved = sessionStorage.getItem(draftKey) || "";
-    const unsent = pending.current;
-    // A send interrupted by a reload returns to the composer unless it was saved.
-    return !saved && unsent && !chain.messages.some((message) => message.id === unsent.id)
-      ? unsent.content
-      : saved;
-  });
+  const pending = useRef<PendingMessage | null>(
+    confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
+  );
+  const [recovery, setRecovery] = useState(pending.current);
+  const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -167,45 +147,49 @@ export default function Chat({
     else sessionStorage.removeItem(draftKey);
   }, [draft, draftKey]);
   useEffect(() => {
-    // A send from before a reload may have been saved after all.
-    const confirmed = pending.current;
-    if (confirmed && chain.messages.some((message) => message.id === confirmed.id)) {
-      pending.current = null;
-      sessionStorage.removeItem(pendingKey);
-    }
-  }, []);
+    savePending(confirmSend(pending.current, chain.messages));
+  }, [chain.messages]);
 
+  function savePending(value: PendingMessage | null) {
+    pending.current = value;
+    setRecovery(value);
+    if (value) sessionStorage.setItem(pendingKey, JSON.stringify(value));
+    else sessionStorage.removeItem(pendingKey);
+  }
   function accept(value: Resource) {
-    const confirmed = pending.current;
-    if (confirmed && value.messages.some((message) => message.id === confirmed.id)) {
-      pending.current = null;
-      sessionStorage.removeItem(pendingKey);
-      setOutgoing(null);
-    }
+    savePending(confirmSend(pending.current, value.messages));
+    if (!pending.current) setOutgoing(null);
     onChange(value);
   }
-  async function send(generate: boolean) {
-    const text = draft.trim();
+  async function send(generate: boolean, retry?: PendingMessage) {
+    const text = retry?.content ?? draft.trim();
     if (!text || sending || blocked) return;
+    if (!retry && pending.current) {
+      setError("Retry or discard the unsent message before sending another.");
+      return;
+    }
+    const message = queueSend(pending.current, retry ?? {
+      id: randomUuid(), content: text, generate, persona,
+    });
+    const messageId = message.id;
+    const personaId = message.persona;
+    savePending(message);
     setSending(true);
     setGenerating(generate);
     onBusy(true);
     setError("");
     setNotice("");
     setPartial("");
-    const messageId = pending.current?.content === text ? pending.current.id : randomUuid();
-    pending.current = { id: messageId, content: text };
-    sessionStorage.setItem(pendingKey, JSON.stringify(pending.current));
     setOutgoing({
       id: messageId,
       role: "user",
       content: text,
       created_at: new Date().toISOString(),
-      resource_ids: generate && persona ? [persona] : [],
+      resource_ids: generate && personaId ? [personaId] : [],
       attachment_ids: [],
       sources: [],
     });
-    setDraft("");
+    if (!retry) setDraft("");
     const path = `${agentPath(agentKey)}/conversations/${chain.id}`;
     let reply = "";
     try {
@@ -225,7 +209,7 @@ export default function Chat({
           {
             content: text,
             expected_version: chain.version,
-            persona_id: persona || null,
+            persona_id: personaId || null,
             message_id: messageId,
           },
           controller.current.signal,
@@ -254,9 +238,8 @@ export default function Chat({
         /* Keep the already confirmed messages visible. */
       }
       if (pending.current?.id === messageId) {
-        // Not delivered: hand the text back so it can be sent again.
+        // The outbox keeps this text independently of anything typed next.
         setOutgoing(null);
-        setDraft((current) => (current.trim() ? current : text));
       }
       void refreshStatus();
     } finally {
@@ -411,6 +394,17 @@ export default function Chat({
             <RotateCw size={14} />
             Reload
           </button>
+        </div>
+      )}
+      {recovery && !sending && (
+        <div className="banner inline" role="status">
+          <div>
+            <strong>Unsent message</strong>
+            <p>{recovery.content}</p>
+          </div>
+          <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
+            onClick={() => void send(recovery.generate, recovery)}>Retry</button>
+          <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
         </div>
       )}
       <Composer

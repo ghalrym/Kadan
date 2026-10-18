@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 from .config import StorageError
 from .models import (
-    MAX_CONVERSATION_MESSAGES,
     Activity,
     Agent,
     AgentInput,
@@ -830,11 +829,6 @@ class Repository:
                 raise StorageError("Messages can only be added to conversations")
             if any(existing.id == message.id for existing in current.messages):
                 raise StorageError("This message ID already exists", 409)
-            if len(current.messages) >= MAX_CONVERSATION_MESSAGES:
-                raise StorageError(
-                    f"Conversation already contains the maximum of {MAX_CONVERSATION_MESSAGES} messages",
-                    409,
-                )
             value = resource_input_adapter.validate_python(
                 {
                     **current.model_dump(exclude=set(ResourceRecord.model_fields)),

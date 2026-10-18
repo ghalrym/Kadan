@@ -15,7 +15,6 @@ from pydantic import (
 
 AgentKey = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")]
 Title = Annotated[str, Field(min_length=1, max_length=500)]
-MAX_CONVERSATION_MESSAGES = 10000
 
 
 def utc_now() -> datetime:
@@ -136,9 +135,7 @@ class DeckContent(ResourceContent):
 class ConversationContent(ResourceContent):
     kind: Literal[ResourceKind.CONVERSATION]
     deck: None = None
-    messages: list[Message] = Field(
-        default_factory=list, max_length=MAX_CONVERSATION_MESSAGES
-    )
+    messages: list[Message] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_message_ids(self) -> Self:

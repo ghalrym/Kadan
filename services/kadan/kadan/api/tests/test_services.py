@@ -420,7 +420,16 @@ class ChainBoundary:
         if request.method == "GET":
             assert request.url.params["kind"] == "conversation"
             return httpx.Response(
-                200, json=[row.model_dump(mode="json") for row in self.rows]
+                200,
+                json=[
+                    row.model_dump(mode="json")
+                    for row in self.rows[
+                        int(request.url.params["offset"]) : int(
+                            request.url.params["offset"]
+                        )
+                        + 200
+                    ]
+                ],
             )
         body = json.loads(request.content)
         assert body == {"kind": "conversation", "title": "Chain"}
@@ -445,6 +454,16 @@ def test_chain_reuses_the_oldest_conversation():
     older = resource(id=UUID(int=7), created_at=datetime(2026, 1, 1, tzinfo=UTC))
     newer = resource(id=UUID(int=8))
     boundary = ChainBoundary([newer, older])
+    assert run(boundary, lambda service: service.chain("test")).id == older.id
+    assert boundary.created == []
+
+
+def test_chain_finds_oldest_beyond_first_page_and_after_reordering():
+    older = resource(id=UUID(int=999), created_at=datetime(2025, 1, 1, tzinfo=UTC))
+    rows = [resource(id=UUID(int=index + 1)) for index in range(400)]
+    boundary = ChainBoundary([*rows, older])
+    assert run(boundary, lambda service: service.chain("test")).id == older.id
+    boundary.rows = [older, *reversed(rows)]
     assert run(boundary, lambda service: service.chain("test")).id == older.id
     assert boundary.created == []
 
