@@ -298,7 +298,7 @@ public:
                 if (!current->cancel.load())
                     publish_(current->request.id, JobState::running, "");
             execution_started = true;
-            const auto results = engine_->execute_batch(batch);
+            auto results = engine_->execute_batch(batch);
             if (results.size() != jobs.size())
                 throw std::runtime_error("batch_result_count");
             if (std::any_of(
@@ -310,6 +310,40 @@ public:
                        return !result.failure.is_null();
                    }))
                 cleanup();
+            else if (compatible_images(request, request)) {
+                // execute_batch has recorded successful measurements and released
+                // request scratch. This fresh projection is a producer hint, not
+                // a reservation: the next FIFO batch always repeats admission.
+                try {
+                    auto free = probe_();
+                    if (free.size() != ceiling_.size())
+                        throw std::runtime_error("probe_shape");
+                    for (std::size_t i = 0; i < free.size(); ++i)
+                        free[i] = std::min(free[i], ceiling_[i]);
+                    resources_->refresh_available(free);
+                    const auto next = std::clamp<std::size_t>(
+                        engine_->batch_capacity(request, free),
+                        1,
+                        std::min<std::size_t>(limit_, 32)
+                    );
+                    for (auto& result : results)
+                        if (result.result.is_object())
+                            result.result["next_batch_capacity"] = next;
+                } catch (const std::exception&) {
+                    // A failed advisory probe cannot discard completed images.
+                }
+                // Transport cancellation may arrive during that extra probe or
+                // projection. Discard advice and release the resident model before
+                // publishing cancellation, just as on the normal execution path.
+                if (std::any_of(jobs.begin(), jobs.end(), [](const auto& current) {
+                        return current->cancel.load();
+                    })) {
+                    for (auto& result : results)
+                        if (result.result.is_object())
+                            result.result.erase("next_batch_capacity");
+                    cleanup();  // Cleanup failures must escape the advisory catch.
+                }
+            }
             for (std::size_t index = 0; index < jobs.size(); ++index) {
                 const auto& current = jobs[index];
                 if (current->cancel.load())

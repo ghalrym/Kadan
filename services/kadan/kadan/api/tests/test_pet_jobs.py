@@ -13,7 +13,12 @@ from kadan.api.builtin_mcp import BuiltinTools
 from kadan.api.config import ServiceError
 from kadan.api.pet_artwork import ROWS, SOURCE_CELL
 from kadan.api.pet_jobs import IMAGE_MODEL, PetJobs
-from kadan.api.pydantic_models.pets import GeneratedImage, PetJob, PetStep
+from kadan.api.pydantic_models.pets import (
+    GeneratedImage,
+    PetJob,
+    PetPendingFrame,
+    PetStep,
+)
 
 KEY = "andrew"
 PET_ID = UUID("10000000-0000-4000-8000-000000000003")
@@ -338,16 +343,19 @@ def test_frame_request_uses_untiled_reference_and_one_fixed_canvas():
         response = SimpleNamespace(
             is_success=True,
             json=lambda: {
+                "next_batch_capacity": 5,
                 "image": {
                     "seeds": [7],
                     "images_base64": [base64.b64encode(PNG).decode()],
                     "mime_type": "image/png",
-                }
+                },
             },
         )
         services.client.post = AsyncMock(return_value=response)
         pets = PetJobs(services)
-        await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, 42)
+        result = await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, 42)
+        assert result.next_batch_capacity == 5
+        assert "next_batch_capacity" not in result.model_dump()
         request = services.client.post.call_args.kwargs["json"]
         assert request["mode"] == "reference"
         assert request["seed"] == 42
@@ -617,7 +625,18 @@ def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch
             seed=42,
         )
         neutral = base.model_copy(update={"name": "idle/0", "output_asset_id": uuid4()})
-        job = await pets.owned_update(job, steps=[base, neutral], completed_steps=2)
+        job = await pets.owned_update(
+            job,
+            steps=[base, neutral],
+            completed_steps=2,
+            **pets.pending_state(
+                [
+                    PetPendingFrame(name=f"idle/{index}", request_id=uuid4(), seed=42)
+                    for index in range(1, 5)
+                ]
+            ),
+        )
+        pets.saved_generation = AsyncMock(return_value=None)
         pets.content = AsyncMock(return_value=PNG)
         pets.prepare_output = AsyncMock(return_value=PNG)
         pets.validate_completed_row = AsyncMock()
@@ -706,7 +725,18 @@ def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds()
             seed=42,
         )
         neutral = base.model_copy(update={"name": "idle/0", "output_asset_id": uuid4()})
-        job = await pets.owned_update(job, steps=[base, neutral], completed_steps=2)
+        job = await pets.owned_update(
+            job,
+            steps=[base, neutral],
+            completed_steps=2,
+            **pets.pending_state(
+                [
+                    PetPendingFrame(name=f"idle/{index}", request_id=uuid4(), seed=42)
+                    for index in range(1, 5)
+                ]
+            ),
+        )
+        pets.saved_generation = AsyncMock(return_value=None)
         pets.content = AsyncMock(return_value=PNG)
         started = asyncio.Event()
         requests = []
@@ -767,3 +797,78 @@ def test_failed_cohort_cleanup_attempts_every_request_before_refusing_resume():
         assert services.jobs[job.id].pending_images == job.pending_images
 
     asyncio.run(run())
+
+
+def test_producer_tracks_reference_capacity_and_pressure_without_base_hint(monkeypatch):
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    rows = ROWS[1:]
+    monkeypatch.setattr("kadan.api.pet_jobs.ROWS", rows)
+    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+
+    async def run():
+        pets, services, job = await setup_running()
+        pets.content = AsyncMock(return_value=PNG)
+        pets.prepare_output = AsyncMock(return_value=PNG)
+        pets.validate_completed_row = AsyncMock()
+        pets.upload = AsyncMock()
+        cohorts = []
+        hints = [2, 3, 5, 2, None, 32, 32, 32]
+        submitted = []
+
+        async def image(request_id, prompt, source, model_id, seed=None):
+            pending = services.jobs[job.id].pending_images
+            assert request_id in {frame.request_id for frame in pending}
+            if source is None:
+                # A base-image capacity cannot size reference-frame cohorts.
+                hint = 32
+            else:
+                members = tuple(frame.request_id for frame in pending)
+                if members not in cohorts:
+                    cohorts.append(members)
+                hint = hints[cohorts.index(members)]
+                assert seed == 42
+                submitted.append(request_id)
+            # Give every persisted sibling a chance to submit before completion.
+            await asyncio.sleep(0)
+            return GeneratedImage(
+                model_id=IMAGE_MODEL,
+                seeds=[42],
+                images_base64=[base64.b64encode(PNG).decode()],
+                mime_type="image/png",
+                next_batch_capacity=hint,
+            )
+
+        pets.image = image
+        await pets.generate(job)
+        sizes = [len(cohort) for cohort in cohorts]
+        assert sizes[:7] == [1, 2, 3, 5, 2, 1, 32]
+        assert sizes[7:] == [sum(row.frame_count for row in rows) - sum(sizes[:7])]
+        assert len(submitted) == len(set(submitted)) == sum(sizes)
+        finished = services.jobs[job.id]
+        assert finished.status == "ready"
+        assert finished.completed_steps == 1 + sum(sizes)
+        assert finished.pending_images == []
+        assert all(step.seed == 42 for step in finished.steps)
+        assert not any(call[2].endswith("/pet") for call in services.calls)
+        for call in pets.upload.call_args_list:
+            if call.args[-1] == "application/json" and call.args[2].endswith(
+                "-provenance"
+            ):
+                assert "next_batch_capacity" not in json.loads(call.args[3])
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("capacity", [0, 33, -1])
+def test_generated_image_rejects_unbounded_capacity_hint(capacity):
+    with pytest.raises(ValueError):
+        GeneratedImage(
+            model_id=IMAGE_MODEL,
+            seeds=[42],
+            images_base64=[base64.b64encode(PNG).decode()],
+            mime_type="image/png",
+            next_batch_capacity=capacity,
+        )

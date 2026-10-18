@@ -992,12 +992,11 @@ def test_pending_cohort_rejects_invalid_members(repository, invalid):
     elif invalid == "canonical":
         pending[1]["name"] = "idle/5"
     else:
-        pending.extend(
-            [
-                {"name": "idle/4", "request_id": uuid4()},
-                {"name": "walk_right/0", "request_id": uuid4()},
-            ]
-        )
+        pending = [
+            {"name": name, "request_id": uuid4()}
+            for name in PET_STEP_NAMES
+            if name not in {"base", "idle/0", "idle/1", "idle/5"}
+        ][:32]
     with pytest.raises(ValidationError):
         PetState(
             steps=[base, neutral],
@@ -1011,6 +1010,25 @@ def test_pending_cohort_rejects_invalid_members(repository, invalid):
 def test_additional_pending_frames_require_a_primary_request():
     with pytest.raises(ValidationError, match="primary"):
         PetState(additional_pending_frames=[{"name": "idle/2", "request_id": uuid4()}])
+
+
+def test_pending_cohort_accepts_one_native_batch_of_32(repository):
+    base = generation_step(repository, "base")
+    neutral = generation_step(repository, "idle/0")
+    names = [
+        name for name in PET_STEP_NAMES if name not in {"base", "idle/0", "idle/5"}
+    ][:32]
+    pending = PetState(
+        steps=[base, neutral],
+        completed_steps=2,
+        pending_step_name=names[0],
+        pending_request_id=uuid4(),
+        additional_pending_frames=[
+            {"name": name, "request_id": uuid4(), "seed": 42} for name in names[1:]
+        ],
+    )
+    assert len(pending.pending_images) == 32
+    assert PetState.model_validate_json(pending.model_dump_json()) == pending
 
 
 def imported_manifest(atlas_id, sprite_version=2):

@@ -77,7 +77,7 @@ class PetState(BaseModel):
     # The primary pending fields identify the earliest unfinished frame. This list
     # contains only the other members of its bounded concurrent cohort.
     additional_pending_frames: list[PetPendingFrame] = Field(
-        default_factory=list, max_length=3
+        default_factory=list, max_length=31
     )
 
     @property
@@ -138,3 +138,5 @@ class GeneratedImage(BaseModel):
     meta: str = ""
     images_base64: list[str] = Field(min_length=1, max_length=1)
     mime_type: Literal["image/png"]
+    # Scheduling advice is transient, never part of saved image provenance.
+    next_batch_capacity: int | None = Field(default=None, ge=1, le=32, exclude=True)

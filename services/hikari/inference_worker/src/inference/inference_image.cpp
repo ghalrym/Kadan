@@ -131,7 +131,13 @@ class ImageEngine final : public InferenceEngine {
 
     std::vector<ImageOwner> image_owners_;
     std::vector<ImageBatchOutput> outputs_;
-    std::map<BatchShape, ImageBatchMemory> measured_;
+
+    struct BatchHistory {
+        ImageBatchMemory memory;
+        image::ImageBatchPerformance performance;
+    };
+
+    std::map<BatchShape, BatchHistory> measured_;
     std::size_t capacity_ = 1;
 
     void release_request() {
@@ -168,6 +174,7 @@ public:
         );
         model_ = std::make_unique<image::Generator>(resources_, compute_->devices);
         model_->load(request.configuration.checkpoint.string(), cancel, progress_);
+        measured_.clear();
     }
 
     std::size_t batch_capacity(
@@ -178,9 +185,13 @@ public:
             || !compatible_images(request, request))
             return capacity_;
         const auto& input = std::get<ImageRequest>(request.input);
+        const auto shape = batch_shape(input);
+        if (!measured_.contains(shape) && measured_.size() == 64)
+            measured_.erase(measured_.begin());
+        auto& history = measured_[shape];
         const std::atomic_bool cancel{false};
         const auto planned =
-            model_->admissible_batch_footprints(native_request(input), 32, cancel);
+            model_->admissible_batch_plans(native_request(input), 32, cancel);
         auto reusable = available;
         const auto cached = model_->device_cache_memory().allocated;
         const auto snapshot = resources_->snapshot();
@@ -194,9 +205,24 @@ public:
         // This is a batch-size projection, not admission credit. Cached GPU
         // payloads already belong to this model; Stage must reuse or physically
         // evict them and re-probe before admitting the selected execution plan.
-        capacity_ = std::max<std::size_t>(
-            1, measured_[batch_shape(input)].capacity(reusable, planned)
+        std::vector<Footprint> footprints;
+        footprints.reserve(planned.size());
+        for (const auto& plan : planned)
+            footprints.push_back(plan.memory);
+        const auto memory_capacity =
+            std::max<std::size_t>(1, history.memory.capacity(reusable, footprints));
+        capacity_ = history.performance.capacity(
+            std::span(planned).first(std::min(memory_capacity, planned.size()))
         );
+        if (capacity_ < memory_capacity && !planned.empty())
+            std::clog << "KADAN_ATEN_IMAGE_CAPACITY "
+                      << Json{{"target", capacity_},
+                              {"memory_capacity", memory_capacity},
+                              {"reason", "throughput"},
+                              {"target_loading_seconds", planned[capacity_ - 1].cost.loading_seconds},
+                              {"maximum_loading_seconds", planned[memory_capacity - 1].cost.loading_seconds}}
+                             .dump()
+                      << '\n';
         return capacity_;
     }
 
@@ -436,17 +462,26 @@ public:
                 auto per_image = measurement.additional_image;
                 per_image[0] = 64ULL * requests[0].width * requests[0].height
                                + 8192ULL * 4096 * sizeof(float);
-                measured_[batch_shape(input)].observe(
+                measured_[batch_shape(input)].memory.observe(
                     requests.size(), incremental, per_image
                 );
+                const auto seconds = std::chrono::duration<double>(
+                                         std::chrono::steady_clock::now() - began
+                )
+                                         .count();
+                if (!cancel_.load())
+                    measured_[batch_shape(input)].performance.observe(
+                        requests.size(),
+                        seconds,
+                        measurement.loading_seconds,
+                        measurement.denoise_seconds,
+                        measurement.streamed_weights
+                    );
                 const Json telemetry{
                     {"event", "image_batch"},
                     {"images", requests.size()},
-                    {"seconds",
-                     std::chrono::duration<double>(
-                         std::chrono::steady_clock::now() - began
-                     )
-                         .count()},
+                    {"seconds", seconds},
+                    {"loading_seconds", measurement.loading_seconds},
                     {"host_baseline_bytes", host_peak_->baseline},
                     {"host_peak_bytes", host_peak},
                     {"device_peak_allocated_bytes", measurement.peak_allocated},

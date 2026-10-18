@@ -64,3 +64,24 @@ class ImageModelTests(unittest.TestCase):
             InferenceTask(
                 input={"feature": "image", "prompt": "test", "model_id": "unknown"}
             )
+
+
+class ImageCapacityResponseTests(unittest.TestCase):
+    def test_optional_capacity_advice_survives_response_validation(self):
+        image = {
+            "id": "result",
+            "mode": "Generate",
+            "prompt": "otter",
+            "aspect": "square",
+            "seeds": [42],
+            "meta": "384×416",
+        }
+        self.assertIsNone(generations.ImageResponse(image=image).next_batch_capacity)
+        for capacity in (1, 5, 32):
+            result = generations.ImageResponse(
+                image=image, next_batch_capacity=capacity
+            )
+            self.assertEqual(result.model_dump()["next_batch_capacity"], capacity)
+        for capacity in (0, 33):
+            with self.assertRaises(ValidationError):
+                generations.ImageResponse(image=image, next_batch_capacity=capacity)

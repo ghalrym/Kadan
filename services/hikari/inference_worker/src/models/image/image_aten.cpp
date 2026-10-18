@@ -1026,18 +1026,19 @@ void AtenGenerator::prepare(
     const ImageRequest& request, const std::atomic_bool& cancel
 ) {
     Generator::validate(request);
-    (void)admission_footprint(request, 1, cancel);
+    (void)admission_plan(request, 1, cancel);
 }
 
-Footprint AtenGenerator::admission_footprint(
+ImageBatchPlan AtenGenerator::admission_plan(
     const ImageRequest& request, std::size_t images, const std::atomic_bool& cancel
 ) {
     need(bool(model_), "image_generator_not_loaded");
     stop(cancel);
     auto snapshot = stage_snapshot(*resources_, devices_);
-    Footprint footprint(snapshot.capacity.size());
+    ImageBatchPlan result{Footprint(snapshot.capacity.size()), {}};
+    auto& footprint = result.memory;
     if (!request.source.empty() && !request.reference && request.strength == 0)
-        return footprint;
+        return result;
     auto& m = *model_;
     const auto prompt = prepare_image_prompt(
         m.tokenizer,
@@ -1073,15 +1074,28 @@ Footprint AtenGenerator::admission_footprint(
         Footprint stage(footprint.size());
         if (inventory->stage == AtenImageStage::denoiser
             && (request.source.empty() || request.reference)) {
-            for (const auto& lane : m.denoiser_plan(
-                     snapshot,
-                     devices_,
-                     points,
-                     tokens,
-                     reference_points,
-                     images,
-                     request.steps
-                 )) {
+            const auto lanes = m.denoiser_plan(
+                snapshot,
+                devices_,
+                points,
+                tokens,
+                reference_points,
+                images,
+                request.steps
+            );
+            result.cost.denoise_seconds = m.performance.denoise_seconds(
+                m.workload(points, tokens, reference_points, request.steps), lanes
+            );
+            for (const auto& lane : lanes) {
+                result.cost.streamed_weights =
+                    result.cost.streamed_weights || lane.stage.stream_weights;
+                if (!lane.stage.stream_weights
+                    && !m.device_cache.contains(*inventory, lane.stage.device))
+                    result.cost.loading_seconds +=
+                        m.device_cache.load_cost(*inventory, lane.stage.device)
+                            .value_or(0);
+                result.cost.loading_seconds +=
+                    m.device_cache.eviction_cost(snapshot, *inventory, lane.stage);
                 stage[0] += lane.stage.host_bytes;
                 stage[lane.stage.device + 1] += lane.stage.device_bytes;
             }
@@ -1100,13 +1114,23 @@ Footprint AtenGenerator::admission_footprint(
                 ),
                 aten_tiled_vae_workspace(inventory->stage, stage_points)
             );
+            result.cost.streamed_weights =
+                result.cost.streamed_weights || plan.stream_weights;
+            if (!plan.stream_weights
+                && !m.device_cache.contains(*inventory, plan.device))
+                result.cost.loading_seconds +=
+                    m.device_cache.load_cost(*inventory, plan.device).value_or(0);
+            result.cost.loading_seconds +=
+                m.device_cache.eviction_cost(snapshot, *inventory, plan);
             stage[0] = plan.host_bytes;
             stage[plan.device + 1] = plan.device_bytes;
         }
         for (std::size_t i = 0; i < footprint.size(); ++i)
             footprint[i] = std::max(footprint[i], stage[i]);
     }
-    return footprint;
+    if (result.cost.streamed_weights)
+        result.cost.denoise_seconds.reset();
+    return result;
 }
 
 void AtenGenerator::prepare_batch(
@@ -1147,19 +1171,19 @@ void AtenGenerator::prepare_batch(
     );
 }
 
-std::vector<Footprint> AtenGenerator::admissible_batch_footprints(
+std::vector<ImageBatchPlan> AtenGenerator::admissible_batch_plans(
     const ImageRequest& request, std::size_t limit, const std::atomic_bool& cancel
 ) {
     stop(cancel);
     if ((!request.source.empty() && !request.reference) || !request.mask.empty())
         limit = std::min<std::size_t>(limit, 1);
-    std::vector<Footprint> plans;
+    std::vector<ImageBatchPlan> plans;
     plans.reserve(limit);
     // Collection uses the head prompt and current device placement. The full
     // candidate preflight checks the longest actual prompt before execution.
     for (std::size_t count = 1; count <= limit; ++count) {
         try {
-            plans.push_back(admission_footprint(request, count, cancel));
+            plans.push_back(admission_plan(request, count, cancel));
         } catch (const ResourceExhausted&) {
             break;
         }
@@ -1509,6 +1533,9 @@ void AtenGenerator::generate_batch(
         for (const auto& failure : failures)
             if (failure)
                 std::rethrow_exception(failure);
+        for (const auto& timing : timings)
+            measurement_.denoise_seconds =
+                std::max(measurement_.denoise_seconds, timing.denoise_seconds);
         if (!editing && std::none_of(lanes.begin(), lanes.end(), [](const auto& lane) {
                 return lane.stage.stream_weights;
             })) {

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "kadan/image_batch_performance.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::image {
@@ -17,6 +18,8 @@ struct ImageDeviceCacheMemory {
 
 struct BatchMeasurement {
     std::size_t images = 0;
+    double loading_seconds = 0, denoise_seconds = 0;
+    bool streamed_weights = false;
     // Index zero is host admission; subsequent entries are independent CUDA devices.
     Footprint peak_allocated, peak_reserved;
     Footprint baseline_allocated, baseline_reserved;
@@ -58,7 +61,7 @@ public:
         const std::atomic_bool&,
         const BatchHook& = {}
     );
-    std::vector<Footprint> admissible_batch_footprints(
+    std::vector<ImageBatchPlan> admissible_batch_plans(
         const ImageRequest&, std::size_t limit, const std::atomic_bool&
     );
     const BatchMeasurement& last_batch_measurement() const;

@@ -31,6 +31,12 @@ class ImageRequest(BaseModel):
 
 class ImageResponse(BaseModel):
     image: ImageSet
+    next_batch_capacity: int | None = Field(
+        default=None,
+        ge=1,
+        le=32,
+        description="Advisory image capacity for a subsequent compatible batch; admission is rechecked when it runs.",
+    )
 
 
 @router.post(

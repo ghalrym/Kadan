@@ -625,6 +625,9 @@ public:
                     && !resident_source->plan_.stream_weights && !plan_.stream_weights),
             "image_aten_replica_inventory"
         );
+        if (measurement_)
+            measurement_->streamed_weights =
+                measurement_->streamed_weights || plan_.stream_weights;
         cache_.make_room(inventory, plan_);
         const bool hit = !plan_.stream_weights && cache_.contains(inventory, device);
         auto footprint = r.snapshot().capacity;
@@ -676,11 +679,11 @@ public:
                         .allocated_bytes[0]
                         .current
                     - before;
-                cache_.loaded(
-                    *cached_,
-                    allocated,
-                    std::chrono::duration<double>(Clock::now() - started).count()
-                );
+                const auto seconds =
+                    std::chrono::duration<double>(Clock::now() - started).count();
+                cache_.loaded(*cached_, allocated, seconds);
+                if (measurement_)
+                    measurement_->loading_seconds += seconds;
             }
             if (cached_)
                 cache_.pin(*cached_, hit);
