@@ -182,6 +182,12 @@ class LanguagePriorityTests(unittest.TestCase):
             [Action("load", "image", [40 * GIB, 18 * GIB])],
         )
 
+    def test_growth_keeps_the_language_reserve(self):
+        machine = ledger(ram=64, vram=(24,))
+        machine.workers["llm"].requirement = requirement(10, 6, 30, 22)
+        load(machine, "image", [40, 18], need=requirement(16, 2, 40, 33))
+        self.assertEqual(plan_growth(machine), [])
+
     def test_only_the_language_tier_is_reserved(self):
         machine = ledger(ram=64, vram=(24,))
         machine.workers["tts"].requirement = requirement(2, 6)

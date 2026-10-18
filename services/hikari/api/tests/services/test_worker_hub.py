@@ -321,6 +321,41 @@ class SchedulingTests(HubTestCase):
         self.assertEqual(loads, [("llm", [2 * GIB, 24 * GIB])])
         self.assertEqual(slot.budget, list(loads[0][1]))
 
+    async def test_image_load_leaves_room_for_the_language_model(self):
+        needs = {
+            "llm": (GIB, 6 * GIB, 2 * GIB, 30 * GIB),
+            "decision": (GIB, 0, GIB, 0),
+            "image": (GIB, 2 * GIB, GIB, 40 * GIB),
+        }
+        loads = []
+
+        def requirement(message):
+            host_min, device_min, host_pref, device_pref = needs[message["worker"]]
+            return [
+                {
+                    "id": message["id"],
+                    "state": "requirement",
+                    "worker": message["worker"],
+                    "model": "m",
+                    "minimum": [host_min, device_min],
+                    "preferred": [host_pref, device_pref],
+                }
+            ]
+
+        def load(message):
+            loads.append((message["worker"], message["budget"]))
+            return [{"id": message["id"], "state": "control", "ok": True}]
+
+        _, machine = await self.connect(
+            "box", replies={"requirement": requirement, "load": load}
+        )
+        await self.hub.submit(
+            InferenceTask(input={"feature": "image", "prompt": "fox", "count": 1})
+        )
+        await self.hub._schedule(machine)
+        self.assertEqual(loads, [("image", [GIB, 18 * GIB])])
+        self.assertFalse(machine.ledger.workers["llm"].loaded)
+
     async def test_busy_reply_leaves_the_ledger_unchanged(self):
         socket, machine = await self.connect(
             "box",

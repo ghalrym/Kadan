@@ -30,6 +30,7 @@ from api.services.inference_worker import (
 )
 from api.services.memory_scheduler import (
     GIB,
+    TOP_PRIORITY,
     Action,
     MachineLedger,
     Requirement,
@@ -611,12 +612,12 @@ class WorkerHub:
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
-            # Unloaded higher-priority workers keep room for their minimum.
+            # The unloaded language tier keeps room for its minimum.
             for other in ledger.workers.values():
                 if (
                     other.requirement is None
                     and not other.loaded
-                    and other.priority < slot.priority
+                    and other.priority == TOP_PRIORITY < slot.priority
                 ):
                     other.requirement = await self._requirement(machine, other.name)
             if slot.requirement is None:

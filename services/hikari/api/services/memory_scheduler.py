@@ -244,7 +244,10 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
     for slot in sorted(ledger.workers.values(), key=lambda slot: slot.priority):
         if not slot.loaded or slot.busy or slot.requirement is None:
             continue
-        free = ledger.free()
+        # Growth never takes the room kept for the language tier.
+        free = [
+            value - kept for value, kept in zip(ledger.free(), _reserve(ledger, slot))
+        ]
         preferred = _grown(slot, [float("inf")] * len(free))
         target = _grown(slot, free)
         donors = []
