@@ -11,6 +11,10 @@
 namespace kadan::image {
 class AtenGenerator;
 
+struct ImageDeviceCacheMemory {
+    Footprint allocated, reserved;
+};
+
 struct BatchMeasurement {
     std::size_t images = 0;
     // Index zero is host admission; subsequent entries are independent CUDA devices.
@@ -59,6 +63,7 @@ public:
     );
     const BatchMeasurement& last_batch_measurement() const;
     static bool compatible(const ImageRequest&, const ImageRequest&);
+    ImageDeviceCacheMemory device_cache_memory() const;
     void unload();
     static void validate(const ImageRequest&);
 

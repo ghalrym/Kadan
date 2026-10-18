@@ -7,11 +7,14 @@
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <chrono>
+#include <cstdio>
 #include <map>
+#include <optional>
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/image_aten.hpp"
 #include "kadan/image_aten_plan.hpp"
+#include "kadan/image_weight_cache.hpp"
 
 namespace kadan::image::detail {
 using Tensor = at::Tensor;
@@ -244,10 +247,310 @@ inline Snapshot stage_snapshot(Resources& resources, const std::vector<int>& dev
     return snapshot;
 }
 
+// Component weights remain owned by the model while idle. Workspace reservations
+// remain request-local, and every eviction confirms device cleanup before release.
+class DeviceWeightCache {
+public:
+    using Bank = std::map<std::string, Tensor, std::less<>>;
+
+    struct Entry {
+        Inventory* inventory;
+        AtenImageStage stage;
+        int device;
+        Handle handle;
+        Bytes bytes;
+        Bytes allocated = 0;
+        bool ready = false;
+        bool pinned = false;
+        std::uint64_t used = 0;
+        Bank bank;
+    };
+
+private:
+    using Key = std::pair<Inventory*, int>;
+    Resources& resources_;
+    std::map<Key, std::unique_ptr<Entry>> entries_;
+    std::map<Key, double> load_seconds_;
+    std::uint64_t clock_ = 0;
+
+    void report(const char* event, const Entry& entry) const {
+        std::fprintf(
+            stderr,
+            "KADAN_ATEN_IMAGE_CACHE {\"location\":\"device\",\"event\":\"%s\","
+            "\"device\":%d,\"stage\":%d,\"reserved_bytes\":%llu,"
+            "\"allocated_bytes\":%llu}\n",
+            event,
+            entry.device,
+            int(entry.stage),
+            static_cast<unsigned long long>(entry.bytes),
+            static_cast<unsigned long long>(entry.allocated)
+        );
+        std::fflush(stderr);
+    }
+
+public:
+    explicit DeviceWeightCache(Resources& resources) : resources_(resources) {
+    }
+
+    ~DeviceWeightCache() noexcept {
+        try {
+            clear();
+        } catch (...) { /* Preserve unconfirmed reservations. */
+        }
+    }
+
+    static Bytes weight_bytes(const Inventory& inventory) {
+        // CUDA's large allocation segments round to 2 MiB. Reserve an upper
+        // envelope per tensor, including a small-pool segment, rather than
+        // treating tensor payload bytes as total retained allocator memory.
+        return image_device_weight_bytes(inventory.bytes, inventory.weights.size());
+    }
+
+    Entry* find(const Inventory& inventory, int device) const {
+        const auto it = entries_.find({const_cast<Inventory*>(&inventory), device});
+        return it == entries_.end() ? nullptr : it->second.get();
+    }
+
+    bool contains(const Inventory& inventory, int device) const {
+        const auto* entry = find(inventory, device);
+        return entry && entry->ready;
+    }
+
+    std::optional<double> load_cost(const Inventory& inventory, int device) const {
+        const auto it =
+            load_seconds_.find({const_cast<Inventory*>(&inventory), device});
+        return it == load_seconds_.end() ? std::nullopt : std::optional(it->second);
+    }
+
+    Bytes device_bytes(int device) const {
+        Bytes result = 0;
+        for (const auto& [key, entry] : entries_)
+            if (entry->device == device)
+                result += entry->bytes;
+        return result;
+    }
+
+    Bytes allocated_bytes(int device) const {
+        Bytes result = 0;
+        for (const auto& [key, entry] : entries_)
+            if (entry->device == device)
+                result += entry->allocated;
+        return result;
+    }
+
+    Snapshot snapshot_for(Snapshot snapshot, const Inventory& inventory) const {
+        for (const auto& [key, entry] : entries_)
+            if (entry->inventory == &inventory && entry->ready)
+                snapshot.used.at(entry->device + 1) -= entry->bytes;
+        return snapshot;
+    }
+
+    Snapshot reclaimable_snapshot(Snapshot snapshot) const {
+        for (const auto& [key, entry] : entries_)
+            if (!entry->pinned)
+                snapshot.used.at(entry->device + 1) -= entry->bytes;
+        return snapshot;
+    }
+
+    double eviction_cost(
+        const Snapshot& snapshot, const Inventory& inventory, const AtenStagePlan& plan
+    ) const {
+        const auto* existing =
+            plan.stream_weights ? nullptr : find(inventory, plan.device);
+        const auto required = plan.device_bytes - (existing ? existing->bytes : 0);
+        auto free =
+            snapshot.capacity.at(plan.device + 1) - snapshot.used.at(plan.device + 1);
+        std::vector<const Entry*> candidates;
+        for (const auto& [key, entry] : entries_)
+            if (entry->device == plan.device && !entry->pinned
+                && entry.get() != existing)
+                candidates.push_back(entry.get());
+        std::sort(
+            candidates.begin(), candidates.end(), [](const auto* a, const auto* b) {
+                return a->used < b->used;
+            }
+        );
+        double seconds = 0;
+        for (const auto* entry : candidates) {
+            if (free >= required)
+                break;
+            free += entry->allocated;
+            seconds += load_cost(*entry->inventory, entry->device).value_or(0);
+        }
+        return seconds;
+    }
+
+    AtenStagePlan plan(
+        const Snapshot& snapshot,
+        const std::vector<int>& devices,
+        const Inventory& inventory,
+        Bytes workspace,
+        Bytes tiled = 0
+    ) const {
+        const auto owned = snapshot_for(snapshot, inventory);
+        for (int device : devices) {
+            if (!contains(inventory, device))
+                continue;
+            try {
+                const auto candidate = aten_stage_plan(
+                    owned,
+                    {device},
+                    weight_bytes(inventory),
+                    inventory.largest,
+                    workspace,
+                    tiled
+                );
+                if (!candidate.stream_weights)
+                    return candidate;
+            } catch (const ResourceExhausted&) {
+            }
+        }
+        std::optional<AtenStagePlan> streamed;
+        try {
+            auto candidate = aten_stage_plan(
+                owned,
+                devices,
+                weight_bytes(inventory),
+                inventory.largest,
+                workspace,
+                tiled
+            );
+            if (!candidate.stream_weights)
+                return candidate;
+            streamed = candidate;
+        } catch (const ResourceExhausted&) {
+        }
+        // This is a projection only. Stage::make_room physically evicts and
+        // re-probes before reserving any additional memory from this plan.
+        try {
+            return aten_stage_plan(
+                reclaimable_snapshot(snapshot),
+                devices,
+                weight_bytes(inventory),
+                inventory.largest,
+                workspace,
+                tiled
+            );
+        } catch (const ResourceExhausted&) {
+            if (streamed)
+                return *streamed;
+            throw;
+        }
+    }
+
+    void verify(int device) const {
+        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+        need(
+            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
+                && Bytes(stats.reserved_bytes[0].current) <= device_bytes(device),
+            "image_aten_cleanup_unconfirmed"
+        );
+    }
+
+    void evict(Entry& entry) {
+        need(!entry.pinned, "image_aten_cache_pinned");
+        c10::cuda::CUDAGuard guard(entry.device);
+        c10::cuda::device_synchronize();
+        if (entry.ready)
+            resources_.begin_eviction(entry.handle);
+        entry.bank.clear();
+        entry.allocated = 0;
+        at::cuda::clearCublasWorkspaces();
+        c10::cuda::CUDACachingAllocator::emptyCache();
+        const auto device = entry.device;
+        const auto handle = entry.handle;
+        const Key key{entry.inventory, device};
+        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+        need(
+            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
+                && Bytes(stats.reserved_bytes[0].current)
+                       <= device_bytes(device) - entry.bytes,
+            "image_aten_cleanup_unconfirmed"
+        );
+        report("eviction", entry);
+        resources_.released(handle);
+        entries_.erase(key);
+        verify(device);
+    }
+
+    void clear() {
+        while (!entries_.empty())
+            evict(*entries_.begin()->second);
+    }
+
+    void make_room(const Inventory& inventory, const AtenStagePlan& plan) {
+        const auto existing =
+            plan.stream_weights ? nullptr : find(inventory, plan.device);
+        const auto required = plan.device_bytes - (existing ? existing->bytes : 0);
+        for (;;) {
+            const auto snapshot = stage_snapshot(resources_, {plan.device});
+            const auto free =
+                snapshot.capacity[plan.device + 1] - snapshot.used[plan.device + 1];
+            if (free >= required)
+                return;
+            Entry* oldest = nullptr;
+            for (const auto& [key, entry] : entries_)
+                if (entry->device == plan.device && !entry->pinned
+                    && entry.get() != existing
+                    && (!oldest || entry->used < oldest->used))
+                    oldest = entry.get();
+            if (!oldest)
+                throw ResourceExhausted("image_aten_component_headroom");
+            evict(*oldest);
+        }
+    }
+
+    Entry& create(Inventory& inventory, int device) {
+        need(!find(inventory, device), "image_aten_cache_duplicate");
+        auto footprint = resources_.snapshot().capacity;
+        std::fill(footprint.begin(), footprint.end(), 0);
+        footprint[device + 1] = weight_bytes(inventory);
+        auto entry = std::make_unique<Entry>();
+        entry->inventory = &inventory;
+        entry->stage = inventory.stage;
+        entry->device = device;
+        entry->bytes = footprint[device + 1];
+        const auto [it, inserted] =
+            entries_.emplace(Key{&inventory, device}, std::move(entry));
+        need(inserted, "image_aten_cache_duplicate");
+        try {
+            it->second->handle = resources_.reserve(Workload::image, footprint);
+        } catch (...) {
+            entries_.erase(it);
+            throw;
+        }
+        return *it->second;
+    }
+
+    void loaded(Entry& entry, Bytes allocated, double seconds) {
+        entry.allocated = allocated;
+        load_seconds_[{entry.inventory, entry.device}] = seconds;
+        resources_.loaded(entry.handle);
+        entry.ready = true;
+        report("miss", entry);
+    }
+
+    void pin(Entry& entry, bool hit) {
+        resources_.pin(entry.handle);
+        entry.pinned = true;
+        entry.used = ++clock_;
+        if (hit)
+            report("hit", entry);
+    }
+
+    void unpin(Entry& entry) {
+        resources_.unpin(entry.handle);
+        entry.pinned = false;
+        report("retained", entry);
+    }
+};
+
 // Admission precedes allocation. ATen's allocator is capped at this ledger
 // envelope; clear its cached blocks before acknowledging release to the worker.
 class Stage {
     Resources& resources_;
+    DeviceWeightCache& cache_;
+    DeviceWeightCache::Entry* cached_ = nullptr;
     Handle handle_ = 0;
     Inventory& inventory_;
     const std::atomic_bool& cancel_;
@@ -278,10 +581,10 @@ class Stage {
 
 public:
     int device;
-    std::map<std::string, Tensor, std::less<>> bank;
 
     Stage(
         Resources& r,
+        DeviceWeightCache& cache,
         const std::vector<int>& devices,
         Inventory& inventory,
         Bytes workspace,
@@ -291,12 +594,12 @@ public:
     )
         : Stage(
               r,
+              cache,
               inventory,
-              aten_stage_plan(
+              cache.plan(
                   stage_snapshot(r, devices),
                   devices,
-                  inventory.bytes,
-                  inventory.largest,
+                  inventory,
                   workspace,
                   tiled_workspace
               ),
@@ -307,41 +610,58 @@ public:
 
     Stage(
         Resources& r,
+        DeviceWeightCache& cache,
         Inventory& inventory,
         AtenStagePlan plan,
         const std::atomic_bool& cancel,
         BatchMeasurement* measurement,
         const Stage* resident_source = nullptr
     )
-        : resources_(r), inventory_(inventory), cancel_(cancel), plan_(plan),
-          measurement_(measurement), device(plan_.device) {
+        : resources_(r), cache_(cache), inventory_(inventory), cancel_(cancel),
+          plan_(plan), measurement_(measurement), device(plan_.device) {
         need(
             !resident_source
                 || (&resident_source->inventory_ == &inventory
                     && !resident_source->plan_.stream_weights && !plan_.stream_weights),
             "image_aten_replica_inventory"
         );
+        cache_.make_room(inventory, plan_);
+        const bool hit = !plan_.stream_weights && cache_.contains(inventory, device);
         auto footprint = r.snapshot().capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
         footprint[0] = plan_.host_bytes;
         footprint[device + 1] = plan_.device_bytes;
+        if (!plan_.stream_weights)
+            footprint[device + 1] -= DeviceWeightCache::weight_bytes(inventory);
         handle_ = r.reserve(Workload::image, footprint);
         try {
             at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
             c10::cuda::CUDAGuard guard(device);
+            if (!plan_.stream_weights) {
+                cached_ = cache_.find(inventory, device);
+                if (!cached_)
+                    cached_ = &cache_.create(inventory, device);
+            }
             std::size_t free = 0, total = 0;
             C10_CUDA_CHECK(cudaMemGetInfo(&free, &total));
-            need(free >= footprint[device + 1], "image_aten_physical_headroom");
+            const auto additional =
+                footprint[device + 1] + (cached_ && !hit ? cached_->bytes : 0);
+            need(free >= additional, "image_aten_physical_headroom");
             c10::cuda::CUDACachingAllocator::resetPeakStats(device);
             c10::cuda::CUDACachingAllocator::setMemoryFraction(
-                double(footprint[device + 1]) / double(total), device
+                double(r.snapshot().used[device + 1]) / double(total), device
             );
-            if (!plan_.stream_weights)
+            if (cached_ && !hit) {
+                const auto started = Clock::now();
+                const auto before =
+                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
+                        .allocated_bytes[0]
+                        .current;
                 for (const auto& [name, weight] : inventory.weights) {
                     stop(cancel_);
-                    bank.emplace(
+                    cached_->bank.emplace(
                         name,
-                        resident_source ? resident_source->bank.at(name).to(
+                        resident_source ? resident_source->cached_->bank.at(name).to(
                                               at::Device(at::kCUDA, device),
                                               inventory_.dtype,
                                               false,
@@ -350,6 +670,20 @@ public:
                                         : read_weight(name)
                     );
                 }
+                sync();
+                const auto allocated =
+                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
+                        .allocated_bytes[0]
+                        .current
+                    - before;
+                cache_.loaded(
+                    *cached_,
+                    allocated,
+                    std::chrono::duration<double>(Clock::now() - started).count()
+                );
+            }
+            if (cached_)
+                cache_.pin(*cached_, hit);
             sync();
         } catch (...) {
             auto error = std::current_exception();
@@ -388,16 +722,18 @@ public:
                 std::max(measurement_->peak_allocated[0], host);
             measurement_->peak_reserved[0] = measurement_->peak_allocated[0];
         }
-        bank.clear();
+        if (cached_) {
+            if (cached_->pinned)
+                cache_.unpin(*cached_);
+            if (!cached_->ready)
+                cache_.evict(*cached_);
+            cached_ = nullptr;
+        }
         at::cuda::clearCublasWorkspaces();
         c10::cuda::CUDACachingAllocator::emptyCache();
-        // Locals in the caller's component scope must be gone before close().
-        auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-        need(
-            stats.allocated_bytes[0].current == 0
-                && stats.reserved_bytes[0].current == 0,
-            "image_aten_cleanup_unconfirmed"
-        );
+        // Caller temporaries must be gone; only explicitly retained banks may
+        // survive this stage. Their reservations remain in the shared ledger.
+        cache_.verify(device);
         resources_.released(handle_);
         handle_ = 0;
     }
@@ -407,7 +743,7 @@ public:
     }
 
     Tensor weight(const std::string& name) const {
-        return plan_.stream_weights ? read_weight(name) : bank.at(name);
+        return plan_.stream_weights ? read_weight(name) : cached_->bank.at(name);
     }
 
     Tensor linear(const std::string& p, const Tensor& x) const {

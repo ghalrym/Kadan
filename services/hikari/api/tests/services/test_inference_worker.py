@@ -159,6 +159,7 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
             b'KADAN_ATEN_IMAGE_TIMING {"phase":"generation"}\n',
             b'KADAN_ATEN_IMAGE_TIMING {"phase":"unload"}\n',
             b'KADAN_ATEN_IMAGE_BATCH {"images":2,"host_peak_bytes":4096}\n',
+            b'KADAN_ATEN_IMAGE_CACHE {"hits":10,"source_bytes":0}\n',
         ]
         worker.process = SimpleNamespace(
             stderr=SimpleNamespace(read=AsyncMock(side_effect=[*chunks, b""]))
@@ -172,7 +173,8 @@ class InferenceTransportTests(unittest.IsolatedAsyncioTestCase):
             'KADAN_ATEN_IMAGE_TIMING {"phase":"load"}\n'
             'KADAN_ATEN_IMAGE_TIMING {"phase":"generation"}\n'
             'KADAN_ATEN_IMAGE_TIMING {"phase":"unload"}\n'
-            'KADAN_ATEN_IMAGE_BATCH {"images":2,"host_peak_bytes":4096}\n',
+            'KADAN_ATEN_IMAGE_BATCH {"images":2,"host_peak_bytes":4096}\n'
+            'KADAN_ATEN_IMAGE_CACHE {"hits":10,"source_bytes":0}\n',
         )
         self.assertEqual("".join(worker.diagnostics), b"".join(chunks).decode())
         callback.assert_not_called()

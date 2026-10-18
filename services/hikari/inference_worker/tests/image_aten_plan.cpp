@@ -255,6 +255,110 @@ void denoiser_lane_units() {
     check(rejected);
 }
 
+void heterogeneous_denoiser_units() {
+    using namespace kadan;
+    using namespace kadan::image;
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    constexpr Bytes weights = 14 * gib, largest = gib / 8;
+    constexpr Bytes host = 2 * largest + 256ULL * 1024 * 1024;
+    const auto workspace = [](std::size_t images) {
+        return aten_batch_workspace(624, 250, 624, images);
+    };
+    const auto plan = [&](const Snapshot& snapshot,
+                          const std::vector<int>& devices,
+                          std::size_t images) {
+        return aten_denoiser_plan(
+            snapshot, devices, weights, largest, 624, 250, 624, images
+        );
+    };
+    // Sparse CUDA IDs and independent background usage must survive placement.
+    Snapshot three{Footprint(7), Footprint(7), 0};
+    three.capacity[0] = 64 * gib;
+    for (const auto& [device, images] :
+         {std::pair{1, 1}, std::pair{3, 2}, std::pair{5, 5}}) {
+        three.used[device + 1] = device * gib;
+        three.capacity[device + 1] =
+            three.used[device + 1] + weights + workspace(images);
+    }
+    const auto uneven = plan(three, {3, 1, 5}, 6);
+    check(uneven.size() == 3);
+    check(uneven[0].stage.device == 5 && uneven[0].images == 3);
+    check(uneven[1].stage.device == 3 && uneven[1].images == 2);
+    check(uneven[2].stage.device == 1 && uneven[2].images == 1);
+    check(uneven[0].begin == 0 && uneven[1].begin == 3 && uneven[2].begin == 5);
+    for (const auto& lane : uneven)
+        check(
+            lane.stage.device_bytes
+            <= three.capacity[lane.stage.device + 1] - three.used[lane.stage.device + 1]
+        );
+
+    Snapshot four{Footprint(9), Footprint(9), 0};
+    four.capacity[0] = 64 * gib;
+    const std::vector<int> devices{0, 2, 5, 7};
+    for (const auto device : devices)
+        four.capacity[device + 1] = weights + workspace(8);
+    const auto balanced = plan(four, devices, 8);
+    check(balanced.size() == 4);
+    Resources ledger(four.capacity);
+    std::vector<Handle> handles;
+    for (std::size_t i = 0; i < balanced.size(); ++i) {
+        const auto& lane = balanced[i];
+        check(
+            lane.stage.device == devices[i] && lane.images == 2 && lane.begin == 2 * i
+        );
+        Footprint bytes(9);
+        bytes[0] = lane.stage.host_bytes;
+        bytes[lane.stage.device + 1] = lane.stage.device_bytes;
+        handles.push_back(ledger.reserve(Workload::image, bytes));
+    }
+    check(ledger.snapshot().used[0] == 4 * host);
+    for (const auto handle : handles)
+        ledger.released(handle);
+    check(ledger.snapshot().used == Footprint(9));
+
+    for (std::size_t i = 0; i < devices.size(); ++i)
+        four.capacity[devices[i] + 1] = weights + workspace(std::size_t(1) << i);
+    const auto four_uneven = plan(four, devices, 10);
+    check(four_uneven.size() == 4);
+    check(four_uneven[0].stage.device == 7 && four_uneven[0].images == 4);
+    check(four_uneven[1].stage.device == 5 && four_uneven[1].images == 3);
+    check(four_uneven[2].stage.device == 2 && four_uneven[2].images == 2);
+    check(four_uneven[3].stage.device == 0 && four_uneven[3].images == 1);
+    check(four_uneven[3].begin == 9);
+
+    // Do not create empty lanes when more devices than images are available.
+    const auto two_images = plan(four, devices, 2);
+    check(two_images.size() == 2);
+    check(two_images[0].images == 1 && two_images[1].images == 1);
+    four.capacity[0] = 3 * host;
+    four.used[0] = host;
+    const auto host_limited = plan(four, devices, 8);
+    check(host_limited.size() == 2);
+    check(host_limited[0].images == 4 && host_limited[1].images == 4);
+    four.used[0] = 2 * host;
+    const auto one_lane = plan(four, devices, 8);
+    check(one_lane.size() == 1 && one_lane[0].images == 8);
+
+    // Four independent 8 GiB devices cannot pool their memory into a replica.
+    four.capacity[0] = 64 * gib;
+    four.used[0] = 0;
+    for (const auto device : devices)
+        four.capacity[device + 1] = 8 * gib;
+    const auto streamed = plan(four, devices, 4);
+    check(streamed.size() == 1 && streamed[0].stage.stream_weights);
+    check(streamed[0].stage.device_bytes <= 8 * gib);
+    // If even one streamed image batch cannot fit, aggregate free VRAM is irrelevant.
+    for (const auto device : devices)
+        four.capacity[device + 1] = 3 * gib;
+    bool rejected = false;
+    try {
+        (void)plan(four, devices, 4);
+    } catch (const ResourceExhausted&) {
+        rejected = true;
+    }
+    check(rejected);
+}
+
 void vae_budget_units() {
     using namespace kadan;
     using namespace kadan::image;
@@ -314,6 +418,7 @@ int main() {
         reference_budget_units();
         batch_budget_units();
         denoiser_lane_units();
+        heterogeneous_denoiser_units();
         using namespace kadan;
         using namespace kadan::image;
         constexpr Bytes gib = 1024ULL * 1024 * 1024;

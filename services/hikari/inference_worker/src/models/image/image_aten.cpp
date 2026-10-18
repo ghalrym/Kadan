@@ -20,12 +20,15 @@
 #include "image_aten_stage.hpp"
 #include "image_vision.hpp"
 #include "kadan/checkpoint.hpp"
+#include "kadan/checkpoint_cache.hpp"
+#include "kadan/image_aten_performance.hpp"
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_checkpoint_config.hpp"
 #include "kadan/image_edit.hpp"
 #include "kadan/image_input.hpp"
 #include "kadan/image_reference.hpp"
 #include "kadan/image_schedule.hpp"
+#include "kadan/image_weight_cache.hpp"
 #include "kadan/text_tokenizer.hpp"
 
 namespace kadan::image {
@@ -734,9 +737,181 @@ struct AtenGenerator::Impl {
     ImageCheckpointConfig config;
     std::string root;
     std::unique_ptr<Inventory> text, denoiser, vae, vae_encoder, vision;
+    std::shared_ptr<checkpoint::ReadCache> weight_cache;
+    DeviceWeightCache device_cache;
+    AtenDenoiserPerformance performance;
+    bool cache_populated = false;
+
+    AtenDenoiserWorkload
+    workload(Bytes points, Bytes tokens, Bytes reference, std::size_t steps) const {
+        bool retained = false;
+        for (std::size_t device = 0; device + 1 < resources.snapshot().capacity.size();
+             ++device)
+            retained = retained || device_cache.contains(*denoiser, int(device));
+        return {points, tokens, reference, steps, cache_populated, retained};
+    }
+
+    std::vector<AtenDenoiserLane> denoiser_plan(
+        const Snapshot& snapshot,
+        const std::vector<int>& devices,
+        Bytes points,
+        Bytes tokens,
+        Bytes reference,
+        std::size_t images,
+        std::size_t steps
+    ) const {
+        const auto parallel = aten_denoiser_plan(
+            device_cache.reclaimable_snapshot(snapshot),
+            devices,
+            DeviceWeightCache::weight_bytes(*denoiser),
+            denoiser->largest,
+            points,
+            tokens,
+            reference,
+            images
+        );
+        std::vector<AtenDenoiserLane> single;
+        try {
+            single.push_back(
+                {0,
+                 images,
+                 device_cache.plan(
+                     snapshot,
+                     devices,
+                     *denoiser,
+                     aten_batch_workspace(points, tokens, reference, images)
+                 )}
+            );
+        } catch (const ResourceExhausted&) {
+            // Memory-fit parallel execution remains available when no whole-batch
+            // device fits.
+        }
+        const auto cost = [&](const std::vector<AtenDenoiserLane>& lanes) {
+            AtenDenoiserCost estimate;
+            estimate.load_seconds.reserve(lanes.size());
+            for (const auto& lane : lanes) {
+                estimate.load_seconds.push_back(
+                    device_cache.contains(*denoiser, lane.stage.device)
+                        ? std::optional<double>(0)
+                        : device_cache.load_cost(*denoiser, lane.stage.device)
+                );
+                estimate.deferred_reload_seconds +=
+                    device_cache.eviction_cost(snapshot, *denoiser, lane.stage);
+            }
+            return estimate;
+        };
+        std::vector<std::vector<AtenDenoiserLane>> candidates;
+        candidates.reserve(parallel.size() + 1);
+        candidates.push_back(std::move(single));
+        std::vector<int> subset;
+        subset.reserve(parallel.size());
+        for (const auto& lane : parallel) {
+            subset.push_back(lane.stage.device);
+            if (subset.size() < 2)
+                continue;
+            try {
+                candidates.push_back(aten_denoiser_plan(
+                    device_cache.reclaimable_snapshot(snapshot),
+                    subset,
+                    DeviceWeightCache::weight_bytes(*denoiser),
+                    denoiser->largest,
+                    points,
+                    tokens,
+                    reference,
+                    images
+                ));
+            } catch (const ResourceExhausted&) {
+                // A smaller subset can fail while the complete device set fits.
+            }
+        }
+        if (parallel.size() < 2)
+            candidates.push_back(parallel);
+        std::vector<AtenDenoiserCost> costs;
+        costs.reserve(candidates.size());
+        for (const auto& candidate : candidates)
+            costs.push_back(cost(candidate));
+        return performance.choose_candidates(
+            workload(points, tokens, reference, steps), candidates, costs
+        );
+    }
+
+    auto inventories() {
+        return std::array<Inventory*, 5>{
+            text.get(), denoiser.get(), vae.get(), vae_encoder.get(), vision.get()
+        };
+    }
+
+    void cache_reads(const std::atomic_bool* cancel) {
+        for (auto* inventory : inventories())
+            if (inventory)
+                for (auto& shard : inventory->shards)
+                    shard->cache_reads(cancel ? weight_cache : nullptr, cancel);
+    }
+
+    void prepare_cache(const std::shared_ptr<Resources>& owner, std::size_t lanes) {
+        if (weight_cache)
+            return;
+        Bytes stored = 0, staging = 0;
+        for (const auto* inventory : inventories()) {
+            if (!inventory)
+                continue;
+            for (const auto& [name, weight] : inventory->weights) {
+                if (weight.info.bytes > std::numeric_limits<Bytes>::max() - stored)
+                    throw std::overflow_error("image_weight_cache_inventory");
+                stored += weight.info.bytes;
+            }
+            const auto copies =
+                inventory->stage == AtenImageStage::denoiser ? lanes : 1;
+            staging = std::max(staging, copies * (2 * inventory->largest + 256 * mib));
+        }
+        const auto snapshot = resources.snapshot();
+        const auto bytes = image_weight_cache_bytes(
+            snapshot.capacity[0] - snapshot.used[0], staging, stored
+        );
+        if (bytes)
+            weight_cache =
+                std::make_shared<checkpoint::ReadCache>(owner, bytes, Workload::image);
+    }
+
+    // Shards outlive requests. Bind cancellation only while this batch is active;
+    // retaining the payload cache must never retain a request's cancellation flag.
+    struct CacheReads {
+        Impl& model;
+        checkpoint::ReadCache::Stats before;
+
+        CacheReads(Impl& m, const std::atomic_bool& cancel) : model(m) {
+            if (model.weight_cache)
+                before = model.weight_cache->stats();
+            model.cache_reads(&cancel);
+        }
+
+        ~CacheReads() {
+            model.cache_reads(nullptr);
+            if (!model.weight_cache)
+                return;
+            const auto after = model.weight_cache->stats();
+            std::fprintf(
+                stderr,
+                "KADAN_ATEN_IMAGE_CACHE {\"location\":\"host\","
+                "\"reserved_bytes\":%llu,\"allocated_bytes\":%zu,"
+                "\"retained_before_bytes\":%zu,\"entries\":%zu,"
+                "\"hits\":%llu,\"misses\":%llu,\"source_bytes\":%llu}\n",
+                static_cast<unsigned long long>(model.weight_cache->reserved_bytes()),
+                after.allocated,
+                before.allocated,
+                after.entries,
+                static_cast<unsigned long long>(after.hits - before.hits),
+                static_cast<unsigned long long>(after.misses - before.misses),
+                static_cast<unsigned long long>(
+                    after.source_bytes - before.source_bytes
+                )
+            );
+            std::fflush(stderr);
+        }
+    };
 
     explicit Impl(const std::shared_ptr<Resources>& r)
-        : resources(*r), metadata(0), tokenizer(r, Workload::image) {
+        : resources(*r), metadata(0), tokenizer(r, Workload::image), device_cache(*r) {
         auto bytes = r->snapshot().capacity;
         std::fill(bytes.begin(), bytes.end(), 0);
         bytes[0] = 192 * mib;
@@ -744,11 +919,18 @@ struct AtenGenerator::Impl {
     }
 
     ~Impl() {
+        try {
+            device_cache.clear();
+        } catch (...) {
+            // Explicit unload reports cleanup failures. Destructor fallback keeps
+            // the unconfirmed device reservations rather than releasing credit.
+        }
         vision.reset();
         vae_encoder.reset();
         vae.reset();
         denoiser.reset();
         text.reset();
+        weight_cache.reset();
         resources.released(metadata);
     }
 
@@ -822,7 +1004,22 @@ void AtenGenerator::load(
 }
 
 void AtenGenerator::unload() {
+    if (model_)
+        model_->device_cache.clear();
     model_.reset();
+}
+
+ImageDeviceCacheMemory AtenGenerator::device_cache_memory() const {
+    ImageDeviceCacheMemory memory;
+    memory.allocated.resize(resources_->snapshot().capacity.size());
+    memory.reserved.resize(memory.allocated.size());
+    if (model_)
+        for (int device : devices_) {
+            memory.allocated.at(device + 1) =
+                model_->device_cache.allocated_bytes(device);
+            memory.reserved.at(device + 1) = model_->device_cache.device_bytes(device);
+        }
+    return memory;
 }
 
 void AtenGenerator::prepare(
@@ -876,25 +1073,23 @@ Footprint AtenGenerator::admission_footprint(
         Footprint stage(footprint.size());
         if (inventory->stage == AtenImageStage::denoiser
             && (request.source.empty() || request.reference)) {
-            for (const auto& lane : aten_denoiser_plan(
+            for (const auto& lane : m.denoiser_plan(
                      snapshot,
                      devices_,
-                     inventory->bytes,
-                     inventory->largest,
                      points,
                      tokens,
                      reference_points,
-                     images
+                     images,
+                     request.steps
                  )) {
                 stage[0] += lane.stage.host_bytes;
                 stage[lane.stage.device + 1] += lane.stage.device_bytes;
             }
         } else {
-            const auto plan = aten_stage_plan(
+            const auto plan = m.device_cache.plan(
                 snapshot,
                 devices_,
-                inventory->bytes,
-                inventory->largest,
+                *inventory,
                 aten_stage_workspace(
                     inventory->stage,
                     stage_points,
@@ -941,16 +1136,14 @@ void AtenGenerator::prepare_batch(
     const auto reference =
         request.reference ? request.source_height / 16 * (request.source_width / 16)
                           : 0;
-    const auto& inventory = *model_->denoiser;
-    (void)aten_denoiser_plan(
+    (void)model_->denoiser_plan(
         stage_snapshot(*resources_, devices_),
         devices_,
-        inventory.bytes,
-        inventory.largest,
         points,
         tokens,
         reference,
-        requests.size()
+        requests.size(),
+        request.steps
     );
 }
 
@@ -1067,6 +1260,13 @@ void AtenGenerator::generate_batch(
     const auto reference_points =
         request.reference ? (request.source_height / 16) * (request.source_width / 16)
                           : 0;
+    if (!request.source.empty()
+        && (request.reference || request.strength < 1 || !request.mask.empty()))
+        (void)m.encoder(cancel);
+    if (request.reference)
+        (void)m.visual_encoder(cancel);
+    m.prepare_cache(resources_, std::min(requests.size(), devices_.size()));
+    Impl::CacheReads cache_reads(m, cancel);
     Tensor source;
     if (!request.source.empty()
         && (request.reference || request.strength < 1 || !request.mask.empty())) {
@@ -1080,6 +1280,7 @@ void AtenGenerator::generate_batch(
         auto started = Clock::now();
         Stage stage(
             *resources_,
+            m.device_cache,
             devices_,
             m.encoder(cancel),
             aten_stage_workspace(AtenImageStage::vae_encoder, source_points, 0),
@@ -1102,6 +1303,7 @@ void AtenGenerator::generate_batch(
         auto started = Clock::now();
         Stage stage(
             *resources_,
+            m.device_cache,
             devices_,
             m.visual_encoder(cancel),
             aten_stage_workspace(
@@ -1138,6 +1340,7 @@ void AtenGenerator::generate_batch(
         auto started = Clock::now();
         Stage stage(
             *resources_,
+            m.device_cache,
             devices_,
             *m.text,
             aten_stage_workspace(AtenImageStage::text, points, count),
@@ -1175,23 +1378,27 @@ void AtenGenerator::generate_batch(
         seed_image_latent(
             {latent[i].data_ptr<float>(), points * 64}, requests[i].seed, cancel
         );
+    std::optional<AtenDenoiserWorkload> completed_workload;
+    std::vector<AtenDenoiserMeasurement> completed_timings;
     {
         const auto snapshot = stage_snapshot(*resources_, devices_);
         const auto editing = !request.source.empty() && !request.reference;
-        const auto lanes = editing
-            ? std::vector<AtenDenoiserLane>{{
-                  0, 1,
-                  aten_stage_plan(
-                      snapshot, devices_, m.denoiser->bytes, m.denoiser->largest,
-                      aten_stage_workspace(
-                          AtenImageStage::denoiser, points, text_tokens, true
-                      )
-                  )
-              }}
-            : aten_denoiser_plan(
-                  snapshot, devices_, m.denoiser->bytes, m.denoiser->largest,
-                  points, text_tokens, reference_points, requests.size()
-              );
+        const auto lanes =
+            editing
+                ? std::vector<
+                      AtenDenoiserLane>{{0, 1, m.device_cache.plan(snapshot, devices_, *m.denoiser, aten_stage_workspace(AtenImageStage::denoiser, points, text_tokens, true))}}
+                : m.denoiser_plan(
+                      snapshot,
+                      devices_,
+                      points,
+                      text_tokens,
+                      reference_points,
+                      requests.size(),
+                      request.steps
+                  );
+        const auto workload =
+            m.workload(points, text_tokens, reference_points, request.steps);
+        std::vector<AtenDenoiserMeasurement> timings(lanes.size());
         std::vector<std::unique_ptr<Stage>> stages;
         stages.reserve(lanes.size());
         for (const auto& lane : lanes) {
@@ -1199,6 +1406,7 @@ void AtenGenerator::generate_batch(
             stages.push_back(
                 std::make_unique<Stage>(
                     *resources_,
+                    m.device_cache,
                     *m.denoiser,
                     lane.stage,
                     cancel,
@@ -1206,6 +1414,13 @@ void AtenGenerator::generate_batch(
                     stages.empty() ? nullptr : stages.front().get()
                 )
             );
+            timings[stages.size() - 1] = {
+                lane.stage.device,
+                lane.images,
+                stages.size() > 1,
+                std::chrono::duration<double>(Clock::now() - started).count(),
+                0
+            };
             stage_timing("load", "denoiser", lane.stage.device, started);
             constexpr Bytes fixed = 2ULL * 1024 * 1024 * 1024;
             const auto workspace =
@@ -1260,6 +1475,8 @@ void AtenGenerator::generate_batch(
                 failures[index] = std::current_exception();
             }
             const auto finished = Clock::now();
+            timings[index].denoise_seconds =
+                std::chrono::duration<double>(finished - started).count();
             std::fprintf(
                 stderr,
                 "KADAN_ATEN_IMAGE_TIMING "
@@ -1292,12 +1509,19 @@ void AtenGenerator::generate_batch(
         for (const auto& failure : failures)
             if (failure)
                 std::rethrow_exception(failure);
+        if (!editing && std::none_of(lanes.begin(), lanes.end(), [](const auto& lane) {
+                return lane.stage.stream_weights;
+            })) {
+            completed_workload = workload;
+            completed_timings = std::move(timings);
+        }
         latent = at::cat(results, 0);
     }
     {
         auto started = Clock::now();
         Stage stage(
             *resources_,
+            m.device_cache,
             devices_,
             *m.vae,
             aten_stage_workspace(AtenImageStage::vae, points, text_tokens),
@@ -1324,5 +1548,8 @@ void AtenGenerator::generate_batch(
     if (!request.mask.empty())
         composite_image_edit(outputs.front(), request.source, request.mask);
     stop(cancel);
+    if (completed_workload)
+        m.performance.observe(*completed_workload, completed_timings);
+    m.cache_populated = m.weight_cache && m.weight_cache->stats().entries != 0;
 }
 }  // namespace kadan::image

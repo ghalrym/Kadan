@@ -314,12 +314,27 @@ Matching those kernels, equal-seed noise, or full numerical output is not
 established by this correction. No GPL source or upstream kernel source is
 copied, and no license is added to Hikari.
 
-Image stages prefer whole-component residency on the admitted GPU with the most
-available memory. When a component does not fit, weights are read on demand through
-the existing shard reader and transferred for each operator. The ledger reserves
-space for the largest overlapping weights, dtype conversion, host transfer buffers
-and stage workspace. Weights retain their checkpoint precision; this path does not
-quantize them. Repeated disk reads and GPU transfers trade speed for bounded residency.
+Image stages reuse component weight banks retained on an admitted GPU when their
+workspace fits. Each bank keeps a shared-memory-manager reservation, is pinned
+while active, and can be evicted after synchronization when another stage needs
+that device. Workspace is request-local. Model changes, competing workloads,
+cancellation and execution failures release the image caches through the existing
+worker owner. Physical cleanup is confirmed before releasing reservations.
+
+Serialized checkpoint weights also remain in the existing bounded host cache,
+using at most half the RAM left after request and stage staging budgets. GPU
+uploads still occur on a device-cache miss. If whole-component residency does not
+fit even after reclaiming inactive banks, the existing operator-streaming path
+remains available. Weights keep their checkpoint precision.
+
+Denoiser placement compares measured loading plus concurrent denoising time and
+the reload cost of component banks it would displace. It starts conservatively,
+permits one successful parallel calibration per comparable shape/cache regime,
+and retains both-GPU execution when the measured cost or memory constraints favor
+it. This is a bounded estimator, not a guarantee of optimal placement. In
+particular, 24 GiB cards cannot keep both the approximately 14.1 GiB text bank
+and 13.3 GiB denoiser bank on one device. Keeping them on separate GPUs can avoid
+reloads that two simultaneous denoiser replicas would cause.
 
 Text stores BF16 weights and performs FP32 forward operations; denoising keeps
 BF16 weights/hidden states and uses library SDPA, normalization, SwiGLU and linear
@@ -348,8 +363,10 @@ workloads synchronize and free their owned allocations on retirement without
 `cudaDeviceReset`, so switching workloads cannot invalidate ATen handle pools.
 Those library/context pools survive until worker exit. Fresh physical memory
 probes account for that baseline before the next engine is admitted. Component
-weights, activations, cuBLAS workspaces and allocator blocks are released before
-ledger acknowledgment; failed cleanup retains admission and blocks worker idle.
+weights are retained only under explicit cache reservations. Activations and
+unused allocator blocks are released at stage boundaries; model retirement also
+releases all cached banks before ledger acknowledgment. Failed cleanup retains
+admission and blocks worker idle.
 Repeated model switching remains a manual lifecycle check.
 
 `KADAN_ATEN_IMAGE_TIMING` lines on stderr report synchronized `load`, `generation`

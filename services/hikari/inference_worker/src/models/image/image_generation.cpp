@@ -46,6 +46,10 @@ void Generator::load(
     aten_->load(root, cancel, hook);
 }
 
+ImageDeviceCacheMemory Generator::device_cache_memory() const {
+    return aten_->device_cache_memory();
+}
+
 void Generator::unload() {
     need(!busy_, "busy");
     aten_->unload();

@@ -258,6 +258,7 @@ class InferenceWorker:
                             b"KADAN_IMAGE_TIMING ",
                             b"KADAN_ATEN_IMAGE_TIMING ",
                             b"KADAN_ATEN_IMAGE_BATCH ",
+                            b"KADAN_ATEN_IMAGE_CACHE ",
                         )
                     ):
                         # Persist opted-in native timings without changing UI progress.
