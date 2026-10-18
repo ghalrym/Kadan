@@ -103,7 +103,7 @@ def list_speech_models() -> list[SpeechModelOption]:
             default_speaker="Ryan",
         )
         for model in models
-        if model.kind == "speech" and model.inference_available
+        if model.id == "qwen-tts-1.7b-custom" and model.inference_available
     ]
 
 

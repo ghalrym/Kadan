@@ -278,7 +278,12 @@ int serve(const char* lock_path) {
         case Workload::formatting:
             return transcription_formatting_engine(resources, progress);
         case Workload::tts:
-            return speech_engine(resources, progress);
+            return speech_engine(resources, progress, [&](const Json& chunk) {
+                auto event = chunk;
+                event["id"] = active;
+                event["state"] = "audio";
+                output.send(event);
+            });
         case Workload::decision:
             return decision_engine(resources, progress);
         }

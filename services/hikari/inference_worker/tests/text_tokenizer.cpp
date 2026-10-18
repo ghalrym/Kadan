@@ -88,6 +88,37 @@ int main() {
         );
     }
     assert(resources->snapshot().used[0] == 0);
+    // Drama needs its 4,172 added tokens, without widening other formats.
+    {
+        auto drama = metadata;
+        drama["normalizer"] = {{"type", "NFC"}};
+        for (unsigned index = 0; index < 4172; ++index)
+            drama["added_tokens"].push_back(
+                {{"id", 248044u + index},
+                 {"content", "<|drama:" + std::to_string(index) + "|>"},
+                 {"single_word", false},
+                 {"lstrip", false},
+                 {"rstrip", false},
+                 {"normalized", false},
+                 {"special", true}}
+            );
+        std::ofstream(path) << drama;
+        kadan::text::Tokenizer tokenizer(
+            resources, kadan::Workload::tts, kadan::text::Tokenizer::Format::drama
+        );
+        tokenizer.load(path.string(), cancel);
+        assert(tokenizer.encode("<|drama:4171|>", output, cancel) == 1);
+        assert(output[0] == 252215);
+        tokenizer.unload();
+        kadan::text::Tokenizer ordinary(resources, kadan::Workload::llm);
+        bool rejected = false;
+        try {
+            ordinary.load(path.string(), cancel);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()) == "text_tokenizer_added_limit";
+        }
+        assert(rejected && resources->snapshot().used[0] == 0);
+    }
     // Muse Spark's published tokenizer contract, using a compact synthetic vocab.
     // Its ByteLevel postprocessor controls offsets; encode still presents explicit
     // special tokens verbatim and never inserts an implicit BOS.

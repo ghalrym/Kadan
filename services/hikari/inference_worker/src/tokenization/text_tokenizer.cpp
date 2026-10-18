@@ -106,7 +106,7 @@ struct Tokenizer::Impl {
     };
 
     Impl(const std::string& path, const std::atomic_bool& cancel, Format format)
-        : fixed_vocabulary(format != Format::byte_level) {
+        : fixed_vocabulary((format == Format::h3 || format == Format::tts)) {
         const auto j = read_json(path, cancel);
         configure_text(j, format);
         const auto& model = j.at("model");
@@ -115,7 +115,7 @@ struct Tokenizer::Impl {
         auto ids = load_vocabulary(model, cancel);
         build_byte_alphabet();
         load_merges(model, cancel);
-        load_added_tokens(j, ids);
+        load_added_tokens(j, ids, format);
         if (!fixed_vocabulary)
             build_decoder();
         compile_pattern(j.at("pre_tokenizer").at("pretokenizers")[0]);
@@ -261,9 +261,12 @@ struct Tokenizer::Impl {
         }
     }
 
-    void load_added_tokens(const Json& j, std::vector<bool>& ids) {
+    void load_added_tokens(const Json& j, std::vector<bool>& ids, Format format) {
         check(
-            j.at("added_tokens").size() <= (fixed_vocabulary ? 256 : 2048),
+            j.at("added_tokens").size()
+                <= (fixed_vocabulary          ? 256
+                    : format == Format::drama ? 8192
+                                              : 2048),
             "text_tokenizer_added_limit"
         );
         for (const auto& item : j.at("added_tokens")) {
@@ -529,7 +532,7 @@ void Tokenizer::load(const std::string& path, const std::atomic_bool& cancel) {
     stop(cancel);
     check(!executing_, "busy");
     check(!impl_, "text_tokenizer_already_loaded");
-    const bool fixed = format_ != Format::byte_level;
+    const bool fixed = (format_ == Format::h3 || format_ == Format::tts);
     Admission admitted(*resources_, workload_, (fixed ? 512ULL : 768ULL) * 1024 * 1024);
     auto next = std::make_unique<Impl>(path, cancel, format_);
     stop(cancel);
@@ -558,7 +561,7 @@ std::size_t Tokenizer::encode(
 ) {
     stop(cancel);
     check(bool(impl_), "text_tokenizer_not_loaded");
-    if (format_ != Format::byte_level)
+    if ((format_ == Format::h3 || format_ == Format::tts))
         input_limit = std::min(input_limit, max_input_bytes);
     check(!text.empty() && text.size() <= input_limit, "text_tokenizer_input_limit");
     Active active(executing_);

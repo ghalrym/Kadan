@@ -213,7 +213,7 @@
         "FL2VA/video_vae/source"
       ],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": false,
       "asset_url": null,
       "asset_name": null,
@@ -258,7 +258,7 @@
       ],
       "weight_paths": [],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": true,
       "asset_url": null,
       "asset_name": null,
@@ -873,6 +873,290 @@
       "asset_url": null,
       "asset_name": null,
       "manifest": []
+    },
+    {
+      "id": "drama-3",
+      "repo_id": "fishaudio/drama-3",
+      "revision": "b2b5ee998034b2975720906c815e7fb0e9f007bd",
+      "license": "fish-audio-research-license",
+      "estimated_bytes": 41502454454,
+      "kind": "speech",
+      "display_name": "Drama 3 FP8 (experimental)",
+      "layout": "composite",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "codec.pth",
+        "config.json",
+        "model-00001-of-00008.safetensors",
+        "model-00002-of-00008.safetensors",
+        "model-00003-of-00008.safetensors",
+        "model-00004-of-00008.safetensors",
+        "model-00005-of-00008.safetensors",
+        "model-00006-of-00008.safetensors",
+        "model-00007-of-00008.safetensors",
+        "model-00008-of-00008.safetensors",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/fishaudio/drama-3/blob/b2b5ee998034b2975720906c815e7fb0e9f007bd/LICENSE",
+      "license_notice": "Experimental Fish Audio research license. Review permitted uses before downloading. Native consumer-GPU performance is unverified.",
+      "inference_available": true,
+      "asset_url": null,
+      "asset_name": null,
+      "manifest": [
+        {
+          "name": "codec.pth",
+          "size": 1871099728,
+          "digest": "74fc41c5a7151c6f350af8bd7e5d6e3accfcc7f3dfbfac23afd35af07052bb2f",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/codec.pth"
+        },
+        {
+          "name": "config.json",
+          "size": 5535,
+          "digest": "7d55fb1de30150d0353349b9e1779cbfaa1e836c",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/config.json"
+        },
+        {
+          "name": "model-00001-of-00008.safetensors",
+          "size": 5000202800,
+          "digest": "e486b4f438d0b2df28846e41e599bd2077a64a825893ed0371b332a40dc4b49b",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00001-of-00008.safetensors"
+        },
+        {
+          "name": "model-00002-of-00008.safetensors",
+          "size": 5000496824,
+          "digest": "a67b726fe950ad57ebc15696009bde4a7dbbdc3645b42fa7d77e3a5fa1d70262",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00002-of-00008.safetensors"
+        },
+        {
+          "name": "model-00003-of-00008.safetensors",
+          "size": 5000988520,
+          "digest": "acfdeb67b8c4cb4784d887339e85bddbc5d7b9be3bbee82e40fa10ffe305d965",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00003-of-00008.safetensors"
+        },
+        {
+          "name": "model-00004-of-00008.safetensors",
+          "size": 5000496392,
+          "digest": "fa2960bddf128f51c3d4d74a1a942e34f61cc7ea294d10aec27f79dc10455c9f",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00004-of-00008.safetensors"
+        },
+        {
+          "name": "model-00005-of-00008.safetensors",
+          "size": 5000227096,
+          "digest": "a49ed8717c47e12b354a711c71ecde8be153bad704ca0a25d4805534f4405971",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00005-of-00008.safetensors"
+        },
+        {
+          "name": "model-00006-of-00008.safetensors",
+          "size": 4984792768,
+          "digest": "8867c0e3d600ebf28cf4734fc433dc98061fb990940e07b192ec0356ba1ff223",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00006-of-00008.safetensors"
+        },
+        {
+          "name": "model-00007-of-00008.safetensors",
+          "size": 4977946704,
+          "digest": "51e7d473f8a270bf79b2896a6ea4f19162eeec5b1ea1c5a2ba7dc7750511dbda",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00007-of-00008.safetensors"
+        },
+        {
+          "name": "model-00008-of-00008.safetensors",
+          "size": 4638423240,
+          "digest": "c5b065cce3b3b851369dfdb5a3b60f6abf2699121071c2b1a9dfd84acb7b8f7d",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model-00008-of-00008.safetensors"
+        },
+        {
+          "name": "model.safetensors.index.json",
+          "size": 6880197,
+          "digest": "8e282a0cd1e03bdfb85f37c34484cea4b2d99b17",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/model.safetensors.index.json"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 20791070,
+          "digest": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/tokenizer.json"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 103580,
+          "digest": "f6d3655491f93602f82a61a6ad6fa0658d737f63",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3/resolve/b2b5ee998034b2975720906c815e7fb0e9f007bd/tokenizer_config.json"
+        }
+      ]
+    },
+    {
+      "id": "drama-3-int4",
+      "repo_id": "fishaudio/drama-3-int4",
+      "revision": "a6f588691a13b6607cb09f9800556487ab7aa0fe",
+      "license": "fish-audio-research-license",
+      "estimated_bytes": 23999462445,
+      "kind": "speech",
+      "display_name": "Drama 3 INT4 (experimental)",
+      "layout": "composite",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "codec.pth",
+        "config.json",
+        "model-00001-of-00012.safetensors",
+        "model-00002-of-00012.safetensors",
+        "model-00003-of-00012.safetensors",
+        "model-00004-of-00012.safetensors",
+        "model-00005-of-00012.safetensors",
+        "model-00006-of-00012.safetensors",
+        "model-00007-of-00012.safetensors",
+        "model-00008-of-00012.safetensors",
+        "model-00009-of-00012.safetensors",
+        "model-00010-of-00012.safetensors",
+        "model-00011-of-00012.safetensors",
+        "model-00012-of-00012.safetensors",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/fishaudio/drama-3-int4/blob/a6f588691a13b6607cb09f9800556487ab7aa0fe/LICENSE",
+      "license_notice": "Experimental Fish Audio research license. Review permitted uses before downloading. Native consumer-GPU performance is unverified. Native INT4 loading is unsupported.",
+      "inference_available": false,
+      "asset_url": null,
+      "asset_name": null,
+      "manifest": [
+        {
+          "name": "codec.pth",
+          "size": 1871099728,
+          "digest": "74fc41c5a7151c6f350af8bd7e5d6e3accfcc7f3dfbfac23afd35af07052bb2f",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/codec.pth"
+        },
+        {
+          "name": "config.json",
+          "size": 6019,
+          "digest": "c8b8535248abb8a48d178211acd0a868b7cd6602",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/config.json"
+        },
+        {
+          "name": "model-00001-of-00012.safetensors",
+          "size": 2000535888,
+          "digest": "1d17414dc1abf63ff063a590b2447d24f6ea7f18d5dd14d00576232231bd1eee",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00001-of-00012.safetensors"
+        },
+        {
+          "name": "model-00002-of-00012.safetensors",
+          "size": 2001314592,
+          "digest": "77d83c82a83bc02b4893ab22257415806aa8400d2ba31416d26e27d9052b88bc",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00002-of-00012.safetensors"
+        },
+        {
+          "name": "model-00003-of-00012.safetensors",
+          "size": 2001489696,
+          "digest": "607da15109e98ab1b1de60fc3bb9db3246ce71cd974310f66e5b259c7190d53e",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00003-of-00012.safetensors"
+        },
+        {
+          "name": "model-00004-of-00012.safetensors",
+          "size": 2001332856,
+          "digest": "476ebbc278d262ba9c9f43dbed0a7194fdd783c3046f418eebafa475fe910a9f",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00004-of-00012.safetensors"
+        },
+        {
+          "name": "model-00005-of-00012.safetensors",
+          "size": 2001385568,
+          "digest": "204b11abc1e223c05b9b025941b4d9b9e9b71c1d410656d3292d9e1cb909ac53",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00005-of-00012.safetensors"
+        },
+        {
+          "name": "model-00006-of-00012.safetensors",
+          "size": 2001201200,
+          "digest": "2aa11e163646420fd3cbbe4d28fe258ce64868299c3f4cc08109eda78f69ca40",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00006-of-00012.safetensors"
+        },
+        {
+          "name": "model-00007-of-00012.safetensors",
+          "size": 2001466576,
+          "digest": "135e10983dee048cb5fd9b1aa54731bb26e7de71a5fb3788a3aa770dfd2b8ab0",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00007-of-00012.safetensors"
+        },
+        {
+          "name": "model-00008-of-00012.safetensors",
+          "size": 2006184792,
+          "digest": "72ae08e3f7e6bd2f352c882b17e386b74ec898eb0d5f61bb2707b6b6d6c656b1",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00008-of-00012.safetensors"
+        },
+        {
+          "name": "model-00009-of-00012.safetensors",
+          "size": 2001368888,
+          "digest": "fe327f32b05c4783e63ba63e09e63d4e25c092983533763082e3cdfb5bbfd03c",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00009-of-00012.safetensors"
+        },
+        {
+          "name": "model-00010-of-00012.safetensors",
+          "size": 2003610704,
+          "digest": "82fc8904de8bdb7d1e30e30a8293075f8a123e9db1cffe5e3a866be286d66121",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00010-of-00012.safetensors"
+        },
+        {
+          "name": "model-00011-of-00012.safetensors",
+          "size": 2000926592,
+          "digest": "8c627d0980146857c8742ed6841041a9350774d7974796231a8f063bd7d11206",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00011-of-00012.safetensors"
+        },
+        {
+          "name": "model-00012-of-00012.safetensors",
+          "size": 80001416,
+          "digest": "2b72dc82f247f36881859ce05d36c8f6b02dfe9fd5fa3237c579b958c07b28a7",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model-00012-of-00012.safetensors"
+        },
+        {
+          "name": "model.safetensors.index.json",
+          "size": 6643280,
+          "digest": "54ca5a43d5a590c456126557482fe2e267356c29",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/model.safetensors.index.json"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 20791070,
+          "digest": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/tokenizer.json"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 103580,
+          "digest": "f6d3655491f93602f82a61a6ad6fa0658d737f63",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/fishaudio/drama-3-int4/resolve/a6f588691a13b6607cb09f9800556487ab7aa0fe/tokenizer_config.json"
+        }
+      ]
     }
   ],
   "assets": [

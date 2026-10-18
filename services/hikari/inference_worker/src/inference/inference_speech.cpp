@@ -188,8 +188,58 @@ private:
 };
 }  // namespace
 
-std::unique_ptr<InferenceEngine>
-speech_engine(std::shared_ptr<Resources> resources, Progress progress) {
-    return std::make_unique<SpeechEngine>(std::move(resources), std::move(progress));
+std::unique_ptr<InferenceEngine> speech_engine(
+    std::shared_ptr<Resources> resources, Progress progress, AudioChunk audio
+) {
+    class SpeechSelection final : public InferenceEngine {
+    public:
+        SpeechSelection(
+            std::shared_ptr<Resources> resources, Progress progress, AudioChunk audio
+        )
+            : resources_(std::move(resources)), progress_(std::move(progress)),
+              audio_(std::move(audio)) {
+        }
+
+        void load(
+            const InferenceRequest& request,
+            const Footprint& available,
+            const std::atomic_bool& cancel
+        ) override {
+            engine_ = request.model == "drama-3"
+                          ? drama_engine(resources_, progress_, audio_)
+                          : std::make_unique<SpeechEngine>(resources_, progress_);
+            engine_->load(request, available, cancel);
+        }
+
+        void prepare(
+            const InferenceRequest& request,
+            const Footprint& available,
+            const std::atomic_bool& cancel
+        ) override {
+            engine_->prepare(request, available, cancel);
+        }
+
+        Json execute(
+            const InferenceRequest& request, const std::atomic_bool& cancel
+        ) override {
+            return engine_->execute(request, cancel);
+        }
+
+        void close() override {
+            if (engine_)
+                engine_->close();
+            engine_.reset();
+        }
+
+    private:
+        std::shared_ptr<Resources> resources_;
+        Progress progress_;
+        AudioChunk audio_;
+        std::unique_ptr<InferenceEngine> engine_;
+    };
+
+    return std::make_unique<SpeechSelection>(
+        std::move(resources), std::move(progress), std::move(audio)
+    );
 }
 }  // namespace kadan::serving

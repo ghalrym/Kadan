@@ -6,6 +6,7 @@ export const navigation = [
   { path: '/video', label: 'Video generation' },
   { path: '/tts', label: 'Text to speech' },
   { path: '/stt', label: 'Speech to text' },
+  { path: '/voice', label: 'Voice conversation' },
   { path: '/api', label: 'API access', group: 'System' },
   { path: '/settings', label: 'Settings' },
 ]

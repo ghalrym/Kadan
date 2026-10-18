@@ -3,7 +3,9 @@
 import asyncio
 from contextlib import suppress
 
+import anyio
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 from api.services.inference_errors import InferenceFailure
 
@@ -35,3 +37,22 @@ async def infer(request, call):
         for task in (generation, watcher):
             with suppress(asyncio.CancelledError, Exception):
                 await await_cleanup(task)
+
+
+class OwnedStreamResponse(StreamingResponse):
+    def __init__(self, content, owner):
+        super().__init__(
+            content,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+        self.owner = owner
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Starlette uses cancellation scopes on disconnect. Shield cleanup
+            # through the queue/native owner, including a disconnect before iteration.
+            with anyio.CancelScope(shield=True):
+                await self.owner.aclose()

@@ -67,6 +67,104 @@ Empty history and unavailable errors are explicit; the server never fabricates
 media results. The API access page reads OpenAPI and does not create credentials.
 Hardware power and thermal policy belongs to the machine, not the application.
 
+## Voice conversation prototype
+
+Open **Playground → Voice conversation** (`/voice`). This experimental flow keeps
+microphone capture active during playback and stops local audio at detected speech
+onset. It cancels the previous server request and discards stale events. The native
+worker still runs ASR, chat and speech **serially**, on its existing FIFO and resource
+ledger. Additional GPUs can share native projection placement; they do not enable
+simultaneous ASR/chat/TTS or turn separate VRAM allocations into one pooled device.
+No tier is selected or changed by this page.
+
+Recognition resamples microphone input to mono 16-bit 16-kHz WAV. Whisper revises
+cumulative windows every two seconds; this is windowed interim recognition, not a
+stateful streaming ASR model. A 600 ms pause ends an utterance; input is capped at
+20 seconds. The active tier's configured Whisper and chat models are pinned for
+the session. Chat text streams first, then the completed response is synthesized.
+The current Qwen speech engine is unchanged: it returns a complete WAV before
+chunked browser playback. Drama emits PCM while generating.
+
+### Prepare and try it
+
+1. Build the branch with the existing full-worker options in `api/Dockerfile` and
+   the normal frontend build. There is no extra inference service or Python model
+   runtime. Review and run it in your own test environment; this branch does not
+   deploy itself or replace a running service.
+2. In Settings, select the hardware tier appropriate to your machine and finish
+   installing its models. Current tier TTS uses the existing Qwen model.
+3. For the optional Drama benchmark, review the pinned
+   [Drama model license](https://huggingface.co/fishaudio/drama-3/blob/b2b5ee998034b2975720906c815e7fb0e9f007bd/LICENSE)
+   and explicitly queue `POST /v1/models/drama-3/download` with
+   `{"license_acknowledged": true}` through the existing API. Poll `GET /v1/models`
+   until `drama-3` is complete. This is an optional model, not part of tier downloads
+   or Settings' tier list. The manifest totals about **41.5 GB**, including the
+   1.87 GB codec checkpoint; preparation also needs disk space for a converted
+   decoder copy. The conversation endpoints never download models implicitly.
+4. Open `/voice` over HTTPS or localhost, use headphones, choose the speech backend
+   and refresh capabilities. An ordinary HTTP LAN IP is not a secure microphone
+   origin. Use your existing trusted HTTPS setup or local browser access; do not
+   disable browser security or change network exposure to make capture work.
+5. Click **Start conversation**, grant microphone access, and speak a short request.
+   Interrupt the spoken answer and confirm the old audio stops and the new turn
+   replaces it. Test Stop, restart, navigation away, denied microphone permission,
+   worker failure, and a tier change during a session. These remain manual tests.
+6. Export measurements after several turns, including cold starts, interruptions,
+   and continuous responses. Compare current TTS and Drama on the same tier, with
+   the same prompts. Test each GPU layout separately; admission is based on measured
+   host and individual-device headroom, not a claim that a tier guarantees fit.
+
+Browser echo cancellation is requested but its effectiveness depends on the
+browser, microphone and output device. The sensitivity control adjusts the local
+energy detector; loudspeaker echo or background noise can cause false barge-in.
+Stop releases capture and playback. Each start creates fresh context. History keeps
+recent complete pairs within 40 messages and 32,000 UTF-8 bytes; interrupted audio
+retains generated response text marked as potentially unheard. Failed turns before
+playback begins are omitted. Results and up to 100 exported turns include transcripts
+and remain in the tab until exported.
+
+### Native Drama scope and measurements
+
+The explicit `drama-3` backend implements the original FP8-weight hybrid backbone,
+MoE expert selection, codebook tower and Fish codec in the existing C++ worker. It
+uses bounded file-backed weight reads, native `DenseCompute` placement and F32
+reference arithmetic. Codec preparation reads a restricted data-only PyTorch
+checkpoint, folds weight normalization and writes validated safetensors atomically.
+No upstream serving runtime is launched. The first implementation supports text
+with default speaker 0, not voice references or cloning. Output is mono 44.1-kHz
+PCM, bounded to 640 codec frames (about 29.7 seconds); hitting that limit reports an
+incomplete response instead of a successful finish. Cancellation is cooperative at
+native computation/read boundaries; local playback cancellation is immediate.
+
+**Drama 3 INT4 is unsupported** and cannot silently fall back to FP8, Qwen or another
+tier. Three billion active parameters do not establish memory fit. FP8 checkpoint
+size does not establish runtime memory or interactive latency either. Native F32
+math, file-backed expert reads and model switches may be slow; published SGLang
+measurements are not measurements of this implementation.
+
+First PCM measures request-to-first-received PCM after ASR. First audio estimates
+scheduled output plus reported device latency, not acoustic output. Speech-end to
+audio includes endpoint delay and ASR. Server speech RTF includes queueing, loading
+and transport backpressure; native generation RTF excludes loading and is exported
+separately when supplied. Playback gaps count scheduling gaps over 20 ms. Exported
+client receive RTF includes chat and playback backpressure. Inspect cold/warm timing
+and continuity together instead of treating one number as isolated model speed.
+
+Validation for this draft covers native compilation, metadata/parser/math unit
+checks, mocked API/session/cancellation units, frontend build/lint, and browser
+layout/capability/error states with static fixtures. **No checkpoints were downloaded,
+loaded or executed; no microphone was captured.** The full CUDA worker could not be
+built in the validation environment. Actual checkpoint conversion, numerical/audio
+quality, GPU lifecycle and memory peaks, barge-in acoustics and real-time performance
+require owner testing on the intended machines. API/orchestration/UI changes require
+Andrew's review before merge.
+
+Native source adaptations identify the pinned SGLang-Omni, Transformers and
+Descript DAC references in their headers. Their notices are included under
+`inference_worker/licenses/` and installed with the runtime. Model licenses remain
+separate. The Fish codec reference is the version vendored by SGLang-Omni; this is
+not a claim that all current upstream Fish source has the same license.
+
 ## Chat API scope
 
 `POST /v1/chat/completions` accepts nonempty text messages with `system`, `user`

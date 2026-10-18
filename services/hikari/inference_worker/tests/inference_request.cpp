@@ -53,5 +53,19 @@ int main() {
     const auto parsed = parse_request(reference);
     assert(std::get<ImageRequest>(parsed.input).reference);
     assert(std::get<ImageRequest>(parsed.input).batch_collection_target == 2);
+    auto speech = envelope;
+    speech["input"] = {
+        {"feature", "tts"},
+        {"script", "Hello"},
+        {"model_id", "drama-3"},
+        {"voice", {{"speaker", "default"}}},
+        {"stream", true},
+        {"expected_tier", "balanced"},
+        {"require_installed", true}
+    };
+    const auto speech_request = parse_request(speech);
+    const auto& audio = std::get<SpeechRequest>(speech_request.input);
+    assert(audio.stream && audio.require_installed);
+    assert(audio.expected_tier == "balanced" && audio.model == "drama-3");
     std::cout << "Inference request parser units passed\n";
 }

@@ -154,6 +154,65 @@ void pinned_catalog_units() {
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
 }
 
+void conversation_admission_units() {
+    Directory tmp;
+    bool fetched = false;
+    ModelStore store(
+        tmp.path,
+        worker_data_directory(),
+        [&](const std::string&,
+            const auto&,
+            const std::atomic_bool&,
+            bool,
+            std::uint64_t) {
+            fetched = true;
+            return std::int64_t(0);
+        }
+    );
+    const auto tier = store.status().at("tiers").at(0).at("id").get<std::string>();
+    store.select_tier(tier);
+    auto speech = request(
+        "speech",
+        {{"feature", "tts"},
+         {"script", "Hello"},
+         {"voice", {{"speaker", "default"}}},
+         {"model_id", "drama-3"},
+         {"stream", true},
+         {"expected_tier", tier},
+         {"require_installed", true}}
+    );
+    rejects([&] {
+        prepare_input(std::get<SpeechRequest>(speech.input), speech, store, running);
+    });
+    assert(!fetched);
+    auto& input = std::get<SpeechRequest>(speech.input);
+    input.expected_tier = "changed-tier";
+    bool changed = false;
+    try {
+        prepare_input(input, speech, store, running);
+    } catch (const RequestError& error) {
+        changed = error.status == 409;
+    }
+    assert(changed && !fetched);
+    input.expected_tier = tier;
+    input.model = "drama-3-int4";
+    bool unsupported = false;
+    try {
+        prepare_input(input, speech, store, running);
+    } catch (const RequestError& error) {
+        unsupported = error.status == 422;
+    }
+    assert(unsupported && !fetched);
+    for (const auto* id : {"drama-3", "drama-3-int4"}) {
+        const auto& model = store.entry(id);
+        store.validate_files(model, model.manifest);
+        assert(model.layout == "composite");
+        assert(model.inference_available == (std::string(id) == "drama-3"));
+        assert(store.allowed("codec.pth", model));
+        assert(!store.allowed("apply_patch.py", model));
+    }
+}
+
 void whisper_formatting_setting_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
@@ -1707,6 +1766,7 @@ void tokenizer_asset_units() {
 }  // namespace
 
 int main() {
+    conversation_admission_units();
     manifest_model_units();
     pinned_catalog_units();
     whisper_formatting_setting_units();

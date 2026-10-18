@@ -59,7 +59,11 @@ std::unique_ptr<InferenceEngine> video_engine(std::shared_ptr<Resources>, Progre
 std::unique_ptr<InferenceEngine>
     transcription_formatting_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> whisper_engine(std::shared_ptr<Resources>, Progress);
-std::unique_ptr<InferenceEngine> speech_engine(std::shared_ptr<Resources>, Progress);
+using AudioChunk = std::function<void(const Json&)>;
+std::unique_ptr<InferenceEngine>
+    speech_engine(std::shared_ptr<Resources>, Progress, AudioChunk);
+std::unique_ptr<InferenceEngine>
+    drama_engine(std::shared_ptr<Resources>, Progress, AudioChunk);
 class ModelStore;
 std::unique_ptr<InferenceEngine> chat_engine(
     std::shared_ptr<Resources>,

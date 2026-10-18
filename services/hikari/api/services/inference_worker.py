@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from api.pydantic_models.inference import (
     ImageProgress,
@@ -69,6 +69,7 @@ class WorkerEvent(BaseModel):
         "waiting_for_resources",
         "progress",
         "content",
+        "audio",
         "succeeded",
         "failed",
         "cancelled",
@@ -81,6 +82,10 @@ class WorkerEvent(BaseModel):
     value: int = 0
     total: int = 0
     content: str | None = None
+    audio: str | None = Field(default=None, max_length=256 * 1024)
+    sample_rate: int | None = Field(default=None, ge=8000, le=96000)
+    format: Literal["s16le"] | None = None
+    sequence: int | None = Field(default=None, ge=0)
     protocol: int | None = None
     pid: int | None = None
     model: str | None = None
@@ -297,13 +302,24 @@ class InferenceWorker:
                     job.identified.set()
                 if event.state in ("succeeded", "failed", "cancelled", "rejected"):
                     job.identified.set()
-                if event.state == "content":
+                if event.state in ("content", "audio"):
+                    if event.state == "audio" and (
+                        event.audio is None or event.sample_rate is None
+                    ):
+                        raise RuntimeError("Worker audio event is incomplete")
                     if job.events is not None and job.stream_error is None:
                         try:
-                            job.events.put_nowait({"content": event.content})
+                            job.events.put_nowait(
+                                {"content": event.content}
+                                if event.state == "content"
+                                else {
+                                    "audio": event.audio,
+                                    "sample_rate": event.sample_rate,
+                                }
+                            )
                         except asyncio.QueueFull:
                             await self.cancel(event.id)
-                            job.stream_error = "Chat stream consumer is too slow."
+                            job.stream_error = "Inference stream consumer is too slow."
                     continue
                 if event.state == "progress":
                     if self.on_event is not None:

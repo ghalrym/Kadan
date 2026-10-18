@@ -42,6 +42,8 @@ import type {
   GenerateVideoData,
   GenerateVideoErrors,
   GenerateVideoResponses,
+  GetConversationCapabilitiesData,
+  GetConversationCapabilitiesResponses,
   GetDecisionsData,
   GetDecisionsResponses,
   GetMetricsData,
@@ -85,9 +87,15 @@ import type {
   SelectWhisperModelData,
   SelectWhisperModelErrors,
   SelectWhisperModelResponses,
+  StreamConversationTurnData,
+  StreamConversationTurnErrors,
+  StreamConversationTurnResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
+  TranscribeConversationWindowData,
+  TranscribeConversationWindowErrors,
+  TranscribeConversationWindowResponses,
   UnloadSelectedModelData,
   UnloadSelectedModelResponses,
   UpdateSettingsData,
@@ -176,6 +184,68 @@ export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: '/model-lifecycle/unload', ...options })
+
+/**
+ * Get Capabilities
+ */
+export const getConversationCapabilities = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetConversationCapabilitiesData, ThrowOnError>,
+): RequestResult<GetConversationCapabilitiesResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetConversationCapabilitiesResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/audio/conversation/capabilities', ...options })
+
+/**
+ * Transcribe Window
+ */
+export const transcribeConversationWindow = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<TranscribeConversationWindowData, ThrowOnError>,
+): RequestResult<
+  TranscribeConversationWindowResponses,
+  TranscribeConversationWindowErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    TranscribeConversationWindowResponses,
+    TranscribeConversationWindowErrors,
+    ThrowOnError
+  >({
+    url: '/v1/audio/conversation/transcriptions',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Stream Turn
+ */
+export const streamConversationTurn = <ThrowOnError extends boolean = false>(
+  options: Options<StreamConversationTurnData, ThrowOnError>,
+): RequestResult<
+  StreamConversationTurnResponses,
+  StreamConversationTurnErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    StreamConversationTurnResponses,
+    StreamConversationTurnErrors,
+    ThrowOnError
+  >({
+    url: '/v1/audio/conversation/turn',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
 
 /**
  * List Speech

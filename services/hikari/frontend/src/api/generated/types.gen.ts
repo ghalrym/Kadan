@@ -355,6 +355,44 @@ export type ContextRequest = {
 }
 
 /**
+ * ConversationCapabilities
+ */
+export type ConversationCapabilities = {
+  /**
+   * Asr Model
+   */
+  asr_model: string | null
+  /**
+   * Available
+   */
+  available: boolean
+  /**
+   * Backends
+   */
+  backends: Array<SpeechBackendOption>
+  /**
+   * Chat Model
+   */
+  chat_model: string | null
+  /**
+   * Notes
+   */
+  notes: Array<string>
+  /**
+   * Reason
+   */
+  reason: string | null
+  /**
+   * Scheduling
+   */
+  scheduling: string
+  /**
+   * Tier
+   */
+  tier: 'go' | 'plus' | 'pro' | 'ultra' | null
+}
+
+/**
  * CustomVoice
  */
 export type CustomVoice = {
@@ -1097,6 +1135,36 @@ export type SettingsResponse = {
 }
 
 /**
+ * SpeechBackendOption
+ */
+export type SpeechBackendOption = {
+  /**
+   * Available
+   */
+  available: boolean
+  /**
+   * Id
+   */
+  id: 'current' | 'drama3' | 'drama3-int4'
+  /**
+   * Name
+   */
+  name: string
+  /**
+   * Reason
+   */
+  reason: string | null
+  /**
+   * Speech Model
+   */
+  speech_model: string | null
+  /**
+   * Streaming
+   */
+  streaming: boolean
+}
+
+/**
  * SpeechHistoryResponse
  */
 export type SpeechHistoryResponse = {
@@ -1297,6 +1365,28 @@ export type TranscriptionUnavailable = {
 }
 
 /**
+ * TurnRequest
+ */
+export type TurnRequest = {
+  /**
+   * Backend
+   */
+  backend: 'current' | 'drama3' | 'drama3-int4'
+  /**
+   * Messages
+   */
+  messages: Array<VoiceMessage>
+  /**
+   * Speaker
+   */
+  speaker?: string
+  /**
+   * Tier
+   */
+  tier: 'go' | 'plus' | 'pro' | 'ultra'
+}
+
+/**
  * ValidationError
  */
 export type ValidationError = {
@@ -1465,6 +1555,20 @@ export type VideosResponse = {
 }
 
 /**
+ * VoiceMessage
+ */
+export type VoiceMessage = {
+  /**
+   * Content
+   */
+  content: string
+  /**
+   * Role
+   */
+  role: string
+}
+
+/**
  * WhisperModels
  */
 export type WhisperModels = {
@@ -1489,6 +1593,38 @@ export type WhisperSelection = {
 }
 
 /**
+ * WindowRequest
+ */
+export type WindowRequest = {
+  /**
+   * Audio
+   */
+  audio: string
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Tier
+   */
+  tier: 'go' | 'plus' | 'pro' | 'ultra'
+}
+
+/**
+ * WindowResponse
+ */
+export type WindowResponse = {
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Text
+   */
+  text: string
+}
+
+/**
  * ImageRequest
  */
 export type ApiRoutesV1ImagesEditsImageRequest = {
@@ -1496,6 +1632,12 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
    * Aspect
    */
   aspect?: '1:1' | '4:3' | '3:4' | '16:9'
+  /**
+   * Batch Collection Target
+   *
+   * Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.
+   */
+  batch_collection_target?: number | null
   /**
    * Count
    */
@@ -1558,6 +1700,12 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    * Aspect
    */
   aspect?: '1:1' | '4:3' | '3:4' | '16:9'
+  /**
+   * Batch Collection Target
+   *
+   * Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.
+   */
+  batch_collection_target?: number | null
   /**
    * Count
    */
@@ -1663,6 +1811,74 @@ export type UnloadSelectedModelResponses = {
 
 export type UnloadSelectedModelResponse =
   UnloadSelectedModelResponses[keyof UnloadSelectedModelResponses]
+
+export type GetConversationCapabilitiesData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/audio/conversation/capabilities'
+}
+
+export type GetConversationCapabilitiesResponses = {
+  /**
+   * Successful Response
+   */
+  200: ConversationCapabilities
+}
+
+export type GetConversationCapabilitiesResponse =
+  GetConversationCapabilitiesResponses[keyof GetConversationCapabilitiesResponses]
+
+export type TranscribeConversationWindowData = {
+  body: WindowRequest
+  path?: never
+  query?: never
+  url: '/v1/audio/conversation/transcriptions'
+}
+
+export type TranscribeConversationWindowErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type TranscribeConversationWindowError =
+  TranscribeConversationWindowErrors[keyof TranscribeConversationWindowErrors]
+
+export type TranscribeConversationWindowResponses = {
+  /**
+   * Successful Response
+   */
+  200: WindowResponse
+}
+
+export type TranscribeConversationWindowResponse =
+  TranscribeConversationWindowResponses[keyof TranscribeConversationWindowResponses]
+
+export type StreamConversationTurnData = {
+  body: TurnRequest
+  path?: never
+  query?: never
+  url: '/v1/audio/conversation/turn'
+}
+
+export type StreamConversationTurnErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type StreamConversationTurnError =
+  StreamConversationTurnErrors[keyof StreamConversationTurnErrors]
+
+export type StreamConversationTurnResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown
+}
 
 export type ListSpeechData = {
   body?: never

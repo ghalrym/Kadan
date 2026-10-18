@@ -596,6 +596,94 @@
         "title": "ContextRequest",
         "type": "object"
       },
+      "ConversationCapabilities": {
+        "properties": {
+          "asr_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asr Model"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechBackendOption"
+            },
+            "title": "Backends",
+            "type": "array"
+          },
+          "chat_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Model"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "scheduling": {
+            "title": "Scheduling",
+            "type": "string"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "go",
+                  "plus",
+                  "pro",
+                  "ultra"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          }
+        },
+        "required": [
+          "available",
+          "reason",
+          "tier",
+          "asr_model",
+          "chat_model",
+          "scheduling",
+          "backends",
+          "notes"
+        ],
+        "title": "ConversationCapabilities",
+        "type": "object"
+      },
       "CustomVoice": {
         "additionalProperties": false,
         "properties": {
@@ -1964,6 +2052,63 @@
         "title": "SettingsResponse",
         "type": "object"
       },
+      "SpeechBackendOption": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "id": {
+            "enum": [
+              "current",
+              "drama3",
+              "drama3-int4"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "speech_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speech Model"
+          },
+          "streaming": {
+            "title": "Streaming",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "speech_model",
+          "available",
+          "reason",
+          "streaming"
+        ],
+        "title": "SpeechBackendOption",
+        "type": "object"
+      },
       "SpeechHistoryResponse": {
         "properties": {
           "audio": {
@@ -2308,6 +2453,51 @@
         "title": "TranscriptionUnavailable",
         "type": "object"
       },
+      "TurnRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "enum": [
+              "current",
+              "drama3",
+              "drama3-int4"
+            ],
+            "title": "Backend",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceMessage"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Messages",
+            "type": "array"
+          },
+          "speaker": {
+            "default": "Ryan",
+            "title": "Speaker",
+            "type": "string"
+          },
+          "tier": {
+            "enum": [
+              "go",
+              "plus",
+              "pro",
+              "ultra"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tier",
+          "backend",
+          "messages"
+        ],
+        "title": "TurnRequest",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -2594,6 +2784,27 @@
         "title": "VideosResponse",
         "type": "object"
       },
+      "VoiceMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "VoiceMessage",
+        "type": "object"
+      },
       "WhisperModels": {
         "properties": {
           "models": {
@@ -2636,6 +2847,57 @@
         "title": "WhisperSelection",
         "type": "object"
       },
+      "WindowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio": {
+            "maxLength": 2097152,
+            "minLength": 1,
+            "pattern": "^data:audio/wav;base64,",
+            "title": "Audio",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "tier": {
+            "enum": [
+              "go",
+              "plus",
+              "pro",
+              "ultra"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tier",
+          "model",
+          "audio"
+        ],
+        "title": "WindowRequest",
+        "type": "object"
+      },
+      "WindowResponse": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "model"
+        ],
+        "title": "WindowResponse",
+        "type": "object"
+      },
       "api__routes__v1__images__edits__ImageRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2649,6 +2911,20 @@
             ],
             "title": "Aspect",
             "type": "string"
+          },
+          "batch_collection_target": {
+            "anyOf": [
+              {
+                "maximum": 32.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+            "title": "Batch Collection Target"
           },
           "count": {
             "default": 4,
@@ -2788,6 +3064,20 @@
             ],
             "title": "Aspect",
             "type": "string"
+          },
+          "batch_collection_target": {
+            "anyOf": [
+              {
+                "maximum": 32.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+            "title": "Batch Collection Target"
           },
           "count": {
             "default": 4,
@@ -2967,6 +3257,112 @@
         "summary": "Unload Selected Model",
         "tags": [
           "Model lifecycle"
+        ]
+      }
+    },
+    "/v1/audio/conversation/capabilities": {
+      "get": {
+        "operationId": "getConversationCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationCapabilities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Capabilities",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/audio/conversation/transcriptions": {
+      "post": {
+        "operationId": "transcribeConversationWindow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WindowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WindowResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transcribe Window",
+        "tags": [
+          "Audio"
+        ]
+      }
+    },
+    "/v1/audio/conversation/turn": {
+      "post": {
+        "operationId": "streamConversationTurn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Turn",
+        "tags": [
+          "Audio"
         ]
       }
     },
