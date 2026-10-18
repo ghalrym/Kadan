@@ -9,6 +9,7 @@ import {
   tierDownloading,
   tierProgress,
   type SettingsResponse,
+  type TierModel,
   type TierSetting,
 } from '../api/settings'
 import { modalityLabels, tierCopy } from '../data/tiers'
@@ -64,6 +65,34 @@ function CheckIcon() {
     <svg className="tier-card-check" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
       <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  )
+}
+
+/** A plain model name; hovering or focusing it reveals the checkpoint details. */
+function ModelName({ id, model }: { id: string; model: NonNullable<TierModel['model']> }) {
+  const tooltipId = `${id}-details`
+  const size = model.total_bytes || model.estimated_bytes
+  const details: [string, ReactNode][] = [
+    ['Checkpoint', model.display_name ?? model.id],
+    ['Repository', <span key="repo" className="mono">{model.repo_id}</span>],
+  ]
+  if (size) details.push(['Download', gigabytes(size)])
+  if (model.context_limit) details.push(['Context', `${model.context_limit.toLocaleString()} tokens`])
+  if (model.license) details.push(['License', model.license])
+  return (
+    <span className="model-name" tabIndex={0} aria-describedby={tooltipId}>
+      {model.short_name ?? model.display_name ?? model.id}
+      <span role="tooltip" id={tooltipId} className="model-tooltip">
+        <dl>
+          {details.map(([term, value]) => (
+            <div key={term}>
+              <dt>{term}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </span>
+    </span>
   )
 }
 
@@ -127,7 +156,7 @@ function TierCard({ tier, current, highlighted, disabled, choose, showProgress }
               <CheckIcon />
               <span>
                 <span className="muted">{modalityLabels[modality].short}</span>{' '}
-                {model ? (model.display_name ?? model.id) : 'TBD'}
+                {model ? <ModelName id={`${tier.id}-${modality}`} model={model} /> : 'TBD'}
               </span>
             </li>
           ))}

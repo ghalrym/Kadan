@@ -30,6 +30,7 @@ class CheckpointStatus(BaseModel):
         "llm", "video", "speech", "transcription", "formatting", "image", "decision"
     ]
     display_name: str | None
+    short_name: str | None = None
     license_url: str | None
     license_notice: str | None
     inference_available: bool

@@ -49,7 +49,7 @@ struct CatalogEntry {
     std::string id, repo_id, revision, kind, layout;
     std::string license;
     std::uint64_t estimated_bytes = 0;
-    std::optional<std::string> display_name, license_url, license_notice;
+    std::optional<std::string> display_name, short_name, license_url, license_notice;
     bool inference_available = false;
     std::string asset_url, asset_name;
     std::vector<std::string> required_files, component_paths, weight_paths;
