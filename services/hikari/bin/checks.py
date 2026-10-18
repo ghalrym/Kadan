@@ -32,6 +32,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-upload-tests",
     "image-edit-tests",
     "image-aten-plan-tests",
+    "image-aten-performance-tests",
+    "image-weight-cache-tests",
     "image-timing-tests",
     "image-decoder-input-tests",
     "image-convolution-tests",
