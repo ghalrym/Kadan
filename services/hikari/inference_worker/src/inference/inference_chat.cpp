@@ -219,6 +219,14 @@ public:
         model_.reset();
     }
 
+    Footprint execution_footprint(const Footprint&) const override {
+        return model_->execution_footprint();
+    }
+
+    bool can_expand() const override {
+        return model_->can_expand();
+    }
+
 private:
     std::size_t prompt_tokens_ = 0;
     std::shared_ptr<Resources> resources_;

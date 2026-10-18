@@ -2814,6 +2814,28 @@ public:
         state_reserve_ = bytes;
     }
 
+    Footprint execution_memory() const override {
+        std::lock_guard lock(operation_mutex_);
+        const auto capacity = resources_->snapshot().capacity;
+        Footprint bound(capacity.size());
+        for (std::size_t i = 0; i < threads_.size(); ++i)
+            threads_[i]
+                ->submit([&, i](DeviceWorkspace& workspace) {
+                    const auto& bank =
+                        static_cast<CudaDeviceOperations&>(workspace.operations())
+                            .weights;
+                    const auto device = std::size_t(devices_[i]) + 1;
+                    bound[device] = native_device_execution_bytes(
+                        capacity[device],
+                        bank.capacity(),
+                        scratch_limits_[i],
+                        state_reserve_
+                    );
+                })
+                .get();
+        return bound;
+    }
+
     bool prepare_weights(Bytes bytes) override {
         std::lock_guard lock(operation_mutex_);
         require(!quarantined_.load(), "h3_cuda_cleanup_unconfirmed");

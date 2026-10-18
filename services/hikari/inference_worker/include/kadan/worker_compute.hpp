@@ -107,6 +107,24 @@ struct WorkerCompute {
         }
     }
 
+    Footprint execution_footprint(Bytes host_headroom) const {
+        const auto state = resources->snapshot();
+        auto bound = state.capacity;
+        bound[0] =
+            state.used[0] + std::min(host_headroom, state.capacity[0] - state.used[0]);
+        const auto device_memory = compute ? compute->execution_memory() : Footprint{};
+        if (device_memory.empty())
+            return bound;
+        if (device_memory.size() != bound.size())
+            throw std::invalid_argument("compute_execution_shape");
+        for (std::size_t i = 1; i < bound.size(); ++i) {
+            const auto bytes = std::min(device_memory[i], bound[i]);
+            bound[i] =
+                std::max(state.used[i], bytes + std::min(context[i], bound[i] - bytes));
+        }
+        return bound;
+    }
+
     // An engine may own additional resident banks outside DenseCompute. They
     // remain charged while idle; park still requires their prior retirement.
     void idle(const Footprint& engine_weights = {}) const {

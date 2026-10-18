@@ -159,6 +159,21 @@ std::shared_ptr<Resources> Engine::resources() const {
     return impl_->execution.resources;
 }
 
+Footprint Engine::execution_footprint() const {
+    // The model reservation already includes host state and its entire RAM
+    // weight cache. Preserve the same request/staging headroom used at load.
+    return impl_->execution.execution_footprint(4ULL * 1024 * 1024 * 1024);
+}
+
+bool Engine::can_expand() const {
+    if (impl_->p.cache < impl_->p.packed)
+        return true;
+    auto remaining = impl_->p.execution_weights;
+    for (const auto& device : impl_->execution.compute->weight_placement())
+        remaining -= std::min<Bytes>(remaining, device.planned_bytes);
+    return remaining != 0;
+}
+
 serving::Info Engine::info() const {
     return {
         impl_->model->vocabulary(),

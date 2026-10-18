@@ -91,6 +91,18 @@ public:
     virtual Json execute(const InferenceRequest&, const std::atomic_bool&) = 0;
     virtual void close() = 0;
 
+    // A complete bound, including allocations deferred until execution. Backends
+    // without a tighter plan keep their entire admission; sampled usage is not
+    // enough to release promised KV, cache or workspace capacity.
+    virtual Footprint execution_footprint(const Footprint& allowance) const {
+        return allowance;
+    }
+
+    // Whether additional planning memory can increase cache or workspace capacity.
+    virtual bool can_expand() const {
+        return true;
+    }
+
     virtual std::size_t batch_capacity(const InferenceRequest&, const Footprint&) {
         return 1;
     }
@@ -344,6 +356,13 @@ public:
                 resident = nullptr;
                 erase_closed();
             }
+            if (resident && should_replan(*resident, *job)) {
+                // Device/cache plans belong to the engine. Rebuild only an idle
+                // constrained plan; changing its ledger cannot enlarge banks.
+                cleanup(*resident);
+                resident = nullptr;
+                erase_closed();
+            }
             if (resident) {
                 admit(*resident);
                 resident->activity =
@@ -422,6 +441,19 @@ public:
                 finish_batch(jobs, "");
                 return true;
             }
+            const auto bound =
+                resident->engine->execution_footprint(resident->allowance);
+            const auto charged = resident->resources->snapshot().used;
+            if (bound.size() != charged.size())
+                throw std::runtime_error("execution_footprint_shape");
+            for (std::size_t i = 0; i < bound.size(); ++i)
+                if (bound[i] < charged[i] || bound[i] > resident->allowance[i])
+                    throw std::runtime_error("execution_footprint_bounds");
+            resident->resources->admit(bound);
+            resident->allowance = bound;
+            std::erase_if(resident->devices, [&](auto device) {
+                return bound[device] == 0;
+            });
             resident->jobs = jobs;
             for (const auto& current : jobs) {
                 current->executing = true;
@@ -449,17 +481,10 @@ public:
         } catch (const ResourceExhausted&) {
             if (resident)
                 cleanup(*resident);
-            bool expanded = false;
-            if (job->share_scale < share_partitions()) {
-                job->share_scale *= 2;
-                expanded = true;
-            } else if (job->device_count < ceiling_.size() - 1) {
-                ++job->device_count;
-                job->share_scale = 1;
-                expanded = true;
-            }
-            // A narrow allowance is not evidence that another resident must go.
-            // Try larger envelopes/subsets before reclaiming an idle model.
+            const bool expanded = !job->full_budget;
+            job->full_budget = true;
+            // A fair share that is too small is not evidence that an idle model
+            // must go. Try the complete remaining envelope before reclaiming it.
             const bool reclaimed = !expanded && evict_idle();
             if (!reclaimed && !executing() && waiting_ == job
                 && bypasses_ >= queues_.size()) {
@@ -531,7 +556,7 @@ private:
         std::chrono::steady_clock::time_point submitted;
         std::atomic_bool cancel{false};
         bool executing = false;
-        std::size_t device_count = 1, share_scale = 1;
+        bool full_budget = false;
     };
 
     struct ResidentEngine {
@@ -539,7 +564,7 @@ private:
         Workload workload;
         EngineConfiguration configuration;
         std::shared_ptr<Resources> resources;
-        Footprint allowance;
+        Footprint allowance, planned_allowance;
         std::shared_ptr<ExecutionContext> context =
             std::make_shared<ExecutionContext>();
         std::unique_ptr<InferenceEngine> engine;
@@ -548,7 +573,7 @@ private:
         std::future<std::vector<InferenceBatchResult>> execution;
         std::unique_ptr<ExecutionActivity::Scope> activity;
         std::uint64_t last_used = 0;
-        bool loaded = false;
+        bool loaded = false, constrained = false;
     };
 
     Footprint probe() {
@@ -617,16 +642,89 @@ private:
         return true;
     }
 
-    std::size_t share_partitions() const {
-        auto partitions = std::max<std::size_t>(2, execution_capacity_.size());
-        for (auto slots : execution_capacity_)
-            partitions = std::max(partitions, slots);
-        return partitions;
+    struct Placement {
+        Footprint allowance;
+        std::vector<std::size_t> devices;
+        bool available = true, constrained = false, memory_blocked = false;
+    };
+
+    static bool uses_gpu(Workload workload) {
+        return workload != Workload::decision && workload != Workload::formatting;
     }
 
-    static Bytes
-    shared_allowance(Bytes capacity, std::size_t slots, std::size_t scale) {
-        return scale >= slots ? capacity : (capacity / slots) * scale;
+    Placement placement(const Job& job, const Footprint& reclaimable = {}) {
+        auto free = probe();
+        const auto global = resources_->snapshot();
+        for (std::size_t i = 0; i < free.size(); ++i) {
+            const auto own = reclaimable.empty() ? 0 : reclaimable[i];
+            free[i] = std::min(free[i], global.capacity[i]);
+            free[i] += std::min(own, global.capacity[i] - free[i]);
+            free[i] = std::min(free[i], global.capacity[i] - global.used[i] + own);
+        }
+        std::size_t demand = 0, gpu_demand = 0;
+        {
+            std::lock_guard guard(mutex_);
+            for (const auto& queue : queues_) {
+                if (queue.empty() || queue.front()->executing)
+                    continue;
+                const auto& next = queue.front();
+                if (next->cancel.load()
+                    || (next->request.operation != Operation::generate
+                        && next->request.operation != Operation::completion
+                        && next->request.operation != Operation::load))
+                    continue;
+                ++demand;
+                gpu_demand += uses_gpu(next->request.workload);
+            }
+        }
+        demand = job.full_budget ? 1 : std::max<std::size_t>(1, demand);
+        gpu_demand = job.full_budget ? 1 : std::max<std::size_t>(1, gpu_demand);
+        Placement result{Footprint(free.size()), {}};
+        if (!execution_available(BackendExecution::isolated, {})) {
+            result.available = false;
+            return result;
+        }
+        for (std::size_t i = 1; uses_gpu(job.request.workload) && i < free.size(); ++i)
+            if (free[i] && device_executions(i) < execution_capacity_[i - 1])
+                result.devices.push_back(i);
+        if (uses_gpu(job.request.workload) && free.size() > 1
+            && result.devices.empty()) {
+            result.available = false;
+            for (std::size_t i = 1; i < free.size(); ++i)
+                result.memory_blocked |=
+                    device_executions(i) < execution_capacity_[i - 1];
+            return result;
+        }
+        std::stable_sort(
+            result.devices.begin(), result.devices.end(), [&](auto a, auto b) {
+                return free[a] > free[b];
+            }
+        );
+        const auto device_count = result.devices.size();
+        const auto shares =
+            device_count ? (gpu_demand + device_count - 1) / device_count : 1;
+        if (device_count)
+            result.devices.resize(std::max<std::size_t>(1, device_count / gpu_demand));
+        // Divide only among queued executable workloads. Execution slots limit
+        // compute overlap; they are not phantom consumers of memory.
+        result.allowance[0] = free[0] / demand;
+        for (auto device : result.devices)
+            result.allowance[device] = free[device] / shares;
+        for (std::size_t i = 0; i < free.size(); ++i)
+            if ((i == 0 || uses_gpu(job.request.workload))
+                && result.allowance[i] < global.capacity[i])
+                result.constrained = true;
+        return result;
+    }
+
+    bool should_replan(const ResidentEngine& resident, const Job& job) {
+        if (!resident.constrained || !resident.engine->can_expand())
+            return false;
+        const auto desired = placement(job, resident.resources->snapshot().used);
+        for (std::size_t i = 0; i < desired.allowance.size(); ++i)
+            if (desired.allowance[i] > resident.planned_allowance[i])
+                return true;
+        return false;
     }
 
     ResidentEngine* load(const std::shared_ptr<Job>& job) {
@@ -634,56 +732,21 @@ private:
         erase_closed();
         if (residents_.size() >= limit_)
             evict_idle();
-        auto free = probe();
-        const auto global = resources_->snapshot();
-        for (std::size_t i = 0; i < free.size(); ++i)
-            free[i] = std::min(free[i], global.capacity[i] - global.used[i]);
-        if (!execution_available(BackendExecution::isolated, {}))
-            return nullptr;
-        const bool uses_gpu = request.workload != Workload::decision
-                              && request.workload != Workload::formatting;
-        std::vector<std::size_t> devices;
-        bool execution_slot = false;
-        for (std::size_t i = 1; uses_gpu && i < free.size(); ++i)
-            if (device_executions(i) < execution_capacity_[i - 1]) {
-                execution_slot = true;
-                if (free[i])
-                    devices.push_back(i);
-            }
-        if (uses_gpu && free.size() > 1 && devices.empty()) {
-            if (execution_slot)
+        auto plan = placement(*job);
+        if (!plan.available) {
+            if (plan.memory_blocked)
                 evict_idle();
             return nullptr;
         }
-        std::stable_sort(devices.begin(), devices.end(), [&](auto a, auto b) {
-            return free[a] > free[b];
-        });
         auto entry = std::make_unique<ResidentEngine>();
         entry->model = request.model;
         entry->workload = request.workload;
         entry->configuration = request.configuration;
-        entry->devices = devices;
-        // Try the smallest high-headroom subset first. Widen only after an
-        // acknowledged load/prepare failure, preserving the image batch planner
-        // inside the assigned subset.
-        if (entry->devices.size() > job->device_count)
-            entry->devices.resize(job->device_count);
-        Footprint allowance(ceiling_.size());
-        allowance[0] = std::min(
-            free[0],
-            shared_allowance(global.capacity[0], share_partitions(), job->share_scale)
-        );
-        for (auto device : entry->devices)
-            allowance[device] = std::min(
-                free[device],
-                shared_allowance(
-                    global.capacity[device],
-                    std::max<std::size_t>(2, execution_capacity_[device - 1]),
-                    job->share_scale
-                )
-            );
+        entry->devices = std::move(plan.devices);
+        const auto& allowance = plan.allowance;
         entry->resources = resources_->scope(allowance);
-        entry->allowance = allowance;
+        entry->allowance = entry->planned_allowance = allowance;
+        entry->constrained = plan.constrained;
         entry->context->request_id = request.id;
         entry->context->activity = activity_;
         entry->last_used = ++use_order_;

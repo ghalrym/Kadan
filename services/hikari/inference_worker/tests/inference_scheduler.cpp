@@ -37,7 +37,7 @@ struct Gate {
 
 struct Model {
     Bytes host = 10, device = 20, scratch = 5, device_scratch = 0;
-    bool lazy_scratch = false;
+    bool lazy_scratch = false, bounded = true, expandable = false;
     std::shared_ptr<Resources> resources;
     bool fail_execution = false;
     Gate gate;
@@ -104,7 +104,15 @@ public:
         bytes[0] = model_->host;
         Bytes remaining = free.size() == 1 ? 0 : model_->device;
         std::vector<std::size_t> devices;
-        for (std::size_t i = 1; i < free.size() && remaining; ++i) {
+        std::vector<std::size_t> eligible;
+        for (std::size_t i = 1; i < free.size(); ++i)
+            eligible.push_back(i);
+        std::stable_sort(eligible.begin(), eligible.end(), [&](auto a, auto b) {
+            return free[a] > free[b];
+        });
+        for (auto i : eligible) {
+            if (!remaining)
+                break;
             bytes[i] = std::min(free[i], remaining);
             remaining -= bytes[i];
             if (bytes[i])
@@ -138,6 +146,20 @@ public:
             scratch_ = resources_->reserve(request.workload, bytes);
         resources_->pin(weights_);
         model_->prepared_activity = context_->activity->snapshot();
+    }
+
+    bool can_expand() const override {
+        return model_->expandable || !model_->bounded;
+    }
+
+    Footprint execution_footprint(const Footprint& allowance) const override {
+        if (!model_->bounded)
+            return InferenceEngine::execution_footprint(allowance);
+        auto bound = resources_->snapshot().used;
+        if (model_->lazy_scratch)
+            for (std::size_t i = 0; i < bound.size(); ++i)
+                bound[i] += lazy_scratch_[i];
+        return bound;
     }
 
     Json
@@ -272,6 +294,8 @@ struct Harness {
         request.id = std::move(id);
         request.model = model.empty() ? request.id : std::move(model);
         request.workload = workload;
+        request.operation =
+            workload == Workload::llm ? Operation::completion : Operation::generate;
         request.prepared = true;
         owner.submit(std::move(request));
     }
@@ -289,6 +313,107 @@ struct Harness {
         advance_until([&] { return owner.pending() == 0; });
     }
 };
+
+void memory_shares_follow_queued_demand() {
+    for (std::size_t devices : {1, 2, 4}) {
+        Harness h(Footprint(devices + 1, 100), std::vector<std::size_t>(devices, 7));
+        auto& chat = h.state.models["chat"];
+        chat.gate.open();
+        h.submit("chat", Workload::llm);
+        h.drain();
+        check(
+            chat.allowances.front() == Footprint(devices + 1, 100),
+            "idle_queues_reduced_solo_budget"
+        );
+    }
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    auto& cancelled = h.state.models["cancelled"];
+    h.submit("chat", Workload::llm);
+    h.submit("chat-next", Workload::llm, "chat");
+    h.submit("speech", Workload::tts);
+    h.submit("cancelled", Workload::speech);
+    check(h.owner.cancel("cancelled"), "demand_cancel_missing");
+    check(h.owner.advance(), "demand_chat_not_dispatched");
+    chat.gate.wait_for(&Gate::entered);
+    check(
+        chat.allowances.front() == Footprint({50, 50}),
+        "demand_count_includes_idle_cancelled_or_same_queue"
+    );
+    chat.gate.open();
+    speech.gate.open();
+    h.drain();
+    check(cancelled.loads == 0, "cancelled_demand_loaded");
+}
+
+void cpu_queue_shares_host_but_not_gpu_memory() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& decision = h.state.models["decision"];
+    decision.device = 0;
+    chat.gate.open();
+    decision.gate.open();
+    h.submit("chat", Workload::llm);
+    h.submit("decision", Workload::decision);
+    h.drain();
+    check(
+        chat.allowances.front() == Footprint({50, 100}), "cpu_queue_reduced_gpu_budget"
+    );
+    check(decision.allowances.front()[1] == 0, "cpu_queue_admitted_gpu_memory");
+}
+
+void constrained_elastic_resident_replans_when_demand_falls() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    chat.expandable = true;
+    chat.gate.open();
+    speech.gate.open();
+    h.submit("chat", Workload::llm);
+    h.submit("speech", Workload::tts);
+    h.drain();
+    check(
+        chat.allowances.front() == Footprint({50, 50}), "initial_elastic_share_not_fair"
+    );
+    h.submit("chat-again", Workload::llm, "chat");
+    h.drain();
+    check(chat.loads == 2 && chat.closes == 1, "idle_constrained_plan_not_rebuilt");
+    check(
+        chat.allowances.back() == Footprint({90, 80}),
+        "elastic_replan_did_not_preserve_idle_peer"
+    );
+    check(
+        speech.loads == 1 && speech.closes == 0, "elastic_growth_evicted_fitting_peer"
+    );
+}
+
+void unknown_execution_bound_keeps_full_admission() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    chat.bounded = false;
+    h.submit("chat", Workload::llm);
+    check(h.owner.advance(), "conservative_chat_not_dispatched");
+    chat.gate.wait_for(&Gate::entered);
+    h.submit("speech", Workload::tts);
+    for (int i = 0; i < 8; ++i)
+        h.owner.advance();
+    check(
+        h.owner.snapshot().used == Footprint({100, 100}),
+        "unknown_bound_was_shrunk_to_usage"
+    );
+    check(
+        speech.loads == 0 && chat.closes == 0, "conservative_inflight_promise_revoked"
+    );
+    chat.gate.open();
+    speech.gate.open();
+    h.drain();
+    check(
+        h.state.peak_active == 1 && h.state.has("speech", JobState::succeeded),
+        "conservative_sequential_fallback_failed"
+    );
+}
 
 void disjoint_devices_execute_concurrently() {
     for (std::size_t devices : {2, 3}) {
@@ -360,7 +485,7 @@ void same_device_executes_distinct_contexts() {
         }
     }
     check(
-        h.owner.snapshot().used == Footprint({42, 42}), "shared_envelopes_not_atomic"
+        h.owner.snapshot().used == Footprint({21, 39}), "shared_envelopes_not_atomic"
     );
     for (auto& [name, model] : h.state.models)
         model.gate.open();
@@ -463,7 +588,10 @@ void images_share_bounded_placement_with_native_work() {
             "image_calibration_not_invalidated"
         );
         check(image.context->activity == chat.context->activity, "activity_not_shared");
-        check(image.allowances.back()[1] < 100, "image_claimed_full_device_budget");
+        check(
+            image.resources->snapshot().capacity[1] == 20,
+            "bounded_image_did_not_release_unused_promise"
+        );
         if (devices > 1)
             check(image.devices != chat.devices, "free_gpu_not_preferred");
         else
@@ -485,7 +613,7 @@ void images_share_bounded_placement_with_native_work() {
     }
 }
 
-void image_placement_widens_only_after_narrow_failure() {
+void solo_image_can_plan_all_available_devices() {
     Harness h({100, 100, 100, 100}, {7, 7, 7});
     auto& image = h.state.models["image"];
     image.device = 150;
@@ -499,8 +627,8 @@ void image_placement_widens_only_after_narrow_failure() {
     );
     check(image.executions == 1 && image.loads == 1, "wide_image_replayed_execution");
     check(
-        image.allowances.front()[2] == 0 && image.allowances.front()[3] == 0,
-        "image_skipped_single_gpu_attempt"
+        image.allowances.front() == Footprint({100, 100, 100, 100}),
+        "solo_image_cannot_plan_available_gpus"
     );
 }
 
@@ -731,7 +859,7 @@ void pressure_never_evicts_active_models() {
     chat.gate.wait_for(&Gate::entered);
     check(!h.owner.advance(), "global_host_budget_overcommitted");
     check(
-        h.owner.snapshot().used == Footprint({15, 50, 0}),
+        h.owner.snapshot().used == Footprint({15, 20, 0}),
         "failed_admission_leaked_resources"
     );
     check(
@@ -789,7 +917,7 @@ void queued_and_running_cancellation_wait_for_cleanup() {
     check(!h.owner.advance(), "running_cancel_completed_before_execution_exit");
     check(!h.state.has("chat", JobState::cancelled), "premature_cancel_terminal");
     check(
-        h.owner.snapshot().used == Footprint({50, 50}),
+        h.owner.snapshot().used == Footprint({15, 20}),
         "running_cancel_released_in_use_resources"
     );
     chat.gate.open();
@@ -868,7 +996,7 @@ void lazy_workspace_is_protected_from_second_admission() {
     check(h.owner.advance(), "second_execution_not_admitted");
     speech.gate.wait_for(&Gate::entered);
     check(
-        h.owner.snapshot().used == Footprint({100, 50, 50}),
+        h.owner.snapshot().used == Footprint({100, 20, 20}),
         "lazy_workspace_not_escrowed"
     );
     check(
@@ -889,7 +1017,7 @@ void lazy_workspace_is_protected_from_second_admission() {
     h.drain();
 }
 
-void prepare_can_expand_a_model_that_loaded_on_one_device() {
+void prepare_uses_full_solo_budget() {
     Harness h({100, 100, 100});
     auto& chat = h.state.models["chat"];
     chat.device_scratch = 150;
@@ -897,7 +1025,10 @@ void prepare_can_expand_a_model_that_loaded_on_one_device() {
     h.submit("chat", Workload::llm);
     h.drain();
     check(h.state.has("chat", JobState::succeeded), "prepare_workspace_did_not_expand");
-    check(chat.loads >= 2 && chat.executions == 1, "prepare_retry_replayed_execution");
+    check(
+        chat.loads == 1 && chat.executions == 1,
+        "solo_prepare_required_avoidable_reload"
+    );
     check(chat.closes == chat.loads - 1, "failed_narrow_prepare_not_cleaned_up");
 }
 
@@ -958,7 +1089,7 @@ void shutdown_waits_for_running_cleanup() {
     chat.gate.wait_for(&Gate::cancellation_seen);
     check(shutdown.wait_for(0s) != std::future_status::ready, "shutdown_did_not_wait");
     check(
-        h.owner.snapshot().used == Footprint({50, 50}),
+        h.owner.snapshot().used == Footprint({15, 20}),
         "shutdown_released_active_resources"
     );
     chat.gate.open();
@@ -974,6 +1105,10 @@ void shutdown_waits_for_running_cleanup() {
 
 int main() {
     const std::pair<const char*, void (*)()> tests[]{
+        {"queued_demand", memory_shares_follow_queued_demand},
+        {"cpu_demand", cpu_queue_shares_host_but_not_gpu_memory},
+        {"elastic_replanning", constrained_elastic_resident_replans_when_demand_falls},
+        {"unknown_execution_bound", unknown_execution_bound_keeps_full_admission},
         {"disjoint_devices", disjoint_devices_execute_concurrently},
         {"same_device_contexts", same_device_executes_distinct_contexts},
         {"execution_slots", execution_slots_bound_overlap},
@@ -982,7 +1117,7 @@ int main() {
         {"sequential_memory_fallback", memory_pressure_requires_sequential_execution},
         {"backend_compatibility", exclusive_backend_waits_even_on_another_device},
         {"image_native_overlap", images_share_bounded_placement_with_native_work},
-        {"image_widens", image_placement_widens_only_after_narrow_failure},
+        {"image_widens", solo_image_can_plan_all_available_devices},
         {"shared_failure_cleanup", shared_peer_survives_failure_and_cancellation},
         {"resident_single_flight", same_resident_remains_single_flight},
         {"sequential_residency", one_device_falls_back_and_reuses_residents},
@@ -996,7 +1131,7 @@ int main() {
         {"large_resident_workspace",
          resident_larger_than_half_capacity_keeps_its_workspace},
         {"lazy_workspace", lazy_workspace_is_protected_from_second_admission},
-        {"prepare_widens", prepare_can_expand_a_model_that_loaded_on_one_device},
+        {"prepare_widens", prepare_uses_full_solo_budget},
         {"bounded_wide_bypass", a_waiting_wide_model_has_bounded_bypass},
         {"shutdown_cleanup", shutdown_waits_for_running_cleanup},
     };

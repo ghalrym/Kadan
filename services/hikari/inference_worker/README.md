@@ -286,7 +286,11 @@ execution allowance. That allowance includes retained weights and room for lazy
 KV, activation, and execution-workspace allocations; individual allocations draw
 from it rather than adding a second charge. This is a conservative capacity bound,
 not a measured peak-memory prediction. Idle engines return unused allowance while
-retaining their weights and contexts. Reuse reacquires the original allowance;
+retaining their weights and contexts. After preparation, a backend may return a
+smaller execution bound that covers all future allocations, including lazy caches
+and workspaces. Chat includes its planned weight banks, scratch limits, CUDA
+contexts, KV growth overlap, and existing host staging margin. Unknown bounds
+retain the full admission. Reuse reacquires the execution bound;
 idle peers can be evicted if needed. Active engines cannot be evicted. Physical
 cleanup must succeed before reservations are released; uncertain cleanup stops
 new admissions.
@@ -305,9 +309,15 @@ also bounded by current physical availability. External processes can still
 allocate after that probe; physical allocation failures remain possible and are
 reported without replaying inference that has already started.
 
-Placement first tries one GPU with a bounded share of its available memory.
-Load or preparation pressure grows that share geometrically, then tries larger
-GPU subsets. This applies to images as well as native workloads. Admission clips
+Placement divides available memory among executable queue heads, excluding
+cancelled work, control operations, and queues already executing. A lone workload
+can plan across all available GPUs; idle queues and compute concurrency limits do
+not reduce its budget. With competing GPU workloads, placement divides eligible
+GPUs into subsets and shares memory when workloads outnumber devices. A load or
+preparation failure retries with the complete remaining budget before reclaiming
+idle models. An idle constrained engine that can use more planning memory is
+rebuilt when its original planning allowance can grow. Fixed-size residents remain
+reusable. This applies to images as well as native workloads. Admission clips
 new allowances to both the shared ledger and a fresh physical-memory probe;
 full-budget requests wait for resources rather than overcommitting other queues.
 Device indices and asymmetric budgets support one through 64 GPUs.

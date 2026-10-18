@@ -57,6 +57,8 @@ public:
     );
     void close() override;
     std::shared_ptr<Resources> resources() const;
+    Footprint execution_footprint() const;
+    bool can_expand() const;
 
     // Work since the previous call, and current weight residency.
     struct Timing {

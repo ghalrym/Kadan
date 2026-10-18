@@ -148,7 +148,7 @@ void admission_retries_head() {
     assert(pending.pending() == 2);
     assert(retry.events == std::vector<std::string>({"load:head", "close:head"}));
     assert(complete_one(pending));
-    assert(retry.loads.back() == Footprint({100, 40, 0}));
+    assert(retry.loads.back() == Footprint({100, 40, 30}));
     assert(
         std::get<0>(replies.back()) == "head"
         && std::get<1>(replies.back()) == JobState::succeeded
@@ -357,7 +357,7 @@ void resident_gpu_pressure_replans_before_execution() {
     assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
     assert(state.loads.size() == 2);
-    assert(state.loads.back()[1] == 0 && state.loads.back()[2] == 70);
+    assert(state.loads.back()[1] == 30 && state.loads.back()[2] == 70);
     owner.shutdown();
 }
 
@@ -426,8 +426,8 @@ void reservation_exhaustion_retries_only_before_execution() {
     for (bool during_execution : {false, true}) {
         FakeState state;
         std::vector<JobState> events;
-        // The initial bounded host allowance fits weights but not scratch.
-        Footprint free{30, 80, 70};
+        // Physical host capacity fits weights but not the complete workspace.
+        Footprint free{29, 80, 70};
         InferenceOwner owner(
             {100, 100, 100},
             [&](auto, auto ledger, auto) {

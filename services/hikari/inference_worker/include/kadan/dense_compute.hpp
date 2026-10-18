@@ -42,6 +42,17 @@ struct DeviceWeightPlacement {
     Bytes planned_bytes, allocated_bytes;
 };
 
+// KV mirrors grow geometrically while the previous buffer is still alive.
+// Three times the declared state covers the old and new allocation together.
+inline Bytes
+native_device_execution_bytes(Bytes limit, Bytes weights, Bytes scratch, Bytes state) {
+    auto bytes = std::min(limit, weights);
+    bytes += std::min(limit - bytes, scratch);
+    for (int allocation = 0; allocation < 3; ++allocation)
+        bytes += std::min(limit - bytes, state);
+    return bytes;
+}
+
 // Per-call result: finite certifies every stored post-bias output, after all
 // partitions synchronize. Unsupported leaves the caller's fallback responsible.
 enum class ProjectionResult {
@@ -84,6 +95,12 @@ public:
 
     // Weight-bank limits and live allocation bytes, excluding context and scratch.
     virtual std::vector<DeviceWeightPlacement> weight_placement() const {
+        return {};
+    }
+
+    // Future device allocations, including bounded caches and lazy workspace,
+    // excluding the caller's CUDA context. Empty means the bound is unknown.
+    virtual Footprint execution_memory() const {
         return {};
     }
 

@@ -25,11 +25,16 @@ template <class F> void fails(F f) {
 
 struct FakeContext final : DenseCompute {
     std::vector<DeviceWeightPlacement> placement;
+    Footprint execution;
     mutable unsigned snapshots = 0;
 
     std::vector<DeviceWeightPlacement> weight_placement() const override {
         ++snapshots;
         return placement;
+    }
+
+    Footprint execution_memory() const override {
+        return execution;
     }
 
     bool fail = false, scratch_fail = false;
@@ -65,6 +70,34 @@ struct FakeContext final : DenseCompute {
             throw std::runtime_error("cleanup_unconfirmed");
     }
 };
+
+void bounded_native_execution() {
+    // The bound protects allocations that have not happened yet, including the
+    // overlap while a KV mirror grows. It is not a snapshot of physical usage.
+    check(native_device_execution_bytes(1000, 200, 100, 50) == 450);
+    check(native_device_execution_bytes(400, 200, 100, 50) == 400);
+    const auto maximum = std::numeric_limits<Bytes>::max();
+    check(native_device_execution_bytes(maximum, maximum - 1, 1, maximum) == maximum);
+
+    WorkerCompute worker({{1000, 1000, 1000}, {}}, Workload::llm);
+    auto compute = std::make_shared<FakeContext>();
+    worker.compute = compute;
+    worker.context = {0, 100, 100};
+    const auto host = worker.resources->reserve(Workload::llm, {300, 0, 0});
+    check(worker.execution_footprint(100) == Footprint({400, 1000, 1000}));
+    compute->execution = {0, native_device_execution_bytes(1000, 200, 100, 50), 100};
+    check(worker.execution_footprint(100) == Footprint({400, 550, 200}));
+    check(worker.execution_footprint(maximum)[0] == 1000);
+    const auto resident = worker.resources->reserve(Workload::llm, {0, 0, 250});
+    check(worker.execution_footprint(100)[2] == 250);
+    compute->execution[1] = maximum;
+    check(worker.execution_footprint(100)[1] == 1000);
+    compute->execution = {0};
+    fails([&] { worker.execution_footprint(100); });
+    worker.resources->released(resident);
+    worker.resources->released(host);
+    worker.compute.reset();
+}
 
 void projection_output_classification() {
     for (std::uint32_t bits :
@@ -338,6 +371,7 @@ void image_pair_planning() {
 }
 
 int main() {
+    bounded_native_execution();
     projection_output_classification();
     image_pair_planning();
     vae_normalization_planning();

@@ -116,7 +116,10 @@ public:
     }
 
     std::size_t device_state_bytes() const override {
-        return 10 * AttentionLayer::state_bytes(attention_spec, context_)
+        return 10
+                   * AttentionLayer::state_bytes(
+                       attention_spec, std::max<std::size_t>(context_, 256)
+                   )
                + 30 * DeltaNetLayer::device_bytes(delta_spec);
     }
 
