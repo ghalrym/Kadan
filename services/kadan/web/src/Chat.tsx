@@ -98,7 +98,18 @@ export default function Chat({
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [thread.messages.length, partial]);
-  useEffect(() => () => controller.current?.abort(), []);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // StrictMode remounts at once in development; abort only when the thread really closes,
+      // or it cancels the opening message sent from Home.
+      setTimeout(() => {
+        if (!mounted.current) controller.current?.abort();
+      });
+    };
+  }, []);
   useEffect(() => {
     if (draft) sessionStorage.setItem(draftKey, draft);
     else sessionStorage.removeItem(draftKey);
