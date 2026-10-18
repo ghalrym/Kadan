@@ -22,9 +22,8 @@ public:
         const std::atomic_bool&,
         const Generator::BatchHook&
     );
-    std::vector<Footprint> admissible_batch_footprints(
-        const ImageRequest&, std::size_t, const std::atomic_bool&
-    );
+    std::vector<ImageBatchPlan>
+    admissible_batch_plans(const ImageRequest&, std::size_t, const std::atomic_bool&);
 
     const BatchMeasurement& last_batch_measurement() const {
         return measurement_;
@@ -34,9 +33,8 @@ public:
     void unload();
 
 private:
-    Footprint admission_footprint(
-        const ImageRequest&, std::size_t images, const std::atomic_bool&
-    );
+    ImageBatchPlan
+    admission_plan(const ImageRequest&, std::size_t images, const std::atomic_bool&);
     BatchMeasurement measurement_;
     struct Impl;
     std::unique_ptr<Impl> model_;

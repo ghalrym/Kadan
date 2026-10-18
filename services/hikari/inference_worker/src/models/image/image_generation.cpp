@@ -140,11 +140,11 @@ void Generator::generate_batch(
     aten_->generate_batch(requests, outputs, cancel, hook);
 }
 
-std::vector<Footprint> Generator::admissible_batch_footprints(
+std::vector<ImageBatchPlan> Generator::admissible_batch_plans(
     const ImageRequest& request, std::size_t limit, const std::atomic_bool& cancel
 ) {
     Busy active(busy_);
-    return aten_->admissible_batch_footprints(request, limit, cancel);
+    return aten_->admissible_batch_plans(request, limit, cancel);
 }
 
 const BatchMeasurement& Generator::last_batch_measurement() const {

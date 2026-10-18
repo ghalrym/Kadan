@@ -96,6 +96,20 @@ class AtenDenoiserPerformance {
     }
 
 public:
+    std::optional<double> denoise_seconds(
+        const AtenDenoiserWorkload& workload, std::span<const AtenDenoiserLane> lanes
+    ) const {
+        const auto found =
+            std::find_if(history_.begin(), history_.end(), [&](const auto& r) {
+                return r.workload == workload;
+            });
+        if (found == history_.end())
+            return std::nullopt;
+        return cost(
+            *found, lanes, {std::vector<std::optional<double>>(lanes.size(), 0), 0}
+        );
+    }
+
     // Candidates already satisfy shared memory limits. The caller provides
     // useful device subsets, rather than assuming every available GPU is faster.
     // Planning is read-only; only successful observations consume calibration.
@@ -209,13 +223,15 @@ public:
             found = std::prev(history_.end());
         }
         auto& target = measurements.size() == 1 ? found->single : found->parallel;
-        // Keep the latest measurement per device and loading role. Narrower
-        // subsequent batches must not erase evidence about other GPUs.
+        // Keep the latest measurement per device, loading role and lane size.
+        // A slower large batch must not replace measured smaller-batch rates;
+        // the bounded history still supplies extrapolation for unseen sizes.
         for (const auto& sample : measurements) {
             const auto prior =
                 std::find_if(target.begin(), target.end(), [&](const auto& existing) {
                     return existing.device == sample.device
-                           && existing.replica == sample.replica;
+                           && existing.replica == sample.replica
+                           && existing.images == sample.images;
                 });
             if (prior != target.end())
                 target.erase(prior);

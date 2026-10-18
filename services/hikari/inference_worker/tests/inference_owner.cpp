@@ -7,6 +7,7 @@
 
 #include "kadan/image_batch_memory.hpp"
 #include "kadan/image_batch_output.hpp"
+#include "kadan/image_batch_performance.hpp"
 using namespace kadan;
 using namespace kadan::serving;
 
@@ -693,6 +694,70 @@ InferenceRequest image_request(std::string id, std::uint64_t seed = 1) {
     return result;
 }
 
+void throughput_target_controls_collection_and_advice() {
+    struct ThroughputEngine : BatchEngine {
+        image::ImageBatchPerformance& performance;
+        std::vector<image::ImageBatchPlan>& plans;
+
+        ThroughputEngine(
+            BatchState& state,
+            std::shared_ptr<Resources> ledger,
+            image::ImageBatchPerformance& policy,
+            std::vector<image::ImageBatchPlan>& candidates
+        )
+            : BatchEngine(state, ledger), performance(policy), plans(candidates) {
+        }
+
+        std::size_t batch_capacity(const InferenceRequest&, const Footprint&) override {
+            return performance.capacity(plans);
+        }
+    };
+
+    BatchState state;
+    state.image_results = true;
+    image::ImageBatchPerformance performance;
+    std::vector<image::ImageBatchPlan> plans(8, {{10, 10, 10}, {0, std::nullopt}});
+    performance.observe(1, 3, 0, 2);
+    state.during_execution = [&] {
+        performance.observe(2, 5, 0, 4);
+    };
+    std::vector<std::size_t> hints;
+    const auto now = std::chrono::steady_clock::time_point{};
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) {
+            return std::make_unique<ThroughputEngine>(
+                state, ledger, performance, plans
+            );
+        },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto, auto event, auto value) {
+            if (event == JobState::succeeded)
+                hints.push_back(value.at("next_batch_capacity"));
+        },
+        32,
+        {},
+        [&] { return now; }
+    );
+    owner.submit(image_request("a"));
+    owner.submit(image_request("b"));
+    assert(owner.advance());
+    assert((hints == std::vector<std::size_t>{3, 3}));
+    owner.submit(image_request("c"));
+    owner.submit(image_request("d"));
+    assert(!owner.advance());
+    // A bank-displacing third image no longer pays. Collection must immediately
+    // execute the selected pair, without waiting for the ten-second deadline.
+    plans[2].cost.loading_seconds = 30;
+    assert(owner.advance());
+    assert(
+        (state.batches == std::vector<std::vector<std::string>>{{"a", "b"}, {"c", "d"}})
+    );
+    assert((hints == std::vector<std::size_t>{3, 3, 2, 2}));
+    assert(owner.pending() == 0);
+    owner.shutdown();
+}
+
 void image_capacity_hint_uses_successful_measurement_and_fresh_pressure() {
     for (const auto devices : {1, 2, 3}) {
         for (const auto mode : {0, 1, 2, 3}) {
@@ -1139,6 +1204,7 @@ void image_memory_growth_is_measured_and_devices_are_independent() {
 }
 
 int main() {
+    throughput_target_controls_collection_and_advice();
     image_capacity_hint_uses_successful_measurement_and_fresh_pressure();
     cancellation_during_capacity_probe_cleans_up_before_terminals();
     later_candidate_pressure_does_not_block_the_admissible_head();
