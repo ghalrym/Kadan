@@ -21,7 +21,8 @@ The Python API validates requests, serializes a typed Pydantic inference task,
 and submits it to the worker. It manages waiting responses, SSE streams, job
 status and cancellation. The worker acquires checkpoints, prepares inputs and
 model assets, executes the task, packages results and removes its workspace.
-Preparation starts only when a task reaches the FIFO head. Checkpoint conversion, downloads, media serialization and execution all run
+Preparation starts at the FIFO head; compatible adjacent image requests may be
+prepared together for one memory-admitted batch. Checkpoint conversion, downloads, media serialization and execution all run
 in the C++ worker. It never invokes Python. Video encoding uses FFmpeg as a codec.
 
 The API starts the inference worker without loading a model or running inference.

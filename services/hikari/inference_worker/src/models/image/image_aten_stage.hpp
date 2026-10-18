@@ -252,6 +252,7 @@ class Stage {
     Inventory& inventory_;
     const std::atomic_bool& cancel_;
     AtenStagePlan plan_;
+    BatchMeasurement* measurement_;
 
     Tensor read_weight(const std::string& name) const {
         stop(cancel_);
@@ -285,18 +286,41 @@ public:
         Inventory& inventory,
         Bytes workspace,
         const std::atomic_bool& cancel,
-        Bytes tiled_workspace = 0
+        Bytes tiled_workspace = 0,
+        BatchMeasurement* measurement = nullptr
     )
-        : resources_(r), inventory_(inventory), cancel_(cancel),
-          plan_(aten_stage_plan(
-              stage_snapshot(r, devices),
-              devices,
-              inventory.bytes,
-              inventory.largest,
-              workspace,
-              tiled_workspace
-          )),
-          device(plan_.device) {
+        : Stage(
+              r,
+              inventory,
+              aten_stage_plan(
+                  stage_snapshot(r, devices),
+                  devices,
+                  inventory.bytes,
+                  inventory.largest,
+                  workspace,
+                  tiled_workspace
+              ),
+              cancel,
+              measurement
+          ) {
+    }
+
+    Stage(
+        Resources& r,
+        Inventory& inventory,
+        AtenStagePlan plan,
+        const std::atomic_bool& cancel,
+        BatchMeasurement* measurement,
+        const Stage* resident_source = nullptr
+    )
+        : resources_(r), inventory_(inventory), cancel_(cancel), plan_(plan),
+          measurement_(measurement), device(plan_.device) {
+        need(
+            !resident_source
+                || (&resident_source->inventory_ == &inventory
+                    && !resident_source->plan_.stream_weights && !plan_.stream_weights),
+            "image_aten_replica_inventory"
+        );
         auto footprint = r.snapshot().capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
         footprint[0] = plan_.host_bytes;
@@ -308,12 +332,24 @@ public:
             std::size_t free = 0, total = 0;
             C10_CUDA_CHECK(cudaMemGetInfo(&free, &total));
             need(free >= footprint[device + 1], "image_aten_physical_headroom");
+            c10::cuda::CUDACachingAllocator::resetPeakStats(device);
             c10::cuda::CUDACachingAllocator::setMemoryFraction(
                 double(footprint[device + 1]) / double(total), device
             );
             if (!plan_.stream_weights)
-                for (const auto& [name, weight] : inventory.weights)
-                    bank.emplace(name, read_weight(name));
+                for (const auto& [name, weight] : inventory.weights) {
+                    stop(cancel_);
+                    bank.emplace(
+                        name,
+                        resident_source ? resident_source->bank.at(name).to(
+                                              at::Device(at::kCUDA, device),
+                                              inventory_.dtype,
+                                              false,
+                                              true
+                                          )
+                                        : read_weight(name)
+                    );
+                }
             sync();
         } catch (...) {
             auto error = std::current_exception();
@@ -339,6 +375,19 @@ public:
             return;
         c10::cuda::CUDAGuard guard(device);
         sync();
+        if (measurement_) {
+            const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+            measurement_->peak_allocated[device + 1] = std::max<Bytes>(
+                measurement_->peak_allocated[device + 1], stats.allocated_bytes[0].peak
+            );
+            measurement_->peak_reserved[device + 1] = std::max<Bytes>(
+                measurement_->peak_reserved[device + 1], stats.reserved_bytes[0].peak
+            );
+            const auto host = resources_.snapshot().used[0];
+            measurement_->peak_allocated[0] =
+                std::max(measurement_->peak_allocated[0], host);
+            measurement_->peak_reserved[0] = measurement_->peak_allocated[0];
+        }
         bank.clear();
         at::cuda::clearCublasWorkspaces();
         c10::cuda::CUDACachingAllocator::emptyCache();
