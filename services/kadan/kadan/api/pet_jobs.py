@@ -477,6 +477,8 @@ class PetJobs:
         source: bytes | None,
         model_id: str | None,
         seed: int | None = None,
+        *,
+        batch_collection_target: int | None = None,
     ) -> GeneratedImage:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -484,6 +486,8 @@ class PetJobs:
             "aspect": "1:1",
             "model_id": IMAGE_MODEL,
         }
+        if batch_collection_target is not None:
+            body["batch_collection_target"] = batch_collection_target
         if model_id:
             body["model_id"] = model_id
         if seed is not None:
@@ -573,6 +577,7 @@ class PetJobs:
         frame: int,
         order: list[str],
         recover: bool,
+        batch_collection_target: int,
     ) -> int | None:
         name = frame_name(row, frame) if row is not None else "base"
         canonical = name in {"idle/0", "idle/5"}
@@ -650,6 +655,7 @@ class PetJobs:
                     source,
                     job.steps[0].model_id if job.steps else None,
                     seed,
+                    batch_collection_target=batch_collection_target,
                 )
             raw = base64.b64decode(generation.images_base64[0], validate=True)
             metadata = generation.model_dump(exclude={"images_base64"})
@@ -774,6 +780,7 @@ class PetJobs:
                 ),
                 **self.pending_state(pending),
             )
+            cohort_size = len(cohort)
             tasks = [
                 asyncio.create_task(
                     self.generate_frame(
@@ -783,6 +790,7 @@ class PetJobs:
                         order,
                         (frame_name(row, frame) if row is not None else "base")
                         in previous,
+                        cohort_size,
                     )
                 )
                 for row, frame in cohort

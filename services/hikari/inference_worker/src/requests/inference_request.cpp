@@ -56,6 +56,16 @@ InferenceRequest parse_request(const Json& envelope) {
         input.model = optional<std::string>(body, "model_id");
         input.aspect = body.value("aspect", "1:1");
         input.count = body.value("count", 4u);
+        if (body.contains("batch_collection_target")
+            && !body.at("batch_collection_target").is_null()) {
+            const auto& target = body.at("batch_collection_target");
+            preparation_check(
+                target.is_number_integer() && target >= 1 && target <= 32,
+                "Image batch collection target must be an integer between 1 and 32",
+                422
+            );
+            input.batch_collection_target = target.get<unsigned>();
+        }
         input.steps = body.value("steps", 50u);
         input.seed = optional<std::uint64_t>(body, "seed");
         input.image = optional<std::string>(body, "image");

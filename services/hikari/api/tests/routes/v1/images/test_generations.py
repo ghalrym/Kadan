@@ -5,12 +5,12 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.routes.v1.images import generations
+from api.routes.v1.images import edits, generations
 
 
 class ImageRequestIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_header_uuid_is_normalized_to_exact_native_job_id(self):
-        body = generations.ImageRequest(prompt="test")
+        body = generations.ImageRequest(prompt="test", batch_collection_target=3)
         request = object()
         result = {"image": {}}
 
@@ -85,3 +85,47 @@ class ImageCapacityResponseTests(unittest.TestCase):
         for capacity in (0, 33):
             with self.assertRaises(ValidationError):
                 generations.ImageResponse(image=image, next_batch_capacity=capacity)
+
+
+class ImageCollectionTargetTests(unittest.TestCase):
+    def test_optional_target_validates_and_survives_worker_task_serialization(self):
+        for model, values in (
+            (generations.ImageRequest, {"prompt": "fox"}),
+            (
+                edits.ImageRequest,
+                {"prompt": "fox", "image": "data:image/png;base64,cG5n"},
+            ),
+        ):
+            with self.subTest(model=model):
+                body = model(**values)
+                self.assertIsNone(body.batch_collection_target)
+                task = InferenceTask(
+                    input={"feature": "image", **body.model_dump(exclude_unset=True)}
+                )
+                self.assertNotIn(
+                    "batch_collection_target", task.model_dump(mode="json")["input"]
+                )
+                for target in (None, 1, 3, 32):
+                    body = model(**values, batch_collection_target=target)
+                    task = InferenceTask(
+                        input={
+                            "feature": "image",
+                            **body.model_dump(exclude_unset=True),
+                        }
+                    )
+                    restored = InferenceTask.model_validate_json(task.model_dump_json())
+                    self.assertEqual(restored.input.batch_collection_target, target)
+                for invalid in (0, -1, 33, 1.5, True, "2"):
+                    with (
+                        self.subTest(invalid=invalid),
+                        self.assertRaises(ValidationError),
+                    ):
+                        model(**values, batch_collection_target=invalid)
+                    with self.assertRaises(ValidationError):
+                        InferenceTask(
+                            input={
+                                "feature": "image",
+                                **values,
+                                "batch_collection_target": invalid,
+                            }
+                        )

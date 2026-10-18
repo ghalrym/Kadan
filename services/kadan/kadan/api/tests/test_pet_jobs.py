@@ -212,7 +212,15 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         async def content(key, asset_id):
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id, seed=None):
+        async def image(
+            request_id,
+            prompt,
+            source,
+            model_id,
+            seed=None,
+            *,
+            batch_collection_target=None,
+        ):
             sources.append(source)
             seeds.append(seed)
             return GeneratedImage(
@@ -330,12 +338,15 @@ def test_frame_request_uses_untiled_reference_and_one_fixed_canvas():
         )
         services.client.post = AsyncMock(return_value=response)
         pets = PetJobs(services)
-        result = await pets.image(uuid4(), "run right", PNG, IMAGE_MODEL, 42)
+        result = await pets.image(
+            uuid4(), "run right", PNG, IMAGE_MODEL, 42, batch_collection_target=3
+        )
         assert result.next_batch_capacity == 5
         assert "next_batch_capacity" not in result.model_dump()
         request = services.client.post.call_args.kwargs["json"]
         assert request["mode"] == "reference"
         assert request["seed"] == 42
+        assert request["batch_collection_target"] == 3
         assert (
             request["image"]
             == "data:image/png;base64," + base64.b64encode(PNG).decode()
@@ -382,7 +393,15 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
                 raise ServiceError("Missing", 404)
             return assets[asset_id]
 
-        async def image(request_id, prompt, source, model_id, seed=None):
+        async def image(
+            request_id,
+            prompt,
+            source,
+            model_id,
+            seed=None,
+            *,
+            batch_collection_target=None,
+        ):
             nonlocal cancelled
             requests.append(request_id)
             if (
@@ -512,7 +531,9 @@ def test_rejected_saved_frame_persists_new_seed_before_retry():
         )
         pets.prepare_output = AsyncMock(side_effect=ValueError("boundary"))
 
-        async def image(request_id, prompt, source, model_id, seed):
+        async def image(
+            request_id, prompt, source, model_id, seed, *, batch_collection_target=None
+        ):
             persisted = services.jobs[job.id]
             assert request_id != old_request
             assert persisted.pending_request_id == request_id
@@ -620,6 +641,19 @@ def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch
         pets.upload = AsyncMock()
         started = asyncio.Event()
         checkpointed = asyncio.Event()
+        last_started = asyncio.Event()
+        original_frame = pets.generate_frame
+
+        async def delayed_frame(
+            job, row, frame, order, recover, batch_collection_target
+        ):
+            if frame == 4:
+                await checkpointed.wait()
+            return await original_frame(
+                job, row, frame, order, recover, batch_collection_target
+            )
+
+        pets.generate_frame = delayed_frame
         requests = {}
         original_request = services.json_request
 
@@ -635,15 +669,28 @@ def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch
 
         services.json_request = track_checkpoint
 
-        async def image(request_id, prompt, source, model_id, seed=None):
+        async def image(
+            request_id,
+            prompt,
+            source,
+            model_id,
+            seed=None,
+            *,
+            batch_collection_target=None,
+        ):
             pending = services.jobs[job.id].pending_images
-            assert len(pending) == 4
+            # The last sibling starts after another result was persisted. Its
+            # immutable cohort hint must remain four even though pending shrank.
+            assert batch_collection_target == 4
+            assert len(pending) == (3 if checkpointed.is_set() else 4)
             frame = next(item for item in pending if item.request_id == request_id)
             assert frame.seed == seed == 42
             assert source == PNG and model_id == IMAGE_MODEL
             requests[frame.name] = asyncio.get_running_loop().create_future()
-            if len(requests) == 4:
+            if len(requests) == 3:
                 started.set()
+            if len(requests) == 4:
+                last_started.set()
             return await requests[frame.name]
 
         pets.image = image
@@ -657,6 +704,7 @@ def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch
         )
         requests["idle/3"].set_result(result)
         await asyncio.wait_for(checkpointed.wait(), timeout=2)
+        await asyncio.wait_for(last_started.wait(), timeout=2)
         assert not task.done()
         requests["idle/1"].set_exception(ServiceError("frame failed"))
         requests["idle/4"].set_result(result)
@@ -718,7 +766,7 @@ def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds()
         started = asyncio.Event()
         requests = []
 
-        async def image(request_id, *args):
+        async def image(request_id, *args, **kwargs):
             requests.append(request_id)
             if len(requests) == 4:
                 started.set()
@@ -795,14 +843,24 @@ def test_producer_tracks_reference_capacity_and_pressure_without_base_hint(monke
         hints = [2, 3, 5, 2, None, 32, 32, 32]
         submitted = []
 
-        async def image(request_id, prompt, source, model_id, seed=None):
+        async def image(
+            request_id,
+            prompt,
+            source,
+            model_id,
+            seed=None,
+            *,
+            batch_collection_target=None,
+        ):
             pending = services.jobs[job.id].pending_images
             assert request_id in {frame.request_id for frame in pending}
             if source is None:
                 # A base-image capacity cannot size reference-frame cohorts.
                 hint = 32
+                assert batch_collection_target == 1
             else:
                 members = tuple(frame.request_id for frame in pending)
+                assert batch_collection_target == len(members)
                 if members not in cohorts:
                     cohorts.append(members)
                 hint = hints[cohorts.index(members)]

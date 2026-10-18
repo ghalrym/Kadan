@@ -55,6 +55,7 @@ struct ImageRequest {
     float strength = .65f;
     bool reference = false;
     std::size_t source_width = 0, source_height = 0;
+    std::optional<unsigned> batch_collection_target;
 };
 
 struct ChoiceOption {

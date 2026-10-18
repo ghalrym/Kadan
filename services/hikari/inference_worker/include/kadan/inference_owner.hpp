@@ -266,7 +266,15 @@ public:
                     if (images == capacity)
                         break;
                 }
-                if (!blocked && images < capacity
+                // A producer may have fewer images to supply than worker capacity.
+                // Scan the complete compatible FIFO prefix first: this hint only
+                // shortens waiting, never limits an already queued batch.
+                const auto target = std::min<std::size_t>(
+                    capacity,
+                    std::get<ImageRequest>(request.input)
+                        .batch_collection_target.value_or(capacity)
+                );
+                if (!blocked && images < target
                     && clock_() - job->submitted < std::chrono::seconds(10))
                     return false;
             }
