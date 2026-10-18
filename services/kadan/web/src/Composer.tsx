@@ -104,7 +104,8 @@ export default function Composer({
           onChange={(event) => onChange(event.target.value)}
           maxLength={16000}
           rows={1}
-          disabled={locked || !ready.storage}
+          // Keep typing while the agent replies, as in a text conversation.
+          disabled={blocked || !ready.storage}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();

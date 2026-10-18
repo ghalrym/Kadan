@@ -5,15 +5,16 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 ## Available in this prototype
 
 - Create and select agents, with each agent's records kept in its own Tsuchi namespace.
-- Create and edit personas, select one for a message, and reopen persisted conversations.
+- Text each agent in one continuous message chain. There are no threads: the chain is the agent's whole history with you.
+- Create and edit personas and select one for a message.
 - Save a note without inference, or stream a response through Hikari's `/v1/chat/completions` API when the selected language model is available.
 - Search memories and Spaces by text, browse Space children, and search file metadata or download a file.
 - See actionable storage, tier, download and inference availability states, with links to the supporting operator interfaces.
-- Each agent has an animated pet that reacts to thread activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
+- Each agent has an animated pet that reacts to chat activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
 
 A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending message IDs and drafts stay in browser session storage so an uncertain save can be reconciled after reload.
 
-Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The model has no tools: chat sends only the persona and conversation text to Hikari. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI. The workspace browser remains read-only. Files are searched by metadata, not their contents. Chat requests are limited to 100 messages and 48,000 characters; longer conversations require a new thread, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
+Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The model has no tools: chat sends only the persona and conversation text to Hikari. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI. The workspace browser remains read-only. Files are searched by metadata, not their contents. Each request replays at most the latest 100 messages and 48,000 characters of the chain, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
 
 ## Pet creation
 
@@ -72,8 +73,19 @@ runtime is installed by this feature.
 
 ## Chat
 
+Each agent has exactly one conversation, the chain, which `GET /api/agents/{key}/chain`
+returns and creates on first use. The resources API does not create conversations.
+The UI reads like texting: a timestamp separates messages more than four hours
+apart, the newest message you sent shows **Sending…**, **Delivered** once saved,
+then **Read** once Hikari is working on it or has replied. While it works the agent
+shows as typing, and its reply appears whole when it is saved. A note is delivered
+but stays unread until the next reply.
+
 Each message is one streamed completion: Kadan sends the optional persona as a
-system message, then the conversation's user and assistant text. There is no
+system message, then the chain's recent user and assistant text. The chain never
+ends, so older messages drop out of the prompt: the replayed window opens on a
+multiple of 20 messages, so its start, and the prompt prefix, stays put for many
+turns. Saved history is never trimmed. There is no
 planning step and the model cannot call tools. Conversations saved while the
 retired plugin system existed may contain `tool` messages; Kadan keeps them in
 Tsuchi but neither shows them nor sends them to the model.
