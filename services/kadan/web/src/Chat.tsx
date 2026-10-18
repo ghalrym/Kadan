@@ -84,10 +84,14 @@ export default function Chat({
   const opened = useRef(false);
   const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
+  // Hikari loads the model on demand; the first reply waits for it without a deadline.
+  const modelLoading = sending && status?.hikari.model_state === "loading";
   const [mood, react] = useMood(
     !status
       ? "idle"
-      : sending
+      : modelLoading
+        ? "waiting"
+        : sending
         ? "running"
         : !ready.chat
           ? "waiting"
@@ -98,7 +102,25 @@ export default function Chat({
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [thread.messages.length, partial]);
-  useEffect(() => () => controller.current?.abort(), []);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // StrictMode remounts at once in development; abort only when the thread really closes,
+      // or it cancels the opening message sent from Home.
+      setTimeout(() => {
+        if (!mounted.current) controller.current?.abort();
+      });
+    };
+  }, []);
+  useEffect(() => {
+    // Until the first words arrive, check whether Hikari is still loading the model.
+    if (!sending || partial) return;
+    const timer = setInterval(() => void refreshStatus(), 2000);
+    void refreshStatus();
+    return () => clearInterval(timer);
+  }, [sending, Boolean(partial)]);
   useEffect(() => {
     if (draft) sessionStorage.setItem(draftKey, draft);
     else sessionStorage.removeItem(draftKey);
@@ -230,8 +252,27 @@ export default function Chat({
         onBusy(false);
       });
   }
+  const perchStatus = modelLoading
+    ? "Loading model…"
+    : sending
+    ? activeTools.size
+      ? `Using ${activeTools.size === 1 ? "a tool" : `${activeTools.size} tools`}`
+      : streamStatus || "Thinking…"
+    : !ready.chat
+      ? "Notes only"
+      : agentName;
   return (
     <section className="chat" aria-label="Conversation">
+      <div className={`lookout ${sending ? "working" : ""}`}>
+        <button type="button" className="lookout-pet" aria-label={`Wave to ${agentName}`} title={`Wave to ${agentName}`}
+          onClick={() => react("waving")}>
+          <Pet sheet={petSheet} state={mood} size={96} look className="hero-pet" />
+        </button>
+        <span className="lookout-ledge" role="status" aria-live="polite">
+          {sending && <i aria-hidden="true" />}
+          {perchStatus}
+        </span>
+      </div>
       <div className="messages">
         <div className="messages-inner">
           {activities.map((activity) => {
@@ -286,7 +327,9 @@ export default function Chat({
           )}
           {sending && !partial && (
             <div className="thinking" role="status">
-              <span>{streamStatus}</span>
+              {modelLoading
+                ? <span className="thinking-label">Loading the model, this can take a few minutes</span>
+                : <span className="sr-only">{streamStatus}</span>}
               <i />
               <i />
               <i />
@@ -322,7 +365,7 @@ export default function Chat({
         persona={persona}
         onPersona={setPersona}
         plugins={plugins}
-        pet={<Pet sheet={petSheet} state={mood} size={96} look className="hero-pet" />}
+        pet={null}
       />
     </section>
   );
