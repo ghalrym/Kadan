@@ -92,6 +92,10 @@ void export_whisper(
         tensor.name = it.key();
         tensor.storage = value.at("storage");
         tensor.dtype = value.at("dtype");
+        preparation_check(
+            tensor.dtype == "F32" || tensor.dtype == "F16" || tensor.dtype == "BF16",
+            "Unsupported Whisper weight dtype"
+        );
         tensor.shape = value.at("shape").get<std::vector<std::uint64_t>>();
         tensor.stride = value.at("stride").get<std::vector<std::uint64_t>>();
         tensor.offset = value.at("offset");

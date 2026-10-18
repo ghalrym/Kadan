@@ -1690,6 +1690,21 @@ void whisper_conversion_units() {
         export_whisper(source, std::string(64, '0'), tmp.path / "invalid", running);
     });
     assert(!fs::exists(tmp.path / "invalid"));
+    auto boolean_weights = pickle;
+    boolean_weights.replace(boolean_weights.find("FloatStorage"), 12, "BoolStorage");
+    // Eight bytes would pass the old implicit two-byte fallback for four values.
+    // Boolean descriptors must not be exported as Whisper floating-point weights.
+    write_archive(
+        source,
+        {{"archive/data.pkl", boolean_weights},
+         {"archive/data/0", std::string(8, '\0')}}
+    );
+    rejects([&] {
+        export_whisper(
+            source, file_digest(source, running), tmp.path / "boolean", running
+        );
+    });
+    assert(!fs::exists(tmp.path / "boolean"));
     write_archive(
         source,
         {{"archive/data.pkl",

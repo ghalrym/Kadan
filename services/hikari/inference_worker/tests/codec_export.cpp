@@ -29,6 +29,13 @@ std::string pickle_string(std::string_view value) {
     return result;
 }
 
+std::string pickle_integer(std::uint32_t value) {
+    std::string result = "J";
+    for (unsigned i = 0; i < 4; ++i)
+        result += char(value >> (8 * i));
+    return result;
+}
+
 void metadata_units() {
     std::string pickle = "\x80\x02"
                          "ccollections\nOrderedDict\n)R";
@@ -45,6 +52,29 @@ void metadata_units() {
     assert(tensor.at("stride") == Json::array({3, 1}));
     assert(tensor.at("storage") == "0" && tensor.at("elements") == 6);
     assert(tensor.at("offset") == 0);
+
+    // The official codec also stores a large causal mask. Parse its descriptor
+    // without allocating or reading its Boolean payload, retaining weight dtypes.
+    auto with_mask = pickle.substr(0, pickle.size() - 1);
+    with_mask += pickle_string("encoder.block.4.block.5.causal_mask")
+                 + "ctorch._utils\n_rebuild_tensor_v2\n((";
+    with_mask += pickle_string("storage") + "ctorch\nBoolStorage\n"
+                 + pickle_string("116") + pickle_string("cpu")
+                 + pickle_integer(268435456) + "tQ" + pickle_integer(0);
+    with_mask += pickle_integer(16384) + pickle_integer(16384) + "\x86"
+                 + pickle_integer(16384) + pickle_integer(1) + "\x86\x89"
+                 + "ccollections\nOrderedDict\n)RtRs.";
+    const auto mixed = read_checkpoint_pickle(with_mask, running);
+    const auto& mask = mixed.at("encoder.block.4.block.5.causal_mask");
+    assert(mask.at("dtype") == "BOOL");
+    assert(mask.at("storage") == "116" && mask.at("elements") == 268435456);
+    assert(mask.at("offset") == 0);
+    assert(mask.at("shape") == Json::array({16384, 16384}));
+    assert(mask.at("stride") == Json::array({16384, 1}));
+    assert(mixed.at("decoder.weight_v") == tensor);
+    // Recognizing a storage descriptor must not make the global callable.
+    rejects([&] { read_checkpoint_pickle("ctorch\nBoolStorage\n)R.", running); });
+    rejects([&] { read_checkpoint_pickle("ctorch\nIntStorage\n.", running); });
     rejects([&] {
         read_checkpoint_pickle(pickle.substr(0, pickle.size() - 1), running);
     });

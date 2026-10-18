@@ -222,6 +222,7 @@ private:
         preparation_check(
             name == "collections.OrderedDict" || name == "torch.FloatStorage"
                 || name == "torch.HalfStorage" || name == "torch.BFloat16Storage"
+                || name == "torch.BoolStorage"
                 || name == "torch._utils._rebuild_tensor_v2"
                 || name == "torch._utils._rebuild_tensor"
                 || name == "torch._utils._rebuild_parameter",
@@ -312,6 +313,8 @@ private:
             dtype = "F16";
         else if (global == "torch.BFloat16Storage")
             dtype = "BF16";
+        else if (global == "torch.BoolStorage")
+            dtype = "BOOL";
         else
             throw RequestError("Unsupported checkpoint storage dtype");
         const auto key = record[2].get<std::string>();
