@@ -5,14 +5,16 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
-#include <poll.h>
 #include <sys/file.h>
+#include <sys/statvfs.h>
 #include <thread>
 #include <unistd.h>
 
 #include "kadan/image_edit.hpp"
 #include "kadan/inference_engines.hpp"
+#include "kadan/machine_host.hpp"
 #include "kadan/preparation.hpp"
+#include "kadan/websocket.hpp"
 
 namespace kadan::serving {
 namespace {
@@ -82,6 +84,51 @@ public:
         return available;
     }
 
+    std::size_t devices() const {
+        return devices_;
+    }
+
+    // Machine shape and current free memory for the API's ledger.
+    Json machine(const std::string& name, const std::filesystem::path& models) const {
+        Bytes ram_total = 0;
+        std::ifstream meminfo("/proc/meminfo");
+        std::string line;
+        while (std::getline(meminfo, line))
+            if (line.starts_with("MemTotal:")) {
+                ram_total = std::stoull(line.substr(9)) * 1024;
+                break;
+            }
+        std::ifstream limit_file("/sys/fs/cgroup/memory.max");
+        std::string limit;
+        if (limit_file >> limit && limit != "max")
+            ram_total = std::min<Bytes>(ram_total, std::stoull(limit));
+        const auto free = probe();
+        Json devices = Json::array();
+        for (unsigned index = 0; index < devices_; ++index) {
+            void* device = nullptr;
+            Memory memory{};
+            require(
+                device_(index, &device) == 0 && memory_(device, &memory) == 0,
+                "device_memory_probe"
+            );
+            devices.push_back(
+                {{"index", index},
+                 {"vram_total", memory.total},
+                 {"vram_free", free[index + 1]}}
+            );
+        }
+        struct statvfs disk{};
+        require(statvfs(models.c_str(), &disk) == 0, "disk_probe");
+        return {
+            {"name", name},
+            {"ram_total", ram_total},
+            {"ram_free", free[0]},
+            {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},
+            {"disk_free", Bytes(disk.f_bavail) * disk.f_frsize},
+            {"devices", devices}
+        };
+    }
+
 private:
     struct Memory {
         unsigned long long total, free, used;
@@ -102,141 +149,77 @@ private:
     unsigned devices_ = 0;
 };
 
-class Output {
-public:
-    void send(const Json& message) {
-        const auto line = message.dump() + '\n';
-        require(line.size() <= 128 * 1024 * 1024, "worker_output_bound");
-        std::lock_guard guard(mutex_);
-        std::size_t offset = 0;
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (offset < line.size()) {
-            require(
-                std::chrono::steady_clock::now() < deadline, "worker_output_timeout"
-            );
-            pollfd descriptor{STDOUT_FILENO, POLLOUT, 0};
-            const auto ready = poll(&descriptor, 1, 100);
-            if (ready < 0 && errno == EINTR)
-                continue;
-            require(
-                ready >= 0 && !(descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)),
-                "worker_output_closed"
-            );
-            if (!ready)
-                continue;
-            const auto written =
-                write(STDOUT_FILENO, line.data() + offset, line.size() - offset);
-            if (written > 0)
-                offset += written;
-            else
-                require(errno == EINTR || errno == EAGAIN, "worker_output_write");
-        }
-    }
-
-private:
-    std::mutex mutex_;
-};
-
-const char* state_name(JobState state) {
-    switch (state) {
-    case JobState::queued:
-        return "queued";
-    case JobState::preparing:
-        return "preparing";
-    case JobState::loading:
-        return "loading";
-    case JobState::running:
-        return "running";
-    case JobState::waiting_for_resources:
-        return "waiting_for_resources";
-    case JobState::succeeded:
-        return "succeeded";
-    case JobState::failed:
-        return "failed";
-    case JobState::cancelled:
-        return "cancelled";
-    }
-    throw std::invalid_argument("job_state");
-}
-
-void read_requests(InferenceOwner& owner, Output& output) {
-    std::string line;
-    std::array<char, 64 * 1024> buffer;
-    try {
-        while (!stopping.load()) {
-            pollfd descriptor{STDIN_FILENO, POLLIN, 0};
-            auto ready = poll(&descriptor, 1, 100);
-            if (ready < 0 && errno == EINTR)
-                continue;
-            require(ready >= 0, "worker_input_poll");
-            if (!ready)
-                continue;
-            const auto count = read(STDIN_FILENO, buffer.data(), buffer.size());
-            if (count == 0)
-                break;
-            if (count < 0 && errno == EINTR)
-                continue;
-            require(count > 0, "worker_input_read");
-            for (ssize_t index = 0; index < count && !stopping.load(); ++index) {
-                const char byte = buffer[index];
-                if (byte != '\n') {
-                    require(line.size() < 64 * 1024 * 1024, "worker_input_bound");
-                    line += byte;
-                    continue;
-                }
-                std::string id;
-                try {
-                    const auto request = Json::parse(line);
-                    id = request.at("id");
-                    require(
-                        id.size() == 32
-                            && id.find_first_not_of("0123456789abcdef")
-                                   == std::string::npos,
-                        "request_id"
-                    );
-                    const auto command = request.at("command").get<std::string>();
-                    if (command == "submit") {
-                        owner.submit(parse_request(request));
-                    } else if (command == "cancel") {
-                        owner.cancel(id);
-                    } else if (command == "stop") {
-                        stopping.store(true);
-                    } else
-                        throw std::invalid_argument("worker_command");
-                } catch (const std::exception& error) {
-                    output.send(
-                        {{"id", id}, {"state", "rejected"}, {"error", error.what()}}
-                    );
-                }
-                line.clear();
-            }
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "worker transport: " << error.what() << '\n';
-    }
-    stopping.store(true);
-    owner.stop();
-}
 }  // namespace
 
-int serve(const char* lock_path) {
+std::string environment(const char* name, std::string fallback = {}) {
+    const char* value = std::getenv(name);
+    return value && *value ? value : fallback;
+}
+
+std::vector<std::string> split(const std::string& text) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const auto end = std::min(text.find(',', start), text.size());
+        if (end > start)
+            parts.push_back(text.substr(start, end - start));
+        start = end + 1;
+    }
+    return parts;
+}
+
+std::string machine_name() {
+    std::array<char, 256> host{};
+    gethostname(host.data(), host.size() - 1);
+    return environment("HIKARI_WORKER_MACHINE", host.data());
+}
+
+// Exits on any connection loss; a supervisor (the API for its local machine,
+// a restart policy elsewhere) starts a fresh process that reconnects.
+int serve(const char* lock_path, const websocket::Url& url) {
+    const auto token = environment("HIKARI_WORKER_TOKEN");
+    require(!token.empty(), "HIKARI_WORKER_TOKEN is required");
     int lock = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     require(
         lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0,
         "inference_worker_already_running"
     );
-    JobWorkspace files(std::filesystem::path(lock_path).parent_path() / "jobs");
+    const auto data = std::filesystem::path(lock_path).parent_path();
+    JobWorkspace files(data / "jobs");
     PhysicalMemory memory;
-    Output output;
-    std::string active;
+    std::unique_ptr<websocket::Client> client;
+    for (auto delay = std::chrono::seconds(1); !client && !stopping.load();
+         delay = std::min(delay * 2, std::chrono::seconds(30))) {
+        try {
+            client = std::make_unique<websocket::Client>(url, token, 64 * 1024 * 1024);
+        } catch (const std::exception& error) {
+            // A rejected token never succeeds on retry.
+            if (std::string(error.what()) == "worker_token_rejected")
+                throw;
+            std::cerr << "inference_worker: connect failed: " << error.what() << '\n';
+            for (auto waited = std::chrono::milliseconds(0);
+                 waited < delay && !stopping.load();
+                 waited += std::chrono::milliseconds(100))
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    if (!client)
+        return 0;
+    auto send = [&](const Json& message) {
+        const auto text = message.dump();
+        require(text.size() <= 128 * 1024 * 1024, "worker_output_bound");
+        client->send_text(text);
+    };
+    WorkerChannel* downloading = nullptr;
     ModelStore store(
-        std::filesystem::path(lock_path).parent_path().parent_path(),
+        data.parent_path(),
         worker_data_directory(),
         {},
         [&](const std::string& model, std::uint64_t downloaded, std::uint64_t total) {
-            output.send(
-                {{"id", active},
+            if (!downloading)
+                return;
+            send(
+                {{"id", downloading->active},
                  {"state", "progress"},
                  {"phase", "download"},
                  {"model", model},
@@ -245,31 +228,38 @@ int serve(const char* lock_path) {
             );
         }
     );
-    auto progress = [&](const char* phase, std::size_t value) {
-        output.send(
-            {{"id", active}, {"state", "progress"}, {"phase", phase}, {"value", value}}
-        );
+    MachineHost::Hooks hooks;
+    hooks.send = send;
+    hooks.probe = [&] {
+        return memory.probe();
     };
-    auto content = [&](const std::string& text) {
-        output.send({{"id", active}, {"state", "content"}, {"content", text}});
-    };
-    auto factory = [&](Workload kind, std::shared_ptr<Resources> resources) {
+    hooks.factory = [&](Workload kind,
+                        std::shared_ptr<Resources> resources,
+                        WorkerChannel& channel) {
+        Progress progress = [&channel](const char* phase, std::size_t value) {
+            channel.progress(phase, value);
+        };
         switch (kind) {
         case Workload::llm:
-            return chat_engine(resources, progress, content, store);
+            return chat_engine(
+                resources,
+                progress,
+                [&channel](const std::string& text) { channel.content(text); },
+                store
+            );
         case Workload::image:
             return image_engine(
                 resources,
                 progress,
                 [&](const std::string& id, const char* phase, std::size_t value) {
-                    output.send(
+                    send(
                         {{"id", id},
                          {"state", "progress"},
                          {"phase", phase},
                          {"value", value}}
                     );
                 },
-                [&] { return memory.probe(); }
+                channel.available
             );
         case Workload::video:
             return video_engine(resources, progress);
@@ -284,39 +274,11 @@ int serve(const char* lock_path) {
         }
         throw std::invalid_argument("unsupported_workload");
     };
-    InferenceOwner* owner_pointer = nullptr;
-    auto publish = [&](const std::string& id, JobState state, const Json& result) {
-        if (state == JobState::queued) {
-            output.send({{"id", id}, {"state", "queued"}});
-            return;
-        }
-        active = id;
-        Json message{{"id", id}, {"state", state_name(state)}};
-        if (state == JobState::succeeded) {
-            message["result"] = result;
-        } else if (state == JobState::failed) {
-            message["error"] = result.at("error");
-            message["status_code"] = result.at("status_code");
-        }
-        if (state == JobState::succeeded || state == JobState::failed
-            || state == JobState::cancelled) {
-            files.cleanup(id);
-            output.send({{"state", "models"}, {"models", store.status()}});
-        }
-        const auto snapshot = owner_pointer->snapshot();
-        message["memory"] = {
-            {"capacity", snapshot.capacity},
-            {"used", snapshot.used},
-            {"residents", snapshot.residents}
-        };
-        output.send(message);
-    };
-    auto capacity = memory.probe();
-    // The ceiling is the machine shape, not its startup free memory. Each new
-    // engine obtains a fresh physical measurement after the old engine closes.
-    std::fill(capacity.begin(), capacity.end(), std::numeric_limits<Bytes>::max());
-    auto prepare = [&](InferenceRequest& request, const std::atomic_bool& cancel) {
-        active = request.id;
+    hooks.prepare = [&](InferenceRequest& request,
+                        const std::atomic_bool& cancel,
+                        WorkerChannel& channel) {
+        if (request.operation == Operation::download)
+            downloading = &channel;
         prepare_task(request, store, files, cancel);
         Json context = nullptr;
         if (request.context) {
@@ -340,30 +302,66 @@ int serve(const char* lock_path) {
                 image->source && !image->reference
                     ? kadan::image::edit_steps(image->steps, image->strength)
                     : image->steps;
-        output.send(prepared);
+        send(prepared);
     };
-    InferenceOwner owner(
-        capacity, factory, [&] { return memory.probe(); }, publish, 32, prepare
+    hooks.requirement = [&](Workload kind,
+                            const std::optional<std::string>& model,
+                            const std::optional<Json>& context) {
+        return worker_requirement(kind, model, store, context);
+    };
+    hooks.machine = [&] {
+        return memory.machine(machine_name(), data.parent_path());
+    };
+    hooks.models = [&] {
+        return store.status();
+    };
+    hooks.cleanup = [&](const std::string& id) {
+        files.cleanup(id);
+    };
+    const auto specs = worker_specs(split(environment("HIKARI_WORKER_WORKLOADS")));
+    MachineHost host(specs, memory.devices(), hooks);
+    Json names = Json::array();
+    for (const auto& spec : specs)
+        names.push_back(spec.name);
+    send(
+        {{"state", "hello"},
+         {"protocol", 3},
+         {"pid", getpid()},
+         {"machine", hooks.machine()},
+         {"workers", names}}
     );
-    owner_pointer = &owner;
-    output.send({{"state", "models"}, {"models", store.status()}});
-    output.send({{"state", "ready"}, {"protocol", 2}, {"pid", getpid()}});
-    std::thread reader([&] { read_requests(owner, output); });
+    send({{"state", "models"}, {"models", store.status()}});
+    send({{"state", "ready"}, {"protocol", 3}, {"pid", getpid()}});
+    host.start();
+    int status = 0;
     try {
-        while (!stopping.load()) {
-            if (!owner.advance())
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Ping every 20 seconds; any frame back, pongs included, shows the API
+        // is alive. A minute without one means it is gone.
+        auto pinged = std::chrono::steady_clock::now();
+        while (!stopping.load() && !host.stopping()) {
+            if (auto message = client->receive(std::chrono::milliseconds(500)))
+                host.handle(*message);
+            const auto now = std::chrono::steady_clock::now();
+            require(
+                now - client->last_heard() < std::chrono::seconds(60), "api_silent"
+            );
+            if (now - pinged >= std::chrono::seconds(20)) {
+                client->ping();
+                pinged = now;
+            }
         }
-        owner.shutdown();
-    } catch (...) {
-        stopping.store(true);
-        owner.stop();
-        reader.join();
-        throw;
+    } catch (const std::exception& error) {
+        std::cerr << "inference_worker: connection lost: " << error.what() << '\n';
+        status = 3;
     }
-    reader.join();
+    host.stop();
+    if (const auto failure = host.failure()) {
+        std::cerr << "inference_worker: " << *failure << '\n';
+        status = 1;
+    }
+    client->close();
     close(lock);
-    return 0;
+    return status;
 }
 }  // namespace kadan::serving
 
@@ -372,13 +370,12 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, kadan::serving::stop_signal);
     std::signal(SIGPIPE, SIG_IGN);
     try {
-        kadan::serving::require(argc == 2, "usage: kadan-inference-worker LOCK_PATH");
-        const auto flags = fcntl(STDOUT_FILENO, F_GETFL);
         kadan::serving::require(
-            flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) == 0,
-            "stdout_nonblocking"
+            argc == 3, "usage: kadan-inference-worker LOCK_PATH API_WEBSOCKET_URL"
         );
-        return kadan::serving::serve(argv[1]);
+        return kadan::serving::serve(
+            argv[1], kadan::serving::websocket::Url::parse(argv[2])
+        );
     } catch (const std::exception& error) {
         std::cerr << "inference_worker: " << error.what() << '\n';
         return 1;

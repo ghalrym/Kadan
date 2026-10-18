@@ -114,6 +114,29 @@ void pinned_catalog_units() {
     store.select_whisper("turbo");
     assert(store.whisper_selected() == "large-v3-turbo");
     rejects([&] { store.whisper_model("unknown"); });
+    // Memory requirements resolve Whisper sizes to their catalog entries.
+    assert(
+        worker_requirement(kadan::Workload::speech, std::nullopt, store)["model"]
+        == "whisper-large-v3-turbo"
+    );
+    assert(
+        worker_requirement(kadan::Workload::speech, "medium", store)["model"]
+        == "whisper-medium"
+    );
+    assert(
+        worker_requirement(kadan::Workload::speech, "large", store)["model"]
+        == "whisper-large-v3"
+    );
+    rejects([&] { worker_requirement(kadan::Workload::speech, "unknown", store); });
+    const auto speech_need =
+        worker_requirement(kadan::Workload::speech, "medium", store);
+    assert(speech_need["minimum"][1] == speech_need["device_floor"]);
+    assert(
+        worker_requirement(
+            kadan::Workload::decision, std::nullopt, store
+        )["device_floor"]
+        == 0
+    );
     const auto& formatter = store.entry("superwhisper-s1-mini");
     assert(
         formatter.repo_id == "superwhisper/s1-mini" && formatter.kind == "formatting"

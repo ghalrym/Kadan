@@ -1,4 +1,4 @@
-"""Transport to the one inference owner; no Python inference scheduler."""
+"""Worker protocol models, outstanding jobs, and the local machine's native process."""
 
 import asyncio
 import json
@@ -8,12 +8,9 @@ import signal
 import sys
 from collections import deque
 from contextlib import suppress
-from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, JsonValue
 
 from api.pydantic_models.inference import (
     ImageProgress,
@@ -21,14 +18,17 @@ from api.pydantic_models.inference import (
 )
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import ModelStoreStatus
-from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 log = logging.getLogger(__name__)
 
+# Native messages travel as WebSocket text frames; see the worker's own bounds.
+MAX_MESSAGE_BYTES = 256 * 1024 * 1024
+
 
 def encode_request(message: dict) -> bytes:
-    encoded = (json.dumps(message, allow_nan=False, ensure_ascii=False) + "\n").encode()
+    encoded = json.dumps(message, allow_nan=False, ensure_ascii=False).encode()
     task = message.get("input", {})
     maximum = (
         64 if task.get("feature") == "image" and task.get("image") is not None else 3
@@ -50,6 +50,9 @@ class JobState(StrEnum):
     REJECTED = "rejected"
 
 
+TERMINAL = ("succeeded", "failed", "cancelled", "rejected")
+
+
 class WorkerMemory(BaseModel):
     capacity: list[int]
     used: list[int]
@@ -57,11 +60,11 @@ class WorkerMemory(BaseModel):
 
 
 class WorkerEvent(BaseModel):
+    """A job event from a machine; control replies are handled separately."""
+
     model_config = ConfigDict(extra="forbid")
     id: str = ""
     state: Literal[
-        "ready",
-        "models",
         "queued",
         "preparing",
         "loading",
@@ -74,6 +77,7 @@ class WorkerEvent(BaseModel):
         "cancelled",
         "rejected",
     ]
+    worker: str | None = None
     result: JsonValue = None
     error: str = ""
     memory: WorkerMemory | None = None
@@ -81,8 +85,6 @@ class WorkerEvent(BaseModel):
     value: int = 0
     total: int = 0
     content: str | None = None
-    protocol: int | None = None
-    pid: int | None = None
     model: str | None = None
     context: dict[str, int | None] | None = None
     status_code: int = 502
@@ -94,7 +96,6 @@ class WorkerExit(BaseModel):
     returncode: int
     signal: int | None = None
     stderr: str
-    protocol_error: str | None = None
 
     def describe(self) -> str:
         cause = (
@@ -102,10 +103,7 @@ class WorkerExit(BaseModel):
             if self.signal
             else f"code {self.returncode}"
         )
-        detail = self.stderr
-        if self.protocol_error:
-            detail = f"{self.protocol_error}: {detail}"
-        return f"Inference worker {self.pid} exited with {cause}: {detail}"
+        return f"Inference worker {self.pid} exited with {cause}: {self.stderr}"
 
 
 class InferenceJob:
@@ -120,6 +118,11 @@ class InferenceJob:
         self.model = None
         self.identified = asyncio.Event()
         self.stream_error = None
+        # Machines still owing a terminal event; settings and downloads go to all.
+        self.machines: set[str] = set()
+        self.worker: str | None = None
+        self.outcome: JsonValue = None
+        self.failure: InferenceFailure | None = None
         self.image_progress = (
             ImageProgress(
                 image_index=1,
@@ -133,8 +136,13 @@ class InferenceJob:
         self.events = asyncio.Queue(maxsize=64) if streaming else None
 
 
-class InferenceWorker:
-    def __init__(self, root: Path | None = None, on_event=None):
+class LocalMachine:
+    """Runs this machine's native worker process, which connects back to the API.
+
+    The process exits when its connection drops, so it is restarted until close().
+    """
+
+    def __init__(self, root: Path | None = None):
         self.root = root or (
             Path(
                 os.getenv(
@@ -146,23 +154,13 @@ class InferenceWorker:
             .resolve()
             / "inference"
         )
-        self.on_event = on_event
         self.process = None
-        self.reader = self.stderr_reader = None
-        self.ready = None
-        self.jobs: dict[str, InferenceJob] = {}
         self.diagnostics = deque(maxlen=64)
-        self.memory: WorkerMemory | None = None
-        self.models: ModelStoreStatus | None = None
-        self.memory_observed_at: str | None = None
         self.last_exit: WorkerExit | None = None
-        self.write_lock = asyncio.Lock()
         self.closing = False
+        self.supervisor: asyncio.Task | None = None
 
-    async def start(self):
-        if self.process is not None:
-            raise RuntimeError("Inference transport already started")
-        self.root.mkdir(parents=True, exist_ok=True)
+    def executable(self) -> Path:
         executable = Path(
             os.getenv(
                 "HIKARI_INFERENCE_WORKER",
@@ -173,71 +171,55 @@ class InferenceWorker:
         )
         if not executable.is_absolute() or not executable.is_file():
             raise InferenceFailure("The inference worker executable is unavailable.")
-        environment = None
-        if "HIKARI_VIDEO_DIR" in os.environ:
-            environment = os.environ.copy()
-            environment["KADAN_VIDEO_DIR"] = environment["HIKARI_VIDEO_DIR"]
-        self.ready = asyncio.get_running_loop().create_future()
+        return executable
+
+    async def launch(self, url: str, token: str):
+        self.root.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        environment["HIKARI_WORKER_TOKEN"] = token
         self.process = await asyncio.create_subprocess_exec(
-            str(executable),
+            str(self.executable()),
             str(self.root / "worker.lock"),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
+            url,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
-            limit=128 * 1024 * 1024 + 1,
             start_new_session=True,
             env=environment,
         )
-        self.stderr_reader = asyncio.create_task(self._stderr())
-        self.reader = asyncio.create_task(self._read())
-        try:
-            await asyncio.wait_for(asyncio.shield(self.ready), 30)
-        except BaseException:
-            await self.close()
-            raise
 
-    async def _send(self, message):
-        if self.process is None or self.process.returncode is not None:
-            raise InferenceFailure("Inference worker is not running.")
-        encoded = encode_request(message)
-        async with self.write_lock:
-            self.process.stdin.write(encoded)
-            if message["command"] == "submit":
-                self.jobs[message["id"]].sent = True
-            await asyncio.wait_for(self.process.stdin.drain(), 10)
+    async def start(self, url: str, token: str):
+        if self.supervisor is not None:
+            raise RuntimeError("Local machine already started")
+        await self.launch(url, token)
+        self.supervisor = asyncio.create_task(self._supervise(url, token))
 
-    async def submit(self, request: InferenceTask, *, streaming=False) -> InferenceJob:
-        if self.closing:
-            raise InferenceFailure("Inference worker is stopping.")
-        # Reject oversized input before registering a job that was never queued.
-        message = request.model_dump(mode="json")
-        encode_request(message)
-        if request.id in self.jobs:
-            raise InferenceFailure("Request is already active.", 409)
-        job = InferenceJob(request, streaming)
-        self.jobs[request.id] = job
-        try:
-            await self._send(message)
-            await asyncio.wait_for(asyncio.shield(job.accepted), 10)
-        except BaseException:
-            if job.sent:
-                with suppress(Exception, asyncio.CancelledError):
-                    await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
-            self.jobs.pop(request.id, None)
-            raise
-        return job
-
-    async def cancel(self, job_id: str):
-        await self._send(dict(command="cancel", id=job_id))
-
-    async def cancel_and_join(self, job: InferenceJob):
-        if not job.result.done():
+    async def _supervise(self, url: str, token: str):
+        delay = 1
+        while True:
+            await self._stderr()
+            returncode = await self.process.wait()
+            self.last_exit = WorkerExit(
+                pid=self.process.pid,
+                returncode=returncode,
+                signal=-returncode if returncode < 0 else None,
+                stderr="".join(self.diagnostics)[-8192:],
+            )
+            # A crashed worker may leave an owned codec process holding stderr open.
+            with suppress(ProcessLookupError):
+                os.killpg(self.process.pid, signal.SIGKILL)
+            if self.closing:
+                return
+            log.error("%s; restarting in %ss", self.last_exit.describe(), delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+            if self.closing:
+                return
             try:
-                await self.cancel(job.request.id)
+                await self.launch(url, token)
             except Exception:
-                await self.close()
-        with suppress(Exception):
-            await asyncio.shield(job.result)
+                log.exception("Inference worker restart failed")
+                continue
 
     async def _stderr(self):
         pending = bytearray()
@@ -271,117 +253,24 @@ class InferenceWorker:
                     pending.clear()
                     oversized = False
 
-    async def _read(self):
-        protocol_error = None
-        try:
-            while line := await self.process.stdout.readline():
-                event = WorkerEvent.model_validate_json(line)
-                if event.state == "models":
-                    if event.models is None:
-                        raise RuntimeError("Worker model snapshot is missing")
-                    self.models = event.models
-                    continue
-                if event.state == "ready":
-                    if event.protocol != 2 or self.ready.done():
-                        raise RuntimeError("Invalid worker readiness response")
-                    self.ready.set_result(event.pid)
-                    continue
-                if event.memory is not None:
-                    self.memory = event.memory
-                    self.memory_observed_at = datetime.now(timezone.utc).isoformat()
-                job = self.jobs.get(event.id)
-                if job is None:
-                    raise RuntimeError("Worker response has no outstanding request")
-                if event.model is not None:
-                    job.model = event.model
-                    job.identified.set()
-                if event.state in ("succeeded", "failed", "cancelled", "rejected"):
-                    job.identified.set()
-                if event.state == "content":
-                    if job.events is not None and job.stream_error is None:
-                        try:
-                            job.events.put_nowait({"content": event.content})
-                        except asyncio.QueueFull:
-                            await self.cancel(event.id)
-                            job.stream_error = "Chat stream consumer is too slow."
-                    continue
-                if event.state == "progress":
-                    if self.on_event is not None:
-                        self.on_event(job, event)
-                    continue
-                job.state = JobState(event.state)
-                if not job.accepted.done():
-                    if job.state == JobState.REJECTED:
-                        job.accepted.set_exception(
-                            InferenceFailure(
-                                event.error, 429 if event.error == "queue_full" else 503
-                            )
-                        )
-                    else:
-                        job.accepted.set_result(None)
-                if self.on_event is not None:
-                    self.on_event(job, event)
-                if job.state == JobState.SUCCEEDED:
-                    job.result.set_result(event.result)
-                elif job.state in (
-                    JobState.FAILED,
-                    JobState.CANCELLED,
-                    JobState.REJECTED,
-                ):
-                    job.result.set_exception(
-                        InferenceFailure(
-                            event.error or "Inference cancelled.",
-                            499
-                            if job.state == JobState.CANCELLED
-                            else event.status_code,
-                        )
-                    )
-        except Exception as error:
-            protocol_error = str(error)[:2000]
-            if self.process.returncode is None:
-                self.process.terminate()
-        finally:
-            try:
-                returncode = await asyncio.wait_for(self.process.wait(), 30)
-            except TimeoutError:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                returncode = await self.process.wait()
-            # A crashed worker may leave an owned codec process holding stderr open.
-            if returncode != 0:
-                with suppress(ProcessLookupError):
-                    os.killpg(self.process.pid, signal.SIGKILL)
-            if self.stderr_reader is not None:
-                await self.stderr_reader
-            self.last_exit = WorkerExit(
-                pid=self.process.pid,
-                returncode=returncode,
-                signal=-returncode if returncode < 0 else None,
-                stderr="".join(self.diagnostics)[-8192:],
-                protocol_error=protocol_error,
-            )
-            failure = InferenceFailure(self.last_exit.describe())
-            if not self.ready.done():
-                self.ready.set_exception(failure)
-            for job in self.jobs.values():
-                job.identified.set()
-                if not job.accepted.done():
-                    job.accepted.set_exception(failure)
-                if not job.result.done():
-                    job.result.set_exception(failure)
-            if not self.closing:
-                log.error("%s", failure)
-
     async def close(self):
         self.closing = True
+        # Stop supervising first: the API closes worker connections before its
+        # own shutdown, and a restart now would retry against a stopped API.
+        if self.supervisor is not None:
+            self.supervisor.cancel()
+            with suppress(Exception, asyncio.CancelledError):
+                await self.supervisor
         if self.process is None:
             return
         if self.process.returncode is None:
-            self.process.stdin.close()
+            self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), 30)
             except TimeoutError:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                await self.process.wait()
-        if self.reader is not None:
-            await self.reader
+                pass
+        # Also reaps any owned codec process left in the worker's group.
+        with suppress(ProcessLookupError):
+            os.killpg(self.process.pid, signal.SIGKILL)
+        await self.process.wait()
         self.process = None

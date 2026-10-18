@@ -8,6 +8,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <utility>
 
 #include "kadan/inference_request.hpp"
 
@@ -115,15 +116,84 @@ public:
         Publish publish,
         std::size_t limit = 32,
         Prepare prepare = {},
-        Clock clock = [] { return std::chrono::steady_clock::now(); }
+        Clock clock = [] { return std::chrono::steady_clock::now(); },
+        bool loaded = true
     )
         : ceiling_(std::move(ceiling)),
           resources_(std::make_shared<Resources>(ceiling_)),
           factory_(std::move(factory)), probe_(std::move(probe)),
           publish_(std::move(publish)), prepare_(std::move(prepare)),
-          clock_(std::move(clock)), limit_(limit) {
+          clock_(std::move(clock)), limit_(limit), loaded_(loaded) {
         if (!limit_ || limit_ > 1024)
             throw std::invalid_argument("queue_limit");
+    }
+
+    // The API grants a budget; the owner only pulls jobs while loaded. Engines
+    // still load lazily from the queue head, bounded by this ceiling. Shrinking
+    // a budget is refused while a job runs, because the API frees that memory
+    // in its own ledger as soon as the call returns.
+    bool load(Footprint budget) {
+        std::lock_guard guard(mutex_);
+        if (budget.size() != ceiling_.size())
+            throw std::invalid_argument("budget_shape");
+        bool shrinks = false;
+        for (std::size_t i = 0; i < budget.size(); ++i)
+            shrinks = shrinks || budget[i] < ceiling_[i];
+        if (shrinks && executing_)
+            return false;
+        // A resident engine is rebuilt inside a changed budget before its next
+        // job; growth waits for the running job instead of being refused. A
+        // shrink is always acknowledged once memory is physically free, so the
+        // API never credits memory an engine still holds.
+        if (shrinks || (budget != ceiling_ && !model_.empty()))
+            release_requested_ = true;
+        ceiling_ = std::move(budget);
+        loaded_ = true;
+        return true;
+    }
+
+    // Stops pulling jobs and releases the engine on the execution thread. The
+    // control listener reports "offloaded" once memory is physically free.
+    bool offload() {
+        std::lock_guard guard(mutex_);
+        if (executing_)
+            return false;
+        loaded_ = false;
+        release_requested_ = true;
+        std::fill(ceiling_.begin(), ceiling_.end(), 0);
+        return true;
+    }
+
+    bool busy() const {
+        std::lock_guard guard(mutex_);
+        return executing_;
+    }
+
+    struct Status {
+        // `releasing`: a changed budget waits for the engine's cleanup.
+        bool loaded, busy, releasing;
+        std::size_t queued;
+        std::string model;
+        Footprint budget;
+        Snapshot memory;
+    };
+
+    Status status() const {
+        std::lock_guard guard(mutex_);
+        return {
+            loaded_,
+            executing_,
+            release_requested_,
+            queue_.size(),
+            model_,
+            ceiling_,
+            resources_->snapshot()
+        };
+    }
+
+    void set_control_listener(std::function<void(const char*)> listener) {
+        std::lock_guard guard(mutex_);
+        control_ = std::move(listener);
     }
 
     void submit(InferenceRequest request) {
@@ -171,14 +241,45 @@ public:
     // another job.
     bool advance() {
         std::shared_ptr<Job> job;
+        bool release = false;
+        std::function<void(const char*)> control;
         {
             std::lock_guard guard(mutex_);
             if (poisoned_)
                 throw std::runtime_error("cleanup_unconfirmed");
-            if (queue_.empty())
+            release = std::exchange(release_requested_, false);
+            control = control_;
+            // An offloaded owner still retires a cancelled head so callers are
+            // not left waiting for a load that may never come.
+            if (!release
+                && (queue_.empty() || (!loaded_ && !queue_.front()->cancel.load())))
                 return false;
-            job = queue_.front();
+            if (!release) {
+                job = queue_.front();
+                executing_ = true;
+            }
         }
+        if (release) {
+            cleanup();
+            {
+                std::lock_guard guard(mutex_);
+                model_.clear();
+            }
+            if (control)
+                control(loaded() ? "resized" : "offloaded");
+            return true;
+        }
+
+        struct Executing {
+            InferenceOwner& owner;
+
+            ~Executing() {
+                std::lock_guard guard(owner.mutex_);
+                owner.executing_ = false;
+                owner.model_ = owner.resident_model_;
+            }
+        } executing{*this};
+
         prepare_job(job);
         if (job->cancel.load()) {
             finish(job, JobState::cancelled, "");
@@ -208,11 +309,7 @@ public:
                 || request.operation == Operation::load) {
                 cleanup();  // Physical release precedes the fresh probe: never add
                             // logical reclaim credit.
-                auto free = probe_();
-                if (free.size() != ceiling_.size())
-                    throw std::runtime_error("probe_shape");
-                for (std::size_t i = 0; i < free.size(); ++i)
-                    free[i] = std::min(free[i], ceiling_[i]);
+                auto free = bounded_probe();
                 resources_->reset_capacity(free);
                 engine_ = factory_(request.workload, resources_);
                 if (!engine_)
@@ -222,6 +319,10 @@ public:
                 resident_model_ = request.model;
                 resident_workload_ = request.workload;
                 resident_configuration_ = request.configuration;
+                {
+                    std::lock_guard guard(mutex_);
+                    model_ = resident_model_;
+                }
             }
             if (job->cancel.load()) {
                 cleanup();
@@ -230,11 +331,7 @@ public:
             }
             // Request-local scratch and context admission is required even when
             // the same model stays resident. No inference runs in prepare().
-            auto available = probe_();
-            if (available.size() != ceiling_.size())
-                throw std::runtime_error("probe_shape");
-            for (std::size_t index = 0; index < available.size(); ++index)
-                available[index] = std::min(available[index], ceiling_[index]);
+            auto available = bounded_probe();
             resources_->refresh_available(available);
             const auto capacity = engine_->batch_capacity(request, available);
             bool blocked = false;
@@ -323,11 +420,7 @@ public:
                 // request scratch. This fresh projection is a producer hint, not
                 // a reservation: the next FIFO batch always repeats admission.
                 try {
-                    auto free = probe_();
-                    if (free.size() != ceiling_.size())
-                        throw std::runtime_error("probe_shape");
-                    for (std::size_t i = 0; i < free.size(); ++i)
-                        free[i] = std::min(free[i], ceiling_[i]);
+                    auto free = bounded_probe();
                     resources_->refresh_available(free);
                     const auto next = std::clamp<std::size_t>(
                         engine_->batch_capacity(request, free),
@@ -366,7 +459,7 @@ public:
             throw;
         } catch (const PublicationFailure&) {
             throw;
-        } catch (const ResourceExhausted&) {
+        } catch (const ResourceExhausted& error) {
             cleanup();
             if (execution_started) {
                 finish_batch(jobs, "admission_after_execution");
@@ -376,7 +469,10 @@ public:
                 finish(job, JobState::cancelled, "");
                 return true;
             }
-            publish_(request.id, JobState::waiting_for_resources, "");
+            // The reason tells the API which memory the engine could not get.
+            publish_(
+                request.id, JobState::waiting_for_resources, {{"error", error.what()}}
+            );
             return false;
         } catch (const RequestError& error) {
             const Json failure{{"error", error.what()}, {"status_code", error.status}};
@@ -412,7 +508,24 @@ public:
         return resources_->snapshot();
     }
 
+    // Physical free memory bounded by the granted budget, for engines that
+    // size work from their own probes.
+    Footprint bounded_probe() {
+        auto free = probe_();
+        std::lock_guard guard(mutex_);
+        if (free.size() != ceiling_.size())
+            throw std::runtime_error("probe_shape");
+        for (std::size_t i = 0; i < free.size(); ++i)
+            free[i] = std::min(free[i], ceiling_[i]);
+        return free;
+    }
+
 private:
+    bool loaded() const {
+        std::lock_guard guard(mutex_);
+        return loaded_;
+    }
+
     struct Job {
         Job(InferenceRequest q, std::chrono::steady_clock::time_point time)
             : request(std::move(q)), submitted(time) {
@@ -511,5 +624,8 @@ private:
     EngineConfiguration resident_configuration_;
     Workload resident_workload_ = Workload::llm;
     bool stopping_ = false, poisoned_ = false;
+    bool loaded_, executing_ = false, release_requested_ = false;
+    std::string model_;
+    std::function<void(const char*)> control_;
 };
 }  // namespace kadan::serving

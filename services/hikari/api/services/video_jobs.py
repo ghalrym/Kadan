@@ -1,9 +1,12 @@
-"""Video presentation and artifact history; execution belongs to the native worker."""
+"""Video presentation and artifact history; execution belongs to the native worker.
 
-from datetime import datetime, timezone
+The worker returns each finished video inline, so its file is written here.
+"""
+
 import os
-from pathlib import Path
 import threading
+from datetime import UTC, datetime
+from pathlib import Path
 
 from api.pydantic_models.media import VideoJob
 
@@ -33,7 +36,7 @@ class VideoJobs:
                     ],
                     fps=str(spec.fps),
                     progress=0,
-                    time=datetime.now(timezone.utc).isoformat(),
+                    time=datetime.now(UTC).isoformat(),
                     status="Queued",
                     thumbnail="",
                     progressText="Queued",
@@ -55,6 +58,16 @@ class VideoJobs:
             if job_id not in self._jobs:
                 raise KeyError(job_id)
             return self._jobs[job_id].model_copy(deep=True)
+
+    def store(self, job_id, data: bytes):
+        """Write a finished video atomically where content() serves it."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        staging = self.root / f".{job_id}.partial.mp4"
+        try:
+            staging.write_bytes(data)
+            staging.replace(self.root / f"{job_id}.mp4")
+        finally:
+            staging.unlink(missing_ok=True)
 
     def content(self, job_id):
         job = self.get(job_id)

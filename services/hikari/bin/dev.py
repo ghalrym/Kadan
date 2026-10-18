@@ -118,6 +118,9 @@ def start(env: dict[str, str]) -> subprocess.Popen:
             "--reload",
             "--reload-dir",
             str(ROOT / "api"),
+            # Worker results, such as finished videos, are large WebSocket messages.
+            "--ws-max-size",
+            str(256 * 1024 * 1024),
         ],
         cwd=ROOT,
         env=env,

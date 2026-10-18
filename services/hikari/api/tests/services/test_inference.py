@@ -1,3 +1,4 @@
+import base64
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -28,6 +29,32 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         job.result.set_result(result)
         self.assertEqual(await task, result)
         self.assertNotIn(job.request.id, service.worker.jobs)
+
+    async def test_video_bytes_arrive_inline_and_are_stored(self):
+        service = InferenceService()
+        job = InferenceJob(
+            InferenceTask(input={"feature": "video", "prompt": "sea"}), False
+        )
+        service.worker.jobs[job.request.id] = job
+        job.result.set_result(
+            {
+                "status": "Done",
+                "progress": 100,
+                "video": base64.b64encode(b"mp4").decode(),
+            }
+        )
+        with (
+            patch("api.services.inference.video_jobs.store") as store,
+            patch("api.services.inference.video_jobs.update") as update,
+        ):
+            await service._complete(job)
+        store.assert_called_once_with(job.request.id, b"mp4")
+        update.assert_called_once_with(
+            job.request.id,
+            status="Done",
+            progress=100,
+            output_url=f"/v1/videos/{job.request.id}/content",
+        )
 
     async def test_submission_contains_typed_complete_inputs(self):
         service = InferenceService()
@@ -497,6 +524,12 @@ class UnloadTests(unittest.IsolatedAsyncioTestCase):
             await service.unload(**kwargs)
         self.assertEqual(worker_submit.call_args.args[0].operation, "unload")
         return cancel
+
+    async def test_unload_returns_the_language_model_budget(self):
+        service = InferenceService()
+        with patch.object(service.worker, "offload", new=AsyncMock()) as offload:
+            await self.unload(service)
+        offload.assert_awaited_once_with("llm")
 
     async def test_unload_cancels_running_chats_by_default(self):
         service = InferenceService()

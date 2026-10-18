@@ -53,7 +53,8 @@ Container Toolkit. The Hikari image builds its native inference executable and
 runtime libraries. The other images build their browser applications and need
 no model downloads.
 
-For a new installation, run from the repository root:
+For a new installation, copy `.env.example` to `.env`, set `HIKARI_WORKER_TOKEN`
+(for example `openssl rand -hex 32`), then run from the repository root:
 
 ```sh
 docker compose up --build -d
@@ -120,8 +121,8 @@ pass `--remove-orphans` to `up`. Otherwise the old `api`, `frontend`, `kadan` an
 `tsuchi` containers keep running, holding the published ports and the model-store
 lock. Named volumes belong to the project, not the service, so data is kept.
 
-Run one API process. The inference worker takes an exclusive lock in the model
-store. Development hot reload shuts down and joins its owned process before the
+Run one API process. Each machine's inference worker process takes an exclusive
+lock in its model store. Development hot reload shuts down and joins its owned process before the
 replacement starts; reloading cancels in-flight work.
 
 ### Development hot reload

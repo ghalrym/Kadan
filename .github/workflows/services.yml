@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Compose requires the worker token when it parses the file. CI only builds and
+# validates configuration; this placeholder is not a secret and never serves.
+env:
+  HIKARI_WORKER_TOKEN: ci-placeholder-not-a-secret
 concurrency:
   group: services-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
