@@ -383,6 +383,7 @@ void scopes_share_control_plane_limit() {
     auto first = root.scope({0});
     auto second = root.scope({0});
     std::vector<Handle> handles;
+    handles.reserve(Resources::max_residents);
     for (std::size_t i = 0; i < Resources::max_residents; ++i)
         handles.push_back(first->reserve(Workload::llm, {0}));
     check(second->snapshot().residents == 0);
