@@ -17,13 +17,14 @@ class PetAnimation(BaseModel):
 
 class PetManifest(BaseModel):
     schema_version: Literal[1] = 1
-    sprite_version: Literal[2] = 2
+    sprite_version: Literal[1, 2] = 2
     atlas_asset_id: UUID
-    base_asset_id: UUID
+    # Imported atlases have no generated base artwork.
+    base_asset_id: UUID | None = None
     cell_width: Literal[192] = 192
     cell_height: Literal[208] = 208
     columns: Literal[8] = 8
-    rows: Literal[11] = 11
+    rows: Literal[9, 11] = 11
     pixelated: bool = False
     animations: list[PetAnimation]
 
@@ -55,6 +56,7 @@ class PetPendingFrame(BaseModel):
 
 
 class PetState(BaseModel):
+    origin: Literal["generated", "imported"] = "generated"
     status: Literal[
         "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
     ] = "queued"

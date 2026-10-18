@@ -38,7 +38,7 @@ docker compose stop
 | Images | Verified PNG/JPEG/WebP/GIF files, original bytes and metadata |
 | Attachments | Audio, video, PDF, and general files, with original filenames and SHA-256 checksums |
 | Conversations | Ordered messages with roles, timestamps, attachments, sources, and stored-resource links |
-| Pets | Creation jobs, generation provenance, v2 atlas manifests, and explicit agent selection |
+| Pets | Creation jobs, generation provenance, imported v1/v2 atlases, atlas manifests, and explicit agent selection |
 
 The image library stores generated images supplied by Hikari, Kadan, or the owner. Tsuchi does not generate them. Images referenced by decks stay separate assets. Slide layouts are `title`, `text`, `split`, and `image`; decks remain editable in the UI and JSON export. This is a defined v1 format, not full ChatGPT feature parity or PowerPoint round-trip support.
 
@@ -184,6 +184,7 @@ Asset: `{id,agent_key,title,filename,media_type,size_bytes,sha256,is_image:boole
 ### Pets
 
 - `POST /api/agents/{key}/pets` `{id,prompt}` => queued PetJob. Same ID and prompt are idempotent; another namespace or prompt conflicts.
+- `POST /api/agents/{key}/pets/imports` `{id,prompt,manifest}` => ready PetJob with `origin: "imported"`. The manifest references an active raster atlas in the namespace and has no base artwork; v1 atlases have 9 rows and v2 atlases 11. Imported pets have no steps, cannot be resumed or revised, and are never selected automatically. Same ID, prompt and manifest are idempotent.
 - `GET /api/agents/{key}/pets` => all candidates/jobs, newest first.
 - `GET /api/agents/{key}/pets/{id}` => PetJob.
 - `PUT /api/agents/{key}/pets/{id}` => PetJob. Supply full mutable state, `expected_version`, and `worker_id` for worker updates. Job identity and prompt cannot change.

@@ -18,6 +18,7 @@ from .models import (
     Metadata,
     Model,
     PetJob,
+    PetManifest,
     PetState,
     Resource,
     ResourceInput,
@@ -41,6 +42,19 @@ class PetCreate(Model):
     def nonblank_prompt(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("Describe the pet to create")
+        return value.strip()
+
+
+class PetImport(Model):
+    id: UUID
+    prompt: str = Field(min_length=1, max_length=10000)
+    manifest: PetManifest
+
+    @field_validator("prompt")
+    @classmethod
+    def nonblank_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name the imported pet")
         return value.strip()
 
 
@@ -102,6 +116,10 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents/{key}/pets", response_model=PetJob, status_code=201)
     def create_pet(key: AgentKey, value: PetCreate):
         return repository.create_pet(key, value.id, value.prompt)
+
+    @router.post("/agents/{key}/pets/imports", response_model=PetJob, status_code=201)
+    def import_pet(key: AgentKey, value: PetImport):
+        return repository.import_pet(key, value.id, value.prompt, value.manifest)
 
     @router.post(
         "/agents/{key}/pets/{pet_id}/revisions", response_model=PetJob, status_code=201
