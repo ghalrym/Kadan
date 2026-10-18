@@ -18,11 +18,13 @@ export async function api<T>(
     `/api${path}`,
     body === undefined
       ? {}
-      : {
-          method,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
+      : body instanceof FormData
+        ? { method, body }
+        : {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));

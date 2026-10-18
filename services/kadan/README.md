@@ -31,6 +31,15 @@ The built-in plugin exposes `pet_create`, `pet_status`, `pet_cancel` and
 `pet_resume`, scoped to the current agent. It has no activation tool. Retain the
 creation UUID to check or resume the same job after an ambiguous response.
 
+To bring over a pet made for ChatGPT or Codex, choose **New pet → Import** and drop
+or choose its folder (`pet.json` plus the spritesheet), a zip of that folder, or the
+spritesheet alone. The browser previews the sheet before upload. Kadan follows
+`spritesheetPath`, takes the name and description from `pet.json` unless you rename
+it, checks the atlas is 1536x1872 (v1) or 1536x2288 (v2), and stores it re-encoded
+as lossless WebP. The import becomes a ready candidate; choose **Use pet** to switch.
+v1 sheets have no look directions, so they do not follow the cursor. Imports run no
+inference and cannot be repaired frame by frame.
+
 Kadan generates a canonical base through Hikari, then generates each articulated
 pose on its own 384x416 canvas using Hikari's native reference-image conditioning.
 Up to four independent poses are submitted together so Hikari can batch them.

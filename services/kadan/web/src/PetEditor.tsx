@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Egg, Plus, Sparkles, Wrench, X } from "lucide-react";
+import { Egg, FileArchive, FolderOpen, Plus, Sparkles, Upload, Wrench, X } from "lucide-react";
 import { agentPath, api, ApiError } from "./api";
 import { agentPet } from "./Pet";
 import { petSheet, usePetImage } from "./PetContext";
 import PetStage, { animationLabel } from "./PetStage";
 import { agentHue, cellPosition, COLUMNS, sheetRows, type PetSheet } from "./pet";
+import { atlasVersion, resolvePetPackage, type PetPackage, type PickedFile } from "./petImport";
 import type { PetJob } from "./types";
 import { randomUuid } from "./uuid";
 
@@ -30,6 +31,7 @@ interface RevisionRequest {
   frame_names: string[];
   reason: string;
 }
+interface ImportPreview { url: string; version: 1 | 2 | null; size: string }
 
 function readPendingRevision(key: string): RevisionRequest | null {
   try {
@@ -64,6 +66,30 @@ function petTitle(job: PetJob) {
     : first.length > 60 || rest.length
       ? { title: `${first.slice(0, 60).trimEnd()}…`, detail: job.prompt }
       : { title: first, detail: "" };
+}
+
+/** Collect files from a drop, walking dropped folders like a folder picker would. */
+async function droppedFiles(transfer: DataTransfer): Promise<PickedFile[]> {
+  // Entries must be taken synchronously, before the drop event finishes.
+  const entries = Array.from(transfer.items, (item) => item.webkitGetAsEntry?.() ?? null);
+  if (!entries.some(Boolean)) return Array.from(transfer.files, (file) => ({ file, path: file.name }));
+  const picked: PickedFile[] = [];
+  const walk = async (entry: FileSystemEntry, depth: number): Promise<void> => {
+    if (picked.length >= 200) return;
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+      picked.push({ file, path: entry.fullPath.replace(/^\//, "") });
+    } else if (entry.isDirectory && depth < 4) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!batch.length) break;
+        for (const child of batch) await walk(child, depth + 1);
+      }
+    }
+  };
+  for (const entry of entries) if (entry) await walk(entry, 0);
+  return picked;
 }
 
 function SheetThumb({ sheet }: { sheet: PetSheet }) {
@@ -108,12 +134,20 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const [jobs, setJobs] = useState<PetJob[]>([]);
   // A job id, NEW for the creation panel, or HATCHLING for the default pet.
   const [view, setView] = useState(initialRevision?.parentId ?? (initialCreation ? NEW : selected?.id ?? ""));
+  const [newTab, setNewTab] = useState<"describe" | "import">("describe");
   const [prompt, setPrompt] = useState(initialCreation?.prompt ?? "");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [selectionError, setSelectionError] = useState("");
+  const [importPackage, setImportPackage] = useState<PetPackage | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importName, setImportName] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const pendingImport = useRef<{ id: string; signature: string } | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const candidate = jobs.find((job) => job.id === view) ?? null;
   const repairFrames = candidate?.steps.filter((step) => step.name !== "base" && step.method !== "canonical") ?? [];
   const frame = repairFrames.find((step) => step.name === repairFrame) ?? repairFrames[0];
@@ -182,6 +216,11 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     };
   }, [refresh, refreshSelection]);
 
+  useEffect(() => () => { if (importPreview) URL.revokeObjectURL(importPreview.url); }, [importPreview]);
+  useEffect(() => {
+    folderInput.current?.setAttribute("webkitdirectory", "");
+  }, [view, newTab]);
+
   function show(next: string) {
     setView(next);
     setError("");
@@ -213,6 +252,68 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
       sessionStorage.removeItem(creationKey);
       if (alive.current) setPrompt("");
     } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
+
+  async function choosePackage(picked: PickedFile[]) {
+    setError("");
+    setImportPreview(null);
+    if (!picked.length) return;
+    const result = await resolvePetPackage(picked, (file) => file.text());
+    if (!alive.current) return;
+    setImportPackage(result);
+    if (result.kind === "error") return;
+    const fallback = result.kind === "files" ? result.sheet.name.replace(/\.(webp|png)$/i, "") : result.zip.name.replace(/\.zip$/i, "");
+    setImportName(result.kind === "files" && result.info?.displayName
+      ? result.info.displayName
+      : /^spritesheet$/i.test(fallback) ? "" : fallback);
+    if (result.kind !== "files") return;
+    const url = URL.createObjectURL(result.sheet);
+    const probe = new Image();
+    probe.onload = () => {
+      if (!alive.current) return URL.revokeObjectURL(url);
+      setImportPreview({ url, version: atlasVersion(probe.naturalWidth, probe.naturalHeight), size: `${probe.naturalWidth}x${probe.naturalHeight}` });
+    };
+    probe.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (alive.current) setImportPackage({ kind: "error", message: "The spritesheet could not be read as an image." });
+    };
+    probe.src = url;
+  }
+
+  function clearImport() {
+    setImportPackage(null);
+    setImportPreview(null);
+    setImportName("");
+    setError("");
+    if (fileInput.current) fileInput.current.value = "";
+    if (folderInput.current) folderInput.current.value = "";
+  }
+
+  async function importPet(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || !importPackage || importPackage.kind === "error") return;
+    if (importPackage.kind === "files" && importPreview?.version === null) return;
+    // Reuse the id when retrying the same upload so an unconfirmed import is not duplicated.
+    const signature = JSON.stringify([importName.trim(), importPackage.files.map((file) => [file.name, file.size, file.lastModified])]);
+    if (pendingImport.current?.signature !== signature) pendingImport.current = { id: randomUuid(), signature };
+    const form = new FormData();
+    form.set("id", pendingImport.current.id);
+    form.set("name", importName.trim());
+    for (const file of importPackage.files) form.append("files", file, file.name);
+    setBusy(true);
+    setError("");
+    try {
+      const job = await api<PetJob>(`${path}/imports`, form);
+      pendingImport.current = null;
+      if (!alive.current) return;
+      clearImport();
+      update(job);
+    } catch (e) {
+      if (e instanceof ApiError && e.status < 500) pendingImport.current = null;
       if (alive.current) setError((e as Error).message);
     } finally {
       if (alive.current) setBusy(false);
@@ -285,10 +386,25 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     }
   }
 
+  const importSheet: PetSheet | null = importPreview?.version
+    ? { url: importPreview.url, version: importPreview.version }
+    : null;
+  const importReady = !!importPackage && importPackage.kind !== "error"
+    && (importPackage.kind === "zip" || !!importSheet);
+
+  const showsNewPanel = view === NEW || (view !== HATCHLING && !candidate && !loading);
+  // The import form shows its own error beside the button, where a failed upload is noticed.
+  const importErrorInline = showsNewPanel && newTab === "import";
   const newPanel = (
     <section className="pet-panel" aria-labelledby="pet-new-title">
       <h3 id="pet-new-title">New pet</h3>
-      <form className="pet-form" onSubmit={create}>
+      <div className="tabs" role="tablist" aria-label="How to add a pet">
+        <button type="button" role="tab" aria-selected={newTab === "describe"} className={newTab === "describe" ? "active" : ""}
+          onClick={() => { setNewTab("describe"); setError(""); }}><Sparkles size={14} /> Describe</button>
+        <button type="button" role="tab" aria-selected={newTab === "import"} className={newTab === "import" ? "active" : ""}
+          onClick={() => { setNewTab("import"); setError(""); }}><Upload size={14} /> Import</button>
+      </div>
+      {newTab === "describe" ? <form className="pet-form" onSubmit={create}>
         <label htmlFor="pet-prompt">Character and art style</label>
         <textarea id="pet-prompt" value={prompt} rows={4} maxLength={4000} required
           placeholder="Who is this pet, and how should it be drawn?"
@@ -305,7 +421,53 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
             {busy ? "Saving…" : "Create pet"}
           </button>
         </div>
-      </form>
+      </form> : <form className="pet-form" onSubmit={importPet}>
+        <p className="quiet">
+          Bring over a pet made for ChatGPT or Codex. Use its folder (with <code>pet.json</code> and the spritesheet), a zip of that folder, or just the spritesheet.
+        </p>
+        <div className={`pet-drop ${dragging ? "dragging" : ""}`} hidden={!!importPackage && importPackage.kind !== "error"}
+          onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            const files = droppedFiles(event.dataTransfer);
+            void files.then(choosePackage, () => setError("Those files could not be read."));
+          }}>
+          <Upload size={22} aria-hidden="true" />
+          <p>Drop a pet folder, zip or spritesheet here</p>
+          <div className="pet-drop-actions">
+            <button type="button" onClick={() => fileInput.current?.click()}><FileArchive size={16} /> Choose files</button>
+            <button type="button" onClick={() => folderInput.current?.click()}><FolderOpen size={16} /> Choose folder</button>
+          </div>
+          <input ref={fileInput} type="file" multiple hidden
+            accept=".zip,.json,.webp,.png,application/zip,application/json,image/webp,image/png"
+            onChange={(event) => void choosePackage(Array.from(event.target.files ?? [], (file) => ({ file, path: file.name })))} />
+          <input ref={folderInput} type="file" multiple hidden
+            onChange={(event) => void choosePackage(Array.from(event.target.files ?? [], (file) => ({ file, path: file.webkitRelativePath || file.name })))} />
+        </div>
+        {importPackage?.kind === "error" && <p className="error" role="alert">{importPackage.message}</p>}
+        {importPackage && importPackage.kind !== "error" && <>
+          <div className="pet-import-files">
+            <span>{importPackage.files.map((file) => file.name).join(" + ")}</span>
+            <button type="button" className="icon" aria-label="Choose different files" title="Choose different files" onClick={clearImport}><X size={16} /></button>
+          </div>
+          {importPackage.kind === "files" && importPackage.info?.description && <p className="pet-description">{importPackage.info.description}</p>}
+          <label htmlFor="pet-import-name">Name</label>
+          <input id="pet-import-name" value={importName} maxLength={200}
+            placeholder={importPackage.kind === "zip" ? "Uses the name in pet.json" : "Imported pet"}
+            onChange={(event) => setImportName(event.target.value)} />
+          {importPackage.kind === "zip"
+            ? <p className="field-hint">The zip is checked when you import it. You can preview the pet before using it.</p>
+            : importPreview && !importSheet
+              ? <p className="error" role="alert">This spritesheet is {importPreview.size}. Codex pets are 1536x1872 (v1) or 1536x2288 (v2).</p>
+              : importSheet && <PetStage key={importSheet.url} sheet={importSheet} />}
+        </>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="form-actions">
+          <button className="primary" disabled={busy || loading || !importReady}>{busy ? "Importing…" : "Import pet"}</button>
+        </div>
+      </form>}
     </section>
   );
 
@@ -409,7 +571,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
             onClick={() => show(NEW)}>
             <span className="pet-thumb"><Plus size={18} aria-hidden="true" /></span>
             <span className="pet-card-text"><span className="pet-card-title">New pet</span>
-              <span className="pet-card-meta">Describe a new pet</span></span>
+              <span className="pet-card-meta">Describe or import</span></span>
           </button>
           <button className={`pet-card ${view === HATCHLING ? "current" : ""}`} aria-current={view === HATCHLING || undefined}
             onClick={() => show(HATCHLING)}>
@@ -436,7 +598,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
           })}
         </nav>
         <div className="pet-main">
-          {error && <p className="error" role="alert">{error}</p>}
+          {error && !importErrorInline && <p className="error" role="alert">{error}</p>}
           {revisionPending && <div className="banner" role="status">
             Checking whether the frame repair was saved.
             <button disabled={busy} onClick={() => void regenerate()}>Retry confirmation</button>
