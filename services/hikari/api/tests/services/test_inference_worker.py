@@ -13,6 +13,7 @@ from api.services.inference_worker import (
     InferenceWorker,
     encode_request,
 )
+from api.services.inference_errors import InferenceFailure
 
 
 class InferenceWorkerConfigurationTests(unittest.IsolatedAsyncioTestCase):
@@ -439,6 +440,193 @@ class ConcurrentWorkerEventsTests(unittest.IsolatedAsyncioTestCase):
             ]
             self.assertEqual([event.value for event in progress], [value])
         self.assertIsNone(worker.last_exit.protocol_error)
+
+
+class WorkerShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_reaps_late_spawn_even_when_start_caller_is_cancelled(self):
+        for cancel_start in (False, True):
+            with self.subTest(cancel_start=cancel_start):
+                worker = InferenceWorker(Path("/unused"))
+                spawning, spawned, stopped = (
+                    asyncio.Event(),
+                    asyncio.Event(),
+                    asyncio.Event(),
+                )
+                process = SimpleNamespace(
+                    returncode=None,
+                    stdin=SimpleNamespace(close=Mock(side_effect=stopped.set)),
+                    wait=AsyncMock(return_value=0),
+                )
+
+                async def spawn(*args, **kwargs):
+                    spawning.set()
+                    await spawned.wait()
+                    return process
+
+                async def read():
+                    await stopped.wait()
+                    worker.ready.set_exception(InferenceFailure("Stopped before ready"))
+
+                with (
+                    patch("pathlib.Path.mkdir"),
+                    patch("pathlib.Path.is_file", return_value=True),
+                    patch(
+                        "asyncio.create_subprocess_exec", side_effect=spawn
+                    ) as launch,
+                    patch.object(worker, "_read", side_effect=read),
+                    patch.object(worker, "_stderr", new=AsyncMock()),
+                ):
+                    starting = asyncio.create_task(worker.start())
+                    await spawning.wait()
+                    closing = asyncio.create_task(worker.close())
+                    if cancel_start:
+                        starting.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(closing.done())
+                    self.assertIsNone(worker.process)
+                    spawned.set()
+                    await closing
+                    with self.assertRaises(
+                        asyncio.CancelledError if cancel_start else InferenceFailure
+                    ):
+                        await starting
+                    await worker.close()
+                launch.assert_awaited_once()
+                process.stdin.close.assert_called_once()
+                process.wait.assert_awaited_once()
+                self.assertIsNone(worker.process)
+
+    async def test_close_preserves_each_terminal_callback_and_cancellation_error(self):
+        events = []
+        worker = InferenceWorker(
+            Path("/unused"), on_event=lambda job, event: events.append((job, event))
+        )
+        worker.ready = asyncio.get_running_loop().create_future()
+        worker.ready.set_result(123)
+        jobs = [
+            InferenceJob(
+                InferenceTask(input={"feature": "image", "prompt": "test"}), False
+            )
+            for _ in range(2)
+        ]
+        for job in jobs:
+            job.accepted.set_result(None)
+            worker.jobs[job.request.id] = job
+        stdout = asyncio.StreamReader()
+
+        def stop():
+            for job in jobs:
+                stdout.feed_data(
+                    (
+                        json.dumps({"id": job.request.id, "state": "cancelled"}) + "\n"
+                    ).encode()
+                )
+            stdout.feed_eof()
+            worker.process.returncode = 0
+
+        worker.process = SimpleNamespace(
+            pid=123,
+            returncode=None,
+            stdin=SimpleNamespace(close=Mock(side_effect=stop)),
+            stdout=stdout,
+            wait=AsyncMock(return_value=0),
+        )
+        worker.reader = asyncio.create_task(worker._read())
+        await worker.close()
+        self.assertEqual(
+            [(job, event.state) for job, event in events],
+            [(job, "cancelled") for job in jobs],
+        )
+        for job in jobs:
+            with self.assertRaises(InferenceFailure) as failure:
+                await job.result
+            self.assertEqual(failure.exception.status_code, 499)
+        self.assertIsNone(worker.last_exit.protocol_error)
+
+    async def test_concurrent_close_and_cancelled_caller_share_teardown(self):
+        worker = InferenceWorker(Path("/unused"))
+        stopped, reaped = asyncio.Event(), asyncio.Event()
+
+        async def wait():
+            await reaped.wait()
+            return 0
+
+        process = SimpleNamespace(
+            returncode=None,
+            stdin=SimpleNamespace(close=Mock(side_effect=stopped.set)),
+            wait=AsyncMock(side_effect=wait),
+        )
+        worker.process = process
+        first = asyncio.create_task(worker.close())
+        await stopped.wait()
+        second = asyncio.create_task(worker.close())
+        first.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(first.done())
+        self.assertFalse(second.done())
+        with self.assertRaisesRegex(InferenceFailure, "stopping"):
+            await worker.submit(
+                InferenceTask(input={"feature": "image", "prompt": "test"})
+            )
+        reaped.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        await second
+        await worker.close()
+        process.stdin.close.assert_called_once()
+        process.wait.assert_awaited_once()
+        self.assertIsNone(worker.process)
+
+    async def test_submission_waiting_for_write_lock_is_rejected_on_shutdown(self):
+        worker = InferenceWorker(Path("/unused"))
+        process = SimpleNamespace(
+            returncode=None,
+            stdin=SimpleNamespace(close=Mock(), write=Mock(), drain=AsyncMock()),
+            wait=AsyncMock(return_value=0),
+        )
+        worker.process = process
+        await worker.write_lock.acquire()
+        submission = asyncio.create_task(
+            worker.submit(InferenceTask(input={"feature": "image", "prompt": "test"}))
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(len(worker.jobs), 1)
+        await worker.close()
+        worker.write_lock.release()
+        with self.assertRaisesRegex(InferenceFailure, "stopping"):
+            await submission
+        process.stdin.write.assert_not_called()
+        self.assertFalse(worker.jobs)
+
+    async def test_forced_reap_waits_for_reader_before_releasing_process(self):
+        worker = InferenceWorker(Path("/unused"))
+        killed, drained = asyncio.Event(), asyncio.Event()
+        process = SimpleNamespace(
+            pid=123,
+            returncode=None,
+            stdin=SimpleNamespace(close=Mock()),
+            wait=AsyncMock(side_effect=[TimeoutError(), -9]),
+        )
+        worker.process = process
+
+        async def read():
+            await killed.wait()
+            await drained.wait()
+            self.assertIs(worker.process, process)
+
+        worker.reader = asyncio.create_task(read())
+        with patch(
+            "api.services.inference_worker.os.killpg",
+            side_effect=lambda *_: killed.set(),
+        ) as kill:
+            closing = asyncio.create_task(worker.close())
+            await killed.wait()
+            self.assertFalse(closing.done())
+            drained.set()
+            await closing
+        kill.assert_called_once_with(123, 9)
+        self.assertEqual(process.wait.await_count, 2)
+        self.assertIsNone(worker.process)
 
 
 class WorkerExitTests(unittest.IsolatedAsyncioTestCase):

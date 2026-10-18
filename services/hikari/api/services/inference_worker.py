@@ -159,9 +159,11 @@ class InferenceWorker:
         self.last_exit: WorkerExit | None = None
         self.write_lock = asyncio.Lock()
         self.closing = False
+        self._startup_task: asyncio.Task | None = None
+        self._close_task: asyncio.Task | None = None
 
     async def start(self):
-        if self.process is not None:
+        if self._startup_task is not None or self.process is not None or self.closing:
             raise RuntimeError("Inference transport already started")
         self.root.mkdir(parents=True, exist_ok=True)
         executable = Path(
@@ -179,6 +181,20 @@ class InferenceWorker:
             environment = os.environ.copy()
             environment["KADAN_VIDEO_DIR"] = environment["HIKARI_VIDEO_DIR"]
         self.ready = asyncio.get_running_loop().create_future()
+        self._startup_task = asyncio.create_task(
+            self._start_process(executable, environment)
+        )
+        try:
+            # A cancelled caller must still own a child whose spawn is pending.
+            await asyncio.shield(self._startup_task)
+            if self.closing:
+                raise InferenceFailure("Inference worker is stopping.")
+            await asyncio.wait_for(asyncio.shield(self.ready), 30)
+        except BaseException:
+            await self.close()
+            raise
+
+    async def _start_process(self, executable: Path, environment: dict[str, str] | None):
         self.process = await asyncio.create_subprocess_exec(
             str(executable),
             str(self.root / "worker.lock"),
@@ -191,17 +207,16 @@ class InferenceWorker:
         )
         self.stderr_reader = asyncio.create_task(self._stderr())
         self.reader = asyncio.create_task(self._read())
-        try:
-            await asyncio.wait_for(asyncio.shield(self.ready), 30)
-        except BaseException:
-            await self.close()
-            raise
 
     async def _send(self, message):
-        if self.process is None or self.process.returncode is not None:
-            raise InferenceFailure("Inference worker is not running.")
         encoded = encode_request(message)
         async with self.write_lock:
+            if self.closing:
+                if message["command"] == "cancel":
+                    return  # Closing stdin already requests cancellation of all jobs.
+                raise InferenceFailure("Inference worker is stopping.")
+            if self.process is None or self.process.returncode is not None:
+                raise InferenceFailure("Inference worker is not running.")
             self.process.stdin.write(encoded)
             if message["command"] == "submit":
                 self.jobs[message["id"]].sent = True
@@ -345,7 +360,8 @@ class InferenceWorker:
             try:
                 returncode = await asyncio.wait_for(self.process.wait(), 30)
             except TimeoutError:
-                os.killpg(self.process.pid, signal.SIGKILL)
+                with suppress(ProcessLookupError):
+                    os.killpg(self.process.pid, signal.SIGKILL)
                 returncode = await self.process.wait()
             # A crashed worker may leave an owned codec process holding stderr open.
             if returncode != 0:
@@ -374,15 +390,30 @@ class InferenceWorker:
 
     async def close(self):
         self.closing = True
-        if self.process is None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await await_cleanup(self._close_task)
+
+    async def _close(self):
+        if self._startup_task is not None:
+            # Spawn and reader installation finish before teardown can complete.
+            # Failed spawns have no child, and start() preserves their exception.
+            with suppress(Exception):
+                await self._startup_task
+        process = self.process
+        if process is None:
             return
-        if self.process.returncode is None:
-            self.process.stdin.close()
+        if process.returncode is None:
+            process.stdin.close()
             try:
-                await asyncio.wait_for(self.process.wait(), 30)
+                await asyncio.wait_for(process.wait(), 30)
             except TimeoutError:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                await self.process.wait()
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
         if self.reader is not None:
             await self.reader
+        if self.ready is not None and self.ready.done() and not self.ready.cancelled():
+            # Shutdown may win the race before start() begins awaiting readiness.
+            self.ready.exception()
         self.process = None

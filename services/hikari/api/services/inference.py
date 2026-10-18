@@ -75,11 +75,14 @@ class InferenceService:
         await self.worker.start()
 
     async def close(self):
+        # EOF stops every native queue before any individual completion is joined.
+        # Starting transport teardown first also puts stalled executions under its
+        # bounded process-reaping deadline.
         try:
+            await self.worker.close()
+        finally:
             for job_id in tuple(self.worker.jobs):
                 await self.cancel(job_id)
-        finally:
-            await self.worker.close()
 
     def status(self):
         memory = self.worker.memory

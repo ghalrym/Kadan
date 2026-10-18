@@ -308,6 +308,39 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         close.assert_awaited_once()
         self.assertFalse(service.worker.jobs)
 
+    async def test_close_stops_all_work_before_joining_individual_jobs(self):
+        service = InferenceService()
+        jobs = [
+            InferenceJob(
+                InferenceTask(input={"feature": feature, "prompt": "test"}), False
+            )
+            for feature in ("image", "image")
+        ]
+        for job in jobs:
+            service.worker.jobs[job.request.id] = job
+        stopped, reaped = asyncio.Event(), asyncio.Event()
+
+        async def close():
+            service.worker.closing = True
+            stopped.set()
+            await reaped.wait()
+            for job in jobs:
+                job.result.set_result(None)
+
+        with (
+            patch.object(service.worker, "close", side_effect=close),
+            patch.object(service.worker, "cancel_and_join", new=AsyncMock()) as join,
+        ):
+            closing = asyncio.create_task(service.close())
+            await stopped.wait()
+            join.assert_not_awaited()
+            self.assertFalse(closing.done())
+            self.assertTrue(all(not job.result.done() for job in jobs))
+            reaped.set()
+            await closing
+        join.assert_not_awaited()
+        self.assertFalse(service.worker.jobs)
+
 
 class ConcurrentObservationTests(unittest.IsolatedAsyncioTestCase):
     async def test_other_workload_load_preserves_resident_chat(self):
