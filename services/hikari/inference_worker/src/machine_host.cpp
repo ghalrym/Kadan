@@ -269,10 +269,13 @@ void MachineHost::handle(const std::string& line) {
                 if (command_message.contains("model")
                     && !command_message["model"].is_null())
                     model = command_message["model"].get<std::string>();
+                std::optional<Json> context;
+                if (command_message.contains("context"))
+                    context = command_message["context"];
                 Json message;
                 {
                     std::lock_guard guard(store_);
-                    message = hooks_.requirement(*target.spec.workload, model);
+                    message = hooks_.requirement(*target.spec.workload, model, context);
                 }
                 message["state"] = "requirement";
                 message["worker"] = target.spec.name;

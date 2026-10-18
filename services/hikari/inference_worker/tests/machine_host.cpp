@@ -63,9 +63,12 @@ struct Harness {
         hooks.probe = [] {
             return Footprint{1000, 1000};
         };
-        hooks.requirement = [](Workload, const std::optional<std::string>& model) {
+        hooks.requirement = [](Workload,
+                               const std::optional<std::string>& model,
+                               const std::optional<Json>& context) {
             return Json{
                 {"model", model.value_or("default")},
+                {"context", context ? *context : Json("saved")},
                 {"minimum", {1, 2}},
                 {"preferred", {3, 4}}
             };
@@ -182,6 +185,21 @@ void status_offload_and_requirement_replies() {
     const auto requirement = harness.last(id('2'));
     assert(requirement["state"] == "requirement" && requirement["worker"] == "llm");
     assert(requirement["model"] == "qwen" && requirement["preferred"][1] == 4);
+    assert(requirement["context"] == "saved");
+    harness.command(
+        {{"id", id('8')},
+         {"command", "requirement"},
+         {"worker", "llm"},
+         {"context", 8192}}
+    );
+    assert(harness.last(id('8'))["context"] == 8192);
+    harness.command(
+        {{"id", id('9')},
+         {"command", "requirement"},
+         {"worker", "llm"},
+         {"context", nullptr}}
+    );
+    assert(harness.last(id('9'))["context"].is_null());
     harness.host->stop();
 }
 

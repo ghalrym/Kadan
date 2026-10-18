@@ -304,8 +304,10 @@ int serve(const char* lock_path, const websocket::Url& url) {
                     : image->steps;
         send(prepared);
     };
-    hooks.requirement = [&](Workload kind, const std::optional<std::string>& model) {
-        return worker_requirement(kind, model, store);
+    hooks.requirement = [&](Workload kind,
+                            const std::optional<std::string>& model,
+                            const std::optional<Json>& context) {
+        return worker_requirement(kind, model, store, context);
     };
     hooks.machine = [&] {
         return memory.machine(machine_name(), data.parent_path());

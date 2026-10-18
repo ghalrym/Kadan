@@ -64,6 +64,10 @@ REQUEUEABLE = (JobState.QUEUED, JobState.PREPARING, JobState.WAITING)
 RELEASE_TIMEOUT = 60
 
 
+def requirement_key(fields: dict) -> tuple:
+    return (fields.get("model"), "context" in fields, fields.get("context"))
+
+
 def gib(budget: list[int]) -> str:
     return ", ".join(f"{value / GIB:.1f}" for value in budget)
 
@@ -582,26 +586,37 @@ class WorkerHub:
                 except Exception:
                     log.exception("Scheduling on %s failed", machine.name)
 
-    def _head_model(self, machine: Machine, worker: str) -> str | None:
-        for job_id in machine.jobs:
-            job = self.jobs.get(job_id)
-            if job is not None and job.worker == worker:
-                return requested_model(job.request)
-        return None
+    def _head_fields(self, machine: Machine, worker: str) -> dict:
+        """What the oldest queued job asks for that changes the worker's needs."""
+        for job in self.jobs.values():
+            if job.worker != worker or machine.name not in job.machines:
+                continue
+            fields = {"model": requested_model(job.request)}
+            # A load's explicit context overrides the saved one, null included.
+            if (
+                job.request.operation == "load"
+                and "context_limit" in job.request.input.model_fields_set
+            ):
+                fields["context"] = job.request.input.context_limit
+            return fields
+        return {"model": None}
 
     async def _requirement(self, machine: Machine, worker: str) -> Requirement:
+        fields = self._head_fields(machine, worker)
         try:
-            reply = await machine.control(
-                "requirement", worker=worker, model=self._head_model(machine, worker)
-            )
-            return Requirement.parse(reply)
+            reply = await machine.control("requirement", worker=worker, **fields)
+            requirement = Requirement.parse(reply)
+            requirement.key = requirement_key(fields)
+            return requirement
         except InferenceFailure as error:
             # Preparation reports the real problem (no tier, no download) once
             # the worker runs; a host-only budget lets it get that far.
             log.info(
                 "No memory requirement for %s on %s: %s", worker, machine.name, error
             )
-            return Requirement(model="", minimum=(0, 0), preferred=(0, 0))
+            return Requirement(
+                model="", minimum=(0, 0), preferred=(0, 0), key=requirement_key(fields)
+            )
 
     async def _apply(self, machine: Machine, actions: list[Action]) -> bool:
         for action in actions:
@@ -703,6 +718,16 @@ class WorkerHub:
                 )
                 await self._resynchronize(machine)
             return
+        # A new head job may ask for another model or context.
+        for slot in ledger.workers.values():
+            if (
+                slot.pending
+                and slot.requirement is not None
+                and slot.requirement.key is not None
+                and slot.requirement.key
+                != requirement_key(self._head_fields(machine, slot.name))
+            ):
+                slot.requirement = None
         # Resident workers keep current requirements so they can shrink and grow.
         for slot in ledger.workers.values():
             if slot.requirement is None and (slot.loaded or slot.pending):

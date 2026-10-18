@@ -312,3 +312,13 @@ class MultiGpuTests(unittest.TestCase):
         machine.workers["image"].budget = [0, 0, 4 * GIB]
         grown = plan_growth(machine)[0].budget
         self.assertLessEqual(sum(grown[1:]), 22 * GIB)
+
+    def test_language_reserve_spans_gpus_like_a_real_grant(self):
+        machine = ledger(ram=64, vram=(24, 24))
+        machine.workers["llm"].requirement = spread(10, 30, 10, 30, 2)
+        machine.workers["image"].requirement = spread(4, 2, 4, 40, 2)
+        # Language would start as [24, 8], so the image gets the other 16.
+        self.assertEqual(
+            plan_load(machine, "image"),
+            [Action("load", "image", [4 * GIB, 0, 16 * GIB])],
+        )

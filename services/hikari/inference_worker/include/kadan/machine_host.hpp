@@ -53,9 +53,13 @@ public:
     using Prepare =
         std::function<void(InferenceRequest&, const std::atomic_bool&, WorkerChannel&)>;
     // {"model", "minimum": [host, device], "preferred": [host, device],
-    //  "device_floor": per extra GPU}
-    using Requirement =
-        std::function<Json(Workload, const std::optional<std::string>& model)>;
+    //  "device_floor": per extra GPU}. `context` is a queued load's explicit
+    // context limit (null for the supported maximum); absent uses the saved one.
+    using Requirement = std::function<Json(
+        Workload,
+        const std::optional<std::string>& model,
+        const std::optional<Json>& context
+    )>;
 
     struct Hooks {
         Send send;

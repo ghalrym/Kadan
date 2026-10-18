@@ -133,8 +133,13 @@ private:
 // for a downloaded language model, its GGUF plan. Reads metadata only.
 // {"model", "minimum": [host, device], "preferred": [host, device],
 //  "device_floor": per extra GPU}
+// A language `context` overrides the saved limit as a load request does: a
+// number, or null for the checkpoint's supported maximum.
 Json worker_requirement(
-    Workload workload, const std::optional<std::string>& model, const ModelStore& store
+    Workload workload,
+    const std::optional<std::string>& model,
+    const ModelStore& store,
+    const std::optional<Json>& context = std::nullopt
 );
 
 // Converts checkpoint containers and tokenizer metadata only; never runs a model.

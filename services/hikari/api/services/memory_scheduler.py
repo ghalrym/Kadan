@@ -7,7 +7,7 @@ per-GPU floor, and only the rest of its device memory is divided between them.
 """
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 GIB = 1024**3
 
@@ -36,6 +36,8 @@ class Requirement:
     preferred: tuple[int, int]
     # Each further GPU needs this much of its own (context and headroom).
     device_floor: int = 0
+    # The head job's model and context this was computed for.
+    key: tuple | None = None
 
     @classmethod
     def parse(cls, message: dict) -> "Requirement":
@@ -197,7 +199,8 @@ def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
     """Room kept for the language tier while it is not loaded.
 
     Other workers never take its minimum, so the language model can start while
-    an image or video runs instead of queueing behind it.
+    an image or video runs instead of queueing behind it. The minimum is placed
+    by the same per-GPU rules as a real grant, so it may span GPUs.
     """
     free = ledger.free()
     reserve = [0] * len(free)
@@ -209,13 +212,12 @@ def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
             or slot.requirement is None
         ):
             continue
-        host_min, device_min = slot.requirement.minimum
-        reserve[0] += host_min
-        if device_min and len(free) > 1:
-            device = max(
-                range(1, len(free)), key=lambda index: free[index] - reserve[index]
-            )
-            reserve[device] += device_min
+        minimum = replace(slot.requirement, preferred=slot.requirement.minimum)
+        placed = ledger.fit(minimum, [room - kept for room, kept in zip(free, reserve)])
+        if placed is None:
+            # It cannot start here anyway; keeping nothing lets others run.
+            continue
+        reserve = [kept + amount for kept, amount in zip(reserve, placed)]
     return reserve
 
 

@@ -68,7 +68,8 @@ Json footprint(
 Json worker_requirement(
     Workload workload,
     const std::optional<std::string>& requested,
-    const ModelStore& store
+    const ModelStore& store,
+    const std::optional<Json>& requested_context
 ) {
     // Transcription requests name a Whisper size; its catalog entry is prefixed.
     const auto model = workload == Workload::speech && requested
@@ -151,7 +152,8 @@ Json worker_requirement(
     // The same context chat admission uses: the saved limit, else the
     // checkpoint's supported one.
     const auto config = read_document(root / "config.json");
-    const auto saved = store.context(model);
+    // A queued load's explicit context wins, as in chat preparation.
+    const auto saved = requested_context ? *requested_context : store.context(model);
     const auto context = saved.is_null() ? config.value("text_config", config)
                                                .at("max_position_embeddings")
                                                .get<std::size_t>()

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,7 +11,12 @@ from fastapi import WebSocketDisconnect
 from api.pydantic_models.inference_task import InferenceTask
 from api.services.inference_errors import InferenceFailure
 from api.services.memory_scheduler import GIB, Requirement
-from api.services.worker_hub import WorkerHub, authorized, requested_model
+from api.services.worker_hub import (
+    RELEASE_TIMEOUT,
+    WorkerHub,
+    authorized,
+    requested_model,
+)
 
 WORKERS = ["store", "llm", "decision", "tts", "speech", "formatting", "image", "video"]
 
@@ -72,6 +78,11 @@ def models(tier=None, whisper=None):
         "selected_whisper": whisper,
         "whisper_formatting": True,
     }
+
+
+def expired():
+    """A release start older than the timeout on this machine's clock."""
+    return time.monotonic() - RELEASE_TIMEOUT - 1
 
 
 def queued(message):
@@ -633,7 +644,7 @@ class ResidentRequirementTests(HubTestCase):
         _, machine = await self.connect("box", replies={"status": status})
         slot = machine.ledger.workers["llm"]
         slot.loaded, slot.budget, slot.releasing = True, [GIB, GIB], True
-        slot.releasing_since = 0.0
+        slot.releasing_since = expired()
         with self.assertLogs("api.services.worker_hub", level="WARNING"):
             await self.hub._schedule(machine)
         self.assertFalse(slot.loaded or slot.releasing)
@@ -677,7 +688,7 @@ class ReleaseConfirmationTests(HubTestCase):
         _, machine = await self.connect("box", replies={"status": status})
         slot = machine.ledger.workers["llm"]
         slot.loaded, slot.budget, slot.releasing = True, [4 * GIB, 20 * GIB], True
-        slot.releasing_since = 0.0
+        slot.releasing_since = expired()
         with self.assertLogs("api.services.worker_hub", level="WARNING"):
             await self.hub._schedule(machine)
         return slot
@@ -705,3 +716,71 @@ class ReleaseConfirmationTests(HubTestCase):
         )
         self.assertFalse(slot.releasing)
         self.assertEqual(slot.budget, [GIB, 9 * GIB])
+
+
+class LoadContextTests(HubTestCase):
+    async def connect_with_context_needs(self, asked, loads):
+        def requirement(message):
+            asked.append(
+                {k: v for k, v in message.items() if k in ("model", "context")}
+            )
+            # Only the saved context is too large for this machine.
+            device = 6 * GIB if "context" in message else 200 * GIB
+            return [
+                {
+                    "id": message["id"],
+                    "state": "requirement",
+                    "worker": message["worker"],
+                    "model": "qwen",
+                    "minimum": [GIB, device],
+                    "preferred": [GIB, device],
+                    "device_floor": 0,
+                }
+            ]
+
+        def load(message):
+            loads.append((message["worker"], message["budget"]))
+            return [{"id": message["id"], "state": "control", "ok": True}]
+
+        return await self.connect(
+            "box", replies={"requirement": requirement, "load": load}
+        )
+
+    def load_task(self, **context):
+        return InferenceTask(operation="load", input={"feature": "llm", **context})
+
+    async def test_a_smaller_load_context_is_planned_instead_of_rejected(self):
+        asked, loads = [], []
+        _, machine = await self.connect_with_context_needs(asked, loads)
+        job = await self.hub.submit(self.load_task(context_limit=8192))
+        await self.hub._schedule(machine)
+        self.assertEqual(asked[-1], {"model": None, "context": 8192})
+        self.assertEqual(loads, [("llm", [GIB, 6 * GIB])])
+        self.assertFalse(job.result.done())
+
+    async def test_explicit_null_and_omitted_contexts_are_distinct(self):
+        asked, loads = [], []
+        _, machine = await self.connect_with_context_needs(asked, loads)
+        machine.ledger.workers["llm"].loaded = True
+        machine.ledger.workers["llm"].busy = True
+        await self.hub.submit(self.load_task(context_limit=None))
+        await self.hub._schedule(machine)
+        self.assertEqual(asked[-1], {"model": None, "context": None})
+        await self.hub.submit(chat())
+        self.assertEqual(
+            self.hub._head_fields(machine, "llm"), {"model": None, "context": None}
+        )
+        self.hub.jobs.pop(next(iter(self.hub.jobs)))
+        self.assertEqual(self.hub._head_fields(machine, "llm"), {"model": None})
+
+    async def test_requirement_follows_a_new_head_job(self):
+        asked, loads = [], []
+        _, machine = await self.connect_with_context_needs(asked, loads)
+        first = await self.hub.submit(self.load_task(context_limit=8192))
+        await self.hub._schedule(machine)
+        self.hub.jobs.pop(first.request.id)
+        machine.jobs.discard(first.request.id)
+        await self.hub.submit(self.load_task(context_limit=4096))
+        machine.ledger.workers["llm"].busy = True
+        await self.hub._schedule(machine)
+        self.assertEqual(asked[-1], {"model": None, "context": 4096})
