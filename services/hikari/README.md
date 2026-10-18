@@ -157,30 +157,30 @@ generation requires the API dependencies. Asset export uses the C++
 `kadan-prepare-assets` tool built by `native build`; CLI help needs only
 `bin/requirements.txt`.
 
-Use the development override for Python hot reload and the Vite frontend with a
-source bind mount. The frontend keeps the same local port 8088. Explicit file
-selection avoids loading an unrelated local `compose.override.yaml`.
+Use the development override for API, inference worker and frontend hot reload
+with source bind mounts. The frontend keeps the same local port 8088. Explicit
+file selection avoids loading an unrelated local `compose.override.yaml`.
 
 ```sh
-docker compose -f compose.yaml -f compose.development.yaml build hikari-api hikari-frontend
+docker compose -f compose.yaml -f compose.development.yaml build hikari-migrate hikari-api hikari-frontend
 docker compose -f compose.yaml -f compose.development.yaml up -d --no-build hikari-api hikari-frontend
 ```
 
-Python and frontend edits reload automatically. Edit Python only when inference
-is idle or cancellation is acceptable: reloading also replaces its owned inference
-worker. C++ changes need an image rebuild and replacement of only the API:
+The development API runs `bin/hikari.py dev serve`. Python and frontend edits
+reload automatically. Inference worker C++ edits rebuild the worker incrementally
+in the container (`docker compose logs -f hikari-api` shows the build); a
+successful build, or a catalog or asset edit, restarts the API with the new
+worker. A failed build keeps the previous worker running. Edit only when
+inference is idle or cancellation is acceptable: every restart replaces the
+owned inference worker. The `hikari_worker_build` volume keeps the build tree;
+remove it after changing the worker's toolchain or build options.
 
-```sh
-docker compose -f compose.yaml -f compose.development.yaml build hikari-api
-docker compose -f compose.yaml -f compose.development.yaml up -d --no-deps --no-build --force-recreate --wait hikari-api
-```
-
-The API and migration service share the built image. The API keeps the worker
-installed in that image; no separately deployed native binary is needed. Existing
-model and database volumes remain attached. On a recovered server, include its
-reviewed storage override in every command and preserve its mount dependencies
-before switching service supervision. These commands alone do not migrate an
-existing systemd-managed installation.
+The migration service uses the release image. Release images install the worker
+at build time; no separately deployed native binary is needed. Existing model and
+database volumes remain attached. On a recovered server, include its reviewed
+storage override in every command and preserve its mount dependencies before
+switching service supervision. These commands alone do not migrate an existing
+systemd-managed installation.
 
 Browser checks exercise generation manually. Use one second for video checks and
 cancel a check if it has not completed after three minutes. These are testing
