@@ -42,25 +42,12 @@ Json present_video(const InferenceRequest& request, const fs::path& source) {
             && fs::is_regular_file(source) && fs::file_size(source) > 0,
         "Invalid video output"
     );
-    const auto root = configured_path(
-        "KADAN_VIDEO_DIR",
-        fs::path(std::getenv("HOME") ? std::getenv("HOME") : "/tmp")
-            / ".local/share/kadan/videos"
-    );
-    fs::create_directories(root);
-    const auto staging = root / ("." + request.id + ".partial.mp4");
-    try {
-        fs::copy_file(source, staging, fs::copy_options::overwrite_existing);
-        fs::rename(staging, root / (request.id + ".mp4"));
-    } catch (...) {
-        fs::remove(staging);
-        throw;
-    }
     return {
         {"status", "Done"},
         {"progress", 100},
         {"progress_text", "Complete"},
-        {"output_url", "/v1/videos/" + request.id + "/content"}
+        // The API may run on another machine, so the file travels in the result.
+        {"video", base64_encode(read_bytes(source, 90 * 1024 * 1024))}
     };
 }
 }  // namespace kadan::serving

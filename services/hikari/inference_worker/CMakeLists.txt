@@ -69,11 +69,24 @@ add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
   src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
   src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
-  src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp)
+  src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp
+  src/preparation/worker_requirement.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE kadan_metadata kadan_gguf_text CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
+  PRIVATE kadan_metadata kadan_gguf_text kadan_h3_profile CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+# The worker's WebSocket transport to the API, and the per-machine host that
+# routes API commands to one owner per inference type.
+add_library(kadan_transport src/transport/websocket.cpp)
+target_include_directories(kadan_transport PUBLIC include)
+target_compile_features(kadan_transport PUBLIC cxx_std_20)
+target_link_libraries(kadan_transport PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+target_compile_options(kadan_transport PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_library(kadan_machine_host src/machine_host.cpp)
+target_link_libraries(kadan_machine_host PUBLIC kadan_resources PRIVATE kadan_preparation)
+target_compile_options(kadan_machine_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_library(kadan_media_residency src/media/media_residency.cpp)
 target_link_libraries(kadan_media_residency PUBLIC kadan_resources)
@@ -436,6 +449,12 @@ if(BUILD_TESTING)
   add_executable(inference-owner-tests tests/inference_owner.cpp)
   target_link_libraries(inference-owner-tests PRIVATE kadan_resources)
   add_test(NAME inference-owner COMMAND inference-owner-tests)
+  add_executable(websocket-tests tests/websocket.cpp)
+  target_link_libraries(websocket-tests PRIVATE kadan_transport)
+  add_test(NAME websocket COMMAND websocket-tests)
+  add_executable(machine-host-tests tests/machine_host.cpp)
+  target_link_libraries(machine-host-tests PRIVATE kadan_machine_host kadan_preparation)
+  add_test(NAME machine-host COMMAND machine-host-tests)
   if(TARGET kadan_h3_generation)
     add_executable(h3-inventory-tests tests/h3_inventory.cpp)
     target_link_libraries(h3-inventory-tests PRIVATE kadan_h3_generation)
@@ -451,7 +470,8 @@ if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_DECISIONS AND KADAN_ENABLE_H3_GENERATION A
   target_link_libraries(kadan-inference-worker PRIVATE kadan_gguf_text
     kadan_decision_executor kadan_image_generation kadan_h3_generation kadan_h3_cuda
     kadan_h3_profile kadan_whisper kadan_stt kadan_tts_generator kadan_tts_audio
-    kadan_transcription_formatting kadan_preparation nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+    kadan_transcription_formatting kadan_preparation kadan_machine_host kadan_transport
+    nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
   install(TARGETS kadan-inference-worker
     RUNTIME_DEPENDENCIES
       PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"

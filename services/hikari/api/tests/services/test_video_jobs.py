@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -42,3 +43,12 @@ class VideoJobsConfigurationTests(unittest.TestCase):
             self.assertEqual(
                 VideoJobs("~/explicit").root, Path("~/explicit").expanduser()
             )
+
+
+class VideoStorageTests(unittest.TestCase):
+    def test_store_writes_the_file_content_serves(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = VideoJobs(root)
+            jobs.store("abc", b"mp4 bytes")
+            self.assertEqual((Path(root) / "abc.mp4").read_bytes(), b"mp4 bytes")
+            self.assertEqual([p.name for p in Path(root).iterdir()], ["abc.mp4"])

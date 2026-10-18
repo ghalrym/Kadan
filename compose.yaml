@@ -41,6 +41,8 @@ services:
       <<: *database_environment
       KADAN_MODEL_DIR: /var/lib/kadan/models
       KADAN_INFERENCE_WORKER: /opt/kadan/bin/kadan-inference-worker
+      # Worker machines, including the API's own, authenticate with this token.
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
     deploy:
       resources:
         reservations:

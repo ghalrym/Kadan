@@ -50,6 +50,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "packed-read-team-tests",
     "device-weight-trace-tests",
     "inference-owner-tests",
+    "websocket-tests",
+    "machine-host-tests",
     "preparation-tests",
     "s1-mini-metadata-tests",
     "text-tokenizer-tests",
@@ -229,7 +231,7 @@ def install() -> None:
     """Validate API imports without starting the application or loading a model."""
     # Application dependencies belong only to this explicit image-build check.
     from api.services.inference import InferenceService
-    from api.services.inference_worker import InferenceWorker
+    from api.services.worker_hub import WorkerHub
 
-    assert InferenceWorker and InferenceService
+    assert WorkerHub and InferenceService
     typer.echo("Inference worker transport imports successfully; no model execution.")

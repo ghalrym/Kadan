@@ -17,6 +17,7 @@ struct FakeState {
     bool wait_once = false, fail_close = false, invalid_input = false;
     unsigned preparations = 0, close_calls = 0;
     std::shared_ptr<Resources> ledger;
+    std::function<void()> during_execute;
 };
 
 struct FakeEngine : InferenceEngine {
@@ -58,6 +59,8 @@ struct FakeEngine : InferenceEngine {
 
     Json execute(const InferenceRequest&, const std::atomic_bool&) override {
         state.events.push_back("execute:" + name);
+        if (state.during_execute)
+            state.during_execute();
         return name;
     }
 
@@ -1297,7 +1300,103 @@ void image_memory_growth_is_measured_and_devices_are_independent() {
     assert(replicas.capacity({64 * gib, 18 * gib, gib}, single_device_plans) == 1);
 }
 
+std::unique_ptr<InferenceOwner>
+offloaded_owner(FakeState& state, Footprint free, std::vector<std::string>& controls) {
+    auto owner = std::make_unique<InferenceOwner>(
+        Footprint{0, 0, 0},
+        [&](auto, std::shared_ptr<Resources> r) {
+            return std::make_unique<FakeEngine>(state, r);
+        },
+        [free] { return free; },
+        [](auto, auto, auto) {},
+        std::size_t{32},
+        InferenceOwner::Prepare{},
+        [] { return std::chrono::steady_clock::now(); },
+        false
+    );
+    owner->set_control_listener([&](const char* event) {
+        controls.emplace_back(event);
+    });
+    return owner;
+}
+
+void offloaded_owner_waits_for_a_budget() {
+    FakeState state;
+    std::vector<std::string> controls;
+    const auto held = offloaded_owner(state, {100, 80, 70}, controls);
+    auto& owner = *held;
+    owner.submit(request("job"));
+    assert(!owner.advance());
+    assert(state.loads.empty() && owner.status().queued == 1);
+    assert(owner.load({50, 60, 90}));
+    assert(owner.advance());
+    // The engine sees physical free memory bounded by the granted budget.
+    assert(state.loads.back() == Footprint({50, 60, 70}));
+    const auto status = owner.status();
+    assert(
+        status.loaded && !status.busy && status.queued == 0 && status.model == "job"
+    );
+    owner.shutdown();
+}
+
+void offload_refuses_while_busy_and_releases_when_idle() {
+    FakeState state;
+    std::vector<std::string> controls;
+    const auto held = offloaded_owner(state, {100, 80, 70}, controls);
+    auto& owner = *held;
+    bool refused = false, shrink_refused = false, grew = false, busy = false;
+    state.during_execute = [&] {
+        busy = owner.busy();
+        refused = !owner.offload();
+        shrink_refused = !owner.load({10, 10, 10});
+        grew = owner.load({100, 100, 100});
+    };
+    assert(owner.load({100, 80, 70}));
+    owner.submit(request("job"));
+    assert(owner.advance());
+    assert(busy && refused && shrink_refused && grew && !owner.busy());
+    // Growth while resident rebuilds the engine inside the new budget.
+    assert(owner.advance() && controls == std::vector<std::string>({"resized"}));
+    assert(owner.status().memory.residents == 0 && owner.status().model.empty());
+    state.during_execute = {};
+    owner.submit(request("next"));
+    assert(owner.advance());
+    assert(owner.offload());
+    assert(!owner.status().loaded && owner.status().budget == Footprint({0, 0, 0}));
+    assert(owner.advance());
+    assert(controls.back() == "offloaded" && owner.status().memory.residents == 0);
+    owner.submit(request("later"));
+    assert(!owner.advance() && owner.status().queued == 1);
+    owner.shutdown();
+}
+
+void offloaded_owner_retires_a_cancelled_head() {
+    FakeState state;
+    std::vector<std::string> controls;
+    std::vector<std::pair<std::string, JobState>> replies;
+    InferenceOwner owner(
+        {0, 0, 0},
+        [&](auto, std::shared_ptr<Resources> r) {
+            return std::make_unique<FakeEngine>(state, r);
+        },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto kind, auto) { replies.emplace_back(id, kind); },
+        32,
+        {},
+        [] { return std::chrono::steady_clock::now(); },
+        false
+    );
+    owner.submit(request("gone"));
+    assert(owner.cancel("gone"));
+    assert(owner.advance());
+    assert(replies.back() == std::make_pair(std::string("gone"), JobState::cancelled));
+    assert(state.loads.empty());
+}
+
 int main() {
+    offloaded_owner_waits_for_a_budget();
+    offload_refuses_while_busy_and_releases_when_idle();
+    offloaded_owner_retires_a_cancelled_head();
     cohort_target_only_shortens_collection_waiting();
     incomplete_cohort_keeps_deadline_and_fifo_barriers();
     throughput_target_controls_collection_and_advice();

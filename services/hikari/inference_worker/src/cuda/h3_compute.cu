@@ -2824,8 +2824,12 @@ public:
 private:
     bool plan_weights_locked() {
         const auto bytes = inventory_bytes_;
-        // Plan from free physical memory on each owned device thread. Freeze the
-        // partition until park/replan so cached identities keep stable slices.
+        // Plan from free physical memory on each owned device thread, bounded by
+        // what the shared ledger can still grant there: a worker's budget may be
+        // smaller than the free device, and the bank reserves its whole bound.
+        // Freeze the partition until park/replan so cached identities keep
+        // stable slices.
+        const auto ledger = resources_->snapshot();
         Bytes total = 0;
         for (std::size_t i = 0; i < threads_.size(); ++i)
             threads_[i]
@@ -2833,8 +2837,21 @@ private:
                     workspace.activate();
                     auto& ops =
                         static_cast<CudaDeviceOperations&>(workspace.operations());
+                    const auto slot = std::size_t(devices_[i]) + 1;
+                    const auto headroom =
+                        (ledger.capacity[slot] > ledger.used[slot]
+                             ? ledger.capacity[slot] - ledger.used[slot]
+                             : 0)
+                        + ops.weights.reserved();
+                    // Keep the unused scratch envelope, as the physical probe does.
+                    const auto scratch = ops.scratch_limit > ops.scratch_bytes
+                                             ? ops.scratch_limit - ops.scratch_bytes
+                                             : 0;
+                    const auto granted = headroom > scratch ? headroom - scratch : 0;
                     const auto capacity = std::min(
-                        ops.weights.maximum_capacity(), ops.available_weight_bytes()
+                        {ops.weights.maximum_capacity(),
+                         ops.available_weight_bytes(),
+                         granted}
                     );
                     // Request state (KV mirrors) keeps up to an eighth of it.
                     weight_capacities_[i] =

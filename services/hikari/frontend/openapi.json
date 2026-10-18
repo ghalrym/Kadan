@@ -2885,7 +2885,7 @@
     }
   },
   "info": {
-    "description": "Local model downloads and selection are persisted. One native C++ worker owns the bounded FIFO, model engines, resource admission and lifecycle. The API submits requests and presents native results. Chat history is client-owned.",
+    "description": "Local model downloads and selection are persisted. Each machine runs one native C++ process with a worker per inference type; workers connect to /v1/workers and own their engines and queues. The API grants every worker its memory budget by priority, routes requests, and presents native results. Chat history is client-owned.",
     "title": "Hikari API",
     "version": "0.0.1"
   },

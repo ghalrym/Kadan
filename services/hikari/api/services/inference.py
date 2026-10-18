@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from contextlib import suppress
-
-from pydantic import BaseModel
 
 from api.pydantic_models.inference import (
     Feature,
@@ -16,6 +15,7 @@ from api.pydantic_models.inference import (
 )
 from api.pydantic_models.inference_task import (
     DownloadTask,
+    InferenceTask,
     TierSelectionTask,
     VideoTask,
 )
@@ -27,8 +27,9 @@ from api.pydantic_models.model_store import (
 )
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
-from api.services.inference_worker import InferenceTask, InferenceWorker
 from api.services.video_jobs import video_jobs
+from api.services.worker_hub import WorkerHub
+from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class InferenceStream:
 
 class InferenceService:
     def __init__(self):
-        self.worker = InferenceWorker(on_event=self._observe)
+        self.worker = WorkerHub(on_event=self._observe)
         self.tasks: dict[str, asyncio.Task] = {}
         self.model_id = None
         self.state = "unloaded"
@@ -335,6 +336,13 @@ class InferenceService:
         try:
             result = await asyncio.shield(job.result)
             if job.request.feature == "video":
+                # The worker may be on another machine; its file arrives inline.
+                video = result.pop("video", None)
+                if video is not None:
+                    await asyncio.to_thread(
+                        video_jobs.store, job.request.id, base64.b64decode(video)
+                    )
+                    result["output_url"] = f"/v1/videos/{job.request.id}/content"
                 video_jobs.update(job.request.id, **result)
             if job.request.operation in ("load", "unload"):
                 return self.status()
@@ -411,7 +419,10 @@ class InferenceService:
         job = await self.worker.submit(
             InferenceTask(operation="unload", input={"feature": "llm"})
         )
-        return await self._complete(job)
+        status = await self._complete(job)
+        # The engine is closed; give its budget back to other workers.
+        await self.worker.offload("llm")
+        return status
 
 
 inference = InferenceService()

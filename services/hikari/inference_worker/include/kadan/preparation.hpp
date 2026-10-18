@@ -129,6 +129,13 @@ private:
     DownloadProgress progress_;
 };
 
+// What a worker needs before the API grants its budget, from the catalog or,
+// for a downloaded language model, its GGUF plan. Reads metadata only.
+// {"model", "minimum": [host, device], "preferred": [host, device]}
+Json worker_requirement(
+    Workload workload, const std::optional<std::string>& model, const ModelStore& store
+);
+
 // Converts checkpoint containers and tokenizer metadata only; never runs a model.
 void export_whisper(
     const fs::path& source,
