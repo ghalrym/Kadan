@@ -21,6 +21,7 @@ int main() {
     std::barrier start(17), admitted(17), release(17);
     std::atomic_int accepted = 0;
     std::vector<std::jthread> threads;
+    threads.reserve(16);
     for (int i = 0; i < 16; ++i)
         threads.emplace_back([&] {
             start.arrive_and_wait();
