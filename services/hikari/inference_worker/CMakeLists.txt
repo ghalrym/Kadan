@@ -6,11 +6,15 @@ if(KADAN_TRACE_WEIGHT_CACHE)
   # the same layout. This developer build does not change runtime settings.
   add_compile_definitions(KADAN_TRACE_WEIGHT_CACHE)
 endif()
-# GGUF metadata and row dequantization only. Kadan retains execution, placement,
-# request state and sampling; no llama.cpp model graph or backend is linked.
+# GGUF metadata, row dequantization and ggml-cpu's quantized dot kernels for
+# host-resident experts. Kadan retains execution, placement, request state and
+# sampling; no llama.cpp model graph runs. The CPU kernels target the AVX2, FMA
+# and F16C baseline (GGML_NATIVE stays off).
 include(FetchContent)
 set(BUILD_SHARED_LIBS OFF)
-set(GGML_CPU OFF CACHE BOOL "" FORCE)
+set(GGML_CPU ON CACHE BOOL "" FORCE)
+set(GGML_CPU_REPACK OFF CACHE BOOL "" FORCE)
+set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
@@ -110,10 +114,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 # Native GGUF text models for the hardware tiers.
 add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
-  src/models/text/gguf_placement.cpp
-  src/models/text/qwen_layers.cpp src/models/text/qwen35.cpp src/models/text/qwen4exp.cpp
+  src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
+  src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp
   src/models/text/glm.cpp)
-target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources)
+target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources
+  PRIVATE ggml-base ggml-cpu)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_gguf_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
@@ -417,7 +422,7 @@ if(BUILD_TESTING)
   target_compile_options(gguf-quantization-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME gguf_quantization COMMAND gguf-quantization-tests)
   add_executable(gguf-text-tests tests/gguf_text.cpp)
-  target_link_libraries(gguf-text-tests PRIVATE kadan_gguf_text)
+  target_link_libraries(gguf-text-tests PRIVATE kadan_gguf_text ggml-base)
   target_compile_options(gguf-text-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME gguf_text COMMAND gguf-text-tests)
   add_executable(gguf-checkpoint-tests tests/gguf_checkpoint.cpp)

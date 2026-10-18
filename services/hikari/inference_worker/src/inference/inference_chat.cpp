@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdio>
 
 #include "kadan/chat_prompt.hpp"
 #include "kadan/gguf_text.hpp"
@@ -9,6 +10,31 @@
 
 namespace kadan::serving {
 namespace {
+// One opted-in stderr line per phase; the API relays it to its log.
+void timing_record(
+    const char* phase, std::size_t tokens, double seconds, text::Engine::Timing t
+) {
+    const Json record{
+        {"phase", phase},
+        {"tokens", tokens},
+        {"seconds", seconds},
+        {"projection_seconds", t.projection_seconds},
+        {"attention_seconds", t.attention_seconds},
+        {"host_seconds", seconds - t.projection_seconds - t.attention_seconds},
+        {"projections", t.projections},
+        {"projection_batches", t.batches},
+        {"streamed_bytes", t.streamed_bytes},
+        {"host_expert_bytes", t.host_bytes},
+        {"packed_bytes", t.packed_bytes},
+        {"device_bytes", t.device_bytes},
+        {"device_slices", t.device_slices},
+        {"ram_bytes", t.ram_bytes},
+        {"ram_slices", t.ram_slices}
+    };
+    std::fprintf(stderr, "KADAN_TEXT_TIMING %s\n", record.dump().c_str());
+    std::fflush(stderr);
+}
+
 class ChatEngine final : public InferenceEngine {
 public:
     ChatEngine(
@@ -107,9 +133,17 @@ public:
         auto first = started, last = started;
         check_cancel(cancel);
         progress_("prefill_begin", prompt_.size());
+        model_->take_timing();
         auto selected = model_->prefill(prompt_, progress_);
+        const auto prefilled = std::chrono::steady_clock::now();
+        timing_record(
+            "prefill",
+            prompt_.size(),
+            std::chrono::duration<double>(prefilled - started).count(),
+            model_->take_timing()
+        );
         std::string text, pending, reason = "length";
-        std::size_t generated = 0;
+        std::size_t generated = 0, steps = 0;
         for (; generated < max_output_; ++generated) {
             check_cancel(cancel);
             if (selected.eos) {
@@ -132,9 +166,18 @@ public:
                 content_(chunk);
                 text += chunk;
             }
-            if (generated + 1 < max_output_)
+            if (generated + 1 < max_output_) {
                 selected = model_->step(selected.id, true);
+                ++steps;
+            }
         }
+        timing_record(
+            "decode",
+            steps,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - prefilled)
+                .count(),
+            model_->take_timing()
+        );
         auto tail = utf8_chunk(pending, true);
         if (!tail.empty()) {
             content_(tail);

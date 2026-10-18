@@ -1,4 +1,4 @@
-// Qwen3.8 27B (GGUF qwen35): llama.cpp src/models/qwen35.cpp at
+// Qwen3.6 35B-A3B (GGUF qwen35moe): llama.cpp src/models/qwen35moe.cpp at
 // 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209. Text only; MTP is not executed.
 #include <cmath>
 #include <string>
@@ -9,11 +9,13 @@
 
 namespace kadan::text {
 namespace {
-constexpr std::size_t hidden = 5120, layers = 64, ff = 17408, vocabulary_size = 248320,
+constexpr std::size_t hidden = 2048, layers = 40, experts = 256, top_k = 8,
+                      expert_ff = 512, vocabulary_size = 248320,
                       context_length = 262144;
 constexpr float eps = 1e-6f;
-const DeltaNetSpec delta_spec{hidden, 16, 48, 128, 4, eps, false};
-const AttentionSpec attention_spec{hidden, 24, 4, 256, 64, 1e7f, eps};
+const DeltaNetSpec delta_spec{hidden, 16, 32, 128, 4, eps, false};
+const AttentionSpec attention_spec{hidden, 16, 2, 256, 64, 1e7f, eps};
+const MoeSpec moe_spec{hidden, experts, top_k, expert_ff, expert_ff};
 
 bool full_attention(std::size_t layer) {
     return (layer + 1) % 4 == 0;
@@ -24,18 +26,21 @@ std::string prefix(std::size_t layer) {
 }
 
 template <class Metadata> void validate(const Metadata& m) {
-    need(m.string("general.architecture") == "qwen35", "qwen35_architecture");
+    need(m.string("general.architecture") == "qwen35moe", "qwen35moe_architecture");
     for (const auto& [key, expected] :
          std::initializer_list<std::pair<const char*, std::uint64_t>>{
              {"block_count", layers},
              {"context_length", context_length},
              {"embedding_length", hidden},
-             {"feed_forward_length", ff},
              {"attention.head_count", attention_spec.heads},
              {"attention.head_count_kv", attention_spec.kv_heads},
              {"attention.key_length", attention_spec.dim},
              {"attention.value_length", attention_spec.dim},
              {"rope.dimension_count", attention_spec.rotary},
+             {"expert_count", experts},
+             {"expert_used_count", top_k},
+             {"expert_feed_forward_length", expert_ff},
+             {"expert_shared_feed_forward_length", expert_ff},
              {"ssm.conv_kernel", delta_spec.conv},
              {"ssm.state_size", delta_spec.dim},
              {"ssm.group_count", delta_spec.key_heads},
@@ -43,44 +48,48 @@ template <class Metadata> void validate(const Metadata& m) {
              {"ssm.inner_size", delta_spec.value_heads * delta_spec.dim},
              {"full_attention_interval", 4}
          })
-        need(m.integer(std::string("qwen35.") + key) == expected, "qwen35_dimensions");
+        need(
+            m.integer(std::string("qwen35moe.") + key) == expected,
+            "qwen35moe_dimensions"
+        );
     need(
-        std::abs(m.number("qwen35.rope.freq_base") - 1e7) < 1
-            && std::abs(m.number("qwen35.attention.layer_norm_rms_epsilon") - eps)
+        std::abs(m.number("qwen35moe.rope.freq_base") - 1e7) < 1
+            && std::abs(m.number("qwen35moe.attention.layer_norm_rms_epsilon") - eps)
                    < 1e-12,
-        "qwen35_arithmetic"
+        "qwen35moe_arithmetic"
     );
-    const auto sections = m.integers("qwen35.rope.dimension_sections");
+    const auto sections = m.integers("qwen35moe.rope.dimension_sections");
     need(
         sections.size() == 4 && sections[0] == 11 && sections[1] == 11
             && sections[2] == 10 && sections[3] == 0,
-        "qwen35_rope_sections"
+        "qwen35moe_rope_sections"
     );
-    const auto recurrent = m.booleans("qwen35.attention.recurrent_layers");
-    need(recurrent.size() == layers, "qwen35_layer_schedule");
-    for (std::size_t i = 0; i < layers; ++i)
-        need(recurrent[i] == !full_attention(i), "qwen35_layer_schedule");
+    // Absent keys select llama.cpp's defaults: no routed weight scale, no MTP,
+    // and the interval-derived recurrent schedule.
     need(
-        !m.has("qwen35.nextn_predict_layers")
+        !m.has("qwen35moe.expert_weights_scale")
+            && !m.has("qwen35moe.nextn_predict_layers")
+            && !m.has("qwen35moe.attention.recurrent_layers")
             && m.string("tokenizer.ggml.model") == "gpt2"
             && m.string("tokenizer.ggml.pre") == "qwen35"
             && m.integer("tokenizer.ggml.eos_token_id") == 248046
             && m.integer("tokenizer.ggml.padding_token_id") == 248044,
-        "qwen35_tokenizer"
+        "qwen35moe_tokenizer"
     );
 }
 
 struct Layer {
     Vec norm, post_norm;
     std::variant<DeltaNetLayer, AttentionLayer> attention;
+    MoeLayer moe;
 };
 
-class Qwen35 final : public Model {
+class Qwen35Moe final : public Model {
 public:
-    Qwen35(const GgufWeights& weights, DenseCompute& compute, std::size_t context)
+    Qwen35Moe(const GgufWeights& weights, DenseCompute& compute, std::size_t context)
         : w_(weights), compute_(compute), context_(context),
           output_norm_(weights.read("output_norm.weight")) {
-        need(context && context <= context_length, "qwen35_context");
+        need(context && context <= context_length, "qwen35moe_context");
         for (std::size_t i = 0; i < layers; ++i) {
             const auto p = prefix(i);
             layers_.push_back(
@@ -96,7 +105,8 @@ public:
                        )
                      : std::variant<DeltaNetLayer, AttentionLayer>(
                            std::in_place_type<DeltaNetLayer>, w_, p, delta_spec
-                       )}
+                       ),
+                 MoeLayer(w_, p, moe_spec)}
             );
         }
     }
@@ -123,11 +133,11 @@ public:
     ) override {
         need(
             !tokens.empty() && position + tokens.size() <= context_,
-            "qwen35_context_exceeded"
+            "qwen35moe_context_exceeded"
         );
         Vec x(tokens.size() * hidden);
         for (std::size_t row = 0; row < tokens.size(); ++row) {
-            need(tokens[row] < vocabulary_size, "qwen35_token");
+            need(tokens[row] < vocabulary_size, "qwen35moe_token");
             w_.rows(
                 "token_embd.weight",
                 tokens[row],
@@ -135,7 +145,6 @@ public:
             );
         }
         for (std::size_t i = 0; i < layers; ++i) {
-            const auto p = prefix(i);
             auto& layer = layers_[i];
             Vec h = x;
             rms_norm(h, layer.norm, eps);
@@ -148,13 +157,9 @@ public:
                 x[j] += mixed[j];
             h = x;
             rms_norm(h, layer.post_norm, eps);
-            auto gate = w_.project(compute_, p + "ffn_gate.weight", h);
-            const auto up = w_.project(compute_, p + "ffn_up.weight", h);
-            for (std::size_t j = 0; j < gate.size(); ++j)
-                gate[j] = silu(gate[j]) * up[j];
-            const auto down = w_.project(compute_, p + "ffn_down.weight", gate);
+            const auto moe = layer.moe.forward(compute_, w_, h);
             for (std::size_t j = 0; j < x.size(); ++j)
-                x[j] += down[j];
+                x[j] += moe[j];
             if (progress)
                 progress("layer", i + 1);
         }
@@ -174,16 +179,16 @@ private:
 };
 }  // namespace
 
-void validate_qwen35(const checkpoint::GgufMetadata& m) {
+void validate_qwen35moe(const checkpoint::GgufMetadata& m) {
     validate(m);
 }
 
-void validate_qwen35(const checkpoint::GgufCheckpoint& m) {
+void validate_qwen35moe(const checkpoint::GgufCheckpoint& m) {
     validate(m);
 }
 
-void bind_qwen35(GgufWeights& w) {
-    validate_qwen35(w.gguf());
+void bind_qwen35moe(GgufWeights& w) {
+    validate_qwen35moe(w.gguf());
     w.matrix("token_embd.weight", vocabulary_size, hidden);
     w.matrix("output.weight", vocabulary_size, hidden);
     w.vector("output_norm.weight", {hidden});
@@ -195,20 +200,18 @@ void bind_qwen35(GgufWeights& w) {
             bind_attention(w, p, attention_spec);
         else
             bind_delta_net(w, p, delta_spec);
-        w.matrix(p + "ffn_gate.weight", ff, hidden);
-        w.matrix(p + "ffn_up.weight", ff, hidden);
-        w.matrix(p + "ffn_down.weight", hidden, ff);
+        bind_moe(w, p, moe_spec);
     }
     w.finish();
 }
 
-std::size_t qwen35_state_bytes(std::size_t context) {
-    return 48 * DeltaNetLayer::state_bytes(delta_spec)
-           + 16 * AttentionLayer::state_bytes(attention_spec, context);
+std::size_t qwen35moe_state_bytes(std::size_t context) {
+    return 30 * DeltaNetLayer::state_bytes(delta_spec)
+           + 10 * AttentionLayer::state_bytes(attention_spec, context);
 }
 
 std::unique_ptr<Model>
-qwen35_model(const GgufWeights& w, DenseCompute& compute, std::size_t context) {
-    return std::make_unique<Qwen35>(w, compute, context);
+qwen35moe_model(const GgufWeights& w, DenseCompute& compute, std::size_t context) {
+    return std::make_unique<Qwen35Moe>(w, compute, context);
 }
 }  // namespace kadan::text

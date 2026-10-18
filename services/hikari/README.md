@@ -35,9 +35,10 @@ system memory.
 
 ## Supported native capabilities
 
-- Chat: one pinned GGUF checkpoint per hardware tier (Qwen3.8 27B Q4_K_M and
-  Q8_0, Qwen3.8 Flash Next and GLM-5.3 Flash), text messages, JSON or streaming
-  SSE responses. GLM reasoning streams inside `<think>…</think>` before the
+- Chat: one pinned GGUF mixture-of-experts checkpoint per hardware tier
+  (Qwen3.6 35B-A3B, Qwen3.8 Flash Next at two precisions and GLM-5.3 Flash),
+  with routed experts tiered across VRAM, RAM and disk;
+  text messages, JSON or streaming SSE responses. GLM reasoning streams inside `<think>…</think>` before the
   answer. Context
   admission uses the configured token capacity; it never silently truncates
   history.

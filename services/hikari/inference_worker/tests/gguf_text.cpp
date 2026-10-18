@@ -1,10 +1,15 @@
 // Component units for the GGUF text layer math against independent naive
 // formulas. No checkpoint is opened and no model runs.
+#include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <ggml.h>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
+#include "../src/models/text/cpu_matvec.hpp"
 #include "../src/models/text/gguf_model.hpp"
 
 namespace {
@@ -105,6 +110,156 @@ void delta() {
     }
 }
 
+// The fused two-pass recurrence equals the three-pass form bit for bit.
+void delta_passes() {
+    constexpr std::size_t dim = 128;
+    std::uint32_t seed = 12345;
+    auto next = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return float(int(seed >> 8) - (1 << 23)) / float(1 << 23);
+    };
+    for (const bool per_key : {false, true}) {
+        Vec state(dim * dim), reference(dim * dim);
+        for (std::size_t i = 0; i < state.size(); ++i)
+            state[i] = reference[i] = next();
+        for (int t = 0; t < 4; ++t) {
+            Vec q(dim), k(dim), v(dim), decay(per_key ? dim : 1), out(dim),
+                expected(dim);
+            for (auto* x : {&q, &k, &v})
+                for (auto& value : *x)
+                    value = next();
+            for (auto& g : decay)
+                g = .5f + .5f * std::abs(next());
+            const float beta = .5f + .25f * next();
+            kadan::text::delta_rule(state, q, k, v, decay, beta, out);
+            for (std::size_t i = 0; i < dim; ++i)
+                for (std::size_t j = 0; j < dim; ++j)
+                    reference[i * dim + j] *= decay[per_key ? i : 0];
+            Vec delta(v);
+            for (std::size_t i = 0; i < dim; ++i)
+                for (std::size_t j = 0; j < dim; ++j)
+                    delta[j] -= reference[i * dim + j] * k[i];
+            for (auto& d : delta)
+                d *= beta;
+            for (std::size_t i = 0; i < dim; ++i)
+                for (std::size_t j = 0; j < dim; ++j) {
+                    reference[i * dim + j] += k[i] * delta[j];
+                    expected[j] += reference[i * dim + j] * q[i];
+                }
+            check(out == expected && state == reference, "delta_passes");
+        }
+    }
+}
+
+void workers() {
+    kadan::text::Workers pool(3);
+    for (int round = 0; round < 50; ++round) {
+        std::vector<int> seen(37);
+        pool.run(seen.size(), [&](std::size_t i) { ++seen[i]; });
+        check(
+            std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }),
+            "workers_once"
+        );
+    }
+    bool thrown = false;
+    try {
+        pool.run(9, [](std::size_t i) {
+            if (i == 4)
+                throw std::runtime_error("workers_error");
+        });
+    } catch (const std::runtime_error& error) {
+        thrown = std::string(error.what()) == "workers_error";
+    }
+    check(thrown, "workers_rethrow");
+    int total = 0;
+    pool.run(1, [&](std::size_t) { ++total; });
+    check(total == 1, "workers_after_error");
+    // start() leaves the caller free until wait().
+    std::vector<int> later(23);
+    pool.start(later.size(), [&](std::size_t i) { ++later[i]; });
+    pool.wait();
+    check(
+        std::all_of(later.begin(), later.end(), [](int n) { return n == 1; }),
+        "workers_async"
+    );
+    pool.start(3, [](std::size_t i) {
+        if (i == 1)
+            throw std::runtime_error("workers_async_error");
+    });
+    thrown = false;
+    try {
+        pool.wait();
+    } catch (const std::runtime_error&) {
+        thrown = true;
+    }
+    check(thrown, "workers_async_rethrow");
+}
+
+// ggml-cpu products of packed rows against double-precision dot products of
+// the same rows decoded by ggml.
+void cpu_matvec() {
+    using kadan::text::CpuMatvec;
+    constexpr std::size_t in = 512, out = 37, rows = 3;
+    std::uint32_t seed = 99;
+    auto next = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return float(int(seed >> 8) - (1 << 23)) / float(1 << 23);
+    };
+    Vec input(rows * in);
+    for (auto& v : input)
+        v = next();
+    for (const auto type :
+         {GGML_TYPE_F32,
+          GGML_TYPE_Q8_0,
+          GGML_TYPE_Q4_K,
+          GGML_TYPE_Q6_K,
+          GGML_TYPE_IQ4_XS}) {
+        check(CpuMatvec::supported(type, in), "cpu_matvec_supported");
+        Vec values(out * in);
+        for (auto& v : values)
+            v = next() * .1f;
+        const auto row_bytes = ggml_row_size(type, in);
+        std::vector<std::byte> packed(out * row_bytes);
+        if (type == GGML_TYPE_F32)
+            std::memcpy(packed.data(), values.data(), packed.size());
+        else
+            ggml_quantize_chunk(
+                type, values.data(), packed.data(), 0, out, in, nullptr
+            );
+        Vec decoded(values);
+        if (type != GGML_TYPE_F32)
+            ggml_get_type_traits(type)->to_float(
+                packed.data(), decoded.data(), out * in
+            );
+        const CpuMatvec product(type, input, in);
+        Vec output(rows * out);
+        product.run(packed.data(), row_bytes, 0, 20, output, out);
+        product.run(packed.data(), row_bytes, 20, out, output, out);
+        double worst = 0, scale = 0;
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t c = 0; c < out; ++c) {
+                double expected = 0;
+                for (std::size_t i = 0; i < in; ++i)
+                    expected += double(decoded[c * in + i]) * input[r * in + i];
+                scale = std::max(scale, std::abs(expected));
+                worst = std::max(worst, std::abs(output[r * out + c] - expected));
+            }
+        // Activations are rounded to the 8-bit dot type, as llama.cpp does.
+        check(
+            worst <= (type == GGML_TYPE_F32 ? 1e-5 : 2e-2) * std::max(scale, 1.0),
+            "cpu_matvec_value"
+        );
+    }
+}
+
+// Rows must be whole blocks of the weight type and of its dot type.
+void cpu_matvec_blocks() {
+    using kadan::text::CpuMatvec;
+    check(CpuMatvec::supported(GGML_TYPE_IQ4_NL, 640), "cpu_matvec_iq4nl_640");
+    check(!CpuMatvec::supported(GGML_TYPE_Q4_K, 640), "cpu_matvec_q4k_640");
+    check(!CpuMatvec::supported(GGML_TYPE_COUNT, 256), "cpu_matvec_type_range");
+}
+
 void attention() {
     // Two query rows at positions 1 and 2, two heads sharing one KV head.
     constexpr std::size_t heads = 2, dim = 2, keys = 3;
@@ -185,6 +340,28 @@ void placement() {
     const auto stats = tiers.stats();
     check(stats.device == 90 && stats.ram == 60, "placement_accounting");
     check(stats.device_slices == 2 && stats.ram_slices == 1, "placement_slices");
+
+    // Pinned slices displace any expert and are never displaced by one.
+    Placement pinned(8);
+    pinned.budgets(100, 100);
+    for (int i = 0; i < 8; ++i)
+        pinned.use(a, 60);
+    const auto dense = pinned.use(big, 50, true);
+    check(
+        dense.device && dense.device_evicted == std::vector<SliceKey>{a},
+        "placement_pin"
+    );
+    for (int i = 0; i < 16; ++i)
+        check(!pinned.use(b, 60).device, "placement_pin_kept");
+    check(pinned.use(c, 40).device, "placement_pin_room");
+
+    // Admission cost does not grow with the number of cold slices.
+    Placement many(8);
+    many.budgets(1000, 0);
+    for (std::size_t e = 0; e < 200000; ++e)
+        many.use({"experts", e}, 10);
+    const auto large = many.stats();
+    check(large.device == 1000 && large.device_slices == 100, "placement_many");
 }
 
 void activations() {
@@ -200,6 +377,10 @@ int main() {
         norms();
         rotation();
         delta();
+        delta_passes();
+        workers();
+        cpu_matvec();
+        cpu_matvec_blocks();
         attention();
         placement();
         activations();

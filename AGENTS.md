@@ -31,6 +31,16 @@ From the repository root, generate the API schema, then the frontend client:
 .venv/bin/python services/hikari/bin/hikari.py generate api
 ```
 
+# Text inference design
+
+The project exists to run mixture-of-experts models larger than the GPU by tiering routed experts across VRAM, RAM and disk (the Strata/FreeToken approach). In short:
+
+- Every hardware tier's language model must be a mixture-of-experts checkpoint. Never add a dense language model to the catalog or a tier.
+- Only routed experts move between VRAM, RAM and disk; every non-expert matrix stays pinned in VRAM.
+- Decode-time projections go through the batched `GgufWeights::project` / `dense_gguf_batch` path with packed weights decoded in-kernel; do not reintroduce per-matrix blocking device calls or F32 weight expansion on the decode path.
+- Routed experts held in host RAM run on the host (ggml-cpu kernels) concurrently with the device batch, split against PCIe streaming by measured rates; do not route them over PCIe by default.
+- Placement admission must stay independent of the total number of slices.
+
 # Developer tooling
 
 - `bin/hikari.py` is the Typer entry point for repeatable developer commands.

@@ -2,8 +2,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -184,6 +186,29 @@ public:
         return ProjectionResult::unsupported;
     }
 
+    // Input rows per job that dense_gguf_batch accepts.
+    static constexpr std::size_t gguf_batch_rows = 8;
+
+    // One small-row product of a packed GGUF matrix; no encoding means F32 rows.
+    // Bank keys match dense_gguf_source/dense_source, so residency is shared.
+    struct GgufBatchJob {
+        const WeightIdentity* identity;
+        std::optional<gguf::Encoding> encoding;
+        const GgufWeightSource* source;
+        std::span<const float> input;
+        std::size_t in, out;
+        std::span<float> output;
+        bool retain_misses;
+    };
+
+    // Token decoding: every job runs in one synchronous device submission with
+    // one input upload and one output download. Unsupported precedes source
+    // reads and output writes; callers then project each job separately.
+    virtual ProjectionResult
+    dense_gguf_batch(std::span<const GgufBatchJob>, const std::atomic_bool&) {
+        return ProjectionResult::unsupported;
+    }
+
     using FloatWeightSource = std::function<void(std::size_t, std::span<float>)>;
 
     // F32 VAE stride-one CHW convolution. False precedes source reads/output
@@ -232,6 +257,33 @@ public:
         std::size_t,
         std::span<float>,
         const std::atomic_bool&
+    ) {
+        return false;
+    }
+
+    // Causal attention over a host KV cache that the device mirrors per `layer`
+    // until release_scratch. Rows are queries at positions position.. whose keys
+    // and values are already in keys/values ([position, kv_head, dim], at least
+    // position + rows positions). Earlier mirrored positions are reused and
+    // rewritten positions are uploaded again. With `selected`, row r attends
+    // only positions selected[offsets[r] .. offsets[r + 1]) (none after its own
+    // position). False precedes any output write and leaves the caller's
+    // attention responsible.
+    virtual bool attend_cached(
+        std::uint64_t /*layer*/,
+        std::span<const float> /*q*/,
+        std::span<const float> /*keys*/,
+        std::span<const float> /*values*/,
+        std::size_t /*rows*/,
+        std::size_t /*position*/,
+        std::size_t /*heads*/,
+        std::size_t /*kv_heads*/,
+        std::size_t /*dim*/,
+        float /*scale*/,
+        std::span<float> /*output*/,
+        const std::atomic_bool&,
+        std::span<const std::uint32_t> /*selected*/ = {},
+        std::span<const std::uint32_t> /*offsets*/ = {}
     ) {
         return false;
     }

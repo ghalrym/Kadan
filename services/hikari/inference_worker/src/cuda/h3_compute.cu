@@ -5,6 +5,7 @@
 #include <cuda_bf16.h>
 #include <future>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -87,6 +88,330 @@ __global__ void gguf_decode_kernel(
     decoded[i] = value;
     if (!isfinite(value))
         atomicOr(status, 1U);
+}
+
+// Decode-time products read packed rows directly, so no F32 weight tile is
+// written and re-read. One block of gguf_matvec_threads reduces one output
+// column for up to gguf_matvec_rows input rows. Weights decode exactly as
+// gguf_decode_kernel; F32 rows are read as stored. Output row r of a job starts
+// at r * stride. One launch covers every resident chunk of a batch.
+constexpr unsigned gguf_matvec_rows = DenseCompute::gguf_batch_rows,
+                   gguf_matvec_threads = 256,
+                   gguf_matvec_columns = gguf_matvec_threads / 32;
+
+// At most 16MiB of F32 source staging per active device, independent of free
+// VRAM; whole rows bound each source chunk.
+constexpr std::size_t source_staging_bytes = 16 * 1024 * 1024;
+
+inline std::size_t source_bytes_per_chunk(std::size_t in) {
+    return source_staging_bytes / (in * sizeof(float));
+}
+
+struct MatvecJob {
+    const unsigned char* weights;
+    const float* input;
+    float* output;
+    // Set when a decoded weight is not finite.
+    unsigned* status;
+    std::size_t row_bytes, stride;
+    unsigned in, columns, rows, first_block;
+    gguf::Encoding encoding;
+    bool f32;
+};
+
+// One warp per output column; each lane decodes aligned runs of eight values
+// (job.in % 8 == 0) and the warp reduces by shuffles. Kind is an Encoding, or
+// -1 for F32 rows, so each format compiles to its own straight-line decoder.
+template <int Kind>
+__device__ void matvec_column(const MatvecJob& job, unsigned column) {
+    constexpr unsigned run = 8;
+    constexpr bool f32 = Kind < 0;
+    constexpr auto encoding = gguf::Encoding(f32 ? 0 : Kind);
+    constexpr unsigned values = f32 ? 1 : unsigned(gguf::block_values(encoding));
+    constexpr std::size_t bytes = f32 ? sizeof(float) : gguf::block_bytes(encoding);
+    if (column >= job.columns)
+        return;
+    const unsigned lane = threadIdx.x % 32;
+    const auto* row = job.weights + std::size_t(column) * job.row_bytes;
+    float sums[gguf_matvec_rows] = {};
+    bool finite = true;
+#pragma unroll 2
+    for (unsigned i = lane * run; i < job.in; i += 32 * run) {
+        float weight[run];
+        if constexpr (f32) {
+            const auto* w = reinterpret_cast<const float4*>(row) + i / 4;
+            const float4 a = w[0], b = w[1];
+            weight[0] = a.x, weight[1] = a.y, weight[2] = a.z, weight[3] = a.w;
+            weight[4] = b.x, weight[5] = b.y, weight[6] = b.z, weight[7] = b.w;
+        } else
+            gguf::decode_run<encoding>(
+                row + std::size_t(i / values) * bytes, i % values, weight
+            );
+#pragma unroll
+        for (unsigned k = 0; k < run; ++k)
+            finite = finite && isfinite(weight[k]);
+#pragma unroll
+        for (unsigned r = 0; r < gguf_matvec_rows; ++r)
+            if (r < job.rows) {
+                // Inputs start on 32-byte boundaries: offsets are multiples of in.
+                const auto* x = reinterpret_cast<const float4*>(
+                    job.input + std::size_t(r) * job.in + i
+                );
+                const float4 a = x[0], b = x[1];
+                float sum = sums[r];
+                sum = fmaf(weight[0], a.x, sum);
+                sum = fmaf(weight[1], a.y, sum);
+                sum = fmaf(weight[2], a.z, sum);
+                sum = fmaf(weight[3], a.w, sum);
+                sum = fmaf(weight[4], b.x, sum);
+                sum = fmaf(weight[5], b.y, sum);
+                sum = fmaf(weight[6], b.z, sum);
+                sum = fmaf(weight[7], b.w, sum);
+                sums[r] = sum;
+            }
+    }
+    if (!finite)
+        atomicOr(job.status, 1U);
+#pragma unroll
+    for (unsigned r = 0; r < gguf_matvec_rows; ++r) {
+        if (r >= job.rows)
+            break;
+        float sum = sums[r];
+        for (unsigned offset = 16; offset; offset /= 2)
+            sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        if (!lane)
+            job.output[std::size_t(r) * job.stride + column] = sum;
+    }
+}
+
+template <int Kind> __global__ void gguf_matvec_kernel(MatvecJob job) {
+    matvec_column<Kind>(job, blockIdx.x * gguf_matvec_columns + threadIdx.x / 32);
+}
+
+// Blocks are numbered consecutively across jobs; each finds its own.
+template <int Kind>
+__global__ void gguf_matvec_batch_kernel(const MatvecJob* jobs, unsigned count) {
+    unsigned low = 0, high = count;
+    while (high - low > 1) {
+        const auto middle = (low + high) / 2;
+        if (jobs[middle].first_block <= blockIdx.x)
+            low = middle;
+        else
+            high = middle;
+    }
+    const auto job = jobs[low];
+    matvec_column<Kind>(
+        job, (blockIdx.x - job.first_block) * gguf_matvec_columns + threadIdx.x / 32
+    );
+}
+
+int matvec_kind(const MatvecJob& job) {
+    return job.f32 ? -1 : int(job.encoding);
+}
+
+// Calls f with the compile-time kernel kind of a runtime kind.
+template <class F> void with_matvec_kind(int kind, F&& f) {
+    using gguf::Encoding;
+    switch (kind) {
+    case -1:
+        return f(std::integral_constant<int, -1>{});
+    case int(Encoding::q3_k):
+        return f(std::integral_constant<int, int(Encoding::q3_k)>{});
+    case int(Encoding::q4_k):
+        return f(std::integral_constant<int, int(Encoding::q4_k)>{});
+    case int(Encoding::q8_0):
+        return f(std::integral_constant<int, int(Encoding::q8_0)>{});
+    case int(Encoding::q6_k):
+        return f(std::integral_constant<int, int(Encoding::q6_k)>{});
+    case int(Encoding::iq3_xxs):
+        return f(std::integral_constant<int, int(Encoding::iq3_xxs)>{});
+    case int(Encoding::iq4_nl):
+        return f(std::integral_constant<int, int(Encoding::iq4_nl)>{});
+    case int(Encoding::iq4_xs):
+        return f(std::integral_constant<int, int(Encoding::iq4_xs)>{});
+    case int(Encoding::iq2_s):
+        return f(std::integral_constant<int, int(Encoding::iq2_s)>{});
+    case int(Encoding::iq3_s):
+        return f(std::integral_constant<int, int(Encoding::iq3_s)>{});
+    case int(Encoding::bf16):
+        return f(std::integral_constant<int, int(Encoding::bf16)>{});
+    }
+    throw std::invalid_argument("h3_cuda_matvec_kind");
+}
+
+// One column-chunk launch.
+void launch_matvec(const MatvecJob& job) {
+    with_matvec_kind(matvec_kind(job), [&](auto kind) {
+        gguf_matvec_kernel<decltype(kind)::value>
+            <<<unsigned((job.columns + gguf_matvec_columns - 1) / gguf_matvec_columns),
+               gguf_matvec_threads>>>(job);
+    });
+    checked(cudaGetLastError());
+}
+
+// One launch per weight format over table[first, end); block numbers restart
+// at zero in each launch.
+struct MatvecLaunch {
+    std::size_t first, end;
+    unsigned blocks;
+};
+
+// Sorts chunks by format and numbers their blocks within each launch.
+std::vector<MatvecLaunch> plan_matvec(std::vector<MatvecJob>& chunks) {
+    std::stable_sort(chunks.begin(), chunks.end(), [](const auto& a, const auto& b) {
+        return matvec_kind(a) < matvec_kind(b);
+    });
+    std::vector<MatvecLaunch> launches;
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        if (!i || matvec_kind(chunks[i]) != matvec_kind(chunks[i - 1]))
+            launches.push_back({i, i, 0});
+        auto& launch = launches.back();
+        chunks[i].first_block = launch.blocks;
+        launch.blocks += unsigned(
+            (chunks[i].columns + gguf_matvec_columns - 1) / gguf_matvec_columns
+        );
+        launch.end = i + 1;
+    }
+    return launches;
+}
+
+// `chunks` are the host copy of `table`, which already holds them on the device.
+void launch_matvec(
+    std::span<const MatvecLaunch> launches,
+    std::span<const MatvecJob> chunks,
+    const MatvecJob* table
+) {
+    for (const auto& launch : launches) {
+        with_matvec_kind(matvec_kind(chunks[launch.first]), [&](auto kind) {
+            gguf_matvec_batch_kernel<decltype(kind)::value>
+                <<<launch.blocks, gguf_matvec_threads>>>(
+                    table + launch.first, unsigned(launch.end - launch.first)
+                );
+        });
+        checked(cudaGetLastError());
+    }
+}
+
+// Every chunk in one launch per format; `table` is device room for them all.
+void launch_matvec(std::vector<MatvecJob>& chunks, MatvecJob* table) {
+    if (chunks.empty())
+        return;
+    const auto launches = plan_matvec(chunks);
+    checked(cudaMemcpy(
+        table, chunks.data(), chunks.size() * sizeof(MatvecJob), cudaMemcpyHostToDevice
+    ));
+    launch_matvec(launches, chunks, table);
+}
+
+// Causal attention over a mirrored KV cache [position, kv_head, dim], split
+// over keys: block (row, head, segment) scores cached_attention_segment keys,
+// eight per tile with one warp each, and leaves its online-softmax partial;
+// cached_attention_combine merges a row's segments. Threads own output dims
+// tid and tid + 256.
+constexpr unsigned cached_attention_threads = 256, cached_attention_dim = 512,
+                   cached_attention_segment = 256;
+
+__global__ void cached_attention_kernel(
+    const float* q,
+    const float* keys,
+    const float* values,
+    float* partial,
+    unsigned position,
+    unsigned heads,
+    unsigned kv_heads,
+    unsigned dim,
+    float scale,
+    const unsigned* selected,
+    const unsigned* offsets
+) {
+    constexpr unsigned warps = cached_attention_threads / 32;
+    __shared__ float query[cached_attention_dim], scores[warps];
+    const unsigned row = blockIdx.x, head = blockIdx.y, segment = blockIdx.z;
+    const unsigned lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    // Sparse rows attend their selected positions; dense rows every earlier one.
+    const unsigned* chosen = selected ? selected + offsets[row] : nullptr;
+    const unsigned kv = head / (heads / kv_heads),
+                   visible =
+                       selected ? offsets[row + 1] - offsets[row] : position + row + 1;
+    const unsigned begin = segment * cached_attention_segment,
+                   end = min(visible, begin + cached_attention_segment);
+    const std::size_t width = std::size_t(kv_heads) * dim;
+    for (unsigned d = threadIdx.x; d < dim; d += cached_attention_threads)
+        query[d] = q[(std::size_t(row) * heads + head) * dim + d];
+    __syncthreads();
+    float maximum = -INFINITY, total = 0, acc[2] = {0, 0};
+    for (unsigned first = begin; first < end; first += warps) {
+        const unsigned t = first + warp;
+        if (t < end) {
+            const float* key = keys + std::size_t(chosen ? chosen[t] : t) * width
+                               + std::size_t(kv) * dim;
+            float dot = 0;
+            for (unsigned d = lane; d < dim; d += 32)
+                dot = fmaf(query[d], key[d], dot);
+            for (unsigned offset = 16; offset; offset /= 2)
+                dot += __shfl_down_sync(0xffffffffu, dot, offset);
+            if (!lane)
+                scores[warp] = dot * scale;
+        } else if (!lane)
+            scores[warp] = -INFINITY;
+        __syncthreads();
+        float tile = maximum;
+        for (unsigned w = 0; w < warps; ++w)
+            tile = fmaxf(tile, scores[w]);
+        const float correction = expf(maximum - tile);
+        total *= correction;
+        acc[0] *= correction;
+        acc[1] *= correction;
+        for (unsigned w = 0; w < warps && first + w < end; ++w) {
+            const float p = expf(scores[w] - tile);
+            total += p;
+            const auto at = first + w;
+            const float* value = values + std::size_t(chosen ? chosen[at] : at) * width
+                                 + std::size_t(kv) * dim;
+            for (unsigned i = 0; i < 2; ++i) {
+                const unsigned d = threadIdx.x + i * cached_attention_threads;
+                if (d < dim)
+                    acc[i] = fmaf(p, value[d], acc[i]);
+            }
+        }
+        maximum = tile;
+        __syncthreads();
+    }
+    // Per (row, head, segment): maximum, total, then dim weighted value sums.
+    // Segments past a row's last visible key keep total == 0.
+    auto* out =
+        partial + ((std::size_t(row) * heads + head) * gridDim.z + segment) * (dim + 2);
+    if (!threadIdx.x) {
+        out[0] = maximum;
+        out[1] = total;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        const unsigned d = threadIdx.x + i * cached_attention_threads;
+        if (d < dim)
+            out[2 + d] = acc[i];
+    }
+}
+
+__global__ void cached_attention_combine(
+    const float* partial, float* out, unsigned heads, unsigned dim, unsigned segments
+) {
+    const unsigned row = blockIdx.x, head = blockIdx.y;
+    const auto* in = partial + (std::size_t(row) * heads + head) * segments * (dim + 2);
+    float maximum = -INFINITY;
+    for (unsigned z = 0; z < segments; ++z)
+        if (in[z * (dim + 2) + 1] > 0)
+            maximum = fmaxf(maximum, in[z * (dim + 2)]);
+    float total = 0;
+    for (unsigned z = 0; z < segments; ++z)
+        if (in[z * (dim + 2) + 1] > 0)
+            total += in[z * (dim + 2) + 1] * expf(in[z * (dim + 2)] - maximum);
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x) {
+        float sum = 0;
+        for (unsigned z = 0; z < segments; ++z)
+            if (in[z * (dim + 2) + 1] > 0)
+                sum += in[z * (dim + 2) + 2 + d] * expf(in[z * (dim + 2)] - maximum);
+        out[(std::size_t(row) * heads + head) * dim + d] = sum / total;
+    }
 }
 
 struct Layout {
@@ -461,12 +786,112 @@ public:
     const Bytes scratch_limit;
     DeviceWeights weights;
 
+    // One layer's mirrored KV cache: keys for `capacity` positions, then values.
+    struct KvMirror {
+        float* data = nullptr;
+        std::size_t capacity = 0, valid = 0, width = 0;
+        Handle reservation = 0;
+    };
+
+    std::map<std::uint64_t, KvMirror> mirrors;
+
     CudaDeviceOperations(
         Resources& resources, int device, Workload workload, Bytes limit, Bytes scratch
     )
-        : scratch_limit(scratch), weights(resources, device, workload, limit, *this) {
+        : scratch_limit(scratch), weights(resources, device, workload, limit, *this),
+          ledger_(resources), device_(device), workload_(workload) {
     }
 
+    ~CudaDeviceOperations() override {
+        try {
+            release_mirrors();
+        } catch (...) {
+        }
+    }
+
+    // Grows a mirror to `positions`, keeping its valid rows. Nullptr when the
+    // device cannot admit it while leaving the scratch workspace room to grow.
+    KvMirror* mirror(std::uint64_t layer, std::size_t positions, std::size_t width) {
+        auto& m = mirrors[layer];
+        if (m.width != width) {
+            release_mirror(m);
+            m.width = width;
+        }
+        if (m.capacity >= positions)
+            return &m;
+        const auto capacity = std::max<std::size_t>({positions, 2 * m.capacity, 256});
+        const Bytes bytes = Bytes(2) * capacity * width * sizeof(float);
+        const auto snapshot = ledger_.snapshot();
+        const auto at = std::size_t(device_) + 1;
+        const Bytes growth =
+            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
+        if (snapshot.used[at] + bytes + growth > snapshot.capacity[at]
+            || bytes > available_weight_bytes())
+            return nullptr;
+        auto footprint = snapshot.capacity;
+        std::fill(footprint.begin(), footprint.end(), 0);
+        footprint[at] = bytes;
+        Handle reservation = 0;
+        try {
+            reservation = ledger_.reserve(workload_, std::move(footprint));
+        } catch (const std::runtime_error&) {
+            return nullptr;
+        }
+        float* data = nullptr;
+        const auto status = cudaMalloc(&data, bytes);
+        if (status != cudaSuccess) {
+            cudaGetLastError();
+            ledger_.released(reservation);
+            if (status != cudaErrorMemoryAllocation)
+                checked(status);
+            return nullptr;
+        }
+        ledger_.loaded(reservation);
+        ledger_.pin(reservation);
+        const auto valid = m.valid;
+        if (valid) {
+            checked(cudaMemcpy(
+                data, m.data, valid * width * sizeof(float), cudaMemcpyDeviceToDevice
+            ));
+            checked(cudaMemcpy(
+                data + capacity * width,
+                m.data + m.capacity * width,
+                valid * width * sizeof(float),
+                cudaMemcpyDeviceToDevice
+            ));
+        }
+        release_mirror(m);
+        m = {data, capacity, valid, width, reservation};
+        return &m;
+    }
+
+    void release_mirrors() {
+        for (auto& [layer, m] : mirrors)
+            release_mirror(m);
+        mirrors.clear();
+    }
+
+private:
+    Resources& ledger_;
+    int device_;
+    Workload workload_;
+
+    void release_mirror(KvMirror& m) {
+        if (m.data) {
+            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cudaFree(m.data));
+        }
+        if (m.reservation) {
+            ledger_.unpin(m.reservation);
+            ledger_.begin_eviction(m.reservation);
+            ledger_.released(m.reservation);
+        }
+        m.data = nullptr;
+        m.reservation = 0;
+        m.capacity = m.valid = 0;
+    }
+
+public:
     Bytes available_weight_bytes() override {
         std::size_t free = 0, total = 0;
         checked(cudaMemGetInfo(&free, &total));
@@ -527,6 +952,7 @@ public:
     }
 
     void release_weights() override {
+        release_mirrors();
         weights.release();
     }
 
@@ -589,6 +1015,7 @@ public:
     }
 
     void reset() override {
+        release_mirrors();
         checked(cudaDeviceSynchronize());
 #ifndef KADAN_ATEN_RUNTIME
         checked(cudaDeviceReset());
@@ -968,7 +1395,11 @@ class Compute final : public H3Compute {
     }
 
     void release_scratch_locked() {
-        all_devices([](DeviceWorkspace& workspace) { workspace.release(); });
+        all_devices([](DeviceWorkspace& workspace) {
+            static_cast<CudaDeviceOperations&>(workspace.operations())
+                .release_mirrors();
+            workspace.release();
+        });
         weight_reservations_[0] = 0;
         for (std::size_t i = 0; i < threads_.size(); ++i)
             threads_[i]
@@ -1150,6 +1581,9 @@ class Compute final : public H3Compute {
         std::atomic_bool nonfinite_output = false;
         const auto total_out = out;
         const auto total_rows = convolution ? convolution->count : x.size() / in;
+        // Token decoding multiplies packed rows directly; prefill keeps SGEMM.
+        const bool matvec =
+            packed_source && !precise && total_rows <= gguf_matvec_rows && in % 8 == 0;
         const bool columns =
             identity
             || (column_split_ && !quant
@@ -1179,9 +1613,8 @@ class Compute final : public H3Compute {
                 }
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
-                // At most 16MiB of source staging per active device, independent of
-                // free VRAM. Plan for that actual chunk, leaving room for inputs.
-                constexpr std::size_t source_bytes = 16 * 1024 * 1024;
+                // Plan for the bounded source chunk, leaving room for inputs.
+                constexpr std::size_t source_bytes = source_staging_bytes;
                 const auto alignment = quant ? 4u : 1u;
                 const auto host_columns =
                     (source_bytes
@@ -1440,28 +1873,10 @@ class Compute final : public H3Compute {
                     auto* weight_pointer =
                         packed_source ? arena.at<void>(w)
                                       : (retained ? retained : arena.at<void>(w));
-                    if (packed_source) {
-                        auto* packed_pointer =
-                            retained ? retained : arena.at<void>(packed);
-                        if (!retained)
-                            checked(cudaMemcpy(
-                                packed_pointer,
-                                host_packed.data(),
-                                packed_bytes,
-                                cudaMemcpyHostToDevice
-                            ));
-                        auto* decode_status = arena.at<unsigned>(packed_status);
-                        checked(cudaMemset(decode_status, 0, sizeof(unsigned)));
-                        gguf_decode_kernel<<<
-                            unsigned((weight_count + 255) / 256),
-                            256>>>(
-                            static_cast<const unsigned char*>(packed_pointer),
-                            static_cast<float*>(weight_pointer),
-                            decode_status,
-                            encoding,
-                            weight_count
-                        );
-                        checked(cudaGetLastError());
+                    void* packed_pointer = nullptr;
+                    unsigned* decode_status = nullptr;
+                    // Runs after every kernel that decodes the packed rows.
+                    auto admit_packed = [&] {
                         checked(cudaStreamSynchronize(cudaStreamLegacy));
                         unsigned invalid = 0;
                         checked(cudaMemcpy(
@@ -1479,6 +1894,31 @@ class Compute final : public H3Compute {
                             arena.weights.retain_device(
                                 key, packed_pointer, packed_bytes, cancel
                             );
+                    };
+                    if (packed_source) {
+                        packed_pointer = retained ? retained : arena.at<void>(packed);
+                        if (!retained)
+                            checked(cudaMemcpy(
+                                packed_pointer,
+                                host_packed.data(),
+                                packed_bytes,
+                                cudaMemcpyHostToDevice
+                            ));
+                        decode_status = arena.at<unsigned>(packed_status);
+                        checked(cudaMemset(decode_status, 0, sizeof(unsigned)));
+                        if (!matvec) {
+                            gguf_decode_kernel<<<
+                                unsigned((weight_count + 255) / 256),
+                                256>>>(
+                                static_cast<const unsigned char*>(packed_pointer),
+                                static_cast<float*>(weight_pointer),
+                                decode_status,
+                                encoding,
+                                weight_count
+                            );
+                            checked(cudaGetLastError());
+                            admit_packed();
+                        }
                     } else if (!retained)
                         checked(cudaMemcpy(
                             weight_pointer,
@@ -1611,6 +2051,30 @@ class Compute final : public H3Compute {
                                 rows * out,
                                 out
                             );
+                        } else if (matvec) {
+                            const MatvecJob job{
+                                static_cast<const unsigned char*>(packed_pointer),
+                                input_pointer,
+                                arena.at<float>(output),
+                                decode_status,
+                                packed_row_bytes,
+                                out,
+                                unsigned(in),
+                                unsigned(out),
+                                unsigned(rows),
+                                0,
+                                encoding,
+                                false
+                            };
+                            launch_matvec(job);
+                            checked(cudaGetLastError());
+                            add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
+                                arena.at<float>(output),
+                                arena.at<float>(b),
+                                rows * out,
+                                out,
+                                nonfinite
+                            );
                         } else {
                             const float one = 1, zero = 0;
                             with_projection_math(
@@ -1693,6 +2157,8 @@ class Compute final : public H3Compute {
                                 cudaMemcpyDeviceToHost
                             ));
                     }
+                    if (matvec)
+                        admit_packed();
                     if (grouped) {
                         stop(cancel, failed);
                         checked(cudaMemcpy2D(
@@ -1862,6 +2328,9 @@ public:
                 checked(cublasSetWorkspace(
                     arena.blas, arena.at<void>(workspace), 8 * 1024 * 1024
                 ));
+                // Consecutive query heads share a KV head; whole-head keys stay
+                // on the device until the KV head changes.
+                std::size_t uploaded_kh = kv_heads;
                 for (std::size_t h = first; h < last; ++h) {
                     stop(cancel, failed);
                     const auto kh = h / (heads / kv_heads);
@@ -1906,7 +2375,9 @@ public:
                     };
                     if (plan.full_heads) {
                         pack_query(0, n);
-                        pack_keys(0, key_tokens);
+                        if (kh != uploaded_kh)
+                            pack_keys(0, key_tokens);
+                        uploaded_kh = kh;
                     }
                     for (std::size_t start = 0; start < n; start += query_tile) {
                         stop(cancel, failed);
@@ -2605,6 +3076,517 @@ public:
             retain_misses
         );
         return ProjectionResult::finite;
+    }
+
+    bool attend_cached(
+        std::uint64_t layer,
+        std::span<const float> q,
+        std::span<const float> keys,
+        std::span<const float> values,
+        std::size_t rows,
+        std::size_t position,
+        std::size_t heads,
+        std::size_t kv_heads,
+        std::size_t dim,
+        float scale,
+        std::span<float> output,
+        const std::atomic_bool& cancel,
+        std::span<const std::uint32_t> selected,
+        std::span<const std::uint32_t> offsets
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        const auto width = kv_heads * dim, positions = position + rows;
+        // The longest row bounds the key segments.
+        std::size_t longest = positions;
+        if (!selected.empty()) {
+            if (offsets.size() != rows + 1 || offsets[0]
+                || offsets[rows] != selected.size())
+                return false;
+            longest = 0;
+            for (std::size_t r = 0; r < rows; ++r) {
+                if (offsets[r + 1] <= offsets[r])
+                    return false;
+                longest = std::max<std::size_t>(longest, offsets[r + 1] - offsets[r]);
+                for (auto i = offsets[r]; i < offsets[r + 1]; ++i)
+                    if (selected[i] > position + r)
+                        return false;
+            }
+        }
+        if (threads_.size() != 1 || !rows || rows > 65535 || !heads || !kv_heads
+            || heads % kv_heads || heads > 65535 || !dim || dim > cached_attention_dim
+            || positions > std::size_t(INT_MAX) / std::max<std::size_t>(width, 1)
+            || q.size() != rows * heads * dim || output.size() != q.size()
+            || keys.size() < positions * width || values.size() < positions * width)
+            return false;
+        for (float v : q)
+            require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        bool admitted = false;
+        split(
+            1,
+            cancel,
+            [&](DeviceWorkspace& device_workspace,
+                std::size_t,
+                std::size_t,
+                const std::atomic_bool& failed) {
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(device_workspace.operations());
+                // Ownership of the device and its context precedes the mirror.
+                device_workspace.ensure(256);
+                auto* m = arena.mirror(layer, positions, width);
+                if (!m)
+                    return;
+                admitted = true;
+                // Positions from `position` on were rewritten by this call's rows.
+                const auto first = std::min(m->valid, position);
+                const auto count = (positions - first) * width;
+                for (float v : keys.subspan(first * width, count))
+                    require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                for (float v : values.subspan(first * width, count))
+                    require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                m->valid = first;
+                checked(cudaMemcpy(
+                    m->data + first * width,
+                    keys.data() + first * width,
+                    count * sizeof(float),
+                    cudaMemcpyHostToDevice
+                ));
+                checked(cudaMemcpy(
+                    m->data + m->capacity * width + first * width,
+                    values.data() + first * width,
+                    count * sizeof(float),
+                    cudaMemcpyHostToDevice
+                ));
+                m->valid = positions;
+                const auto segments = unsigned(
+                    (longest + cached_attention_segment - 1) / cached_attention_segment
+                );
+                Layout l;
+                const auto query = l.add(q.size_bytes()),
+                           result = l.add(output.size_bytes()),
+                           partial = l.add(
+                               rows * heads * segments * (dim + 2) * sizeof(float)
+                           ),
+                           indices = l.add(selected.size_bytes()),
+                           starts = l.add(offsets.size_bytes());
+                require(l.bytes <= arena.scratch_limit, "h3_cuda_attention_scratch");
+                device_workspace.ensure(l.bytes);
+                stop(cancel, failed);
+                checked(cudaMemcpy(
+                    arena.at<void>(query),
+                    q.data(),
+                    q.size_bytes(),
+                    cudaMemcpyHostToDevice
+                ));
+                if (!selected.empty()) {
+                    checked(cudaMemcpy(
+                        arena.at<void>(indices),
+                        selected.data(),
+                        selected.size_bytes(),
+                        cudaMemcpyHostToDevice
+                    ));
+                    checked(cudaMemcpy(
+                        arena.at<void>(starts),
+                        offsets.data(),
+                        offsets.size_bytes(),
+                        cudaMemcpyHostToDevice
+                    ));
+                }
+                cached_attention_kernel<<<
+                    dim3(unsigned(rows), unsigned(heads), segments),
+                    cached_attention_threads>>>(
+                    arena.at<float>(query),
+                    m->data,
+                    m->data + m->capacity * width,
+                    arena.at<float>(partial),
+                    unsigned(position),
+                    unsigned(heads),
+                    unsigned(kv_heads),
+                    unsigned(dim),
+                    scale,
+                    selected.empty() ? nullptr : arena.at<unsigned>(indices),
+                    selected.empty() ? nullptr : arena.at<unsigned>(starts)
+                );
+                checked(cudaGetLastError());
+                cached_attention_combine<<<
+                    dim3(unsigned(rows), unsigned(heads)),
+                    256>>>(
+                    arena.at<float>(partial),
+                    arena.at<float>(result),
+                    unsigned(heads),
+                    unsigned(dim),
+                    segments
+                );
+                checked(cudaGetLastError());
+                checked(cudaMemcpy(
+                    output.data(),
+                    arena.at<void>(result),
+                    output.size_bytes(),
+                    cudaMemcpyDeviceToHost
+                ));
+            }
+        );
+        if (admitted)
+            for (float v : output)
+                require(std::isfinite(v), "h3_cuda_nonfinite_output");
+        return admitted;
+    }
+
+    ProjectionResult dense_gguf_batch(
+        std::span<const GgufBatchJob> jobs, const std::atomic_bool& cancel
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        // Bank slices follow per-device column splits on multiple devices.
+        if (threads_.size() != 1 || jobs.empty())
+            return ProjectionResult::unsupported;
+        std::size_t inputs = 0, outputs = 0;
+        for (const auto& job : jobs) {
+            if (!job.identity || !job.source || !job.in || !job.out
+                || job.in > std::size_t(INT_MAX) || job.out > std::size_t(INT_MAX)
+                || job.input.empty() || job.input.size() % job.in
+                || job.input.size() / job.in > gguf_matvec_rows
+                || job.output.size() != product(job.input.size() / job.in, job.out)
+                || (job.encoding
+                    && (!gguf::supported(*job.encoding)
+                        || job.in % gguf::block_values(*job.encoding)
+                        || job.in / gguf::block_values(*job.encoding)
+                               > gguf_projection_staging_bytes
+                                     / gguf::block_bytes(*job.encoding)))
+                || (!job.encoding && job.in * sizeof(float) > source_staging_bytes)
+                || job.in % 8)
+                return ProjectionResult::unsupported;
+            inputs += job.input.size();
+            outputs += job.output.size();
+        }
+        for (const auto& job : jobs) {
+            for (const auto& other : jobs)
+                require(
+                    !overlap(
+                        job.output.data(),
+                        job.output.size_bytes(),
+                        other.input.data(),
+                        other.input.size_bytes()
+                    ),
+                    "h3_cuda_alias"
+                );
+            for (float v : job.input)
+                require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        }
+        HostAdmission admission(
+            *resources_, (inputs + outputs) * sizeof(float) + 4096, workload_
+        );
+        std::vector<float> host_input, host_output(outputs);
+        host_input.reserve(inputs);
+        for (const auto& job : jobs)
+            host_input.insert(host_input.end(), job.input.begin(), job.input.end());
+        split(
+            1,
+            cancel,
+            [&](DeviceWorkspace& device_workspace,
+                std::size_t,
+                std::size_t,
+                const std::atomic_bool& failed) {
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(device_workspace.operations());
+                // The same column chunks as dense_source/dense_gguf_source, so
+                // bank entries are shared. Each resident chunk is one table entry.
+                std::vector<std::size_t> columns;
+                std::size_t chunks = 0;
+                for (const auto& job : jobs) {
+                    columns.push_back(
+                        job.encoding ? gguf_projection_plan(
+                                           job.in,
+                                           job.out,
+                                           *job.encoding,
+                                           false,
+                                           arena.scratch_limit
+                                       )
+                                           .columns
+                                     : projection_plan(
+                                           job.in,
+                                           std::min<std::size_t>(
+                                               job.out, source_bytes_per_chunk(job.in)
+                                           ),
+                                           sizeof(float),
+                                           false,
+                                           1,
+                                           arena.scratch_limit
+                                       )
+                                           .columns
+                    );
+                    chunks += (job.out + columns.back() - 1) / columns.back();
+                }
+                Layout l;
+                const auto weight_status = l.add(sizeof(unsigned)),
+                           miss_status = l.add(chunks * sizeof(unsigned)),
+                           input = l.add(inputs * sizeof(float)),
+                           output = l.add(outputs * sizeof(float)),
+                           staging = l.add(gguf_projection_staging_bytes),
+                           table = l.add(chunks * sizeof(MatvecJob));
+                require(l.bytes <= arena.scratch_limit, "h3_cuda_projection_scratch");
+                device_workspace.ensure(l.bytes);
+                checked(cudaMemset(arena.at<void>(weight_status), 0, sizeof(unsigned)));
+                checked(cudaMemcpy(
+                    arena.at<void>(input),
+                    host_input.data(),
+                    inputs * sizeof(float),
+                    cudaMemcpyHostToDevice
+                ));
+                auto read_status = [&](std::size_t at) {
+                    unsigned invalid = 0;
+                    checked(cudaMemcpy(
+                        &invalid,
+                        arena.at<void>(at),
+                        sizeof(invalid),
+                        cudaMemcpyDeviceToHost
+                    ));
+                    require(!invalid, "h3_cuda_nonfinite_weight");
+                };
+                // A missing chunk is read, validated and only then retained.
+                struct Miss {
+                    MatvecJob chunk;
+                    DeviceWeights::Key key;
+                    const GgufBatchJob* job;
+                    std::size_t first, row_bytes, bytes;
+                };
+                std::vector<MatvecJob> resident;
+                std::vector<Miss> misses;
+                std::size_t input_at = 0, output_at = 0;
+                for (std::size_t j = 0; j < jobs.size(); ++j) {
+                    const auto& job = jobs[j];
+                    const bool f32 = !job.encoding;
+                    const auto encoding = job.encoding.value_or(gguf::Encoding::q8_0);
+                    const std::size_t values = f32 ? 1 : gguf::block_values(encoding),
+                                      block = f32 ? sizeof(float)
+                                                  : gguf::block_bytes(encoding),
+                                      row_bytes = job.in / values * block,
+                                      rows = job.input.size() / job.in;
+                    for (std::size_t first = 0; first < job.out; first += columns[j]) {
+                        const auto count = std::min(columns[j], job.out - first);
+                        const DeviceWeights::Key key{
+                            *job.identity,
+                            first * (job.in / values),
+                            product(count, job.in) / values,
+                            block
+                        };
+                        MatvecJob chunk{
+                            nullptr,
+                            arena.at<float>(input) + input_at,
+                            arena.at<float>(output) + output_at + first,
+                            arena.at<unsigned>(weight_status),
+                            row_bytes,
+                            job.out,
+                            unsigned(job.in),
+                            unsigned(count),
+                            unsigned(rows),
+                            0,
+                            encoding,
+                            f32
+                        };
+                        // Establish device/thread ownership before any retention.
+                        if (auto* hit = arena.weights.find(key, job.retain_misses)) {
+                            chunk.weights = static_cast<const unsigned char*>(hit);
+                            resident.push_back(chunk);
+                        } else
+                            misses.push_back(
+                                {chunk,
+                                 key,
+                                 &job,
+                                 first,
+                                 row_bytes,
+                                 product(count, row_bytes)}
+                            );
+                    }
+                    input_at += job.input.size();
+                    output_at += job.output.size();
+                }
+                // Misses stream through the pinned staging buffer. A tile larger
+                // than half of it runs alone; the rest form groups in two halves:
+                // the read team fills one half while the device uploads,
+                // multiplies and validates the group in the other. Validated
+                // bytes alone become reusable bank entries.
+                auto* staged = arena.at<unsigned char>(staging);
+                auto* statuses = arena.at<unsigned>(miss_status);
+                auto host =
+                    device_workspace.host_staging(gguf_projection_staging_bytes);
+                constexpr std::size_t status_slots = 8192;
+                const std::size_t half = (gguf_projection_staging_bytes
+                                          - 2 * status_slots * sizeof(unsigned))
+                                         / 2 / 256 * 256;
+                auto* pinned_status =
+                    reinterpret_cast<unsigned*>(host.data() + 2 * half);
+                // Groups of about 2MB keep reads and uploads overlapping; a
+                // group always takes at least one tile and never exceeds a half.
+                const std::size_t group_bytes = std::min<std::size_t>(half, 2 << 20);
+                auto retain = [&](const Miss& miss, const unsigned char* weights) {
+                    if (miss.job->retain_misses)
+                        arena.weights.retain_device(
+                            miss.key, weights, miss.bytes, cancel
+                        );
+                };
+                std::vector<std::size_t> small;
+                for (std::size_t i = 0; i < misses.size(); ++i) {
+                    auto& miss = misses[i];
+                    if (miss.bytes <= half) {
+                        small.push_back(i);
+                        continue;
+                    }
+                    stop(cancel, failed);
+                    const auto destination = host.first(miss.bytes);
+                    if (miss.chunk.columns >= 4)
+                        device_workspace.packed_read_team().read(
+                            *miss.job->source, miss.first, miss.row_bytes, destination
+                        );
+                    else
+                        (*miss.job->source)(miss.first, destination);
+                    stop(cancel, failed);
+                    checked(cudaMemcpy(
+                        staged, destination.data(), miss.bytes, cudaMemcpyHostToDevice
+                    ));
+                    checked(cudaMemset(statuses, 0, sizeof(unsigned)));
+                    miss.chunk.weights = staged;
+                    miss.chunk.status = statuses;
+                    launch_matvec(miss.chunk);
+                    read_status(miss_status);
+                    stop(cancel, failed);
+                    retain(miss, staged);
+                }
+                struct Group {
+                    std::size_t first, end, used;
+                    std::vector<MatvecLaunch> launches;
+                };
+                std::vector<Group> groups;
+                std::vector<MatvecJob> table_entries;
+                std::vector<std::size_t> offsets(misses.size());
+                for (std::size_t k = 0; k < small.size();) {
+                    const auto parity = groups.size() % 2;
+                    Group group{k, k, 0, {}};
+                    std::vector<MatvecJob> chunks;
+                    while (group.end < small.size() && group.end - k < status_slots
+                           && (group.end == k
+                               || group.used + misses[small[group.end]].bytes
+                                      <= group_bytes)) {
+                        auto& miss = misses[small[group.end]];
+                        offsets[small[group.end]] = group.used;
+                        miss.chunk.weights = staged + parity * half + group.used;
+                        miss.chunk.status = statuses + group.end;
+                        chunks.push_back(miss.chunk);
+                        // 256-byte starts keep F32 rows aligned for vector loads.
+                        group.used += (miss.bytes + 255) / 256 * 256;
+                        ++group.end;
+                    }
+                    group.launches = plan_matvec(chunks);
+                    for (auto& launch : group.launches) {
+                        launch.first += table_entries.size();
+                        launch.end += table_entries.size();
+                    }
+                    table_entries.insert(
+                        table_entries.end(), chunks.begin(), chunks.end()
+                    );
+                    groups.push_back(std::move(group));
+                    k = groups.back().end;
+                }
+                if (!groups.empty()) {
+                    checked(cudaMemcpy(
+                        arena.at<void>(table),
+                        table_entries.data(),
+                        table_entries.size() * sizeof(MatvecJob),
+                        cudaMemcpyHostToDevice
+                    ));
+                    struct Events {
+                        cudaEvent_t done[2]{};
+                        ~Events() {
+                            for (auto event : done)
+                                if (event)
+                                    cudaEventDestroy(event);
+                        }
+                    } events;
+                    for (auto& event : events.done)
+                        checked(
+                            cudaEventCreateWithFlags(&event, cudaEventDisableTiming)
+                        );
+                    auto finish = [&](std::size_t g) {
+                        const auto& group = groups[g];
+                        checked(cudaEventSynchronize(events.done[g % 2]));
+                        const auto* flags = pinned_status + (g % 2) * status_slots;
+                        for (std::size_t i = 0; i < group.end - group.first; ++i)
+                            require(!flags[i], "h3_cuda_nonfinite_weight");
+                        stop(cancel, failed);
+                        for (auto k = group.first; k < group.end; ++k)
+                            retain(
+                                misses[small[k]],
+                                staged + (g % 2) * half + offsets[small[k]]
+                            );
+                    };
+                    for (std::size_t g = 0; g < groups.size(); ++g) {
+                        const auto& group = groups[g];
+                        const auto parity = g % 2;
+                        // This half was last used by group g - 2, finished during g
+                        // - 1.
+                        device_workspace.packed_read_team().each(
+                            group.end - group.first, [&](std::size_t i) {
+                                const auto& miss = misses[small[group.first + i]];
+                                (*miss.job->source)(
+                                    miss.first,
+                                    host.subspan(
+                                        parity * half + offsets[small[group.first + i]],
+                                        miss.bytes
+                                    )
+                                );
+                            }
+                        );
+                        stop(cancel, failed);
+                        checked(cudaMemcpyAsync(
+                            staged + parity * half,
+                            host.data() + parity * half,
+                            group.used,
+                            cudaMemcpyHostToDevice,
+                            cudaStreamLegacy
+                        ));
+                        checked(cudaMemsetAsync(
+                            statuses + group.first,
+                            0,
+                            (group.end - group.first) * sizeof(unsigned),
+                            cudaStreamLegacy
+                        ));
+                        launch_matvec(
+                            group.launches, table_entries, arena.at<MatvecJob>(table)
+                        );
+                        checked(cudaMemcpyAsync(
+                            pinned_status + parity * status_slots,
+                            statuses + group.first,
+                            (group.end - group.first) * sizeof(unsigned),
+                            cudaMemcpyDeviceToHost,
+                            cudaStreamLegacy
+                        ));
+                        checked(cudaEventRecord(events.done[parity], cudaStreamLegacy));
+                        // Group g is queued before g - 1 is checked, so uploads run
+                        // back to back.
+                        if (g)
+                            finish(g - 1);
+                    }
+                    finish(groups.size() - 1);
+                }
+                launch_matvec(resident, arena.at<MatvecJob>(table));
+                checked(cudaStreamSynchronize(cudaStreamLegacy));
+                stop(cancel, failed);
+                read_status(weight_status);
+                checked(cudaMemcpy(
+                    host_output.data(),
+                    arena.at<void>(output),
+                    outputs * sizeof(float),
+                    cudaMemcpyDeviceToHost
+                ));
+            },
+            true
+        );
+        std::size_t at = 0;
+        for (const auto& job : jobs) {
+            std::copy_n(
+                host_output.begin() + at, job.output.size(), job.output.begin()
+            );
+            at += job.output.size();
+        }
+        return ProjectionResult::unvalidated;
     }
 
     bool convrot_source(

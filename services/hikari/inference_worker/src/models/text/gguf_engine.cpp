@@ -17,8 +17,8 @@ struct Architecture {
 };
 
 Architecture architecture(const std::string& name) {
-    if (name == "qwen35")
-        return {bind_qwen35, qwen35_state_bytes, qwen35_model};
+    if (name == "qwen35moe")
+        return {bind_qwen35moe, qwen35moe_state_bytes, qwen35moe_model};
     if (name == "qwen4exp")
         return {bind_qwen4exp, qwen4exp_state_bytes, qwen4exp_model};
     if (name == "glm5-next")
@@ -42,9 +42,9 @@ std::size_t host_bytes(const std::string& name, std::size_t context) {
 
 std::string validate_metadata(const checkpoint::GgufMetadata& m) {
     const auto name = m.string("general.architecture");
-    if (name == "qwen35") {
-        validate_qwen35(m);
-        return "qwen35";
+    if (name == "qwen35moe") {
+        validate_qwen35moe(m);
+        return "qwen35moe";
     }
     if (name == "qwen4exp") {
         validate_qwen4exp(m);
@@ -65,9 +65,9 @@ void validate_config(
     const auto maximum = config.at("max_position_embeddings").integer();
     need(
         config.at("kadan_checkpoint_format").string() == "gguf"
-            && ((type == "qwen35" || type == "qwen4exp") ? maximum == 262144
-                : type == "glm5_next"                    ? maximum == 1048576
-                                                         : false),
+            && ((type == "qwen35moe" || type == "qwen4exp") ? maximum == 262144
+                : type == "glm5_next"                       ? maximum == 1048576
+                                                            : false),
         "gguf_text_config"
     );
 }
@@ -253,6 +253,25 @@ serving::Token Engine::prefill(
         m.poisoned = true;
         throw;
     }
+}
+
+Engine::Timing Engine::take_timing() {
+    const auto& w = *impl_->weights;
+    const auto timing = w.take_timing();
+    const auto placement = w.placement();
+    return {
+        timing.projection,
+        timing.attention,
+        timing.projections,
+        timing.batches,
+        timing.streamed,
+        timing.host,
+        w.packed_bytes(),
+        placement.device,
+        placement.ram,
+        placement.device_slices,
+        placement.ram_slices
+    };
 }
 
 void Engine::close() {

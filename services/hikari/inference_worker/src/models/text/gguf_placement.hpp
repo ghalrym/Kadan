@@ -4,10 +4,18 @@
 // score that halves every `half_life` tokens. Slices stay in a tier while they
 // fit; a resident slice is displaced only by one whose score exceeds it by
 // `margin`, so routinely routed experts stay put and rare ones stream.
+// Pinned slices (every non-expert matrix) are admitted ahead of any unpinned
+// resident and are never displaced: only routed experts move between tiers.
+//
+// A decayed score s * 2^(-(t - stamp) / half_life) orders slices the same way
+// at every t as log2(s) + stamp / half_life, so residents stay in ordered sets
+// and admission touches only the coldest few instead of every slice.
 #include <compare>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "kadan/resources.hpp"
@@ -46,25 +54,33 @@ public:
         clock_ += tokens;
     }
 
-    Decision use(const SliceKey& key, Bytes bytes);
+    Decision use(const SliceKey& key, Bytes bytes, bool pinned = false);
     Stats stats() const;
 
 private:
     struct Slot {
-        double score = 0;
+        double score = 0, priority = 0;
         std::uint64_t stamp = 0;
         Bytes bytes = 0;
-        bool device = false, ram = false;
+        bool device = false, ram = false, pinned = false;
     };
+
+    using Order = std::set<std::pair<double, SliceKey>>;
 
     double score(const Slot&) const;
     // Admit `key` to a tier when it fits or displaces colder slices.
     bool
     admit(const SliceKey& key, Slot& slot, bool device, std::vector<SliceKey>& evicted);
 
+    // Unpinned residents of a tier, coldest first.
+    Order& order(bool device) {
+        return device ? device_order_ : ram_order_;
+    }
+
     double half_life_, margin_;
     std::uint64_t clock_ = 0;
     Bytes device_budget_ = 0, ram_budget_ = 0, device_used_ = 0, ram_used_ = 0;
     std::map<SliceKey, Slot> slots_;
+    Order device_order_, ram_order_;
 };
 }  // namespace kadan::text
