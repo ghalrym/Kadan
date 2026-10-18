@@ -26,11 +26,20 @@ public:
     Vec forward(DenseCompute&, const GgufWeights&, std::span<const float> input);
     void reset();
     static std::size_t state_bytes(const DeltaNetSpec&);
+    // Device bytes of DenseCompute::delta_step state and constants.
+    static std::size_t device_bytes(const DeltaNetSpec&);
 
 private:
     DeltaNetSpec spec_;
     std::string prefix_;
     Vec conv_weight_, dt_, a_, norm_, conv_, state_;
+    // Each request keeps its recurrence on the device or on the host, decided by
+    // its first step: neither copy of the state is ever partial.
+    enum class Mode {
+        unknown,
+        device,
+        host
+    } mode_ = Mode::unknown;
 };
 
 struct AttentionSpec {

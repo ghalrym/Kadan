@@ -84,6 +84,11 @@ public:
         return {};
     }
 
+    // Device bytes per device kept out of the weight bank for request state such
+    // as attend_cached mirrors; it applies from the next prepare_weights.
+    virtual void reserve_device_state(Bytes) {
+    }
+
     // Header-derived execution bytes, before any weight placement. True means the
     // conservative full inventory fits; false selects bounded RAM-backed streaming.
     virtual bool prepare_weights(Bytes) {
@@ -285,6 +290,29 @@ public:
         std::span<const std::uint32_t> /*selected*/ = {},
         std::span<const std::uint32_t> /*offsets*/ = {}
     ) {
+        return false;
+    }
+
+    // One gated delta-net step over `rows` in order (llama.cpp delta-net-base):
+    // causal depthwise convolution with SiLU over qkv, L2-normalized q and k,
+    // then per value head the decayed delta rule, RMSNorm by `norm` and the
+    // sigmoid or SiLU gate of z. The convolution history and recurrent state of
+    // `layer` stay on the device until release_scratch. `fresh` starts them at
+    // zero. False on a fresh step precedes any output write and leaves the
+    // caller's host path responsible for the request; later steps throw rather
+    // than lose device state.
+    struct DeltaStep {
+        std::uint64_t layer;
+        bool fresh;
+        std::span<const float> qkv, z, alpha, beta;
+        std::span<const float> conv, dt, a, norm;
+        std::size_t rows, key_heads, value_heads, dim, kernel;
+        float eps;
+        bool sigmoid_gate;
+        std::span<float> output;
+    };
+
+    virtual bool delta_step(const DeltaStep&, const std::atomic_bool&) {
         return false;
     }
 

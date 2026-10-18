@@ -41,9 +41,15 @@ std::size_t DeltaNetLayer::state_bytes(const DeltaNetSpec& s) {
            * sizeof(float);
 }
 
+std::size_t DeltaNetLayer::device_bytes(const DeltaNetSpec& s) {
+    return state_bytes(s)
+           + (s.channels() * s.conv + 2 * s.value_heads + s.dim) * sizeof(float);
+}
+
 void DeltaNetLayer::reset() {
     std::fill(conv_.begin(), conv_.end(), 0.f);
     std::fill(state_.begin(), state_.end(), 0.f);
+    mode_ = Mode::unknown;
 }
 
 Vec DeltaNetLayer::forward(
@@ -63,7 +69,43 @@ Vec DeltaNetLayer::forward(
                &beta = projected[3];
     const float scale = 1 / std::sqrt(float(s.dim));
     need(s.dim <= 256, "gguf_text_delta_shape");
+    const auto started = std::chrono::steady_clock::now();
     Vec mixed(channels), output(rows * inner);
+    if (mode_ != Mode::host) {
+        const bool fresh = mode_ == Mode::unknown;
+        const DenseCompute::DeltaStep step{
+            std::uint64_t(reinterpret_cast<std::uintptr_t>(this)),
+            fresh,
+            qkv,
+            z,
+            alpha,
+            beta,
+            conv_weight_,
+            dt_,
+            a_,
+            norm_,
+            rows,
+            s.key_heads,
+            s.value_heads,
+            s.dim,
+            s.conv,
+            s.eps,
+            s.sigmoid_gate,
+            output
+        };
+        if (compute.delta_step(step, w.cancel())) {
+            mode_ = Mode::device;
+            w.add_recurrent(
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - started
+                )
+                    .count()
+            );
+            return w.project(compute, prefix_ + "ssm_out.weight", output);
+        }
+        need(fresh, "gguf_text_recurrent_device_lost");
+        mode_ = Mode::host;
+    }
     for (std::size_t row = 0; row < rows; ++row) {
         w.check_cancel();
         const auto* x = qkv.data() + row * channels;
@@ -110,6 +152,10 @@ Vec DeltaNetLayer::forward(
             }
         });
     }
+    w.add_recurrent(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+            .count()
+    );
     return w.project(compute, prefix_ + "ssm_out.weight", output);
 }
 

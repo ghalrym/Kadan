@@ -116,6 +116,8 @@ struct Engine::Impl {
             );
             weights->set_ram_budget(p.cache);
             model = architecture(name).model(*weights, *execution.compute, p.context);
+            // KV mirrors stay out of the weight bank's reservation.
+            execution.compute->reserve_device_state(model->device_state_bytes());
             // False selects the bounded disk-source projection path.
             execution.compute->prepare_weights(p.execution_weights);
             execution.resources->loaded(memory);
@@ -262,6 +264,10 @@ Engine::Timing Engine::take_timing() {
     return {
         timing.projection,
         timing.attention,
+        timing.prepare,
+        timing.device,
+        timing.host_wait,
+        timing.recurrent,
         timing.projections,
         timing.batches,
         timing.streamed,

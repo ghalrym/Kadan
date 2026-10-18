@@ -2,7 +2,9 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <future>
 #include <limits>
 #include <map>
@@ -111,7 +113,8 @@ struct MatvecJob {
     const unsigned char* weights;
     const float* input;
     float* output;
-    // Set when a decoded weight is not finite.
+    // Set when a decoded weight is not finite; null skips the check for chunks
+    // already validated when the bank admitted them.
     unsigned* status;
     std::size_t row_bytes, stride;
     unsigned in, columns, rows, first_block;
@@ -119,11 +122,50 @@ struct MatvecJob {
     bool f32;
 };
 
+// gguf::decode_run<q4_k> with word loads: every Q4_K block starts on a 16-byte
+// boundary (rows are multiples of 144 bytes and chunk bases are 256-aligned).
+// The arithmetic is the reference's; only finite halves are converted alike.
+__device__ inline void
+q4k_run(const unsigned char* block, unsigned element, float* out) {
+    const auto* words = reinterpret_cast<const unsigned*>(block);
+    // Selected without an indexed array, which would live in local memory.
+    const unsigned dm = words[0], s0 = words[1], s1 = words[2], s2 = words[3];
+    const auto scale_byte = [&](unsigned i) {
+        return ((i < 4 ? s0 : i < 8 ? s1 : s2) >> (8 * (i % 4))) & 255u;
+    };
+    const unsigned group = element / 32;
+    const unsigned scale =
+        group < 4 ? scale_byte(group) & 63u
+                  : (scale_byte(group + 4) & 15u) | ((scale_byte(group - 4) >> 6) << 4);
+    const unsigned minimum =
+        group < 4 ? scale_byte(group + 4) & 63u
+                  : (scale_byte(group + 4) >> 4) | ((scale_byte(group) >> 6) << 4);
+    const float scaled = __fmul_rn(
+        __half2float(__ushort_as_half(static_cast<unsigned short>(dm & 0xffffu))),
+        float(scale)
+    );
+    const float offset = __fmul_rn(
+        __half2float(__ushort_as_half(static_cast<unsigned short>(dm >> 16))),
+        float(minimum)
+    );
+    const uint2 codes = *reinterpret_cast<const uint2*>(
+        block + 16 + (element / 64) * 32 + element % 32
+    );
+    const unsigned shift = (group & 1u) ? 4 : 0;
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i) {
+        const unsigned byte = ((i < 4 ? codes.x : codes.y) >> (8 * (i % 4))) & 255u;
+        out[i] = __fsub_rn(__fmul_rn(scaled, float((byte >> shift) & 15u)), offset);
+    }
+}
+
 // One warp per output column; each lane decodes aligned runs of eight values
 // (job.in % 8 == 0) and the warp reduces by shuffles. Kind is an Encoding, or
 // -1 for F32 rows, so each format compiles to its own straight-line decoder.
-template <int Kind>
-__device__ void matvec_column(const MatvecJob& job, unsigned column) {
+// Rows is the compile-time bound on input rows: unrolled guards for unused rows
+// would still issue, so single-row decoding has its own instantiation.
+template <int Kind, unsigned Rows>
+__device__ void matvec_rows(const MatvecJob& job, unsigned column) {
     constexpr unsigned run = 8;
     constexpr bool f32 = Kind < 0;
     constexpr auto encoding = gguf::Encoding(f32 ? 0 : Kind);
@@ -133,7 +175,7 @@ __device__ void matvec_column(const MatvecJob& job, unsigned column) {
         return;
     const unsigned lane = threadIdx.x % 32;
     const auto* row = job.weights + std::size_t(column) * job.row_bytes;
-    float sums[gguf_matvec_rows] = {};
+    float sums[Rows] = {};
     bool finite = true;
 #pragma unroll 2
     for (unsigned i = lane * run; i < job.in; i += 32 * run) {
@@ -143,16 +185,19 @@ __device__ void matvec_column(const MatvecJob& job, unsigned column) {
             const float4 a = w[0], b = w[1];
             weight[0] = a.x, weight[1] = a.y, weight[2] = a.z, weight[3] = a.w;
             weight[4] = b.x, weight[5] = b.y, weight[6] = b.z, weight[7] = b.w;
-        } else
+        } else if constexpr (encoding == gguf::Encoding::q4_k)
+            q4k_run(row + std::size_t(i / values) * bytes, i % values, weight);
+        else
             gguf::decode_run<encoding>(
                 row + std::size_t(i / values) * bytes, i % values, weight
             );
+        if (job.status)
 #pragma unroll
-        for (unsigned k = 0; k < run; ++k)
-            finite = finite && isfinite(weight[k]);
+            for (unsigned k = 0; k < run; ++k)
+                finite = finite && isfinite(weight[k]);
 #pragma unroll
-        for (unsigned r = 0; r < gguf_matvec_rows; ++r)
-            if (r < job.rows) {
+        for (unsigned r = 0; r < Rows; ++r)
+            if (Rows == 1 || r < job.rows) {
                 // Inputs start on 32-byte boundaries: offsets are multiples of in.
                 const auto* x = reinterpret_cast<const float4*>(
                     job.input + std::size_t(r) * job.in + i
@@ -170,11 +215,11 @@ __device__ void matvec_column(const MatvecJob& job, unsigned column) {
                 sums[r] = sum;
             }
     }
-    if (!finite)
+    if (!finite && job.status)
         atomicOr(job.status, 1U);
 #pragma unroll
-    for (unsigned r = 0; r < gguf_matvec_rows; ++r) {
-        if (r >= job.rows)
+    for (unsigned r = 0; r < Rows; ++r) {
+        if (Rows > 1 && r >= job.rows)
             break;
         float sum = sums[r];
         for (unsigned offset = 16; offset; offset /= 2)
@@ -182,6 +227,14 @@ __device__ void matvec_column(const MatvecJob& job, unsigned column) {
         if (!lane)
             job.output[std::size_t(r) * job.stride + column] = sum;
     }
+}
+
+template <int Kind>
+__device__ void matvec_column(const MatvecJob& job, unsigned column) {
+    if (job.rows == 1)
+        matvec_rows<Kind, 1>(job, column);
+    else
+        matvec_rows<Kind, gguf_matvec_rows>(job, column);
 }
 
 template <int Kind> __global__ void gguf_matvec_kernel(MatvecJob job) {
@@ -411,6 +464,128 @@ __global__ void cached_attention_combine(
             if (in[z * (dim + 2) + 1] > 0)
                 sum += in[z * (dim + 2) + 2 + d] * expf(in[z * (dim + 2)] - maximum);
         out[(std::size_t(row) * heads + head) * dim + d] = sum / total;
+    }
+}
+
+// Gated delta net on the device. The convolution history holds the previous
+// kernel - 1 inputs, oldest first; the next history goes to a separate buffer.
+__global__ void delta_conv_kernel(
+    const float* x,
+    const float* history,
+    const float* weights,
+    float* mixed,
+    float* next_history,
+    unsigned rows,
+    unsigned channels,
+    unsigned kernel
+) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    const unsigned past = kernel - 1;
+    if (i < std::size_t(past) * channels) {
+        // seq = history ++ x; the newest `past` entries are seq[rows ..].
+        const unsigned k = unsigned(i / channels), c = unsigned(i % channels);
+        const unsigned source = rows + k;
+        next_history[i] = source < past
+                              ? history[source * channels + c]
+                              : x[(source - past) * std::size_t(channels) + c];
+    }
+    if (i >= std::size_t(rows) * channels)
+        return;
+    const unsigned r = unsigned(i / channels), c = unsigned(i % channels);
+    float sum = 0;
+    for (unsigned k = 0; k < past; ++k) {
+        const int t = int(r) - int(past) + int(k);
+        const float value = t < 0 ? history[(past + t) * channels + c]
+                                  : x[std::size_t(t) * channels + c];
+        sum += value * weights[std::size_t(c) * kernel + k];
+    }
+    sum += x[i] * weights[std::size_t(c) * kernel + past];
+    mixed[i] = sum / (1 + expf(-sum));
+}
+
+// Block-wide double sum; every thread receives it.
+__device__ double block_sum(double value, double* shared) {
+    for (unsigned offset = 16; offset; offset /= 2)
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    if (threadIdx.x % 32 == 0)
+        shared[threadIdx.x / 32] = value;
+    __syncthreads();
+    double total = 0;
+    for (unsigned w = 0; w < (blockDim.x + 31) / 32; ++w)
+        total += shared[w];
+    __syncthreads();
+    return total;
+}
+
+// x / sqrt(sum(x^2) + eps) per head of q and k (build_gdn_l2_norm), in place.
+__global__ void delta_l2_kernel(
+    float* mixed, unsigned channels, unsigned key_heads, unsigned dim, float eps
+) {
+    __shared__ double shared[32];
+    const unsigned row = blockIdx.x, head = blockIdx.y;
+    float* x = mixed + std::size_t(row) * channels + std::size_t(head) * dim;
+    double sum = 0;
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x)
+        sum += double(x[d]) * x[d];
+    sum = block_sum(sum, shared);
+    const float scale = 1 / sqrtf(float(sum / double(dim)) + eps / float(dim));
+    const float width = 1 / sqrtf(float(dim));
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x)
+        x[d] = x[d] * scale * width;
+}
+
+// One block per value head, one thread per state column; rows in order.
+__global__ void delta_heads_kernel(
+    const float* mixed,
+    const float* z,
+    const float* alpha,
+    const float* beta,
+    const float* dt,
+    const float* a,
+    const float* norm,
+    float* state,
+    float* output,
+    unsigned rows,
+    unsigned channels,
+    unsigned key_heads,
+    unsigned value_heads,
+    unsigned dim,
+    float eps,
+    bool sigmoid_gate
+) {
+    __shared__ float q[256], k[256];
+    __shared__ double shared[32];
+    const unsigned h = blockIdx.x, j = threadIdx.x, kh = h % key_heads;
+    const std::size_t inner = std::size_t(value_heads) * dim;
+    float* s = state + std::size_t(h) * dim * dim;
+    const float scale = 1 / sqrtf(float(dim));
+    for (unsigned r = 0; r < rows; ++r) {
+        const float* m = mixed + std::size_t(r) * channels;
+        q[j] = m[kh * dim + j] * scale;
+        k[j] = m[key_heads * dim + kh * dim + j];
+        const float v = m[2 * key_heads * dim + h * dim + j];
+        __syncthreads();
+        const float x = alpha[r * value_heads + h] + dt[h];
+        const float g = expf((x > 20 ? x : log1pf(expf(x))) * a[h]);
+        const float b = 1 / (1 + expf(-beta[r * value_heads + h]));
+        float delta = v;
+        for (unsigned i = 0; i < dim; ++i)
+            delta -= s[i * dim + j] * g * k[i];
+        delta *= b;
+        float out = 0;
+        for (unsigned i = 0; i < dim; ++i) {
+            const float value = s[i * dim + j] * g + k[i] * delta;
+            s[i * dim + j] = value;
+            out += value * q[i];
+        }
+        const double sum = block_sum(double(out) * out, shared);
+        const float normalized =
+            out * (1 / sqrtf(float(sum / double(dim)) + eps)) * norm[j];
+        const float gate = z[r * inner + std::size_t(h) * dim + j];
+        output[r * inner + std::size_t(h) * dim + j] =
+            normalized
+            * (sigmoid_gate ? 1 / (1 + expf(-gate)) : gate / (1 + expf(-gate)));
+        __syncthreads();
     }
 }
 
@@ -820,34 +995,12 @@ public:
         if (m.capacity >= positions)
             return &m;
         const auto capacity = std::max<std::size_t>({positions, 2 * m.capacity, 256});
-        const Bytes bytes = Bytes(2) * capacity * width * sizeof(float);
-        const auto snapshot = ledger_.snapshot();
-        const auto at = std::size_t(device_) + 1;
-        const Bytes growth =
-            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
-        if (snapshot.used[at] + bytes + growth > snapshot.capacity[at]
-            || bytes > available_weight_bytes())
-            return nullptr;
-        auto footprint = snapshot.capacity;
-        std::fill(footprint.begin(), footprint.end(), 0);
-        footprint[at] = bytes;
-        Handle reservation = 0;
-        try {
-            reservation = ledger_.reserve(workload_, std::move(footprint));
-        } catch (const std::runtime_error&) {
-            return nullptr;
-        }
         float* data = nullptr;
-        const auto status = cudaMalloc(&data, bytes);
-        if (status != cudaSuccess) {
-            cudaGetLastError();
-            ledger_.released(reservation);
-            if (status != cudaErrorMemoryAllocation)
-                checked(status);
+        Handle reservation = 0;
+        if (!admit_state(
+                Bytes(2) * capacity * width * sizeof(float), data, reservation
+            ))
             return nullptr;
-        }
-        ledger_.loaded(reservation);
-        ledger_.pin(reservation);
         const auto valid = m.valid;
         if (valid) {
             checked(cudaMemcpy(
@@ -865,16 +1018,90 @@ public:
         return &m;
     }
 
+    // One layer's recurrent state for the current request.
+    struct Recurrent {
+        float* data = nullptr;
+        std::size_t floats = 0;
+        Handle reservation = 0;
+    };
+
+    std::map<std::uint64_t, Recurrent> recurrent;
+
+    // A zeroed buffer of `floats` for a layer's first step, otherwise the one
+    // that step created. Nullptr when it cannot be admitted or no longer exists.
+    Recurrent* recurrent_state(std::uint64_t layer, std::size_t floats, bool fresh) {
+        auto& r = recurrent[layer];
+        if (!fresh)
+            return r.data && r.floats == floats ? &r : nullptr;
+        release_recurrent(r);
+        if (!admit_state(floats * sizeof(float), r.data, r.reservation))
+            return nullptr;
+        r.floats = floats;
+        checked(cudaMemset(r.data, 0, floats * sizeof(float)));
+        return &r;
+    }
+
+    // Request boundary: KV mirrors and recurrent state.
     void release_mirrors() {
         for (auto& [layer, m] : mirrors)
             release_mirror(m);
         mirrors.clear();
+        for (auto& [layer, r] : recurrent)
+            release_recurrent(r);
+        recurrent.clear();
     }
 
 private:
     Resources& ledger_;
     int device_;
     Workload workload_;
+
+    // Ledger admission and allocation of request state, leaving the scratch
+    // workspace room to grow.
+    bool admit_state(Bytes bytes, float*& data, Handle& reservation) {
+        const auto snapshot = ledger_.snapshot();
+        const auto at = std::size_t(device_) + 1;
+        const Bytes growth =
+            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
+        if (snapshot.used[at] + bytes + growth > snapshot.capacity[at]
+            || bytes > available_weight_bytes())
+            return false;
+        auto footprint = snapshot.capacity;
+        std::fill(footprint.begin(), footprint.end(), 0);
+        footprint[at] = bytes;
+        try {
+            reservation = ledger_.reserve(workload_, std::move(footprint));
+        } catch (const std::runtime_error&) {
+            reservation = 0;
+            return false;
+        }
+        const auto status = cudaMalloc(&data, bytes);
+        if (status != cudaSuccess) {
+            cudaGetLastError();
+            data = nullptr;
+            ledger_.released(reservation);
+            reservation = 0;
+            if (status != cudaErrorMemoryAllocation)
+                checked(status);
+            return false;
+        }
+        ledger_.loaded(reservation);
+        ledger_.pin(reservation);
+        return true;
+    }
+
+    void release_recurrent(Recurrent& r) {
+        if (r.data) {
+            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cudaFree(r.data));
+        }
+        if (r.reservation) {
+            ledger_.unpin(r.reservation);
+            ledger_.begin_eviction(r.reservation);
+            ledger_.released(r.reservation);
+        }
+        r = {};
+    }
 
     void release_mirror(KvMirror& m) {
         if (m.data) {
@@ -1373,7 +1600,7 @@ class Compute final : public H3Compute {
     Footprint weight_reservations_;
     std::vector<Bytes> weight_capacities_;
     std::vector<Bytes> scratch_limits_;
-    Bytes inventory_bytes_ = 0;
+    Bytes inventory_bytes_ = 0, state_reserve_ = 0;
     bool replan_ = false;
 
     template <class F> void all_devices(F function) {
@@ -2582,6 +2809,11 @@ public:
         return result;
     }
 
+    void reserve_device_state(Bytes bytes) override {
+        std::lock_guard lock(operation_mutex_);
+        state_reserve_ = bytes;
+    }
+
     bool prepare_weights(Bytes bytes) override {
         std::lock_guard lock(operation_mutex_);
         require(!quarantined_.load(), "h3_cuda_cleanup_unconfirmed");
@@ -2601,9 +2833,12 @@ private:
                     workspace.activate();
                     auto& ops =
                         static_cast<CudaDeviceOperations&>(workspace.operations());
-                    weight_capacities_[i] = std::min(
+                    const auto capacity = std::min(
                         ops.weights.maximum_capacity(), ops.available_weight_bytes()
                     );
+                    // Request state (KV mirrors) keeps up to an eighth of it.
+                    weight_capacities_[i] =
+                        capacity - std::min(state_reserve_, capacity / 8);
                     total += weight_capacities_[i];
                 })
                 .get();
@@ -3231,6 +3466,152 @@ public:
         return admitted;
     }
 
+    bool delta_step(const DeltaStep& step, const std::atomic_bool& cancel) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        const auto rows = step.rows, dim = step.dim, heads = step.value_heads;
+        const auto channels = dim * (2 * step.key_heads + heads), inner = heads * dim;
+        if (threads_.size() != 1 || !rows || !dim || dim > 256 || dim % 32
+            || !step.key_heads || !heads || heads > 65535 || step.kernel < 2
+            || step.qkv.size() != rows * channels || step.z.size() != rows * inner
+            || step.alpha.size() != rows * heads || step.beta.size() != rows * heads
+            || step.conv.size() != channels * step.kernel || step.dt.size() != heads
+            || step.a.size() != heads || step.norm.size() != dim
+            || step.output.size() != rows * inner)
+            return false;
+        for (const auto input : {step.qkv, step.z, step.alpha, step.beta})
+            for (float v : input)
+                require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        const auto past = step.kernel - 1;
+        const std::size_t state_floats = heads * dim * dim,
+                          history_floats = past * channels,
+                          constant_floats = channels * step.kernel + 2 * heads + dim;
+        bool done = false;
+        split(
+            1,
+            cancel,
+            [&](DeviceWorkspace& device_workspace,
+                std::size_t,
+                std::size_t,
+                const std::atomic_bool& failed) {
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(device_workspace.operations());
+                device_workspace.ensure(256);
+                auto* r = arena.recurrent_state(
+                    step.layer,
+                    state_floats + history_floats + constant_floats,
+                    step.fresh
+                );
+                if (!r) {
+                    require(step.fresh, "h3_cuda_recurrent_state_lost");
+                    return;
+                }
+                float* state = r->data;
+                float* history = state + state_floats;
+                float* weights = history + history_floats;
+                float* dt = weights + channels * step.kernel;
+                float* a = dt + heads;
+                float* norm = a + heads;
+                if (step.fresh) {
+                    std::vector<float> constants;
+                    constants.reserve(constant_floats);
+                    for (const auto part : {step.conv, step.dt, step.a, step.norm})
+                        constants.insert(constants.end(), part.begin(), part.end());
+                    checked(cudaMemcpy(
+                        weights,
+                        constants.data(),
+                        constant_floats * sizeof(float),
+                        cudaMemcpyHostToDevice
+                    ));
+                }
+                Layout l;
+                const auto qkv = l.add(step.qkv.size_bytes()),
+                           z = l.add(step.z.size_bytes()),
+                           alpha = l.add(step.alpha.size_bytes()),
+                           beta = l.add(step.beta.size_bytes()),
+                           mixed = l.add(rows * channels * sizeof(float)),
+                           next = l.add(history_floats * sizeof(float)),
+                           output = l.add(step.output.size_bytes());
+                require(l.bytes <= arena.scratch_limit, "h3_cuda_recurrent_scratch");
+                device_workspace.ensure(l.bytes);
+                stop(cancel, failed);
+                {
+                    std::vector<std::byte> upload(mixed);
+                    for (const auto& [at, part] :
+                         {std::pair{qkv, step.qkv},
+                          std::pair{z, step.z},
+                          std::pair{alpha, step.alpha},
+                          std::pair{beta, step.beta}})
+                        std::memcpy(upload.data() + at, part.data(), part.size_bytes());
+                    checked(cudaMemcpy(
+                        arena.at<void>(0),
+                        upload.data(),
+                        upload.size(),
+                        cudaMemcpyHostToDevice
+                    ));
+                }
+                const auto count = std::max(rows, past) * channels;
+                delta_conv_kernel<<<unsigned((count + 255) / 256), 256>>>(
+                    arena.at<float>(qkv),
+                    history,
+                    weights,
+                    arena.at<float>(mixed),
+                    arena.at<float>(next),
+                    unsigned(rows),
+                    unsigned(channels),
+                    unsigned(step.kernel)
+                );
+                checked(cudaGetLastError());
+                checked(cudaMemcpyAsync(
+                    history,
+                    arena.at<void>(next),
+                    history_floats * sizeof(float),
+                    cudaMemcpyDeviceToDevice,
+                    cudaStreamLegacy
+                ));
+                delta_l2_kernel<<<
+                    dim3(unsigned(rows), unsigned(2 * step.key_heads)),
+                    128>>>(
+                    arena.at<float>(mixed),
+                    unsigned(channels),
+                    unsigned(step.key_heads),
+                    unsigned(dim),
+                    step.eps
+                );
+                checked(cudaGetLastError());
+                delta_heads_kernel<<<unsigned(heads), unsigned(dim)>>>(
+                    arena.at<float>(mixed),
+                    arena.at<float>(z),
+                    arena.at<float>(alpha),
+                    arena.at<float>(beta),
+                    dt,
+                    a,
+                    norm,
+                    state,
+                    arena.at<float>(output),
+                    unsigned(rows),
+                    unsigned(channels),
+                    unsigned(step.key_heads),
+                    unsigned(heads),
+                    unsigned(dim),
+                    step.eps,
+                    step.sigmoid_gate
+                );
+                checked(cudaGetLastError());
+                checked(cudaMemcpy(
+                    step.output.data(),
+                    arena.at<void>(output),
+                    step.output.size_bytes(),
+                    cudaMemcpyDeviceToHost
+                ));
+                done = true;
+            }
+        );
+        if (done)
+            for (float v : step.output)
+                require(std::isfinite(v), "h3_cuda_nonfinite_output");
+        return done;
+    }
+
     ProjectionResult dense_gguf_batch(
         std::span<const GgufBatchJob> jobs, const std::atomic_bool& cancel
     ) override {
@@ -3254,10 +3635,30 @@ public:
                 || (!job.encoding && job.in * sizeof(float) > source_staging_bytes)
                 || job.in % 8)
                 return ProjectionResult::unsupported;
-            inputs += job.input.size();
             outputs += job.output.size();
         }
-        for (const auto& job : jobs) {
+        // Jobs that share an input span (every expert of a token) upload and
+        // check it once; input_offsets[j] is job j's float offset.
+        std::vector<std::size_t> input_offsets(jobs.size());
+        std::vector<float> host_input;
+        for (std::size_t j = 0; j < jobs.size(); ++j) {
+            const auto& job = jobs[j];
+            std::size_t shared = 0;
+            while (shared < j
+                   && (jobs[shared].input.data() != job.input.data()
+                       || jobs[shared].input.size() != job.input.size()))
+                ++shared;
+            if (shared < j) {
+                input_offsets[j] = input_offsets[shared];
+                continue;
+            }
+            for (float v : job.input)
+                require(std::isfinite(v), "h3_cuda_nonfinite_input");
+            input_offsets[j] = host_input.size();
+            host_input.insert(host_input.end(), job.input.begin(), job.input.end());
+        }
+        inputs = host_input.size();
+        for (const auto& job : jobs)
             for (const auto& other : jobs)
                 require(
                     !overlap(
@@ -3268,16 +3669,10 @@ public:
                     ),
                     "h3_cuda_alias"
                 );
-            for (float v : job.input)
-                require(std::isfinite(v), "h3_cuda_nonfinite_input");
-        }
         HostAdmission admission(
             *resources_, (inputs + outputs) * sizeof(float) + 4096, workload_
         );
-        std::vector<float> host_input, host_output(outputs);
-        host_input.reserve(inputs);
-        for (const auto& job : jobs)
-            host_input.insert(host_input.end(), job.input.begin(), job.input.end());
+        std::vector<float> host_output(outputs);
         split(
             1,
             cancel,
@@ -3316,20 +3711,19 @@ public:
                     chunks += (job.out + columns.back() - 1) / columns.back();
                 }
                 Layout l;
-                const auto weight_status = l.add(sizeof(unsigned)),
-                           miss_status = l.add(chunks * sizeof(unsigned)),
-                           input = l.add(inputs * sizeof(float)),
+                // Inputs and the resident table go up in one copy; outputs and
+                // their weight status come back in one copy.
+                const auto input = l.add(inputs * sizeof(float)),
+                           resident_table = l.add(chunks * sizeof(MatvecJob)),
                            output = l.add(outputs * sizeof(float)),
+                           weight_status = l.add(sizeof(unsigned)),
+                           miss_status = l.add(chunks * sizeof(unsigned)),
                            staging = l.add(gguf_projection_staging_bytes),
                            table = l.add(chunks * sizeof(MatvecJob));
                 require(l.bytes <= arena.scratch_limit, "h3_cuda_projection_scratch");
                 device_workspace.ensure(l.bytes);
-                checked(cudaMemset(arena.at<void>(weight_status), 0, sizeof(unsigned)));
-                checked(cudaMemcpy(
-                    arena.at<void>(input),
-                    host_input.data(),
-                    inputs * sizeof(float),
-                    cudaMemcpyHostToDevice
+                checked(cudaMemsetAsync(
+                    arena.at<void>(weight_status), 0, sizeof(unsigned), cudaStreamLegacy
                 ));
                 auto read_status = [&](std::size_t at) {
                     unsigned invalid = 0;
@@ -3350,7 +3744,7 @@ public:
                 };
                 std::vector<MatvecJob> resident;
                 std::vector<Miss> misses;
-                std::size_t input_at = 0, output_at = 0;
+                std::size_t output_at = 0;
                 for (std::size_t j = 0; j < jobs.size(); ++j) {
                     const auto& job = jobs[j];
                     const bool f32 = !job.encoding;
@@ -3370,7 +3764,7 @@ public:
                         };
                         MatvecJob chunk{
                             nullptr,
-                            arena.at<float>(input) + input_at,
+                            arena.at<float>(input) + input_offsets[j],
                             arena.at<float>(output) + output_at + first,
                             arena.at<unsigned>(weight_status),
                             row_bytes,
@@ -3384,7 +3778,9 @@ public:
                         };
                         // Establish device/thread ownership before any retention.
                         if (auto* hit = arena.weights.find(key, job.retain_misses)) {
+                            // Validated when the bank admitted it.
                             chunk.weights = static_cast<const unsigned char*>(hit);
+                            chunk.status = nullptr;
                             resident.push_back(chunk);
                         } else
                             misses.push_back(
@@ -3396,8 +3792,27 @@ public:
                                  product(count, row_bytes)}
                             );
                     }
-                    input_at += job.input.size();
                     output_at += job.output.size();
+                }
+                const auto resident_launches = plan_matvec(resident);
+                {
+                    std::vector<std::byte> upload(
+                        resident_table - input + resident.size() * sizeof(MatvecJob)
+                    );
+                    std::memcpy(
+                        upload.data(), host_input.data(), inputs * sizeof(float)
+                    );
+                    std::memcpy(
+                        upload.data() + (resident_table - input),
+                        resident.data(),
+                        resident.size() * sizeof(MatvecJob)
+                    );
+                    checked(cudaMemcpy(
+                        arena.at<void>(input),
+                        upload.data(),
+                        upload.size(),
+                        cudaMemcpyHostToDevice
+                    ));
                 }
                 // Misses stream through the pinned staging buffer. A tile larger
                 // than half of it runs alone; the rest form groups in two halves:
@@ -3566,16 +3981,29 @@ public:
                     }
                     finish(groups.size() - 1);
                 }
-                launch_matvec(resident, arena.at<MatvecJob>(table));
-                checked(cudaStreamSynchronize(cudaStreamLegacy));
-                stop(cancel, failed);
-                read_status(weight_status);
+                launch_matvec(
+                    resident_launches, resident, arena.at<MatvecJob>(resident_table)
+                );
+                std::vector<std::byte> download(
+                    weight_status - output + sizeof(unsigned)
+                );
                 checked(cudaMemcpy(
-                    host_output.data(),
+                    download.data(),
                     arena.at<void>(output),
-                    outputs * sizeof(float),
+                    download.size(),
                     cudaMemcpyDeviceToHost
                 ));
+                stop(cancel, failed);
+                unsigned invalid = 0;
+                std::memcpy(
+                    &invalid,
+                    download.data() + (weight_status - output),
+                    sizeof(invalid)
+                );
+                require(!invalid, "h3_cuda_nonfinite_weight");
+                std::memcpy(
+                    host_output.data(), download.data(), outputs * sizeof(float)
+                );
             },
             true
         );
