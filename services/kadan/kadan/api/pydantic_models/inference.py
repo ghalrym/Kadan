@@ -28,6 +28,11 @@ class HikariSettings(BaseModel):
     tiers: list[HardwareTier]
 
 
+class HikariModelLifecycle(BaseModel):
+    state: Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
+    model_id: str | None = None
+
+
 class CompletionMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str

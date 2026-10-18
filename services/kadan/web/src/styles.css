@@ -776,6 +776,12 @@ main:focus {
   padding: 8px 0;
   animation: rise 300ms var(--out);
 }
+.thinking-label {
+  order: 1;
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .notice {
   color: var(--muted);
   font-size: 12px;
@@ -1670,10 +1676,6 @@ dialog::backdrop {
   border-radius: var(--r-sm);
   background: var(--bg);
   font: 12px / 1.5 var(--mono);
-}
-.thinking > span {
-  color: var(--muted);
-  font-size: 12px;
 }
 @media (max-width: 600px) {
   .plugin-controls > button,

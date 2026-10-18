@@ -84,10 +84,14 @@ export default function Chat({
   const opened = useRef(false);
   const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
+  // Hikari loads the model on demand; the first reply waits for it without a deadline.
+  const modelLoading = sending && status?.hikari.model_state === "loading";
   const [mood, react] = useMood(
     !status
       ? "idle"
-      : sending
+      : modelLoading
+        ? "waiting"
+        : sending
         ? "running"
         : !ready.chat
           ? "waiting"
@@ -110,6 +114,13 @@ export default function Chat({
       });
     };
   }, []);
+  useEffect(() => {
+    // Until the first words arrive, check whether Hikari is still loading the model.
+    if (!sending || partial) return;
+    const timer = setInterval(() => void refreshStatus(), 2000);
+    void refreshStatus();
+    return () => clearInterval(timer);
+  }, [sending, Boolean(partial)]);
   useEffect(() => {
     if (draft) sessionStorage.setItem(draftKey, draft);
     else sessionStorage.removeItem(draftKey);
@@ -297,7 +308,9 @@ export default function Chat({
           )}
           {sending && !partial && (
             <div className="thinking" role="status">
-              <span>{streamStatus}</span>
+              {modelLoading
+                ? <span className="thinking-label">Loading the model, this can take a few minutes</span>
+                : <span className="sr-only">{streamStatus}</span>}
               <i />
               <i />
               <i />

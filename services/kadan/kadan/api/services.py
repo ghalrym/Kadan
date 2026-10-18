@@ -10,7 +10,12 @@ from pydantic import ValidationError
 from .config import ServiceError, Settings
 from .pet_jobs import PetJobs
 from .plugins import PluginRegistry
-from .pydantic_models.inference import CompletionMessage, HikariSettings, PreparedChat
+from .pydantic_models.inference import (
+    CompletionMessage,
+    HikariModelLifecycle,
+    HikariSettings,
+    PreparedChat,
+)
 from .pydantic_models.resources import Message, Resource, ResourceKind
 from .routes.agents.conversations.chat import ChatInput
 from .routes.agents.conversations.notes import NoteInput
@@ -155,10 +160,22 @@ class LocalServices:
                 browser_url=self.settings.tsuchi_browser_url,
             )
 
+    async def model_state(self, model_id: str | None):
+        try:
+            value = HikariModelLifecycle.model_validate(
+                await self.json_request("Hikari", "GET", "/model-lifecycle")
+            )
+        except (ServiceError, ValidationError):
+            return None
+        # A different resident model means the selected one still has to load.
+        return value.state if value.model_id == model_id else "unloaded"
+
     async def status(self) -> Status:
         storage, inference = await asyncio.gather(
             self.storage_status(), self.inference_status()
         )
+        if inference.state == "ready":
+            inference.model_state = await self.model_state(inference.model_id)
         return Status(tsuchi=storage, hikari=inference)
 
     async def update_persona(
