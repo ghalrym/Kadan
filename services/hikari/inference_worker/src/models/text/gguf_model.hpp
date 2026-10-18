@@ -283,23 +283,17 @@ void validate_qwen35moe(const checkpoint::GgufMetadata&);
 void validate_qwen35moe(const checkpoint::GgufCheckpoint&);
 void validate_qwen4exp(const checkpoint::GgufMetadata&);
 void validate_qwen4exp(const checkpoint::GgufCheckpoint&);
-void validate_glm(const checkpoint::GgufMetadata&);
-void validate_glm(const checkpoint::GgufCheckpoint&);
 
 // Binds every tensor; the model is constructed only after finish().
 void bind_qwen35moe(GgufWeights&);
 void bind_qwen4exp(GgufWeights&);
-void bind_glm(GgufWeights&);
 
 // Host bytes of KV/recurrent state for a context.
 std::size_t qwen35moe_state_bytes(std::size_t context);
 std::size_t qwen4exp_state_bytes(std::size_t context);
-std::size_t glm_state_bytes(std::size_t context);
 
 std::unique_ptr<Model>
 qwen35moe_model(const GgufWeights&, DenseCompute&, std::size_t context);
 std::unique_ptr<Model>
 qwen4exp_model(const GgufWeights&, DenseCompute&, std::size_t context);
-std::unique_ptr<Model>
-glm_model(const GgufWeights&, DenseCompute&, std::size_t context);
 }  // namespace kadan::text

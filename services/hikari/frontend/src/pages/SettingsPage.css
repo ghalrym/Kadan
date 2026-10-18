@@ -3,7 +3,7 @@
 .tier-intro h1 { font-size: 26px; letter-spacing: -0.02em; }
 .tier-intro > p { font-size: 13.5px; }
 .tier-layout { max-width: 1140px; }
-.tier-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding-top: 12px; }
+.tier-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding-top: 12px; }
 /* Subgrid rows keep each card's header, price, button and list aligned across cards. */
 .tier-card { position: relative; display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 22px; align-content: start; padding: 28px 22px 24px; background: var(--surface); border: 1px solid #23262c; border-radius: 14px; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; }
 .tier-card:hover { border-color: #33373f; transform: translateY(-2px); }
@@ -34,8 +34,7 @@
 .tier-card--highlighted .tier-card-check { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .tier-card, .tier-card:hover { transition: none; transform: none; } }
 
-@media (max-width: 1240px) { .tier-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 28px; } }
-@media (max-width: 640px) { .tier-cards { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 960px) { .tier-cards { grid-template-columns: minmax(0, 1fr); row-gap: 28px; } }
 
 /* Confirmation and download progress modals. */
 .tier-dialog { width: min(460px, calc(100vw - 40px)); padding: 24px; color: var(--text); background: var(--surface); border: 1px solid var(--border-control); border-radius: 12px; }

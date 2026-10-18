@@ -123,60 +123,6 @@
       ]
     },
     {
-      "id": "glm-5.3-flash-q3-k-xl",
-      "repo_id": "unsloth/GLM-5.3-Flash-GGUF",
-      "revision": "a38483c8cd5df544f53d70fb281afe97369d5ab6",
-      "license": "mit",
-      "estimated_bytes": 147535922080,
-      "kind": "llm",
-      "display_name": "GLM-5.3 Flash (UD-Q3_K_XL)",
-      "layout": "gguf",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
-        "GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf",
-        "GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf",
-        "GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf"
-      ],
-      "weight_paths": [],
-      "license_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": null,
-      "asset_name": "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
-      "manifest": [
-        {
-          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf",
-          "size": 9429984,
-          "digest": "be89305a221c1449cf9a5a84b5c492520a7fb23a3af1b2178a20ecf0b6ecae76",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00001-of-00004.gguf"
-        },
-        {
-          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf",
-          "size": 49609243584,
-          "digest": "310b5bef056c5cc61d98e1845feac97e35d0a5aa412fca354b6cd597d66b486e",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00002-of-00004.gguf"
-        },
-        {
-          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf",
-          "size": 49623486016,
-          "digest": "eacaab11505a25f00e78b4dce64795cc38bc25839372ec586745af0261673a0c",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00003-of-00004.gguf"
-        },
-        {
-          "name": "GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf",
-          "size": 48293762496,
-          "digest": "c650640c9f94f5f1662ac84b803405db3265ee9fc24ffe56670bb0eafd632d00",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL/GLM-5.3-Flash-UD-Q3_K_XL-00004-of-00004.gguf"
-        }
-      ]
-    },
-    {
       "id": "h3-fl2va",
       "repo_id": "MiniMaxAI/MiniMax-H3",
       "revision": "42ed227ee7df40d41602854ae760620d6eb651fe",
@@ -955,24 +901,6 @@
       },
       "video_defaults": {
         "duration": 5,
-        "resolution": "768p"
-      }
-    },
-    {
-      "id": "ultra",
-      "name": "Ultra",
-      "vram_gb": 48,
-      "ram_gb": 512,
-      "models": {
-        "llm": "glm-5.3-flash-q3-k-xl",
-        "image": "qwen-image-2.1-turbo",
-        "video": "h3-fl2va-int8-turbo",
-        "speech": "qwen-tts-1.7b-custom",
-        "transcription": "whisper-medium",
-        "formatting": "superwhisper-s1-mini"
-      },
-      "video_defaults": {
-        "duration": 8,
         "resolution": "768p"
       }
     }

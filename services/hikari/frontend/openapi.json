@@ -1333,8 +1333,7 @@
                 "enum": [
                   "qwen3.6-35b-a3b-q4-k-m",
                   "qwen3.8-flash-next-ud-iq3-xxs",
-                  "qwen3.8-flash-next-q3-k-xl",
-                  "glm-5.3-flash-q3-k-xl"
+                  "qwen3.8-flash-next-q3-k-xl"
                 ],
                 "type": "string"
               },
@@ -1896,8 +1895,7 @@
                 "enum": [
                   "go",
                   "plus",
-                  "pro",
-                  "ultra"
+                  "pro"
                 ],
                 "type": "string"
               },
@@ -1931,8 +1929,7 @@
                 "enum": [
                   "go",
                   "plus",
-                  "pro",
-                  "ultra"
+                  "pro"
                 ],
                 "type": "string"
               },
@@ -2137,8 +2134,7 @@
             "enum": [
               "go",
               "plus",
-              "pro",
-              "ultra"
+              "pro"
             ],
             "title": "Id",
             "type": "string"
@@ -2650,6 +2646,20 @@
             "title": "Aspect",
             "type": "string"
           },
+          "batch_collection_target": {
+            "anyOf": [
+              {
+                "maximum": 32.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+            "title": "Batch Collection Target"
+          },
           "count": {
             "default": 4,
             "enum": [
@@ -2788,6 +2798,20 @@
             ],
             "title": "Aspect",
             "type": "string"
+          },
+          "batch_collection_target": {
+            "anyOf": [
+              {
+                "maximum": 32.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
+            "title": "Batch Collection Target"
           },
           "count": {
             "default": 4,

@@ -31,7 +31,6 @@ LlmModel = Literal[
     "qwen3.6-35b-a3b-q4-k-m",
     "qwen3.8-flash-next-ud-iq3-xxs",
     "qwen3.8-flash-next-q3-k-xl",
-    "glm-5.3-flash-q3-k-xl",
 ]
 # Every hardware tier generates images with Turbo.
 ImageModel = Literal["qwen-image-2.1-turbo"]

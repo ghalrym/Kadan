@@ -53,7 +53,6 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ("go", 5, "480p"),
             ("plus", 8, "480p"),
             ("pro", 5, "768p"),
-            ("ultra", 8, "768p"),
         ):
             with self.subTest(tier=tier_id):
                 service = InferenceService()
@@ -518,7 +517,7 @@ class TierSelectionTests(unittest.IsolatedAsyncioTestCase):
         for state, model_id, unloads in (
             ("ready", "qwen3.8-flash-next-ud-iq3-xxs", True),
             ("offloaded", "qwen3.8-flash-next-ud-iq3-xxs", True),
-            ("loading", "glm-5.3-flash-q3-k-xl", True),
+            ("loading", "qwen3.8-flash-next-q3-k-xl", True),
             ("ready", language_model, False),
             ("unloaded", None, False),
             ("error", "qwen3.8-flash-next-ud-iq3-xxs", False),

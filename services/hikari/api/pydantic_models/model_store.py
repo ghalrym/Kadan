@@ -37,7 +37,7 @@ class CheckpointStatus(BaseModel):
     architecture_context_limit: int | None
 
 
-TierId = Literal["go", "plus", "pro", "ultra"]
+TierId = Literal["go", "plus", "pro"]
 TierModality = Literal["llm", "image", "video", "speech", "transcription", "formatting"]
 
 

@@ -18,12 +18,6 @@ Pretokenizer pretokenizer(const std::string& name) {
             true,
             false
         };
-    if (name == "glm4")
-        return {
-            R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)",
-            false,
-            true
-        };
     throw RequestError("Unsupported GGUF tokenizer", 422);
 }
 

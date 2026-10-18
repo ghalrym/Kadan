@@ -21,8 +21,6 @@ Architecture architecture(const std::string& name) {
         return {bind_qwen35moe, qwen35moe_state_bytes, qwen35moe_model};
     if (name == "qwen4exp")
         return {bind_qwen4exp, qwen4exp_state_bytes, qwen4exp_model};
-    if (name == "glm5-next")
-        return {bind_glm, glm_state_bytes, glm_model};
     throw std::runtime_error("gguf_text_architecture");
 }
 
@@ -50,10 +48,6 @@ std::string validate_metadata(const checkpoint::GgufMetadata& m) {
         validate_qwen4exp(m);
         return "qwen4exp";
     }
-    if (name == "glm5-next") {
-        validate_glm(m);
-        return "glm5_next";
-    }
     throw std::runtime_error("gguf_text_architecture");
 }
 
@@ -65,9 +59,7 @@ void validate_config(
     const auto maximum = config.at("max_position_embeddings").integer();
     need(
         config.at("kadan_checkpoint_format").string() == "gguf"
-            && ((type == "qwen35moe" || type == "qwen4exp") ? maximum == 262144
-                : type == "glm5_next"                       ? maximum == 1048576
-                                                            : false),
+            && (type == "qwen35moe" || type == "qwen4exp") && maximum == 262144,
         "gguf_text_config"
     );
 }

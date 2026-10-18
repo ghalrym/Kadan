@@ -117,7 +117,7 @@ and libarchive reads checkpoint containers.
 
 ## Hardware tier text models
 
-Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
+Settings offers three hardware tiers. Each tier in `catalog.json` pins one GGUF
 mixture-of-experts language model (dense language models are out of scope), Qwen-Image-2.1-Turbo (the only image model), H3 FL2VA INT8 + Turbo,
 the Qwen3-TTS 1.7B CustomVoice speech model, Whisper medium for transcription
 (also the default without a saved Whisper choice) and the S1-mini formatter.
@@ -130,7 +130,6 @@ the existing FIFO.
 | Go | 8 GB VRAM, 32 GB RAM | `qwen3.6-35b-a3b-q4-k-m` | [ggml-org Qwen3.6-35B-A3B Q4_K_M](https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/tree/baec3ebee244827cda0f4557eafa8b28f7545fa6) | 20,419,565,568 |
 | Plus | 16 GB VRAM, 64 GB RAM | `qwen3.8-flash-next-ud-iq3-xxs` | [Unsloth Qwen3.8 Flash Next UD-IQ3_XXS](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ3_XXS) | 81,961,823,936 |
 | Pro | 24 GB VRAM, 128 GB RAM | `qwen3.8-flash-next-q3-k-xl` | [Unsloth Qwen3.8 Flash Next UD-Q3_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL) | 89,986,353,824 |
-| Ultra | 48 GB VRAM, 512 GB RAM | `glm-5.3-flash-q3-k-xl` | [Unsloth GLM-5.3 Flash UD-Q3_K_XL](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/tree/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL) | 147,535,922,080 |
 
 Qwen3.8 Flash Next is under the Qwen Community License 1.0; its catalog notice
 must be acknowledged before download.
@@ -140,9 +139,9 @@ first split) before any weight split. `src/preparation/gguf_assets.cpp`
 validates the exact architecture contract and derives `config.json` and a
 byte-level BPE `tokenizer.json` from the GGUF tokenizer arrays: normal tokens
 form the vocabulary, control and user-defined tokens are added tokens, and the
-published pre-tokenizers (Qwen NFC with `\p{M}`, GLM with `ignore_merges`) are
-reproduced. The derivation matches the upstream `tokenizer.json` vocabularies,
-merges and added tokens exactly.
+published Qwen pre-tokenizer (NFC with `\p{M}`) is reproduced. The derivation
+matches the upstream `tokenizer.json` vocabularies, merges and added tokens
+exactly.
 
 `src/models/text/` holds one engine (`gguf_engine.cpp`) and one model per GGUF
 architecture, following llama.cpp
@@ -154,8 +153,6 @@ architecture, following llama.cpp
 - `qwen4exp.cpp`: Qwen3.8 Flash Next, four hyper-connection streams in place of
   layer norms, n-gram hash embeddings on layer 1, a 512-expert top-10 MoE with a
   gated shared expert, and QSA top-block selection on full attention layers.
-- `glm.cpp`: GLM-5.3 Flash, mHC streams, KDA linear layers and nope-only MLA
-  with the k-pool sparse indexer. MLA is absorbed, so only the latent is cached.
 
 `qwen_layers.cpp` holds the delta net, gated attention and routed experts shared
 by both Qwen models. Layer math is F32 on the host (delta-net heads run in
@@ -193,7 +190,7 @@ actual memory and loading, prefill and decode times.
 
 ## Hardware tier video
 
-All four tiers use the existing pinned `h3-fl2va-int8-turbo` audiovisual bundle.
+All three tiers use the existing pinned `h3-fl2va-int8-turbo` audiovisual bundle.
 The catalog owns the clip defaults exposed by Settings and used by the video
 page and requests that omit duration or resolution:
 
@@ -202,7 +199,6 @@ page and requests that omit duration or resolution:
 | Go | 8 GB / 32 GB | 480p, 5 seconds |
 | Plus | 16 GB / 64 GB | 480p, 8 seconds |
 | Pro | 24 GB / 128 GB | 768p, 5 seconds |
-| Ultra | 48 GB / 512 GB | 768p, 8 seconds |
 
 These are starting settings. Every tier accepts explicit 1–15 second, 480p or
 768p requests; admission uses the actual request geometry, prompt and available
