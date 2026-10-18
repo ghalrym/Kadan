@@ -180,8 +180,10 @@ public:
         const auto& input = std::get<ImageRequest>(request.input);
         const std::atomic_bool cancel{false};
         const auto planned =
-            model_->admissible_batch_size(native_request(input), 32, cancel);
-        capacity_ = measured_[batch_shape(input)].capacity(available, planned);
+            model_->admissible_batch_footprints(native_request(input), 32, cancel);
+        capacity_ = std::max<std::size_t>(
+            1, measured_[batch_shape(input)].capacity(available, planned)
+        );
         return capacity_;
     }
 

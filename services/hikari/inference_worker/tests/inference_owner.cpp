@@ -979,16 +979,30 @@ void image_memory_growth_is_measured_and_devices_are_independent() {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;
     ImageBatchMemory memory;
     const Footprint free{64 * gib, 24 * gib, 24 * gib};
-    assert(memory.capacity(free, 16) == 1);
+    const std::vector<Footprint> plans(16, {gib, gib, gib});
+    assert(memory.capacity(free, plans) == 1);
     memory.observe(1, {2 * gib, 19 * gib, 4 * gib}, {gib, 2 * gib, 0});
-    assert(memory.capacity(free, 16) == 2);
+    assert(memory.capacity(free, plans) == 2);
     memory.observe(2, {3 * gib, 21 * gib, 4 * gib}, {gib, 2 * gib, 0});
-    assert(memory.capacity(free, 16) == 3);
+    assert(memory.capacity(free, plans) == 3);
     memory.observe(3, {4 * gib, 23 * gib, 4 * gib}, {gib, 2 * gib, 0});
-    assert(memory.capacity(free, 16) == 3);
-    assert(memory.capacity({64 * gib, 22 * gib, 100 * gib}, 16) == 2);
-    assert(memory.capacity({3 * gib, 100 * gib, 100 * gib}, 16) == 1);
-    assert(memory.capacity(free, 1) == 1);
+    assert(memory.capacity(free, plans) == 3);
+    assert(memory.capacity({64 * gib, 22 * gib, 100 * gib}, plans) == 2);
+    assert(memory.capacity({3 * gib, 100 * gib, 100 * gib}, plans) == 1);
+    assert(memory.capacity(free, std::span(plans).first(1)) == 1);
+
+    ImageBatchMemory replicas;
+    replicas.observe(1, {2 * gib, 15 * gib, 0}, {gib, gib, 0});
+    replicas.observe(2, {3 * gib, 15 * gib, 15 * gib}, {gib, gib, gib});
+    // The first second-GPU sample includes fixed weights, not 15 GiB per image.
+    assert(replicas.capacity(free, plans) == 3);
+    replicas.observe(3, {4 * gib, 16 * gib, 15 * gib}, {gib, gib, gib});
+    assert(replicas.capacity(free, plans) == 4);
+    assert(replicas.capacity({64 * gib, 24 * gib, 15 * gib}, plans) == 1);
+    const std::vector<Footprint> single_device_plans(16, {gib, 18 * gib, 0});
+    assert(replicas.capacity({64 * gib, 24 * gib, gib}, single_device_plans) == 4);
+    // A current placement's planned floor still bounds growth on its active GPU.
+    assert(replicas.capacity({64 * gib, 18 * gib, gib}, single_device_plans) == 1);
 }
 
 int main() {

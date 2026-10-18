@@ -289,21 +289,38 @@ public:
         Bytes tiled_workspace = 0,
         BatchMeasurement* measurement = nullptr
     )
-        : resources_(r), inventory_(inventory), cancel_(cancel),
-          plan_(aten_stage_plan(
-              stage_snapshot(r, devices),
-              devices,
-              inventory.bytes,
-              inventory.largest,
-              workspace,
-              tiled_workspace
-          )),
+        : Stage(
+              r,
+              inventory,
+              aten_stage_plan(
+                  stage_snapshot(r, devices),
+                  devices,
+                  inventory.bytes,
+                  inventory.largest,
+                  workspace,
+                  tiled_workspace
+              ),
+              cancel,
+              measurement
+          ) {
+    }
+
+    Stage(
+        Resources& r,
+        Inventory& inventory,
+        AtenStagePlan plan,
+        const std::atomic_bool& cancel,
+        BatchMeasurement* measurement,
+        const Stage* resident_source = nullptr
+    )
+        : resources_(r), inventory_(inventory), cancel_(cancel), plan_(plan),
           measurement_(measurement), device(plan_.device) {
-        if (measurement_ && inventory.stage == AtenImageStage::denoiser) {
-            constexpr Bytes fixed = 2ULL * 1024 * 1024 * 1024;
-            measurement_->additional_image[device + 1] =
-                (workspace - fixed) / measurement_->images;
-        }
+        need(
+            !resident_source
+                || (&resident_source->inventory_ == &inventory
+                    && !resident_source->plan_.stream_weights && !plan_.stream_weights),
+            "image_aten_replica_inventory"
+        );
         auto footprint = r.snapshot().capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
         footprint[0] = plan_.host_bytes;
@@ -320,8 +337,19 @@ public:
                 double(footprint[device + 1]) / double(total), device
             );
             if (!plan_.stream_weights)
-                for (const auto& [name, weight] : inventory.weights)
-                    bank.emplace(name, read_weight(name));
+                for (const auto& [name, weight] : inventory.weights) {
+                    stop(cancel_);
+                    bank.emplace(
+                        name,
+                        resident_source ? resident_source->bank.at(name).to(
+                                              at::Device(at::kCUDA, device),
+                                              inventory_.dtype,
+                                              false,
+                                              true
+                                          )
+                                        : read_weight(name)
+                    );
+                }
             sync();
         } catch (...) {
             auto error = std::current_exception();

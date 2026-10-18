@@ -54,7 +54,7 @@ public:
         const std::atomic_bool&,
         const BatchHook& = {}
     );
-    std::size_t admissible_batch_size(
+    std::vector<Footprint> admissible_batch_footprints(
         const ImageRequest&, std::size_t limit, const std::atomic_bool&
     );
     const BatchMeasurement& last_batch_measurement() const;

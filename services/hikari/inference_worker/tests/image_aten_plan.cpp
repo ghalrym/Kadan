@@ -182,6 +182,79 @@ void batch_budget_units() {
     check(rejected);
 }
 
+void denoiser_lane_units() {
+    using namespace kadan;
+    using namespace kadan::image;
+    constexpr Bytes gib = 1024ULL * 1024 * 1024;
+    constexpr Bytes weights = 14 * gib, largest = gib / 8;
+    constexpr Bytes host = 2 * largest + 256ULL * 1024 * 1024;
+    const auto workspace = [](std::size_t images) {
+        return aten_batch_workspace(624, 250, 624, images);
+    };
+    const auto plan = [&](const Snapshot& snapshot, std::size_t images) {
+        return aten_denoiser_plan(
+            snapshot, {0, 1}, weights, largest, 624, 250, 624, images
+        );
+    };
+    const Snapshot ample{{64 * gib, 24 * gib, 24 * gib}, {0, 0, 0}, 0};
+    const auto balanced = plan(ample, 4);
+    check(balanced.size() == 2);
+    check(balanced[0].begin == 0 && balanced[0].images == 2);
+    check(balanced[1].begin == 2 && balanced[1].images == 2);
+    check(balanced[0].stage.device != balanced[1].stage.device);
+    Resources ledger(ample.capacity);
+    std::vector<Handle> handles;
+    for (const auto& lane : balanced) {
+        check(!lane.stage.stream_weights && !lane.stage.tile_vae);
+        check(lane.stage.device_bytes == weights + workspace(2));
+        Footprint bytes(3);
+        bytes[0] = lane.stage.host_bytes;
+        bytes[lane.stage.device + 1] = lane.stage.device_bytes;
+        handles.push_back(ledger.reserve(Workload::image, bytes));
+    }
+    check(ledger.snapshot().used[0] == 2 * host);
+    for (const auto handle : handles)
+        ledger.released(handle);
+    check(ledger.snapshot().used == Footprint({0, 0, 0}));
+    const auto uneven = plan(
+        Snapshot{
+            {64 * gib, weights + workspace(1), weights + workspace(4)}, {0, 0, 0}, 0
+        },
+        4
+    );
+    check(uneven.size() == 2);
+    check(uneven[0].stage.device == 1 && uneven[0].images == 3);
+    check(uneven[1].stage.device == 0 && uneven[1].images == 1);
+    check(uneven[1].begin == 3);
+    // Physical headroom on one device never increases the other's capacity.
+    const auto pressured =
+        plan(Snapshot{{64 * gib, 24 * gib, 24 * gib}, {0, 0, 20 * gib}, 0}, 4);
+    check(pressured.size() == 1 && pressured[0].stage.device == 0);
+    // Staging reservations coexist while replicas execute; admit their sum.
+    const auto host_limited =
+        plan(Snapshot{{2 * host, 24 * gib, 24 * gib}, {host, 0, 0}, 0}, 4);
+    check(host_limited.size() == 1 && host_limited[0].images == 4);
+    const auto streamed = plan(Snapshot{{64 * gib, 8 * gib, 8 * gib}, {0, 0, 0}, 0}, 4);
+    check(streamed.size() == 1 && streamed[0].stage.stream_weights);
+    check(streamed[0].images == 4);
+    const auto singleton = plan(ample, 1);
+    check(singleton.size() == 1 && singleton[0].images == 1);
+    bool rejected = false;
+    try {
+        (void)plan(Snapshot{{64 * gib, 3 * gib, 3 * gib}, {0, 0, 0}, 0}, 4);
+    } catch (const ResourceExhausted&) {
+        rejected = true;
+    }
+    check(rejected);
+    rejected = false;
+    try {
+        (void)aten_denoiser_plan(ample, {0, 0}, weights, largest, 624, 250, 624, 4);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected);
+}
+
 void vae_budget_units() {
     using namespace kadan;
     using namespace kadan::image;
@@ -240,6 +313,7 @@ int main() {
         vae_budget_units();
         reference_budget_units();
         batch_budget_units();
+        denoiser_lane_units();
         using namespace kadan;
         using namespace kadan::image;
         constexpr Bytes gib = 1024ULL * 1024 * 1024;

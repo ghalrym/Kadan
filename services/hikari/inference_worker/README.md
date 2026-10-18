@@ -13,6 +13,14 @@ image must match. Source-latent edits remain singleton work. Each image keeps it
 own noise, attention context and output; text conditioning and VAE decoding run
 sequentially within their shared loaded stages. GPU memory is never pooled.
 
+When multiple devices have room for resident denoisers, the same worker splits
+images across balanced device-local batches and denoises them concurrently.
+Each device reserves its own complete weight replica and workspace; combined
+host staging is admitted before execution. Replicas copy the first resident
+weight bank, then all execution threads join before allocator cleanup. Devices
+that cannot hold a resident replica are excluded; single-device streaming remains
+available. No extra worker process or user setting is required.
+
 The oldest request waits at most ten seconds for compatible neighbors, including
 time already spent queued. A full admissible batch or an incompatible FIFO
 neighbor starts execution immediately. Each shape begins with a measured
@@ -21,6 +29,10 @@ Admission checks current host and individual GPU headroom, native stage plans,
 measured peaks and incremental per-image memory. Existing count requests use the
 same bounded execution. Cancellation, progress, results and errors retain their
 request IDs.
+Placement-aware admission ignores historical peaks on devices unused by the
+current plan. Cancelling one request does not cancel its siblings. A native
+execution failure fails the unfinished batch after all device work joins and
+resources are cleaned up; successful results from earlier subbatches survive.
 
 `KADAN_ATEN_IMAGE_BATCH` logs record image count, elapsed batch execution time,
 worker RSS baseline/peak and CUDA allocator peaks. Footprint arrays use host RAM
@@ -28,6 +40,9 @@ at index zero and CUDA device N at index N+1. Component loading, generation and
 unloading remain separate `KADAN_ATEN_IMAGE_TIMING` records. These observations
 are specific to the measured shape and process lifetime; they are not a fixed
 hardware batch-size guarantee.
+Denoiser timing records also include each device's image count, request offset,
+monotonic start/end times and completion status. Weights are released after each
+batch, so loading time and generation with resident weights are distinct costs.
 
 ## Source layout
 

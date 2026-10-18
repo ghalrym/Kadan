@@ -164,6 +164,96 @@ inline Bytes aten_batch_workspace(
     return fixed + images * (one - fixed);
 }
 
+struct AtenDenoiserLane {
+    std::size_t begin;
+    std::size_t images;
+    AtenStagePlan stage;
+};
+
+// Independent replicas split images, never one image's weights or device budget.
+// Reference/text encoding and decoding stay sequential outside these lanes.
+inline std::vector<AtenDenoiserLane> aten_denoiser_plan(
+    const Snapshot& snapshot,
+    const std::vector<int>& devices,
+    Bytes weights,
+    Bytes largest,
+    Bytes points,
+    Bytes tokens,
+    Bytes reference_points,
+    std::size_t images
+) {
+    const auto workspace = [&](std::size_t count) {
+        return aten_batch_workspace(points, tokens, reference_points, count);
+    };
+    const auto single = [&] {
+        return std::vector<AtenDenoiserLane>{
+            {0,
+             images,
+             aten_stage_plan(snapshot, devices, weights, largest, workspace(images))}
+        };
+    };
+    if (images <= 1)
+        return single();
+    constexpr Bytes mib = 1024ULL * 1024;
+    const auto host = 2 * largest + 256 * mib;
+    const auto host_lanes = (snapshot.capacity[0] - snapshot.used[0]) / host;
+
+    struct Candidate {
+        int device;
+        Bytes free;
+        std::size_t capacity;
+        std::size_t images = 0;
+    };
+
+    std::vector<Candidate> candidates;
+    std::vector<int> seen;
+    for (int device : devices) {
+        if (device < 0 || std::size_t(device) + 1 >= snapshot.capacity.size()
+            || std::find(seen.begin(), seen.end(), device) != seen.end())
+            throw std::invalid_argument("image_aten_device");
+        seen.push_back(device);
+        const auto free = snapshot.capacity[device + 1] - snapshot.used[device + 1];
+        std::size_t capacity = 0;
+        for (std::size_t count = 1; count <= images; ++count) {
+            if (weights > free || workspace(count) > free - weights)
+                break;
+            capacity = count;
+        }
+        if (capacity)
+            candidates.push_back({device, free, capacity});
+    }
+    std::stable_sort(
+        candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+            return a.capacity != b.capacity ? a.capacity > b.capacity : a.free > b.free;
+        }
+    );
+    candidates.resize(
+        std::min<std::size_t>(candidates.size(), std::min<Bytes>(images, host_lanes))
+    );
+    for (std::size_t assigned = 0; assigned < images; ++assigned) {
+        auto selected = candidates.end();
+        for (auto lane = candidates.begin(); lane != candidates.end(); ++lane)
+            if (lane->images < lane->capacity
+                && (selected == candidates.end() || lane->images < selected->images))
+                selected = lane;
+        if (selected == candidates.end())
+            return single();
+        ++selected->images;
+    }
+    std::vector<AtenDenoiserLane> lanes;
+    lanes.reserve(candidates.size());
+    std::size_t begin = 0;
+    for (const auto& lane : candidates) {
+        lanes.push_back(
+            {begin,
+             lane.images,
+             {lane.device, false, false, host, weights + workspace(lane.images)}}
+        );
+        begin += lane.images;
+    }
+    return lanes;
+}
+
 // Tiling changes only the convolutional sections. Global bottleneck attention
 // still sees the complete latent grid and is accounted for independently.
 inline Bytes aten_tiled_vae_workspace(AtenImageStage stage, Bytes points) {
