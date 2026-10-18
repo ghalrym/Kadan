@@ -148,7 +148,7 @@ void admission_retries_head() {
     assert(pending.pending() == 2);
     assert(retry.events == std::vector<std::string>({"load:head", "close:head"}));
     assert(complete_one(pending));
-    assert(retry.loads.back() == Footprint({100, 40, 30}));
+    assert(retry.loads.back() == Footprint({100, 40, 0}));
     assert(
         std::get<0>(replies.back()) == "head"
         && std::get<1>(replies.back()) == JobState::succeeded
@@ -301,6 +301,7 @@ void refreshed_reservations_never_create_physical_capacity() {
 void resident_gpu_pressure_replans_before_execution() {
     struct PlannedEngine : FakeEngine {
         Bytes planned = 0;
+        std::size_t device = 0;
         using FakeEngine::FakeEngine;
 
         void load(
@@ -309,13 +310,24 @@ void resident_gpu_pressure_replans_before_execution() {
             const std::atomic_bool& cancel
         ) override {
             FakeEngine::load(request, available, cancel);
-            planned = available[1];
+            device = std::size_t(
+                std::distance(
+                    available.begin(),
+                    std::find_if(
+                        std::next(available.begin()), available.end(), [](auto bytes) {
+                            return bytes != 0;
+                        }
+                    )
+                )
+            );
+            assert(device < available.size());
+            planned = available[device];
         }
 
         void prepare(
             const InferenceRequest&, const Footprint& available, const std::atomic_bool&
         ) override {
-            if (available[1] < planned)
+            if (available[device] < planned)
                 throw AdmissionWait("request_state_pressure");
         }
     };
@@ -335,7 +347,7 @@ void resident_gpu_pressure_replans_before_execution() {
     head.model = "same";
     owner.submit(head);
     assert(complete_one(owner));
-    free[1] = 40;
+    free[1] = 30;
     head.id = "second";
     owner.submit(head);
     assert(!complete_one(owner));
@@ -344,7 +356,8 @@ void resident_gpu_pressure_replans_before_execution() {
     assert(state.close_calls == 1);
     assert(complete_one(owner));
     assert(events.back() == JobState::succeeded);
-    assert(state.loads.size() == 2 && state.loads.back()[1] == 40);
+    assert(state.loads.size() == 2);
+    assert(state.loads.back()[1] == 0 && state.loads.back()[2] == 70);
     owner.shutdown();
 }
 
@@ -413,7 +426,8 @@ void reservation_exhaustion_retries_only_before_execution() {
     for (bool during_execution : {false, true}) {
         FakeState state;
         std::vector<JobState> events;
-        Footprint free{15, 80, 70};
+        // The initial bounded host allowance fits weights but not scratch.
+        Footprint free{30, 80, 70};
         InferenceOwner owner(
             {100, 100, 100},
             [&](auto, auto ledger, auto) {
@@ -652,18 +666,30 @@ struct BatchState : FakeState {
 
 struct BatchEngine : FakeEngine {
     BatchState& batch_state;
+    std::vector<std::size_t> devices;
 
     BatchEngine(BatchState& state, std::shared_ptr<Resources> ledger)
         : FakeEngine(state, std::move(ledger)), batch_state(state) {
     }
 
+    void load(
+        const InferenceRequest& request,
+        const Footprint& free,
+        const std::atomic_bool& cancel
+    ) override {
+        FakeEngine::load(request, free, cancel);
+        for (std::size_t i = 1; i < free.size(); ++i)
+            if (free[i])
+                devices.push_back(i);
+    }
+
     std::size_t
     batch_capacity(const InferenceRequest&, const Footprint& available) override {
-        // Tests can inject physical pressure independently for either device.
+        // A masked-out GPU is not a pressured execution lane.
         return std::any_of(
-                   std::next(available.begin()),
-                   available.end(),
-                   [](auto free) { return free < 40; }
+                   devices.begin(),
+                   devices.end(),
+                   [&](auto device) { return available[device] < 40; }
                )
                    ? 1
                    : batch_state.capacity;
@@ -791,7 +817,7 @@ void image_capacity_hint_uses_successful_measurement_and_fresh_pressure() {
                 executed = true;
                 state.capacity = 5;
                 if (mode == 1)
-                    free.back() = 30;
+                    free[1] = 30;
                 if (mode == 3)
                     state.capacity = 100;
             };
@@ -1173,7 +1199,8 @@ void physical_pressure_reduces_batch_before_launch() {
     owner.submit(image_request("first"));
     assert(!complete_one(owner));
     owner.submit(image_request("second"));
-    available[2] = 20;
+    // Pressure every feasible device so re-placement cannot avoid it.
+    available[1] = available[2] = 20;
     assert(!complete_one(owner));
     assert(complete_one(owner));
     assert((state.batches == std::vector<std::vector<std::string>>{{"first"}}));

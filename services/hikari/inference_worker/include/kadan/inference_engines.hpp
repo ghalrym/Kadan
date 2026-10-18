@@ -59,7 +59,11 @@ private:
 
 std::unique_ptr<InferenceEngine> decision_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> image_engine(
-    std::shared_ptr<Resources>, Progress, RequestProgress, InferenceOwner::Probe
+    std::shared_ptr<Resources>,
+    Progress,
+    RequestProgress,
+    InferenceOwner::Probe,
+    std::shared_ptr<ExecutionContext>
 );
 std::unique_ptr<InferenceEngine> video_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine>

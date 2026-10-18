@@ -66,6 +66,10 @@ void publish_audio(
 
 class SpeechEngine final : public InferenceEngine {
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     SpeechEngine(std::shared_ptr<Resources> resources, Progress progress)
         : resources_(std::move(resources)), progress_(std::move(progress)) {
     }

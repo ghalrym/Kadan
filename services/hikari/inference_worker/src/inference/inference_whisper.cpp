@@ -22,6 +22,10 @@ void read_floats(const std::string& path, std::span<float> output) {
 
 class WhisperEngine final : public InferenceEngine {
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     WhisperEngine(std::shared_ptr<Resources> resources, Progress progress)
         : resources_(std::move(resources)), progress_(std::move(progress)) {
     }

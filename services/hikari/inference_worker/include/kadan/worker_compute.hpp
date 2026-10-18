@@ -9,8 +9,6 @@
 #include "kadan/media_session.hpp"
 
 namespace kadan {
-inline constexpr Bytes compute_context_bytes = 384ULL * 1024 * 1024;
-
 inline Footprint host_footprint(Resources& r, Bytes bytes) {
     auto f = r.snapshot().capacity;
     std::fill(f.begin(), f.end(), 0);

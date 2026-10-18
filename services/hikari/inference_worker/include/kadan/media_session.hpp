@@ -45,6 +45,46 @@ struct MediaSessionActivity {
     std::atomic_size_t owners = 0;
 };
 
+// Admit library overhead before initialization, independently of other streams'
+// allocations. Explicit release follows confirmed handle destruction. An
+// abandoned lease retains its charge and activity guard after uncertain cleanup.
+class MediaLibraryAllocation {
+public:
+    MediaLibraryAllocation(
+        std::shared_ptr<Resources> resources,
+        std::shared_ptr<MediaSessionActivity> activity,
+        Workload workload,
+        int device,
+        Bytes bytes
+    )
+        : resources_(std::move(resources)), activity_(std::move(activity)) {
+        if (!resources_ || !activity_ || device < 0 || !bytes)
+            throw std::invalid_argument("media_library_allocation");
+        Footprint charge(resources_->snapshot().capacity.size());
+        if (std::size_t(device) + 1 >= charge.size())
+            throw std::invalid_argument("media_library_device");
+        charge[std::size_t(device) + 1] = bytes;
+        handle_ = resources_->reserve(workload, std::move(charge));
+        ++activity_->owners;
+    }
+
+    MediaLibraryAllocation(const MediaLibraryAllocation&) = delete;
+    MediaLibraryAllocation& operator=(const MediaLibraryAllocation&) = delete;
+
+    void release() {
+        if (!handle_)
+            return;
+        resources_->released(handle_);
+        handle_ = 0;
+        --activity_->owners;
+    }
+
+private:
+    std::shared_ptr<Resources> resources_;
+    std::shared_ptr<MediaSessionActivity> activity_;
+    Handle handle_ = 0;
+};
+
 struct MediaDeviceSpan {
     void* data = nullptr;
     int device = -1;

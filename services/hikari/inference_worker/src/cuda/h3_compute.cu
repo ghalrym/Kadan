@@ -4103,33 +4103,36 @@ CudaBf16Projection::CudaBf16Projection(
     Workload workload,
     int device
 )
-    : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
-      resources_(std::move(resources)), device_(device) {
+    : context_owner_(std::move(context_owner)), device_(device) {
     require(
-        context_owner_ && activity_ && resources_ && device >= 0
-            && std::size_t(device) + 1 < resources_->snapshot().capacity.size(),
+        context_owner_ && activity && resources && device >= 0
+            && std::size_t(device) + 1 < resources->snapshot().capacity.size(),
         "bf16_projection_context_owner"
     );
-    // Initialization may touch context resources even when CUDA reports failure.
-    ++activity_->owners;
     checked(cudaSetDevice(device_));
     int major = 0;
     checked(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_));
     require(major >= 8, "h3_cuda_bf16_policy");
-    std::size_t before = 0, after = 0, total = 0;
-    checked(cudaMemGetInfo(&before, &total));
+    // Use the native context/library envelope, not a device-wide allocation
+    // delta that can include another engine. Explicit workspace is session-owned.
+    library_ = std::make_unique<MediaLibraryAllocation>(
+        std::move(resources),
+        std::move(activity),
+        workload,
+        device_,
+        compute_context_bytes
+    );
     cublasHandle_t handle = nullptr;
-    checked(cublasCreate(&handle));
-    blas_ = handle;
     try {
-        checked(cudaMemGetInfo(&after, &total));
-        Footprint charge(resources_->snapshot().capacity.size());
-        charge[device_ + 1] = before > after ? before - after : 0;
-        library_charge_ = resources_->reserve(workload, charge);
+        checked(cublasCreate(&handle));
     } catch (...) {
-        close();
+        blas_ = handle;
+        if (blas_)
+            rethrow_after_cleanup(std::current_exception(), [this] { close(); });
+        // No handle means cleanup cannot be acknowledged. Preserve the lease.
         throw;
     }
+    blas_ = handle;
 }
 
 CudaBf16Projection::~CudaBf16Projection() {
@@ -4143,6 +4146,7 @@ CudaBf16Projection::~CudaBf16Projection() {
 void CudaBf16Projection::close() {
     if (!blas_)
         return;
+    require(!quarantined_, "bf16_projection_cleanup_unconfirmed");
     try {
         checked(cudaSetDevice(device_));
         if (stream_)
@@ -4153,11 +4157,7 @@ void CudaBf16Projection::close() {
         throw;
     }
     blas_ = nullptr;
-    if (library_charge_) {
-        resources_->released(library_charge_);
-        library_charge_ = 0;
-    }
-    --activity_->owners;
+    library_->release();
 }
 
 void CudaBf16Projection::launch(
@@ -5222,30 +5222,30 @@ CudaH3Launcher::CudaH3Launcher(
     std::shared_ptr<Resources> resources,
     int device
 )
-    : context_owner_(std::move(context_owner)), activity_(std::move(activity)),
-      resources_(std::move(resources)), device_(device) {
+    : context_owner_(std::move(context_owner)), device_(device) {
     require(
-        context_owner_ && activity_ && resources_ && device >= 0
-            && std::size_t(device) + 1 < resources_->snapshot().capacity.size(),
+        context_owner_ && activity && resources && device >= 0
+            && std::size_t(device) + 1 < resources->snapshot().capacity.size(),
         "h3_resident_context_owner"
     );
-    // Initialization may touch context resources even when CUDA reports failure.
-    ++activity_->owners;
     checked(cudaSetDevice(device_));
-    std::size_t before = 0, after = 0, total = 0;
-    checked(cudaMemGetInfo(&before, &total));
+    library_ = std::make_unique<MediaLibraryAllocation>(
+        std::move(resources),
+        std::move(activity),
+        Workload::video,
+        device_,
+        compute_context_bytes
+    );
     cublasHandle_t handle = nullptr;
-    checked(cublasCreate(&handle));
-    blas_ = handle;
     try {
-        checked(cudaMemGetInfo(&after, &total));
-        Footprint charge(resources_->snapshot().capacity.size());
-        charge[device_ + 1] = before > after ? before - after : 0;
-        library_charge_ = resources_->reserve(Workload::video, charge);
+        checked(cublasCreate(&handle));
     } catch (...) {
-        close();
+        blas_ = handle;
+        if (blas_)
+            rethrow_after_cleanup(std::current_exception(), [this] { close(); });
         throw;
     }
+    blas_ = handle;
 }
 
 CudaH3Launcher::~CudaH3Launcher() {
@@ -5259,6 +5259,7 @@ CudaH3Launcher::~CudaH3Launcher() {
 void CudaH3Launcher::close() {
     if (!blas_)
         return;
+    require(!quarantined_, "h3_resident_cleanup_unconfirmed");
     try {
         checked(cudaSetDevice(device_));
         if (stream_)
@@ -5269,11 +5270,7 @@ void CudaH3Launcher::close() {
         throw;
     }
     blas_ = nullptr;
-    if (library_charge_) {
-        resources_->released(library_charge_);
-        library_charge_ = 0;
-    }
-    --activity_->owners;
+    library_->release();
 }
 
 void CudaH3Launcher::release_stream() {

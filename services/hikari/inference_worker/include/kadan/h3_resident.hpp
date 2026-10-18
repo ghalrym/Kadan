@@ -629,9 +629,7 @@ public:
 
 private:
     std::shared_ptr<DenseCompute> context_owner_;
-    std::shared_ptr<MediaSessionActivity> activity_;
-    std::shared_ptr<Resources> resources_;
-    Handle library_charge_ = 0;
+    std::unique_ptr<MediaLibraryAllocation> library_;
     int device_;
     void* stream_ = nullptr;
     void* blas_ = nullptr;

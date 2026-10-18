@@ -69,9 +69,21 @@ inline bool compatible_images(const InferenceRequest& a, const InferenceRequest&
     return true;
 }
 
+// Unknown backends remain exclusive until their handles, streams and mutable
+// request state are explicitly isolated from other resident engines.
+enum class BackendExecution {
+    exclusive,
+    isolated
+};
+
 class InferenceEngine {
 public:
     virtual ~InferenceEngine() = default;
+
+    virtual BackendExecution execution_policy() const {
+        return BackendExecution::exclusive;
+    }
+
     virtual void
     load(const InferenceRequest&, const Footprint&, const std::atomic_bool&) = 0;
     virtual void
@@ -99,16 +111,62 @@ public:
     }
 };
 
+// Process-wide observations (such as RSS) are attributable only while one
+// engine is active. A changed epoch also detects a peer that started and ended
+// entirely between two observations.
+class ExecutionActivity {
+public:
+    struct Snapshot {
+        std::size_t active;
+        std::uint64_t epoch;
+    };
+
+    class Scope {
+    public:
+        explicit Scope(std::shared_ptr<ExecutionActivity> activity)
+            : activity_(std::move(activity)) {
+            std::lock_guard lock(activity_->mutex_);
+            ++activity_->active_;
+            ++activity_->epoch_;
+        }
+
+        ~Scope() {
+            std::lock_guard lock(activity_->mutex_);
+            --activity_->active_;
+            ++activity_->epoch_;
+        }
+
+        Scope(const Scope&) = delete;
+        Scope& operator=(const Scope&) = delete;
+
+    private:
+        std::shared_ptr<ExecutionActivity> activity_;
+    };
+
+    Snapshot snapshot() const {
+        std::lock_guard lock(mutex_);
+        return {active_, epoch_};
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::size_t active_ = 0;
+    std::uint64_t epoch_ = 0;
+};
+
 // A context belongs to one resident engine. The scheduler changes its identity
 // only while idle; callbacks may read it throughout asynchronous execution.
 struct ExecutionContext {
     std::string request_id;
+    std::shared_ptr<ExecutionActivity> activity;
 };
 
 // Transport only submits/cancels. One scheduler thread owns admission, residency
-// and completion; execution threads own distinct engines and disjoint GPUs.
+// and completion; execution threads own distinct engines and isolated contexts.
 class InferenceOwner {
 public:
+    // Factories construct control state only. Device allocation and backend
+    // global-state mutation belong in load(), after compatibility admission.
     using Factory = std::function<std::unique_ptr<InferenceEngine>(
         Workload, std::shared_ptr<Resources>, std::shared_ptr<ExecutionContext>
     )>;
@@ -124,15 +182,26 @@ public:
         Publish publish,
         std::size_t limit = 32,
         Prepare prepare = {},
-        Clock clock = [] { return std::chrono::steady_clock::now(); }
+        Clock clock = [] { return std::chrono::steady_clock::now(); },
+        std::vector<std::size_t> execution_capacity = {}
     )
         : ceiling_(std::move(ceiling)),
           resources_(std::make_shared<Resources>(ceiling_)),
           factory_(std::move(factory)), probe_(std::move(probe)),
           publish_(std::move(publish)), prepare_(std::move(prepare)),
-          clock_(std::move(clock)), limit_(limit) {
+          clock_(std::move(clock)), execution_capacity_(std::move(execution_capacity)),
+          limit_(limit) {
         if (!limit_ || limit_ > 1024)
             throw std::invalid_argument("queue_limit");
+        if (execution_capacity_.empty())
+            execution_capacity_.assign(ceiling_.size() - 1, 1);
+        if (execution_capacity_.size() != ceiling_.size() - 1
+            || std::any_of(
+                execution_capacity_.begin(), execution_capacity_.end(), [&](auto n) {
+                    return !n || n > queues_.size();
+                }
+            ))
+            throw std::invalid_argument("execution_capacity");
     }
 
     ~InferenceOwner() {
@@ -225,19 +294,6 @@ public:
         }
         if (!job)
             return false;
-        // Image calibration includes process-wide host RSS and ATen settings.
-        // Preserve that measurement window across preparation and execution.
-        const bool image_active =
-            std::any_of(residents_.begin(), residents_.end(), [](const auto& resident) {
-                return resident->workload == Workload::image
-                       && resident->execution.valid();
-            });
-        if (!job->cancel.load()
-            && (image_active
-                || (job->request.workload == Workload::image && executing()))) {
-            wait_for(job);
-            return false;
-        }
         prepare_job(job);
         if (job->cancel.load()) {
             finish(job, JobState::cancelled, "");
@@ -276,7 +332,10 @@ public:
                     break;
                 }
             if (resident
-                && (resident->execution.valid() || devices_busy(resident->devices))) {
+                && (resident->execution.valid()
+                    || !execution_available(
+                        resident->engine->execution_policy(), resident->devices
+                    ))) {
                 wait_for(job);
                 return false;
             }
@@ -285,8 +344,11 @@ public:
                 resident = nullptr;
                 erase_closed();
             }
-            if (resident)
+            if (resident) {
                 admit(*resident);
+                resident->activity =
+                    std::make_unique<ExecutionActivity::Scope>(activity_);
+            }
             if (!resident) {
                 resident = load(job);
                 if (!resident) {
@@ -334,6 +396,7 @@ public:
                 if (!blocked && images < target
                     && clock_() - job->submitted < std::chrono::seconds(10)) {
                     resident->resources->idle();
+                    resident->activity.reset();
                     return false;
                 }
             }
@@ -386,13 +449,18 @@ public:
         } catch (const ResourceExhausted&) {
             if (resident)
                 cleanup(*resident);
-            if (!job->full_device && request.workload != Workload::image)
-                job->full_device = true;
-            else if (!job->wide && ceiling_.size() > 2)
-                job->wide = true;
-            else
-                job->full_host = true;
-            const bool reclaimed = evict_idle();
+            bool expanded = false;
+            if (job->share_scale < share_partitions()) {
+                job->share_scale *= 2;
+                expanded = true;
+            } else if (job->device_count < ceiling_.size() - 1) {
+                ++job->device_count;
+                job->share_scale = 1;
+                expanded = true;
+            }
+            // A narrow allowance is not evidence that another resident must go.
+            // Try larger envelopes/subsets before reclaiming an idle model.
+            const bool reclaimed = !expanded && evict_idle();
             if (!reclaimed && !executing() && waiting_ == job
                 && bypasses_ >= queues_.size()) {
                 waiting_.reset();
@@ -463,7 +531,7 @@ private:
         std::chrono::steady_clock::time_point submitted;
         std::atomic_bool cancel{false};
         bool executing = false;
-        bool full_device = false, wide = false, full_host = false;
+        std::size_t device_count = 1, share_scale = 1;
     };
 
     struct ResidentEngine {
@@ -478,6 +546,7 @@ private:
         std::vector<std::size_t> devices;
         std::vector<std::shared_ptr<Job>> jobs;
         std::future<std::vector<InferenceBatchResult>> execution;
+        std::unique_ptr<ExecutionActivity::Scope> activity;
         std::uint64_t last_used = 0;
         bool loaded = false;
     };
@@ -522,16 +591,42 @@ private:
         }
     }
 
-    bool devices_busy(const std::vector<std::size_t>& devices) const {
+    std::size_t device_executions(std::size_t device) const {
+        return std::count_if(
+            residents_.begin(), residents_.end(), [&](const auto& resident) {
+                return resident->execution.valid()
+                       && std::find(
+                              resident->devices.begin(), resident->devices.end(), device
+                          ) != resident->devices.end();
+            }
+        );
+    }
+
+    bool execution_available(
+        BackendExecution policy, const std::vector<std::size_t>& devices
+    ) const {
         for (const auto& resident : residents_)
-            if (resident->execution.valid())
-                for (auto device : devices)
-                    if (std::find(
-                            resident->devices.begin(), resident->devices.end(), device
-                        )
-                        != resident->devices.end())
-                        return true;
-        return false;
+            if (resident->execution.valid()
+                && (policy == BackendExecution::exclusive
+                    || resident->engine->execution_policy()
+                           == BackendExecution::exclusive))
+                return false;
+        for (auto device : devices)
+            if (device_executions(device) >= execution_capacity_.at(device - 1))
+                return false;
+        return true;
+    }
+
+    std::size_t share_partitions() const {
+        auto partitions = std::max<std::size_t>(2, execution_capacity_.size());
+        for (auto slots : execution_capacity_)
+            partitions = std::max(partitions, slots);
+        return partitions;
+    }
+
+    static Bytes
+    shared_allowance(Bytes capacity, std::size_t slots, std::size_t scale) {
+        return scale >= slots ? capacity : (capacity / slots) * scale;
     }
 
     ResidentEngine* load(const std::shared_ptr<Job>& job) {
@@ -543,16 +638,21 @@ private:
         const auto global = resources_->snapshot();
         for (std::size_t i = 0; i < free.size(); ++i)
             free[i] = std::min(free[i], global.capacity[i] - global.used[i]);
-        if ((job->wide || job->full_host) && executing())
+        if (!execution_available(BackendExecution::isolated, {}))
             return nullptr;
         const bool uses_gpu = request.workload != Workload::decision
                               && request.workload != Workload::formatting;
         std::vector<std::size_t> devices;
+        bool execution_slot = false;
         for (std::size_t i = 1; uses_gpu && i < free.size(); ++i)
-            if (free[i] && !devices_busy({i}))
-                devices.push_back(i);
+            if (device_executions(i) < execution_capacity_[i - 1]) {
+                execution_slot = true;
+                if (free[i])
+                    devices.push_back(i);
+            }
         if (uses_gpu && free.size() > 1 && devices.empty()) {
-            evict_idle();
+            if (execution_slot)
+                evict_idle();
             return nullptr;
         }
         std::stable_sort(devices.begin(), devices.end(), [&](auto a, auto b) {
@@ -563,32 +663,45 @@ private:
         entry->workload = request.workload;
         entry->configuration = request.configuration;
         entry->devices = devices;
-        // Preserve the image engine's existing multi-device batch planner.
-        // Other workloads try one GPU before widening on load/prepare pressure.
-        if (!job->wide && request.workload != Workload::image
-            && entry->devices.size() > 1)
-            entry->devices.resize(1);
+        // Try the smallest high-headroom subset first. Widen only after an
+        // acknowledged load/prepare failure, preserving the image batch planner
+        // inside the assigned subset.
+        if (entry->devices.size() > job->device_count)
+            entry->devices.resize(job->device_count);
         Footprint allowance(ceiling_.size());
-        const auto slots = std::max<std::size_t>(2, ceiling_.size() - 1);
-        const auto share = global.capacity[0] / slots
-                           * std::max<std::size_t>(1, entry->devices.size());
-        allowance[0] = job->full_host ? free[0] : std::min(free[0], share);
+        allowance[0] = std::min(
+            free[0],
+            shared_allowance(global.capacity[0], share_partitions(), job->share_scale)
+        );
         for (auto device : entry->devices)
-            allowance[device] =
-                job->full_device || request.workload == Workload::image
-                    ? free[device]
-                    : std::min(free[device], global.capacity[device] / 2);
+            allowance[device] = std::min(
+                free[device],
+                shared_allowance(
+                    global.capacity[device],
+                    std::max<std::size_t>(2, execution_capacity_[device - 1]),
+                    job->share_scale
+                )
+            );
         entry->resources = resources_->scope(allowance);
         entry->allowance = allowance;
         entry->context->request_id = request.id;
+        entry->context->activity = activity_;
         entry->last_used = ++use_order_;
         auto* resident = entry.get();
         residents_.push_back(std::move(entry));
         try {
+            resident->activity = std::make_unique<ExecutionActivity::Scope>(activity_);
             resident->engine =
                 factory_(request.workload, resident->resources, resident->context);
             if (!resident->engine)
                 throw std::runtime_error("unsupported_workload");
+            if (!execution_available(
+                    resident->engine->execution_policy(), resident->devices
+                )) {
+                cleanup(*resident);
+                erase_closed();
+                return nullptr;
+            }
             publish_(request.id, JobState::loading, "");
             resident->engine->load(request, allowance, job->cancel);
             resident->loaded = true;
@@ -665,6 +778,7 @@ private:
             finish_batch(jobs, error.what());
         }
         resident.jobs.clear();
+        resident.activity.reset();
     }
 
     void wait_for(const std::shared_ptr<Job>& job) {
@@ -697,6 +811,9 @@ private:
         if (resident.execution.valid())
             throw CleanupFailure("engine_in_use");
         try {
+            if (!resident.activity)
+                resident.activity =
+                    std::make_unique<ExecutionActivity::Scope>(activity_);
             if (resident.engine)
                 resident.engine->close();
             resident.engine.reset();
@@ -708,6 +825,7 @@ private:
                    }))
                 throw std::runtime_error("cleanup_unconfirmed");
             resident.resources->idle();
+            resident.activity.reset();
         } catch (...) {
             poisoned_.store(true);
             stop();
@@ -719,6 +837,7 @@ private:
         if (job->request.prepared || job->cancel.load())
             return;
         publish_(job->request.id, JobState::preparing, "");
+        ExecutionActivity::Scope activity(activity_);
         try {
             if (!prepare_)
                 throw std::runtime_error("preparation_unavailable");
@@ -789,6 +908,9 @@ private:
     Publish publish_;
     Prepare prepare_;
     Clock clock_;
+    std::vector<std::size_t> execution_capacity_;
+    std::shared_ptr<ExecutionActivity> activity_ =
+        std::make_shared<ExecutionActivity>();
     std::size_t limit_, next_queue_ = 0;
     mutable std::mutex mutex_;
     std::array<std::deque<std::shared_ptr<Job>>, 7> queues_;

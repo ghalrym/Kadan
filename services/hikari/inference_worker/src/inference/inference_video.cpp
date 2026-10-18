@@ -9,6 +9,10 @@ namespace kadan::serving {
 namespace {
 class VideoEngine final : public InferenceEngine {
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     VideoEngine(std::shared_ptr<Resources> resources, Progress progress)
         : resources_(std::move(resources)), progress_updates_(std::move(progress)),
           progress_([this](const char* phase, std::size_t value) {

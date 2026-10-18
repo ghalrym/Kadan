@@ -29,6 +29,40 @@ std::vector<AtenDenoiserLane> parallel(std::size_t images) {
 
 constexpr AtenDenoiserWorkload workload{624, 128, 256, 8, false};
 
+void deferred_batch_calibration() {
+    AtenDenoiserPerformance policy;
+    const std::vector baseline{AtenDenoiserMeasurement{0, 2, false, 5, 4}};
+    const std::vector costly{
+        AtenDenoiserMeasurement{0, 1, false, 5, 2},
+        AtenDenoiserMeasurement{1, 1, true, 3, 2}
+    };
+    policy.defer_observation(workload, baseline);
+    check(!policy.denoise_seconds(workload, single(2)));
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    // An overlapped or cancelled first run cannot consume its singleton probe.
+    policy.record_batch_measurement(false);
+    policy.record_batch_measurement(true);
+    check(!policy.denoise_seconds(workload, single(2)));
+    policy.defer_observation(workload, baseline);
+    policy.record_batch_measurement(true);
+    check(policy.denoise_seconds(workload, single(2)) == 4);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 2);
+    // Rejecting a replica probe preserves the prior estimate and pending probe.
+    policy.defer_observation(workload, costly);
+    policy.record_batch_measurement(false);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 2);
+    policy.defer_observation(workload, costly);
+    policy.record_batch_measurement(true);
+    check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
+    const std::vector contaminated{AtenDenoiserMeasurement{0, 2, false, 5, 400}};
+    policy.defer_observation(workload, contaminated);
+    policy.record_batch_measurement(false);
+    check(policy.denoise_seconds(workload, single(2)) == 4);
+    // A failed batch is discarded even if a later caller accepts with no sample.
+    policy.record_batch_measurement(true);
+    check(policy.denoise_seconds(workload, single(2)) == 4);
+}
+
 void loading_and_amortization() {
     AtenDenoiserPerformance policy;
     check(policy.choose_candidates(workload, {single(2), parallel(2)}).size() == 1);
@@ -383,6 +417,7 @@ void bounded_history() {
 
 int main() {
     try {
+        deferred_batch_calibration();
         loading_and_amortization();
         separate_loading_regimes_and_shapes();
         retained_banks_and_reload_cost();

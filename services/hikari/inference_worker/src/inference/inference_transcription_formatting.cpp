@@ -8,6 +8,10 @@ namespace kadan::serving {
 namespace {
 class TranscriptionFormattingEngine final : public InferenceEngine {
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     TranscriptionFormattingEngine(
         std::shared_ptr<Resources> resources, Progress progress
     )

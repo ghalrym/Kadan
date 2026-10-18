@@ -147,6 +147,11 @@ std::vector<ImageBatchPlan> Generator::admissible_batch_plans(
     return aten_->admissible_batch_plans(request, limit, cancel);
 }
 
+void Generator::record_batch_measurement(bool calibrated) {
+    Busy active(busy_);
+    aten_->record_batch_measurement(calibrated);
+}
+
 const BatchMeasurement& Generator::last_batch_measurement() const {
     return aten_->last_batch_measurement();
 }

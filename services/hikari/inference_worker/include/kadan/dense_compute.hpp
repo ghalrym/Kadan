@@ -16,6 +16,9 @@
 #include "kadan/weight_identity.hpp"
 
 namespace kadan {
+// Conservative envelope for native CUDA context and library-handle overhead.
+inline constexpr Bytes compute_context_bytes = 384ULL * 1024 * 1024;
+
 #ifdef __CUDACC__
 __host__ __device__
 #endif

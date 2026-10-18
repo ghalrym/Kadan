@@ -44,6 +44,9 @@ struct Model {
     std::size_t loads = 0, executions = 0, closes = 0;
     std::vector<std::size_t> devices;
     std::vector<std::string> context_ids;
+    std::shared_ptr<ExecutionContext> context;
+    std::vector<Footprint> allowances;
+    ExecutionActivity::Snapshot prepared_activity{};
 };
 
 struct Event {
@@ -56,6 +59,7 @@ struct State {
     std::map<std::string, Model> models;
     std::vector<Event> events;
     std::vector<std::string> order;
+    std::map<Workload, BackendExecution> policies;
     std::size_t active = 0, peak_active = 0;
 
     bool has(const std::string& id, JobState wanted) {
@@ -70,11 +74,19 @@ class FakeEngine : public InferenceEngine {
 public:
     FakeEngine(
         State& state,
+        Workload workload,
         std::shared_ptr<Resources> resources,
         std::shared_ptr<ExecutionContext> context
     )
-        : state_(state), resources_(std::move(resources)),
-          context_(std::move(context)) {
+        : state_(state), resources_(std::move(resources)), context_(std::move(context)),
+          policy_(
+              state.policies.contains(workload) ? state.policies.at(workload)
+                                                : BackendExecution::isolated
+          ) {
+    }
+
+    BackendExecution execution_policy() const override {
+        return policy_;
     }
 
     void load(
@@ -85,6 +97,8 @@ public:
         {
             std::lock_guard lock(state_.mutex);
             model_->resources = resources_;
+            model_->context = context_;
+            model_->allowances.push_back(free);
         }
         Footprint bytes(free.size());
         bytes[0] = model_->host;
@@ -123,6 +137,7 @@ public:
         else
             scratch_ = resources_->reserve(request.workload, bytes);
         resources_->pin(weights_);
+        model_->prepared_activity = context_->activity->snapshot();
     }
 
     Json
@@ -194,6 +209,7 @@ private:
     State& state_;
     std::shared_ptr<Resources> resources_;
     std::shared_ptr<ExecutionContext> context_;
+    BackendExecution policy_;
     Model* model_ = nullptr;
     std::string name_;
     Handle weights_ = 0, scratch_ = 0;
@@ -206,12 +222,14 @@ struct Harness {
     bool physical_probe = false;
     InferenceOwner owner;
 
-    explicit Harness(Footprint budget)
+    explicit Harness(Footprint budget, std::vector<std::size_t> execution_capacity = {})
         : capacity(std::move(budget)),
           owner(
               capacity,
-              [&](auto, auto resources, auto context) {
-                  return std::make_unique<FakeEngine>(state, resources, context);
+              [&](auto workload, auto resources, auto context) {
+                  return std::make_unique<FakeEngine>(
+                      state, workload, resources, context
+                  );
               },
               [&] {
                   auto free = capacity;
@@ -232,7 +250,11 @@ struct Harness {
                   state.events.push_back({id, event});
                   if (event == JobState::cancelled)
                       state.order.push_back("cancelled:" + id);
-              }
+              },
+              32,
+              {},
+              [] { return std::chrono::steady_clock::now(); },
+              std::move(execution_capacity)
           ) {
     }
 
@@ -311,6 +333,307 @@ void disjoint_devices_execute_concurrently() {
     }
 }
 
+void same_device_executes_distinct_contexts() {
+    Harness h({100, 100}, {7});
+    const std::array workloads{Workload::llm, Workload::speech, Workload::tts};
+    const std::array names{"chat", "transcription", "speech"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        auto& model = h.state.models[names[i]];
+        model.host = 5;
+        model.device = 10;
+        model.scratch = 2;
+        model.device_scratch = 3;
+        model.lazy_scratch = true;
+        h.submit(names[i], workloads[i]);
+        h.advance_until([&] { return h.state.has(names[i], JobState::running); });
+        model.gate.wait_for(&Gate::entered);
+    }
+    {
+        std::lock_guard lock(h.state.mutex);
+        check(h.state.active == 3, "same_gpu_contexts_did_not_overlap");
+        for (const auto& [name, model] : h.state.models) {
+            check(model.devices == std::vector<std::size_t>{1}, "wrong_shared_gpu");
+            check(
+                model.context_ids == std::vector<std::string>{name},
+                "context_identity_shared"
+            );
+        }
+    }
+    check(
+        h.owner.snapshot().used == Footprint({42, 42}), "shared_envelopes_not_atomic"
+    );
+    for (auto& [name, model] : h.state.models)
+        model.gate.open();
+    h.drain();
+    check(h.owner.resident_models().size() == 3, "shared_residents_not_retained");
+    for (const auto* name : names)
+        check(h.state.has(name, JobState::succeeded), "shared_lazy_workspace_failed");
+}
+
+void execution_slots_bound_overlap() {
+    Harness h({100, 100}, {2});
+    for (const auto* name : {"chat", "transcription", "speech"}) {
+        auto& model = h.state.models[name];
+        model.host = model.device = 5;
+        model.scratch = 1;
+    }
+    h.submit("chat", Workload::llm);
+    h.submit("transcription", Workload::speech);
+    h.submit("speech", Workload::tts);
+    h.advance_until([&] { return h.state.has("transcription", JobState::running); });
+    h.state.models.at("chat").gate.wait_for(&Gate::entered);
+    h.state.models.at("transcription").gate.wait_for(&Gate::entered);
+    check(!h.owner.advance(), "execution_capacity_exceeded");
+    check(h.state.models.at("speech").loads == 0, "busy_slot_loaded_model");
+    h.state.models.at("chat").gate.open();
+    h.advance_until([&] { return h.state.has("speech", JobState::running); });
+    h.state.models.at("speech").gate.wait_for(&Gate::entered);
+    check(h.state.peak_active == 2, "slot_policy_not_enforced");
+    h.state.models.at("transcription").gate.open();
+    h.state.models.at("speech").gate.open();
+    h.drain();
+}
+
+void memory_pressure_requires_sequential_execution() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    chat.device = speech.device = 60;
+    h.submit("chat", Workload::llm);
+    h.advance_until([&] { return h.state.has("chat", JobState::running); });
+    chat.gate.wait_for(&Gate::entered);
+    h.submit("speech", Workload::tts);
+    for (int i = 0; i < 8; ++i)
+        h.owner.advance();
+    check(speech.executions == 0 && chat.closes == 0, "memory_pressure_ignored");
+    chat.gate.open();
+    h.advance_until([&] { return h.state.has("speech", JobState::running); });
+    speech.gate.wait_for(&Gate::entered);
+    check(
+        chat.closes == 1 && h.state.peak_active == 1,
+        "sequential_memory_fallback_failed"
+    );
+    speech.gate.open();
+    h.drain();
+}
+
+void exclusive_backend_waits_even_on_another_device() {
+    for (bool first_exclusive : {false, true}) {
+        Harness h({100, 100, 100}, {7, 7});
+        auto& chat = h.state.models["chat"];
+        auto& speech = h.state.models["speech"];
+        h.state.policies[first_exclusive ? Workload::llm : Workload::tts] =
+            BackendExecution::exclusive;
+        h.submit("chat", Workload::llm);
+        h.advance_until([&] { return h.state.has("chat", JobState::running); });
+        chat.gate.wait_for(&Gate::entered);
+        h.submit("speech", Workload::tts);
+        check(!h.owner.advance(), "exclusive_backend_overlapped");
+        check(speech.loads == 0, "exclusive_backend_loaded_during_peer_execution");
+        chat.gate.open();
+        h.advance_until([&] { return h.state.has("speech", JobState::running); });
+        speech.gate.wait_for(&Gate::entered);
+        speech.gate.open();
+        h.drain();
+        check(h.state.peak_active == 1, "exclusive_policy_not_symmetric");
+    }
+}
+
+void images_share_bounded_placement_with_native_work() {
+    for (std::size_t devices : {1, 2, 3}) {
+        Harness h(Footprint(devices + 1, 100), std::vector<std::size_t>(devices, 7));
+        auto& image = h.state.models["image"];
+        auto& chat = h.state.models["chat"];
+        h.submit("image", Workload::image);
+        h.advance_until([&] { return h.state.has("image", JobState::running); });
+        image.gate.wait_for(&Gate::entered);
+        check(image.devices.size() == 1, "small_image_claimed_all_gpus");
+        const auto observed = image.context->activity->snapshot();
+        check(observed.active == 1, "image_activity_not_registered");
+        check(
+            observed.epoch == image.prepared_activity.epoch,
+            "own_prepare_execute_transition_invalidated_calibration"
+        );
+        h.submit("chat", Workload::llm);
+        h.advance_until([&] { return h.state.has("chat", JobState::running); });
+        chat.gate.wait_for(&Gate::entered);
+        const auto overlap = image.context->activity->snapshot();
+        check(
+            overlap.active == 2 && overlap.epoch != observed.epoch,
+            "image_calibration_not_invalidated"
+        );
+        check(image.context->activity == chat.context->activity, "activity_not_shared");
+        check(image.allowances.back()[1] < 100, "image_claimed_full_device_budget");
+        if (devices > 1)
+            check(image.devices != chat.devices, "free_gpu_not_preferred");
+        else
+            check(image.devices == chat.devices, "image_native_shared_gpu_missing");
+        chat.gate.open();
+        h.advance_until([&] { return h.state.has("chat", JobState::succeeded); });
+        const auto after = image.context->activity->snapshot();
+        check(
+            after.active == 1 && after.epoch != observed.epoch,
+            "completed_peer_contamination_lost"
+        );
+        image.gate.open();
+        h.drain();
+        check(
+            image.context->activity->snapshot().active == 0,
+            "activity_leaked_after_completion"
+        );
+        check(image.loads == 1 && chat.loads == 1, "shared_image_execution_reloaded");
+    }
+}
+
+void image_placement_widens_only_after_narrow_failure() {
+    Harness h({100, 100, 100, 100}, {7, 7, 7});
+    auto& image = h.state.models["image"];
+    image.device = 150;
+    image.gate.open();
+    h.submit("image", Workload::image);
+    h.drain();
+    check(h.state.has("image", JobState::succeeded), "wide_image_never_fit");
+    check(
+        image.devices == std::vector<std::size_t>({1, 2}),
+        "wide_image_used_unneeded_device"
+    );
+    check(image.executions == 1 && image.loads == 1, "wide_image_replayed_execution");
+    check(
+        image.allowances.front()[2] == 0 && image.allowances.front()[3] == 0,
+        "image_skipped_single_gpu_attempt"
+    );
+}
+
+void shared_peer_survives_failure_and_cancellation() {
+    for (bool cancel : {false, true}) {
+        Harness h({100, 100}, {7});
+        auto& chat = h.state.models["chat"];
+        auto& speech = h.state.models["speech"];
+        chat.fail_execution = !cancel;
+        h.submit("chat", Workload::llm);
+        h.submit("speech", Workload::tts);
+        h.advance_until([&] { return h.state.has("speech", JobState::running); });
+        chat.gate.wait_for(&Gate::entered);
+        speech.gate.wait_for(&Gate::entered);
+        if (cancel) {
+            check(h.owner.cancel("chat"), "shared_cancel_not_found");
+            chat.gate.wait_for(&Gate::cancellation_seen);
+        }
+        chat.gate.open();
+        h.advance_until([&] {
+            return h.state.has("chat", cancel ? JobState::cancelled : JobState::failed);
+        });
+        check(
+            speech.closes == 0 && h.owner.executing(),
+            "peer_cleaned_with_failed_context"
+        );
+        check(
+            chat.executions == 1 && chat.closes == 1,
+            "failed_shared_job_replayed_or_leaked"
+        );
+        check(
+            speech.context->activity->snapshot().active == 1,
+            "failed_context_activity_leaked"
+        );
+        speech.gate.open();
+        h.drain();
+        check(h.state.has("speech", JobState::succeeded), "peer_execution_failed");
+    }
+}
+
+void same_resident_remains_single_flight() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    h.submit("chat-first", Workload::llm, "chat");
+    h.submit("chat-second", Workload::llm, "chat");
+    h.submit("speech", Workload::tts);
+    h.advance_until([&] { return h.state.has("speech", JobState::running); });
+    chat.gate.wait_for(&Gate::entered);
+    speech.gate.wait_for(&Gate::entered);
+    check(
+        chat.executions == 1 && !h.state.has("chat-second", JobState::running),
+        "mutable_resident_shared"
+    );
+    chat.gate.open();
+    h.advance_until([&] { return h.state.has("chat-second", JobState::succeeded); });
+    check(
+        chat.loads == 1
+            && chat.context_ids
+                   == std::vector<std::string>({"chat-first", "chat-second"}),
+        "resident_context_identity_changed_in_flight"
+    );
+    speech.gate.open();
+    h.drain();
+}
+
+void shutdown_drains_all_shared_contexts() {
+    Harness h({100, 100}, {7});
+    auto& chat = h.state.models["chat"];
+    auto& speech = h.state.models["speech"];
+    h.submit("chat", Workload::llm);
+    h.submit("speech", Workload::tts);
+    h.advance_until([&] { return h.state.has("speech", JobState::running); });
+    chat.gate.wait_for(&Gate::entered);
+    speech.gate.wait_for(&Gate::entered);
+    auto shutdown = std::async(std::launch::async, [&] { h.owner.shutdown(); });
+
+    struct ReleaseOnFailure {
+        Gate& first;
+        Gate& second;
+
+        ~ReleaseOnFailure() {
+            first.open();
+            second.open();
+        }
+    } release{chat.gate, speech.gate};
+
+    chat.gate.wait_for(&Gate::cancellation_seen);
+    speech.gate.wait_for(&Gate::cancellation_seen);
+    chat.gate.open();
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!h.state.has("chat", JobState::cancelled)) {
+        check(
+            std::chrono::steady_clock::now() < deadline,
+            "shutdown_first_context_timeout"
+        );
+        std::this_thread::yield();
+    }
+    check(
+        shutdown.wait_for(0s) != std::future_status::ready,
+        "shutdown_abandoned_shared_peer"
+    );
+    check(
+        speech.closes == 0 && speech.context->activity->snapshot().active == 1,
+        "shutdown_released_running_peer"
+    );
+    speech.gate.open();
+    check(
+        shutdown.wait_for(5s) == std::future_status::ready, "shared_shutdown_timeout"
+    );
+    shutdown.get();
+    check(
+        h.owner.snapshot().residents == 0 && h.owner.pending() == 0,
+        "shared_shutdown_leaked_resources"
+    );
+    check(speech.context->activity->snapshot().active == 0, "shutdown_activity_leaked");
+}
+
+void execution_capacity_is_validated() {
+    for (const auto& slots :
+         {std::vector<std::size_t>{0},
+          std::vector<std::size_t>{8},
+          std::vector<std::size_t>{1, 1}}) {
+        bool rejected = false;
+        try {
+            Harness invalid({100, 100}, slots);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected, "invalid_execution_capacity_accepted");
+    }
+}
+
 void one_device_falls_back_and_reuses_residents() {
     Harness h({100, 100});
     auto& chat = h.state.models["chat"];
@@ -360,12 +683,10 @@ void model_expands_to_multiple_devices_when_needed() {
         chat.devices == std::vector<std::size_t>({1, 2}),
         "model_did_not_expand_across_gpus"
     );
-    // The scheduler reserves all selected lanes for a multi-device engine,
-    // including a device its planner did not need after admission.
-    check(!h.owner.advance(), "multi_device_execution_lanes_overlapped");
-    chat.gate.open();
-    h.advance_until([&] { return h.state.has("large-chat", JobState::succeeded); });
+    // A model that needs two GPUs leaves the third device available.
     h.advance_until([&] { return h.state.has("speech", JobState::running); });
+    check(chat.devices.size() == 2, "wide_model_claimed_unneeded_gpu");
+    chat.gate.open();
     speech.gate.wait_for(&Gate::entered);
     speech.gate.open();
     h.drain();
@@ -528,7 +849,7 @@ void resident_larger_than_half_capacity_keeps_its_workspace() {
         h.state.has("large-chat", JobState::succeeded),
         "resident_memory_was_double_charged"
     );
-    check(chat.loads == 1 && chat.executions == 1, "large_resident_retried");
+    check(chat.executions == 1, "large_resident_execution_retried");
     check(h.owner.snapshot().used == Footprint({60, 60}), "large_weights_not_retained");
 }
 
@@ -654,6 +975,16 @@ void shutdown_waits_for_running_cleanup() {
 int main() {
     const std::pair<const char*, void (*)()> tests[]{
         {"disjoint_devices", disjoint_devices_execute_concurrently},
+        {"same_device_contexts", same_device_executes_distinct_contexts},
+        {"execution_slots", execution_slots_bound_overlap},
+        {"execution_capacity_validation", execution_capacity_is_validated},
+        {"shared_shutdown", shutdown_drains_all_shared_contexts},
+        {"sequential_memory_fallback", memory_pressure_requires_sequential_execution},
+        {"backend_compatibility", exclusive_backend_waits_even_on_another_device},
+        {"image_native_overlap", images_share_bounded_placement_with_native_work},
+        {"image_widens", image_placement_widens_only_after_narrow_failure},
+        {"shared_failure_cleanup", shared_peer_survives_failure_and_cancellation},
+        {"resident_single_flight", same_resident_remains_single_flight},
         {"sequential_residency", one_device_falls_back_and_reuses_residents},
         {"multi_device_model", model_expands_to_multiple_devices_when_needed},
         {"round_robin_fifo", round_robin_preserves_each_workloads_fifo},

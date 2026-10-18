@@ -11,6 +11,7 @@
 #include <map>
 #include <optional>
 
+#include "image_aten_context.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/image_aten.hpp"
 #include "kadan/image_aten_plan.hpp"
@@ -263,14 +264,16 @@ public:
         bool ready = false;
         bool pinned = false;
         std::uint64_t used = 0;
+        std::unique_ptr<ImageCudaPool> pool;
         Bank bank;
     };
 
 private:
     using Key = std::pair<Inventory*, int>;
     Resources& resources_;
+    std::map<int, std::unique_ptr<ImageCudaStream>> streams_;
     std::map<Key, std::unique_ptr<Entry>> entries_;
-    std::map<Key, double> load_seconds_;
+    std::map<Key, double> load_seconds_, pending_load_seconds_;
     std::uint64_t clock_ = 0;
 
     void report(const char* event, const Entry& entry) const {
@@ -438,35 +441,44 @@ public:
         }
     }
 
+    c10::cuda::CUDAStream stream(int device) {
+        auto& stream = streams_[device];
+        if (!stream)
+            stream = std::make_unique<ImageCudaStream>(device);
+        return stream->stream();
+    }
+
+    Bytes reserved_bytes(int device) const {
+        Bytes result = 0;
+        for (const auto& [key, entry] : entries_)
+            if (entry->device == device && entry->pool)
+                result += entry->pool->reserved();
+        return result;
+    }
+
     void verify(int device) const {
-        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-        need(
-            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
-                && Bytes(stats.reserved_bytes[0].current) <= device_bytes(device),
-            "image_aten_cleanup_unconfirmed"
-        );
+        for (const auto& [key, entry] : entries_)
+            if (entry->device == device && entry->pool)
+                need(
+                    entry->pool->allocated() == entry->allocated
+                        && entry->pool->reserved() <= entry->bytes,
+                    "image_aten_cleanup_unconfirmed"
+                );
     }
 
     void evict(Entry& entry) {
         need(!entry.pinned, "image_aten_cache_pinned");
-        c10::cuda::CUDAGuard guard(entry.device);
-        c10::cuda::device_synchronize();
+        c10::cuda::CUDAStreamGuard guard(stream(entry.device));
+        stream(entry.device).synchronize();
         if (entry.ready)
             resources_.begin_eviction(entry.handle);
         entry.bank.clear();
         entry.allocated = 0;
-        at::cuda::clearCublasWorkspaces();
-        c10::cuda::CUDACachingAllocator::emptyCache();
+        if (entry.pool)
+            entry.pool->close();
         const auto device = entry.device;
         const auto handle = entry.handle;
         const Key key{entry.inventory, device};
-        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-        need(
-            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
-                && Bytes(stats.reserved_bytes[0].current)
-                       <= device_bytes(device) - entry.bytes,
-            "image_aten_cleanup_unconfirmed"
-        );
         report("eviction", entry);
         resources_.released(handle);
         entries_.erase(key);
@@ -476,6 +488,10 @@ public:
     void clear() {
         while (!entries_.empty())
             evict(*entries_.begin()->second);
+        for (auto& [device, stream] : streams_)
+            if (stream)
+                stream->close();
+        streams_.clear();
     }
 
     void make_room(const Inventory& inventory, const AtenStagePlan& plan) {
@@ -524,10 +540,17 @@ public:
 
     void loaded(Entry& entry, Bytes allocated, double seconds) {
         entry.allocated = allocated;
-        load_seconds_[{entry.inventory, entry.device}] = seconds;
+        pending_load_seconds_[{entry.inventory, entry.device}] = seconds;
         resources_.loaded(entry.handle);
         entry.ready = true;
         report("miss", entry);
+    }
+
+    void record_batch_measurement(bool calibrated) {
+        if (calibrated)
+            for (const auto& [key, seconds] : pending_load_seconds_)
+                load_seconds_[key] = seconds;
+        pending_load_seconds_.clear();
     }
 
     void pin(Entry& entry, bool hit) {
@@ -556,6 +579,7 @@ class Stage {
     const std::atomic_bool& cancel_;
     AtenStagePlan plan_;
     BatchMeasurement* measurement_;
+    std::unique_ptr<ImageCudaPool> workspace_;
 
     Tensor read_weight(const std::string& name) const {
         stop(cancel_);
@@ -639,7 +663,7 @@ public:
         handle_ = r.reserve(Workload::image, footprint);
         try {
             at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
-            c10::cuda::CUDAGuard guard(device);
+            c10::cuda::CUDAStreamGuard guard(stream());
             if (!plan_.stream_weights) {
                 cached_ = cache_.find(inventory, device);
                 if (!cached_)
@@ -650,16 +674,11 @@ public:
             const auto additional =
                 footprint[device + 1] + (cached_ && !hit ? cached_->bytes : 0);
             need(free >= additional, "image_aten_physical_headroom");
-            c10::cuda::CUDACachingAllocator::resetPeakStats(device);
-            c10::cuda::CUDACachingAllocator::setMemoryFraction(
-                double(r.snapshot().used[device + 1]) / double(total), device
-            );
             if (cached_ && !hit) {
                 const auto started = Clock::now();
-                const auto before =
-                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
-                        .allocated_bytes[0]
-                        .current;
+                cached_->pool =
+                    std::make_unique<ImageCudaPool>(stream(), cached_->bytes);
+                cached_->pool->begin();
                 for (const auto& [name, weight] : inventory.weights) {
                     stop(cancel_);
                     cached_->bank.emplace(
@@ -674,11 +693,8 @@ public:
                     );
                 }
                 sync();
-                const auto allocated =
-                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
-                        .allocated_bytes[0]
-                        .current
-                    - before;
+                cached_->pool->end();
+                const auto allocated = cached_->pool->allocated();
                 const auto seconds =
                     std::chrono::duration<double>(Clock::now() - started).count();
                 cache_.loaded(*cached_, allocated, seconds);
@@ -687,6 +703,9 @@ public:
             }
             if (cached_)
                 cache_.pin(*cached_, hit);
+            workspace_ =
+                std::make_unique<ImageCudaPool>(stream(), footprint[device + 1]);
+            workspace_->begin();
             sync();
         } catch (...) {
             auto error = std::current_exception();
@@ -702,23 +721,31 @@ public:
         }
     }
 
+    c10::cuda::CUDAStream stream() const {
+        return cache_.stream(device);
+    }
+
     void sync() const {
-        c10::cuda::CUDAGuard guard(device);
-        c10::cuda::device_synchronize();
+        stream().synchronize();
     }
 
     void close() {
         if (!handle_)
             return;
-        c10::cuda::CUDAGuard guard(device);
+        c10::cuda::CUDAStreamGuard guard(stream());
         sync();
         if (measurement_) {
-            const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+            // Segment peaks bound live allocations conservatively; they are
+            // attributable to this execution, including allocator fragmentation.
+            const auto scratch_peak = workspace_ ? workspace_->peak() : 0;
+            measurement_->allocated_is_upper_bound = true;
             measurement_->peak_allocated[device + 1] = std::max<Bytes>(
-                measurement_->peak_allocated[device + 1], stats.allocated_bytes[0].peak
+                measurement_->peak_allocated[device + 1],
+                cache_.allocated_bytes(device) + scratch_peak
             );
             measurement_->peak_reserved[device + 1] = std::max<Bytes>(
-                measurement_->peak_reserved[device + 1], stats.reserved_bytes[0].peak
+                measurement_->peak_reserved[device + 1],
+                cache_.reserved_bytes(device) + scratch_peak
             );
             const auto host = resources_.snapshot().used[0];
             measurement_->peak_allocated[0] =
@@ -732,8 +759,11 @@ public:
                 cache_.evict(*cached_);
             cached_ = nullptr;
         }
-        at::cuda::clearCublasWorkspaces();
-        c10::cuda::CUDACachingAllocator::emptyCache();
+        at::cuda::clearCublasWorkspacesForStream(stream().stream());
+        if (workspace_) {
+            workspace_->close();
+            workspace_.reset();
+        }
         // Caller temporaries must be gone; only explicitly retained banks may
         // survive this stage. Their reservations remain in the shared ledger.
         cache_.verify(device);

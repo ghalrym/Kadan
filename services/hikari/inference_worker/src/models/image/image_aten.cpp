@@ -689,28 +689,17 @@ Tensor decode(
     return output;
 }
 
-// Backend flags are process-wide, so restore them before another workload runs.
-struct ArithmeticScope {
-    at::Context& context = at::globalContext();
-    bool blas = context.allowTF32CuBLAS(), cudnn = context.allowTF32CuDNN();
-    at::CuBLASReductionOption reduction = context.allowBF16ReductionCuBLAS();
-
-    ArithmeticScope() {
+// ATen math policy is stable for the worker lifetime. Native engines own their
+// cuBLAS handles and do not observe or mutate these ATen flags.
+void initialize_arithmetic() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        auto& context = at::globalContext();
         context.setAllowTF32CuBLAS(false);
         context.setAllowTF32CuDNN(false);
         context.setAllowBF16ReductionCuBLAS(false);
-    }
-
-    ~ArithmeticScope() {
-        context.setAllowTF32CuBLAS(blas);
-        context.setAllowTF32CuDNN(cudnn);
-        context.setAllowBF16ReductionCuBLAS(
-            reduction == at::CuBLASReductionOption::AllowReducedPrecisionWithSplitK,
-            reduction
-                != at::CuBLASReductionOption::DisallowReducedPrecisionDisallowSplitK
-        );
-    }
-};
+    });
+}
 
 void stage_timing(
     const char* phase, const char* stage, int device, Clock::time_point started
@@ -1208,6 +1197,13 @@ void AtenGenerator::generate(
     );
 }
 
+void AtenGenerator::record_batch_measurement(bool calibrated) {
+    if (model_) {
+        model_->performance.record_batch_measurement(calibrated);
+        model_->device_cache.record_batch_measurement(calibrated);
+    }
+}
+
 void AtenGenerator::generate_batch(
     std::span<const ImageRequest> requests,
     std::span<const std::span<float>> outputs,
@@ -1215,6 +1211,8 @@ void AtenGenerator::generate_batch(
     const Generator::BatchHook& batch_hook
 ) {
     need(bool(model_), "image_generator_not_loaded");
+    // A previous failed or unpublished batch must never become a later sample.
+    record_batch_measurement(false);
     need(!requests.empty() && requests.size() == outputs.size(), "image_batch_shape");
     const auto& request = requests.front();
     for (std::size_t i = 0; i < requests.size(); ++i) {
@@ -1240,9 +1238,10 @@ void AtenGenerator::generate_batch(
     measurement_.baseline_reserved[0] = measurement_.baseline_allocated[0];
     at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
     for (const auto device : devices_) {
-        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-        measurement_.baseline_allocated[device + 1] = stats.allocated_bytes[0].current;
-        measurement_.baseline_reserved[device + 1] = stats.reserved_bytes[0].current;
+        measurement_.baseline_allocated[device + 1] =
+            model_->device_cache.allocated_bytes(device);
+        measurement_.baseline_reserved[device + 1] =
+            model_->device_cache.reserved_bytes(device);
     }
     const auto indexed_hook = [&](std::size_t index) -> Generator::Hook {
         return [&, index](const char* event, std::size_t value) {
@@ -1262,7 +1261,7 @@ void AtenGenerator::generate_batch(
         return;
     }
     c10::InferenceMode inference;
-    ArithmeticScope arithmetic;
+    initialize_arithmetic();
     auto& m = *model_;
     std::vector<ImagePrompt> prompts;
     std::size_t count = 0, text_tokens = 0;
@@ -1313,7 +1312,7 @@ void AtenGenerator::generate_batch(
             &measurement_
         );
         stage_timing("load", "vae_encoder", stage.device, started);
-        c10::cuda::CUDAGuard guard(stage.device);
+        c10::cuda::CUDAStreamGuard guard(stage.stream());
         started = Clock::now();
         source = encode_source(stage, source_request, m.config, cancel, hook);
         stage.sync();
@@ -1343,7 +1342,7 @@ void AtenGenerator::generate_batch(
             &measurement_
         );
         stage_timing("load", "vision", stage.device, started);
-        c10::cuda::CUDAGuard guard(stage.device);
+        c10::cuda::CUDAStreamGuard guard(stage.stream());
         started = Clock::now();
         vision = encode_vision(
             stage,
@@ -1373,7 +1372,7 @@ void AtenGenerator::generate_batch(
             &measurement_
         );
         stage_timing("load", "text", stage.device, started);
-        c10::cuda::CUDAGuard guard(stage.device);
+        c10::cuda::CUDAStreamGuard guard(stage.stream());
         started = Clock::now();
         for (std::size_t i = 0; i < requests.size(); ++i) {
             conditions.push_back(encode_text(
@@ -1467,7 +1466,7 @@ void AtenGenerator::generate_batch(
             bool completed = false;
             try {
                 c10::InferenceMode lane_inference;
-                c10::cuda::CUDAGuard guard(stage.device);
+                c10::cuda::CUDAStreamGuard guard(stage.stream());
                 const std::vector<Tensor> lane_conditions(
                     conditions.begin() + lane.begin,
                     conditions.begin() + lane.begin + lane.images
@@ -1519,7 +1518,7 @@ void AtenGenerator::generate_batch(
         };
         {
             // jthread destruction joins even if a later thread cannot launch.
-            // All lanes must stop before Stage::close clears global CUDA caches.
+            // All lanes must stop before Stage::close releases their private pools.
             std::vector<std::jthread> threads;
             threads.reserve(lanes.size());
             for (std::size_t i = 0; i < lanes.size(); ++i)
@@ -1557,7 +1556,7 @@ void AtenGenerator::generate_batch(
             &measurement_
         );
         stage_timing("load", "vae", stage.device, started);
-        c10::cuda::CUDAGuard guard(stage.device);
+        c10::cuda::CUDAStreamGuard guard(stage.stream());
         started = Clock::now();
         for (std::size_t i = 0; i < requests.size(); ++i) {
             auto decoded =
@@ -1576,7 +1575,9 @@ void AtenGenerator::generate_batch(
         composite_image_edit(outputs.front(), request.source, request.mask);
     stop(cancel);
     if (completed_workload)
-        m.performance.observe(*completed_workload, completed_timings);
+        m.performance.defer_observation(
+            *completed_workload, std::move(completed_timings)
+        );
     m.cache_populated = m.weight_cache && m.weight_cache->stats().entries != 0;
 }
 }  // namespace kadan::image

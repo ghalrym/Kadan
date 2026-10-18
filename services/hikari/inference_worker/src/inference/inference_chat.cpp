@@ -41,6 +41,10 @@ void timing_record(
 
 class ChatEngine final : public InferenceEngine {
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     ChatEngine(
         std::shared_ptr<Resources> resources,
         Progress progress,

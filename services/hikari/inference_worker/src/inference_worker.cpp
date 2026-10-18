@@ -10,6 +10,10 @@
 #include <thread>
 #include <unistd.h>
 
+#ifdef KADAN_WORKER_CUDA
+#include <cuda_runtime_api.h>
+#endif
+
 #include "kadan/image_edit.hpp"
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
@@ -46,6 +50,27 @@ public:
             dlclose(library_);
     }
 
+    std::vector<std::size_t> execution_capacity() const {
+        std::vector<std::size_t> capacity(devices_, 1);
+#ifdef KADAN_WORKER_CUDA
+        for (unsigned index = 0; index < devices_; ++index) {
+            int concurrent = 0;
+            require(
+                cudaDeviceGetAttribute(
+                    &concurrent, cudaDevAttrConcurrentKernels, int(index)
+                ) == cudaSuccess,
+                "device_execution_capability"
+            );
+            // Each queue has one active engine. CUDA admits kernels against the
+            // device's SM/register/shared-memory limits; the shared ledger owns
+            // every engine's weights, KV, activations and execution workspaces.
+            if (concurrent)
+                capacity[index] = static_cast<std::size_t>(Workload::decision) + 1;
+        }
+#endif
+        return capacity;
+    }
+
     Footprint probe() const {
         Footprint available(devices_ + 1);
         std::ifstream meminfo("/proc/meminfo");
@@ -76,6 +101,9 @@ public:
                 device_(index, &device) == 0 && memory_(device, &memory) == 0,
                 "device_memory_probe"
             );
+            // Primary CUDA contexts and ATen's shared handle pool live until
+            // process exit. Keep their headroom outside every engine allowance;
+            // owned tensor pools and execution workspaces are charged separately.
             constexpr Bytes margin = 512ULL * 1024 * 1024;
             available[index + 1] = memory.free > margin ? memory.free - margin : 0;
         }
@@ -276,7 +304,8 @@ int serve(const char* lock_path) {
                          {"value", value}}
                     );
                 },
-                [&] { return memory.probe(); }
+                [&] { return memory.probe(); },
+                context
             );
         case Workload::video:
             return video_engine(resources, progress);
@@ -350,7 +379,14 @@ int serve(const char* lock_path) {
         output.send(prepared);
     };
     InferenceOwner owner(
-        capacity, factory, [&] { return memory.probe(); }, publish, 32, prepare
+        capacity,
+        factory,
+        [&] { return memory.probe(); },
+        publish,
+        32,
+        prepare,
+        [] { return std::chrono::steady_clock::now(); },
+        memory.execution_capacity()
     );
     owner_pointer = &owner;
     output.send({{"state", "models"}, {"models", store.status()}});

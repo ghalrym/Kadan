@@ -1,12 +1,11 @@
-#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <thread>
 #include <unistd.h>
 
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_batch_memory.hpp"
+#include "kadan/image_batch_monitor.hpp"
 #include "kadan/image_batch_output.hpp"
 #include "kadan/image_edit.hpp"
 #include "kadan/image_generation.hpp"
@@ -23,58 +22,6 @@ Bytes resident_bytes() {
         throw std::runtime_error("image_host_memory_probe");
     return resident * static_cast<Bytes>(sysconf(_SC_PAGESIZE));
 }
-
-// RSS is sampled only around a batch, including its preparation and output
-// buffers. Process lifetime ru_maxrss cannot measure a later batch's increment.
-class BatchMonitor {
-public:
-    const Bytes baseline = resident_bytes();
-
-    explicit BatchMonitor(std::function<void()> update_cancellation)
-        : peak_(baseline), sampler_([this, update_cancellation] {
-              std::unique_lock lock(mutex_);
-              while (!done_) {
-                  update_cancellation();
-                  try {
-                      peak_ = std::max(peak_, resident_bytes());
-                  } catch (...) {
-                      failed_ = true;
-                  }
-                  changed_.wait_for(lock, std::chrono::milliseconds(10), [&] {
-                      return done_;
-                  });
-              }
-          }) {
-    }
-
-    ~BatchMonitor() {
-        stop();
-    }
-
-    Bytes finish() {
-        stop();
-        if (failed_)
-            throw std::runtime_error("image_host_memory_probe");
-        return std::max(peak_, resident_bytes());
-    }
-
-private:
-    void stop() {
-        {
-            std::lock_guard lock(mutex_);
-            done_ = true;
-        }
-        changed_.notify_one();
-        if (sampler_.joinable())
-            sampler_.join();
-    }
-
-    Bytes peak_;
-    bool done_ = false, failed_ = false;
-    std::mutex mutex_;
-    std::condition_variable changed_;
-    std::thread sampler_;
-};
 
 image::ImageRequest native_request(const ImageRequest& input) {
     return {
@@ -116,12 +63,13 @@ class ImageEngine final : public InferenceEngine {
     Progress progress_;
     RequestProgress request_progress_;
     InferenceOwner::Probe probe_;
+    std::shared_ptr<ExecutionContext> context_;
     std::atomic_bool cancel_{false};
     std::function<void()> update_cancel_;
     std::unique_ptr<WorkerCompute> compute_;
     std::unique_ptr<image::Generator> model_;
     std::unique_ptr<HostAllocation> request_memory_;
-    std::unique_ptr<BatchMonitor> host_peak_;
+    std::unique_ptr<ImageBatchMonitor> host_peak_;
     std::vector<float> source_, mask_;
     std::vector<image::ImageRequest> images_;
 
@@ -140,6 +88,18 @@ class ImageEngine final : public InferenceEngine {
     std::map<BatchShape, BatchHistory> measured_;
     std::size_t capacity_ = 1;
 
+    void monitor_batch() {
+        const auto activity = context_->activity;
+        const auto initial = activity->snapshot();
+        host_peak_ = std::make_unique<ImageBatchMonitor>(
+            resident_bytes, update_cancel_, [activity, initial] {
+                const auto current = activity->snapshot();
+                return initial.active == 1 && current.active == 1
+                       && initial.epoch == current.epoch;
+            }
+        );
+    }
+
     void release_request() {
         host_peak_.reset();
         update_cancel_ = {};
@@ -156,10 +116,16 @@ public:
         std::shared_ptr<Resources> r,
         Progress p,
         RequestProgress rp,
-        InferenceOwner::Probe probe
+        InferenceOwner::Probe probe,
+        std::shared_ptr<ExecutionContext> context
     )
         : resources_(std::move(r)), progress_(std::move(p)),
-          request_progress_(std::move(rp)), probe_(std::move(probe)) {
+          request_progress_(std::move(rp)), probe_(std::move(probe)),
+          context_(std::move(context)) {
+    }
+
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
     }
 
     void load(
@@ -254,7 +220,7 @@ public:
             );
         };
         update_cancel_();
-        host_peak_ = std::make_unique<BatchMonitor>(update_cancel_);
+        monitor_batch();
         const auto& first = std::get<ImageRequest>(batch[0].request->input);
         Bytes bytes = 8 * 1024 * 1024;
         for (const auto& item : batch) {
@@ -371,7 +337,7 @@ public:
                 if (requests.empty())
                     continue;
                 if (!host_peak_)
-                    host_peak_ = std::make_unique<BatchMonitor>(update_cancel_);
+                    monitor_batch();
                 const auto began = std::chrono::steady_clock::now();
                 std::vector<std::vector<float>> rgba(requests.size());
                 std::vector<std::span<float>> output;
@@ -433,12 +399,14 @@ public:
                         outputs_[owner.request].failure = error.what();
                     }
                 }
+                const auto ended = std::chrono::steady_clock::now();
                 const auto host_peak = host_peak_->finish();
                 const auto& measurement = model_->last_batch_measurement();
                 Footprint incremental(resources_->snapshot().capacity.size());
-                incremental[0] = host_peak > host_peak_->baseline
-                                     ? host_peak - host_peak_->baseline
-                                     : 0;
+                if (host_peak)
+                    incremental[0] = host_peak->peak > host_peak->baseline
+                                         ? host_peak->peak - host_peak->baseline
+                                         : 0;
                 // A reused malloc arena may hide the next batch's RSS growth. Keep a
                 // floor for the actual owned output buffers as well as prior peaks.
                 incremental[0] = std::max<Bytes>(
@@ -462,28 +430,41 @@ public:
                 auto per_image = measurement.additional_image;
                 per_image[0] = 64ULL * requests[0].width * requests[0].height
                                + 8192ULL * 4096 * sizeof(float);
-                measured_[batch_shape(input)].memory.observe(
-                    requests.size(), incremental, per_image
-                );
-                const auto seconds = std::chrono::duration<double>(
-                                         std::chrono::steady_clock::now() - began
-                )
-                                         .count();
-                if (!cancel_.load())
-                    measured_[batch_shape(input)].performance.observe(
+                const auto seconds =
+                    std::chrono::duration<double>(ended - began).count();
+                // RSS and timings belong to this batch only if no other model
+                // preparation, load, execution or cleanup overlapped its window.
+                // Keep prior calibration on overlap/cancellation; native stage
+                // plans and owned reservations still bound every admission.
+                const bool calibrated =
+                    host_peak.has_value()
+                    && std::none_of(
+                        owners.begin(), owners.end(), [&](const auto& owner) {
+                            return batch[owner.request].cancel->load();
+                        }
+                    );
+                model_->record_batch_measurement(calibrated);
+                if (calibrated) {
+                    auto& history = measured_[batch_shape(input)];
+                    history.memory.observe(requests.size(), incremental, per_image);
+                    history.performance.observe(
                         requests.size(),
                         seconds,
                         measurement.loading_seconds,
                         measurement.denoise_seconds,
                         measurement.streamed_weights
                     );
+                }
                 const Json telemetry{
                     {"event", "image_batch"},
                     {"images", requests.size()},
                     {"seconds", seconds},
                     {"loading_seconds", measurement.loading_seconds},
-                    {"host_baseline_bytes", host_peak_->baseline},
-                    {"host_peak_bytes", host_peak},
+                    {"calibration_valid", calibrated},
+                    {"host_baseline_bytes",
+                     host_peak ? Json(host_peak->baseline) : Json(nullptr)},
+                    {"host_peak_bytes",
+                     host_peak ? Json(host_peak->peak) : Json(nullptr)},
                     {"device_peak_allocated_bytes", measurement.peak_allocated},
                     {"device_peak_reserved_bytes", measurement.peak_reserved},
                     {"incremental_peak_bytes", incremental},
@@ -540,10 +521,11 @@ std::unique_ptr<InferenceEngine> image_engine(
     std::shared_ptr<Resources> r,
     Progress p,
     RequestProgress rp,
-    InferenceOwner::Probe probe
+    InferenceOwner::Probe probe,
+    std::shared_ptr<ExecutionContext> context
 ) {
     return std::make_unique<ImageEngine>(
-        std::move(r), std::move(p), std::move(rp), std::move(probe)
+        std::move(r), std::move(p), std::move(rp), std::move(probe), std::move(context)
     );
 }
 }  // namespace kadan::serving

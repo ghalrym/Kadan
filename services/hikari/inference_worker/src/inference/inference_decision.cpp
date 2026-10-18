@@ -9,6 +9,10 @@ class DecisionEngine final : public InferenceEngine {
     Progress progress_;
 
 public:
+    BackendExecution execution_policy() const override {
+        return BackendExecution::isolated;
+    }
+
     DecisionEngine(std::shared_ptr<Resources> r, Progress progress)
         : resources_(std::move(r)), executor_(resources_),
           progress_(std::move(progress)) {

@@ -29,6 +29,7 @@ public:
         return measurement_;
     }
 
+    void record_batch_measurement(bool calibrated);
     ImageDeviceCacheMemory device_cache_memory() const;
     void unload();
 

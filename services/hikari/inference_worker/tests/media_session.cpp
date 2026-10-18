@@ -1447,6 +1447,100 @@ void kv_barrier_and_worker_idle() {
     --worker.media_activity->owners;
     worker.idle();
 }
+
+void library_admission_is_isolated_between_owners() {
+    auto root = std::make_shared<Resources>(Footprint{100, 2 * compute_context_bytes});
+    auto first_activity = std::make_shared<MediaSessionActivity>();
+    auto second_activity = std::make_shared<MediaSessionActivity>();
+    MediaLibraryAllocation first(
+        root, first_activity, Workload::video, 0, compute_context_bytes
+    );
+    MediaLibraryAllocation second(
+        root, second_activity, Workload::image, 0, compute_context_bytes
+    );
+    check(root->snapshot().used[1] == 2 * compute_context_bytes);
+    check(first_activity->owners == 1 && second_activity->owners == 1);
+    // A third library cannot initialize before accounting admits its envelope.
+    bool initialized = false;
+    auto blocked_activity = std::make_shared<MediaSessionActivity>();
+    check(
+        fails([&] {
+            MediaLibraryAllocation blocked(
+                root, blocked_activity, Workload::video, 0, compute_context_bytes
+            );
+            initialized = true;
+        })
+        == "exhausted"
+    );
+    check(!initialized && blocked_activity->owners == 0);
+    first.release();
+    first.release();
+    check(root->snapshot().used[1] == compute_context_bytes);
+    check(first_activity->owners == 0 && second_activity->owners == 1);
+    second.release();
+    check(root->snapshot().residents == 0 && second_activity->owners == 0);
+}
+
+void failed_library_initialization_keeps_unconfirmed_charge() {
+    auto resources = std::make_shared<Resources>(Footprint{100, compute_context_bytes});
+    auto activity = std::make_shared<MediaSessionActivity>();
+    check(
+        fails([&] {
+            MediaLibraryAllocation library(
+                resources, activity, Workload::video, 0, compute_context_bytes
+            );
+            check(resources->snapshot().used[1] == compute_context_bytes);
+            // A failed library call may not return a handle we can destroy.
+            throw std::runtime_error("library_create_failed");
+        })
+        == "library_create_failed"
+    );
+    check(resources->snapshot().used[1] == compute_context_bytes);
+    check(resources->snapshot().residents == 1 && activity->owners == 1);
+}
+
+void library_cleanup_requires_acknowledgment() {
+    auto resources = std::make_shared<Resources>(Footprint{100, compute_context_bytes});
+    auto activity = std::make_shared<MediaSessionActivity>();
+    auto library = std::make_unique<MediaLibraryAllocation>(
+        resources, activity, Workload::video, 0, compute_context_bytes
+    );
+    bool destruction_fails = true;
+    check(
+        fails([&] {
+            rethrow_after_cleanup(
+                std::make_exception_ptr(std::runtime_error("library_create_failed")),
+                [&] {
+                    // Destruction did not confirm cleanup; do not release the lease.
+                    if (destruction_fails)
+                        throw std::runtime_error("library_destroy_failed");
+                    library->release();
+                }
+            );
+        }).find("library_destroy_failed")
+        != std::string::npos
+    );
+    library.reset();
+    check(resources->snapshot().used[1] == compute_context_bytes);
+    check(activity->owners == 1);
+
+    auto clean_resources =
+        std::make_shared<Resources>(Footprint{100, compute_context_bytes});
+    auto clean_activity = std::make_shared<MediaSessionActivity>();
+    MediaLibraryAllocation clean(
+        clean_resources, clean_activity, Workload::video, 0, compute_context_bytes
+    );
+    check(
+        fails([&] {
+            rethrow_after_cleanup(
+                std::make_exception_ptr(std::runtime_error("library_create_failed")),
+                [&] { clean.release(); }
+            );
+        })
+        == "library_create_failed"
+    );
+    check(clean_resources->snapshot().residents == 0 && clean_activity->owners == 0);
+}
 }  // namespace
 
 int main() {
@@ -1476,6 +1570,9 @@ int main() {
     retained_owner_migration();
     retained_partition_migration();
     kv_barrier_and_worker_idle();
+    library_admission_is_isolated_between_owners();
+    failed_library_initialization_keeps_unconfirmed_charge();
+    library_cleanup_requires_acknowledgment();
     std::cout
         << "Media session CPU lifecycle units passed; no CUDA or forward execution\n";
 }

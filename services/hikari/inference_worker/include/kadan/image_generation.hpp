@@ -21,6 +21,8 @@ struct BatchMeasurement {
     double loading_seconds = 0, denoise_seconds = 0;
     bool streamed_weights = false;
     // Index zero is host admission; subsequent entries are independent CUDA devices.
+    // True when private allocator segment peaks conservatively bound live bytes.
+    bool allocated_is_upper_bound = false;
     Footprint peak_allocated, peak_reserved;
     Footprint baseline_allocated, baseline_reserved;
     // Conservative extra denoiser workspace for one more compatible image.
@@ -65,6 +67,8 @@ public:
         const ImageRequest&, std::size_t limit, const std::atomic_bool&
     );
     const BatchMeasurement& last_batch_measurement() const;
+    // Accept only an uncancelled batch whose full execution window stayed isolated.
+    void record_batch_measurement(bool calibrated);
     static bool compatible(const ImageRequest&, const ImageRequest&);
     ImageDeviceCacheMemory device_cache_memory() const;
     void unload();

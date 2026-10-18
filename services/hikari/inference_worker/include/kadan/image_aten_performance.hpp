@@ -46,6 +46,13 @@ class AtenDenoiserPerformance {
     static constexpr std::size_t history_limit = 64;
     std::vector<Record> history_;
 
+    struct Pending {
+        AtenDenoiserWorkload workload;
+        std::vector<AtenDenoiserMeasurement> measurements;
+    };
+
+    std::optional<Pending> pending_;
+
     static bool valid_cost(const AtenDenoiserCost& current, std::size_t lanes) {
         const auto valid = [](double seconds) {
             return std::isfinite(seconds) && seconds >= 0;
@@ -96,6 +103,22 @@ class AtenDenoiserPerformance {
     }
 
 public:
+    // Execution cannot determine whether other workloads contaminated the full
+    // batch window. Hold timings until the worker accepts that observation.
+    void defer_observation(
+        const AtenDenoiserWorkload& workload,
+        std::vector<AtenDenoiserMeasurement> measurements
+    ) {
+        pending_ = Pending{workload, std::move(measurements)};
+    }
+
+    void record_batch_measurement(bool calibrated) {
+        auto pending = std::move(pending_);
+        pending_.reset();
+        if (calibrated && pending)
+            observe(pending->workload, pending->measurements);
+    }
+
     std::optional<double> denoise_seconds(
         const AtenDenoiserWorkload& workload, std::span<const AtenDenoiserLane> lanes
     ) const {
