@@ -178,6 +178,115 @@ void retained_banks_and_reload_cost() {
         );
 }
 
+void calibration_cost_gate() {
+    AtenDenoiserPerformance policy;
+    const std::array baseline{AtenDenoiserMeasurement{0, 2, false, 0, 4}};
+    const AtenDenoiserCost hit{{0}, 0};
+    const AtenDenoiserCost upload{{0, 4}, 0};
+    const AtenDenoiserCost reload{{0, 0}, 5};
+    const AtenDenoiserCost combined{{0, 2}, 2};
+    const AtenDenoiserCost unknown_upload{{0, std::nullopt}, 4};
+    // New prompt lengths retain independent timing histories, but must not
+    // repeat probes whose known loading costs already exhaust their baseline.
+    for (const auto tokens : {128, 129}) {
+        auto shape = workload;
+        shape.tokens = tokens;
+        policy.observe(shape, baseline);
+        for (const auto& expensive : {upload, reload, combined, unknown_upload})
+            check(
+                policy
+                    .choose_candidates(
+                        shape, {single(2), parallel(2)}, {hit, expensive}
+                    )
+                    .size()
+                == 1
+            );
+    }
+    // The gate does not permanently disable a device: larger batches can
+    // amortize the same cost, and a smaller current cost restores eligibility.
+    check(
+        policy.choose_candidates(workload, {single(4), parallel(4)}, {hit, upload})
+            .size()
+        == 2
+    );
+    const AtenDenoiserCost cheaper{{0, 1}, 1};
+    check(
+        policy.choose_candidates(workload, {single(2), parallel(2)}, {hit, cheaper})
+            .size()
+        == 2
+    );
+    const AtenDenoiserCost unknown{{0, std::nullopt}, 0};
+    check(
+        policy.choose_candidates(workload, {single(2), parallel(2)}, {hit, unknown})
+            .size()
+        == 2
+    );
+    // Planning alone never consumes calibration; a successful observation does.
+    check(
+        policy.choose_candidates(workload, {single(2), parallel(2)}, {hit, unknown})
+            .size()
+        == 2
+    );
+    // When no single-device plan fits, its cost cannot veto the required pair.
+    check(
+        policy.choose_candidates(workload, {{}, parallel(2)}, {{}, reload}).size() == 2
+    );
+    check(policy.choose_candidates(workload, {single(2)}, {hit}).size() == 1);
+}
+
+void narrower_calibration_candidates() {
+    AtenDenoiserPerformance policy;
+    const std::array baseline{AtenDenoiserMeasurement{0, 6, false, 0, 6}};
+    policy.observe(workload, baseline);
+    const std::vector<AtenDenoiserLane> three{
+        {0, 2, {0, false, false, 100, 200}},
+        {2, 2, {1, false, false, 100, 200}},
+        {4, 2, {5, false, false, 100, 200}}
+    };
+    const std::vector<AtenDenoiserLane> four{
+        {0, 2, {0, false, false, 100, 200}},
+        {2, 2, {1, false, false, 100, 200}},
+        {4, 1, {5, false, false, 100, 200}},
+        {5, 1, {7, false, false, 100, 200}}
+    };
+    const AtenDenoiserCost hit{{0}, 0};
+    const AtenDenoiserCost pair{{0, 1}, 0};
+    const AtenDenoiserCost costly_three{{0, 1, 3}, 2};
+    const AtenDenoiserCost costly_four{{0, 1, 3, 4}, 2};
+    check(
+        policy
+            .choose_candidates(
+                workload,
+                {single(6), parallel(6), three, four},
+                {hit, pair, costly_three, costly_four}
+            )
+            .size()
+        == 2
+    );
+    // Candidate order must not hide a worthwhile narrower subset.
+    check(
+        policy
+            .choose_candidates(
+                workload,
+                {four, three, parallel(6), single(6)},
+                {costly_four, costly_three, pair, hit}
+            )
+            .size()
+        == 2
+    );
+    const AtenDenoiserCost cheap_three{{0, 1, 1}, 0};
+    check(
+        policy
+            .choose_candidates(
+                workload,
+                {single(6), parallel(6), three, four},
+                {hit, pair, cheap_three, costly_four}
+            )
+            .size()
+        == 3
+    );
+}
+
 void memory_and_incomplete_observations() {
     AtenDenoiserPerformance policy;
     check(policy.choose_candidates(workload, {{}, parallel(2)}).size() == 2);
@@ -277,6 +386,8 @@ int main() {
         loading_and_amortization();
         separate_loading_regimes_and_shapes();
         retained_banks_and_reload_cost();
+        calibration_cost_gate();
+        narrower_calibration_candidates();
         memory_and_incomplete_observations();
         heterogeneous_device_candidates();
         bounded_history();

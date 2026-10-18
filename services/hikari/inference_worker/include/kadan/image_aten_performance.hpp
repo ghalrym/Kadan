@@ -141,8 +141,8 @@ public:
             });
         if (found == history_.end())
             return candidates[baseline];
-        const auto largest =
-            *std::max_element(resident.begin(), resident.end(), fewer_lanes);
+        auto best = baseline;
+        auto best_seconds = cost(*found, candidates[baseline], current_cost(baseline));
         const auto unmeasured_device = [&](const auto& lane) {
             return std::none_of(
                 found->parallel.begin(),
@@ -150,18 +150,25 @@ public:
                 [&](const auto& sample) { return sample.device == lane.stage.device; }
             );
         };
-        // One largest-plan calibration discovers all its devices. Keeping their
-        // observations means later narrower runs do not repeat that probe.
-        if (candidates[largest].size() > candidates[baseline].size()
-            && std::any_of(
-                candidates[largest].begin(),
-                candidates[largest].end(),
-                unmeasured_device
-            )
-            && valid_cost(current_cost(largest), candidates[largest].size()))
-            return candidates[largest];
-        auto best = baseline;
-        auto best_seconds = cost(*found, candidates[baseline], current_cost(baseline));
+        // Probe the largest worthwhile unmeasured subset. Even assuming free
+        // compute and unknown uploads, known loading and displaced-bank reloads
+        // can already outweigh the baseline. Keep narrower subsets eligible.
+        auto probe = baseline;
+        for (auto i : resident) {
+            if (candidates[i].size() <= candidates[probe].size()
+                || !valid_cost(current_cost(i), candidates[i].size())
+                || std::none_of(
+                    candidates[i].begin(), candidates[i].end(), unmeasured_device
+                ))
+                continue;
+            double loading = current_cost(i).deferred_reload_seconds;
+            for (const auto& seconds : current_cost(i).load_seconds)
+                loading += seconds.value_or(0);
+            if (!best_seconds || loading < *best_seconds)
+                probe = i;
+        }
+        if (probe != baseline)
+            return candidates[probe];
         if (!best_seconds)
             return candidates[baseline];
         for (auto i : resident) {
