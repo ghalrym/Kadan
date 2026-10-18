@@ -137,9 +137,7 @@ class Boundary:
 
 async def with_services(boundary, operation):
     async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
-        return await operation(
-            LocalServices(client, Settings(_env_file=None, plugins=[]))
-        )
+        return await operation(LocalServices(client, Settings(_env_file=None)))
 
 
 def run(boundary, operation):
@@ -513,3 +511,19 @@ def test_status_reports_whether_the_selected_model_is_loaded(lifecycle, state):
     status = run(transport, lambda service: service.status())
     assert status.hikari.state == "ready"
     assert status.hikari.model_state == state
+
+
+def test_saved_tool_activity_is_not_sent_to_the_model():
+    current = resource(
+        messages=[
+            Message(role="user", content="Find my notes"),
+            Message(role="tool", content='{"name":"kadan__memory_search"}'),
+            Message(role="assistant", content="Here they are"),
+        ]
+    )
+    messages = completion_messages(current, None, Message(role="user", content="Next"))
+    assert [(m.role, m.content) for m in messages] == [
+        ("user", "Find my notes"),
+        ("assistant", "Here they are"),
+        ("user", "Next"),
+    ]

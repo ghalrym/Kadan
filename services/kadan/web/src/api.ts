@@ -89,8 +89,6 @@ export async function readEvents(
           ![
             "user_saved",
             "status",
-            "tool_started",
-            "tool_finished",
             "delta",
             "done",
             "error",

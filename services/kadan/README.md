@@ -8,28 +8,22 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Create and edit personas, select one for a message, and reopen persisted conversations.
 - Save a note without inference, or stream a response through Hikari's `/v1/chat/completions` API when the selected language model is available.
 - Search memories and Spaces by text, browse Space children, and search file metadata or download a file.
-- Enable configured plugins per thread, inspect their skills/setup, and watch tool calls and results in the conversation.
-- Let the agent search/read/create/update memories and Space documents through the built-in MCP server.
 - See actionable storage, tier, download and inference availability states, with links to the supporting operator interfaces.
 - Each agent has an animated pet that reacts to thread activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
 
 A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending message IDs and drafts stay in browser session storage so an uncertain save can be reconciled after reload.
 
-Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The agent can use enabled MCP tools to retrieve context and edit memories or Space documents. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI or enabled pet tool. The workspace browser remains read-only. Files are searched by metadata, not their contents. Chat requests are limited to 100 messages and 48,000 characters; longer conversations require a new thread, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
+Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The model has no tools: chat sends only the persona and conversation text to Hikari. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI. The workspace browser remains read-only. Files are searched by metadata, not their contents. Chat requests are limited to 100 messages and 48,000 characters; longer conversations require a new thread, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
 
 ## Pet creation
 
 Open **Edit pet**. The left column lists **New pet**, the default **Hatchling** and
 every candidate with its progress; the right side previews the chosen one. Under
 **New pet**, **Describe** the character and art style, then choose **Create pet**.
-Creation runs independently of the dialog or MCP turn. The existing pet stays in
+Creation runs independently of the dialog. The existing pet stays in
 use until the user previews the candidate and chooses **Use pet**. The preview
 plays all nine animation states and exposes all sixteen look directions. **Use
 hatchling** resets selection. Selected pets appear in the roster, home and chat.
-
-The built-in plugin exposes `pet_create`, `pet_status`, `pet_cancel` and
-`pet_resume`, scoped to the current agent. It has no activation tool. Retain the
-creation UUID to check or resume the same job after an ambiguous response.
 
 To bring over a pet made for ChatGPT or Codex, choose **New pet → Import** and drop
 or choose its folder (`pet.json` plus the spritesheet), a zip of that folder, or the
@@ -76,95 +70,18 @@ UUID and prompt and returns immediately with HTTP 202. `POST /pets/{id}/revision
 Hikari model; all inference stays in its native worker. No additional model
 runtime is installed by this feature.
 
-## Plugin execution
+## Chat
 
-Plugins are explicit server configuration, with a stable ID, display metadata,
-setup instructions, skill instructions, and an MCP server. The default `kadan`
-plugin exposes twelve tools: `memory_search`, `memory_read`, `memory_create`,
-`memory_update`, the corresponding `workspace_*` tools, and the four pet tools
-listed above. Names are qualified
-as `kadan__memory_search` when presented to the model. Workspace tools operate on
-Tsuchi Space Markdown documents, not host filesystem paths. The selected agent
-key is bound when the built-in server is created; models cannot supply another
-namespace. Updates require a fresh `expected_version` and retain all metadata
-outside the title/Markdown edit. Searches return excerpts and pagination;
-reads page through Markdown by character offset.
+Each message is one streamed completion: Kadan sends the optional persona as a
+system message, then the conversation's user and assistant text. There is no
+planning step and the model cannot call tools. Conversations saved while the
+retired plugin system existed may contain `tool` messages; Kadan keeps them in
+Tsuchi but neither shows them nor sends them to the model.
 
-The chat composer lists configured plugins and saves per-thread deselections in
-this browser. **All enabled tools run with full access and no per-call approval.**
-Each MCP server owns its own restrictions. Disabling a plugin affects later turns;
-Stop cancels the current turn. Cancellation cannot undo completed writes.
-
-`KADAN_PLUGINS` accepts a JSON array of manifests. Leaving it unset uses the
-built-in plugin; `[]` disables all plugins. To add an explicitly configured server,
-provide the full desired list (maximum 16). For example, the following configuration
-keeps the built-in tools and adds an already-running local Streamable HTTP server:
-
-```json
-[
-  {
-    "id": "kadan",
-    "name": "Memory and workspace",
-    "description": "Agent memories and Space documents in Tsuchi",
-    "enabled": true,
-    "server": {"transport": "builtin"},
-    "setup": {"instructions": "Requires Tsuchi."},
-    "skills": [{"name": "Workspace", "description": "Use saved context", "instructions": "Search and read before updating. Use the returned version and preserve concurrent changes."}]
-  },
-  {
-    "id": "local-tools",
-    "name": "Local tools",
-    "description": "An owner-configured MCP server",
-    "enabled": true,
-    "server": {"transport": "streamable_http", "url": "http://127.0.0.1:9000/mcp"},
-    "setup": {"instructions": "Start the reviewed MCP server before enabling it."},
-    "skills": []
-  }
-]
-```
-
-Set this on the Kadan API process (or in an owner-managed Compose override).
-Container loopback refers to that container, so use a reachable endpoint there.
-Kadan never installs or launches the configured server. This slice has no stdio
-subprocesses, OAuth, credential fields, account connections or marketplace.
-The catalog is metadata-only: opening it does not contact configured servers.
-Connections open for the selected turn and close before the final reply.
-
-The implementation uses the [official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk)
-1.30 client, server and transports, including an in-memory client/server connection
-for built-in tools. The built-in MCP server is internal to Kadan; this change does
-not publish a general-purpose MCP HTTP endpoint. Tool discovery follows
-[MCP tools/list and tools/call](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
-with paginated discovery, local JSON-schema validation and bounded calls. Remote
-schema references are rejected; redirects and environment proxy inheritance are
-disabled. No external MCP server was connected while implementing this feature.
-
-Hikari currently exposes text completions without native tool-call fields. Kadan
-uses a separate, bounded planning completion that must return exactly
-`{"type":"tool","name":"...","arguments":{...}}` or `{"type":"reply"}`.
-Hikari's complete GLM reasoning envelope is removed before validating the final JSON; unfinished reasoning is rejected. Persona, skill and planner instructions are combined into one leading system message for Hikari's non-GLM templates. Malformed, incomplete or oversized decisions never dispatch a tool. Each result
-feeds the next planning step; a reply decision starts ordinary streamed text
-completion. Skill instructions accompany the turn. This adds at least one
-planning completion when tools are selected and depends on the selected model
-following the JSON instruction; it is not grammar-constrained generation.
-Model quality and latency require owner review with real inference.
-
-A turn permits eight calls, 64 discovered tools, a 15-second discovery timeout
-per plugin, and a 30-second timeout per call. Planner and final context stay within
-the existing 100-message/48,000-character budget. Tool results are limited to
-32,000 serialized characters. Errors and version conflicts return to the model
-as tool results; malformed decisions and exhausted budgets end the turn visibly.
-A call timeout ends the turn and closes its MCP sessions before any further planning or execution; its saved intent remains an unknown outcome. There are no automatic write retries.
-
-Tool intent is appended to the Tsuchi conversation before dispatch, then its
-outcome is appended before the next decision. Both use the conversation's version
-check. An interrupted call, uncertain storage response or failed result save can
-leave a started record with no outcome. The UI shows **Outcome unknown** after
-reload; inspect current storage before repeating a write. The final assistant
-reply is saved only after its complete stream. Tool traces remain as `tool`
-messages with JSON execution records and are replayed as explicitly labeled data
-because Hikari only accepts system/user/assistant text. API clients can observe
-progress and durable activity through the new SSE events.
+Hikari serves one request at a time and loads the selected model on demand, so
+the first reply can wait for a model load. Kadan sets no read deadline on chat
+requests; while it waits, the chat shows when Hikari reports the model loading.
+Stop disconnects, which cancels the request in Hikari.
 
 ## Docker integration
 
@@ -214,8 +131,7 @@ Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 an
 | Route | Behavior |
 | --- | --- |
 | `GET /api/health` | Coordinator liveness |
-| `GET /api/plugins` | Configured plugin catalog, skills, setup and MCP transport metadata |
-| `GET /api/status` | Storage and inference readiness, including browser links |
+| `GET /api/status` | Storage and inference readiness, including browser links and whether the selected model is loaded (`hikari.model_state`) |
 | `GET, POST /api/agents` | List or create agents |
 | `GET, POST /api/agents/{key}/resources` | Browse/search resources; create a persona or conversation |
 | `GET, PUT /api/agents/{key}/resources/{id}` | Read a resource; update a persona with an expected version |
@@ -225,7 +141,7 @@ Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 an
 | `POST /api/agents/{key}/conversations/{id}/notes` | Append a user note with an expected version and message ID |
 | `POST /api/agents/{key}/conversations/{id}/chat` | Save a user message, then stream inference and save a completed response |
 
-Chat requests include `content`, `expected_version`, an optional `message_id`, an explicit `persona_id` UUID or `null`, and optional `plugin_ids`. Omitting `plugin_ids` enables all server-enabled plugins; `[]` disables tools for that turn. Unknown, duplicate or server-disabled plugin IDs are rejected before saving the user message. Streaming events are `user_saved`, `status`, `tool_started`, `tool_finished`, `delta`, `done`, and `error`. Tool events carry the persisted `conversation` and an `execution` record; `status` carries a progress message. `done` includes the persisted conversation and `finish_reason`; a missing `done` must not be presented as a saved response. The service's `/docs` exposes the request schemas.
+Chat requests include `content`, `expected_version`, an optional `message_id`, and an explicit `persona_id` UUID or `null`. Streaming events are `user_saved`, `status`, `delta`, `done`, and `error`; `status` carries a progress message. `done` includes the persisted conversation and `finish_reason`; a missing `done` must not be presented as a saved response. The service's `/docs` exposes the request schemas.
 
 ## Validation
 
@@ -238,7 +154,5 @@ npm run build --prefix web
 ```
 
 Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
-
-The plugin change was verified with isolated unit fixtures and frontend builds. A temporary static preview with in-memory HTTP fixtures was inspected in Chrome for the plugin chooser and saved tool result cards; it never contacted the live services. It still needs owner UI/API review and real-model evaluation; no inference, runtime rollout, GPU load or live storage writes were performed.
 
 The standalone prototype was manually checked on desktop against temporary isolated storage for agent/persona creation, persona editing, conversation persistence, memory search, Space navigation and file metadata browsing. This monorepo packaging still needs owner verification with the combined Compose stack. Mobile rendering, browser download completion and real inference have not been verified. No model was downloaded or tier selected during prototype work.

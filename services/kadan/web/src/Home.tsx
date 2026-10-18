@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import Composer, { readiness, usePlugins } from "./Composer";
+import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import { useAgentPet } from "./PetContext";
 import type { Opening } from "./Chat";
@@ -22,7 +22,6 @@ export default function Home({ agentKey, agentName, entrance, personas, status, 
   const draftKey = `kadan.draft.${agentKey}.home`;
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
-  const plugins = usePlugins(`kadan.plugins.${agentKey}.home.disabled`);
   const ready = readiness(status);
   const [mood, react] = useMood(status && !ready.chat ? "waiting" : draft.trim() ? "review" : "idle");
   useEffect(() => react(entrance, 2), [entrance, react]);
@@ -43,8 +42,8 @@ export default function Home({ agentKey, agentName, entrance, personas, status, 
         value={draft}
         onChange={setDraft}
         onSend={(generate) => {
-          if (!draft.trim() || disabled || (generate && !plugins.ready)) return;
-          onStart({ content: draft.trim(), persona, generate, pluginIds: plugins.ids });
+          if (!draft.trim() || disabled) return;
+          onStart({ content: draft.trim(), persona, generate });
         }}
         sending={false}
         blocked={disabled}
@@ -52,7 +51,6 @@ export default function Home({ agentKey, agentName, entrance, personas, status, 
         personas={personas}
         persona={persona}
         onPersona={setPersona}
-        plugins={plugins}
         pet={null}
         autoFocus
       />
