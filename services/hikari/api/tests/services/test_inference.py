@@ -514,14 +514,14 @@ class UnloadTests(unittest.IsolatedAsyncioTestCase):
 
 class TierSelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_tier_selection_unloads_only_another_tiers_model(self):
-        language_model = "qwen3.8-27b-q4-k-m"
+        language_model = "qwen3.6-35b-a3b-q4-k-m"
         for state, model_id, unloads in (
-            ("ready", "qwen3.8-27b-q8-0", True),
-            ("offloaded", "qwen3.8-27b-q8-0", True),
+            ("ready", "qwen3.8-flash-next-ud-iq3-xxs", True),
+            ("offloaded", "qwen3.8-flash-next-ud-iq3-xxs", True),
             ("loading", "glm-5.3-flash-q3-k-xl", True),
             ("ready", language_model, False),
             ("unloaded", None, False),
-            ("error", "qwen3.8-27b-q8-0", False),
+            ("error", "qwen3.8-flash-next-ud-iq3-xxs", False),
         ):
             service = InferenceService()
             service.worker.models = ModelStoreStatus(

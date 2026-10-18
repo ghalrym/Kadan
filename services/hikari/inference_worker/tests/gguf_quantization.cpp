@@ -147,6 +147,20 @@ void reference_blocks(Encoding encoding, ggml_type type) {
         to_float(block.data(), expected.data(), values);
         for (std::size_t i = 0; i < values; ++i)
             same(decode(encoding, block.data(), i), expected[i]);
+        // Aligned runs of eight equal their single-value decodes. BF16 runs
+        // read eight one-value blocks.
+        if (encoding == Encoding::bf16) {
+            std::array<float, 8> run{};
+            kadan::gguf::decode_run(encoding, block.data(), 0, run.data());
+            for (std::size_t i = 0; i < 8; ++i)
+                same(run[i], decode(encoding, block.data() + 2 * i, 0));
+        } else
+            for (std::size_t first = 0; first < values; first += 8) {
+                std::array<float, 8> run{};
+                kadan::gguf::decode_run(encoding, block.data(), first, run.data());
+                for (std::size_t i = 0; i < 8; ++i)
+                    same(run[i], expected[first + i]);
+            }
     }
 }
 }  // namespace
@@ -162,6 +176,8 @@ int main() {
         reference_blocks(Encoding::iq3_xxs, GGML_TYPE_IQ3_XXS);
         reference_blocks(Encoding::iq4_nl, GGML_TYPE_IQ4_NL);
         reference_blocks(Encoding::iq4_xs, GGML_TYPE_IQ4_XS);
+        reference_blocks(Encoding::iq2_s, GGML_TYPE_IQ2_S);
+        reference_blocks(Encoding::iq3_s, GGML_TYPE_IQ3_S);
         reference_blocks(Encoding::bf16, GGML_TYPE_BF16);
         for (std::uint32_t type = 0; type < 64; ++type) {
             const auto mapped = kadan::gguf::encoding(type);
@@ -170,7 +186,8 @@ int main() {
                 == (type == GGML_TYPE_Q8_0 || type == GGML_TYPE_Q3_K
                     || type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K
                     || type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ4_NL
-                    || type == GGML_TYPE_IQ4_XS || type == GGML_TYPE_BF16)
+                    || type == GGML_TYPE_IQ4_XS || type == GGML_TYPE_IQ2_S
+                    || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_BF16)
             );
             if (mapped)
                 check(kadan::gguf::supported(*mapped));

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
@@ -306,9 +307,59 @@ void failed_read_drains_every_callback(const char* message) {
 }
 }  // namespace
 
+// Whole items run once each across several lanes; the team remains reusable
+// after an item fails and reads still work afterwards.
+void items_run_once_across_lanes() {
+    const auto admission = PackedReadTeam::host_bytes();
+    Resources resources({admission});
+    PackedReadTeam team(resources, Workload::llm);
+    for (int round = 0; round < 20; ++round) {
+        std::vector<std::atomic<int>> seen(57);
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::set<std::thread::id> lanes;
+        bool timed_out = false;
+        team.each(seen.size(), [&](std::size_t i) {
+            ++seen[i];
+            std::unique_lock lock(mutex);
+            lanes.insert(std::this_thread::get_id());
+            condition.notify_all();
+            // Require overlapping lanes; the timeout only bounds a broken team.
+            if (!condition.wait_for(lock, 5s, [&] {
+                    return lanes.size() > 1 || timed_out;
+                })) {
+                timed_out = true;
+                condition.notify_all();
+            }
+            check(!timed_out, "packed_items_parallel_timeout");
+        });
+        for (const auto& count : seen)
+            check(count == 1, "packed_items_once");
+        check(lanes.size() > 1, "packed_items_parallel");
+    }
+    fails([&] {
+        team.each(8, [](std::size_t i) {
+            if (i == 3)
+                throw std::runtime_error("item_failed");
+        });
+    });
+    std::vector<std::byte> destination(16);
+    team.read(
+        [](std::size_t, std::span<std::byte> to) {
+            std::fill(to.begin(), to.end(), std::byte{7});
+        },
+        0,
+        4,
+        destination
+    );
+    check(destination[15] == std::byte{7}, "packed_items_then_read");
+    team.close();
+}
+
 int main() {
     try {
         rows_are_disjoint_parallel_and_reused();
+        items_run_once_across_lanes();
         small_reads_and_callback_lifetime();
         failed_read_drains_every_callback("reader_failed");
         failed_read_drains_every_callback("cancelled");

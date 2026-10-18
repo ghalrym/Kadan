@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -127,6 +128,46 @@ public:
             std::rethrow_exception(error);
     }
 
+    // Independent whole items (such as many small tiles) across the same four
+    // lanes. Every item runs once; the first failure is rethrown after all lanes
+    // finish.
+    void each(std::size_t count, const std::function<void(std::size_t)>& item) {
+        if (!count)
+            return;
+        {
+            std::lock_guard lock(mutex_);
+            if (closing_ || busy_)
+                throw std::runtime_error("packed_read_team_unavailable");
+            busy_ = true;
+            errors_.fill(nullptr);
+            items_ = &item;
+            item_count_ = count;
+            next_item_ = 0;
+            remaining_ = threads_.size();
+            ++round_;
+        }
+        ready_.notify_all();
+        std::exception_ptr caller_error;
+        try {
+            drain_items();
+        } catch (...) {
+            caller_error = std::current_exception();
+        }
+        std::unique_lock lock(mutex_);
+        errors_[3] = caller_error;
+        done_.wait(lock, [&] { return remaining_ == 0; });
+        items_ = nullptr;
+        busy_ = false;
+        std::exception_ptr error;
+        for (const auto& failure : errors_)
+            if (failure && !error)
+                error = failure;
+        lock.unlock();
+        done_.notify_all();
+        if (error)
+            std::rethrow_exception(error);
+    }
+
     // Called by the same owner after read() returns. Joining precedes release of
     // both the staging buffer and the stack/control reservation.
     void close() {
@@ -181,6 +222,11 @@ private:
         );
     }
 
+    void drain_items() {
+        for (std::size_t i; (i = next_item_.fetch_add(1)) < item_count_;)
+            (*items_)(i);
+    }
+
     void run(std::size_t lane) noexcept {
         std::uint64_t seen = 0;
         for (;;) {
@@ -189,13 +235,17 @@ private:
             if (stopping_)
                 return;
             seen = round_;
+            const bool items = items_ != nullptr;
             const auto* source = source_;
             const auto first = first_row_, row_bytes = row_bytes_;
             const auto destination = destination_;
             lock.unlock();
             std::exception_ptr error;
             try {
-                read_region(*source, first, row_bytes, destination, lane);
+                if (items)
+                    drain_items();
+                else
+                    read_region(*source, first, row_bytes, destination, lane);
             } catch (...) {
                 error = std::current_exception();
             }
@@ -215,6 +265,9 @@ private:
     std::array<std::thread, 3> threads_;
     std::array<std::exception_ptr, 4> errors_{};
     const Source* source_ = nullptr;
+    const std::function<void(std::size_t)>* items_ = nullptr;
+    std::size_t item_count_ = 0;
+    std::atomic<std::size_t> next_item_{0};
     std::span<std::byte> destination_;
     std::size_t first_row_ = 0, row_bytes_ = 0, remaining_ = 0;
     std::uint64_t round_ = 0;

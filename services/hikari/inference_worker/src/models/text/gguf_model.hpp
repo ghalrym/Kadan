@@ -3,13 +3,18 @@
 // projections, F32 layer math and the per-architecture model interface. Layer
 // math follows llama.cpp's GGUF graphs and uses F32 activation arithmetic.
 #include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "gguf_placement.hpp"
@@ -21,6 +26,33 @@ using Vec = std::vector<float>;
 using Progress = std::function<void(const char*, std::size_t)>;
 
 void need(bool condition, const char* error);
+
+// Persistent host threads for independent layer math and host-resident
+// experts. run() includes the caller; start()/wait() leave it free (for the
+// device batch). The first exception is rethrown after every index finishes.
+class Workers {
+public:
+    explicit Workers(std::size_t threads);
+    ~Workers();
+    Workers(const Workers&) = delete;
+    Workers& operator=(const Workers&) = delete;
+    void run(std::size_t count, const std::function<void(std::size_t)>& body);
+    void start(std::size_t count, std::function<void(std::size_t)> body);
+    void wait();
+
+private:
+    void work();
+    void drain();
+
+    std::mutex mutex_;
+    std::condition_variable start_, done_;
+    std::vector<std::thread> threads_;
+    std::function<void(std::size_t)> task_;
+    std::size_t count_ = 0, generation_ = 0, active_ = 0;
+    std::atomic<std::size_t> next_{0};
+    std::exception_ptr error_;
+    bool stop_ = false, started_ = false;
+};
 
 // Every tensor of the checkpoint is bound to an exact GGML shape (columns,
 // rows, experts) or explicitly skipped before execution starts.
@@ -73,6 +105,16 @@ public:
         std::span<const float> input,
         std::size_t expert = 0
     ) const;
+
+    struct Projection {
+        std::string name;
+        std::span<const float> input;
+        std::size_t expert = 0;
+    };
+
+    // Independent projections in one device submission when every input is a
+    // few decode rows; otherwise each runs as project() would.
+    std::vector<Vec> project(DenseCompute& compute, std::span<const Projection>) const;
     void check_unchanged() const;
 
     // Host RAM for weight slices that do not win device residency.
@@ -88,6 +130,26 @@ public:
     Placement::Stats placement() const {
         return placement_.stats();
     }
+
+    // Wall time spent in projections and attention, and bytes projected from
+    // slices without device residency, since the previous take_timing().
+    struct Timing {
+        double projection = 0, attention = 0;
+        std::size_t projections = 0, batches = 0;
+        Bytes streamed = 0, host = 0;
+    };
+
+    Timing take_timing() const {
+        return std::exchange(timing_, {});
+    }
+
+    void add_attention(double seconds) const {
+        timing_.attention += seconds;
+    }
+
+    // body(i) for every i < count on the shared host workers.
+    void
+    parallel(std::size_t count, const std::function<void(std::size_t)>& body) const;
 
     std::uint64_t packed_bytes() const {
         return packed_;
@@ -117,6 +179,15 @@ private:
     mutable bool budgeted_ = false;
     mutable Placement placement_;
     mutable std::map<SliceKey, std::vector<std::byte>> ram_;
+    // Identities derive from each file's opening stat; every projection batch
+    // still checks the files before and after it runs.
+    mutable std::map<SliceKey, WeightIdentity> identities_;
+    mutable Timing timing_;
+    // Thread stacks are covered by the engine's fixed host allowance.
+    mutable std::unique_ptr<Workers> workers_;
+    // Measured bytes per second of host-executed experts and of slices the
+    // device streams over PCIe; they split misses so both sides finish together.
+    mutable double host_rate_ = 20e9, stream_rate_ = 10e9;
 
     void place(DenseCompute&, const SliceKey&, Bytes bytes, Placement::Decision&) const;
 
@@ -194,25 +265,25 @@ public:
 };
 
 // Exact metadata contracts, shared by acquisition and loading.
-void validate_qwen35(const checkpoint::GgufMetadata&);
-void validate_qwen35(const checkpoint::GgufCheckpoint&);
+void validate_qwen35moe(const checkpoint::GgufMetadata&);
+void validate_qwen35moe(const checkpoint::GgufCheckpoint&);
 void validate_qwen4exp(const checkpoint::GgufMetadata&);
 void validate_qwen4exp(const checkpoint::GgufCheckpoint&);
 void validate_glm(const checkpoint::GgufMetadata&);
 void validate_glm(const checkpoint::GgufCheckpoint&);
 
 // Binds every tensor; the model is constructed only after finish().
-void bind_qwen35(GgufWeights&);
+void bind_qwen35moe(GgufWeights&);
 void bind_qwen4exp(GgufWeights&);
 void bind_glm(GgufWeights&);
 
 // Host bytes of KV/recurrent state for a context.
-std::size_t qwen35_state_bytes(std::size_t context);
+std::size_t qwen35moe_state_bytes(std::size_t context);
 std::size_t qwen4exp_state_bytes(std::size_t context);
 std::size_t glm_state_bytes(std::size_t context);
 
 std::unique_ptr<Model>
-qwen35_model(const GgufWeights&, DenseCompute&, std::size_t context);
+qwen35moe_model(const GgufWeights&, DenseCompute&, std::size_t context);
 std::unique_ptr<Model>
 qwen4exp_model(const GgufWeights&, DenseCompute&, std::size_t context);
 std::unique_ptr<Model>

@@ -1,10 +1,12 @@
 // GGUF text model plumbing; arithmetic follows llama.cpp
 // 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209 (ggml-cpu ops.cpp).
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 
+#include "cpu_matvec.hpp"
 #include "gguf_model.hpp"
 #include "kadan/gguf_quantization.hpp"
 #include "kadan/weight_inventory.hpp"
@@ -13,6 +15,102 @@ namespace kadan::text {
 void need(bool condition, const char* error) {
     if (!condition)
         throw std::runtime_error(error);
+}
+
+Workers::Workers(std::size_t threads) {
+    try {
+        for (std::size_t i = 0; i < threads; ++i)
+            threads_.emplace_back([this] { work(); });
+    } catch (...) {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        start_.notify_all();
+        for (auto& thread : threads_)
+            thread.join();
+        throw;
+    }
+}
+
+Workers::~Workers() {
+    {
+        std::lock_guard lock(mutex_);
+        stop_ = true;
+    }
+    start_.notify_all();
+    for (auto& thread : threads_)
+        thread.join();
+}
+
+void Workers::drain() {
+    for (std::size_t i; (i = next_.fetch_add(1)) < count_;)
+        try {
+            task_(i);
+        } catch (...) {
+            std::lock_guard lock(mutex_);
+            if (!error_)
+                error_ = std::current_exception();
+        }
+}
+
+void Workers::work() {
+    std::size_t seen = 0;
+    for (;;) {
+        {
+            std::unique_lock lock(mutex_);
+            start_.wait(lock, [&] { return stop_ || generation_ != seen; });
+            if (stop_)
+                return;
+            seen = generation_;
+        }
+        drain();
+        std::lock_guard lock(mutex_);
+        if (--active_ == 0)
+            done_.notify_one();
+    }
+}
+
+void Workers::start(std::size_t count, std::function<void(std::size_t)> body) {
+    need(!started_, "gguf_text_workers_busy");
+    if (threads_.empty()) {
+        for (std::size_t i = 0; i < count; ++i)
+            body(i);
+        return;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        task_ = std::move(body);
+        count_ = count;
+        next_ = 0;
+        error_ = nullptr;
+        active_ = threads_.size();
+        ++generation_;
+        started_ = true;
+    }
+    start_.notify_all();
+}
+
+void Workers::wait() {
+    if (!started_)
+        return;
+    std::unique_lock lock(mutex_);
+    done_.wait(lock, [&] { return active_ == 0; });
+    started_ = false;
+    task_ = {};
+    if (error_)
+        std::rethrow_exception(std::exchange(error_, nullptr));
+}
+
+void Workers::run(std::size_t count, const std::function<void(std::size_t)>& body) {
+    if (count < 2 || threads_.empty()) {
+        for (std::size_t i = 0; i < count; ++i)
+            body(i);
+        return;
+    }
+    start(count, body);
+    drain();
+    wait();
 }
 
 GgufWeights::GgufWeights(const char* root, const std::atomic_bool* cancel) {
@@ -144,7 +242,8 @@ void GgufWeights::place(
         placement_.budgets(device ? device / 10 * 9 : ~Bytes(0), ram_budget_);
         budgeted_ = true;
     }
-    decision = placement_.use(key, bytes);
+    // Only routed experts move between tiers; every other matrix is pinned.
+    decision = placement_.use(key, bytes, matrices_.at(key.tensor).experts == 1);
     if (!decision.device_evicted.empty()) {
         std::vector<WeightIdentity> released;
         released.reserve(decision.device_evicted.size());
@@ -181,73 +280,296 @@ Vec GgufWeights::project(
     std::span<const float> input,
     std::size_t expert
 ) const {
-    const auto it = matrices_.find(name);
-    need(it != matrices_.end(), "gguf_text_missing_matrix");
-    const auto& m = it->second;
-    need(
-        !input.empty() && input.size() % m.columns == 0 && expert < m.experts,
-        "gguf_text_projection_shape"
-    );
+    const Projection request{name, input, expert};
+    return std::move(project(compute, std::span(&request, 1)).front());
+}
+
+std::vector<Vec> GgufWeights::project(
+    DenseCompute& compute, std::span<const Projection> requests
+) const {
     check_cancel();
+    const auto started = std::chrono::steady_clock::now();
     gguf_->check_unchanged();
-    const auto& tensor = gguf_->tensor(name);
-    const SliceKey key{name, expert};
-    const Bytes bytes = tensor.bytes / m.experts, row_bytes = bytes / m.rows;
-    Placement::Decision decision;
-    place(compute, key, bytes, decision);
-    const auto cached = ram_.find(key);
-    const std::byte* host = cached == ram_.end() ? nullptr : cached->second.data();
-    Vec output(input.size() / m.columns * m.rows);
-    const auto identity = gguf_->identity(name, expert);
-    ProjectionResult result;
-    if (tensor.type == 0) {
-        const auto reader = [&](std::size_t first, std::span<float> destination) {
-            if (host)
-                std::memcpy(
-                    destination.data(),
-                    host + first * sizeof(float),
-                    destination.size_bytes()
-                );
-            else
-                gguf_->read_rows(
-                    name, expert, first / m.columns, destination, *cancel_
-                );
-        };
-        result = compute.dense_source(
-            identity, reader, {}, input, m.columns, m.rows, output, *cancel_
+
+    struct Prepared {
+        const Matrix* matrix;
+        const checkpoint::GgufTensor* tensor;
+        SliceKey key;
+        Bytes bytes, row_bytes;
+        bool device;
+        WeightIdentity identity;
+        DenseCompute::GgufWeightSource source;
+    };
+
+    std::vector<Prepared> prepared;
+    prepared.reserve(requests.size());
+    std::vector<Vec> outputs(requests.size());
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& request = requests[i];
+        const auto it = matrices_.find(request.name);
+        need(it != matrices_.end(), "gguf_text_missing_matrix");
+        const auto& m = it->second;
+        need(
+            !request.input.empty() && request.input.size() % m.columns == 0
+                && request.expert < m.experts,
+            "gguf_text_projection_shape"
         );
-    } else {
-        const auto reader = [&](std::size_t first, std::span<std::byte> destination) {
-            if (host)
+        const auto& tensor = gguf_->tensor(request.name);
+        need(tensor.type == 0 || gguf::encoding(tensor.type), "gguf_text_encoding");
+        SliceKey key{request.name, request.expert};
+        const Bytes bytes = tensor.bytes / m.experts;
+        Placement::Decision decision;
+        place(compute, key, bytes, decision);
+        // A later slice of this batch may displace an earlier one.
+        for (const auto& evicted : decision.device_evicted)
+            for (auto& earlier : prepared)
+                if (earlier.key == evicted)
+                    earlier.device = false;
+        outputs[i].resize(request.input.size() / m.columns * m.rows);
+        const auto row_bytes = bytes / m.rows;
+        // RAM slices are looked up when read: later placements may evict them.
+        auto source = [this,
+                       key,
+                       row_bytes](std::size_t first, std::span<std::byte> to) {
+            const auto cached = ram_.find(key);
+            if (cached != ram_.end())
                 std::memcpy(
-                    destination.data(), host + first * row_bytes, destination.size()
+                    to.data(), cached->second.data() + first * row_bytes, to.size()
                 );
             else
-                gguf_->read_packed_rows(name, expert, first, destination, *cancel_);
+                gguf_->read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
         };
-        const auto encoding = gguf::encoding(tensor.type);
-        if (!encoding)
-            throw std::runtime_error("gguf_text_encoding_unsupported");
-        // Slices without device residency stream without displacing hot tiles.
-        result = compute.dense_gguf_source(
-            identity,
-            *encoding,
-            reader,
-            {},
-            input,
-            m.columns,
-            m.rows,
-            output,
-            *cancel_,
-            false,
-            decision.device
+        auto identity = identities_.find(key);
+        if (identity == identities_.end())
+            identity =
+                identities_.emplace(key, gguf_->identity(request.name, request.expert))
+                    .first;
+        prepared.push_back(
+            {&m,
+             &tensor,
+             std::move(key),
+             bytes,
+             row_bytes,
+             decision.device,
+             identity->second,
+             std::move(source)}
         );
     }
-    need(result != ProjectionResult::unsupported, "gguf_text_cuda_required");
-    need(projection_output_finite(result, output), "gguf_text_nonfinite");
+    // Routed experts held in host RAM run on the host workers while the device
+    // batch runs, as long as the host is expected to finish no later than the
+    // device's PCIe stream (FreeToken's split of misses between CPU execution
+    // and transfer). Resident, newly admitted and disk slices stay on the device.
+    std::vector<bool> on_host(requests.size());
+    Bytes host_bytes = 0, stream_bytes = 0;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& p = prepared[i];
+        if (p.device
+            || requests[i].input.size() / p.matrix->columns
+                   > DenseCompute::gguf_batch_rows)
+            continue;
+        const bool host = p.matrix->experts > 1 && ram_.contains(p.key)
+                          && CpuMatvec::supported(p.tensor->type, p.matrix->columns);
+        if (host
+            && double(host_bytes + p.bytes) / host_rate_
+                   <= double(stream_bytes + p.bytes) / stream_rate_) {
+            on_host[i] = true;
+            host_bytes += p.bytes;
+        } else
+            stream_bytes += p.bytes;
+    }
+
+    struct HostJob {
+        std::size_t request;
+        CpuMatvec product;
+        const std::byte* weights;
+    };
+
+    std::vector<HostJob> host;
+    std::vector<std::pair<std::size_t, std::size_t>> units;
+    constexpr std::size_t unit_columns = 64;
+    for (std::size_t i = 0; i < requests.size(); ++i)
+        if (on_host[i]) {
+            const auto& p = prepared[i];
+            host.push_back(
+                {i,
+                 CpuMatvec(p.tensor->type, requests[i].input, p.matrix->columns),
+                 ram_.at(p.key).data()}
+            );
+            for (std::size_t first = 0; first < p.matrix->rows; first += unit_columns)
+                units.emplace_back(host.size() - 1, first);
+        }
+    std::atomic<std::size_t> remaining = units.size();
+    std::chrono::steady_clock::time_point host_finished{};
+    const auto host_started = std::chrono::steady_clock::now();
+
+    // Every started unit finishes before this frame's data goes out of scope.
+    struct Join {
+        Workers* workers = nullptr;
+
+        ~Join() {
+            if (workers)
+                try {
+                    workers->wait();
+                } catch (...) {
+                }
+        }
+    } join;
+
+    if (!units.empty()) {
+        if (!workers_)
+            parallel(0, [](std::size_t) {});
+        workers_->start(units.size(), [&](std::size_t u) {
+            const auto& [job, first] = units[u];
+            const auto& h = host[job];
+            const auto& p = prepared[h.request];
+            h.product.run(
+                h.weights,
+                p.row_bytes,
+                first,
+                std::min(first + unit_columns, p.matrix->rows),
+                outputs[h.request],
+                p.matrix->rows
+            );
+            if (remaining.fetch_sub(1) == 1)
+                host_finished = std::chrono::steady_clock::now();
+        });
+        join.workers = workers_.get();
+    }
+    std::vector<DenseCompute::GgufBatchJob> jobs;
+    std::vector<std::size_t> batched;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& p = prepared[i];
+        if (on_host[i]
+            || requests[i].input.size() / p.matrix->columns
+                   > DenseCompute::gguf_batch_rows)
+            continue;
+        batched.push_back(i);
+        jobs.push_back(
+            {&p.identity,
+             p.tensor->type == 0 ? std::nullopt : gguf::encoding(p.tensor->type),
+             &p.source,
+             requests[i].input,
+             p.matrix->columns,
+             p.matrix->rows,
+             outputs[i],
+             p.device}
+        );
+    }
+    std::vector<bool> done(requests.size());
+    if (!jobs.empty()) {
+        const auto device_started = std::chrono::steady_clock::now();
+        const auto result = compute.dense_gguf_batch(jobs, *cancel_);
+        if (result != ProjectionResult::unsupported) {
+            for (const auto i : batched) {
+                need(
+                    projection_output_finite(result, outputs[i]), "gguf_text_nonfinite"
+                );
+                done[i] = true;
+            }
+            // The whole batch time bounds the stream rate from below.
+            if (stream_bytes >= (Bytes(1) << 20)) {
+                const auto seconds =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - device_started
+                    )
+                        .count();
+                stream_rate_ = std::clamp(
+                    .8 * stream_rate_ + .2 * double(stream_bytes) / seconds, 1e8, 1e12
+                );
+            }
+        }
+    }
+    if (join.workers) {
+        join.workers = nullptr;
+        workers_->wait();
+        for (const auto& h : host) {
+            need(
+                std::all_of(
+                    outputs[h.request].begin(),
+                    outputs[h.request].end(),
+                    [](float v) { return std::isfinite(v); }
+                ),
+                "gguf_text_nonfinite"
+            );
+            done[h.request] = true;
+        }
+        if (host_bytes >= (Bytes(1) << 20)) {
+            const auto seconds =
+                std::chrono::duration<double>(host_finished - host_started).count();
+            if (seconds > 0)
+                host_rate_ = std::clamp(
+                    .8 * host_rate_ + .2 * double(host_bytes) / seconds, 1e8, 1e12
+                );
+        }
+        timing_.host += host_bytes;
+    }
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        if (done[i])
+            continue;
+        const auto& p = prepared[i];
+        const auto& m = *p.matrix;
+        const auto& request = requests[i];
+        auto& output = outputs[i];
+        ProjectionResult result;
+        if (p.tensor->type == 0) {
+            const auto reader = [&](std::size_t first, std::span<float> destination) {
+                p.source(first / m.columns, std::as_writable_bytes(destination));
+            };
+            result = compute.dense_source(
+                p.identity,
+                reader,
+                {},
+                request.input,
+                m.columns,
+                m.rows,
+                output,
+                *cancel_
+            );
+        } else {
+            const auto encoding = gguf::encoding(p.tensor->type);
+            if (!encoding)
+                throw std::runtime_error("gguf_text_encoding");
+            // Slices without device residency stream without displacing hot tiles.
+            result = compute.dense_gguf_source(
+                p.identity,
+                *encoding,
+                p.source,
+                {},
+                request.input,
+                m.columns,
+                m.rows,
+                output,
+                *cancel_,
+                false,
+                p.device
+            );
+        }
+        need(result != ProjectionResult::unsupported, "gguf_text_cuda_required");
+        need(projection_output_finite(result, output), "gguf_text_nonfinite");
+    }
     // Resident rows remain valid only while every file is unchanged.
     gguf_->check_unchanged();
-    return output;
+    timing_.projection +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+            .count();
+    timing_.projections += requests.size();
+    ++timing_.batches;
+    for (std::size_t i = 0; i < prepared.size(); ++i)
+        if (!prepared[i].device && !on_host[i])
+            timing_.streamed += prepared[i].bytes;
+    return outputs;
+}
+
+void GgufWeights::parallel(
+    std::size_t count, const std::function<void(std::size_t)>& body
+) const {
+    if (!workers_) {
+        const auto cores = std::max(1u, std::thread::hardware_concurrency());
+        // About one thread per physical core, bounded; the caller is the last.
+        workers_ =
+            std::make_unique<Workers>(std::clamp<std::size_t>(cores / 2, 1, 16) - 1);
+    }
+    workers_->run(count, body);
 }
 
 void GgufWeights::check_unchanged() const {
@@ -420,23 +742,28 @@ void delta_rule(
             && state.size() == dim * dim && (decay.size() == 1 || decay.size() == dim),
         "gguf_text_delta_shape"
     );
+    // The decayed state g_i * S[i][j] is recomputed with the same rounding in
+    // both passes instead of being stored, so the state is read twice and
+    // written once. delta[j] = (v[j] - sum_i S'[i][j] k[i]) * beta, row by row.
+    float delta[256];
+    need(dim <= std::size(delta), "gguf_text_delta_shape");
+    std::copy(v.begin(), v.end(), delta);
     for (std::size_t i = 0; i < dim; ++i) {
-        const float g = decay[decay.size() == 1 ? 0 : i];
+        const float g = decay[decay.size() == 1 ? 0 : i], key = k[i];
+        const float* row = state.data() + i * dim;
         for (std::size_t j = 0; j < dim; ++j)
-            state[i * dim + j] *= g;
+            delta[j] -= row[j] * g * key;
     }
-    // delta[j] = (v[j] - sum_i S[i][j] k[i]) * beta, accumulated row by row.
-    Vec delta(v.begin(), v.end());
-    for (std::size_t i = 0; i < dim; ++i)
-        for (std::size_t j = 0; j < dim; ++j)
-            delta[j] -= state[i * dim + j] * k[i];
-    for (auto& d : delta)
-        d *= beta;
+    for (std::size_t j = 0; j < dim; ++j)
+        delta[j] *= beta;
     std::fill(out.begin(), out.end(), 0.f);
-    for (std::size_t i = 0; i < dim; ++i)
+    for (std::size_t i = 0; i < dim; ++i) {
+        const float g = decay[decay.size() == 1 ? 0 : i], key = k[i], query = q[i];
+        float* row = state.data() + i * dim;
         for (std::size_t j = 0; j < dim; ++j) {
-            state[i * dim + j] += k[i] * delta[j];
-            out[j] += state[i * dim + j] * q[i];
+            row[j] = row[j] * g + key * delta[j];
+            out[j] += row[j] * query;
         }
+    }
 }
 }  // namespace kadan::text

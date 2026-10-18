@@ -118,7 +118,7 @@ and libarchive reads checkpoint containers.
 ## Hardware tier text models
 
 Settings offers four hardware tiers. Each tier in `catalog.json` pins one GGUF
-language model, Qwen-Image-2.1-Turbo (the only image model), H3 FL2VA INT8 + Turbo,
+mixture-of-experts language model (dense language models are out of scope), Qwen-Image-2.1-Turbo (the only image model), H3 FL2VA INT8 + Turbo,
 the Qwen3-TTS 1.7B CustomVoice speech model, Whisper medium for transcription
 (also the default without a saved Whisper choice) and the S1-mini formatter.
 Choosing a tier persists `tier.json` in the model store and selects its language
@@ -127,8 +127,8 @@ the existing FIFO.
 
 | Tier | Hardware | Catalog ID | Checkpoint | Download bytes |
 | --- | --- | --- | --- | --- |
-| Go | 8 GB VRAM, 32 GB RAM | `qwen3.8-27b-q4-k-m` | [ggml-org Qwen3.8-27B Q4_K_M](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/tree/71bc7b627595dc8a91039addd9c791ae548d6747) | 18,973,870,528 |
-| Plus | 16 GB VRAM, 64 GB RAM | `qwen3.8-27b-q8-0` | [ggml-org Qwen3.8-27B Q8_0](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/tree/71bc7b627595dc8a91039addd9c791ae548d6747) | 28,595,763,648 |
+| Go | 8 GB VRAM, 32 GB RAM | `qwen3.6-35b-a3b-q4-k-m` | [ggml-org Qwen3.6-35B-A3B Q4_K_M](https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/tree/baec3ebee244827cda0f4557eafa8b28f7545fa6) | 20,419,565,568 |
+| Plus | 16 GB VRAM, 64 GB RAM | `qwen3.8-flash-next-ud-iq3-xxs` | [Unsloth Qwen3.8 Flash Next UD-IQ3_XXS](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ3_XXS) | 81,961,823,936 |
 | Pro | 24 GB VRAM, 128 GB RAM | `qwen3.8-flash-next-q3-k-xl` | [Unsloth Qwen3.8 Flash Next UD-Q3_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-Q3_K_XL) | 89,986,353,824 |
 | Ultra | 48 GB VRAM, 512 GB RAM | `glm-5.3-flash-q3-k-xl` | [Unsloth GLM-5.3 Flash UD-Q3_K_XL](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/tree/a38483c8cd5df544f53d70fb281afe97369d5ab6/UD-Q3_K_XL) | 147,535,922,080 |
 
@@ -148,25 +148,31 @@ merges and added tokens exactly.
 architecture, following llama.cpp
 `6420cf5dd588c68e48657a0bbd82bb3bd5ac7209` graphs and converter conventions:
 
-- `qwen35.cpp`: Qwen3.8 27B, 48 gated delta net layers and 16 gated full
-  attention layers with a dense SwiGLU MLP.
+- `qwen35moe.cpp`: Qwen3.6 35B-A3B, 30 gated delta net layers and 10 gated
+  full attention layers, each followed by a 256-expert top-8 MoE with a gated
+  shared expert.
 - `qwen4exp.cpp`: Qwen3.8 Flash Next, four hyper-connection streams in place of
   layer norms, n-gram hash embeddings on layer 1, a 512-expert top-10 MoE with a
   gated shared expert, and QSA top-block selection on full attention layers.
 - `glm.cpp`: GLM-5.3 Flash, mHC streams, KDA linear layers and nope-only MLA
   with the k-pool sparse indexer. MLA is absorbed, so only the latent is cached.
 
-`qwen_layers.cpp` holds the delta net and gated attention shared by both Qwen
-models. Layer math is F32 on the host; text-only interleaved M-RoPE reduces to
-NEOX rotation of the first 64 dimensions. Projections run through the existing
-device banks, which keep packed rows and decode F32, Q8_0, Q3_K, Q4_K, Q6_K,
-IQ3_XXS, IQ4_NL, IQ4_XS and BF16 on the GPU. Attention uses the device attention
-path when available.
+`qwen_layers.cpp` holds the delta net, gated attention and routed experts shared
+by both Qwen models. Layer math is F32 on the host (delta-net heads run in
+parallel); text-only interleaved M-RoPE reduces to NEOX rotation of the first 64
+dimensions. Projections run through the existing device banks, which keep packed
+rows and decode F32, Q8_0, Q3_K, Q4_K, Q6_K, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL,
+IQ4_XS and BF16 on the GPU. Decode-time projections that share a layer step are
+submitted as one batch and multiplied directly from packed rows; routed experts
+held in host RAM run concurrently on the host with ggml-cpu's quantized dot
+kernels (AVX2/FMA/F16C baseline); full attention reads a per-layer device
+mirror of the KV cache.
 
 Checkpoints larger than VRAM are tiered across VRAM, host RAM and disk by
 `gguf_placement.cpp`. Each slice (one expert of an expert stack, or one matrix)
 carries a usage score that gains one per projection and halves every 512
-tokens. A slice stays device-resident while it fits 90% of the planned bank
+tokens. Non-expert matrices are pinned: they are admitted ahead of experts and
+never displaced, so only routed experts move between tiers. A slice stays device-resident while it fits 90% of the planned bank
 capacity; a resident slice is released only for one scoring 1.5x higher, so
 routinely routed experts stay in VRAM and rare ones do not thrash it. Slices
 without device residency are held in a host RAM cache with the same admission

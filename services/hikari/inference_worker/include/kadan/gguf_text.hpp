@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -10,12 +11,12 @@
 #include "kadan/worker_compute.hpp"
 
 namespace kadan::text {
-// Native text engine for the tier GGUF checkpoints: qwen35, qwen4exp and
+// Native text engine for the tier GGUF checkpoints: qwen35moe, qwen4exp and
 // glm5-next. Checkpoint data stays on disk; projections stream packed rows
 // through the worker's bounded device banks and layer math is F32 on the host.
 
 // Validates the exact metadata contract of a supported architecture and
-// returns its config model type ("qwen35", "qwen4exp" or "glm5_next").
+// returns its config model type ("qwen35moe", "qwen4exp" or "glm5_next").
 std::string validate_metadata(const checkpoint::GgufMetadata&);
 // Validates the config.json derived from that metadata.
 void validate_config(const char* root, std::shared_ptr<checkpoint::MemoryBudget>);
@@ -56,6 +57,16 @@ public:
     );
     void close() override;
     std::shared_ptr<Resources> resources() const;
+
+    // Work since the previous call, and current weight residency.
+    struct Timing {
+        double projection_seconds, attention_seconds;
+        std::size_t projections, batches;
+        std::uint64_t streamed_bytes, host_bytes, packed_bytes, device_bytes, ram_bytes;
+        std::size_t device_slices, ram_slices;
+    };
+
+    Timing take_timing();
 
 private:
     struct Impl;

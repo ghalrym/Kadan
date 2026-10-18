@@ -1,10 +1,15 @@
-// Gated delta net and gated attention: llama.cpp src/models/qwen35.cpp,
-// qwen4exp.cpp and delta-net-base.cpp at 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209.
+// Gated delta net, gated attention and routed experts: llama.cpp
+// src/models/qwen35moe.cpp, qwen4exp.cpp, delta-net-base.cpp and
+// llama-graph.cpp build_moe_ffn at 6420cf5dd588c68e48657a0bbd82bb3bd5ac7209.
 // The converter tiles V heads, so value head h reads key head h % key_heads.
 #include "qwen_layers.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <numeric>
 
 namespace kadan::text {
 void bind_delta_net(GgufWeights& w, const std::string& p, const DeltaNetSpec& s) {
@@ -47,12 +52,18 @@ Vec DeltaNetLayer::forward(
     const auto& s = spec_;
     const auto rows = input.size() / s.hidden, channels = s.channels(),
                inner = s.value_heads * s.dim, history = s.conv - 1;
-    const auto qkv = w.project(compute, prefix_ + "attn_qkv.weight", input);
-    const auto z = w.project(compute, prefix_ + "attn_gate.weight", input);
-    const auto alpha = w.project(compute, prefix_ + "ssm_alpha.weight", input);
-    const auto beta = w.project(compute, prefix_ + "ssm_beta.weight", input);
+    const std::array<GgufWeights::Projection, 4> requests{
+        {{prefix_ + "attn_qkv.weight", input},
+         {prefix_ + "attn_gate.weight", input},
+         {prefix_ + "ssm_alpha.weight", input},
+         {prefix_ + "ssm_beta.weight", input}}
+    };
+    const auto projected = w.project(compute, requests);
+    const auto &qkv = projected[0], &z = projected[1], &alpha = projected[2],
+               &beta = projected[3];
     const float scale = 1 / std::sqrt(float(s.dim));
-    Vec mixed(channels), output(rows * inner), query(s.dim), decay(1), head(s.dim);
+    need(s.dim <= 256, "gguf_text_delta_shape");
+    Vec mixed(channels), output(rows * inner);
     for (std::size_t row = 0; row < rows; ++row) {
         w.check_cancel();
         const auto* x = qkv.data() + row * channels;
@@ -72,9 +83,13 @@ Vec DeltaNetLayer::forward(
         const auto v = std::span(mixed).subspan(2 * s.key_heads * s.dim);
         l2_norm(q, s.dim, s.eps);
         l2_norm(k, s.dim, s.eps);
-        for (std::size_t h = 0; h < s.value_heads; ++h) {
+        // Heads own disjoint state and output slices.
+        w.parallel(s.value_heads, [&](std::size_t h) {
+            std::array<float, 256> query_storage, head_storage;
+            const auto query = std::span(query_storage).first(s.dim);
+            const auto head = std::span(head_storage).first(s.dim);
             const auto kh = h % s.key_heads;
-            decay[0] =
+            const float decay =
                 std::exp(softplus(alpha[row * s.value_heads + h] + dt_[h]) * a_[h]);
             for (std::size_t d = 0; d < s.dim; ++d)
                 query[d] = q[kh * s.dim + d] * scale;
@@ -83,7 +98,7 @@ Vec DeltaNetLayer::forward(
                 query,
                 k.subspan(kh * s.dim, s.dim),
                 v.subspan(h * s.dim, s.dim),
-                decay,
+                std::span(&decay, 1),
                 sigmoid(beta[row * s.value_heads + h]),
                 head
             );
@@ -93,7 +108,7 @@ Vec DeltaNetLayer::forward(
                 output[row * inner + h * s.dim + d] =
                     head[d] * (s.sigmoid_gate ? sigmoid(gate) : silu(gate));
             }
-        }
+        });
     }
     return w.project(compute, prefix_ + "ssm_out.weight", output);
 }
@@ -135,9 +150,15 @@ Vec AttentionLayer::forward(
                kv_width = s.kv_heads * s.dim;
     need(position + rows <= context_, "gguf_text_context_exceeded");
     need(!sparse || sparse->size() == rows, "gguf_text_sparse_rows");
-    const auto joint = w.project(compute, prefix_ + "attn_q.weight", input);
-    auto k = w.project(compute, prefix_ + "attn_k.weight", input);
-    const auto v = w.project(compute, prefix_ + "attn_v.weight", input);
+    const std::array<GgufWeights::Projection, 3> requests{
+        {{prefix_ + "attn_q.weight", input},
+         {prefix_ + "attn_k.weight", input},
+         {prefix_ + "attn_v.weight", input}}
+    };
+    auto projected = w.project(compute, requests);
+    const auto& joint = projected[0];
+    auto& k = projected[1];
+    const auto& v = projected[2];
     Vec q(rows * width), gate(rows * width);
     for (std::size_t row = 0; row < rows; ++row)
         for (std::size_t h = 0; h < s.heads; ++h) {
@@ -174,61 +195,230 @@ Vec AttentionLayer::forward(
         || std::all_of(sparse->begin(), sparse->end(), [](const auto& selected) {
                return selected.empty();
            });
-    if (dense)
-        attend(
-            compute,
+    const auto started = std::chrono::steady_clock::now();
+    // The device mirrors this layer's KV cache; the host copy stays complete.
+    const auto cached = [&](std::span<const std::uint32_t> chosen,
+                            std::span<const std::uint32_t> offsets) {
+        return compute.attend_cached(
+            std::uint64_t(reinterpret_cast<std::uintptr_t>(this)),
             q,
-            keys_,
-            values_,
+            std::span<const float>(keys_).first((position + rows) * kv_width),
+            std::span<const float>(values_).first((position + rows) * kv_width),
             rows,
-            position + rows,
+            position,
             s.heads,
             s.kv_heads,
             s.dim,
-            position,
             scale,
             attended,
-            w.cancel()
+            w.cancel(),
+            chosen,
+            offsets
         );
-    else
-        for (std::size_t row = 0; row < rows; ++row) {
-            auto selected = (*sparse)[row];
-            if (selected.empty())
-                for (std::size_t t = 0; t <= position + row; ++t)
-                    selected.push_back(t);
-            Vec gathered_k(selected.size() * kv_width), gathered_v(gathered_k.size());
-            for (std::size_t i = 0; i < selected.size(); ++i) {
-                need(selected[i] <= position + row, "gguf_text_sparse_future");
-                std::copy_n(
-                    keys_.begin() + selected[i] * kv_width,
-                    kv_width,
-                    gathered_k.begin() + i * kv_width
-                );
-                std::copy_n(
-                    values_.begin() + selected[i] * kv_width,
-                    kv_width,
-                    gathered_v.begin() + i * kv_width
-                );
-            }
-            // One query attending every gathered key: its causal offset is last.
+    };
+    if (dense) {
+        if (!cached({}, {}))
             attend(
                 compute,
-                std::span<const float>(q).subspan(row * width, width),
-                gathered_k,
-                gathered_v,
-                1,
-                selected.size(),
+                q,
+                keys_,
+                values_,
+                rows,
+                position + rows,
                 s.heads,
                 s.kv_heads,
                 s.dim,
-                selected.size() - 1,
+                position,
                 scale,
-                std::span(attended).subspan(row * width, width),
+                attended,
                 w.cancel()
             );
+    } else {
+        // Every row's positions; an empty selection is every earlier one.
+        std::vector<std::uint32_t> chosen, offsets{0};
+        for (std::size_t row = 0; row < rows; ++row) {
+            const auto& selected = (*sparse)[row];
+            if (selected.empty())
+                for (std::size_t t = 0; t <= position + row; ++t)
+                    chosen.push_back(std::uint32_t(t));
+            for (const auto t : selected) {
+                need(t <= position + row, "gguf_text_sparse_future");
+                chosen.push_back(std::uint32_t(t));
+            }
+            offsets.push_back(std::uint32_t(chosen.size()));
         }
+        if (!cached(chosen, offsets))
+            for (std::size_t row = 0; row < rows; ++row) {
+                const auto first = offsets[row], count = offsets[row + 1] - first;
+                Vec gathered_k(count * kv_width), gathered_v(gathered_k.size());
+                for (std::size_t i = 0; i < count; ++i) {
+                    std::copy_n(
+                        keys_.begin() + chosen[first + i] * kv_width,
+                        kv_width,
+                        gathered_k.begin() + i * kv_width
+                    );
+                    std::copy_n(
+                        values_.begin() + chosen[first + i] * kv_width,
+                        kv_width,
+                        gathered_v.begin() + i * kv_width
+                    );
+                }
+                // One query attending every gathered key: its causal offset is last.
+                attend(
+                    compute,
+                    std::span<const float>(q).subspan(row * width, width),
+                    gathered_k,
+                    gathered_v,
+                    1,
+                    count,
+                    s.heads,
+                    s.kv_heads,
+                    s.dim,
+                    count - 1,
+                    scale,
+                    std::span(attended).subspan(row * width, width),
+                    w.cancel()
+                );
+            }
+    }
+    w.add_attention(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+            .count()
+    );
     for (std::size_t i = 0; i < attended.size(); ++i)
         attended[i] *= sigmoid(gate[i]);
     return w.project(compute, prefix_ + "attn_output.weight", attended);
+}
+
+void bind_moe(GgufWeights& w, const std::string& p, const MoeSpec& s) {
+    w.matrix(p + "ffn_gate_inp.weight", s.experts, s.hidden);
+    w.matrix(p + "ffn_gate_exps.weight", s.ff, s.hidden, s.experts);
+    w.matrix(p + "ffn_up_exps.weight", s.ff, s.hidden, s.experts);
+    w.matrix(p + "ffn_down_exps.weight", s.hidden, s.ff, s.experts);
+    w.vector(p + "ffn_gate_inp_shexp.weight", {s.hidden});
+    w.matrix(p + "ffn_gate_shexp.weight", s.shared_ff, s.hidden);
+    w.matrix(p + "ffn_up_shexp.weight", s.shared_ff, s.hidden);
+    w.matrix(p + "ffn_down_shexp.weight", s.hidden, s.shared_ff);
+}
+
+MoeLayer::MoeLayer(const GgufWeights& w, std::string prefix, const MoeSpec& spec)
+    : spec_(spec), prefix_(std::move(prefix)),
+      shared_gate_(w.read(prefix_ + "ffn_gate_inp_shexp.weight")) {
+}
+
+Vec MoeLayer::forward(
+    DenseCompute& compute, const GgufWeights& w, std::span<const float> x
+) const {
+    const auto& s = spec_;
+    const auto& p = prefix_;
+    const auto rows = x.size() / s.hidden;
+    const std::array<GgufWeights::Projection, 3> first{
+        {{p + "ffn_gate_inp.weight", x},
+         {p + "ffn_gate_shexp.weight", x},
+         {p + "ffn_up_shexp.weight", x}}
+    };
+    auto routed_and_shared = w.project(compute, first);
+    const auto& logits = routed_and_shared[0];
+    auto& shared = routed_and_shared[1];
+    {
+        const auto& up = routed_and_shared[2];
+        for (std::size_t j = 0; j < shared.size(); ++j)
+            shared[j] = silu(shared[j]) * up[j];
+    }
+    // Softmax router, top-k by probability, renormalized; contributions
+    // are summed in selection order as llama.cpp aggregates them.
+    std::vector<std::size_t> chosen(rows * s.top_k);
+    Vec weight(rows * s.top_k);
+    std::vector<std::size_t> order(s.experts);
+    Vec probability(s.experts);
+    for (std::size_t row = 0; row < rows; ++row) {
+        const auto* l = logits.data() + row * s.experts;
+        const float maximum = *std::max_element(l, l + s.experts);
+        double total = 0;
+        for (std::size_t e = 0; e < s.experts; ++e)
+            total += probability[e] = std::exp(l[e] - maximum);
+        for (auto& v : probability)
+            v = float(v / total);
+        std::iota(order.begin(), order.end(), 0);
+        std::partial_sort(
+            order.begin(), order.begin() + s.top_k, order.end(), [&](auto a, auto b) {
+                return probability[a] > probability[b];
+            }
+        );
+        float sum = 0;
+        for (std::size_t i = 0; i < s.top_k; ++i) {
+            chosen[row * s.top_k + i] = order[i];
+            sum += weight[row * s.top_k + i] = probability[order[i]];
+        }
+        sum = std::max(sum, 6.103515625e-5f);
+        for (std::size_t i = 0; i < s.top_k; ++i)
+            weight[row * s.top_k + i] /= sum;
+    }
+
+    // Every selected expert gathers its routed rows; gate/up, then down, each
+    // run as one batch, with the shared expert's down projection in the second.
+    struct Routed {
+        std::size_t expert;
+        std::vector<std::size_t> slots;
+        Vec gathered;
+    };
+
+    std::vector<Routed> active;
+    for (std::size_t e = 0; e < s.experts; ++e) {
+        std::vector<std::size_t> slots;
+        for (std::size_t slot = 0; slot < rows * s.top_k; ++slot)
+            if (chosen[slot] == e)
+                slots.push_back(slot);
+        if (slots.empty())
+            continue;
+        Vec gathered(slots.size() * s.hidden);
+        for (std::size_t r = 0; r < slots.size(); ++r)
+            std::copy_n(
+                x.begin() + slots[r] / s.top_k * s.hidden,
+                s.hidden,
+                gathered.begin() + r * s.hidden
+            );
+        active.push_back({e, std::move(slots), std::move(gathered)});
+    }
+    std::vector<GgufWeights::Projection> requests;
+    requests.reserve(2 * active.size());
+    for (const auto& a : active) {
+        requests.push_back({p + "ffn_gate_exps.weight", a.gathered, a.expert});
+        requests.push_back({p + "ffn_up_exps.weight", a.gathered, a.expert});
+    }
+    auto gate_up = w.project(compute, requests);
+    requests.clear();
+    for (std::size_t i = 0; i < active.size(); ++i) {
+        auto& gate = gate_up[2 * i];
+        const auto& up = gate_up[2 * i + 1];
+        for (std::size_t j = 0; j < gate.size(); ++j)
+            gate[j] = silu(gate[j]) * up[j];
+        requests.push_back({p + "ffn_down_exps.weight", gate, active[i].expert});
+    }
+    requests.push_back({p + "ffn_down_shexp.weight", shared});
+    const auto downs = w.project(compute, requests);
+    Vec contribution(rows * s.top_k * s.hidden);
+    for (std::size_t i = 0; i < active.size(); ++i) {
+        const auto& slots = active[i].slots;
+        for (std::size_t r = 0; r < slots.size(); ++r)
+            for (std::size_t d = 0; d < s.hidden; ++d)
+                contribution[slots[r] * s.hidden + d] =
+                    downs[i][r * s.hidden + d] * weight[slots[r]];
+    }
+    const auto& down = downs.back();
+    Vec output(rows * s.hidden);
+    for (std::size_t row = 0; row < rows; ++row) {
+        float gate = 0;
+        for (std::size_t c = 0; c < s.hidden; ++c)
+            gate += shared_gate_[c] * x[row * s.hidden + c];
+        gate = sigmoid(gate);
+        for (std::size_t d = 0; d < s.hidden; ++d) {
+            float sum = 0;
+            for (std::size_t i = 0; i < s.top_k; ++i)
+                sum += contribution[(row * s.top_k + i) * s.hidden + d];
+            output[row * s.hidden + d] = sum + down[row * s.hidden + d] * gate;
+        }
+    }
+    return output;
 }
 }  // namespace kadan::text

@@ -1,13 +1,14 @@
 #pragma once
-// Layers shared by the qwen35 and qwen4exp GGUF graphs: the gated delta net
-// and the gated full attention with per-head Q/K RMSNorm and partial RoPE.
+// Layers shared by the qwen35moe and qwen4exp GGUF graphs: the gated delta net,
+// the gated full attention with per-head Q/K RMSNorm and partial RoPE, and the
+// softmax-routed experts with a sigmoid-gated shared expert.
 #include "gguf_model.hpp"
 
 namespace kadan::text {
 struct DeltaNetSpec {
     std::size_t hidden, key_heads, value_heads, dim, conv;
     float eps;
-    // qwen4exp gates the normalized output with sigmoid; qwen35 with SiLU.
+    // qwen4exp gates the normalized output with sigmoid; qwen35moe with SiLU.
     bool sigmoid_gate;
 
     std::size_t channels() const {
@@ -64,5 +65,25 @@ private:
     std::string prefix_;
     std::size_t context_;
     Vec q_norm_, k_norm_, keys_, values_;
+};
+
+struct MoeSpec {
+    std::size_t hidden, experts, top_k, ff, shared_ff;
+};
+
+// Binds the router, the expert stacks and the shared expert of one layer.
+void bind_moe(GgufWeights&, const std::string& prefix, const MoeSpec&);
+
+// llama.cpp build_moe_ffn with softmax gating and renormalized top-k weights,
+// plus the shared expert scaled by sigmoid(ffn_gate_inp_shexp . x).
+class MoeLayer {
+public:
+    MoeLayer(const GgufWeights&, std::string prefix, const MoeSpec&);
+    Vec forward(DenseCompute&, const GgufWeights&, std::span<const float> input) const;
+
+private:
+    MoeSpec spec_;
+    std::string prefix_;
+    Vec shared_gate_;
 };
 }  // namespace kadan::text

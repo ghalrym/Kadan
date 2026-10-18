@@ -27,6 +27,7 @@ constexpr unsigned ple_eos = 248044;
 constexpr float eps = 1e-6f;
 const DeltaNetSpec delta_spec{hidden, 16, 48, 128, 4, eps, true};
 const AttentionSpec attention_spec{hidden, 24, 2, 256, 64, 1e7f, eps};
+const MoeSpec moe_spec{hidden, experts, top_k, expert_ff, expert_ff};
 
 bool full_attention(std::size_t layer) {
     return (layer + 1) % 4 == 0;
@@ -133,7 +134,7 @@ struct QsaAttention {
 
 struct Layer {
     Mixer attention_mixer, ffn_mixer;
-    Vec shared_gate;
+    MoeLayer moe;
     std::variant<DeltaNetLayer, QsaAttention> attention;
 };
 
@@ -167,7 +168,7 @@ public:
             layers_.push_back(
                 {mixer(p + "hc_attn_"),
                  mixer(p + "hc_ffn_"),
-                 w_.read(p + "ffn_gate_inp_shexp.weight"),
+                 MoeLayer(w_, p, moe_spec),
                  full_attention(i)
                      ? std::variant<DeltaNetLayer, QsaAttention>(
                            std::in_place_type<QsaAttention>, w_, p, context
@@ -245,7 +246,7 @@ public:
                     : std::get<DeltaNetLayer>(layer.attention).forward(compute_, w_, x);
             combine(residual, mixed, inject);
             x = mix(layer.ffn_mixer, residual, &inject);
-            combine(residual, moe(i, x), inject);
+            combine(residual, layer.moe.forward(compute_, w_, x), inject);
             if (progress)
                 progress("layer", i + 1);
         }
@@ -489,88 +490,6 @@ private:
         }
         return state.attention.forward(compute_, w_, x, position, &sparse);
     }
-
-    Vec moe(std::size_t layer, std::span<const float> x) {
-        const auto rows = x.size() / hidden;
-        const auto p = prefix(layer);
-        const auto logits = w_.project(compute_, p + "ffn_gate_inp.weight", x);
-        // Softmax router, top-k by probability, renormalized; contributions
-        // are summed in selection order as llama.cpp aggregates them.
-        std::vector<std::array<std::size_t, top_k>> chosen(rows);
-        std::vector<std::array<float, top_k>> weight(rows);
-        for (std::size_t row = 0; row < rows; ++row) {
-            const auto* l = logits.data() + row * experts;
-            const float maximum = *std::max_element(l, l + experts);
-            Vec probability(experts);
-            double total = 0;
-            for (std::size_t e = 0; e < experts; ++e)
-                total += probability[e] = std::exp(l[e] - maximum);
-            for (auto& v : probability)
-                v = float(v / total);
-            std::array<std::size_t, experts> order;
-            std::iota(order.begin(), order.end(), 0);
-            std::partial_sort(
-                order.begin(), order.begin() + top_k, order.end(), [&](auto a, auto b) {
-                    return probability[a] > probability[b];
-                }
-            );
-            float sum = 0;
-            for (std::size_t i = 0; i < top_k; ++i) {
-                chosen[row][i] = order[i];
-                sum += weight[row][i] = probability[order[i]];
-            }
-            sum = std::max(sum, 6.103515625e-5f);
-            for (auto& v : weight[row])
-                v /= sum;
-        }
-        Vec contribution(rows * top_k * hidden);
-        for (std::size_t e = 0; e < experts; ++e) {
-            std::vector<std::pair<std::size_t, std::size_t>> routed;
-            for (std::size_t row = 0; row < rows; ++row)
-                for (std::size_t i = 0; i < top_k; ++i)
-                    if (chosen[row][i] == e)
-                        routed.emplace_back(row, i);
-            if (routed.empty())
-                continue;
-            Vec gathered(routed.size() * hidden);
-            for (std::size_t r = 0; r < routed.size(); ++r)
-                std::copy_n(
-                    x.begin() + routed[r].first * hidden,
-                    hidden,
-                    gathered.begin() + r * hidden
-                );
-            auto gate = w_.project(compute_, p + "ffn_gate_exps.weight", gathered, e);
-            const auto up = w_.project(compute_, p + "ffn_up_exps.weight", gathered, e);
-            for (std::size_t j = 0; j < gate.size(); ++j)
-                gate[j] = silu(gate[j]) * up[j];
-            const auto down = w_.project(compute_, p + "ffn_down_exps.weight", gate, e);
-            for (std::size_t r = 0; r < routed.size(); ++r) {
-                const auto [row, slot] = routed[r];
-                for (std::size_t d = 0; d < hidden; ++d)
-                    contribution[(row * top_k + slot) * hidden + d] =
-                        down[r * hidden + d] * weight[row][slot];
-            }
-        }
-        auto shared = w_.project(compute_, p + "ffn_gate_shexp.weight", x);
-        const auto up = w_.project(compute_, p + "ffn_up_shexp.weight", x);
-        for (std::size_t j = 0; j < shared.size(); ++j)
-            shared[j] = silu(shared[j]) * up[j];
-        const auto down = w_.project(compute_, p + "ffn_down_shexp.weight", shared);
-        Vec output(rows * hidden);
-        for (std::size_t row = 0; row < rows; ++row) {
-            float gate = 0;
-            for (std::size_t c = 0; c < hidden; ++c)
-                gate += layers_[layer].shared_gate[c] * x[row * hidden + c];
-            gate = sigmoid(gate);
-            for (std::size_t d = 0; d < hidden; ++d) {
-                float sum = 0;
-                for (std::size_t i = 0; i < top_k; ++i)
-                    sum += contribution[(row * top_k + i) * hidden + d];
-                output[row * hidden + d] = sum + down[row * hidden + d] * gate;
-            }
-        }
-        return output;
-    }
 };
 }  // namespace
 
@@ -615,14 +534,7 @@ void bind_qwen4exp(GgufWeights& w) {
             w.vector(p + "ple_norm_conv.weight", {wide});
             w.vector(p + "ple_conv1d.weight", {ple_kernel, wide});
         }
-        w.matrix(p + "ffn_gate_inp.weight", experts, hidden);
-        w.matrix(p + "ffn_gate_exps.weight", expert_ff, hidden, experts);
-        w.matrix(p + "ffn_up_exps.weight", expert_ff, hidden, experts);
-        w.matrix(p + "ffn_down_exps.weight", hidden, expert_ff, experts);
-        w.vector(p + "ffn_gate_inp_shexp.weight", {hidden});
-        w.matrix(p + "ffn_gate_shexp.weight", expert_ff, hidden);
-        w.matrix(p + "ffn_up_shexp.weight", expert_ff, hidden);
-        w.matrix(p + "ffn_down_shexp.weight", hidden, expert_ff);
+        bind_moe(w, p, moe_spec);
     }
     w.finish();
 }

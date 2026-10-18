@@ -1,62 +1,78 @@
 {
   "models": [
     {
-      "id": "qwen3.8-27b-q4-k-m",
-      "repo_id": "ggml-org/Qwen3.8-27B-GGUF",
-      "revision": "71bc7b627595dc8a91039addd9c791ae548d6747",
+      "id": "qwen3.6-35b-a3b-q4-k-m",
+      "repo_id": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+      "revision": "baec3ebee244827cda0f4557eafa8b28f7545fa6",
       "license": "apache-2.0",
-      "estimated_bytes": 18973870528,
+      "estimated_bytes": 20419565568,
       "kind": "llm",
-      "display_name": "Qwen3.8 27B (Q4_K_M)",
+      "display_name": "Qwen3.6 35B-A3B (Q4_K_M)",
       "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
       "required_files": [
-        "Qwen3.8-27B-Q4_K_M.gguf"
+        "Qwen3.6-35B-A3B-Q4_K_M.gguf"
       ],
       "weight_paths": [],
-      "license_url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/blob/71bc7b627595dc8a91039addd9c791ae548d6747/README.md",
+      "license_url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/blob/baec3ebee244827cda0f4557eafa8b28f7545fa6/README.md",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
-      "asset_name": "Qwen3.8-27B-Q4_K_M.gguf",
+      "asset_name": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
       "manifest": [
         {
-          "name": "Qwen3.8-27B-Q4_K_M.gguf",
-          "size": 18973870528,
-          "digest": "c600de0300ae8a0eb3a6c0b8b5561b8b96f16bd2c863c2a66c42de29d391a747",
+          "name": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+          "size": 20419565568,
+          "digest": "671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7",
           "algorithm": "sha256",
-          "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/71bc7b627595dc8a91039addd9c791ae548d6747/Qwen3.8-27B-Q4_K_M.gguf"
+          "url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/resolve/baec3ebee244827cda0f4557eafa8b28f7545fa6/Qwen3.6-35B-A3B-Q4_K_M.gguf"
         }
       ]
     },
     {
-      "id": "qwen3.8-27b-q8-0",
-      "repo_id": "ggml-org/Qwen3.8-27B-GGUF",
-      "revision": "71bc7b627595dc8a91039addd9c791ae548d6747",
-      "license": "apache-2.0",
-      "estimated_bytes": 28595763648,
+      "id": "qwen3.8-flash-next-ud-iq3-xxs",
+      "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "revision": "766911a6b7369840a91dbcd95f9f997acaab6cd6",
+      "license": "qwen-community-1.0",
+      "estimated_bytes": 81961823936,
       "kind": "llm",
-      "display_name": "Qwen3.8 27B (Q8_0)",
+      "display_name": "Qwen3.8 Flash Next (UD-IQ3_XXS)",
       "layout": "gguf",
       "subfolder": "",
       "component_paths": [],
       "required_files": [
-        "Qwen3.8-27B-Q8_0.gguf"
+        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf"
       ],
       "weight_paths": [],
-      "license_url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/blob/71bc7b627595dc8a91039addd9c791ae548d6747/README.md",
-      "license_notice": null,
+      "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE",
+      "license_notice": "Qwen Community License 1.0: free to use, modify and redistribute with the notice retained. Offering this model as a hosted model service or AI work assistant for commercial purposes requires a separate license from Qwen; very large commercial products must display the model name.",
       "inference_available": true,
       "asset_url": null,
-      "asset_name": "Qwen3.8-27B-Q8_0.gguf",
+      "asset_name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
       "manifest": [
         {
-          "name": "Qwen3.8-27B-Q8_0.gguf",
-          "size": 28595763648,
-          "digest": "aab65c67ef0dad127960efef9247f1832bca105faa1c7a052cc039b223cf86a1",
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+          "size": 10946624,
+          "digest": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8",
           "algorithm": "sha256",
-          "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/71bc7b627595dc8a91039addd9c791ae548d6747/Qwen3.8-27B-Q8_0.gguf"
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf"
+        },
+        {
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+          "size": 49567921344,
+          "digest": "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf"
+        },
+        {
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+          "size": 32382955968,
+          "digest": "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf"
         }
       ]
     },
@@ -894,7 +910,7 @@
       "vram_gb": 8,
       "ram_gb": 32,
       "models": {
-        "llm": "qwen3.8-27b-q4-k-m",
+        "llm": "qwen3.6-35b-a3b-q4-k-m",
         "image": "qwen-image-2.1-turbo",
         "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",
@@ -912,7 +928,7 @@
       "vram_gb": 16,
       "ram_gb": 64,
       "models": {
-        "llm": "qwen3.8-27b-q8-0",
+        "llm": "qwen3.8-flash-next-ud-iq3-xxs",
         "image": "qwen-image-2.1-turbo",
         "video": "h3-fl2va-int8-turbo",
         "speech": "qwen-tts-1.7b-custom",

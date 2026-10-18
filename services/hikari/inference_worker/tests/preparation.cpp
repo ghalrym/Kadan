@@ -142,7 +142,7 @@ void pinned_catalog_units() {
         rejects([&] { store.validate_files(speech, parse_manifest(incomplete)); });
     }
     for (const auto* model :
-         {"qwen3.8-27b-q4-k-m",
+         {"qwen3.6-35b-a3b-q4-k-m",
           "qwen-tts-1.7b-custom",
           "h3-fl2va",
           "h3-fl2va-int8-turbo"})
@@ -295,8 +295,8 @@ void checkpoint_catalog_units() {
     );
     // Each hardware tier pins one GGUF language model and the formatter.
     const std::map<std::string, std::string> tiers{
-        {"go", "qwen3.8-27b-q4-k-m"},
-        {"plus", "qwen3.8-27b-q8-0"},
+        {"go", "qwen3.6-35b-a3b-q4-k-m"},
+        {"plus", "qwen3.8-flash-next-ud-iq3-xxs"},
         {"pro", "qwen3.8-flash-next-q3-k-xl"},
         {"ultra", "glm-5.3-flash-q3-k-xl"}
     };
@@ -1080,40 +1080,38 @@ private:
     }
 };
 
-// The qwen35 metadata contract with a tiny tokenizer: three normal tokens,
+// The qwen35moe metadata contract with a tiny tokenizer: three normal tokens,
 // one control token and one unused slot.
-std::string qwen35_metadata(bool valid) {
+std::string qwen35moe_metadata(bool valid) {
     GgufWriter w;
-    w.string("general.architecture", "qwen35");
+    w.string("general.architecture", "qwen35moe");
     for (const auto& [key, value] :
          std::initializer_list<std::pair<const char*, std::uint32_t>>{
-             {"qwen35.block_count", valid ? 64 : 63},
-             {"qwen35.context_length", 262144},
-             {"qwen35.embedding_length", 5120},
-             {"qwen35.feed_forward_length", 17408},
-             {"qwen35.attention.head_count", 24},
-             {"qwen35.attention.head_count_kv", 4},
-             {"qwen35.attention.key_length", 256},
-             {"qwen35.attention.value_length", 256},
-             {"qwen35.rope.dimension_count", 64},
-             {"qwen35.ssm.conv_kernel", 4},
-             {"qwen35.ssm.state_size", 128},
-             {"qwen35.ssm.group_count", 16},
-             {"qwen35.ssm.time_step_rank", 48},
-             {"qwen35.ssm.inner_size", 6144},
-             {"qwen35.full_attention_interval", 4},
+             {"qwen35moe.block_count", valid ? 40 : 39},
+             {"qwen35moe.context_length", 262144},
+             {"qwen35moe.embedding_length", 2048},
+             {"qwen35moe.attention.head_count", 16},
+             {"qwen35moe.attention.head_count_kv", 2},
+             {"qwen35moe.attention.key_length", 256},
+             {"qwen35moe.attention.value_length", 256},
+             {"qwen35moe.rope.dimension_count", 64},
+             {"qwen35moe.expert_count", 256},
+             {"qwen35moe.expert_used_count", 8},
+             {"qwen35moe.expert_feed_forward_length", 512},
+             {"qwen35moe.expert_shared_feed_forward_length", 512},
+             {"qwen35moe.ssm.conv_kernel", 4},
+             {"qwen35moe.ssm.state_size", 128},
+             {"qwen35moe.ssm.group_count", 16},
+             {"qwen35moe.ssm.time_step_rank", 32},
+             {"qwen35moe.ssm.inner_size", 4096},
+             {"qwen35moe.full_attention_interval", 4},
              {"tokenizer.ggml.eos_token_id", 248046},
              {"tokenizer.ggml.padding_token_id", 248044}
          })
         w.u32(key, value);
-    w.f32("qwen35.rope.freq_base", 1e7f);
-    w.f32("qwen35.attention.layer_norm_rms_epsilon", 1e-6f);
-    w.integers("qwen35.rope.dimension_sections", {11, 11, 10, 0});
-    std::vector<bool> recurrent;
-    recurrent.reserve(64);
-    for (unsigned i = 0; i < 64; ++i)
-        recurrent.push_back((i + 1) % 4 != 0);
-    w.booleans("qwen35.attention.recurrent_layers", recurrent);
+    w.f32("qwen35moe.rope.freq_base", 1e7f);
+    w.f32("qwen35moe.attention.layer_norm_rms_epsilon", 1e-6f);
+    w.integers("qwen35moe.rope.dimension_sections", {11, 11, 10, 0});
     w.string("tokenizer.ggml.model", "gpt2");
     w.string("tokenizer.ggml.pre", "qwen35");
     w.strings("tokenizer.ggml.tokens", {"a", "b", "ab", "<|im_end|>", "<|unused|>"});
@@ -1131,7 +1129,9 @@ void gguf_acquisition_units() {
             const bool split = std::string_view(layout) == "split";
             const std::string first =
                 split ? "model-00001-of-00002.gguf" : "model.gguf";
-            std::map<std::string, std::string> content{{first, qwen35_metadata(valid)}};
+            std::map<std::string, std::string> content{
+                {first, qwen35moe_metadata(valid)}
+            };
             if (split)
                 content["model-00002-of-00002.gguf"] = "unread tensor placeholder";
             auto files = local_manifest(tmp.path / "source", content);
@@ -1169,7 +1169,7 @@ void gguf_acquisition_units() {
                 } catch (const RequestError& error) {
                     assert(error.status == 422);
                     assert(
-                        std::string(error.what()).find("qwen35_dimensions")
+                        std::string(error.what()).find("qwen35moe_dimensions")
                         != std::string::npos
                     );
                 }
@@ -1184,7 +1184,7 @@ void gguf_acquisition_units() {
             assert(
                 read_document(root / "config.json")
                 == Json(
-                    {{"model_type", "qwen35"},
+                    {{"model_type", "qwen35moe"},
                      {"kadan_checkpoint_format", "gguf"},
                      {"max_position_embeddings", 262144}}
                 )
@@ -1234,7 +1234,7 @@ void job_units() {
                jobs = tmp.path / "jobs";
     const auto config =
         Json{
-            {"model_type", "qwen35"},
+            {"model_type", "qwen35moe"},
             {"kadan_checkpoint_format", "gguf"},
             {"max_position_embeddings", 262144}
         }
