@@ -109,6 +109,34 @@ class PetJobs:
         self.wakeup.set()
         return job
 
+    async def import_atlas(
+        self, key: str, pet_id: UUID, prompt: str, atlas: bytes, sprite_version: int
+    ) -> PetJob:
+        # Asset and job IDs derive from the caller's UUID, so a retry is idempotent.
+        atlas_id = await self.upload_asset(
+            key, pet_id, uuid5(pet_id, "atlas"), "atlas", atlas, "image/webp"
+        )
+        manifest = PetManifest(
+            sprite_version=sprite_version,
+            rows=11 if sprite_version == 2 else 9,
+            atlas_asset_id=atlas_id,
+            animations=[
+                {"name": row.name, "row": row.index, "durations": list(row.durations)}
+                for row in ROWS[:9]
+            ],
+        )
+        value = await self.services.json_request(
+            "Tsuchi",
+            "POST",
+            self.path(key) + "/imports",
+            json={
+                "id": str(pet_id),
+                "prompt": prompt,
+                "manifest": manifest.model_dump(mode="json"),
+            },
+        )
+        return self.checked(value, key, pet_id)
+
     async def revise(
         self,
         key: str,
@@ -400,24 +428,37 @@ class PetJobs:
     async def upload(
         self, job: PetJob, asset_id: UUID, label: str, data: bytes, media_type: str
     ) -> UUID:
+        return await self.upload_asset(
+            job.agent_key, job.id, asset_id, label, data, media_type
+        )
+
+    async def upload_asset(
+        self,
+        key: str,
+        pet_id: UUID,
+        asset_id: UUID,
+        label: str,
+        data: bytes,
+        media_type: str,
+    ) -> UUID:
         suffix = {"image/png": "png", "image/webp": "webp", "application/json": "json"}[
             media_type
         ]
         value = await self.services.json_request(
             "Tsuchi",
             "POST",
-            f"/api/agents/{job.agent_key}/assets",
+            f"/api/agents/{key}/assets",
             files={"file": (f"{label.replace('/', '-')}.{suffix}", data, media_type)},
             data={
                 "title": f"Pet {label}",
-                "tags": json.dumps(["pet", str(job.id)]),
+                "tags": json.dumps(["pet", str(pet_id)]),
                 "asset_id": str(asset_id),
             },
         )
         asset = PetAsset.model_validate(value)
         if (
             asset.id != asset_id
-            or asset.agent_key != job.agent_key
+            or asset.agent_key != key
             or asset.deleted_at
             or asset.sha256 != hashlib.sha256(data).hexdigest()
             or asset.media_type != media_type

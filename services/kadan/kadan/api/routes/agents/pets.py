@@ -1,8 +1,12 @@
+import asyncio
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
+from ...config import ServiceError
+from ...pet_import import MAX_FILE_BYTES, read_package
 from ...pydantic_models.pets import PetJob
 from ...pydantic_models.resources import AgentKey
 
@@ -45,6 +49,36 @@ async def list_pets(key: AgentKey, request: Request) -> list[PetJob]:
 @router.post("/api/agents/{key}/pets", status_code=202)
 async def create_pet(key: AgentKey, value: CreatePet, request: Request) -> PetJob:
     return await request.app.state.services.pets.create(key, value.id, value.prompt)
+
+
+@router.post("/api/agents/{key}/pets/imports", status_code=201)
+async def import_pet(
+    key: AgentKey,
+    request: Request,
+    id: Annotated[UUID, Form()],
+    files: Annotated[list[UploadFile], File()],
+    name: Annotated[str, Form(max_length=200)] = "",
+) -> PetJob:
+    """Import a Codex pet as a ready candidate. Selection stays explicit."""
+    if len(files) > 3:
+        raise ServiceError(
+            "Upload a zip, or a spritesheet with its pet.json.",
+            422,
+            "invalid_pet_package",
+        )
+    uploads = []
+    for upload in files:
+        data = await upload.read(MAX_FILE_BYTES + 1)
+        uploads.append((upload.filename or "upload", data))
+    try:
+        pet = await asyncio.to_thread(read_package, uploads)
+    except ValueError as error:
+        raise ServiceError(str(error), 422, "invalid_pet_package") from error
+    if name.strip():
+        pet.name = name.strip()
+    return await request.app.state.services.pets.import_atlas(
+        key, id, pet.prompt, pet.atlas, pet.sprite_version
+    )
 
 
 @router.get("/api/agents/{key}/pets/{pet_id}")

@@ -3,6 +3,7 @@ pydantic==2.14.1
 pydantic-settings==2.16.0
 uvicorn==0.54.0
 httpx==0.28.1
+python-multipart==0.0.32
 mcp==1.30.0
 jsonschema==4.26.0
 Pillow==13.0.0

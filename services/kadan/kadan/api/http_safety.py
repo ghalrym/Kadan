@@ -1,8 +1,18 @@
+import re
 from urllib.parse import urlsplit
 
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+MAX_BODY_BYTES = 1024 * 1024
+# Pet packages carry a full spritesheet; pet_import checks each file against 20 MB.
+LARGE_BODY_PATHS = re.compile(r"/api/agents/[^/]+/pets/imports")
+MAX_LARGE_BODY_BYTES = 64 * 1024 * 1024
+
+
+def body_limit(path: str) -> int:
+    return MAX_LARGE_BODY_BYTES if LARGE_BODY_PATHS.fullmatch(path) else MAX_BODY_BYTES
 
 
 def same_origin(origin: str, host: str, scheme: str) -> bool:
@@ -71,14 +81,16 @@ class LocalRequestSafety:
                     {"detail": "Cross-origin writes are not allowed"}, status_code=403
                 )(scope, receive, send)
                 return
+        limit = body_limit(scope.get("path", ""))
+        too_large = f"Request body must be at most {limit // (1024 * 1024)} MiB"
         try:
             declared = int(headers.get(b"content-length", b"0"))
         except ValueError:
             declared = -1
-        if declared < 0 or declared > 1024 * 1024:
-            await JSONResponse(
-                {"detail": "Request body must be at most 1 MiB"}, status_code=413
-            )(scope, receive, send)
+        if declared < 0 or declared > limit:
+            await JSONResponse({"detail": too_large}, status_code=413)(
+                scope, receive, send
+            )
             return
         received = 0
         started = False
@@ -88,8 +100,8 @@ class LocalRequestSafety:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > 1024 * 1024:
-                    raise HTTPException(413, "Request body must be at most 1 MiB")
+                if received > limit:
+                    raise HTTPException(413, too_large)
             return message
 
         async def secure_send(message: Message) -> None:
