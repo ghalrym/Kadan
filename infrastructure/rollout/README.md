@@ -1,8 +1,9 @@
-# Compose image rollout draft
+# Compose image rollout
 
-This is a reviewable draft. `compose-release.yml.example` is inactive and no host
-dispatcher is installed. No image was published and no installation was changed.
-The developer command is:
+The publication workflow is installed at `.github/workflows/compose-release.yml`.
+It publishes immutable images and a release artifact from reviewed, passing master
+commits, without access to the deployment server. The example remains a reference;
+no host dispatcher is installed by this workflow. The developer command is:
 
 ```sh
 python services/hikari/bin/hikari.py rollout apply RUN_ID STATE_DIRECTORY CHECKOUT
@@ -60,11 +61,35 @@ installation or prove a native worker's initial queue state.
    empty work queues and the existing storage volumes. Perform owner-operated
    manual request, streaming, runner, failure/restart and recovery checks on a
    disposable installation before enabling a real host dispatcher.
-6. Only then consider installing the template at its exact workflow path and
-   starting the host-local `watch` command or passing successful run IDs to `apply`. Host
+6. Only after verification start the host-local `watch` command or pass successful
+   run IDs to `apply`. Host
    access, registry access, policy, secrets and dispatcher setup are separate
    owner work. A suitable builder must support the native image build; the draft
    does not provision one.
+
+## Publication bootstrap before enrollment
+
+Publication can run before any host enrollment so that genuine cached image pins
+are available for disposable verification. A successful publication run does not
+authorize a live rollout or start a dispatcher. The initial full build was checked
+on a standard hosted CPU runner; no GPU execution or self-hosted builder is needed.
+
+The activation PR must have a write-capable reviewer's GitHub approval of its exact
+head before merge: the publisher checks that review and all three required
+exact-master CI workflows. It uses only ephemeral `GITHUB_TOKEN` permissions
+`contents: read`, `actions: read` and `packages: write`. No personal publication
+token, host credential or repository permission change is required.
+
+New GHCR packages default to private. The approved public bootstrap requires the
+package owner to open each of the thirteen `ghalrym/kadan/*` package settings and
+choose **Change visibility → Public**, confirming the package name. Public status
+is irreversible. Do not broaden a CLI token if it lacks package-administration
+access. If a pre-existing package is not linked to Kadan, its owner must also
+grant this repository Actions access before publication can succeed.
+
+Only after the approved visibility and caching steps should disposable recovery
+verification run. Host enrollment and any unattended Actions credential handoff
+remain independent, coordinated operations; this workflow supplies neither.
 
 ## Operation and recovery
 
@@ -206,7 +231,8 @@ enrolling a different last-known-good baseline.
 
 Storage-format and cross-version compatibility still require reviewer judgement;
 change the compatibility epoch whenever mixed versions or rollback cannot be safe.
-This draft does not promise zero downtime or automatic data rollback. All runtime,
-publication and dispatcher validation here is unit-level with external boundaries
-mocked; no live rollout, package publication, GPU run or service installation was
-performed.
+The controller does not promise zero downtime or automatic data rollback. Its
+automated tests mock external boundaries. Successful publication and compilation
+do not prove deployed runtime health; coordinated disposable and enrollment
+verification remain separate. Publication never runs inference or installs a host
+service.
