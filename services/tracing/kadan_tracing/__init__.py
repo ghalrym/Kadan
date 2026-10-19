@@ -19,6 +19,8 @@ from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
+from .cuda_metrics import CUDA_ATTRIBUTES
+
 propagator = TraceContextTextMapPropagator()
 # No URLs, identifiers, headers, model inputs, exception text, or event contents.
 ATTRIBUTES = frozenset(
@@ -79,7 +81,7 @@ class PrivateExporter(SpanExporter):
                 for key, value in span.attributes.items()
                 if key in ATTRIBUTES
                 or (
-                    key in TEXT_ATTRIBUTES
+                    (key in TEXT_ATTRIBUTES or key in CUDA_ATTRIBUTES)
                     and type(value) in (int, float)
                     and 0 <= value < 2**63
                     and math.isfinite(value)
@@ -131,7 +133,7 @@ def configure(service: str) -> TracerProvider | None:
         resource=Resource({"service.name": service}),
         sampler=ParentBased(TraceIdRatioBased(ratio)),
         span_limits=SpanLimits(
-            max_attributes=32, max_events=0, max_links=0, max_attribute_length=128
+            max_attributes=256, max_events=0, max_links=0, max_attribute_length=128
         ),
         shutdown_on_exit=False,
     )
@@ -306,7 +308,7 @@ def worker_tracer(kind: str) -> trace.Tracer:
         provider = TracerProvider(
             resource=Resource({"service.name": "hikari-worker-" + kind}),
             shutdown_on_exit=False,
-            span_limits=SpanLimits(max_attributes=32, max_events=0, max_links=0),
+            span_limits=SpanLimits(max_attributes=256, max_events=0, max_links=0),
         )
         provider.add_span_processor(_processor)
         _relays[kind] = provider.get_tracer("kadan.native")

@@ -651,6 +651,25 @@ void destruction_does_not_acknowledge_failed_cleanup() {
     check(r.snapshot().used[1] == 128 && c->allocated == 128 && c->frees == 0);
 }
 
+void telemetry_context_follows_device_tasks() {
+    Resources resources({1024, 512});
+    auto counts = std::make_shared<Counters>();
+    DeviceThread device(resources, 0, Workload::image, fake(resources, counts));
+    {
+        serving::CudaPhaseScope phase(true);
+        const auto& context = phase.context();
+        device
+            .submit_work([context](DeviceWorkspace&) {
+                check(serving::cuda_phase == context);
+                serving::cuda_phase->metrics.observed = true;
+                serving::cuda_phase->metrics.sync.calls = 1;
+            })
+            .get();
+        check(phase.snapshot().sync.calls == 1);
+    }
+    device.submit([](DeviceWorkspace&) { check(!serving::cuda_phase); }).get();
+}
+
 void bounded_mailbox() {
     Resources r({1024, 512});
     auto c = std::make_shared<Counters>();
@@ -759,6 +778,7 @@ int main() {
     projection_status_lifecycle();
     selection_failure_never_uses_default_device();
     destruction_does_not_acknowledge_failed_cleanup();
+    telemetry_context_follows_device_tasks();
     bounded_mailbox();
     joining_failed_devices();
     std::cout << "Mock device workspace lifecycle passed (no CUDA or inference)\n";

@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "kadan/cleanup_error.hpp"
+#include "kadan/cuda_phase_metrics.hpp"
 #include "kadan/packed_read_team.hpp"
 #include "kadan/resources.hpp"
 
@@ -346,9 +347,12 @@ public:
     }
 
     std::future<void> submit(std::function<void(DeviceWorkspace&)> function) {
-        std::packaged_task<void()> task([this, function = std::move(function)] {
-            function(workspace_);
-        });
+        std::packaged_task<void()> task(
+            [this, function = std::move(function), phase = serving::cuda_phase] {
+                serving::CudaPhaseScope tracing(phase);
+                function(workspace_);
+            }
+        );
         auto result = task.get_future();
         {
             std::lock_guard lock(mutex_);

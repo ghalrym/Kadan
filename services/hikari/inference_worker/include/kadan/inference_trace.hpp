@@ -6,6 +6,8 @@
 #include <functional>
 #include <optional>
 
+#include "kadan/cuda_phase_metrics.hpp"
+
 namespace kadan::serving {
 // Fixed numeric details attached only to existing sampled text phase spans.
 struct TextPhaseMetrics {
@@ -36,8 +38,14 @@ struct TextPhaseMetrics {
     double unsupported_seconds = 0;
 };
 
-using TraceSink = std::function<
-    void(const char*, std::int64_t, std::int64_t, bool, const TextPhaseMetrics*)>;
+using TraceSink = std::function<void(
+    const char*,
+    std::int64_t,
+    std::int64_t,
+    bool,
+    const TextPhaseMetrics*,
+    const CudaPhaseMetrics*
+)>;
 
 inline std::int64_t trace_unix_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -49,19 +57,29 @@ inline std::int64_t trace_unix_ns() {
 class InferenceTrace {
 public:
     InferenceTrace(const TraceSink& sink, const char* phase)
-        : sink_(sink), phase_(phase), start_(sink ? trace_unix_ns() : 0),
-          exceptions_(std::uncaught_exceptions()) {
+        : InferenceTrace(sink, phase, make_context(bool(sink))) {
+    }
+
+    // A missing shared collector must stay disabled: retrying as a singleton
+    // could mislabel a batch's full cost after a telemetry allocation failure.
+    InferenceTrace(
+        const TraceSink& sink, const char* phase, std::shared_ptr<CudaPhase> shared
+    )
+        : cuda_(std::move(shared)), sink_(sink), phase_(phase),
+          start_(sink ? trace_unix_ns() : 0), exceptions_(std::uncaught_exceptions()) {
     }
 
     ~InferenceTrace() noexcept {
         if (sink_) {
             try {
+                const auto cuda = cuda_.snapshot();
                 sink_(
                     phase_,
                     start_,
                     trace_unix_ns(),
                     std::uncaught_exceptions() > exceptions_,
-                    metrics_ ? &*metrics_ : nullptr
+                    metrics_ ? &*metrics_ : nullptr,
+                    cuda.observed ? &cuda : nullptr
                 );
             } catch (...) {
                 // Observability must never alter completion or cancellation.
@@ -78,6 +96,17 @@ public:
     InferenceTrace& operator=(const InferenceTrace&) = delete;
 
 private:
+    static std::shared_ptr<CudaPhase> make_context(bool enabled) noexcept {
+        if (enabled) {
+            try {
+                return std::make_shared<CudaPhase>();
+            } catch (...) {
+            }
+        }
+        return {};
+    }
+
+    CudaPhaseScope cuda_;
     const TraceSink& sink_;
     const char* phase_;
     std::int64_t start_;

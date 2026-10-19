@@ -21,6 +21,7 @@
 #include "image_vision.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/checkpoint_cache.hpp"
+#include "kadan/cuda_phase_metrics.hpp"
 #include "kadan/image_aten_performance.hpp"
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_checkpoint_config.hpp"
@@ -1523,7 +1524,10 @@ void AtenGenerator::generate_batch(
             std::vector<std::jthread> threads;
             threads.reserve(lanes.size());
             for (std::size_t i = 0; i < lanes.size(); ++i)
-                threads.emplace_back([&, i] { run_lane(i); });
+                threads.emplace_back([&, i, phase = serving::cuda_phase] {
+                    serving::CudaPhaseScope tracing(phase);
+                    run_lane(i);
+                });
         }
         for (auto& stage : stages) {
             const auto started = Clock::now();

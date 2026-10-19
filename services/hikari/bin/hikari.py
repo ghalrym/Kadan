@@ -10,7 +10,7 @@ import typer
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, dev, generate, inference, native, profiling, publishing
+from bin import assets, checks, dev, generate, inference, native, publishing
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -26,9 +26,6 @@ app.add_typer(
 )
 app.add_typer(
     assets.app, name="assets", help="Export local checkpoint and tokenizer assets."
-)
-app.add_typer(
-    profiling.app, name="profile", help="Collect and summarize CUDA profiling data."
 )
 app.add_typer(
     dev.app,

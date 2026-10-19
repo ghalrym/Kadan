@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from kadan_tracing import propagator, worker_tracer
+from kadan_tracing.cuda_metrics import CUDA_KERNELS
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -48,6 +49,45 @@ class TextPhaseMetrics(BaseModel):
     unsupported_seconds: Duration
 
 
+class CudaPhaseMetrics(BaseModel):
+    """Bounded custom-kernel event times and host API costs, never payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kernels: list[tuple[Count, Duration, Count, Duration]] = Field(
+        min_length=len(CUDA_KERNELS), max_length=len(CUDA_KERNELS)
+    )
+    copies: list[tuple[Count, Duration]] = Field(min_length=5, max_length=5)
+    sync_calls: Count
+    sync_seconds: Duration
+    dropped: Count
+    unavailable: Count
+    shared_batch_size: Annotated[int, Field(strict=True, ge=1, le=32)]
+
+    def attributes(self) -> dict[str, int | float]:
+        result = {
+            "kadan.cuda.dropped": self.dropped,
+            "kadan.cuda.unavailable": self.unavailable,
+            "kadan.cuda.shared_batch_size": self.shared_batch_size,
+        }
+        for name, values in zip(CUDA_KERNELS, self.kernels, strict=True):
+            if values[0] or values[2]:
+                for field, value in zip(
+                    ("calls", "host_seconds", "measured", "gpu_seconds"),
+                    values,
+                    strict=True,
+                ):
+                    result[f"kadan.cuda.{name}.{field}"] = value
+        for kind, (calls, seconds) in enumerate(self.copies):
+            if calls:
+                result[f"kadan.cuda.copy{kind}.calls"] = calls
+                result[f"kadan.cuda.copy{kind}.host_seconds"] = seconds
+        if self.sync_calls:
+            result["kadan.cuda.sync.calls"] = self.sync_calls
+            result["kadan.cuda.sync.host_seconds"] = self.sync_seconds
+        return result
+
+
 class NativeSpan(BaseModel):
     phase: Literal[
         "prepare",
@@ -64,6 +104,7 @@ class NativeSpan(BaseModel):
     failed: bool = False
     traceparent: str
     metrics: object = None
+    cuda: object = None
 
 
 class JobTracing:
@@ -124,6 +165,12 @@ class JobTracing:
                         for key, value in metrics.model_dump().items()
                     }
                 )
+        try:
+            cuda = CudaPhaseMetrics.model_validate(event.cuda)
+        except ValidationError:
+            pass
+        else:
+            attributes.update(cuda.attributes())
         current = worker_tracer(worker.kind).start_span(
             "kadan.native." + event.phase,
             context=self.context,
