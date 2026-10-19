@@ -20,6 +20,7 @@ from bin import (
     native,
     publishing,
     rollout,
+    verify_rollout,
 )
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
@@ -52,6 +53,7 @@ app.add_typer(
 )
 
 rollout.app.command("watch")(dispatch.watch)
+rollout.app.command("verify-disposable")(verify_rollout.run)
 
 
 def main() -> None:

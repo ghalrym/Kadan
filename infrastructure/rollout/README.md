@@ -13,8 +13,8 @@ python services/hikari/bin/hikari.py rollout watch STATE_DIRECTORY CHECKOUT
 The run must be the successful `push` to `master` run of the exact
 `.github/workflows/compose-release.yml` publication workflow in `ghalrym/Kadan`.
 The command downloads its `compose-release` artifact, checks the source commit,
-and accepts only digest references under `ghcr.io/ghalrym/kadan/`. It never accepts
-an arbitrary Compose file, command, registry, or local release manifest. The
+and accepts only digest references under `ghcr.io/ghalrym/kadan/`. A release artifact cannot supply a Compose overlay, command, registry, or local
+release manifest. An optional fixed host overlay is enrolled separately below. The
 publication workflow checks that current master came from a merged PR with a
 write-capable reviewer's approval of the PR head, no outstanding requested changes,
 and successful exact-commit runs of all three existing CI workflows. The GitHub
@@ -27,8 +27,9 @@ is intentionally not automated: the controller cannot adopt an arbitrary running
 installation or prove a native worker's initial queue state.
 
 1. Use the canonical `compose.yaml` topology with exactly one instance of each
-   managed service. Runner overrides, alternate Compose files, replicas and
-   topology changes require a separate manual rollout. The owner must attest
+   managed service. The optional pinned host overlay described below preserves
+   local storage and operational settings. Other alternate Compose files, extra
+   runners, replicas and topology changes require a separate manual rollout. The owner must attest
    `detached-independent` supervision: containers run detached and no attached
    `compose up` session, abort-on-container-exit policy or whole-stack supervisor
    can stop/restart other services when one container exits. Docker inspection
@@ -65,6 +66,80 @@ installation or prove a native worker's initial queue state.
    access, registry access, policy, secrets and dispatcher setup are separate
    owner work. A suitable builder must support the native image build; the draft
    does not provision one.
+
+## Fixed host storage and configuration overlay
+
+An installation may add `host_overlay` to its protected `installation.json`:
+
+```json
+{
+  "host_overlay": {
+    "path": "/operator-owned/compose.host.json",
+    "sha256": "REPLACE_WITH_THE_OVERLAY_SHA256",
+    "content_pins": [
+      {
+        "path": "/operator-owned/AGENT.md",
+        "sha256": "REPLACE_WITH_THE_FILE_SHA256"
+      }
+    ]
+  }
+}
+```
+
+These are placeholder paths and digests, not deployment configuration. The overlay
+must be an absolute host-owned JSON Compose file outside the release checkout;
+its byte digest and selected nonsecret file digests are fixed at manual enrollment.
+Leave `host_overlay` absent for canonical-only installations. Release artifacts
+cannot add, replace or update this host configuration. Keep actual local paths,
+credential values and deployment overlays outside the repository and artifacts.
+
+Every Compose command applies files in this order: canonical `compose.yaml`, the
+fixed host overlay, then generated `images.json`. Existing binds, environment,
+volume names and operational settings therefore stay in place while generated
+image digests and admission controls remain authoritative. Compose merges mounts
+by container target: adding the generated rollout gate does not discard a separate
+instruction or storage mount. Port entries are **additive** by Compose port tuple;
+a host LAN binding can coexist with the canonical loopback binding. JSON overlays
+do not reset canonical port lists. Removing/replacing a canonical published port
+requires a separate manual topology transition. During enrollment compare the
+fully resolved ports, mounts, environment and operational settings against the
+existing installation; merely matching the overlay hash does not prove that the
+initial resolved configuration preserves it. The project name and `.env` keep their existing
+pins and precedence; ambient application/Compose environment remains scrubbed.
+
+The JSON overlay supports existing services only and top-level named volumes.
+Service settings may preserve environment, long-syntax volumes, ports, restart,
+init, read-only/capability/security settings, memory/CPU/process limits, `/tmp`
+tmpfs, shared-memory/ulimit settings and `deploy.resources`. Named volume definitions
+support fixed `name` values and boolean `external` flags. It cannot redefine image,
+build, command, entrypoint, health checks, dependencies, service replication,
+profiles, networking or project identity. `KADAN_ROLLOUT_*` environment keys and the
+rollout gate mount stay controller-owned. Environment values otherwise remain
+trusted host policy and can influence process behavior, just as the existing
+owner-controlled `.env` can; inspect them during enrollment.
+
+Bind sources must be absolute, already exist and use explicit long Compose
+syntax. Supported data targets are Postgres `/var/lib/postgresql`, Tsuchi `/data`,
+and Hikari `/var/lib/kadan/models`, `/var/lib/kadan/media` and `/var/lib/kadan/videos`,
+including descendants. Native workers also support `/mnt/glm-models`. Arbitrary
+application/executable/runtime mounts are rejected. Kadan API/runner may bind
+`/app/AGENT.md` and Jaeger may bind `/etc/jaeger/config.yaml`; these specific file
+binds must be read-only and their sources must have matching `content_pins`.
+
+Data/model directories and secret/checkpoint files are not content-hashed or
+rewritten. Additional nonsecret configuration files can be explicitly pinned.
+Overlay bytes pin the mount mapping; only declared `content_pins` pin mounted
+file contents. Unpinned mounted content remains owner-managed and is not a rollout
+change detector. Enrollment must include every supported instruction/configuration
+file whose drift should block automatic work. Hash checks do not log file contents
+or environment values.
+
+The controller rechecks overlay and declared file hashes during configuration
+validation, before each Compose command and before direct Docker stops, including
+recovery. Drift refuses the operation before a Docker mutation; a pending recovery
+keeps its journal/fence. Stop the dispatcher and perform a reviewed manual enrollment
+transition to change host policy or pinned instructions. The controller does not
+silently update hashes or rewrite host mounts to match an incoming release.
 
 ## Operation and recovery
 
@@ -210,3 +285,66 @@ This draft does not promise zero downtime or automatic data rollback. All runtim
 publication and dispatcher validation here is unit-level with external boundaries
 mocked; no live rollout, package publication, GPU run or service installation was
 performed.
+
+## Disposable CPU verification
+
+The developer command below requires `CACHED_KADAN_API_DIGEST` to name a genuine,
+already cached `ghcr.io/ghalrym/kadan/kadan-api@sha256:…` image. It rejects missing
+or unverified pins before creating resources and never pulls, builds, publishes,
+or handles registry credentials. Docker access must already be authorized.
+
+```sh
+.venv/bin/python services/hikari/bin/hikari.py rollout verify-disposable \
+  "$CACHED_KADAN_API_DIGEST" /tmp/kadan-disposable-report.json
+```
+
+This creates fourteen CPU-only protocol stubs in a random throwaway Compose
+project, with no published host ports, GPUs, inference, or application databases.
+It checks host instruction/data preservation, accepted-work drain, a synthetic
+five-second runner lease, health failure, process interruption, controller locking,
+and recovery from an explicitly prepared same-pin journal. It uses the existing
+controller and admission implementation without relaxing release validation.
+The JSON report records the scope, completed checks, cleanup outcome, and working
+directory. The full UUID project identity must have no pre-existing containers,
+volume, or network. Resource ownership labels are checked before starting the
+stubs and before cleanup; cleanup refuses foreign resources. If cleanup fails,
+the complete working directory, overlay, journal, and report remain available
+for inspection and a reviewed cleanup retry. A failed cleanup cannot report a
+successful verification. Successful cleanup removes only the owned disposable
+project resources and then its temporary working directory.
+
+This is recovery-primitive verification, **not** a changed-image publication test,
+a full native-worker rollout, or proof of the production inference protocol.
+Mocked unit checks cover harness orchestration without starting Docker resources.
+A real run remains pending until a genuine cached GHCR API pin is available;
+local image aliases and fabricated registry references cannot substitute for it.
+
+## Hosted build capacity check
+
+`Compose release build fit` builds all thirteen initial-release images in the
+same order and on one standard GitHub-hosted CPU runner. It uses the publisher's
+build environment and records available disk/memory plus final image/cache size.
+Local image exports consume at least as much final-image storage as remote
+publication, making this a conservative fit check. The job never starts the
+images, submits inference, logs into GHCR, or pushes packages. Its token has only
+`contents: read`; it has no access to the deployment server.
+
+The check runs for PR changes to its own workflow file and can subsequently be
+invoked manually. It does not enable the inactive publication workflow, add a
+self-hosted runner, or select a paid builder. Successful completion is an enrollment
+gate, not evidence of a live rollout or disposable recovery run.
+
+## Unattended Actions download access
+
+Public GHCR images can be pulled without a registry credential. The current
+dispatcher still downloads an Actions artifact: public artifact metadata can be
+listed anonymously, but archive download requires authentication. A successful
+metadata request alone does not prove unattended download access.
+
+Use the approved user-provided credential with only `Actions: read` on Kadan
+(and automatic metadata access). A desktop-keyring login must not be assumed to
+work in a boot-time service. Token creation and entry belong to the user's secure
+handoff, outside chat and command-line arguments. The host supports systemd
+encrypted credentials; the service should reference that protected credential
+without copying its value into the repository, unit text, logs, or reports.
+This PR does not create, read, export, install, or configure a token or service.

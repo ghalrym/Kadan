@@ -12,7 +12,7 @@ import subprocess
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
@@ -175,13 +175,208 @@ def locked(directory: Path):
         yield
 
 
+class HostFilePin(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    path: Path
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def absolute_path(self):
+        if not self.path.is_absolute():
+            raise ValueError("Host configuration pins require absolute paths")
+        return self
+
+    def read(self) -> bytes:
+        data = self.path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != self.sha256:
+            raise ValueError(
+                "Enrolled host configuration changed; manual enrollment required"
+            )
+        return data
+
+
+class HostOverlay(HostFilePin):
+    content_pins: tuple[HostFilePin, ...] = ()
+
+    def validate_document(self, checkout: Path) -> None:
+        if self.path.resolve().is_relative_to(checkout):
+            raise ValueError("Host overlay must live outside the release checkout")
+        document = json.loads(self.read())
+        if not isinstance(document, dict) or set(document) - {"services", "volumes"}:
+            raise ValueError("Host overlay only supports services and named volumes")
+        services = document.get("services", {})
+        if not isinstance(services, dict) or set(services) - {
+            *SERVICES,
+            "hikari-postgres",
+            "hikari-migrate",
+            "jaeger",
+        }:
+            raise ValueError("Host overlay cannot introduce services or replicas")
+        pinned = {pin.path.resolve() for pin in self.content_pins}
+        if len(pinned) != len(self.content_pins):
+            raise ValueError("Host content pins must name distinct files")
+        allowed = {
+            "environment",
+            "volumes",
+            "ports",
+            "restart",
+            "init",
+            "read_only",
+            "cap_drop",
+            "security_opt",
+            "mem_limit",
+            "mem_reservation",
+            "cpus",
+            "pids_limit",
+            "tmpfs",
+            "deploy",
+            "shm_size",
+            "ulimits",
+        }
+        for name, service in services.items():
+            if not isinstance(service, dict) or set(service) - allowed:
+                raise ValueError(
+                    "Host overlay changes a protected service runtime contract"
+                )
+            environment = service.get("environment", {})
+            if not isinstance(environment, dict) or any(
+                key.startswith("KADAN_ROLLOUT_") for key in environment
+            ):
+                raise ValueError(
+                    "Host overlay environment must preserve rollout-owned controls"
+                )
+            if not isinstance(service.get("deploy", {}), dict) or set(
+                service.get("deploy", {})
+            ) - {"resources"}:
+                raise ValueError(
+                    "Host overlay cannot change service replication or placement"
+                )
+            tmpfs = service.get("tmpfs", [])
+            if not isinstance(tmpfs, list) or any(
+                not isinstance(value, str)
+                or not PurePosixPath(value.split(":", 1)[0]).is_relative_to("/tmp")
+                or ".." in PurePosixPath(value.split(":", 1)[0]).parts
+                or "$" in value
+                for value in tmpfs
+            ):
+                raise ValueError("Host tmpfs mounts must remain under /tmp")
+            mounts = service.get("volumes", [])
+            if not isinstance(mounts, list):
+                raise ValueError("Host mounts require long Compose syntax")  # noqa: TRY004 - enrollment validation uses ValueError
+            for mount in mounts:
+                self.validate_mount(name, mount, pinned)
+        volumes = document.get("volumes", {})
+        fixed_name = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*\Z")
+        if not isinstance(volumes, dict):
+            raise ValueError("Host named volumes require fixed definitions")  # noqa: TRY004 - enrollment validation uses ValueError
+        for name, value in volumes.items():
+            if (
+                not fixed_name.fullmatch(name)
+                or not isinstance(value, dict)
+                or set(value) - {"name", "external"}
+                or (
+                    "name" in value
+                    and (
+                        not isinstance(value["name"], str)
+                        or not fixed_name.fullmatch(value["name"])
+                    )
+                )
+                or ("external" in value and not isinstance(value["external"], bool))
+            ):
+                raise ValueError(
+                    "Host named volumes require fixed names and explicit external booleans"
+                )
+        for pin in self.content_pins:
+            pin.read()
+
+    @staticmethod
+    def validate_mount(service: str, mount: dict, pinned: set[Path]) -> None:
+        if not isinstance(mount, dict) or set(mount) - {
+            "type",
+            "source",
+            "target",
+            "read_only",
+            "bind",
+            "volume",
+            "consistency",
+        }:
+            raise ValueError("Host mounts require explicit long Compose syntax")
+        target = mount.get("target")
+        if (
+            not isinstance(target, str)
+            or not target.startswith("/")
+            or "$" in target
+            or ".." in PurePosixPath(target).parts
+        ):
+            raise ValueError(
+                "Host mount targets must be fixed absolute container paths"
+            )
+        target_path = PurePosixPath(target)
+        file_target = (
+            service in {"kadan-api", "kadan-runner"}
+            and target_path == PurePosixPath("/app/AGENT.md")
+        ) or (
+            service == "jaeger"
+            and target_path == PurePosixPath("/etc/jaeger/config.yaml")
+        )
+        roots = []
+        if service == "hikari-postgres":
+            roots = ["/var/lib/postgresql"]
+        elif service == "tsuchi-api":
+            roots = ["/data"]
+        elif service in {"hikari-api", *WORKERS}:
+            roots = [
+                "/var/lib/kadan/models",
+                "/var/lib/kadan/media",
+                "/var/lib/kadan/videos",
+            ]
+            if service in WORKERS:
+                roots.append("/mnt/glm-models")
+        if not file_target and not any(
+            target_path.is_relative_to(root) for root in roots
+        ):
+            raise ValueError(
+                "Host mount would replace application code or protected runtime paths"
+            )
+        source = mount.get("source")
+        if mount.get("type") == "bind":
+            if (
+                not isinstance(source, str)
+                or not Path(source).is_absolute()
+                or "$" in source
+            ):
+                raise ValueError("Host bind sources require fixed absolute paths")
+            if not Path(source).exists():
+                raise ValueError("Host bind source must already exist")
+            if file_target and (
+                mount.get("read_only") is not True
+                or Path(source).resolve() not in pinned
+            ):
+                raise ValueError(
+                    "Host instruction/config binds require read-only content pins"
+                )
+        elif (
+            mount.get("type") != "volume"
+            or file_target
+            or not isinstance(source, str)
+            or not source
+            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", source)
+        ):
+            raise ValueError("Host storage mounts require a fixed bind or named volume")
+
+
 class Compose:
+    host_overlay: HostOverlay | None = None
+
     def __init__(self, checkout: Path, state: Path, timeout: int = 300):
         self.checkout = checkout.resolve()
         self.state = state.resolve()
         self.timeout = timeout
         self.installation = json.loads((state / "installation.json").read_text())
         self.project = self.installation["project"]
+        if self.installation.get("host_overlay") is not None:
+            self.host_overlay = HostOverlay(**self.installation["host_overlay"])
+            self.host_overlay.validate_document(self.checkout)
         if self.installation.get("supervision") != "detached-independent":
             raise ValueError(
                 "Rollout requires detached-independent supervision enrollment"
@@ -189,7 +384,16 @@ class Compose:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", self.project):
             raise ValueError("Invalid enrolled Compose project")
 
+    def host_configuration(self) -> None:
+        if self.host_overlay is not None:
+            self.host_overlay.validate_document(self.checkout)
+
     def command(self, *args: str) -> str:
+        self.host_configuration()
+        files = [self.checkout / "compose.yaml"]
+        if self.host_overlay is not None:
+            files.append(self.host_overlay.path)
+        files.append(self.state / "images.json")
         result = subprocess.run(
             [
                 "docker",
@@ -202,10 +406,7 @@ class Compose:
                 str(self.checkout / ".env"),
                 "--project-directory",
                 str(self.checkout),
-                "-f",
-                str(self.checkout / "compose.yaml"),
-                "-f",
-                str(self.state / "images.json"),
+                *(part for path in files for part in ("-f", str(path))),
                 *args,
             ],
             cwd=self.checkout,
@@ -222,6 +423,7 @@ class Compose:
         return result.stdout
 
     def overlay(self, release: Release) -> None:
+        self.host_configuration()
         services = {name: {"image": image} for name, image in release.images.items()}
         # The migration image is pinned too, but automatic rollout never runs it.
         services["hikari-migrate"] = {"image": release.images["hikari-api"]}
@@ -289,6 +491,7 @@ class Compose:
             raise ValueError("Storage migration changes require a manual rollout")
 
     def configuration(self, release: Release) -> None:
+        self.host_configuration()
         topology = hashlib.sha256(
             (self.checkout / "compose.yaml").read_bytes()
         ).hexdigest()
@@ -634,6 +837,7 @@ class Compose:
     def stop_ids(self, ids: tuple[str, ...]) -> None:
         if not ids:
             return
+        self.host_configuration()
         subprocess.run(
             [
                 "docker",

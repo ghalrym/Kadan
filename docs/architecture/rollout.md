@@ -10,6 +10,31 @@ publication workflow is the provenance boundary. The host retains its existing
 Compose project, environment and persistent volumes. No release can introduce
 arbitrary service commands or rewrite host deployment topology.
 
+An installation can enroll one host-owned JSON overlay and its byte hash outside
+the release checkout. Canonical Compose, the pinned host overlay and generated
+image/admission pins form a fixed ordered configuration. The overlay retains host
+storage mappings, selected environment and operational policy; it never arrives
+from a release artifact. Existing project, canonical topology and environment pins
+remain independent invariants. Compose mounts merge by target and ports merge
+additively by port tuple. Enrollment must prove the complete resolved configuration
+matches the existing installation; removing canonical ports is a manual topology
+transition rather than a JSON overlay reset.
+
+The host overlay is limited to existing services, storage mounts and operational
+settings. It cannot change image/build/command/entrypoint, dependency/readiness or
+replication contracts. Storage roots and narrowly supported instruction/config
+file targets keep arbitrary application code mounts out of this mechanism.
+Controller admission variables and the gate mount remain reserved. Host-owned
+environment values remain trusted process policy and require enrollment review.
+Read-only instruction and Jaeger configuration binds require explicit content
+pins; data directories and other unpinned file contents remain owner-managed.
+
+Overlay and selected content hashes are revalidated before Compose operations and
+direct container stops, including recovery. Drift preserves pending safety state
+and requires manual enrollment; no release can silently adopt changed host paths,
+file contents or policy. Configuration checks never publish host content or secret
+values into release artifacts or logs.
+
 One host controller owns release order, a last-known-good record and a durable
 replacement journal under a process lock. A later release must descend from the
 installed source. Compatibility-epoch changes, data migration changes and topology
