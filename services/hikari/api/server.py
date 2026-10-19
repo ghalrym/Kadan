@@ -1,7 +1,10 @@
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+
 from fastapi import FastAPI
-from api.routes import health
+from kadan_tracing import RequestTracing, configure, shutdown
+
+from api.routes import health, model_lifecycle
 from api.routes.v1 import (
     decisions,
     images,
@@ -14,18 +17,19 @@ from api.routes.v1 import (
 )
 from api.routes.v1.audio import speech, transcriptions
 from api.routes.v1.chat import completions, messages
-from api.routes.v1.images import edits, generations as image_generations
+from api.routes.v1.images import edits
+from api.routes.v1.images import generations as image_generations
 from api.routes.v1.images import requests as image_requests
 from api.routes.v1.videos import generations as video_generations
-from api.routes import model_lifecycle
-from api.services.telemetry import TelemetryMiddleware
 from api.services.inference import inference
+from api.services.telemetry import TelemetryMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the worker hub and local machine; models load on requests, never on API reload."""
     async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)
         await inference.start()
         yield
@@ -45,6 +49,7 @@ app = FastAPI(
 
 # Observe only generation POST handlers; dashboard polling is excluded.
 app.add_middleware(TelemetryMiddleware)
+app.add_middleware(RequestTracing)
 
 for router in (
     health.router,

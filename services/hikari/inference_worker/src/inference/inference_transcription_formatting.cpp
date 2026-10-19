@@ -56,22 +56,30 @@ public:
         model_->begin_request(s1::context_tokens);
     }
 
-    Json execute(const InferenceRequest&, const std::atomic_bool& cancel) override {
+    Json
+    execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
         progress_("formatting", 0);
-        auto selected = model_->prefill(prompt_, cancel);
+        std::uint32_t selected;
+        {
+            InferenceTrace tracing(request.trace, "prefill");
+            selected = model_->prefill(prompt_, cancel);
+        }
         std::string output, pending;
         bool stopped = false;
-        for (std::size_t generated = 0; generated < s1::max_output_tokens;
-             ++generated) {
-            check_cancel(cancel);
-            if (model_->is_eos(selected)) {
-                stopped = true;
-                break;
+        {
+            InferenceTrace tracing(request.trace, "decode");
+            for (std::size_t generated = 0; generated < s1::max_output_tokens;
+                 ++generated) {
+                check_cancel(cancel);
+                if (model_->is_eos(selected)) {
+                    stopped = true;
+                    break;
+                }
+                pending += tokenizer_->decode(selected);
+                output += utf8_chunk(pending);
+                progress_("formatting", generated + 1);
+                selected = model_->step(selected, cancel);
             }
-            pending += tokenizer_->decode(selected);
-            output += utf8_chunk(pending);
-            progress_("formatting", generated + 1);
-            selected = model_->step(selected, cancel);
         }
         stopped = stopped || model_->is_eos(selected);
         require(

@@ -91,6 +91,14 @@ public:
     Json status() const;
 
 private:
+    struct TraceBuffer {
+        std::mutex mutex;
+        Json spans = Json::array();
+    };
+
+    std::mutex traces_mutex_;
+    std::map<std::string, std::shared_ptr<TraceBuffer>> traces_;
+
     struct Worker {
         WorkerSpec spec;
         WorkerChannel channel;

@@ -11,6 +11,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4, uuid5
 
 import httpx
+from kadan_tracing import job_span, traced
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -118,21 +119,27 @@ class ImageJobs:
                         continue
                     if job.status not in {"queued", "running", "cancelling"}:
                         continue
-                    try:
-                        job = await self.save(
-                            job,
-                            status="cancelling"
-                            if job.status == "cancelling"
-                            else "running",
-                            owner_id=self.owner,
-                            lease_expires_at=datetime.now(UTC)
-                            + timedelta(seconds=LEASE_SECONDS),
-                        )
-                    except ServiceError as error:
-                        if error.status == 409:
-                            continue
-                        raise
-                    await self.process(job, recovering=recovering)
+                    with job_span(
+                        "kadan.image_jobs.process",
+                        job,
+                        queued_at=job.updated_at if not recovering else None,
+                        recovering=recovering,
+                    ):
+                        try:
+                            job = await self.save(
+                                job,
+                                status="cancelling"
+                                if job.status == "cancelling"
+                                else "running",
+                                owner_id=self.owner,
+                                lease_expires_at=datetime.now(UTC)
+                                + timedelta(seconds=LEASE_SECONDS),
+                            )
+                        except ServiceError as error:
+                            if error.status == 409:
+                                continue
+                            raise
+                        await self.process(job, recovering=recovering)
                     self.wakeup.set()
                     break
             except asyncio.CancelledError:
@@ -222,11 +229,13 @@ class ImageJobs:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
+    @traced("kadan.image_jobs.finish")
     async def finish(self, job: ImageJob, status: str, **changes: Any) -> ImageJob:
         return await self.save(
             job, status=status, owner_id=None, lease_expires_at=None, **changes
         )
 
+    @traced("kadan.image_jobs.recover")
     async def recover(self, job: ImageJob) -> None:
         # A generation with an uncertain outcome must never be silently resubmitted.
         await self.stop_request(job)
@@ -245,6 +254,7 @@ class ImageJobs:
                     error="Image generation was interrupted before an image was saved; it was not resubmitted.",
                 )
 
+    @traced("kadan.image_jobs.saved_asset")
     async def saved_asset(self, job: ImageJob) -> UUID | None:
         asset_id = uuid5(job.id, "image")
         try:
@@ -273,6 +283,7 @@ class ImageJobs:
             )
         return asset_id
 
+    @traced("kadan.image_jobs.generate")
     async def generate(self, job: ImageJob) -> None:
         response = await self.services.client.post(
             self.services.settings.hikari_url + "/v1/images/generations",

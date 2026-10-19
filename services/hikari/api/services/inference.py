@@ -29,6 +29,7 @@ from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.video_jobs import video_jobs
 from api.services.worker_hub import WorkerHub
+from kadan_tracing import span, traced
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -332,21 +333,23 @@ class InferenceService:
             await await_cleanup(asyncio.create_task(self.cancel(job.request.id)))
             raise
 
+    @traced("kadan.inference.wait_and_deliver")
     async def _complete(self, job):
         try:
             result = await asyncio.shield(job.result)
-            if job.request.feature == "video":
-                # The worker may be on another machine; its file arrives inline.
-                video = result.pop("video", None)
-                if video is not None:
-                    await asyncio.to_thread(
-                        video_jobs.store, job.request.id, base64.b64decode(video)
-                    )
-                    result["output_url"] = f"/v1/videos/{job.request.id}/content"
-                video_jobs.update(job.request.id, **result)
-            if job.request.operation in ("load", "unload"):
-                return self.status()
-            return result
+            with span("kadan.result.delivery"):
+                if job.request.feature == "video":
+                    # The worker may be on another machine; its file arrives inline.
+                    video = result.pop("video", None)
+                    if video is not None:
+                        await asyncio.to_thread(
+                            video_jobs.store, job.request.id, base64.b64decode(video)
+                        )
+                        result["output_url"] = f"/v1/videos/{job.request.id}/content"
+                    video_jobs.update(job.request.id, **result)
+                if job.request.operation in ("load", "unload"):
+                    return self.status()
+                return result
         finally:
             try:
                 if not job.result.done():

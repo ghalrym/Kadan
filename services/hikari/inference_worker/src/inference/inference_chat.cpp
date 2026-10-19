@@ -137,7 +137,11 @@ public:
         check_cancel(cancel);
         progress_("prefill_begin", prompt_.size());
         model_->take_timing();
-        auto selected = model_->prefill(prompt_, progress_);
+        Token selected;
+        {
+            InferenceTrace tracing(request.trace, "prefill");
+            selected = model_->prefill(prompt_, progress_);
+        }
         const auto prefilled = std::chrono::steady_clock::now();
         timing_record(
             "prefill",
@@ -147,25 +151,28 @@ public:
         );
         std::string text, pending, reason = "length";
         std::size_t generated = 0, steps = 0;
-        for (; generated < max_output_; ++generated) {
-            check_cancel(cancel);
-            if (selected.eos) {
-                reason = "stop";
-                break;
-            }
-            progress_("decode_token", generated + 1);
-            last = std::chrono::steady_clock::now();
-            if (!generated)
-                first = last;
-            pending += tokenizer_->decode(selected.id);
-            auto chunk = utf8_chunk(pending);
-            if (!chunk.empty()) {
-                content_(chunk);
-                text += chunk;
-            }
-            if (generated + 1 < max_output_) {
-                selected = model_->step(selected.id, true);
-                ++steps;
+        {
+            InferenceTrace tracing(request.trace, "decode");
+            for (; generated < max_output_; ++generated) {
+                check_cancel(cancel);
+                if (selected.eos) {
+                    reason = "stop";
+                    break;
+                }
+                progress_("decode_token", generated + 1);
+                last = std::chrono::steady_clock::now();
+                if (!generated)
+                    first = last;
+                pending += tokenizer_->decode(selected.id);
+                auto chunk = utf8_chunk(pending);
+                if (!chunk.empty()) {
+                    content_(chunk);
+                    text += chunk;
+                }
+                if (generated + 1 < max_output_) {
+                    selected = model_->step(selected.id, true);
+                    ++steps;
+                }
             }
         }
         timing_record(

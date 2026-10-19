@@ -6,6 +6,8 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
+from kadan_tracing import carrier, traced
+
 from .config import StorageError
 from .models import (
     Activity,
@@ -238,6 +240,7 @@ class Repository:
             db, key, conversation, value, conversation.version, "message_added"
         )
 
+    @traced("kadan.storage.create_run")
     def create_run(
         self,
         key: str,
@@ -278,6 +281,7 @@ class Repository:
             now = utc_now()
             run = AgentRun(
                 id=message.id,
+                trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
@@ -325,6 +329,7 @@ class Repository:
         ):
             raise StorageError("Agent run lease is not owned by this worker", 409)
 
+    @traced("kadan.storage.update_run")
     def update_run(
         self,
         key: str,
@@ -409,6 +414,7 @@ class Repository:
             self._save_run(db, updated)
             return updated
 
+    @traced("kadan.storage.deliver_run_message")
     def deliver_run_message(
         self,
         key: str,
@@ -473,6 +479,7 @@ class Repository:
                 )
             return conversation
 
+    @traced("kadan.storage.create_image_job")
     def create_image_job(
         self,
         key: str,
@@ -508,6 +515,7 @@ class Repository:
             now = utc_now()
             job = ImageJob(
                 id=job_id,
+                trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 run_id=run_id,
                 conversation_id=run.conversation_id,
@@ -547,6 +555,7 @@ class Repository:
                 )
             ]
 
+    @traced("kadan.storage.image_event")
     def _image_event(self, db: sqlite3.Connection, job: ImageJob) -> None:
         # The terminal result and its wake-up event share one transaction: a
         # restart can neither lose the event nor enqueue it a second time.
@@ -560,6 +569,7 @@ class Repository:
             db,
             AgentRun(
                 id=job.event_run_id,
+                trace_parent=carrier().get("traceparent") or job.trace_parent,
                 agent_key=job.agent_key,
                 conversation_id=job.conversation_id,
                 trigger_job_id=job.id,
@@ -570,6 +580,7 @@ class Repository:
             ),
         )
 
+    @traced("kadan.storage.update_image_job")
     def update_image_job(
         self,
         key: str,
@@ -709,6 +720,7 @@ class Repository:
         now = utc_now()
         pet = PetJob(
             id=pet_id,
+            trace_parent=carrier().get("traceparent"),
             agent_key=key,
             prompt=prompt,
             version=1,
@@ -734,6 +746,7 @@ class Repository:
         now = utc_now()
         pet = PetJob(
             id=pet_id,
+            trace_parent=carrier().get("traceparent"),
             agent_key=key,
             prompt=prompt,
             origin="imported",
@@ -817,6 +830,7 @@ class Repository:
             steps = [step for step in source.steps if step.name not in rejected_names]
             revision = PetJob(
                 id=revision_id,
+                trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 prompt=source.prompt,
                 parent_pet_id=source.id,

@@ -532,6 +532,9 @@ class PetState(Model):
 
 
 class PetJob(PetState):
+    trace_parent: str | None = Field(
+        default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    )
     id: UUID
     agent_key: AgentKey
     prompt: str = Field(min_length=1, max_length=10000)
@@ -568,6 +571,9 @@ class AgentRunState(Model):
 
 
 class AgentRun(AgentRunState):
+    trace_parent: str | None = Field(
+        default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    )
     id: UUID
     agent_key: AgentKey
     conversation_id: UUID
@@ -607,6 +613,9 @@ class ImageJobState(Model):
 
 
 class ImageJob(ImageJobState):
+    trace_parent: str | None = Field(
+        default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    )
     id: UUID
     agent_key: AgentKey
     run_id: UUID

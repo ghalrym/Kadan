@@ -245,10 +245,44 @@ void each_program_runs_only_its_own_type() {
     assert(image.last(id('b'))["worker"] == "image");
     image.host->stop();
 }
+
+void sampled_phases_share_context_without_changing_results() {
+    Harness harness;
+    auto message = chat(id('a'));
+    const auto parent =
+        std::string("00-") + std::string(32, 'b') + "-" + std::string(16, 'c') + "-03";
+    message["traceparent"] = parent;
+    harness.command(message);
+    harness.command(message);  // A duplicate must retain the original buffer.
+    auto unsampled = message;
+    unsampled.erase("traceparent");
+    harness.command(unsampled);
+    assert(harness.last(id('a'))["state"] == "rejected");
+    harness.command(
+        {{"id", id('b')},
+         {"command", "load"},
+         {"worker", "llm"},
+         {"budget", {500, 600}}}
+    );
+    while (harness.host->advance_all()) {
+    }
+    const auto done = harness.last(id('a'));
+    assert(done["state"] == "succeeded");
+    const auto& spans = done.at("trace_spans");
+    assert(spans.size() == 4);
+    for (const auto& span : spans) {
+        assert(span.at("traceparent") == parent);
+        assert(span.at("end") >= span.at("start"));
+        assert(!span.contains("input") && !span.contains("error"));
+    }
+    harness.host->stop();
+}
+
 }  // namespace
 
 int main() {
     inference_waits_for_a_budget_on_its_own_worker();
+    sampled_phases_share_context_without_changing_results();
     downloads_and_settings_run_on_the_store_worker();
     status_offload_and_requirement_replies();
     invalid_commands_are_rejected_not_thrown();

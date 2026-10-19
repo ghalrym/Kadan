@@ -12,7 +12,7 @@ from api.pydantic_models.inference import (
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_errors import InferenceFailure
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
 
 def encode_request(message: dict) -> bytes:
@@ -65,6 +65,7 @@ class WorkerEvent(BaseModel):
         "cancelled",
         "rejected",
     ]
+    trace_unix_ns: int | None = None
     worker: str | None = None
     result: JsonValue = None
     error: str = ""
@@ -78,11 +79,18 @@ class WorkerEvent(BaseModel):
     status_code: int = 502
     models: ModelStoreStatus | None = None
 
+    @field_validator("trace_unix_ns", mode="before")
+    @classmethod
+    def optional_trace_timestamp(cls, value: object) -> int | None:
+        # Optional telemetry must not reject an otherwise valid completion.
+        return value if type(value) is int and 0 < value < 2**63 else None
+
 
 class InferenceJob:
     """An outstanding response and bounded streaming channel, never an executor."""
 
     def __init__(self, request: InferenceTask, streaming: bool):
+        self.tracing = None
         self.request = request
         self.sent = False
         self.state = JobState.QUEUED

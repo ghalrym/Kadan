@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4, uuid5
 
 import httpx
+from kadan_tracing import job_span, traced
 from pydantic import TypeAdapter, ValidationError
 
 from .config import ServiceError
@@ -257,29 +258,35 @@ class PetJobs:
                             )
                         continue
                     if job.status == "queued":
-                        try:
-                            job = await self.save(
-                                job,
-                                worker=True,
-                                status="running",
-                                stage="preparing",
-                                owner_id=self.owner,
-                                lease_expires_at=datetime.now(UTC)
-                                + timedelta(seconds=LEASE_SECONDS),
+                        with job_span(
+                            "kadan.pet_jobs.process",
+                            job,
+                            queued_at=job.updated_at,
+                            recovering=False,
+                        ):
+                            try:
+                                job = await self.save(
+                                    job,
+                                    worker=True,
+                                    status="running",
+                                    stage="preparing",
+                                    owner_id=self.owner,
+                                    lease_expires_at=datetime.now(UTC)
+                                    + timedelta(seconds=LEASE_SECONDS),
+                                )
+                            except ServiceError as error:
+                                if error.status == 409:
+                                    continue
+                                raise
+                            self.active_id = job.id
+                            self.active = asyncio.create_task(
+                                self.process(job), name=f"pet-{job.id}"
                             )
-                        except ServiceError as error:
-                            if error.status == 409:
-                                continue
-                            raise
-                        self.active_id = job.id
-                        self.active = asyncio.create_task(
-                            self.process(job), name=f"pet-{job.id}"
-                        )
-                        try:
-                            await self.active
-                        finally:
-                            self.active = None
-                            self.active_id = None
+                            try:
+                                await self.active
+                            finally:
+                                self.active = None
+                                self.active_id = None
                         self.wakeup.set()
                         break
             except asyncio.CancelledError:
@@ -570,6 +577,7 @@ class PetJobs:
             ]
             await asyncio.to_thread(validate_row, row, complete)
 
+    @traced("kadan.pet_jobs.generate_frame")
     async def generate_frame(
         self,
         job: PetJob,
@@ -709,6 +717,7 @@ class PetJobs:
             else None
         )
 
+    @traced("kadan.pet_jobs.generate")
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
         items = [(None, 0), *frames]

@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
+from kadan_tracing import traced
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
@@ -244,6 +245,7 @@ class AgentInference:
         self.client = client
         self.hikari_url = hikari_url
 
+    @traced("kadan.agent_inference.call")
     async def call(
         self,
         messages: list[CompletionMessage],

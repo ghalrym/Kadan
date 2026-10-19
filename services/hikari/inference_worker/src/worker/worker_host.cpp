@@ -130,14 +130,19 @@ WorkerHost::Worker& WorkerHost::route(const InferenceRequest& request) {
 void WorkerHost::publish(
     Worker& worker, const std::string& id, JobState state, const Json& result
 ) {
-    if (state == JobState::queued) {
-        hooks_.send({{"id", id}, {"state", "queued"}, {"worker", worker.spec.name}});
-        return;
-    }
-    worker.channel.active = id;
     Json message{
         {"id", id}, {"state", state_name(state)}, {"worker", worker.spec.name}
     };
+    {
+        std::lock_guard guard(traces_mutex_);
+        if (traces_.contains(id))
+            message["trace_unix_ns"] = trace_unix_ns();
+    }
+    if (state == JobState::queued) {
+        hooks_.send(message);
+        return;
+    }
+    worker.channel.active = id;
     if (state == JobState::succeeded) {
         message["result"] = result;
     } else if (state == JobState::failed) {
@@ -148,6 +153,15 @@ void WorkerHost::publish(
     }
     if (state == JobState::succeeded || state == JobState::failed
         || state == JobState::cancelled) {
+        {
+            std::lock_guard guard(traces_mutex_);
+            auto found = traces_.find(id);
+            if (found != traces_.end()) {
+                std::lock_guard buffer_guard(found->second->mutex);
+                message["trace_spans"] = std::move(found->second->spans);
+                traces_.erase(found);
+            }
+        }
         hooks_.cleanup(id);
         hooks_.send({{"state", "models"}, {"models", hooks_.models()}});
     }
@@ -196,7 +210,46 @@ void WorkerHost::handle(const std::string& line) {
         };
         if (command == "submit") {
             auto request = parse_request(command_message);
-            route(request).owner->submit(std::move(request));
+            const auto parent = command_message.value("traceparent", std::string{});
+            const bool sampled =
+                parent.size() == 55 && parent.substr(0, 3) == "00-"
+                && std::string("13579bdf").find(parent.back()) != std::string::npos
+                && parent.find_first_not_of("0123456789abcdef-") == std::string::npos;
+            std::shared_ptr<TraceBuffer> buffer;
+            if (sampled) {
+                buffer = std::make_shared<TraceBuffer>();
+                {
+                    std::lock_guard guard(traces_mutex_);
+                    // A duplicate submit must not replace the original context.
+                    if (!traces_.try_emplace(id, buffer).second)
+                        throw RequestError("Request is already active.", 409);
+                }
+                request.trace = [buffer, parent](
+                                    const char* phase,
+                                    std::int64_t start,
+                                    std::int64_t end,
+                                    bool failed
+                                ) {
+                    std::lock_guard guard(buffer->mutex);
+                    if (buffer->spans.size() < 16)
+                        buffer->spans.push_back(
+                            {{"traceparent", parent},
+                             {"phase", phase},
+                             {"start", start},
+                             {"end", end},
+                             {"failed", failed}}
+                        );
+                };
+            }
+            try {
+                route(request).owner->submit(std::move(request));
+            } catch (...) {
+                std::lock_guard guard(traces_mutex_);
+                auto found = traces_.find(id);
+                if (found != traces_.end() && found->second == buffer)
+                    traces_.erase(found);
+                throw;
+            }
         } else if (command == "cancel") {
             for (auto& worker : workers_)
                 if (worker->owner->cancel(id))

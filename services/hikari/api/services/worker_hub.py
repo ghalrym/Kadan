@@ -42,6 +42,7 @@ from api.services.memory_scheduler import (
     plan_load,
     releases,
 )
+from api.services.tracing import JobTracing
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
@@ -324,6 +325,18 @@ class WorkerHub:
             else:
                 future.set_result(message)
             return
+        # Tracing metadata is optional and cannot reject a valid job event.
+        spans = message.pop("trace_spans", None)
+        job = self.jobs.get(message.get("id", ""))
+        if (
+            state in TERMINAL
+            and job is not None
+            and worker.id in job.machines
+            and job.tracing is not None
+            and isinstance(spans, list)
+        ):
+            for native in spans[:16]:
+                job.tracing.native(worker, native)
         self._job_event(worker, WorkerEvent.model_validate(message))
 
     async def _disconnected(self, worker: Worker):
@@ -396,6 +409,8 @@ class WorkerHub:
 
     async def _send_job(self, job: InferenceJob):
         message = job.request.model_dump(mode="json")
+        if job.tracing is not None:
+            message.update(job.tracing.parent)
         targets = (
             self._store_targets(job.request)
             if job.worker is None
@@ -431,6 +446,7 @@ class WorkerHub:
         if request.id in self.jobs:
             raise InferenceFailure("Request is already active.", 409)
         job = InferenceJob(request, streaming)
+        job.tracing = JobTracing()
         job.worker = target_worker(request)
         self.jobs[request.id] = job
         try:
@@ -442,6 +458,7 @@ class WorkerHub:
                     await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
             self._release(job)
             self.jobs.pop(request.id, None)
+            job.tracing.end(failed=True)
             raise
         return job
 
@@ -491,6 +508,8 @@ class WorkerHub:
         self.wake.set()
 
     def _fail(self, job: InferenceJob, failure: InferenceFailure):
+        if job.tracing is not None:
+            job.tracing.end(failed=True)
         job.identified.set()
         if not job.accepted.done():
             job.accepted.set_exception(failure)
@@ -500,6 +519,8 @@ class WorkerHub:
         job.machines.clear()
 
     def _settle(self, job: InferenceJob):
+        if job.tracing is not None:
+            job.tracing.end(failed=job.failure is not None)
         job.identified.set()
         if not job.accepted.done():
             if job.failure is not None:
@@ -518,6 +539,8 @@ class WorkerHub:
         if job is None or worker.id not in job.machines:
             log.debug("Event for unknown job %s from %s", event.id, worker.name)
             return
+        if job.tracing is not None:
+            job.tracing.event(worker, event)
         if event.memory is not None and worker.kind == "llm":
             self.memory = event.memory
             self.memory_observed_at = datetime.now(UTC).isoformat()

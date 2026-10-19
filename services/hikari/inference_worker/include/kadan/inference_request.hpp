@@ -11,6 +11,7 @@
 
 #include "kadan/h3_generation.hpp"
 #include "kadan/image_upload.hpp"
+#include "kadan/inference_trace.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::serving {
@@ -184,6 +185,7 @@ struct ContextLimits {
 
 struct InferenceRequest {
     std::string id, model;
+    TraceSink trace;
     Operation operation = Operation::generate;
     TaskInput input;
     Workload workload = Workload::llm;

@@ -40,6 +40,7 @@ jobs:
           cache-dependency-path: services/hikari/api/requirements*.txt
       - name: Install unit-test dependencies
         run: |
+          python -m pip install services/tracing
           python -m pip install -r services/hikari/api/requirements.txt -r services/hikari/bin/requirements.txt
       - name: Run isolated unit tests
         run: |
