@@ -126,6 +126,78 @@ Run one API process. Each Hikari worker container runs one worker program and
 locks its own workspace in the shared model volume. Reloading the API drops its
 worker connections, which cancels in-flight work; the workers reconnect.
 
+### Local tracing with Jaeger
+
+Jaeger is optional infrastructure for inspecting trace waterfalls. No application
+exports traces yet; service instrumentation is a separate change. The `tracing`
+profile adds one official Jaeger 2.22.0 container, pinned to its multi-platform
+image digest, with no additional database or collector.
+
+After configuring `.env` as above, start only Jaeger in the existing Compose
+project (keep your existing `-p` / `COMPOSE_PROJECT_NAME`):
+
+```sh
+docker compose --profile tracing up -d --no-deps jaeger
+docker compose logs --tail=100 jaeger
+```
+
+Open <http://127.0.0.1:16686>. The UI and query API have no authentication; keep
+this loopback binding and do not proxy it to the public internet. OTLP collection
+ports 4317 and 4318 are reachable only on the existing Compose network and are
+not published to the host. The query gRPC server binds to container loopback.
+Legacy Jaeger/Zipkin receivers, remote sampling, debug endpoints, AI/MCP and
+external telemetry exporters are not configured.
+
+Storage is **temporary RAM only**, capped at 10,000 traces. This is a count-based
+capacity limit, not a time-based retention promise: traces can be evicted as the
+store fills, and all traces disappear whenever the Jaeger process exits,
+including on stop, restart, recreation, upgrade or an out-of-memory kill. There
+is no persistent volume, disk archive or backup. Export a selected trace from
+the UI before stopping if you need to keep it; treat exported files as sensitive.
+Durable tracing with a time-based deletion policy needs a separately reviewed
+storage configuration; Kadan's Postgres and Tsuchi stores are not used for traces.
+
+The container is limited to one CPU, 512 MiB RAM and 128 processes. Go has a
+400 MiB soft memory limit. The ingestion memory limiter starts applying pressure
+at 288 MiB with a 384 MiB hard threshold, checked once per second; batches hold
+at most 1,024 spans and OTLP requests are limited to 4 MiB. Trace count is not a
+byte limit. Oversized traces or load can cause rejected/dropped spans or a
+container restart; this local diagnostic store does not guarantee delivery.
+
+```sh
+docker compose stop jaeger
+docker compose rm -f jaeger
+```
+
+These commands affect only Jaeger and clear its temporary traces. To start it
+again, repeat the `up` command. After changing its config or pinned image, use
+`docker compose --profile tracing up -d --no-deps --force-recreate jaeger`.
+Do not use `down -v` to clear traces: it would remove application data volumes.
+
+#### Contract for service instrumentation
+
+The follow-up should use OpenTelemetry OTLP with `service.name` identifying each
+service/worker, sending gRPC to `http://jaeger:4317` or HTTP/protobuf to
+`http://jaeger:4318` (trace-specific HTTP URL: `/v1/traces`). These are plaintext
+endpoints for containers in the same Compose project. Host processes, remote
+workers and browsers cannot use these endpoints directly; their transport and
+access require a separate design. Do not publish collector ports to support them.
+
+Propagate W3C `traceparent` / `tracestate` across HTTP, queued work and worker
+messages so meaningful operation and timing spans share one trace waterfall.
+Keep tracing optional with bounded SDK queues, sampling and export timeouts;
+Jaeger availability must not block application startup or requests. Use an
+attribute allowlist for timings, operation names, status and opaque correlation
+IDs. Do not collect prompts, completions, tool arguments/results, message bodies,
+documents, file contents, credentials or arbitrary headers, query strings or
+exception text. No payload logging or automatic payload capture is enabled by
+this configuration. Instrumentation and its privacy controls belong in that
+follow-up, not in this infrastructure change.
+
+Configuration references: [official deployment guide](https://www.jaegertracing.io/docs/2.22/deployment/),
+[memory storage](https://www.jaegertracing.io/docs/2.22/storage/memory/), and
+[v2.22.0 configuration](https://www.jaegertracing.io/docs/2.22/deployment/configuration/).
+
 ### Development hot reload
 
 `compose.development.yaml` bind-mounts source into every service on the same
