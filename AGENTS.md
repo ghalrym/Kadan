@@ -2,7 +2,8 @@
 
 ## Documentation
 
-- Markdown files are allowed only when named `README.md`, `AGENT.md`, `AGENTS.md`, or `SKILL.md`.
+- Markdown files are allowed only when named `README.md`, `AGENT.md`, `AGENTS.md`, or `SKILL.md`, or when they live in `docs/architecture/`.
+- Docs in `docs/architecture/` explain only what the architecture needs and the intent behind it: what a component is for, what it depends on, and the constraints a change must keep. They do not hold plans, status, reports, how-to steps, or notes.
 - Do not create other Markdown documentation, plans, reports, or notes in this project.
 
 ## API
