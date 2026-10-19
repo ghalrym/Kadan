@@ -11,6 +11,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4, uuid5
 
+from kadan_tracing import traced, traced_job
 from langchain_core.tools import StructuredTool
 from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
@@ -174,6 +175,7 @@ class AgentRuns:
                 lease_expires_at=datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS),
             )
 
+    @traced_job("kadan.agent_runs.process")
     async def process(self, run: AgentRun) -> None:
         try:
             run = await self.save(
@@ -216,6 +218,7 @@ class AgentRuns:
             heartbeat.cancel()
             await asyncio.gather(work, heartbeat, return_exceptions=True)
 
+    @traced("kadan.agent_runs.context")
     async def context(self, run: AgentRun) -> list[RunMessage]:
         instructions = await asyncio.to_thread(
             Path(self.services.settings.agent_instruction_file).read_text
@@ -302,6 +305,7 @@ class AgentRuns:
             )
         return [system, *reversed(history), trigger]
 
+    @traced("kadan.agent_runs.advance")
     async def advance(self, run: AgentRun) -> None:
         # At most three invalid-command attempts plus two nodes per command.
         try:
@@ -325,6 +329,7 @@ class AgentRuns:
             run = await self.update(run, transcript=await self.context(run))
         return {"run": run}
 
+    @traced("kadan.agent_runs.infer_command")
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
@@ -391,6 +396,7 @@ class AgentRuns:
             )
         return {"run": run, "command": command}
 
+    @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
         command = state.command
         assert command is not None
@@ -407,6 +413,7 @@ class AgentRuns:
         run = await tool.ainvoke(command.model_dump())
         return {"run": run, "command": None}
 
+    @traced("kadan.agent_runs.execute_command")
     async def execute_command(self, run: AgentRun, command: AgentCommand) -> AgentRun:
         if isinstance(command, Finish):
             return await self.update(

@@ -128,8 +128,8 @@ worker connections, which cancels in-flight work; the workers reconnect.
 
 ### Local tracing with Jaeger
 
-Jaeger is optional infrastructure for inspecting trace waterfalls. No application
-exports traces yet; service instrumentation is a separate change. The `tracing`
+Jaeger is optional infrastructure for inspecting trace waterfalls. Application
+tracing remains disabled until an OTLP trace endpoint is configured. The `tracing`
 profile adds one official Jaeger 2.22.0 container, pinned to its multi-platform
 image digest, with no additional database or collector.
 
@@ -174,25 +174,97 @@ again, repeat the `up` command. After changing its config or pinned image, use
 `docker compose --profile tracing up -d --no-deps --force-recreate jaeger`.
 Do not use `down -v` to clear traces: it would remove application data volumes.
 
-#### Contract for service instrumentation
+#### Service tracing and waterfall coverage
 
-The follow-up should use OpenTelemetry OTLP with `service.name` identifying each
-service/worker, sending gRPC to `http://jaeger:4317` or HTTP/protobuf to
-`http://jaeger:4318` (trace-specific HTTP URL: `/v1/traces`). These are plaintext
-endpoints for containers in the same Compose project. Host processes, remote
-workers and browsers cannot use these endpoints directly; their transport and
-access require a separate design. Do not publish collector ports to support them.
+After an owner-authorized rollout of the application images, set these values in
+`.env` to opt in. This is configuration guidance; rebuilding or restarting the
+application services is a separate rollout decision.
 
-Propagate W3C `traceparent` / `tracestate` across HTTP, queued work and worker
-messages so meaningful operation and timing spans share one trace waterfall.
-Keep tracing optional with bounded SDK queues, sampling and export timeouts;
-Jaeger availability must not block application startup or requests. Use an
-attribute allowlist for timings, operation names, status and opaque correlation
-IDs. Do not collect prompts, completions, tool arguments/results, message bodies,
-documents, file contents, credentials or arbitrary headers, query strings or
-exception text. No payload logging or automatic payload capture is enabled by
-this configuration. Instrumentation and its privacy controls belong in that
-follow-up, not in this infrastructure change.
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://jaeger:4318/v1/traces
+KADAN_TRACE_SAMPLE_RATIO=0.1
+OTEL_SDK_DISABLED=false
+```
+
+Use `KADAN_TRACE_SAMPLE_RATIO=1` temporarily when inspecting a particular ordinary
+request. Sampling is parent based: a downstream service follows its parent’s
+sample decision. The ratio controls new root traces, not an incoming sampled
+parent. Leave the endpoint empty, or set `OTEL_SDK_DISABLED=true`, to disable the
+SDK, exporter thread, and automatic HTTP client instrumentation. A missing Jaeger
+container does not prevent startup or request completion: export uses a bounded
+512-span queue, batches of 64, a one-second exporter timeout and a one-second
+batch schedule. A full queue drops telemetry; it never backpressures requests.
+Shutdown drains that bounded queue on a background thread. Trace loss is expected
+when collectors or workers disconnect or processes terminate abruptly.
+
+| Service / boundary | Waterfall coverage | Limits |
+| --- | --- | --- |
+| Kadan frontend | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and nginx serving time are not measured |
+| Kadan API | HTTP ingress through the last response body; outgoing HTTPX calls; graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
+| Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; initial queue wait uses creation time; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
+| Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
+| Tsuchi frontend | API ingress traces in `tsuchi-api` | Browser/nginx timing is not measured |
+| Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
+| Hikari frontend | API ingress traces in `hikari-api` | Browser/nginx timing is not measured |
+| All seven native workload workers: llm, decision, tts, speech, formatting, image, video | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
+| Language and formatting workers | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
+| Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
+| Image, video, decision and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec, decision-stage and TTS subphases are not split in this change |
+| Postgres, migration job, Jaeger and nginx containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |
+
+Native workers receive W3C `traceparent` in the existing job envelope and retain it
+through the FIFO and engine calls. Each sampled request buffers at most 16 fixed
+phase records in memory and attaches them to its existing terminal result over
+the authenticated WebSocket. No new worker thread, port, collector dependency,
+or telemetry send is added during inference. The API validates the worker/job
+association and parent, then exports those measured intervals using the originating
+worker’s service resource. This is an API export relay, not an OTLP SDK running in
+the native process. Native intervals appear after the terminal result, and can be
+lost if the worker disconnects first. Retries can exceed the 16-record cap; extra
+phase records are dropped. Queue intervals use native timestamps; clock skew
+between machines can affect their placement in the waterfall.
+
+HTTP and job propagation carries only `traceparent`; arbitrary baggage and vendor
+`tracestate` are deliberately omitted. Context copying into asyncio tasks and
+threadpool calls follows OpenTelemetry/Python contextvars. Queue workers restore
+the persisted context instead of inheriting the polling loop’s trace. Duplicate
+submissions return the original durable record and parent; tracing does not
+resubmit inference or alter cancellation, leases, image saving or completion
+transactions.
+
+The exporter has an attribute allowlist for route templates, HTTP method/status,
+fixed operation/stage names, worker kind and recovery state. Span names use fixed
+operations and server route templates. It strips all exception descriptions,
+events, links and unapproved attributes, including automatic HTTPX URLs. No prompt,
+completion, image/audio payload, tool arguments/results, file content, auth header,
+credential, query string, arbitrary header, conversation ID or personal content is
+exported. Error spans retain status without exception text. No payload callback or
+SQL instrumentation is installed.
+
+`kadan.kv_cache.cross_request_reuse=false` on language prefill describes the current
+engine behavior: `text::Engine::begin_request()` resets the request’s recurrent/KV
+state. It is not a measured cache hit/miss count. The native engine does not expose
+measured cross-request KV hit/miss counters, so none are invented from the API’s
+compatibility cache fields. Weight-cache reuse is a separate mechanism and is not
+reported as KV reuse.
+
+In Jaeger, select `kadan-api` and a recent trace, or copy `x-kadan-trace-id` from the
+frontend request’s response in developer tools and search that trace ID. Expand
+the Kadan graph/tool spans, HTTP child calls to Tsuchi/Hikari, native worker queue,
+load/admission/execute spans, and language prefill/decode siblings. Compare the
+intervals to identify where wall time is spent. Other entry points start under
+`tsuchi-api` or `hikari-api`. Absence of a sampled trace is not evidence of a fast
+request. Jaeger’s existing RAM-only retention and loopback UI limits still apply.
+
+For local Python development, install the shared package before service dependencies:
+`python -m pip install -e services/tracing`. Compose supplies it as the named
+`tracing` build context; standalone API image builds need the equivalent
+`--build-context tracing=<path-to-services/tracing>` option. No local collector is
+needed for unit tests: `python -m pytest services/tracing/tests` uses an in-memory
+exporter and fake boundaries. The implementation follows the official
+[Python exporter guidance](https://opentelemetry.io/docs/languages/python/exporters/),
+[SDK processor contract](https://opentelemetry.io/docs/specs/otel/trace/sdk/), and
+[Python batch processor API](https://opentelemetry-python.readthedocs.io/en/latest/sdk/trace.export.html).
 
 Configuration references: [official deployment guide](https://www.jaegertracing.io/docs/2.22/deployment/),
 [memory storage](https://www.jaegertracing.io/docs/2.22/storage/memory/), and

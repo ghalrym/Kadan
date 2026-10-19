@@ -315,7 +315,10 @@ public:
                 if (!engine_)
                     throw std::runtime_error("unsupported_workload");
                 publish_(request.id, JobState::loading, "");
-                engine_->load(request, free, job->cancel);
+                {
+                    InferenceTrace tracing(request.trace, "load");
+                    engine_->load(request, free, job->cancel);
+                }
                 resident_model_ = request.model;
                 resident_workload_ = request.workload;
                 resident_configuration_ = request.configuration;
@@ -381,6 +384,13 @@ public:
                 batch.push_back({&current->request, &current->cancel});
             for (;;) {
                 try {
+                    std::vector<std::unique_ptr<InferenceTrace>> tracing;
+                    for (const auto& item : batch)
+                        tracing.push_back(
+                            std::make_unique<InferenceTrace>(
+                                item.request->trace, "admission"
+                            )
+                        );
                     engine_->prepare_batch(batch, available);
                     break;
                 } catch (const ResourceExhausted&) {
@@ -403,7 +413,13 @@ public:
                 if (!current->cancel.load())
                     publish_(current->request.id, JobState::running, "");
             execution_started = true;
+            std::vector<std::unique_ptr<InferenceTrace>> tracing;
+            for (const auto& item : batch)
+                tracing.push_back(
+                    std::make_unique<InferenceTrace>(item.request->trace, "execute")
+                );
             auto results = engine_->execute_batch(batch);
+            tracing.clear();
             if (results.size() != jobs.size())
                 throw std::runtime_error("batch_result_count");
             if (std::any_of(
@@ -549,6 +565,7 @@ private:
         try {
             if (!prepare_)
                 throw std::runtime_error("preparation_unavailable");
+            InferenceTrace tracing(job->request.trace, "prepare");
             prepare_(job->request, job->cancel);
         } catch (const RequestError& error) {
             job->error = {{"error", error.what()}, {"status_code", error.status}};

@@ -11,6 +11,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4, uuid5
 
 import httpx
+from kadan_tracing import traced, traced_job
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -185,6 +186,7 @@ class ImageJobs:
                 "Hikari did not confirm image cleanup.", 502, "invalid_response"
             )
 
+    @traced_job("kadan.image_jobs.process")
     async def process(self, job: ImageJob, *, recovering: bool = False) -> None:
         # Keep work separate from the queue task so cancellation does not stop the queue.
         work = asyncio.create_task(
@@ -222,11 +224,13 @@ class ImageJobs:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
+    @traced("kadan.image_jobs.finish")
     async def finish(self, job: ImageJob, status: str, **changes: Any) -> ImageJob:
         return await self.save(
             job, status=status, owner_id=None, lease_expires_at=None, **changes
         )
 
+    @traced("kadan.image_jobs.recover")
     async def recover(self, job: ImageJob) -> None:
         # A generation with an uncertain outcome must never be silently resubmitted.
         await self.stop_request(job)
@@ -245,6 +249,7 @@ class ImageJobs:
                     error="Image generation was interrupted before an image was saved; it was not resubmitted.",
                 )
 
+    @traced("kadan.image_jobs.saved_asset")
     async def saved_asset(self, job: ImageJob) -> UUID | None:
         asset_id = uuid5(job.id, "image")
         try:
@@ -273,6 +278,7 @@ class ImageJobs:
             )
         return asset_id
 
+    @traced("kadan.image_jobs.generate")
     async def generate(self, job: ImageJob) -> None:
         response = await self.services.client.post(
             self.services.settings.hikari_url + "/v1/images/generations",

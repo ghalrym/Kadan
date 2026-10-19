@@ -65,6 +65,7 @@ class WorkerEvent(BaseModel):
         "cancelled",
         "rejected",
     ]
+    trace_unix_ns: int | None = None
     worker: str | None = None
     result: JsonValue = None
     error: str = ""
@@ -83,6 +84,7 @@ class InferenceJob:
     """An outstanding response and bounded streaming channel, never an executor."""
 
     def __init__(self, request: InferenceTask, streaming: bool):
+        self.tracing = None
         self.request = request
         self.sent = False
         self.state = JobState.QUEUED

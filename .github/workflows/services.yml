@@ -34,8 +34,10 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: services/${{ matrix.service }}/requirements*.txt
+      - run: python -m pip install ../tracing
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest
+      - run: python -m pytest ../tracing/tests -q
 
   web:
     name: ${{ matrix.service }} web build

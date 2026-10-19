@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4, uuid5
 
 import httpx
+from kadan_tracing import traced, traced_job
 from pydantic import TypeAdapter, ValidationError
 
 from .config import ServiceError
@@ -348,6 +349,7 @@ class PetJobs:
             logger.exception("Pet lease could not be renewed; stopping inference")
             work.cancel()
 
+    @traced_job("kadan.pet_jobs.process")
     async def process(self, job: PetJob) -> None:
         work = asyncio.current_task()
         heartbeat = asyncio.create_task(self.heartbeat(job, work))
@@ -570,6 +572,7 @@ class PetJobs:
             ]
             await asyncio.to_thread(validate_row, row, complete)
 
+    @traced("kadan.pet_jobs.generate_frame")
     async def generate_frame(
         self,
         job: PetJob,
@@ -709,6 +712,7 @@ class PetJobs:
             else None
         )
 
+    @traced("kadan.pet_jobs.generate")
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
         items = [(None, 0), *frames]

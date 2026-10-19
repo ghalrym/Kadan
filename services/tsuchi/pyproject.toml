@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Local agent memory and document storage"
 requires-python = ">=3.12"
 dependencies = [
+  "kadan-tracing==0.1.0",
   "fastapi>=0.115,<1",
   "uvicorn>=0.32,<1",
   "pydantic-settings>=2.6,<3",

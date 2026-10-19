@@ -3,6 +3,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TSUCHI_DATA_DIR=/data
 WORKDIR /app
+COPY --from=tracing . /opt/kadan-tracing
+RUN pip install --no-cache-dir /opt/kadan-tracing
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 10001 tsuchi \

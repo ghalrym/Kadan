@@ -39,6 +39,8 @@ services:
 
   hikari-migrate:
     build:
+      additional_contexts:
+        tracing: ./services/tracing
       context: ./services/hikari
       dockerfile: api/Dockerfile
     environment: &database_environment
@@ -55,10 +57,15 @@ services:
   hikari-api:
     stop_grace_period: 5m
     build:
+      additional_contexts:
+        tracing: ./services/tracing
       context: ./services/hikari
       dockerfile: api/Dockerfile
     init: true
     environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       <<: *database_environment
       # Every worker container authenticates with this token.
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
@@ -252,9 +259,14 @@ services:
 
   tsuchi-api:
     build:
+      additional_contexts:
+        tracing: ./services/tracing
       context: ./services/tsuchi
     init: true
     environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       TSUCHI_DATA_DIR: /data
       TSUCHI_MAX_UPLOAD_BYTES: ${TSUCHI_MAX_UPLOAD_BYTES:-104857600}
       TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi-api"]'
@@ -280,9 +292,14 @@ services:
 
   kadan-api:
     build:
+      additional_contexts:
+        tracing: ./services/tracing
       context: ./services/kadan
     init: true
     environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       KADAN_TSUCHI_URL: http://tsuchi-api:8000
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}

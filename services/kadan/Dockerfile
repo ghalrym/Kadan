@@ -1,6 +1,8 @@
 FROM python:3.14-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
+COPY --from=tracing . /opt/kadan-tracing
+RUN pip install --no-cache-dir /opt/kadan-tracing
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY kadan/ ./kadan/

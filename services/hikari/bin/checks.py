@@ -50,6 +50,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "packed-read-team-tests",
     "device-weight-trace-tests",
     "inference-owner-tests",
+    "inference-trace-tests",
     "websocket-tests",
     "worker-host-tests",
     "kadan-worker-formatting",

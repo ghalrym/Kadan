@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import BinaryIO
 from uuid import UUID, uuid4
 
+from kadan_tracing import traced
 from PIL import Image, UnidentifiedImageError
 
 from .config import StorageError
@@ -86,6 +87,7 @@ class FileStorage:
     def blob_path(self, asset_id: UUID) -> Path:
         return self.blob_dir / str(UUID(str(asset_id)))
 
+    @traced("kadan.storage.upload")
     def upload(
         self,
         key: str,
@@ -151,6 +153,7 @@ class FileStorage:
         finally:
             temporary.unlink(missing_ok=True)
 
+    @traced("kadan.storage.export")
     def export(self, key: str) -> Path:
         descriptor, filename = tempfile.mkstemp(
             prefix="export-", suffix=".zip", dir=self.temp_dir

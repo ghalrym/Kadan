@@ -107,20 +107,30 @@ public:
             std::vector<float> mel(dimensions_.mels * 3000),
                 encoded(dimensions_.audio_context * dimensions_.audio_state);
             std::vector<std::uint32_t> generated(max_tokens_);
-            frontend_->execute_window(
-                std::get<TranscriptionRequest>(request.input).pcm, mel, cancel
-            );
-            model_->encode(mel, encoded, cancel, progress_);
-            const auto count = model_->greedy(
-                tokens_->prompt(),
-                encoded,
-                generated,
-                tokens_->eos(),
-                tokens_->suppressed(),
-                cancel,
-                progress_,
-                tokens_->first_suppressed()
-            );
+            {
+                InferenceTrace tracing(request.trace, "audio_frontend");
+                frontend_->execute_window(
+                    std::get<TranscriptionRequest>(request.input).pcm, mel, cancel
+                );
+            }
+            {
+                InferenceTrace tracing(request.trace, "audio_encode");
+                model_->encode(mel, encoded, cancel, progress_);
+            }
+            std::size_t count;
+            {
+                InferenceTrace tracing(request.trace, "decode");
+                count = model_->greedy(
+                    tokens_->prompt(),
+                    encoded,
+                    generated,
+                    tokens_->eos(),
+                    tokens_->suppressed(),
+                    cancel,
+                    progress_,
+                    tokens_->first_suppressed()
+                );
+            }
             require(
                 count && generated[count - 1] == tokens_->eos(), "whisper_token_limit"
             );
