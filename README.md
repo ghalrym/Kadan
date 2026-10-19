@@ -13,7 +13,8 @@ Their management interfaces are for inspecting and operating those services.
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
 Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
-without a GPU. Hikari's full inference image needs a supported NVIDIA host.
+without a GPU. Hikari's API does too; its GPU worker containers need a supported
+NVIDIA host.
 
 ## Hikari rename and existing installations
 
@@ -33,10 +34,10 @@ Existing installations keep their data and operational identifiers:
 | Persistent storage | Keep `~/.local/share/kadan/models`, `~/.local/share/kadan/videos`, `/var/lib/kadan/models`, database credentials and named volumes. No automatic moves or data rewriting occur. |
 | Compose | The default project name stays `kadan`, even from a checkout named Hikari. Keep any existing `-p` / `COMPOSE_PROJECT_NAME` and storage overrides. |
 | HTTP clients | Endpoint paths, request/response fields, model IDs and `X-Kadan-Request-Id` are unchanged. |
-| Native tools | `kadan-inference-worker`, `kadan-*` tool names, C++ namespaces/includes, `KADAN_*` CMake options, native environment variables, timing records and prepared-asset formats stay compatible. |
+| Native tools | `kadan-*` tool names, C++ namespaces/includes, `KADAN_*` CMake options, native environment variables, timing records and prepared-asset formats stay compatible. The single `kadan-inference-worker` is replaced by one `kadan-worker-<type>` program per inference type. |
 
-The API forwards `HIKARI_VIDEO_DIR` as `KADAN_VIDEO_DIR` to its child worker,
-so the installed native executable and API use the same video directory.
+Workers return finished videos to the API, which writes them to
+`HIKARI_VIDEO_DIR`.
 
 Keep the old `/kadan.svg` asset URL for already-open clients; the application now
 uses `/hikari.svg`. Historical benchmark names and evidence remain unchanged.
@@ -121,9 +122,9 @@ pass `--remove-orphans` to `up`. Otherwise the old `api`, `frontend`, `kadan` an
 `tsuchi` containers keep running, holding the published ports and the model-store
 lock. Named volumes belong to the project, not the service, so data is kept.
 
-Run one API process. Each machine's inference worker process takes an exclusive
-lock in its model store. Development hot reload shuts down and joins its owned process before the
-replacement starts; reloading cancels in-flight work.
+Run one API process. Each Hikari worker container runs one worker program and
+locks its own workspace in the shared model volume. Reloading the API drops its
+worker connections, which cancels in-flight work; the workers reconnect.
 
 ### Development hot reload
 
@@ -137,8 +138,10 @@ commands include the override.
 docker compose up --build -d
 ```
 
-To pick up only frontend or Kadan/Tsuchi API edits, replace just those services
-and leave `hikari-api` running:
+Each Hikari worker's development container rebuilds only its own program from
+the source mount and restarts it when its binary changes, so other workers keep
+running. To pick up only frontend or Kadan/Tsuchi API edits, replace just those
+services and leave `hikari-api` running:
 
 ```sh
 docker compose up -d --no-deps --build --force-recreate --wait hikari-frontend kadan-frontend tsuchi-frontend kadan-api tsuchi-api

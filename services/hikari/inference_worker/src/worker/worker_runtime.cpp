@@ -1,3 +1,5 @@
+#include "kadan/worker_runtime.hpp"
+
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -10,10 +12,6 @@
 #include <thread>
 #include <unistd.h>
 
-#include "kadan/image_edit.hpp"
-#include "kadan/inference_engines.hpp"
-#include "kadan/machine_host.hpp"
-#include "kadan/preparation.hpp"
 #include "kadan/websocket.hpp"
 
 namespace kadan::serving {
@@ -26,14 +24,19 @@ void stop_signal(int) {
 
 class PhysicalMemory {
 public:
-    PhysicalMemory() {
+    // CPU-only programs run without an NVIDIA driver and report no GPUs.
+    explicit PhysicalMemory(bool uses_gpu) {
         library_ = dlopen("libnvidia-ml.so.1", RTLD_NOW);
-        require(library_, "nvml_unavailable");
+        if (!library_) {
+            require(!uses_gpu, "nvml_unavailable");
+            return;
+        }
         initialize_ = symbol<int (*)()>("nvmlInit_v2");
         shutdown_ = symbol<int (*)()>("nvmlShutdown");
         count_ = symbol<int (*)(unsigned*)>("nvmlDeviceGetCount_v2");
         device_ = symbol<int (*)(unsigned, void**)>("nvmlDeviceGetHandleByIndex_v2");
         memory_ = symbol<int (*)(void*, Memory*)>("nvmlDeviceGetMemoryInfo");
+        uuid_ = symbol<int (*)(void*, char*, unsigned)>("nvmlDeviceGetUUID");
         require(
             initialize_() == 0 && count_(&devices_) == 0
                 && devices_ <= Resources::max_devices,
@@ -88,8 +91,15 @@ public:
         return devices_;
     }
 
-    // Machine shape and current free memory for the API's ledger.
+    // Computer shape and current free memory for the API's ledger. Workers on
+    // one computer share its RAM and GPUs: the kernel boot ID identifies the
+    // computer across containers, and each GPU's UUID identifies the GPU.
     Json machine(const std::string& name, const std::filesystem::path& models) const {
+        std::string boot;
+        std::ifstream("/proc/sys/kernel/random/boot_id") >> boot;
+        require(!boot.empty(), "computer_identity");
+        // A container's hostname names the container, not the computer.
+        const auto label = name.empty() ? "computer-" + boot.substr(0, 8) : name;
         Bytes ram_total = 0;
         std::ifstream meminfo("/proc/meminfo");
         std::string line;
@@ -111,8 +121,13 @@ public:
                 device_(index, &device) == 0 && memory_(device, &memory) == 0,
                 "device_memory_probe"
             );
+            std::array<char, 96> uuid{};
+            require(
+                uuid_(device, uuid.data(), unsigned(uuid.size())) == 0, "device_uuid"
+            );
             devices.push_back(
                 {{"index", index},
+                 {"uuid", std::string(uuid.data())},
                  {"vram_total", memory.total},
                  {"vram_free", free[index + 1]}}
             );
@@ -120,7 +135,8 @@ public:
         struct statvfs disk{};
         require(statvfs(models.c_str(), &disk) == 0, "disk_probe");
         return {
-            {"name", name},
+            {"id", boot},
+            {"name", label},
             {"ram_total", ram_total},
             {"ram_free", free[0]},
             {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},
@@ -146,63 +162,60 @@ private:
     int (*count_)(unsigned*) = nullptr;
     int (*device_)(unsigned, void**) = nullptr;
     int (*memory_)(void*, Memory*) = nullptr;
+    int (*uuid_)(void*, char*, unsigned) = nullptr;
     unsigned devices_ = 0;
 };
-
-}  // namespace
 
 std::string environment(const char* name, std::string fallback = {}) {
     const char* value = std::getenv(name);
     return value && *value ? value : fallback;
 }
 
-std::vector<std::string> split(const std::string& text) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    while (start <= text.size()) {
-        const auto end = std::min(text.find(',', start), text.size());
-        if (end > start)
-            parts.push_back(text.substr(start, end - start));
-        start = end + 1;
-    }
-    return parts;
-}
-
-std::string machine_name() {
+std::string host_name() {
     std::array<char, 256> host{};
     gethostname(host.data(), host.size() - 1);
-    return environment("HIKARI_WORKER_MACHINE", host.data());
+    return host.data();
 }
 
-// Exits on any connection loss; a supervisor (the API for its local machine,
-// a restart policy elsewhere) starts a fresh process that reconnects.
-int serve(const char* lock_path, const websocket::Url& url) {
-    const auto token = environment("HIKARI_WORKER_TOKEN");
-    require(!token.empty(), "HIKARI_WORKER_TOKEN is required");
-    int lock = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
-    require(
-        lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0,
-        "inference_worker_already_running"
-    );
-    const auto data = std::filesystem::path(lock_path).parent_path();
-    JobWorkspace files(data / "jobs");
-    PhysicalMemory memory;
-    std::unique_ptr<websocket::Client> client;
-    for (auto delay = std::chrono::seconds(1); !client && !stopping.load();
+std::unique_ptr<websocket::Client>
+connect(const websocket::Url& url, const std::string& token) {
+    for (auto delay = std::chrono::seconds(1); !stopping.load();
          delay = std::min(delay * 2, std::chrono::seconds(30))) {
         try {
-            client = std::make_unique<websocket::Client>(url, token, 64 * 1024 * 1024);
+            return std::make_unique<websocket::Client>(url, token, 64 * 1024 * 1024);
         } catch (const std::exception& error) {
             // A rejected token never succeeds on retry.
             if (std::string(error.what()) == "worker_token_rejected")
                 throw;
-            std::cerr << "inference_worker: connect failed: " << error.what() << '\n';
+            std::cerr << "worker: connect failed: " << error.what() << '\n';
             for (auto waited = std::chrono::milliseconds(0);
                  waited < delay && !stopping.load();
                  waited += std::chrono::milliseconds(100))
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+    return nullptr;
+}
+
+int serve(const WorkerProgram& program) {
+    const auto name = std::string(worker_name(program.workload));
+    const auto token = environment("HIKARI_WORKER_TOKEN");
+    require(!token.empty(), "HIKARI_WORKER_TOKEN is required");
+    const auto url = websocket::Url::parse(environment("HIKARI_API_URL"));
+    const auto models = std::filesystem::path(environment(
+        "KADAN_MODEL_DIR", environment("HOME", "/tmp") + "/.local/share/kadan/models"
+    ));
+    // Replicas share the model volume, so each process owns its own
+    // workspace, named after its container, and locks it.
+    const auto instance = environment("HIKARI_WORKER_INSTANCE", host_name());
+    const auto workspace = models / "inference" / "jobs" / (name + "-" + instance);
+    std::filesystem::create_directories(workspace.parent_path());
+    const auto lock_path = workspace.string() + ".lock";
+    int lock = open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    require(lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0, "worker_already_running");
+    JobWorkspace files(workspace);
+    PhysicalMemory memory(program.uses_gpu);
+    auto client = connect(url, token);
     if (!client)
         return 0;
     auto send = [&](const Json& message) {
@@ -212,7 +225,7 @@ int serve(const char* lock_path, const websocket::Url& url) {
     };
     WorkerChannel* downloading = nullptr;
     ModelStore store(
-        data.parent_path(),
+        models,
         worker_data_directory(),
         {},
         [&](const std::string& model, std::uint64_t downloaded, std::uint64_t total) {
@@ -228,52 +241,16 @@ int serve(const char* lock_path, const websocket::Url& url) {
             );
         }
     );
-    MachineHost::Hooks hooks;
+    WorkerHost::Hooks hooks;
     hooks.send = send;
     hooks.probe = [&] {
         return memory.probe();
     };
-    hooks.factory = [&](Workload kind,
-                        std::shared_ptr<Resources> resources,
-                        WorkerChannel& channel) {
-        Progress progress = [&channel](const char* phase, std::size_t value) {
-            channel.progress(phase, value);
+    hooks.factory =
+        [&](Workload, std::shared_ptr<Resources> resources, WorkerChannel& channel) {
+            WorkerEnvironment environment{std::move(resources), channel, store};
+            return program.engine(environment);
         };
-        switch (kind) {
-        case Workload::llm:
-            return chat_engine(
-                resources,
-                progress,
-                [&channel](const std::string& text) { channel.content(text); },
-                store
-            );
-        case Workload::image:
-            return image_engine(
-                resources,
-                progress,
-                [&](const std::string& id, const char* phase, std::size_t value) {
-                    send(
-                        {{"id", id},
-                         {"state", "progress"},
-                         {"phase", phase},
-                         {"value", value}}
-                    );
-                },
-                channel.available
-            );
-        case Workload::video:
-            return video_engine(resources, progress);
-        case Workload::speech:
-            return whisper_engine(resources, progress);
-        case Workload::formatting:
-            return transcription_formatting_engine(resources, progress);
-        case Workload::tts:
-            return speech_engine(resources, progress);
-        case Workload::decision:
-            return decision_engine(resources, progress);
-        }
-        throw std::invalid_argument("unsupported_workload");
-    };
     hooks.prepare = [&](InferenceRequest& request,
                         const std::atomic_bool& cancel,
                         WorkerChannel& channel) {
@@ -297,11 +274,8 @@ int serve(const char* lock_path, const websocket::Url& url) {
             {"model", request.model},
             {"context", context}
         };
-        if (const auto* image = std::get_if<ImageRequest>(&request.input))
-            prepared["total"] =
-                image->source && !image->reference
-                    ? kadan::image::edit_steps(image->steps, image->strength)
-                    : image->steps;
+        if (program.prepared)
+            program.prepared(request, prepared);
         send(prepared);
     };
     hooks.requirement = [&](Workload kind,
@@ -310,7 +284,7 @@ int serve(const char* lock_path, const websocket::Url& url) {
         return worker_requirement(kind, model, store, context);
     };
     hooks.machine = [&] {
-        return memory.machine(machine_name(), data.parent_path());
+        return memory.machine(environment("HIKARI_WORKER_MACHINE"), models);
     };
     hooks.models = [&] {
         return store.status();
@@ -318,20 +292,17 @@ int serve(const char* lock_path, const websocket::Url& url) {
     hooks.cleanup = [&](const std::string& id) {
         files.cleanup(id);
     };
-    const auto specs = worker_specs(split(environment("HIKARI_WORKER_WORKLOADS")));
-    MachineHost host(specs, memory.devices(), hooks);
-    Json names = Json::array();
-    for (const auto& spec : specs)
-        names.push_back(spec.name);
+    WorkerHost host(program.workload, memory.devices(), hooks);
     send(
         {{"state", "hello"},
-         {"protocol", 3},
+         {"protocol", 4},
          {"pid", getpid()},
-         {"machine", hooks.machine()},
-         {"workers", names}}
+         {"worker", name},
+         {"instance", instance},
+         {"machine", hooks.machine()}}
     );
     send({{"state", "models"}, {"models", store.status()}});
-    send({{"state", "ready"}, {"protocol", 3}, {"pid", getpid()}});
+    send({{"state", "ready"}, {"protocol", 4}, {"pid", getpid()}});
     host.start();
     int status = 0;
     try {
@@ -351,33 +322,30 @@ int serve(const char* lock_path, const websocket::Url& url) {
             }
         }
     } catch (const std::exception& error) {
-        std::cerr << "inference_worker: connection lost: " << error.what() << '\n';
+        std::cerr << "worker: connection lost: " << error.what() << '\n';
         status = 3;
     }
     host.stop();
     if (const auto failure = host.failure()) {
-        std::cerr << "inference_worker: " << *failure << '\n';
+        std::cerr << "worker: " << *failure << '\n';
         status = 1;
     }
     client->close();
     close(lock);
     return status;
 }
-}  // namespace kadan::serving
+}  // namespace
 
-int main(int argc, char** argv) {
-    std::signal(SIGTERM, kadan::serving::stop_signal);
-    std::signal(SIGINT, kadan::serving::stop_signal);
+int run_worker(const WorkerProgram& program) {
+    std::signal(SIGTERM, stop_signal);
+    std::signal(SIGINT, stop_signal);
     std::signal(SIGPIPE, SIG_IGN);
     try {
-        kadan::serving::require(
-            argc == 3, "usage: kadan-inference-worker LOCK_PATH API_WEBSOCKET_URL"
-        );
-        return kadan::serving::serve(
-            argv[1], kadan::serving::websocket::Url::parse(argv[2])
-        );
+        return serve(program);
     } catch (const std::exception& error) {
-        std::cerr << "inference_worker: " << error.what() << '\n';
+        std::cerr << "worker " << worker_name(program.workload) << ": " << error.what()
+                  << '\n';
         return 1;
     }
 }
+}  // namespace kadan::serving

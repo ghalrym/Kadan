@@ -1,7 +1,9 @@
-"""Decide which workers hold memory on a machine; the API's only global view of it.
+"""Decide which workers hold memory on a computer; the API's only global view of it.
 
-Budgets are footprints of [host RAM, device 0, device 1, ...] bytes. A worker's
-engine never exceeds its budget, so the ledger is the sum of granted budgets.
+Each computer has one ledger: its RAM and each of its GPUs, shared by every
+worker container running there. Budgets are footprints of [host RAM, GPU, ...]
+bytes in ledger order. A worker's engine never exceeds its budget, so the
+ledger is the sum of granted budgets.
 VRAM is never pooled: every GPU a worker uses must hold that worker's own
 per-GPU floor, and only the rest of its device memory is divided between them.
 """
@@ -51,7 +53,11 @@ class Requirement:
 
 @dataclass
 class WorkerSlot:
+    # One worker container: `name` identifies it, `kind` is its inference type.
     name: str
+    kind: str = ""
+    # Ledger indices of the GPUs this worker can see; None means all of them.
+    devices: list[int] | None = None
     loaded: bool = False
     busy: bool = False
     pending: int = 0
@@ -65,7 +71,7 @@ class WorkerSlot:
 
     @property
     def priority(self) -> int:
-        return PRIORITY[self.name]
+        return PRIORITY[self.kind or self.name]
 
 
 @dataclass
@@ -92,11 +98,18 @@ class MachineLedger:
         return cls(
             capacity=capacity,
             workers={
-                name: WorkerSlot(name=name, budget=[0] * len(capacity))
+                name: WorkerSlot(name=name, kind=name, budget=[0] * len(capacity))
                 for name in workers
                 if name in PRIORITY
             },
         )
+
+    def add_gpu(self, free: int) -> int:
+        """Adds a GPU first seen by a newly connected worker; returns its index."""
+        self.capacity.append(free)
+        for slot in self.workers.values():
+            slot.budget.append(0)
+        return len(self.capacity) - 1
 
     def free(self) -> list[int]:
         free = list(self.capacity)
@@ -105,13 +118,19 @@ class MachineLedger:
                 free[index] -= value
         return free
 
-    def fit(self, requirement: Requirement, free: list[float]) -> list[int] | None:
+    def fit(
+        self,
+        requirement: Requirement,
+        free: list[float],
+        devices: list[int] | None = None,
+    ) -> list[int] | None:
         """The largest budget up to preferred that meets the minimum.
 
-        The workload may spread over several GPUs, roomiest first. Each GPU it
-        uses must have the per-GPU floor free; each extra GPU adds that floor to
-        the total. Among placements, the one holding the most of the workload
-        wins, and fewer GPUs win ties.
+        The workload may spread over several of the GPUs the worker can see
+        (`devices`, all when None), roomiest first. Each GPU it uses must have
+        the per-GPU floor free; each extra GPU adds that floor to the total.
+        Among placements, the one holding the most of the workload wins, and
+        fewer GPUs win ties.
         """
         (host_min, device_min), (host_pref, device_pref) = (
             requirement.minimum,
@@ -124,7 +143,8 @@ class MachineLedger:
         budget = [host] + [0] * (len(free) - 1)
         if device_min == 0 and device_pref == 0:
             return budget
-        order = sorted(range(1, len(free)), key=lambda index: -free[index])
+        visible = range(1, len(free)) if devices is None else devices
+        order = sorted(visible, key=lambda index: -free[index])
         best = None
         for count in range(1, len(order) + 1):
             devices = order[:count]
@@ -213,7 +233,9 @@ def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
         ):
             continue
         minimum = replace(slot.requirement, preferred=slot.requirement.minimum)
-        placed = ledger.fit(minimum, [room - kept for room, kept in zip(free, reserve)])
+        placed = ledger.fit(
+            minimum, [room - kept for room, kept in zip(free, reserve)], slot.devices
+        )
         if placed is None:
             # It cannot start here anyway; keeping nothing lets others run.
             continue
@@ -225,7 +247,7 @@ def _plan(
     ledger: MachineLedger, target: WorkerSlot, reserve: list[int]
 ) -> list[Action] | None:
     free = [value - kept for value, kept in zip(ledger.free(), reserve)]
-    budget = ledger.fit(target.requirement, free)
+    budget = ledger.fit(target.requirement, free, target.devices)
     if budget is not None:
         return [Action("load", target.name, budget)]
     candidates = sorted(
@@ -249,7 +271,7 @@ def _plan(
                 trial[index] += value - (0 if option is None else released[index])
             kind = "offload" if option is None else "load"
             step = Action(kind, slot.name, option)
-            budget = ledger.fit(target.requirement, trial)
+            budget = ledger.fit(target.requirement, trial, target.devices)
             if budget is not None:
                 return [*actions, step, Action("load", target.name, budget)]
             # A shrink that is not enough is superseded by the offload.
@@ -291,7 +313,7 @@ def needs_grant(ledger: MachineLedger, slot: WorkerSlot) -> bool:
     if not slot.loaded:
         return True
     return slot.requirement is not None and (
-        ledger.fit(slot.requirement, slot.budget) is None
+        ledger.fit(slot.requirement, slot.budget, slot.devices) is None
     )
 
 
@@ -304,7 +326,7 @@ def _grown(ledger: MachineLedger, slot: WorkerSlot, free: list[float]) -> list[i
     """
     requirement = slot.requirement
     available = [room + held for room, held in zip(free, slot.budget)]
-    candidate = ledger.fit(requirement, available)
+    candidate = ledger.fit(requirement, available, slot.devices)
     if candidate is not None and all(
         new >= old for new, old in zip(candidate, slot.budget)
     ):

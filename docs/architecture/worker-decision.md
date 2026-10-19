@@ -4,6 +4,18 @@ Answers structured decisions (choices, scores and Noul answers) with the pinned
 Laya model. It is small and CPU-only so agents get fast answers without taking
 GPU memory from generation.
 
+## Program and container
+
+- Its own program, `kadan-worker-decision`, built from
+  `services/hikari/inference_worker/workers/decision/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/decision/Dockerfile`: no CUDA.
+- Its own Compose service, `hikari-worker-decision` (CPU only). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - `/v1/decisions`.

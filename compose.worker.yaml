@@ -1,0 +1,152 @@
+# Worker containers for a computer other than the API's. Start only the
+# workers this computer should run, for example:
+#   docker compose -f compose.worker.yaml up -d hikari-worker-image hikari-worker-video
+# Each worker downloads its own models into this computer's volume and takes
+# memory only as the API grants it.
+name: kadan-workers
+
+services:
+  # Language worker: the tier's mixture-of-experts model for chat.
+  hikari-worker-llm:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/llm/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-llm]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Decisions worker: Laya on the CPU.
+  hikari-worker-decision:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/decision/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-decision]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    # CPU only: no GPU reservation.
+
+  # Speech synthesis worker.
+  hikari-worker-tts:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/tts/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-tts]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Transcription worker: native Whisper.
+  hikari-worker-speech:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/speech/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-speech]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Transcript formatting worker: S1-mini on the CPU.
+  hikari-worker-formatting:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/formatting/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-formatting]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    # CPU only: no GPU reservation.
+
+  # Image worker: Qwen Image.
+  hikari-worker-image:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/image/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-image]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Video worker: H3 video with audio.
+  hikari-worker-video:
+    build:
+      context: ./services/hikari
+      dockerfile: inference_worker/workers/video/Dockerfile
+    command: [/opt/kadan/bin/kadan-worker-video]
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:?Set HIKARI_API_URL to the API, e.g. ws://api-host:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN to the API's token}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - worker_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  worker_models:

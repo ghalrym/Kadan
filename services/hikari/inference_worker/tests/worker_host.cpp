@@ -1,5 +1,5 @@
 // Command routing with fake engines: no model acquisition or inference.
-#include "kadan/machine_host.hpp"
+#include "kadan/worker_host.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -42,10 +42,10 @@ struct FakeEngine : InferenceEngine {
 struct Harness {
     std::vector<Json> sent;
     std::vector<std::string> prepared, cleaned;
-    std::unique_ptr<MachineHost> host;
+    std::unique_ptr<WorkerHost> host;
 
-    explicit Harness(std::vector<std::string> names = {}) {
-        MachineHost::Hooks hooks;
+    explicit Harness(Workload workload = Workload::llm) {
+        WorkerHost::Hooks hooks;
         hooks.send = [this](const Json& message) {
             sent.push_back(message);
         };
@@ -82,7 +82,7 @@ struct Harness {
         hooks.cleanup = [this](const std::string& id) {
             cleaned.push_back(id);
         };
-        host = std::make_unique<MachineHost>(worker_specs(names), 1, hooks);
+        host = std::make_unique<WorkerHost>(workload, 1, hooks);
     }
 
     Json last(const std::string& id) const {
@@ -158,24 +158,23 @@ void downloads_and_settings_run_on_the_store_worker() {
 }
 
 void status_offload_and_requirement_replies() {
-    Harness harness({"llm", "image"});
+    Harness harness;
     harness.command({{"id", id('e')}, {"command", "status"}});
     const auto status = harness.last(id('e'));
     assert(status["state"] == "status" && status["machine"]["name"] == "box");
-    assert(status["workers"].size() == 3 && status["workers"][1]["worker"] == "llm");
+    assert(status["workers"].size() == 2 && status["workers"][1]["worker"] == "llm");
     assert(status["workers"][1]["loaded"] == false);
     assert(status["workers"][1]["releasing"] == false);
-    harness.command(
-        {{"id", id('f')}, {"command", "load"}, {"worker", "image"}, {"budget", {1, 1}}}
-    );
-    harness.command({{"id", id('0')}, {"command", "is_busy"}, {"worker", "image"}});
+    // Budget commands need not name the worker: a program runs one.
+    harness.command({{"id", id('f')}, {"command", "load"}, {"budget", {1, 1}}});
+    harness.command({{"id", id('0')}, {"command", "is_busy"}});
     assert(harness.last(id('0'))["busy"] == false);
-    harness.command({{"id", id('1')}, {"command", "offload"}, {"worker", "image"}});
+    harness.command({{"id", id('1')}, {"command", "offload"}, {"worker", "llm"}});
     assert(harness.last(id('1'))["ok"] == true);
     harness.host->advance_all();
     const auto& event = harness.sent.back();
     assert(event["state"] == "worker" && event["event"] == "offloaded");
-    assert(event["worker"] == "image" && event["loaded"] == false);
+    assert(event["worker"] == "llm" && event["loaded"] == false);
     harness.command(
         {{"id", id('2')},
          {"command", "requirement"},
@@ -204,7 +203,7 @@ void status_offload_and_requirement_replies() {
 }
 
 void invalid_commands_are_rejected_not_thrown() {
-    Harness harness({"llm"});
+    Harness harness;
     harness.command(
         {{"id", id('3')}, {"command", "load"}, {"worker", "llm"}, {"budget", {1}}}
     );
@@ -215,7 +214,7 @@ void invalid_commands_are_rejected_not_thrown() {
     );
     assert(harness.last(id('4'))["status_code"] == 404);
     harness.command({{"id", id('5')}, {"command", "offload"}, {"worker", "store"}});
-    assert(harness.last(id('5'))["state"] == "rejected");
+    assert(harness.last(id('5'))["status_code"] == 404);
     harness.command(
         {{"id", id('6')},
          {"command", "submit"},
@@ -232,18 +231,19 @@ void invalid_commands_are_rejected_not_thrown() {
     harness.host->stop();
 }
 
-void worker_names_are_validated() {
-    const auto specs = worker_specs({"image", "llm"});
-    assert(specs.size() == 3 && specs[0].name == "store" && !specs[0].workload);
-    assert(specs[1].name == "llm" && specs[2].name == "image");
-    assert(worker_specs({}).size() == 8);
-    bool rejected = false;
-    try {
-        worker_specs({"gpu"});
-    } catch (const std::invalid_argument&) {
-        rejected = true;
-    }
-    assert(rejected);
+void each_program_runs_only_its_own_type() {
+    Harness image(Workload::image);
+    image.command(chat(id('a')));
+    assert(image.last(id('a'))["state"] == "rejected");
+    assert(image.last(id('a'))["status_code"] == 404);
+    image.command(
+        {{"id", id('b')},
+         {"command", "submit"},
+         {"operation", "generate"},
+         {"input", {{"feature", "image"}, {"prompt", "fox"}, {"count", 1}}}}
+    );
+    assert(image.last(id('b'))["worker"] == "image");
+    image.host->stop();
 }
 }  // namespace
 
@@ -252,6 +252,6 @@ int main() {
     downloads_and_settings_run_on_the_store_worker();
     status_offload_and_requirement_replies();
     invalid_commands_are_rejected_not_thrown();
-    worker_names_are_validated();
-    std::cout << "Machine host units passed\n";
+    each_program_runs_only_its_own_type();
+    std::cout << "Worker host units passed\n";
 }

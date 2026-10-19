@@ -2,6 +2,18 @@
 
 Generates images with Qwen Image 2.1 Turbo. Editing is unavailable.
 
+## Program and container
+
+- Its own program, `kadan-worker-image`, built from
+  `services/hikari/inference_worker/workers/image/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/image/Dockerfile`: CUDA and LibTorch, the only image with LibTorch.
+- Its own Compose service, `hikari-worker-image` (GPU). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - `/v1/images/generations`.

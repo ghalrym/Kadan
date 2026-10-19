@@ -3,6 +3,18 @@
 Transcribes English audio, up to 30 seconds of mono 16-bit 16 kHz PCM WAV, with
 native Whisper.
 
+## Program and container
+
+- Its own program, `kadan-worker-speech`, built from
+  `services/hikari/inference_worker/workers/speech/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/speech/Dockerfile`: CUDA and OpenBLAS.
+- Its own Compose service, `hikari-worker-speech` (GPU). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - `/v1/audio/transcriptions`. When formatting is on, the result then goes to the

@@ -3,7 +3,6 @@ services:
     image: kadan-dev:local
 
   hikari-api:
-    # The development stage rebuilds the inference worker from the source mount.
     image: kadan-hikari-dev:local
     build:
       target: development
@@ -12,12 +11,91 @@ services:
     volumes:
       - ./services/hikari/api:/app/api:ro
       - ./services/hikari/bin:/app/bin:ro
+
+  # Rebuilds only kadan-worker-llm from the source mount and restarts it.
+  hikari-worker-llm:
+    image: kadan-hikari-worker-llm-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, llm]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
       - ./services/hikari/inference_worker:/src/inference_worker:ro
-      # Seeded from the image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_build:/build
-    healthcheck:
-      # A worker rebuild can precede the API's first start.
-      start_period: 30m
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_llm_build:/build
+
+  # Rebuilds only kadan-worker-decision from the source mount and restarts it.
+  hikari-worker-decision:
+    image: kadan-hikari-worker-decision-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, decision]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_decision_build:/build
+
+  # Rebuilds only kadan-worker-tts from the source mount and restarts it.
+  hikari-worker-tts:
+    image: kadan-hikari-worker-tts-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, tts]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_tts_build:/build
+
+  # Rebuilds only kadan-worker-speech from the source mount and restarts it.
+  hikari-worker-speech:
+    image: kadan-hikari-worker-speech-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, speech]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_speech_build:/build
+
+  # Rebuilds only kadan-worker-formatting from the source mount and restarts it.
+  hikari-worker-formatting:
+    image: kadan-hikari-worker-formatting-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, formatting]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_formatting_build:/build
+
+  # Rebuilds only kadan-worker-image from the source mount and restarts it.
+  hikari-worker-image:
+    image: kadan-hikari-worker-image-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, image]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_image_build:/build
+
+  # Rebuilds only kadan-worker-video from the source mount and restarts it.
+  hikari-worker-video:
+    image: kadan-hikari-worker-video-dev:local
+    build:
+      target: development
+    command: [python, bin/hikari.py, dev, worker, video]
+    volumes:
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_video_build:/build
+
 
   hikari-frontend:
     build:
@@ -84,4 +162,10 @@ services:
 volumes:
   tsuchi_frontend_node_modules:
   kadan_frontend_node_modules:
-  hikari_worker_build:
+  hikari_worker_llm_build:
+  hikari_worker_decision_build:
+  hikari_worker_tts_build:
+  hikari_worker_speech_build:
+  hikari_worker_formatting_build:
+  hikari_worker_image_build:
+  hikari_worker_video_build:

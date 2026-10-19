@@ -3,6 +3,18 @@
 Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 9:16 or 1:1, 24 fps, 1 to 15 seconds.
 
+## Program and container
+
+- Its own program, `kadan-worker-video`, built from
+  `services/hikari/inference_worker/workers/video/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/video/Dockerfile`: CUDA and FFmpeg, the only image with FFmpeg.
+- Its own Compose service, `hikari-worker-video` (GPU). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - `/v1/videos/generations`. Omitted clip settings use the tier's defaults.

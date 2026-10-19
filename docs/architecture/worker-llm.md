@@ -4,6 +4,18 @@ Runs the hardware tier's language model for chat. It exists to serve
 mixture-of-experts checkpoints larger than the GPU by tiering routed experts
 across VRAM, RAM and disk (the Strata/FreeToken approach).
 
+## Program and container
+
+- Its own program, `kadan-worker-llm`, built from
+  `services/hikari/inference_worker/workers/llm/`. It links only this engine;
+  the shared worker runtime supplies the API contract, the WebSocket client and
+  the model store.
+- Its own image, built by `workers/llm/Dockerfile`: CUDA; no LibTorch, no FFmpeg.
+- Its own Compose service, `hikari-worker-llm` (GPU). It can be scaled, and
+  run on another computer with `compose.worker.yaml`.
+- It connects to the API and takes memory only as the API grants it. Workers on
+  one computer share its RAM and GPUs in the API's ledger.
+
 ## Serves
 
 - `/v1/chat/completions` (JSON and streaming).

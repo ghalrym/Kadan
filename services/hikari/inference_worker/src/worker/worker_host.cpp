@@ -1,4 +1,4 @@
-#include "kadan/machine_host.hpp"
+#include "kadan/worker_host.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -28,16 +28,6 @@ const char* state_name(JobState state) {
     throw std::invalid_argument("job_state");
 }
 
-constexpr Workload workloads[]{
-    Workload::llm,
-    Workload::decision,
-    Workload::tts,
-    Workload::speech,
-    Workload::formatting,
-    Workload::image,
-    Workload::video,
-};
-
 bool valid_id(const std::string& id) {
     return id.size() == 32
            && id.find_first_not_of("0123456789abcdef") == std::string::npos;
@@ -64,28 +54,11 @@ const char* worker_name(Workload workload) {
     throw std::invalid_argument("workload");
 }
 
-std::vector<WorkerSpec> worker_specs(const std::vector<std::string>& names) {
-    std::vector<WorkerSpec> specs{{"store", std::nullopt}};
-    for (const auto workload : workloads)
-        if (names.empty()
-            || std::find(names.begin(), names.end(), worker_name(workload))
-                   != names.end())
-            specs.push_back({worker_name(workload), workload});
-    for (const auto& name : names) {
-        const bool known =
-            std::any_of(specs.begin(), specs.end(), [&](const auto& spec) {
-                return spec.name == name;
-            });
-        if (!known)
-            throw std::invalid_argument("unknown_worker: " + name);
-    }
-    return specs;
-}
-
-MachineHost::MachineHost(
-    std::vector<WorkerSpec> specs, std::size_t devices, Hooks hooks
-)
+WorkerHost::WorkerHost(Workload workload, std::size_t devices, Hooks hooks)
     : devices_(devices), hooks_(std::move(hooks)) {
+    std::vector<WorkerSpec> specs{
+        {"store", std::nullopt}, {worker_name(workload), workload}
+    };
     for (auto& spec : specs) {
         auto worker = std::make_unique<Worker>();
         worker->spec = std::move(spec);
@@ -133,28 +106,28 @@ MachineHost::MachineHost(
     }
 }
 
-MachineHost::~MachineHost() {
+WorkerHost::~WorkerHost() {
     try {
         stop();
     } catch (...) {
     }
 }
 
-MachineHost::Worker& MachineHost::worker(const std::string& name) {
+WorkerHost::Worker& WorkerHost::worker(const std::string& name) {
     for (auto& worker : workers_)
         if (worker->spec.name == name)
             return *worker;
-    throw RequestError("Worker is not hosted on this machine.", 404);
+    throw RequestError("This worker does not run " + name + " work.", 404);
 }
 
-MachineHost::Worker& MachineHost::route(const InferenceRequest& request) {
+WorkerHost::Worker& WorkerHost::route(const InferenceRequest& request) {
     if (request.operation == Operation::download
         || request.operation == Operation::configure)
         return worker("store");
     return worker(worker_name(request.workload));
 }
 
-void MachineHost::publish(
+void WorkerHost::publish(
     Worker& worker, const std::string& id, JobState state, const Json& result
 ) {
     if (state == JobState::queued) {
@@ -187,7 +160,7 @@ void MachineHost::publish(
     hooks_.send(message);
 }
 
-Json MachineHost::worker_status(const Worker& worker) const {
+Json WorkerHost::worker_status(const Worker& worker) const {
     const auto status = worker.owner->status();
     return {
         {"worker", worker.spec.name},
@@ -202,14 +175,14 @@ Json MachineHost::worker_status(const Worker& worker) const {
     };
 }
 
-Json MachineHost::status() const {
+Json WorkerHost::status() const {
     Json workers = Json::array();
     for (const auto& worker : workers_)
         workers.push_back(worker_status(*worker));
     return {{"machine", hooks_.machine()}, {"workers", workers}};
 }
 
-void MachineHost::handle(const std::string& line) {
+void WorkerHost::handle(const std::string& line) {
     std::string id;
     try {
         const auto command_message = Json::parse(line);
@@ -235,9 +208,11 @@ void MachineHost::handle(const std::string& line) {
             message["state"] = "status";
             reply(message);
         } else {
-            auto& target = worker(command_message.at("worker").get<std::string>());
-            if (!target.spec.workload)
-                throw RequestError("The store worker has no engine.", 422);
+            // Budget commands always address this program's inference lane.
+            auto& target = *workers_.back();
+            if (command_message.contains("worker")
+                && command_message["worker"] != target.spec.name)
+                throw RequestError("This worker runs " + target.spec.name + ".", 404);
             if (command == "load") {
                 const auto budget = command_message.at("budget").get<Footprint>();
                 if (budget.size() != devices_ + 1)
@@ -295,7 +270,7 @@ void MachineHost::handle(const std::string& line) {
     }
 }
 
-void MachineHost::run(Worker& worker) {
+void WorkerHost::run(Worker& worker) {
     try {
         while (!stopping_.load()) {
             if (!worker.owner->advance())
@@ -309,24 +284,24 @@ void MachineHost::run(Worker& worker) {
     }
 }
 
-void MachineHost::start() {
+void WorkerHost::start() {
     for (auto& worker : workers_)
         worker->thread = std::thread([this, &current = *worker] { run(current); });
 }
 
-bool MachineHost::advance_all() {
+bool WorkerHost::advance_all() {
     bool progressed = false;
     for (auto& worker : workers_)
         progressed = worker->owner->advance() || progressed;
     return progressed;
 }
 
-std::optional<std::string> MachineHost::failure() const {
+std::optional<std::string> WorkerHost::failure() const {
     std::lock_guard guard(failure_mutex_);
     return failure_;
 }
 
-void MachineHost::stop() {
+void WorkerHost::stop() {
     stopping_.store(true);
     for (auto& worker : workers_)
         worker->owner->stop();
