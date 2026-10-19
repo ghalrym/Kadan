@@ -4,9 +4,10 @@ import Markdown from "./Markdown";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import { useAgentPet } from "./PetContext";
-import { agentPath, api, streamChat } from "./api";
+import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
-import type { Message, Resource, Status } from "./types";
+import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
+import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
 import { randomUuid } from "./uuid";
 import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
 
@@ -49,6 +50,30 @@ function breakLabel(value: string) {
 const stamp = (value: string) =>
   new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
+function Attachment({ agentKey, id }: { agentKey: string; id: string }) {
+  const [asset, setAsset] = useState<Asset | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const path = `${agentPath(agentKey)}/assets/${encodeURIComponent(id)}`;
+  useEffect(() => {
+    let closed = false;
+    setAsset(null);
+    setFailed(false);
+    api<Asset>(path).then((value) => {
+      if (!closed) setAsset(value);
+    }).catch(() => { if (!closed) setFailed(true); });
+    return () => { closed = true; };
+  }, [path, attempt]);
+  if (failed) return <button className="tag" onClick={() => setAttempt(attempt + 1)}>Reload attachment</button>;
+  if (!asset) return <span className="tag">Loading attachment…</span>;
+  const content = `/api${path}/content`;
+  return isImageAsset(asset) ? (
+    <a className="message-image" href={content} target="_blank" rel="noreferrer">
+      <img src={content} alt={asset.title || asset.filename} loading="lazy" onError={() => setFailed(true)} />
+    </a>
+  ) : <a className="tag" href={`${content}?download=true`}>{asset.title || asset.filename}<ArrowUpRight size={12} /></a>;
+}
+
 export default function Chat({
   agentKey,
   agentName,
@@ -72,22 +97,30 @@ export default function Chat({
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [images, setImages] = useState<ImageJob[]>([]);
+  const [pollError, setPollError] = useState("");
+  const [stopping, setStopping] = useState(false);
+  const generating = runs.some(activeRun);
+  const imagePending = images.some((job) => cancellableImage(job) || job.status === "cancelling" || (job.status === "completed" && !job.delivered_message_id));
   /** The message being sent, shown before Tsuchi confirms it. */
   const [outgoing, setOutgoing] = useState<Message | null>(null);
-  const [partial, setPartial] = useState("");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [shown, setShown] = useState(PAGE);
   // Tool activity saved by the retired plugin system is history the model no longer sees.
   const saved = chain.messages.filter((message) => message.role !== "tool");
-  const controller = useRef<AbortController | null>(null);
+  const currentChain = useRef(chain);
+  currentChain.current = latestConversation(currentChain.current, chain);
+  const mutation = useRef(0);
+  const sendLock = useRef(false);
+  const callbacks = useRef({ onChange, refreshStatus });
+  callbacks.current = { onChange, refreshStatus };
   const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
   const modelLoading = generating && status?.hikari.model_state === "loading";
   // The agent has read the message once Hikari is working on it, and types until the reply lands.
-  const typing = generating && !outgoing && !modelLoading;
+  const typing = runs.some((run) => run.status === "running") && !modelLoading;
   const [mood, react] = useMood(
     !status
       ? "idle"
@@ -112,7 +145,7 @@ export default function Chat({
       ? null
       : visible[lastUser] === outgoing
         ? "Sending…"
-        : answered || typing
+        : answered
           ? "Read"
           : "Delivered";
 
@@ -124,22 +157,33 @@ export default function Chat({
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [items.length, typing]);
   useEffect(() => react(entrance, 2), [entrance, react]);
-  const mounted = useRef(false);
   useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      // StrictMode remounts at once in development; abort only when the chat really closes.
-      setTimeout(() => {
-        if (!mounted.current) controller.current?.abort();
-      });
-    };
-  }, []);
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      const revision = mutation.current;
+      try {
+        const snapshot = await api<RunSnapshot>(`${agentPath(agentKey)}/conversations/${chain.id}/runs`);
+        if (!closed && revision === mutation.current) {
+          accept(snapshot.conversation);
+          setRuns(snapshot.runs);
+          setImages(snapshot.images);
+          setPollError("");
+        }
+      } catch (e) {
+        if (!closed) setPollError(`Updates unavailable: ${(e as Error).message}`);
+      } finally {
+        if (!closed) timer = setTimeout(poll, 2000);
+      }
+    }
+    void poll();
+    // Closing the view only stops polling; the agent and image jobs continue on the server.
+    return () => { closed = true; clearTimeout(timer); };
+  }, [agentKey, chain.id]);
   useEffect(() => {
-    // Until the reply lands, check whether Hikari is still loading the model.
     if (!generating) return;
-    const timer = setInterval(() => void refreshStatus(), 2000);
-    void refreshStatus();
+    const timer = setInterval(() => void callbacks.current.refreshStatus(), 2000);
+    void callbacks.current.refreshStatus();
     return () => clearInterval(timer);
   }, [generating]);
   useEffect(() => {
@@ -157,13 +201,17 @@ export default function Chat({
     else sessionStorage.removeItem(pendingKey);
   }
   function accept(value: Resource) {
-    savePending(confirmSend(pending.current, value.messages));
+    const latest = latestConversation(currentChain.current, value);
+    savePending(confirmSend(pending.current, latest.messages));
     if (!pending.current) setOutgoing(null);
-    onChange(value);
+    if (latest !== currentChain.current) {
+      currentChain.current = latest;
+      callbacks.current.onChange(latest);
+    }
   }
   async function send(generate: boolean, retry?: PendingMessage) {
     const text = retry?.content ?? draft.trim();
-    if (!text || sending || blocked) return;
+    if (!text || sendLock.current || sending || blocked) return;
     if (!retry && pending.current) {
       setError("Retry or discard the unsent message before sending another.");
       return;
@@ -174,12 +222,11 @@ export default function Chat({
     const messageId = message.id;
     const personaId = message.persona;
     savePending(message);
+    sendLock.current = true;
+    mutation.current++;
     setSending(true);
-    setGenerating(generate);
     onBusy(true);
     setError("");
-    setNotice("");
-    setPartial("");
     setOutgoing({
       id: messageId,
       role: "user",
@@ -191,62 +238,41 @@ export default function Chat({
     });
     if (!retry) setDraft("");
     const path = `${agentPath(agentKey)}/conversations/${chain.id}`;
-    let reply = "";
     try {
       if (!generate) {
         accept(
           await api<Resource>(`${path}/notes`, {
             content: text,
-            expected_version: chain.version,
+            expected_version: currentChain.current.version,
             message_id: messageId,
           }),
         );
         react("waving");
       } else {
-        controller.current = new AbortController();
-        await streamChat(
-          `${path}/chat`,
-          {
-            content: text,
-            expected_version: chain.version,
-            persona_id: personaId || null,
-            message_id: messageId,
-          },
-          controller.current.signal,
-          (event) => {
-            if (event.event === "user_saved") accept(event.data.conversation);
-            // Like a text, the reply arrives whole; the agent shows as typing until then.
-            if (event.event === "delta") reply += event.data.content;
-            if (event.event === "done") {
-              onChange(event.data.conversation);
-              react("jumping", 2);
-              if (event.data.finish_reason === "length")
-                setNotice("Stopped at Hikari's response limit.");
-            }
-          },
-        );
+        const result = await api<{ run: AgentRun; conversation: Resource }>(`${path}/runs`, {
+          content: text,
+          expected_version: currentChain.current.version,
+          persona_id: personaId || null,
+          message_id: messageId,
+        });
+        accept(result.conversation);
+        setRuns((previous) => [...previous.filter((run) => run.id !== result.run.id), result.run]);
       }
     } catch (e) {
-      const aborted = (e as Error).name === "AbortError";
-      if (!aborted) react("failed", 2);
-      setPartial(reply);
-      setError(aborted ? "Stopped. Reloading saved messages…" : (e as Error).message);
+      react("failed", 2);
+      setError((e as Error).message);
       try {
         accept(await api<Resource>(`${agentPath(agentKey)}/resources/${chain.id}`));
-        if (aborted) setError("Stopped. Saved messages reloaded.");
       } catch {
         /* Keep the already confirmed messages visible. */
       }
-      if (pending.current?.id === messageId) {
-        // The outbox keeps this text independently of anything typed next.
-        setOutgoing(null);
-      }
+      if (pending.current?.id === messageId) setOutgoing(null);
       void refreshStatus();
     } finally {
       setSending(false);
-      setGenerating(false);
       onBusy(false);
-      controller.current = null;
+      sendLock.current = false;
+      mutation.current++;
     }
   }
   function reload() {
@@ -255,7 +281,6 @@ export default function Chat({
     api<Resource>(`${agentPath(agentKey)}/resources/${chain.id}`)
       .then((value) => {
         accept(value);
-        setPartial("");
         setError("");
       })
       .catch((e) => setError(e.message))
@@ -264,24 +289,49 @@ export default function Chat({
         onBusy(false);
       });
   }
+  async function cancelRun() {
+    if (stopping) return;
+    setStopping(true);
+    mutation.current++;
+    try {
+      for (const run of runs.filter(activeRun)) {
+        const updated = await api<AgentRun>(`${agentPath(agentKey)}/runs/${run.id}/cancel`, {});
+        setRuns((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      }
+    } catch (e) { setError((e as Error).message); }
+    finally { setStopping(false); mutation.current++; }
+  }
+  async function cancelImage(job: ImageJob) {
+    if (stopping) return;
+    setStopping(true);
+    mutation.current++;
+    try {
+      const updated = await api<ImageJob>(`${agentPath(agentKey)}/image-jobs/${job.id}/cancel`, {});
+      setImages((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+    } catch (e) { setError((e as Error).message); }
+    finally { setStopping(false); mutation.current++; }
+  }
+  const lastRun = runs.at(-1);
+  const notice = lastRun?.status === "failed"
+    ? `Response failed: ${lastRun.error || "Please try again."}`
+    : lastRun?.status === "cancelled" ? "Response stopped" : "";
   const perchStatus = modelLoading
     ? "Loading model…"
-    : typing
-      ? "Typing…"
-      : !ready.chat
-        ? "Notes only"
-        : agentName;
-  const empty = items.length === 0 && !partial;
+    : typing ? "Typing…"
+      : generating ? "Waiting to respond…"
+        : imagePending ? "Image pending…"
+          : !ready.chat ? "Notes only" : agentName;
+  const empty = items.length === 0;
   return (
     <section className="chat" aria-label={`Messages with ${agentName}`}>
       {!empty && (
-        <div className={`lookout ${generating ? "working" : ""}`}>
+        <div className={`lookout ${(generating || imagePending) ? "working" : ""}`}>
           <button type="button" className="lookout-pet" aria-label={`Wave to ${agentName}`} title={`Wave to ${agentName}`}
             onClick={() => react("waving")}>
             <Pet sheet={petSheet} state={mood} size={96} look className="hero-pet" />
           </button>
           <span className="lookout-ledge" role="status" aria-live="polite">
-            {generating && <i aria-hidden="true" />}
+            {(generating || imagePending) && <i aria-hidden="true" />}
             {perchStatus}
           </span>
         </div>
@@ -310,7 +360,7 @@ export default function Chat({
             const first = split || previous?.role !== message.role;
             const last = gap(message, next) || next?.role !== message.role;
             const tags = message.resource_ids?.length > 0;
-            const attached = message.attachment_ids?.length > 0 || message.sources?.length > 0;
+            const sources = message.sources?.length > 0;
             return (
               <Fragment key={message.id}>
                 {split && (
@@ -325,17 +375,18 @@ export default function Chat({
                   <h3 className={message.role === "user" || message.role === "assistant" ? "sr-only" : "role"}>
                     {ROLE[message.role]}
                   </h3>
-                  <div className="body">
+                  {message.content && <div className="body">
                     <Markdown>{message.content}</Markdown>
-                  </div>
-                  {(tags || attached) && (
+                  </div>}
+                  {message.attachment_ids?.map((id) => <Attachment key={id} agentKey={agentKey} id={id} />)}
+                  {(tags || sources) && (
                     <footer>
                       {message.resource_ids.map((id) => (
                         <span className="tag" key={id}>
                           {personas.find((p) => p.id === id)?.title || `Resource ${id.slice(0, 8)}`}
                         </span>
                       ))}
-                      {attached &&
+                      {message.sources?.length > 0 &&
                         (status?.tsuchi.browser_url ? (
                           <a className="tag" href={status.tsuchi.browser_url} target="_blank" rel="noreferrer">
                             Attachments in Tsuchi
@@ -355,17 +406,6 @@ export default function Chat({
               </Fragment>
             );
           })}
-          {partial && !sending && (
-            <article className="message assistant first last unsaved">
-              <h3 className="sr-only">Assistant</h3>
-              <div className="body">
-                <Markdown>{partial}</Markdown>
-              </div>
-              <footer>
-                <span className="tag warn">Not saved</span>
-              </footer>
-            </article>
-          )}
           {typing && (
             <div className="typing" role="status">
               <span className="sr-only">{agentName} is typing</span>
@@ -384,12 +424,18 @@ export default function Chat({
               {notice}
             </p>
           )}
+          {images.filter((job) => imageStatus(job)).map((job) => (
+            <div className="image-job notice" key={job.id} role="status">
+              <span>{imageStatus(job)}</span>
+              {cancellableImage(job) && <button disabled={stopping} onClick={() => void cancelImage(job)}>Stop image</button>}
+            </div>
+          ))}
           <div ref={end} />
         </div>
       </div>
-      {error && (
+      {(error || pollError) && (
         <div className="banner inline" role="alert">
-          {error}
+          {error || pollError}
           <button disabled={sending || blocked} onClick={reload}>
             <RotateCw size={14} />
             Reload
@@ -412,7 +458,8 @@ export default function Chat({
         value={draft}
         onChange={setDraft}
         onSend={(generate) => void send(generate)}
-        onStop={generating ? () => controller.current?.abort() : undefined}
+        onStop={generating ? () => void cancelRun() : undefined}
+        stopping={stopping}
         sending={sending}
         blocked={blocked}
         status={status}

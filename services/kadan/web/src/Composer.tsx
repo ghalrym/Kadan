@@ -32,6 +32,7 @@ interface Props {
   onSend: (generate: boolean) => void;
   onStop?: () => void;
   sending: boolean;
+  stopping?: boolean;
   blocked: boolean;
   status: Status | null;
   personas: Resource[];
@@ -48,6 +49,7 @@ export default function Composer({
   onSend,
   onStop,
   sending,
+  stopping,
   blocked,
   status,
   personas,
@@ -148,26 +150,26 @@ export default function Composer({
                 <NotebookPen size={16} />
               </button>
             )}
-            {sending && onStop ? (
+            {onStop && (
               <button
                 className="send stop"
                 type="button"
                 aria-label="Stop response"
                 title="Stop"
                 onClick={onStop}
+                disabled={stopping}
               >
                 <Square size={13} fill="currentColor" />
               </button>
-            ) : (
-              <button
-                className="send"
-                disabled={locked || empty || !ready.storage}
-                aria-label={ready.chat ? "Send message" : "Save note"}
-                title={ready.chat ? "Send · Enter" : "Save note · Enter"}
-              >
-                {ready.chat ? <ArrowUp size={18} /> : <NotebookPen size={16} />}
-              </button>
             )}
+            <button
+              className="send"
+              disabled={locked || empty || !ready.storage}
+              aria-label={ready.chat ? "Send message" : "Save note"}
+              title={ready.chat ? "Send · Enter" : "Save note · Enter"}
+            >
+              {ready.chat ? <ArrowUp size={18} /> : <NotebookPen size={16} />}
+            </button>
           </div>
         </div>
       </form>
