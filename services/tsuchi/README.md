@@ -1,6 +1,6 @@
 # Tsuchi
 
-Tsuchi stores agent personas, memories, Spaces, slide decks, files, and conversations on one local machine. Its management website shows the stored content, usage, revision history, trash, and activity. Kadan can use the same HTTP API. Inference belongs in Hikari; agent decisions belong in Kadan.
+Tsuchi stores agent personas, memories, Spaces, slide decks, files, and conversations on one local machine. Its management website shows the stored content, usage, revision history, trash, and activity. Kadan can use the same HTTP API. Inference belongs in Hikari; agent execution belongs in the Kadan runner service.
 
 ## Run with Docker
 
@@ -53,6 +53,16 @@ Edits use an expected version to prevent silent overwrites. Resource history can
 Decks support up to 100 slides on a fixed 1920 × 1080 canvas. Select a slide, edit its title, Markdown body and speaker notes, choose a title/text/split/image layout, and select or remove one image from the namespace's image library. The preview updates while editing. Add and delete slides or reorder them with Move up and Move down, then save the deck. Deck metadata, revisions, trash/restore, and namespace export use the same resource controls. The editor does not provide freeform element positioning, animations, a slideshow player, or PPTX import/export.
 
 Spaces are Markdown documents that can also be parents. Create a Space, edit its title and Markdown, preview it, and select its Parent Space under Details to nest or move it. The Spaces view shows the hierarchy and opens each document for editing. Other stored resources can also choose a Parent Space. Tags, sources, attachments, full-text search, revision restore, and trash/restore are supported. Parent links must stay in the same namespace and cannot form cycles. A parent with active children cannot be trashed; a child cannot be restored until its parent is active. Moving uses the Parent Space selector, without drag-and-drop or automatic subtree deletion.
+
+## Runner ownership
+
+Tsuchi stores runner sessions and logical agent assignments separately from agent content. A runner defaults to five assigned agents; idle agents keep their slots. The capacity is a positive integer set by runner registration. Assignment scans atomically select the oldest unassigned agents, ordered by creation time and key, up to remaining capacity. Excess agents and their queued runs remain durable until a slot becomes available. New containers do not steal existing assignments.
+
+`PUT /api/runners/{runner_id}` registers a stable runner identity with a fresh process `worker_id` UUID and `capacity` (default 5). The response includes `lease_expires_at` and `agent_keys`. Repeating the request with the same worker renews a server-calculated 60-second infrastructure ownership lease. Another process can take over the same stable identity after expiry, or immediately with `expected_worker_id` matching the current owner. This renewal protects ownership; it does not wake agents or perform inference. Assignments survive session expiry and process restarts.
+
+`POST /api/runners/{runner_id}/assign` with `worker_id` fills that runner's free slots. `GET /api/runners` lists sessions and assignments. `POST /api/agents/{key}/runner` with `runner_id` and `expected_runner_id` explicitly moves an agent using compare-and-set ownership and destination capacity checks. A null destination releases the slot and makes that agent eligible for the next assignment scan; it does not pause the agent. To retire a runner, stop its process and explicitly move its assignments to other runners with capacity.
+
+Changing a session owner or moving an agent expires its running run leases and advances their versions without discarding transcripts. Claims, renewals, message delivery and image submission require both a live runner session and the current agent assignment, fencing stale processes. Image and pet workload workers retain their separate job leases. Runner sessions and assignments are infrastructure state and are excluded from namespace exports; imported agents enter the unassigned queue.
 
 ## Kadan API
 

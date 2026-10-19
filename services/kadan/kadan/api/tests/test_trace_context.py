@@ -12,10 +12,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
-from kadan.api.image_jobs import ImageJobs
-from kadan.api.pet_jobs import PetJobs
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob
 from kadan.api.pydantic_models.pets import PetJob
+from kadan.runner.image_jobs import ImageJobs
+from kadan.runner.pet_jobs import PetJobs
 
 
 @pytest.mark.parametrize("ratio", [0, 1])

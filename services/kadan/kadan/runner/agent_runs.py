@@ -17,6 +17,16 @@ from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
+from ..api.config import ServiceError
+from ..api.pydantic_models.agent_runs import (
+    AgentRun,
+    AgentRunState,
+    ImageJob,
+    RunMessage,
+)
+from ..api.pydantic_models.inference import CompletionMessage
+from ..api.pydantic_models.resources import Message, ResourceKind
+from ..api.run_client import RunClient
 from .agent_inference import (
     TOOL_PROTOCOL,
     AgentCommand,
@@ -25,13 +35,9 @@ from .agent_inference import (
     GenerateImage,
     parse_command,
 )
-from .config import ServiceError
-from .pydantic_models.agent_runs import AgentRun, AgentRunState, ImageJob, RunMessage
-from .pydantic_models.inference import CompletionMessage
-from .pydantic_models.resources import Message, ResourceKind
 
 if TYPE_CHECKING:
-    from .services import LocalServices
+    from ..api.services import LocalServices
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
@@ -45,12 +51,11 @@ class RunState(BaseModel):
     corrections: int = 0
 
 
-class AgentRuns:
-    def __init__(self, services: LocalServices):
-        self.services = services
-        self.owner = uuid4()
+class AgentRuns(RunClient):
+    def __init__(self, services: LocalServices, owner: UUID | None = None):
+        super().__init__(services)
+        self.owner = owner or uuid4()
         self.wakeup = asyncio.Event()
-        self.runner: asyncio.Task | None = None
         self.lock = asyncio.Lock()
         self.inference = AgentInference(services.client, services.settings.hikari_url)
         graph = StateGraph(RunState)
@@ -64,56 +69,6 @@ class AgentRuns:
         # Tsuchi owns checkpoints and side-effect receipts. A second persistence
         # store here would compete with its version/lease fencing.
         self.graph = graph.compile()
-
-    def start(self) -> None:
-        self.runner = asyncio.create_task(self.run(), name="agent-runs")
-
-    async def close(self) -> None:
-        if self.runner:
-            self.runner.cancel()
-            await asyncio.gather(self.runner, return_exceptions=True)
-
-    @staticmethod
-    def path(key: str, run_id: UUID) -> str:
-        return f"/api/agents/{key}/runs/{run_id}"
-
-    async def get(self, key: str, run_id: UUID) -> AgentRun:
-        run = AgentRun.model_validate(
-            await self.services.json_request("Tsuchi", "GET", self.path(key, run_id))
-        )
-        if run.agent_key != key or run.id != run_id:
-            raise ServiceError("Tsuchi returned the wrong agent run.", 502)
-        return run
-
-    async def enqueue(self, key: str, conversation_id: UUID, value) -> AgentRun:
-        # Storage checks idempotent retries before checking the conversation version.
-        message = Message(
-            id=value.message_id,
-            role="user",
-            content=value.content,
-            resource_ids=[value.persona_id] if value.persona_id else [],
-        )
-        run = AgentRun.model_validate(
-            await self.services.json_request(
-                "Tsuchi",
-                "POST",
-                f"/api/agents/{key}/resources/{conversation_id}/runs",
-                json={
-                    "message": message.model_dump(mode="json"),
-                    "expected_version": value.expected_version,
-                    "persona_id": str(value.persona_id) if value.persona_id else None,
-                },
-            )
-        )
-        self.wakeup.set()
-        return run
-
-    async def cancel(self, key: str, run_id: UUID) -> AgentRun:
-        result = await self.services.json_request(
-            "Tsuchi", "POST", self.path(key, run_id) + "/cancel", json={}
-        )
-        self.wakeup.set()
-        return AgentRun.model_validate(result)
 
     async def save(self, run: AgentRun, **changes) -> AgentRun:
         state = AgentRunState.model_validate({**run.model_dump(), **changes})
@@ -146,28 +101,7 @@ class AgentRuns:
         async with self.lock:
             return await self.save(await self.owned(run), **changes)
 
-    async def run(self) -> None:
-        while True:
-            self.wakeup.clear()
-            try:
-                values = await self.services.json_request(
-                    "Tsuchi", "GET", "/api/agent-runs", params={"active": "true"}
-                )
-                for value in values:
-                    run = AgentRun.model_validate(value)
-                    if run.status == "queued" or (
-                        run.status == "running"
-                        and run.lease_expires_at <= datetime.now(UTC)
-                    ):
-                        await self.process(run)
-            except (ServiceError, ValidationError):
-                logger.exception("Could not process the durable agent queue")
-            try:
-                await asyncio.wait_for(self.wakeup.wait(), timeout=2)
-            except TimeoutError:
-                pass
-
-    async def heartbeat(self, run: AgentRun) -> None:
+    async def renew_lease(self, run: AgentRun) -> None:
         while True:
             await asyncio.sleep(10)
             await self.update(
@@ -193,7 +127,7 @@ class AgentRuns:
             "Agent run claimed run=%s at=%s", run.id, datetime.now(UTC).isoformat()
         )
         work = asyncio.create_task(self.advance(run))
-        heartbeat = asyncio.create_task(self.heartbeat(run))
+        heartbeat = asyncio.create_task(self.renew_lease(run))
         try:
             done, _ = await asyncio.wait(
                 {work, heartbeat}, return_when=asyncio.FIRST_COMPLETED

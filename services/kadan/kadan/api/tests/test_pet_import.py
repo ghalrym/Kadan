@@ -10,8 +10,8 @@ from uuid import UUID, uuid5
 import pytest
 from PIL import Image
 
+from kadan.api.pet_client import PetClient
 from kadan.api.pet_import import prepare_atlas, read_package
-from kadan.api.pet_jobs import PetJobs
 
 KEY = "andrew"
 PET_ID = UUID("10000000-0000-4000-8000-000000000009")
@@ -160,7 +160,7 @@ def test_import_uploads_derived_atlas_then_records_ready_candidate():
             "updated_at": "2026-10-17T00:00:00Z",
         }
 
-    jobs = PetJobs(SimpleNamespace(json_request=AsyncMock(side_effect=json_request)))
+    jobs = PetClient(SimpleNamespace(json_request=AsyncMock(side_effect=json_request)))
     atlas, version = prepare_atlas(sheet(9))
     job = asyncio.run(jobs.import_atlas(KEY, PET_ID, "Copper Fox", atlas, version))
     assert [(method, path) for method, path, _ in calls] == [

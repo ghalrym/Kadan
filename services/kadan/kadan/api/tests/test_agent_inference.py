@@ -6,7 +6,9 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from kadan.api.agent_inference import (
+from kadan.api.config import ServiceError
+from kadan.api.pydantic_models.inference import CompletionMessage
+from kadan.runner.agent_inference import (
     MAX_COMMAND_CHARACTERS,
     AgentInference,
     Finish,
@@ -15,8 +17,6 @@ from kadan.api.agent_inference import (
     SendMessage,
     parse_command,
 )
-from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.inference import CompletionMessage
 
 
 def chunk(content="", finish=None):

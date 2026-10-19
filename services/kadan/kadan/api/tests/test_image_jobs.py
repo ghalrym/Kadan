@@ -12,8 +12,8 @@ import pytest
 from PIL import Image
 
 from kadan.api.config import ServiceError
-from kadan.api.image_jobs import ImageJobs
 from kadan.api.pydantic_models.agent_runs import ImageJob
+from kadan.runner.image_jobs import ImageJobs
 
 
 def png():
@@ -285,7 +285,7 @@ def test_lease_loss_fences_request_without_overwriting_new_owner(monkeypatch):
         assert services.fences
         assert not services.runs.wakeup.is_set()
 
-    monkeypatch.setattr("kadan.api.image_jobs.HEARTBEAT_SECONDS", 0.001)
+    monkeypatch.setattr("kadan.runner.image_jobs.HEARTBEAT_SECONDS", 0.001)
     asyncio.run(run())
 
 
@@ -305,5 +305,5 @@ def test_heartbeat_observes_cancellation_of_pending_generation(monkeypatch):
         assert services.fences
         assert services.runs.wakeup.is_set()
 
-    monkeypatch.setattr("kadan.api.image_jobs.HEARTBEAT_SECONDS", 0.001)
+    monkeypatch.setattr("kadan.runner.image_jobs.HEARTBEAT_SECONDS", 0.001)
     asyncio.run(run())
