@@ -149,6 +149,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 include(CTest)
+if(BUILD_TESTING)
+  add_test(NAME worker-packaging
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/worker_packaging.cmake)
+endif()
 
 # Original CPU H3 VAE decoder-input component; not a full video generator.
 add_library(kadan_video src/models/video/video.cpp)
@@ -481,7 +485,8 @@ endif()
 function(kadan_install_worker target)
   install(TARGETS ${target}
     RUNTIME_DEPENDENCIES
-      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      # The NVIDIA runtime supplies the host driver; never bundle its link stub.
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux" "^libcuda[.]so[.]1$"
       POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
     RUNTIME DESTINATION libexec COMPONENT ${target}
     LIBRARY DESTINATION lib COMPONENT ${target})
