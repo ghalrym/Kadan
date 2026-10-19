@@ -75,5 +75,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v7
-      - run: docker compose config --quiet
-      - run: docker compose -f compose.yaml -f compose.development.yaml config --quiet
+      - run: docker compose --profile tracing config --quiet
+      - run: docker compose -f compose.yaml -f compose.development.yaml --profile tracing config --quiet
+      - name: Validate Jaeger configuration without starting a collector
+        run: docker compose run --rm --no-deps -T jaeger validate --config /etc/jaeger/config.yaml
