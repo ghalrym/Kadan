@@ -156,6 +156,9 @@ worker connections, which cancels in-flight work; the workers reconnect.
 
 ### Local tracing with Jaeger
 
+[Observability architecture](docs/architecture/observability.md) defines the shared
+span-first performance details, privacy boundary and role of operational logs.
+
 Jaeger is optional infrastructure for inspecting trace waterfalls. Application
 tracing remains disabled until an OTLP trace endpoint is configured. The `tracing`
 profile adds one official Jaeger 2.22.0 container, pinned to its multi-platform
@@ -261,7 +264,10 @@ resubmit inference or alter cancellation, leases, image saving or completion
 transactions.
 
 The exporter has an attribute allowlist for route templates, HTTP method/status,
-fixed operation/stage names, worker kind and recovery state. Span names use fixed
+fixed operation/stage names, worker kind, recovery state and fixed numeric text
+phase counters. Sampled language-worker prefill/decode spans include projection dispatch
+counts and completed-call wall costs within a bounded 32-attribute limit. These
+do not measure individual CUDA kernels. Span names use fixed
 operations and server route templates. It strips all exception descriptions,
 events, links and unapproved attributes, including automatic HTTPX URLs. No prompt,
 completion, image/audio payload, tool arguments/results, file content, auth header,

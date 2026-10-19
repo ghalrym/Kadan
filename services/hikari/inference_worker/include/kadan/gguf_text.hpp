@@ -70,6 +70,7 @@ public:
     };
 
     Timing take_timing();
+    void set_projection_timing(bool enabled);
 
 private:
     struct Impl;

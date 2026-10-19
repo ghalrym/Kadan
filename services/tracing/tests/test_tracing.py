@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import httpx
 import pytest
 from kadan_tracing import (
+    TEXT_ATTRIBUTES,
     PrivateExporter,
     RequestTracing,
     carrier,
@@ -229,3 +230,28 @@ def test_actual_httpx_span_exports_safe_method_status_and_propagates_context():
     assert "traceparent" in requests[0].headers
     assert "private" not in str(exported.attributes)
     assert "credential" not in str(exported.attributes)
+
+
+def test_text_metric_export_is_fixed_numeric_and_finite():
+    destination = Mock()
+    source = ReadableSpan(
+        name="kadan.native.prefill",
+        resource=Resource({"service.name": "unit"}),
+        attributes={
+            "kadan.text.tokens": 9,
+            "kadan.text.large_row_seconds": 0.5,
+            "kadan.text.rows": "private",
+            "kadan.text.packed_calls": True,
+            "kadan.text.unsupported_seconds": float("nan"),
+            "kadan.text.batch_calls": -1,
+            "kadan.text.batch_rejections": 2**63,
+            "kadan.text.arbitrary": 42,
+        },
+    )
+    PrivateExporter(destination).export([source])
+    result = destination.export.call_args.args[0][0]
+    assert dict(result.attributes) == {
+        "kadan.text.tokens": 9,
+        "kadan.text.large_row_seconds": 0.5,
+    }
+    assert len(TEXT_ATTRIBUTES) + 3 <= 32

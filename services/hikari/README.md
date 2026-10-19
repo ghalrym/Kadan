@@ -158,16 +158,14 @@ group and command supports `--help` with its arguments and options.
 | `infer chat` / `infer image` / `infer video` | Submit a JSON request file through the live API to its worker queue. |
 | `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
 | `infer video-status` / `infer video-cancel` / `infer video-download` | Inspect, cancel, or download a server-owned video job. |
-| `profile build` / `profile phase` | Build the profiler and mark phases on an already instrumented live worker. |
-| `profile symbols` / `profile summarize` | Extract executable symbols and summarize captured phase measurements. |
 | `check --help` | List formatting, frontend builds, and unit-test commands. |
 | `pr preflight` / `pr publish` | Run the restricted owner-dispatched GitHub publisher with workflow inputs. |
 
 Native inspection tool builds require CMake and a C++20 compiler. They only read
 checkpoint metadata and plan memory; they do not load or execute models. Use
 `native --build-dir PATH` before the subcommand to select another build directory.
-The optional profiler additionally requires the CUDA toolkit. It can analyze an
-already instrumented live worker; the CLI never launches an inference process.
+Request performance details belong to existing spans in Jaeger; see the
+[observability architecture](../../docs/architecture/observability.md).
 
 All generation runs in the API-owned inference worker. CLI commands send the same
 JSON request bodies as the frontend to the existing API endpoints. The API applies

@@ -3,10 +3,9 @@
 import bisect
 import json
 import os
-import signal
-import statistics
-import subprocess
 from pathlib import Path
+import signal
+import subprocess
 
 import typer
 
@@ -106,86 +105,3 @@ def summarize(symbols: Path, report: Path, output: Path | None = None) -> None:
         typer.echo(result, nl=False)
     else:
         output.write_text(result)
-
-
-def projection_samples(report: Path) -> dict:
-    """Extract aggregate phase records without copying unrelated log/payload fields."""
-    samples = []
-    for line in report.read_text().splitlines():
-        marker = "KADAN_TEXT_TIMING "
-        if marker not in line:
-            continue
-        record = json.loads(line.split(marker, 1)[1])
-        detail = record.get("projection_detail")
-        if detail is None:
-            continue
-        if detail.get("version") != 1:
-            raise ValueError("Unsupported projection timing version.")
-        samples.append(
-            {
-                key: record[key]
-                for key in (
-                    "phase",
-                    "tokens",
-                    "seconds",
-                    "projection_seconds",
-                    "attention_seconds",
-                    "recurrent_seconds",
-                    "device_seconds",
-                    "projections",
-                    "projection_batches",
-                    "streamed_bytes",
-                    "host_expert_bytes",
-                    "packed_bytes",
-                    "device_bytes",
-                    "device_slices",
-                    "ram_bytes",
-                    "ram_slices",
-                    "prepare_seconds",
-                    "host_wait_seconds",
-                    "projection_detail",
-                )
-                if key in record
-            }
-        )
-    if not samples:
-        raise ValueError("No opted-in projection samples found.")
-    phases = {}
-    for phase in sorted({sample["phase"] for sample in samples}):
-        selected = [sample for sample in samples if sample["phase"] == phase]
-        series = {
-            "seconds": [sample["seconds"] for sample in selected],
-            "projection_seconds": [sample["projection_seconds"] for sample in selected],
-            "batch_wall_seconds": [
-                sample["projection_detail"]["batch_wall_seconds"] for sample in selected
-            ],
-            "source_wall_seconds": [
-                sum(
-                    group["source_wall_seconds"]
-                    for group in sample["projection_detail"]["groups"]
-                )
-                for sample in selected
-            ],
-        }
-        phases[phase] = {
-            "samples": len(selected),
-            "spread": {
-                name: {
-                    "min": min(values),
-                    "median": statistics.median(values),
-                    "max": max(values),
-                }
-                for name, values in series.items()
-            },
-        }
-    return {
-        "samples": samples,
-        "phases": phases,
-        "timing": "completed-call wall seconds, not GPU time",
-    }
-
-
-@app.command("projections")
-def projections(report: Path, output: Path) -> None:
-    """Extract projection phase samples from a saved worker log; runs no inference."""
-    output.write_text(json.dumps(projection_samples(report), indent=2) + "\n")

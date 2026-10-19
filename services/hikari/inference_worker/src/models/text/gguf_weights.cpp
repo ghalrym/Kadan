@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -115,8 +114,6 @@ void Workers::run(std::size_t count, const std::function<void(std::size_t)>& bod
 }
 
 GgufWeights::GgufWeights(const char* root, const std::atomic_bool* cancel) {
-    const auto* diagnostic = std::getenv("KADAN_TEXT_PROJECTION_TIMING");
-    projection_timing_ = diagnostic && std::string_view(diagnostic) == "1";
     if (cancel)
         cancel_ = cancel;
     check_cancel();
@@ -460,20 +457,6 @@ std::vector<Vec> GgufWeights::project(
              p.device}
         );
     }
-    auto record = [&](std::size_t i, const char* dispatch, double seconds = 0) {
-        if (!projection_timing_)
-            return;
-        const auto& p = prepared[i];
-        timing_.projection_detail.add(
-            requests[i].name,
-            p.tensor->type,
-            p.matrix->columns,
-            p.matrix->rows,
-            requests[i].input.size() / p.matrix->columns,
-            dispatch,
-            seconds
-        );
-    };
     std::vector<bool> done(requests.size());
     if (!jobs.empty()) {
         const auto device_started = std::chrono::steady_clock::now();
@@ -505,8 +488,7 @@ std::vector<Vec> GgufWeights::project(
         if (projection_timing_) {
             auto& detail = timing_.projection_detail;
             ++detail.batch_calls;
-            detail.batch_unsupported += result == ProjectionResult::unsupported;
-            detail.batch_wall_seconds += batch_seconds;
+            detail.batch_rejections += result == ProjectionResult::unsupported;
         }
     }
     if (join.workers) {
@@ -541,7 +523,11 @@ std::vector<Vec> GgufWeights::project(
     if (projection_timing_)
         for (std::size_t i = 0; i < requests.size(); ++i)
             if (done[i])
-                record(i, on_host[i] ? "host_expert" : "packed_batch");
+                timing_.projection_detail.add(
+                    requests[i].input.size() / prepared[i].matrix->columns,
+                    on_host[i] ? ProjectionTiming::Path::host
+                               : ProjectionTiming::Path::packed
+                );
     for (std::size_t i = 0; i < requests.size(); ++i) {
         if (done[i])
             continue;
@@ -587,11 +573,11 @@ std::vector<Vec> GgufWeights::project(
             );
         }
         if (projection_timing_)
-            record(
-                i,
+            timing_.projection_detail.add(
+                request.input.size() / m.columns,
                 request.input.size() / m.columns > DenseCompute::gguf_batch_rows
-                    ? "source_rows_gt_8"
-                    : "source_batch_unsupported",
+                    ? ProjectionTiming::Path::large_rows
+                    : ProjectionTiming::Path::batch_unsupported,
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - source_started
                 )

@@ -373,25 +373,25 @@ void activations() {
 }  // namespace
 
 void projection_timing_aggregates() {
-    using kadan::text::ProjectionTiming;
-    ProjectionTiming t;
-    for (const auto rows : {1u, 8u, 9u, 32u, 64u}) {
-        t.add("blk.0.attn_q.weight", 12, 256, 512, rows, "source_rows_gt_8", .25);
-        t.add("blk.39.attn_q.weight", 12, 256, 512, rows, "source_rows_gt_8", .25);
-    }
-    check(t.groups.size() == 4, "projection_row_buckets");
-    const auto& nine =
-        t.groups.at({"attn_q.weight", 12, 256, 512, 32, "source_rows_gt_8"});
+    kadan::text::ProjectionTiming timing;
+    using Path = kadan::text::ProjectionTiming::Path;
+    timing.add(8, Path::packed);
+    timing.add(1, Path::host);
+    timing.add(9, Path::large_rows, .25);
+    timing.add(64, Path::large_rows, .75);
+    timing.add(8, Path::batch_unsupported, .5);
     check(
-        nine.calls == 4 && nine.rows == 82 && nine.source_wall_seconds == 1,
-        "projection_aggregate"
+        timing.rows == 90 && timing.packed_calls == 1 && timing.host_calls == 1,
+        "projection_rows_and_completed_paths"
     );
-    t.add("output.weight", 12, 256, 512, 8, "packed_batch");
-    t.add("output.weight", 12, 256, 512, 8, "source_batch_unsupported", .5);
-    check(t.groups.size() == 6, "projection_dispatch_separation");
-    for (unsigned i = 0; i < 1100; ++i)
-        t.add("output.weight", i, 256, 512, 1, "packed_batch");
-    check(t.groups.size() == 1024 && t.dropped == 82, "projection_aggregate_bound");
+    check(
+        timing.large_row_calls == 2 && timing.large_row_seconds == 1,
+        "projection_large_row_cost"
+    );
+    check(
+        timing.unsupported_calls == 1 && timing.unsupported_seconds == .5,
+        "projection_eligible_batch_rejection_cost"
+    );
 }
 
 int main() {

@@ -4,9 +4,40 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <optional>
 
 namespace kadan::serving {
-using TraceSink = std::function<void(const char*, std::int64_t, std::int64_t, bool)>;
+// Fixed numeric details attached only to existing sampled text phase spans.
+struct TextPhaseMetrics {
+    std::uint64_t tokens = 0;
+    double projection_seconds = 0;
+    double attention_seconds = 0;
+    double prepare_seconds = 0;
+    double device_seconds = 0;
+    double host_wait_seconds = 0;
+    double recurrent_seconds = 0;
+    std::uint64_t projections = 0;
+    std::uint64_t projection_batches = 0;
+    std::uint64_t streamed_bytes = 0;
+    std::uint64_t host_expert_bytes = 0;
+    std::uint64_t packed_bytes = 0;
+    std::uint64_t device_bytes = 0;
+    std::uint64_t device_slices = 0;
+    std::uint64_t ram_bytes = 0;
+    std::uint64_t ram_slices = 0;
+    std::uint64_t packed_calls = 0;
+    std::uint64_t host_calls = 0;
+    std::uint64_t large_row_calls = 0;
+    std::uint64_t unsupported_calls = 0;
+    std::uint64_t rows = 0;
+    std::uint64_t batch_calls = 0;
+    std::uint64_t batch_rejections = 0;
+    double large_row_seconds = 0;
+    double unsupported_seconds = 0;
+};
+
+using TraceSink = std::function<
+    void(const char*, std::int64_t, std::int64_t, bool, const TextPhaseMetrics*)>;
 
 inline std::int64_t trace_unix_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -29,12 +60,18 @@ public:
                     phase_,
                     start_,
                     trace_unix_ns(),
-                    std::uncaught_exceptions() > exceptions_
+                    std::uncaught_exceptions() > exceptions_,
+                    metrics_ ? &*metrics_ : nullptr
                 );
             } catch (...) {
                 // Observability must never alter completion or cancellation.
             }
         }
+    }
+
+    void text_metrics(TextPhaseMetrics metrics) noexcept {
+        if (sink_)
+            metrics_ = metrics;
     }
 
     InferenceTrace(const InferenceTrace&) = delete;
@@ -45,5 +82,6 @@ private:
     const char* phase_;
     std::int64_t start_;
     int exceptions_;
+    std::optional<TextPhaseMetrics> metrics_;
 };
 }  // namespace kadan::serving

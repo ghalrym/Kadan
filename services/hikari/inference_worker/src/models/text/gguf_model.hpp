@@ -144,6 +144,10 @@ public:
         ProjectionTiming projection_detail;
     };
 
+    void set_projection_timing(bool enabled) {
+        projection_timing_ = enabled;
+    }
+
     Timing take_timing() const {
         return std::exchange(timing_, {});
     }
