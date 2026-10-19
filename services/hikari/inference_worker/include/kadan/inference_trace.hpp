@@ -56,10 +56,16 @@ inline std::int64_t trace_unix_ns() {
 
 class InferenceTrace {
 public:
+    InferenceTrace(const TraceSink& sink, const char* phase)
+        : InferenceTrace(sink, phase, make_context(bool(sink))) {
+    }
+
+    // A missing shared collector must stay disabled: retrying as a singleton
+    // could mislabel a batch's full cost after a telemetry allocation failure.
     InferenceTrace(
-        const TraceSink& sink, const char* phase, std::shared_ptr<CudaPhase> shared = {}
+        const TraceSink& sink, const char* phase, std::shared_ptr<CudaPhase> shared
     )
-        : cuda_(shared ? shared : make_context(bool(sink))), sink_(sink), phase_(phase),
+        : cuda_(std::move(shared)), sink_(sink), phase_(phase),
           start_(sink ? trace_unix_ns() : 0), exceptions_(std::uncaught_exceptions()) {
     }
 

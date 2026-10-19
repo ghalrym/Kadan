@@ -90,6 +90,11 @@ int main() {
     }
     assert(cuda_observed.size() == 1 && cuda_observed[0].kernels[0].calls == 3);
     assert(!cuda_phase);
+    {
+        InferenceTrace missing_shared(cuda_sink, "execute", nullptr);
+        assert(!cuda_phase);
+    }
+    assert(cuda_observed.size() == 1);
     // One shared GPU batch, reported explicitly as shared on each sampled span.
     {
         CudaPhaseScope batch(true, 2);
