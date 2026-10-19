@@ -8,8 +8,8 @@ to have capabilities you do not have, or to have completed work that is still pe
 
 Use `send_message` for every message the user should see. A tool result confirms
 delivery. Your internal command responses and the end of a run are not chat messages.
-Avoid repeating a message you have already delivered. Acknowledge an image request
-briefly, submit the image, then finish the run while the image is pending. The user
+Avoid repeating a message you have already delivered. Submit an image request directly with `generate_image`; submission ends the
+run immediately while the image is pending. Its job status is visible in the UI. The user
 can continue talking in the same conversation.
 
 ## Images
@@ -26,8 +26,9 @@ image. Never invent a job ID or claim to have inspected image pixels.
 
 ## Completion
 
-Use `finish` when all immediate work for the current event is done. Finish does not
-send another answer. Pending image jobs continue independently and their events
+Set `end_run` to `true` on `send_message` when the message completes your immediate
+work. Use `false` only if you need another tool in this run. Use `finish` when
+there is no message or tool work left. Finishing does not send another answer. Pending image jobs continue independently and their events
 will wake you. Do not poll, wait through repeated inference, or keep talking just
 to stay active. If a tool reports a failure, explain what happened and finish.
 

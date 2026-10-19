@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from time import monotonic
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -165,6 +166,9 @@ class AgentRuns:
             if error.status == 409:
                 return
             raise
+        logger.info(
+            "Agent run claimed run=%s at=%s", run.id, datetime.now(UTC).isoformat()
+        )
         work = asyncio.create_task(self.advance(run))
         heartbeat = asyncio.create_task(self.heartbeat(run))
         try:
@@ -230,6 +234,25 @@ class AgentRuns:
                 role="user",
                 content=f"Respond to user message {run.trigger_message_id} in the conversation above. Other user messages have their own queued runs.",
             )
+        jobs = [
+            ImageJob.model_validate(value)
+            for value in await self.services.json_request(
+                "Tsuchi",
+                "GET",
+                f"/api/agents/{run.agent_key}/resources/{run.conversation_id}/image-jobs",
+            )
+        ]
+        # Pending jobs survive their submitting run; later turns must see them.
+        pending = [
+            job for job in jobs if job.status in {"queued", "running", "cancelling"}
+        ]
+        if pending:
+            trigger.content += "\nPending image jobs (do not resubmit): " + json.dumps(
+                [
+                    {"job_id": str(job.id), "status": job.status, "prompt": job.prompt}
+                    for job in pending
+                ]
+            )
         budget = MAX_CONTEXT - len(system.content) - len(trigger.content)
         if budget < 0:
             raise ServiceError(
@@ -282,6 +305,12 @@ class AgentRuns:
                 status = await self.services.inference_status()
                 if status.state != "ready":
                     raise ServiceError(status.message, 503)
+                started = monotonic()
+                logger.info(
+                    "Agent inference started run=%s at=%s",
+                    run.id,
+                    datetime.now(UTC).isoformat(),
+                )
                 try:
                     command = await self.inference.call(
                         [
@@ -306,6 +335,13 @@ class AgentRuns:
                         ],
                     )
                     continue
+                finally:
+                    logger.info(
+                        "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
+                        run.id,
+                        datetime.now(UTC).isoformat(),
+                        monotonic() - started,
+                    )
                 # Persist the action before side effects. Recovery reuses its derived ID.
                 run = await self.update(
                     run,
@@ -363,6 +399,9 @@ class AgentRuns:
                     "delivered": True,
                     "message_id": str(action_id),
                 }
+            end_run = isinstance(command, GenerateImage) or command.end_run
+            # Save the result and release ownership together. Recovery before this
+            # write replays the same action ID; after it no inference is scheduled.
             run = await self.update(
                 run,
                 transcript=[
@@ -371,4 +410,17 @@ class AgentRuns:
                         role="user", content="Tool result: " + json.dumps(result)
                     ),
                 ],
+                **(
+                    {"status": "completed", "owner_id": None, "lease_expires_at": None}
+                    if end_run
+                    else {}
+                ),
             )
+            if end_run:
+                logger.info(
+                    "Agent run yielded run=%s tool=%s at=%s",
+                    run.id,
+                    command.tool,
+                    datetime.now(UTC).isoformat(),
+                )
+                return

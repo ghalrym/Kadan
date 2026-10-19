@@ -60,12 +60,18 @@ def invoke(stream, status=200, media_type="text/event-stream"):
     "command,expected",
     [
         (
-            {"tool": "send_message", "content": "Hello", "image_job_id": None},
+            {
+                "tool": "send_message",
+                "end_run": True,
+                "content": "Hello",
+                "image_job_id": None,
+            },
             SendMessage,
         ),
         (
             {
                 "tool": "send_message",
+                "end_run": True,
                 "content": "Here it is",
                 "image_job_id": "10000000-0000-4000-8000-000000000001",
             },
@@ -195,3 +201,13 @@ def test_cancel_closes_silent_hikari_stream():
             assert stream.closed
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("end_run", [None, "true", 1, [], {}])
+def test_message_requires_explicit_boolean_run_boundary(end_run):
+    command = {"tool": "send_message", "content": "Hello"}
+    if end_run is not None:
+        command["end_run"] = end_run
+    with pytest.raises(ServiceError) as error:
+        parse_command(json.dumps(command))
+    assert error.value.code == "invalid_command"

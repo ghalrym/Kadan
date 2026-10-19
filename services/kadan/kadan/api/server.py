@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -64,5 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
     return app
 
+
+logging.basicConfig(level=logging.INFO)
 
 app = create_app()

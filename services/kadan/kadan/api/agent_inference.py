@@ -18,14 +18,17 @@ INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 TOOL_PROTOCOL = """You control this conversation through exactly one JSON command per response.
 Return only a JSON object, without Markdown, reasoning, or text outside the object.
 The available commands are:
-{"tool":"send_message","content":"Text to show the user","image_job_id":null}
+{"tool":"send_message","content":"Text to show the user","image_job_id":null,"end_run":true}
 {"tool":"generate_image","prompt":"Image description"}
 {"tool":"finish"}
 send_message delivers visible text immediately. To deliver a completed image, set
 image_job_id to its job UUID. Only deliver images whose completion event you received.
-generate_image submits a background job and returns its ID; submission is not delivery.
+Set end_run=true when this message completes the immediate work. This delivers the
+message and ends the run without another inference call. Use false only when you
+need another tool now.
+generate_image saves a background job and its ID, then ends this run immediately;
+submission is not delivery. Submit directly without a separate acknowledgment.
 Tool results and image completion or failure events arrive as user-role messages.
-Continue after tool results as needed, then finish when there is no immediate work.
 finish ends this run without sending text. Image events will wake you again.
 Use precisely the documented fields. Content must be nonblank and at most 16000
 characters; an image prompt must be nonblank and at most 8000 characters.
@@ -37,6 +40,7 @@ class SendMessage(BaseModel):
     tool: Literal["send_message"]
     content: str = Field(min_length=1, max_length=16000, pattern=r"\S")
     image_job_id: UUID | None = None
+    end_run: bool = Field(strict=True)
 
 
 class GenerateImage(BaseModel):
