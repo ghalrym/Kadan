@@ -19,6 +19,8 @@ class Admission:
         self.active = 0
         self.check_ready = lambda: True
         self.extra_active = lambda: 0
+        self.extra_status = dict
+        self.prove_idle = None
 
     @property
     def fenced(self):
@@ -51,6 +53,7 @@ class Admission:
             "fenced": self.fenced,
             "active": self.active + self.extra_active(),
             "ready": bool(self.service) and self.check_ready(),
+            **self.extra_status(),
         }
 
     @asynccontextmanager
@@ -71,7 +74,20 @@ class Admission:
 
             async def respond(reader, writer):
                 try:
-                    writer.write(json.dumps(self.status()).encode() + b"\n")
+                    command = (await asyncio.wait_for(reader.readline(), 3)).strip()
+                    if command == b"status":
+                        result = self.status()
+                    elif command == b"barrier" and self.prove_idle is not None:
+                        try:
+                            result = await asyncio.wait_for(self.prove_idle(), 25)
+                        except Exception:  # noqa: BLE001 - fixed local command fails closed
+                            result = {
+                                "native_idle": False,
+                                "error": "Native idle barrier failed.",
+                            }
+                    else:
+                        result = {"error": "Unsupported rollout observation command."}
+                    writer.write(json.dumps(result).encode() + b"\n")
                     await writer.drain()
                 finally:
                     writer.close()
@@ -125,12 +141,19 @@ class RolloutAdmission:
             self.gate.leave()
 
 
-async def status():
+async def status(command="status"):
     reader, writer = await asyncio.wait_for(
         asyncio.open_unix_connection("/tmp/kadan-rollout.sock"), 3
     )
     try:
-        print((await asyncio.wait_for(reader.readline(), 3)).decode().strip())
+        writer.write(command.encode() + b"\n")
+        await writer.drain()
+        result = json.loads(
+            await asyncio.wait_for(reader.readline(), 30 if command == "barrier" else 3)
+        )
+        print(json.dumps(result))
+        if "error" in result:
+            raise SystemExit(1)
     finally:
         writer.close()
         await writer.wait_closed()
@@ -170,7 +193,11 @@ def smoke():
 if __name__ == "__main__":
     if sys.argv[1:] == ["status"]:
         asyncio.run(status())
+    elif sys.argv[1:] == ["barrier"]:
+        asyncio.run(status("barrier"))
     elif sys.argv[1:] == ["smoke"]:
         print(json.dumps(smoke()))
     else:
-        raise SystemExit("Usage: python -m kadan_tracing.rollout {status|smoke}")
+        raise SystemExit(
+            "Usage: python -m kadan_tracing.rollout {status|barrier|smoke}"
+        )

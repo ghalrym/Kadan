@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <future>
 #include <thread>
 #include <tuple>
 
@@ -17,7 +18,7 @@ struct FakeState {
     bool wait_once = false, fail_close = false, invalid_input = false;
     unsigned preparations = 0, close_calls = 0;
     std::shared_ptr<Resources> ledger;
-    std::function<void()> during_execute;
+    std::function<void()> during_execute, during_close;
 };
 
 struct FakeEngine : InferenceEngine {
@@ -66,6 +67,8 @@ struct FakeEngine : InferenceEngine {
 
     void close() override {
         ++state.close_calls;
+        if (state.during_close)
+            state.during_close();
         if (state.fail_close)
             throw std::runtime_error("cleanup_failed");
         if (handle) {
@@ -1370,6 +1373,32 @@ void offload_refuses_while_busy_and_releases_when_idle() {
     owner.shutdown();
 }
 
+void cleanup_stays_visible_until_release_completes() {
+    FakeState state;
+    std::vector<std::string> controls;
+    const auto held = offloaded_owner(state, {100, 80, 70}, controls);
+    auto& owner = *held;
+    assert(owner.load({100, 80, 70}));
+    owner.submit(request("resident"));
+    assert(owner.advance());
+    std::promise<void> entered, release;
+    auto released = release.get_future();
+    state.during_close = [&] {
+        entered.set_value();
+        released.wait();
+    };
+    assert(owner.offload());
+    std::thread cleanup([&] { assert(owner.advance()); });
+    entered.get_future().wait();
+    const auto while_closing = owner.status();
+    assert(while_closing.releasing && while_closing.queued == 0);
+    release.set_value();
+    cleanup.join();
+    assert(!owner.status().releasing && !owner.status().busy);
+    state.during_close = {};
+    owner.shutdown();
+}
+
 void shrink_is_acknowledged_even_without_an_engine() {
     FakeState state;
     std::vector<std::string> controls;
@@ -1410,6 +1439,7 @@ void offloaded_owner_retires_a_cancelled_head() {
 int main() {
     offloaded_owner_waits_for_a_budget();
     offload_refuses_while_busy_and_releases_when_idle();
+    cleanup_stays_visible_until_release_completes();
     offloaded_owner_retires_a_cancelled_head();
     shrink_is_acknowledged_even_without_an_engine();
     cohort_target_only_shortens_collection_waiting();

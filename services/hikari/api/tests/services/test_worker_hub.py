@@ -5,6 +5,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi import WebSocketDisconnect
 
@@ -54,11 +55,13 @@ class FakeSocket:
         return [message for message in self.sent if message.get("command") == command]
 
 
-def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), protocol=4):
+def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), protocol=5):
     return {
         "state": "hello",
         "protocol": protocol,
         "pid": 1,
+        "generation": str(uuid4()),
+        "rollout_generation": "",
         "worker": kind,
         "instance": instance or kind + "-1",
         "machine": {

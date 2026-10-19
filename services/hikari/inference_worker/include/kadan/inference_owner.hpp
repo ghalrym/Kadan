@@ -182,8 +182,8 @@ public:
         std::lock_guard guard(mutex_);
         return {
             loaded_,
-            executing_,
-            release_requested_,
+            executing_ || poisoned_,
+            release_requested_ || releasing_ || poisoned_,
             queue_.size(),
             model_,
             ceiling_,
@@ -248,6 +248,7 @@ public:
             if (poisoned_)
                 throw std::runtime_error("cleanup_unconfirmed");
             release = std::exchange(release_requested_, false);
+            releasing_ = release;
             control = control_;
             // An offloaded owner still retires a cancelled head so callers are
             // not left waiting for a load that may never come.
@@ -260,6 +261,13 @@ public:
             }
         }
         if (release) {
+            struct Releasing {
+                InferenceOwner& owner;
+                ~Releasing() {
+                    std::lock_guard guard(owner.mutex_);
+                    owner.releasing_ = false;
+                }
+            } releasing{*this};
             cleanup();
             {
                 std::lock_guard guard(mutex_);
@@ -663,7 +671,7 @@ private:
     EngineConfiguration resident_configuration_;
     Workload resident_workload_ = Workload::llm;
     bool stopping_ = false, poisoned_ = false;
-    bool loaded_, executing_ = false, release_requested_ = false;
+    bool loaded_, executing_ = false, release_requested_ = false, releasing_ = false;
     std::string model_;
     std::function<void(const char*)> control_;
 };

@@ -23,6 +23,7 @@ from api.routes.v1.images import generations as image_generations
 from api.routes.v1.images import requests as image_requests
 from api.routes.v1.videos import generations as video_generations
 from api.services.inference import inference
+from api.services.rollout import NativeBarrier
 from api.services.telemetry import TelemetryMiddleware
 
 
@@ -33,20 +34,19 @@ async def lifespan(app: FastAPI):
         cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)
         await inference.start()
-        started_fenced = admission.fenced
         admission.extra_active = lambda: (
             sum(not job.result.done() for job in inference.worker.jobs.values())
             + sum(not task.done() for task in inference.tasks.values())
+            + inference.worker.submitting
         )
-        admission.check_ready = lambda: (
-            not started_fenced
-            and inference.worker.rollout_safe
-            and {worker.kind for worker in inference.worker.workers.values()}
-            == {"llm", "decision", "tts", "speech", "formatting", "image", "video"}
-            and all(
-                worker.ready.is_set() for worker in inference.worker.workers.values()
-            )
+        barrier = NativeBarrier(
+            inference.worker,
+            admission,
+            lambda: admission.active + admission.extra_active(),
         )
+        admission.check_ready = barrier.ready
+        admission.extra_status = barrier.status
+        admission.prove_idle = barrier.prove
         async with admission.observe():
             yield
 

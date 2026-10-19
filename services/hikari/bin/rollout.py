@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import UUID, uuid4
 
 import typer
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -33,6 +34,7 @@ SERVICES = (
     "kadan-runner",
     "kadan-frontend",
 )
+NATIVE = ("hikari-api", *WORKERS)
 OWNERS = ("kadan-api", "kadan-runner", "hikari-api", "tsuchi-api")
 PIN = re.compile(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}\Z")
 SHA = re.compile(r"[a-f0-9]{40}\Z")
@@ -68,6 +70,51 @@ class Release(BaseModel):
     @classmethod
     def read(cls, path: Path) -> Release:
         return cls(**json.loads(path.read_text()))
+
+
+class NativeWorker(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: str
+    instance: str
+    generation: UUID
+
+
+class NativeProof(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    native_idle: bool
+    api_generation: UUID
+    cold_start_generation: str | None
+    workers: tuple[NativeWorker, ...]
+
+    @model_validator(mode="after")
+    def valid_idle_cohort(self):
+        expected = {name.removeprefix("hikari-worker-") for name in WORKERS}
+        if (
+            not self.native_idle
+            or len(self.workers) != len(WORKERS)
+            or {worker.kind for worker in self.workers} != expected
+            or len({worker.generation for worker in self.workers}) != len(WORKERS)
+        ):
+            raise ValueError("Native barrier did not prove one complete idle cohort")
+        return self
+
+
+class ContainerIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    started: str
+    image: str
+    hostname: str
+    generation: str | None
+
+
+def affected_services(current: Release, target: Release) -> tuple[str, ...]:
+    affected = {
+        name for name in SERVICES if current.images[name] != target.images[name]
+    }
+    if affected.intersection(NATIVE):
+        affected.update(NATIVE)
+    return tuple(name for name in SERVICES if name in affected)
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -148,16 +195,16 @@ class Compose:
                 }
             ]
             services[name]["environment"] = {"KADAN_ROLLOUT_SERVICE": name}
+        marker = self.state / "gate" / "native.json"
+        if marker.exists():
+            generation = json.loads(marker.read_text())["generation"]
+            for name in NATIVE:
+                services[name].setdefault("environment", {})[
+                    "KADAN_ROLLOUT_GENERATION"
+                ] = generation
         atomic_json(self.state / "images.json", {"services": services})
 
     def preflight(self, current: Release, target: Release) -> None:
-        if any(
-            current.images[name] != target.images[name]
-            for name in ("hikari-api", *WORKERS)
-        ):
-            raise ValueError(
-                "Native queue snapshot protocol required for Hikari image changes"
-            )
         if current.source == target.source and current != target:
             raise ValueError(
                 "A commit cannot be republished with different release contents"
@@ -244,6 +291,226 @@ class Compose:
             str(self.timeout),
             *services,
         )
+
+    def containers(self, services: tuple[str, ...]) -> dict[str, ContainerIdentity]:
+        ids = self.command("ps", "--all", "--quiet", *services).split()
+        if not ids:
+            return {}
+        values = json.loads(
+            subprocess.run(
+                ["docker", "--host", "unix:///var/run/docker.sock", "inspect", *ids],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        result = {}
+        for value in values:
+            name = value["Config"]["Labels"]["com.docker.compose.service"]
+            if name not in services or name in result:
+                raise ValueError("Native cohort has unknown services or replicas")
+            environment = dict(
+                item.split("=", 1) for item in value["Config"]["Env"] if "=" in item
+            )
+            result[name] = ContainerIdentity(
+                id=value["Id"],
+                started=value["State"]["StartedAt"],
+                image=value["Config"]["Image"],
+                hostname=value["Config"]["Hostname"],
+                generation=environment.get("KADAN_ROLLOUT_GENERATION"),
+            )
+        return result
+
+    def barrier(self) -> NativeProof:
+        return NativeProof.model_validate_json(
+            self.command(
+                "exec",
+                "-T",
+                "hikari-api",
+                "python",
+                "-m",
+                "kadan_tracing.rollout",
+                "barrier",
+            )
+        )
+
+    def native_transition(self, previous: Release) -> dict:
+        before = self.containers(NATIVE)
+        if set(before) != set(NATIVE):
+            raise ValueError("Native cohort is incomplete before its idle barrier")
+        proof = self.barrier()
+        after = self.containers(NATIVE)
+        if before != after:
+            raise ValueError("Native container identity changed during idle proof")
+        for worker in proof.workers:
+            container = after["hikari-worker-" + worker.kind]
+            if worker.instance != container.hostname:
+                raise ValueError(
+                    "Native proof does not match enrolled container identity"
+                )
+        if any(
+            container.image != previous.images[name]
+            for name, container in after.items()
+        ):
+            raise ValueError("Native images changed during idle proof")
+        return {
+            "proof": proof.model_dump(mode="json"),
+            "old": {name: value.model_dump() for name, value in after.items()},
+            "generations": [],
+            "fresh_proof": None,
+        }
+
+    def replace_native(self, release: Release, journal: dict) -> None:
+        closed = json.loads((self.state / "gate" / "fence.json").read_text())["closed"]
+        if set(closed) != set(OWNERS):
+            raise ValueError(
+                "Native replacement requires the complete persistent fence"
+            )
+        native = journal["native"]
+        proof = NativeProof(**native["proof"])
+        old = {
+            name: ContainerIdentity(**value) for name, value in native["old"].items()
+        }
+        if set(old) != set(NATIVE):
+            raise ValueError("Persisted native idle proof is incomplete")
+        previous, target = Release(**journal["previous"]), Release(**journal["target"])
+        cohort = self.containers(NATIVE)
+        for name, container in cohort.items():
+            original = (
+                container.id == old[name].id and container.started == old[name].started
+            )
+            replacement = container.generation in native[
+                "generations"
+            ] and container.image in {previous.images[name], target.images[name]}
+            if not (original or replacement):
+                raise ValueError(
+                    "Unknown native process epoch; preserve fence for manual recovery"
+                )
+        # Every old epoch was proven idle; every new epoch was born under this
+        # transaction's still-closed fence and has never accepted application work.
+        self.stop_native_ids(
+            tuple(cohort[name].id for name in WORKERS if name in cohort)
+        )
+        if "hikari-api" in cohort:
+            self.stop_native_ids((cohort["hikari-api"].id,))
+        if self.containers(NATIVE) != cohort:
+            raise RuntimeError("Native container identity changed while stopping")
+        generation = str(uuid4())
+        native["generations"].append(generation)
+        journal["phase"] = "native_stopped"
+        save_pending(self.state, journal)
+        atomic_json(
+            self.state / "gate" / "native.json",
+            {
+                "phase": "cold_start",
+                "generation": generation,
+                "old_workers": [
+                    value.model_dump(mode="json") for value in proof.workers
+                ],
+            },
+        )
+        self.overlay(release)
+        self.command("pull", *NATIVE)
+        self.command(
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--force-recreate",
+            "--wait",
+            "--wait-timeout",
+            str(self.timeout),
+            "hikari-api",
+        )
+        self.command(
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--force-recreate",
+            *WORKERS,
+        )
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                fresh = self.barrier()
+                if (
+                    fresh.cold_start_generation != generation
+                    or fresh.api_generation == proof.api_generation
+                ):
+                    raise ValueError(
+                        "Cold-start barrier does not match the controller generation"
+                    )
+                if {worker.generation for worker in fresh.workers}.intersection(
+                    worker.generation for worker in proof.workers
+                ):
+                    raise ValueError(
+                        "A previous native process reconnected after replacement"
+                    )
+                containers = self.containers(NATIVE)
+                if set(containers) != set(NATIVE) or any(
+                    value.generation != generation
+                    or value.id == old[name].id
+                    or value.image != release.images[name]
+                    for name, value in containers.items()
+                ):
+                    raise ValueError(
+                        "Cold-start container cohort is not fresh and pinned"
+                    )
+                if any(
+                    worker.instance
+                    != containers["hikari-worker-" + worker.kind].hostname
+                    for worker in fresh.workers
+                ):
+                    raise ValueError("Cold-start native identity mismatch")
+                native["fresh_proof"] = fresh.model_dump(mode="json")
+                journal["phase"] = "replacing"
+                save_pending(self.state, journal)
+                return
+            except subprocess.CalledProcessError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "Fresh native cohort did not prove idle"
+                    ) from None
+                time.sleep(0.2)
+
+    def stop_native_ids(self, ids: tuple[str, ...]) -> None:
+        if not ids:
+            return
+        subprocess.run(
+            [
+                "docker",
+                "--host",
+                "unix:///var/run/docker.sock",
+                "stop",
+                "--time",
+                "30",
+                *ids,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout,
+        )
+        values = json.loads(
+            subprocess.run(
+                ["docker", "--host", "unix:///var/run/docker.sock", "inspect", *ids],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            ).stdout
+        )
+        if {value["Id"] for value in values} != set(ids) or any(
+            value["State"]["Running"]
+            or value["State"]["Status"] not in {"exited", "dead", "created"}
+            for value in values
+        ):
+            raise RuntimeError("Native container IDs are not conclusively stopped")
 
     def status(self, service: str) -> dict:
         return json.loads(
@@ -417,71 +684,100 @@ def fence(state: Path, closed: list[str]) -> None:
     atomic_json(gate / "fence.json", {"closed": closed})
 
 
+def save_pending(state: Path, journal: dict) -> None:
+    atomic_json(state / "state.json", {"good": journal["previous"], "pending": journal})
+
+
 def recover(state: Path, backend: Compose, journal: dict) -> None:
-    if journal["phase"] not in {"draining", "replacing"}:
+    if journal["phase"] not in {
+        "draining",
+        "native_stopping",
+        "native_stopped",
+        "replacing",
+    }:
         raise ValueError("Unknown recovery phase; keep admission fenced")
     previous = Release(**journal["previous"])
     logger.warning("Recovering release %s phase %s", previous.source, journal["phase"])
-    if journal["phase"] == "replacing":
-        backend.stop_failed_replacements(journal)
-        backend.drain(tuple(journal["affected"]))
-        backend.replace(previous, tuple(journal["affected"]))
+    if journal["phase"] != "draining":
+        if journal.get("native"):
+            backend.replace_native(previous, journal)
+            others = tuple(name for name in journal["affected"] if name not in NATIVE)
+            if others:
+                backend.stop_failed_replacements({**journal, "affected": others})
+                backend.drain(others)
+                backend.replace(previous, others)
+        else:
+            backend.stop_failed_replacements(journal)
+            backend.drain(tuple(journal["affected"]))
+            backend.replace(previous, tuple(journal["affected"]))
         backend.verify(tuple(journal["affected"]))
     atomic_json(state / "state.json", {"good": previous.model_dump(), "pending": None})
     fence(state, [])
 
 
-def rollout(target: Release, state: Path, backend: Compose) -> None:
-    with locked(state):
+def resume_locked(state: Path, backend: Compose) -> Release:
+    record = json.loads((state / "state.json").read_text())
+    backend.configuration(Release(**record["good"]))
+    if record["pending"]:
+        recover(state, backend, record["pending"])
         record = json.loads((state / "state.json").read_text())
-        backend.configuration(Release(**record["good"]))
-        if record["pending"]:
-            recover(state, backend, record["pending"])
-            record = json.loads((state / "state.json").read_text())
-        current = Release(**record["good"])
-        backend.preflight(current, target)
-        gate = state / "gate" / "fence.json"
-        if gate.exists() and json.loads(gate.read_text())["closed"]:
-            backend.drain()
-            backend.verify(SERVICES)
-            fence(state, [])
-        if current == target:
-            return
-        affected = tuple(
-            name for name in SERVICES if current.images[name] != target.images[name]
-        )
-        if not affected:
-            atomic_json(
-                state / "state.json", {"good": target.model_dump(), "pending": None}
-            )
-            return
-        journal = {
-            "previous": current.model_dump(),
-            "target": target.model_dump(),
-            "affected": affected,
-            "phase": "draining",
-        }
-        atomic_json(
-            state / "state.json", {"good": current.model_dump(), "pending": journal}
-        )
-        try:
-            backend.drain()
-            journal["phase"] = "replacing"
-            atomic_json(
-                state / "state.json", {"good": current.model_dump(), "pending": journal}
-            )
-            logger.info(
-                "Replacing release %s services %s", target.source, ",".join(affected)
-            )
-            backend.replace(target, affected)
-            backend.verify(affected)
-        except Exception:
-            recover(state, backend, journal)
-            raise
+    current = Release(**record["good"])
+    gate = state / "gate" / "fence.json"
+    if gate.exists() and json.loads(gate.read_text())["closed"]:
+        backend.drain()
+        backend.verify(SERVICES)
+        fence(state, [])
+    return current
+
+
+def rollout_locked(target: Release, state: Path, backend: Compose) -> None:
+    current = resume_locked(state, backend)
+    backend.preflight(current, target)
+    if current == target:
+        return
+    affected = affected_services(current, target)
+    if not affected:
         atomic_json(
             state / "state.json", {"good": target.model_dump(), "pending": None}
         )
-        fence(state, [])
+        return
+    journal = {
+        "previous": current.model_dump(),
+        "target": target.model_dump(),
+        "affected": affected,
+        "phase": "draining",
+        "native": None,
+    }
+    save_pending(state, journal)
+    try:
+        backend.drain()
+        if set(affected).intersection(NATIVE):
+            journal["native"] = backend.native_transition(current)
+            journal["phase"] = "native_stopping"
+        else:
+            journal["phase"] = "replacing"
+        save_pending(state, journal)
+        logger.info(
+            "Replacing release %s services %s", target.source, ",".join(affected)
+        )
+        if journal["native"]:
+            backend.replace_native(target, journal)
+            others = tuple(name for name in affected if name not in NATIVE)
+            if others:
+                backend.replace(target, others)
+        else:
+            backend.replace(target, affected)
+        backend.verify(affected)
+    except Exception:
+        recover(state, backend, journal)
+        raise
+    atomic_json(state / "state.json", {"good": target.model_dump(), "pending": None})
+    fence(state, [])
+
+
+def rollout(target: Release, state: Path, backend: Compose) -> None:
+    with locked(state):
+        rollout_locked(target, state, backend)
 
 
 def download_release(run_id: int, destination: Path) -> Release:
@@ -490,6 +786,7 @@ def download_release(run_id: int, destination: Path) -> Release:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     run = json.loads(result.stdout)
     if (
@@ -517,6 +814,7 @@ def download_release(run_id: int, destination: Path) -> Release:
             str(destination),
         ],
         check=True,
+        timeout=120,
     )
     release = Release.read(destination / "release.json")
     if release.source != run["head_sha"]:
