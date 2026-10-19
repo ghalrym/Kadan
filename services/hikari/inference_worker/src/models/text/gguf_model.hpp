@@ -1,4 +1,5 @@
 #pragma once
+#include "kadan/text_projection_timing.hpp"
 // Shared pieces of the native GGUF text models: tensor binding, bounded device
 // projections, F32 layer math and the per-architecture model interface. Layer
 // math follows llama.cpp's GGUF graphs and uses F32 activation arithmetic.
@@ -140,7 +141,12 @@ public:
                recurrent = 0;
         std::size_t projections = 0, batches = 0;
         Bytes streamed = 0, host = 0;
+        ProjectionTiming projection_detail;
     };
+
+    void set_projection_timing(bool enabled) {
+        projection_timing_ = enabled;
+    }
 
     Timing take_timing() const {
         return std::exchange(timing_, {});
@@ -191,6 +197,7 @@ private:
     // still checks the files before and after it runs.
     mutable std::map<SliceKey, WeightIdentity> identities_;
     mutable Timing timing_;
+    bool projection_timing_ = false;
     // Thread stacks are covered by the engine's fixed host allowance.
     mutable std::unique_ptr<Workers> workers_;
     // Measured bytes per second of host-executed experts and of slices the

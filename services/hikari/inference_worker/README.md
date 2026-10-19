@@ -271,3 +271,20 @@ protection or preserving residency across existing retirement boundaries.
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/hikari.py infer` to submit requests through the live API and its
 existing queue. There are no standalone model execution tools.
+
+## Text performance telemetry
+
+Sampled text requests attach phase counters and a fixed projection dispatch
+summary to their existing native prefill/decode spans in Jaeger. Unsampled
+requests do not collect the additional projection summary. Performance details
+are not emitted as separate text timing logs or per-token spans.
+
+Projection durations are completed-call wall time, including source reads,
+transfers, validation and existing synchronization; they are not GPU kernel
+durations. Packed batch time remains `device_seconds`. Large-row source bypass
+and eligible-batch rejection have separate counts and source wall totals. Counts
+also distinguish accepted batch matrices and host experts, with activation row
+sums. Shared Qwen35/Qwen4 execution paths feed the same summary. These counters
+do not separate dequantization, SGEMM or transfers, or establish numerical parity
+or cross-tier performance. See the observability architecture document for the
+shared export/privacy boundary and the purpose of operational logs.

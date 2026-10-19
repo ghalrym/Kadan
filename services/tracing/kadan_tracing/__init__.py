@@ -1,6 +1,7 @@
 """Opt-in, bounded tracing shared by the independently packaged Python services."""
 
 import asyncio
+import math
 import os
 from contextlib import contextmanager
 from datetime import datetime
@@ -32,6 +33,37 @@ ATTRIBUTES = frozenset(
     }
 )
 
+# Fixed numeric attributes, never arbitrary worker-provided keys or strings.
+TEXT_ATTRIBUTES = frozenset(
+    {
+        "kadan.text.tokens",
+        "kadan.text.projection_seconds",
+        "kadan.text.attention_seconds",
+        "kadan.text.prepare_seconds",
+        "kadan.text.device_seconds",
+        "kadan.text.host_wait_seconds",
+        "kadan.text.recurrent_seconds",
+        "kadan.text.projections",
+        "kadan.text.projection_batches",
+        "kadan.text.streamed_bytes",
+        "kadan.text.host_expert_bytes",
+        "kadan.text.packed_bytes",
+        "kadan.text.device_bytes",
+        "kadan.text.device_slices",
+        "kadan.text.ram_bytes",
+        "kadan.text.ram_slices",
+        "kadan.text.packed_calls",
+        "kadan.text.host_calls",
+        "kadan.text.large_row_calls",
+        "kadan.text.unsupported_calls",
+        "kadan.text.rows",
+        "kadan.text.batch_calls",
+        "kadan.text.batch_rejections",
+        "kadan.text.large_row_seconds",
+        "kadan.text.unsupported_seconds",
+    }
+)
+
 
 class PrivateExporter(SpanExporter):
     """Enforce the export boundary even for third-party HTTP instrumentation."""
@@ -46,6 +78,12 @@ class PrivateExporter(SpanExporter):
                 key: value
                 for key, value in span.attributes.items()
                 if key in ATTRIBUTES
+                or (
+                    key in TEXT_ATTRIBUTES
+                    and type(value) in (int, float)
+                    and 0 <= value < 2**63
+                    and math.isfinite(value)
+                )
             }
             # The HTTPX instrumentor still defaults to legacy HTTP semantics.
             method = span.attributes.get("http.method")
@@ -93,7 +131,7 @@ def configure(service: str) -> TracerProvider | None:
         resource=Resource({"service.name": service}),
         sampler=ParentBased(TraceIdRatioBased(ratio)),
         span_limits=SpanLimits(
-            max_attributes=16, max_events=0, max_links=0, max_attribute_length=128
+            max_attributes=32, max_events=0, max_links=0, max_attribute_length=128
         ),
         shutdown_on_exit=False,
     )
@@ -268,7 +306,7 @@ def worker_tracer(kind: str) -> trace.Tracer:
         provider = TracerProvider(
             resource=Resource({"service.name": "hikari-worker-" + kind}),
             shutdown_on_exit=False,
-            span_limits=SpanLimits(max_attributes=16, max_events=0, max_links=0),
+            span_limits=SpanLimits(max_attributes=32, max_events=0, max_links=0),
         )
         provider.add_span_processor(_processor)
         _relays[kind] = provider.get_tracer("kadan.native")

@@ -1,5 +1,4 @@
 #include <chrono>
-#include <cstdio>
 
 #include "kadan/chat_prompt.hpp"
 #include "kadan/gguf_text.hpp"
@@ -10,33 +9,34 @@
 
 namespace kadan::serving {
 namespace {
-// One opted-in stderr line per phase; the API relays it to its log.
-void timing_record(
-    const char* phase, std::size_t tokens, double seconds, text::Engine::Timing t
-) {
-    const Json record{
-        {"phase", phase},
-        {"tokens", tokens},
-        {"seconds", seconds},
-        {"projection_seconds", t.projection_seconds},
-        {"attention_seconds", t.attention_seconds},
-        {"prepare_seconds", t.prepare_seconds},
-        {"device_seconds", t.device_seconds},
-        {"host_wait_seconds", t.host_wait_seconds},
-        {"recurrent_seconds", t.recurrent_seconds},
-        {"host_seconds", seconds - t.projection_seconds - t.attention_seconds},
-        {"projections", t.projections},
-        {"projection_batches", t.batches},
-        {"streamed_bytes", t.streamed_bytes},
-        {"host_expert_bytes", t.host_bytes},
-        {"packed_bytes", t.packed_bytes},
-        {"device_bytes", t.device_bytes},
-        {"device_slices", t.device_slices},
-        {"ram_bytes", t.ram_bytes},
-        {"ram_slices", t.ram_slices}
+TextPhaseMetrics phase_metrics(std::size_t tokens, const text::Engine::Timing& t) {
+    return {
+        tokens,
+        t.projection_seconds,
+        t.attention_seconds,
+        t.prepare_seconds,
+        t.device_seconds,
+        t.host_wait_seconds,
+        t.recurrent_seconds,
+        t.projections,
+        t.batches,
+        t.streamed_bytes,
+        t.host_bytes,
+        t.packed_bytes,
+        t.device_bytes,
+        t.device_slices,
+        t.ram_bytes,
+        t.ram_slices,
+        t.projection_detail.packed_calls,
+        t.projection_detail.host_calls,
+        t.projection_detail.large_row_calls,
+        t.projection_detail.unsupported_calls,
+        t.projection_detail.rows,
+        t.projection_detail.batch_calls,
+        t.projection_detail.batch_rejections,
+        t.projection_detail.large_row_seconds,
+        t.projection_detail.unsupported_seconds
     };
-    std::fprintf(stderr, "KADAN_TEXT_TIMING %s\n", record.dump().c_str());
-    std::fflush(stderr);
 }
 
 class ChatEngine final : public InferenceEngine {
@@ -136,19 +136,14 @@ public:
         auto first = started, last = started;
         check_cancel(cancel);
         progress_("prefill_begin", prompt_.size());
+        model_->set_projection_timing(bool(request.trace));
         model_->take_timing();
         Token selected;
         {
             InferenceTrace tracing(request.trace, "prefill");
             selected = model_->prefill(prompt_, progress_);
+            tracing.text_metrics(phase_metrics(prompt_.size(), model_->take_timing()));
         }
-        const auto prefilled = std::chrono::steady_clock::now();
-        timing_record(
-            "prefill",
-            prompt_.size(),
-            std::chrono::duration<double>(prefilled - started).count(),
-            model_->take_timing()
-        );
         std::string text, pending, reason = "length";
         std::size_t generated = 0, steps = 0;
         {
@@ -174,14 +169,8 @@ public:
                     ++steps;
                 }
             }
+            tracing.text_metrics(phase_metrics(steps, model_->take_timing()));
         }
-        timing_record(
-            "decode",
-            steps,
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - prefilled)
-                .count(),
-            model_->take_timing()
-        );
         auto tail = utf8_chunk(pending, true);
         if (!tail.empty()) {
             content_(tail);

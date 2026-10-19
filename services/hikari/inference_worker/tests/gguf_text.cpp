@@ -372,7 +372,30 @@ void activations() {
 }
 }  // namespace
 
+void projection_timing_aggregates() {
+    kadan::text::ProjectionTiming timing;
+    using Path = kadan::text::ProjectionTiming::Path;
+    timing.add(8, Path::packed);
+    timing.add(1, Path::host);
+    timing.add(9, Path::large_rows, .25);
+    timing.add(64, Path::large_rows, .75);
+    timing.add(8, Path::batch_unsupported, .5);
+    check(
+        timing.rows == 90 && timing.packed_calls == 1 && timing.host_calls == 1,
+        "projection_rows_and_completed_paths"
+    );
+    check(
+        timing.large_row_calls == 2 && timing.large_row_seconds == 1,
+        "projection_large_row_cost"
+    );
+    check(
+        timing.unsupported_calls == 1 && timing.unsupported_seconds == .5,
+        "projection_eligible_batch_rejection_cost"
+    );
+}
+
 int main() {
+    projection_timing_aggregates();
     try {
         norms();
         rotation();

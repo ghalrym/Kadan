@@ -9,7 +9,7 @@ from opentelemetry.trace import StatusCode
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.services.inference_worker import InferenceJob
-from api.services.tracing import JobTracing
+from api.services.tracing import JobTracing, TextPhaseMetrics
 from api.services.worker_hub import WorkerHub
 
 
@@ -44,6 +44,65 @@ class JobTracingTests(unittest.TestCase):
         self.assertEqual(native.start_time, 100)
         self.assertEqual(native.end_time, 200)
         self.assertIs(native.attributes["kadan.kv_cache.cross_request_reuse"], False)
+        job.end()
+
+    def native_message(self, job, metrics):
+        return {
+            "phase": "prefill",
+            "start": 100,
+            "end": 200,
+            "traceparent": job.parent["traceparent"],
+            "metrics": metrics,
+        }
+
+    def text_metrics(self):
+        return {name: 0 for name in TextPhaseMetrics.model_fields}
+
+    def test_text_metrics_are_numeric_attributes_on_existing_span(self):
+        job = JobTracing()
+        metrics = self.text_metrics()
+        metrics.update(tokens=9, large_row_calls=2, large_row_seconds=0.5)
+        job.native(SimpleNamespace(kind="llm"), self.native_message(job, metrics))
+        spans = self.exporter.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].name, "kadan.native.prefill")
+        self.assertEqual(spans[0].attributes["kadan.text.tokens"], 9)
+        self.assertEqual(spans[0].attributes["kadan.text.large_row_seconds"], 0.5)
+        self.assertEqual(len(spans[0].attributes), 28)
+        self.assertFalse(spans[0].events)
+        job.end()
+
+    def test_invalid_metrics_preserve_the_valid_phase_span(self):
+        for invalid in [
+            None,
+            "private",
+            {"prompt": "private"},
+            self.text_metrics() | {"tokens": True},
+            self.text_metrics() | {"rows": -1},
+            self.text_metrics() | {"rows": 2**63},
+            self.text_metrics() | {"large_row_seconds": float("nan")},
+            self.text_metrics() | {"large_row_seconds": float("inf")},
+        ]:
+            job = JobTracing()
+            job.native(SimpleNamespace(kind="llm"), self.native_message(job, invalid))
+            native = self.exporter.get_finished_spans()[-1]
+            self.assertEqual(native.name, "kadan.native.prefill")
+            self.assertFalse(
+                any(key.startswith("kadan.text.") for key in native.attributes)
+            )
+            job.end()
+
+    def test_text_metrics_are_ignored_for_other_workers(self):
+        job = JobTracing()
+        job.native(
+            SimpleNamespace(kind="image"), self.native_message(job, self.text_metrics())
+        )
+        self.assertFalse(
+            any(
+                key.startswith("kadan.text.")
+                for key in self.exporter.get_finished_spans()[0].attributes
+            )
+        )
         job.end()
 
     def test_unrelated_malformed_and_unknown_phases_are_ignored(self):

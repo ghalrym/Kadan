@@ -228,17 +228,48 @@ void WorkerHost::handle(const std::string& line) {
                                     const char* phase,
                                     std::int64_t start,
                                     std::int64_t end,
-                                    bool failed
+                                    bool failed,
+                                    const TextPhaseMetrics* metrics
                                 ) {
                     std::lock_guard guard(buffer->mutex);
-                    if (buffer->spans.size() < 16)
-                        buffer->spans.push_back(
-                            {{"traceparent", parent},
-                             {"phase", phase},
-                             {"start", start},
-                             {"end", end},
-                             {"failed", failed}}
-                        );
+                    if (buffer->spans.size() < 16) {
+                        Json span{
+                            {"traceparent", parent},
+                            {"phase", phase},
+                            {"start", start},
+                            {"end", end},
+                            {"failed", failed}
+                        };
+                        if (metrics)
+                            span["metrics"] = {
+                                {"tokens", metrics->tokens},
+                                {"projection_seconds", metrics->projection_seconds},
+                                {"attention_seconds", metrics->attention_seconds},
+                                {"prepare_seconds", metrics->prepare_seconds},
+                                {"device_seconds", metrics->device_seconds},
+                                {"host_wait_seconds", metrics->host_wait_seconds},
+                                {"recurrent_seconds", metrics->recurrent_seconds},
+                                {"projections", metrics->projections},
+                                {"projection_batches", metrics->projection_batches},
+                                {"streamed_bytes", metrics->streamed_bytes},
+                                {"host_expert_bytes", metrics->host_expert_bytes},
+                                {"packed_bytes", metrics->packed_bytes},
+                                {"device_bytes", metrics->device_bytes},
+                                {"device_slices", metrics->device_slices},
+                                {"ram_bytes", metrics->ram_bytes},
+                                {"ram_slices", metrics->ram_slices},
+                                {"packed_calls", metrics->packed_calls},
+                                {"host_calls", metrics->host_calls},
+                                {"large_row_calls", metrics->large_row_calls},
+                                {"unsupported_calls", metrics->unsupported_calls},
+                                {"rows", metrics->rows},
+                                {"batch_calls", metrics->batch_calls},
+                                {"batch_rejections", metrics->batch_rejections},
+                                {"large_row_seconds", metrics->large_row_seconds},
+                                {"unsupported_seconds", metrics->unsupported_seconds}
+                            };
+                        buffer->spans.push_back(std::move(span));
+                    }
                 };
             }
             try {

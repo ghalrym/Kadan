@@ -461,10 +461,11 @@ std::vector<Vec> GgufWeights::project(
     if (!jobs.empty()) {
         const auto device_started = std::chrono::steady_clock::now();
         const auto result = compute.dense_gguf_batch(jobs, *cancel_);
-        timing_.device += std::chrono::duration<double>(
-                              std::chrono::steady_clock::now() - device_started
+        const auto batch_seconds = std::chrono::duration<double>(
+                                       std::chrono::steady_clock::now() - device_started
         )
-                              .count();
+                                       .count();
+        timing_.device += batch_seconds;
         if (result != ProjectionResult::unsupported) {
             for (const auto i : batched) {
                 need(
@@ -483,6 +484,11 @@ std::vector<Vec> GgufWeights::project(
                     .8 * stream_rate_ + .2 * double(stream_bytes) / seconds, 1e8, 1e12
                 );
             }
+        }
+        if (projection_timing_) {
+            auto& detail = timing_.projection_detail;
+            ++detail.batch_calls;
+            detail.batch_rejections += result == ProjectionResult::unsupported;
         }
     }
     if (join.workers) {
@@ -513,6 +519,15 @@ std::vector<Vec> GgufWeights::project(
         }
         timing_.host += host_bytes;
     }
+    // Record after adaptive rate updates so diagnostics are not charged to them.
+    if (projection_timing_)
+        for (std::size_t i = 0; i < requests.size(); ++i)
+            if (done[i])
+                timing_.projection_detail.add(
+                    requests[i].input.size() / prepared[i].matrix->columns,
+                    on_host[i] ? ProjectionTiming::Path::host
+                               : ProjectionTiming::Path::packed
+                );
     for (std::size_t i = 0; i < requests.size(); ++i) {
         if (done[i])
             continue;
@@ -520,6 +535,9 @@ std::vector<Vec> GgufWeights::project(
         const auto& m = *p.matrix;
         const auto& request = requests[i];
         auto& output = outputs[i];
+        const auto source_started = projection_timing_
+                                        ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
         ProjectionResult result;
         if (p.tensor->type == 0) {
             const auto reader = [&](std::size_t first, std::span<float> destination) {
@@ -554,6 +572,17 @@ std::vector<Vec> GgufWeights::project(
                 p.device
             );
         }
+        if (projection_timing_)
+            timing_.projection_detail.add(
+                request.input.size() / m.columns,
+                request.input.size() / m.columns > DenseCompute::gguf_batch_rows
+                    ? ProjectionTiming::Path::large_rows
+                    : ProjectionTiming::Path::batch_unsupported,
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - source_started
+                )
+                    .count()
+            );
         need(result != ProjectionResult::unsupported, "gguf_text_cuda_required");
         need(projection_output_finite(result, output), "gguf_text_nonfinite");
     }

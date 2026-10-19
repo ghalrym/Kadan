@@ -1,15 +1,51 @@
 """Job spans and native phase spans relayed over the authenticated worker channel."""
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from kadan_tracing import propagator, worker_tracer
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 if TYPE_CHECKING:
     from api.services.inference_worker import WorkerEvent
     from api.services.worker_hub import Worker
+
+
+Duration = Annotated[float, Field(strict=True, ge=0, le=604800, allow_inf_nan=False)]
+Count = Annotated[int, Field(strict=True, ge=0, lt=2**63)]
+
+
+class TextPhaseMetrics(BaseModel):
+    """Fixed numeric phase details; malformed details never invalidate a span."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tokens: Count
+    projection_seconds: Duration
+    attention_seconds: Duration
+    prepare_seconds: Duration
+    device_seconds: Duration
+    host_wait_seconds: Duration
+    recurrent_seconds: Duration
+    projections: Count
+    projection_batches: Count
+    streamed_bytes: Count
+    host_expert_bytes: Count
+    packed_bytes: Count
+    device_bytes: Count
+    device_slices: Count
+    ram_bytes: Count
+    ram_slices: Count
+    packed_calls: Count
+    host_calls: Count
+    large_row_calls: Count
+    unsupported_calls: Count
+    rows: Count
+    batch_calls: Count
+    batch_rejections: Count
+    large_row_seconds: Duration
+    unsupported_seconds: Duration
 
 
 class NativeSpan(BaseModel):
@@ -27,6 +63,7 @@ class NativeSpan(BaseModel):
     end: int = Field(gt=0)
     failed: bool = False
     traceparent: str
+    metrics: object = None
 
 
 class JobTracing:
@@ -75,6 +112,18 @@ class JobTracing:
         if worker.kind == "llm" and event.phase == "prefill":
             # Engine::begin_request resets recurrent/KV state for every request.
             attributes["kadan.kv_cache.cross_request_reuse"] = False
+        if worker.kind == "llm" and event.phase in {"prefill", "decode"}:
+            try:
+                metrics = TextPhaseMetrics.model_validate(event.metrics)
+            except ValidationError:
+                pass
+            else:
+                attributes.update(
+                    {
+                        "kadan.text." + key: value
+                        for key, value in metrics.model_dump().items()
+                    }
+                )
         current = worker_tracer(worker.kind).start_span(
             "kadan.native." + event.phase,
             context=self.context,
