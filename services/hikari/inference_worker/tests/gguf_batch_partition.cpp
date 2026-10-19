@@ -79,7 +79,12 @@ void eligibility_and_mixed_dispatch() {
     rejected([](auto& job) { job.input = {}; });
     rejected([](auto& job) { job.output = {}; });
     rejected([](auto& job) { job.in = 255; });
-    rejected([](auto& job) { job.encoding = static_cast<gguf::Encoding>(999); });
+    std::vector<float> unaligned_input(8 * 128);
+    rejected([&](auto& job) {
+        job.encoding = gguf::Encoding::q4_k;
+        job.in = 128;
+        job.input = unaligned_input;
+    });
     check(!gguf_batch_supported({}, 2));
     check(!gguf_batch_supported(jobs, 0));
 }
