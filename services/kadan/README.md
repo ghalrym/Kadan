@@ -87,7 +87,16 @@ not cancel work. The interface polls saved run and conversation state, keeps the
 composer available, and shows text as soon as the messaging tool delivers it.
 Run completion never appends an answer.
 
-Hikari currently exposes text completions. Kadan sends a strict JSON command
+LangGraph routes each claimed run through context preparation, model inference,
+and tool execution. LangChain Core supplies the chat-model, message and structured
+tool interfaces. Tsuchi remains the only durable checkpoint and receipt store:
+commands are saved before tool execution, and retries reuse their action IDs.
+The graph ends at the existing tool boundaries; image events enqueue a new run in
+the same conversation. No graph runs or inference are scheduled while idle.
+
+Hikari currently exposes text completions. Its request schema does not accept native tool binding. The async
+`HikariChatModel` adapter sends text messages through the existing stream, and
+Kadan sends a strict JSON command
 protocol alongside the instruction file, validates one complete command per
 inference, executes it, persists its result, and continues. The initial tools are
 `send_message` (optionally attaching a completed image job) and `generate_image`.

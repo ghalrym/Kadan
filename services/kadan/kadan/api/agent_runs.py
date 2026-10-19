@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from time import monotonic
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4, uuid5
 
-from pydantic import ValidationError
+from langchain_core.tools import StructuredTool
+from langgraph.errors import NodeCancelledError
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, ValidationError
 
 from .agent_inference import (
     TOOL_PROTOCOL,
+    AgentCommand,
     AgentInference,
     Finish,
     GenerateImage,
@@ -34,6 +38,12 @@ MAX_COMMANDS = 24
 MAX_CONTEXT = 48000
 
 
+class RunState(BaseModel):
+    run: AgentRun
+    command: AgentCommand | None = None
+    corrections: int = 0
+
+
 class AgentRuns:
     def __init__(self, services: LocalServices):
         self.services = services
@@ -42,6 +52,17 @@ class AgentRuns:
         self.runner: asyncio.Task | None = None
         self.lock = asyncio.Lock()
         self.inference = AgentInference(services.client, services.settings.hikari_url)
+        graph = StateGraph(RunState)
+        graph.add_node("prepare", self.prepare)
+        graph.add_node("model", self.infer_command)
+        graph.add_node("tool", self.invoke_tool)
+        graph.add_edge(START, "prepare")
+        graph.add_edge("prepare", "model")
+        graph.add_conditional_edges("model", self.after_model)
+        graph.add_conditional_edges("tool", self.after_tool)
+        # Tsuchi owns checkpoints and side-effect receipts. A second persistence
+        # store here would compete with its version/lease fencing.
+        self.graph = graph.compile()
 
     def start(self) -> None:
         self.runner = asyncio.create_task(self.run(), name="agent-runs")
@@ -282,145 +303,177 @@ class AgentRuns:
         return [system, *reversed(history), trigger]
 
     async def advance(self, run: AgentRun) -> None:
+        # At most three invalid-command attempts plus two nodes per command.
+        try:
+            await self.graph.ainvoke(
+                {"run": run}, {"recursion_limit": MAX_COMMANDS * 2 + 8}
+            )
+        except NodeCancelledError as error:
+            # A cancelled boundary must leave the durable action recoverable,
+            # just like cancellation of the enclosing task.
+            raise asyncio.CancelledError() from error
+
+    async def after_model(self, state: RunState) -> str:
+        return "tool" if state.command is not None else "model"
+
+    async def after_tool(self, state: RunState) -> str:
+        return END if state.run.status == "completed" else "model"
+
+    async def prepare(self, state: RunState) -> dict:
+        run = state.run
         if not run.transcript:
             run = await self.update(run, transcript=await self.context(run))
-        corrections = 0
-        while True:
-            run = await self.owned(run)
-            if run.transcript[-1].role == "assistant":
-                command = parse_command(run.transcript[-1].content)
-            else:
-                if (
-                    sum(
-                        item.role == "assistant" and item.content.startswith('{"tool":')
-                        for item in run.transcript
-                    )
-                    >= MAX_COMMANDS
-                ):
-                    raise ServiceError(
-                        "The agent reached its 24-command run limit.", 422
-                    )
-                if sum(len(item.content) for item in run.transcript) > MAX_CONTEXT:
-                    raise ServiceError("The agent run exceeded its context limit.", 422)
-                status = await self.services.inference_status()
-                if status.state != "ready":
-                    raise ServiceError(status.message, 503)
-                started = monotonic()
-                logger.info(
-                    "Agent inference started run=%s at=%s",
-                    run.id,
-                    datetime.now(UTC).isoformat(),
+        return {"run": run}
+
+    async def infer_command(self, state: RunState) -> dict:
+        run = state.run
+        run = await self.owned(run)
+        if run.transcript[-1].role == "assistant":
+            command = parse_command(run.transcript[-1].content)
+        else:
+            if (
+                sum(
+                    item.role == "assistant" and item.content.startswith('{"tool":')
+                    for item in run.transcript
                 )
-                try:
-                    command = await self.inference.call(
-                        [
-                            CompletionMessage(**item.model_dump())
-                            for item in run.transcript
-                        ],
-                        status.model_id,
-                        f"kadan:{run.agent_key}:{run.conversation_id}",
-                    )
-                except ServiceError as error:
-                    if error.code != "invalid_command" or corrections >= 2:
-                        raise
-                    corrections += 1
-                    run = await self.update(
-                        run,
-                        transcript=[
-                            *run.transcript,
-                            RunMessage(
-                                role="user",
-                                content="Your response was not a valid command. Return exactly one JSON object using the documented tool schema. No user message was delivered.",
-                            ),
-                        ],
-                    )
-                    continue
-                finally:
-                    logger.info(
-                        "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
-                        run.id,
-                        datetime.now(UTC).isoformat(),
-                        monotonic() - started,
-                    )
-                # Persist the action before side effects. Recovery reuses its derived ID.
+                >= MAX_COMMANDS
+            ):
+                raise ServiceError("The agent reached its 24-command run limit.", 422)
+            if sum(len(item.content) for item in run.transcript) > MAX_CONTEXT:
+                raise ServiceError("The agent run exceeded its context limit.", 422)
+            status = await self.services.inference_status()
+            if status.state != "ready":
+                raise ServiceError(status.message, 503)
+            started = monotonic()
+            logger.info(
+                "Agent inference started run=%s at=%s",
+                run.id,
+                datetime.now(UTC).isoformat(),
+            )
+            try:
+                command = await self.inference.call(
+                    [CompletionMessage(**item.model_dump()) for item in run.transcript],
+                    status.model_id,
+                    f"kadan:{run.agent_key}:{run.conversation_id}",
+                )
+            except ServiceError as error:
+                if error.code != "invalid_command" or state.corrections >= 2:
+                    raise
                 run = await self.update(
                     run,
                     transcript=[
                         *run.transcript,
-                        RunMessage(role="assistant", content=command.model_dump_json()),
+                        RunMessage(
+                            role="user",
+                            content="Your response was not a valid command. Return exactly one JSON object using the documented tool schema. No user message was delivered.",
+                        ),
                     ],
                 )
-            if isinstance(command, Finish):
-                await self.update(
-                    run, status="completed", owner_id=None, lease_expires_at=None
-                )
-                return
-            action_id = uuid5(run.id, f"command:{len(run.transcript)}")
-            if isinstance(command, GenerateImage):
-                image = ImageJob.model_validate(
-                    await self.services.json_request(
-                        "Tsuchi",
-                        "POST",
-                        self.path(run.agent_key, run.id) + "/image-jobs",
-                        json={
-                            "id": str(action_id),
-                            "prompt": command.prompt,
-                            "request_id": str(uuid5(action_id, "request")),
-                            "worker_id": str(self.owner),
-                        },
-                    )
-                )
-                self.services.images.wakeup.set()
-                result = {
-                    "tool": "generate_image",
-                    "job_id": str(image.id),
-                    "status": image.status,
-                    "delivered": image.delivered_message_id is not None,
+                return {
+                    "run": run,
+                    "command": None,
+                    "corrections": state.corrections + 1,
                 }
-            else:
-                message = Message(
-                    id=action_id, role="assistant", content=command.content
+            finally:
+                logger.info(
+                    "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
+                    run.id,
+                    datetime.now(UTC).isoformat(),
+                    monotonic() - started,
                 )
-                async with self.lock:
-                    await self.services.json_request(
-                        "Tsuchi",
-                        "POST",
-                        self.path(run.agent_key, run.id) + "/messages",
-                        json={
-                            "worker_id": str(self.owner),
-                            "message": message.model_dump(mode="json"),
-                            "image_job_id": str(command.image_job_id)
-                            if command.image_job_id
-                            else None,
-                        },
-                    )
-                result = {
-                    "tool": "send_message",
-                    "delivered": True,
-                    "message_id": str(action_id),
-                }
-            end_run = isinstance(command, GenerateImage) or command.end_run
-            # Save the result and release ownership together. Recovery before this
-            # write replays the same action ID; after it no inference is scheduled.
+            # Persist the action before side effects. Recovery reuses its derived ID.
             run = await self.update(
                 run,
                 transcript=[
                     *run.transcript,
-                    RunMessage(
-                        role="user", content="Tool result: " + json.dumps(result)
-                    ),
+                    RunMessage(role="assistant", content=command.model_dump_json()),
                 ],
-                **(
-                    {"status": "completed", "owner_id": None, "lease_expires_at": None}
-                    if end_run
-                    else {}
-                ),
             )
-            if end_run:
-                logger.info(
-                    "Agent run yielded run=%s tool=%s at=%s",
-                    run.id,
-                    command.tool,
-                    datetime.now(UTC).isoformat(),
+        return {"run": run, "command": command}
+
+    async def invoke_tool(self, state: RunState) -> dict:
+        command = state.command
+        assert command is not None
+
+        async def execute(**arguments):
+            return await self.execute_command(state.run, type(command)(**arguments))
+
+        tool = StructuredTool.from_function(
+            coroutine=execute,
+            name=command.tool,
+            description=f"Execute the persisted {command.tool} command.",
+            args_schema=type(command),
+        )
+        run = await tool.ainvoke(command.model_dump())
+        return {"run": run, "command": None}
+
+    async def execute_command(self, run: AgentRun, command: AgentCommand) -> AgentRun:
+        if isinstance(command, Finish):
+            return await self.update(
+                run, status="completed", owner_id=None, lease_expires_at=None
+            )
+        action_id = uuid5(run.id, f"command:{len(run.transcript)}")
+        if isinstance(command, GenerateImage):
+            image = ImageJob.model_validate(
+                await self.services.json_request(
+                    "Tsuchi",
+                    "POST",
+                    self.path(run.agent_key, run.id) + "/image-jobs",
+                    json={
+                        "id": str(action_id),
+                        "prompt": command.prompt,
+                        "request_id": str(uuid5(action_id, "request")),
+                        "worker_id": str(self.owner),
+                    },
                 )
-                return
+            )
+            self.services.images.wakeup.set()
+            result = {
+                "tool": "generate_image",
+                "job_id": str(image.id),
+                "status": image.status,
+                "delivered": image.delivered_message_id is not None,
+            }
+        else:
+            message = Message(id=action_id, role="assistant", content=command.content)
+            async with self.lock:
+                await self.services.json_request(
+                    "Tsuchi",
+                    "POST",
+                    self.path(run.agent_key, run.id) + "/messages",
+                    json={
+                        "worker_id": str(self.owner),
+                        "message": message.model_dump(mode="json"),
+                        "image_job_id": str(command.image_job_id)
+                        if command.image_job_id
+                        else None,
+                    },
+                )
+            result = {
+                "tool": "send_message",
+                "delivered": True,
+                "message_id": str(action_id),
+            }
+        end_run = isinstance(command, GenerateImage) or command.end_run
+        # Save the result and release ownership together. Recovery before this
+        # write replays the same action ID; after it no inference is scheduled.
+        run = await self.update(
+            run,
+            transcript=[
+                *run.transcript,
+                RunMessage(role="user", content="Tool result: " + json.dumps(result)),
+            ],
+            **(
+                {"status": "completed", "owner_id": None, "lease_expires_at": None}
+                if end_run
+                else {}
+            ),
+        )
+        if end_run:
+            logger.info(
+                "Agent run yielded run=%s tool=%s at=%s",
+                run.id,
+                command.tool,
+                datetime.now(UTC).isoformat(),
+            )
+        return run
