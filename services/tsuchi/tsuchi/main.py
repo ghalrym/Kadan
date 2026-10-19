@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from kadan_tracing import RequestTracing, configure, shutdown
+from kadan_tracing.rollout import RolloutAdmission, admission
 from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
@@ -24,7 +25,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         files.initialize()
         provider = configure("tsuchi-api")
         try:
-            yield
+            async with admission.observe():
+                yield
         finally:
             await shutdown(provider)
 
@@ -35,6 +37,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.add_middleware(RequestTracing)
+    app.add_middleware(RolloutAdmission)
     app.add_middleware(
         LocalRequestSafety,
         allowed_hosts=settings.allowed_hosts,

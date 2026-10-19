@@ -3,6 +3,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from kadan_tracing import RequestTracing, configure, shutdown
+from kadan_tracing.rollout import RolloutAdmission, admission
 
 from api.routes import health, model_lifecycle
 from api.routes.v1 import (
@@ -32,7 +33,22 @@ async def lifespan(app: FastAPI):
         cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)
         await inference.start()
-        yield
+        started_fenced = admission.fenced
+        admission.extra_active = lambda: (
+            sum(not job.result.done() for job in inference.worker.jobs.values())
+            + sum(not task.done() for task in inference.tasks.values())
+        )
+        admission.check_ready = lambda: (
+            not started_fenced
+            and inference.worker.rollout_safe
+            and {worker.kind for worker in inference.worker.workers.values()}
+            == {"llm", "decision", "tts", "speech", "formatting", "image", "video"}
+            and all(
+                worker.ready.is_set() for worker in inference.worker.workers.values()
+            )
+        )
+        async with admission.observe():
+            yield
 
 
 # Uvicorn configures only its own loggers; scheduling decisions log at INFO.
@@ -52,6 +68,7 @@ app = FastAPI(
 # Observe only generation POST handlers; dashboard polling is excluded.
 app.add_middleware(TelemetryMiddleware)
 app.add_middleware(RequestTracing)
+app.add_middleware(RolloutAdmission)
 
 for router in (
     health.router,

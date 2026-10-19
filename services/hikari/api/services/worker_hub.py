@@ -226,6 +226,8 @@ class WorkerHub:
         self.joined = asyncio.Condition()
         self.scheduler: asyncio.Task | None = None
         self.closing = False
+        # A lost connection can leave native work outside this hub's view.
+        self.rollout_safe = True
 
     async def start(self):
         if not worker_token():
@@ -340,6 +342,7 @@ class WorkerHub:
         self._job_event(worker, WorkerEvent.model_validate(message))
 
     async def _disconnected(self, worker: Worker):
+        self.rollout_safe = False
         self.workers.pop(worker.id, None)
         computer = worker.computer
         computer.ledger.workers.pop(worker.id, None)

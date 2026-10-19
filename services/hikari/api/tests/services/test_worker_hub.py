@@ -466,6 +466,15 @@ class DisconnectTests(HubTestCase):
         with self.assertRaises(InferenceFailure):
             await job.result
 
+    async def test_disconnect_invalidates_rollout_queue_knowledge(self):
+        socket, _ = await self.connect("llm")
+        self.assertTrue(self.hub.rollout_safe)
+        await socket.close()
+        await self.settle()
+        self.assertFalse(self.hub.rollout_safe)
+        await self.connect("llm")
+        self.assertFalse(self.hub.rollout_safe)
+
     async def test_pending_controls_fail_on_disconnect(self):
         socket, worker = await self.connect("llm")
         control = asyncio.create_task(worker.control("status"))

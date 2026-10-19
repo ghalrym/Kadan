@@ -45,6 +45,9 @@ jobs:
       - name: Run isolated unit tests
         run: |
           python services/hikari/bin/hikari.py check api
+      - name: Run developer tooling unit tests
+        working-directory: services/hikari
+        run: python -m unittest discover -s bin/tests -v
   frontend-lint:
     name: Frontend lint
     runs-on: ubuntu-latest

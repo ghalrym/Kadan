@@ -5,6 +5,8 @@ import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from kadan_tracing.rollout import admission
+
 from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import AgentRun
 from ..api.pydantic_models.runners import Runner
@@ -33,7 +35,7 @@ class AgentRunner:
         self.owner = services.runs.owner
         self.work: dict[str, tuple[AgentRun, asyncio.Task]] = {}
 
-    async def assignments(self) -> Runner:
+    async def renew_assignment_lease(self) -> None:
         path = f"/api/runners/{self.settings.id}"
         # This renews only infrastructure ownership. It never wakes an agent.
         await self.services.json_request(
@@ -42,6 +44,10 @@ class AgentRunner:
             path,
             json={"worker_id": str(self.owner), "capacity": self.settings.capacity},
         )
+
+    async def assignments(self) -> Runner:
+        await self.renew_assignment_lease()
+        path = f"/api/runners/{self.settings.id}"
         runner = Runner.model_validate(
             await self.services.json_request(
                 "Tsuchi", "POST", path + "/assign", json={"worker_id": str(self.owner)}
@@ -59,6 +65,27 @@ class AgentRunner:
         return runner
 
     async def reconcile(self) -> None:
+        if not admission.enter():
+            # Keep accepted tasks alive, including their downstream calls.
+            for key, (_, task) in list(self.work.items()):
+                if task.done():
+                    await asyncio.gather(task, return_exceptions=True)
+                    del self.work[key]
+            if self.work:
+                # Renewal belongs to the accepted tasks, not new admission.
+                # Count it independently if the last graph finishes mid-request.
+                admission.active += 1
+                try:
+                    await self.renew_assignment_lease()
+                finally:
+                    admission.leave()
+            return
+        try:
+            await self._reconcile()
+        finally:
+            admission.leave()
+
+    async def _reconcile(self) -> None:
         runner = await self.assignments()
         values = await self.services.json_request("Tsuchi", "GET", "/api/agent-runs")
         runs = [AgentRun.model_validate(value) for value in values]
@@ -85,9 +112,12 @@ class AgentRunner:
             if run.status == "queued" or (
                 run.status == "running" and run.lease_expires_at <= datetime.now(UTC)
             ):
+                if not admission.enter():
+                    break
                 task = asyncio.create_task(
                     self.services.runs.process(run), name=f"agent-{run.agent_key}"
                 )
+                task.add_done_callback(lambda _: admission.leave())
                 self.work[run.agent_key] = (run, task)
 
     async def close(self) -> None:
@@ -123,7 +153,8 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     services.images.start()
     services.pets.start()
     try:
-        await runner.run(stop)
+        async with admission.observe():
+            await runner.run(stop)
     finally:
         await services.images.close()
         await services.pets.close()

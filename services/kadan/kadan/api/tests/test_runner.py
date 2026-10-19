@@ -6,12 +6,14 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from kadan_tracing.rollout import Admission
 from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun
 from kadan.api.pydantic_models.runners import Runner
 from kadan.api.run_client import RunClient
+from kadan.runner import service
 from kadan.runner.config import RunnerSettings
 from kadan.runner.service import AgentRunner
 
@@ -259,5 +261,73 @@ def test_recovery_starts_only_expired_runs():
             assert boundary.started == [expired.id]
         finally:
             await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_rollout_fence_preserves_accepted_work_and_blocks_new_claims(
+    monkeypatch, tmp_path
+):
+    async def scenario():
+        fence = tmp_path / "fence.json"
+        fence.write_text('{"closed":[]}')
+        gate = Admission("kadan-runner", fence)
+        monkeypatch.setattr(service, "admission", gate)
+        run = make_run("a")
+        boundary = Boundary(["a"], [run])
+        runner = AgentRunner(boundary, RunnerSettings(_env_file=None))
+        await runner.reconcile()
+        await asyncio.sleep(0)
+        assert gate.active == 1
+        fence.write_text('{"closed":["kadan-runner"]}')
+        calls = len(boundary.calls)
+        await runner.reconcile()
+        assert boundary.calls[calls:] == [
+            (
+                "Tsuchi",
+                "PUT",
+                "/api/runners/runner-1",
+                {"json": {"worker_id": str(boundary.owner), "capacity": 5}},
+            )
+        ]
+        assert boundary.cancelled == []
+        assert gate.active == 1
+        boundary.release.set()
+        await asyncio.gather(*(task for _, task in runner.work.values()))
+        assert gate.active == 0
+        await runner.reconcile()
+        assert runner.work == {}
+
+    asyncio.run(scenario())
+
+
+def test_fenced_runner_counts_lease_renewal_after_last_graph_finishes(
+    monkeypatch, tmp_path
+):
+    async def scenario():
+        fence = tmp_path / "fence.json"
+        fence.write_text('{"closed":[]}')
+        gate = Admission("kadan-runner", fence)
+        monkeypatch.setattr(service, "admission", gate)
+        boundary = Boundary(["a"], [make_run("a")])
+        runner = AgentRunner(boundary, RunnerSettings(_env_file=None))
+        await runner.reconcile()
+        await asyncio.sleep(0)
+        fence.write_text('{"closed":["kadan-runner"]}')
+        renewing, release = asyncio.Event(), asyncio.Event()
+
+        async def renew():
+            renewing.set()
+            await release.wait()
+
+        monkeypatch.setattr(runner, "renew_assignment_lease", renew)
+        reconciliation = asyncio.create_task(runner.reconcile())
+        await renewing.wait()
+        boundary.release.set()
+        await asyncio.gather(*(task for _, task in runner.work.values()))
+        assert gate.active == 1
+        release.set()
+        await reconciliation
+        assert gate.active == 0
 
     asyncio.run(scenario())
