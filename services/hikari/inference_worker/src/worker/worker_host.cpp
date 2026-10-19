@@ -213,10 +213,11 @@ void WorkerHost::handle(const std::string& line) {
             const auto parent = command_message.value("traceparent", std::string{});
             const bool sampled =
                 parent.size() == 55 && parent.substr(0, 3) == "00-"
-                && parent.substr(53) == "01"
+                && std::string("13579bdf").find(parent.back()) != std::string::npos
                 && parent.find_first_not_of("0123456789abcdef-") == std::string::npos;
+            std::shared_ptr<TraceBuffer> buffer;
             if (sampled) {
-                auto buffer = std::make_shared<TraceBuffer>();
+                buffer = std::make_shared<TraceBuffer>();
                 {
                     std::lock_guard guard(traces_mutex_);
                     // A duplicate submit must not replace the original context.
@@ -245,7 +246,7 @@ void WorkerHost::handle(const std::string& line) {
             } catch (...) {
                 std::lock_guard guard(traces_mutex_);
                 auto found = traces_.find(id);
-                if (found != traces_.end())
+                if (found != traces_.end() && found->second == buffer)
                     traces_.erase(found);
                 throw;
             }

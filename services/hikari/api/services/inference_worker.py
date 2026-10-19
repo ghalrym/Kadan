@@ -12,7 +12,7 @@ from api.pydantic_models.inference import (
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_errors import InferenceFailure
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
 
 def encode_request(message: dict) -> bytes:
@@ -78,6 +78,12 @@ class WorkerEvent(BaseModel):
     context: dict[str, int | None] | None = None
     status_code: int = 502
     models: ModelStoreStatus | None = None
+
+    @field_validator("trace_unix_ns", mode="before")
+    @classmethod
+    def optional_trace_timestamp(cls, value: object) -> int | None:
+        # Optional telemetry must not reject an otherwise valid completion.
+        return value if type(value) is int and 0 < value < 2**63 else None
 
 
 class InferenceJob:

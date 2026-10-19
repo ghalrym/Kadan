@@ -250,10 +250,13 @@ void sampled_phases_share_context_without_changing_results() {
     Harness harness;
     auto message = chat(id('a'));
     const auto parent =
-        std::string("00-") + std::string(32, 'b') + "-" + std::string(16, 'c') + "-01";
+        std::string("00-") + std::string(32, 'b') + "-" + std::string(16, 'c') + "-03";
     message["traceparent"] = parent;
     harness.command(message);
     harness.command(message);  // A duplicate must retain the original buffer.
+    auto unsampled = message;
+    unsampled.erase("traceparent");
+    harness.command(unsampled);
     assert(harness.last(id('a'))["state"] == "rejected");
     harness.command(
         {{"id", id('b')},

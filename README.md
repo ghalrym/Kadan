@@ -201,7 +201,7 @@ when collectors or workers disconnect or processes terminate abruptly.
 | --- | --- | --- |
 | Kadan frontend | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and nginx serving time are not measured |
 | Kadan API | HTTP ingress through the last response body; outgoing HTTPX calls; graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
-| Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; initial queue wait uses creation time; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
+| Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; queue wait uses the persisted preclaim enqueue timestamp; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
 | Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
 | Tsuchi frontend | API ingress traces in `tsuchi-api` | Browser/nginx timing is not measured |
 | Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
@@ -227,7 +227,7 @@ between machines can affect their placement in the waterfall.
 HTTP and job propagation carries only `traceparent`; arbitrary baggage and vendor
 `tracestate` are deliberately omitted. Context copying into asyncio tasks and
 threadpool calls follows OpenTelemetry/Python contextvars. Queue workers restore
-the persisted context instead of inheriting the polling loop’s trace. Duplicate
+the persisted context before claiming work instead of inheriting the polling loop’s trace. Duplicate
 submissions return the original durable record and parent; tracing does not
 resubmit inference or alter cancellation, leases, image saving or completion
 transactions.

@@ -1,11 +1,15 @@
 """Job spans and native phase spans relayed over the authenticated worker channel."""
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from kadan_tracing import propagator, worker_tracer
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field, ValidationError
+
+if TYPE_CHECKING:
+    from api.services.inference_worker import WorkerEvent
+    from api.services.worker_hub import Worker
 
 
 class NativeSpan(BaseModel):
@@ -26,7 +30,7 @@ class NativeSpan(BaseModel):
 
 
 class JobTracing:
-    def __init__(self):
+    def __init__(self) -> None:
         self.span = trace.get_tracer("kadan").start_span("kadan.inference")
         self.context = trace.set_span_in_context(self.span)
         self.parent = {}
@@ -39,7 +43,7 @@ class JobTracing:
         self.queued = {}
         self.closed = False
 
-    def event(self, worker, event):
+    def event(self, worker: "Worker", event: "WorkerEvent") -> None:
         if self.closed or event.trace_unix_ns is None:
             return
         if event.state == "queued":
@@ -52,7 +56,7 @@ class JobTracing:
                 )
                 stage.end(end_time=event.trace_unix_ns)
 
-    def native(self, worker, message):
+    def native(self, worker: "Worker", message: object) -> None:
         if self.closed or not self.span.is_recording():
             return
         try:
@@ -81,7 +85,7 @@ class JobTracing:
             current.set_status(Status(StatusCode.ERROR))
         current.end(end_time=event.end)
 
-    def end(self, failed=False):
+    def end(self, failed: bool = False) -> None:
         if self.closed:
             return
         self.closed = True

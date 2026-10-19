@@ -2,11 +2,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from api.services.tracing import JobTracing
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
+
+from api.pydantic_models.inference_task import InferenceTask
+from api.services.inference_worker import InferenceJob
+from api.services.tracing import JobTracing
+from api.services.worker_hub import WorkerHub
 
 
 class JobTracingTests(unittest.TestCase):
@@ -85,3 +89,25 @@ class JobTracingTests(unittest.TestCase):
         wait = self.exporter.get_finished_spans()[0]
         self.assertEqual((wait.start_time, wait.end_time), (100, 200))
         job.end()
+
+
+class OptionalTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_optional_timestamp_does_not_drop_result(self):
+        hub = WorkerHub()
+        job = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "unit"}), False
+        )
+        worker = SimpleNamespace(id="one", kind="image", name="unit", controls={})
+        job.machines.add(worker.id)
+        hub.jobs[job.request.id] = job
+        await hub._dispatch(
+            worker,
+            {
+                "id": job.request.id,
+                "state": "succeeded",
+                "result": {"value": 42},
+                "trace_unix_ns": "invalid",
+            },
+        )
+        self.assertTrue(job.result.done())
+        self.assertEqual(job.result.result(), {"value": 42})

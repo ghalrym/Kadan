@@ -3,6 +3,7 @@
 import asyncio
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from functools import wraps
 from inspect import iscoroutinefunction
 
@@ -46,6 +47,13 @@ class PrivateExporter(SpanExporter):
                 for key, value in span.attributes.items()
                 if key in ATTRIBUTES
             }
+            # The HTTPX instrumentor still defaults to legacy HTTP semantics.
+            method = span.attributes.get("http.method")
+            status = span.attributes.get("http.status_code")
+            if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+                attributes.setdefault("http.request.method", method)
+            if isinstance(status, int) and 100 <= status <= 599:
+                attributes.setdefault("http.response.status_code", status)
             name = span.name if span.name.startswith("kadan.") else "HTTP request"
             clean.append(
                 ReadableSpan(
@@ -72,7 +80,7 @@ class PrivateExporter(SpanExporter):
         return self.exporter.force_flush(timeout_millis)
 
 
-def configure(service: str):
+def configure(service: str) -> TracerProvider | None:
     """No endpoint means no SDK, instrumentation, exporter thread, or network IO."""
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
     if not endpoint or os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
@@ -104,7 +112,7 @@ def configure(service: str):
     return provider
 
 
-async def shutdown(provider):
+async def shutdown(provider: TracerProvider | None) -> None:
     if provider is not None:
         await asyncio.to_thread(provider.shutdown)
 
@@ -213,28 +221,33 @@ class RequestTracing:
                     current.update_name(f"kadan.http.{method} {route.path}")
 
 
-def traced_job(name):
-    """Restore the durable enqueue context, including after process restart."""
+@contextmanager
+def job_span(name: str, job, *, queued_at: datetime | None, recovering: bool):
+    """Restore durable context before claiming work; measure only this enqueue."""
+    parent = {"traceparent": job.trace_parent} if job.trace_parent else {}
+    start = int(queued_at.timestamp() * 1_000_000_000) if queued_at else None
+    with span(
+        name, parent=parent, attributes={"kadan.recovery": recovering}, start_time=start
+    ):
+        if start is not None:
+            with span("kadan.queue.wait", start_time=start):
+                pass
+        yield
+
+
+def traced_job(name: str):
+    """Agent runs claim inside process(), unlike the image and pet queues."""
 
     def decorate(function):
         @wraps(function)
         async def call(self, job, *args, **kwargs):
-            parent = {"traceparent": job.trace_parent} if job.trace_parent else {}
             queued = job.status == "queued"
-            with span(
+            with job_span(
                 name,
-                parent=parent,
-                attributes={"kadan.recovery": not queued},
-                start_time=int(job.created_at.timestamp() * 1_000_000_000)
-                if queued
-                else None,
+                job,
+                queued_at=job.created_at if queued else None,
+                recovering=not queued,
             ):
-                if queued:
-                    with span(
-                        "kadan.queue.wait",
-                        start_time=int(job.created_at.timestamp() * 1_000_000_000),
-                    ):
-                        pass
                 return await function(self, job, *args, **kwargs)
 
         return call
@@ -248,7 +261,7 @@ _processor = None
 _relays = {}
 
 
-def worker_tracer(kind):
+def worker_tracer(kind: str) -> trace.Tracer:
     if _processor is None:
         return trace.get_tracer("kadan")
     if kind not in _relays:

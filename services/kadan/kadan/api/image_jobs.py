@@ -11,7 +11,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4, uuid5
 
 import httpx
-from kadan_tracing import traced, traced_job
+from kadan_tracing import job_span, traced
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -119,21 +119,27 @@ class ImageJobs:
                         continue
                     if job.status not in {"queued", "running", "cancelling"}:
                         continue
-                    try:
-                        job = await self.save(
-                            job,
-                            status="cancelling"
-                            if job.status == "cancelling"
-                            else "running",
-                            owner_id=self.owner,
-                            lease_expires_at=datetime.now(UTC)
-                            + timedelta(seconds=LEASE_SECONDS),
-                        )
-                    except ServiceError as error:
-                        if error.status == 409:
-                            continue
-                        raise
-                    await self.process(job, recovering=recovering)
+                    with job_span(
+                        "kadan.image_jobs.process",
+                        job,
+                        queued_at=job.updated_at if not recovering else None,
+                        recovering=recovering,
+                    ):
+                        try:
+                            job = await self.save(
+                                job,
+                                status="cancelling"
+                                if job.status == "cancelling"
+                                else "running",
+                                owner_id=self.owner,
+                                lease_expires_at=datetime.now(UTC)
+                                + timedelta(seconds=LEASE_SECONDS),
+                            )
+                        except ServiceError as error:
+                            if error.status == 409:
+                                continue
+                            raise
+                        await self.process(job, recovering=recovering)
                     self.wakeup.set()
                     break
             except asyncio.CancelledError:
@@ -186,7 +192,6 @@ class ImageJobs:
                 "Hikari did not confirm image cleanup.", 502, "invalid_response"
             )
 
-    @traced_job("kadan.image_jobs.process")
     async def process(self, job: ImageJob, *, recovering: bool = False) -> None:
         # Keep work separate from the queue task so cancellation does not stop the queue.
         work = asyncio.create_task(

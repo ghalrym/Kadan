@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from kadan_tracing import (
     PrivateExporter,
@@ -13,6 +14,7 @@ from kadan_tracing import (
     traced_job,
 )
 from opentelemetry import trace
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -194,3 +196,36 @@ def test_enabled_configuration_is_bounded_without_connecting(monkeypatch):
         assert provider.resource.attributes == {"service.name": "unit"}
         httpx.return_value.instrument.assert_called_once_with(tracer_provider=provider)
         provider.shutdown()
+
+
+def test_actual_httpx_span_exports_safe_method_status_and_propagates_context():
+    destination = InMemorySpanExporter()
+    provider = TracerProvider(
+        resource=Resource({"service.name": "unit"}), shutdown_on_exit=False
+    )
+    provider.add_span_processor(SimpleSpanProcessor(PrivateExporter(destination)))
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(201)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    HTTPXClientInstrumentor.instrument_client(client, tracer_provider=provider)
+    try:
+        client.post(
+            "http://internal/private?secret=content",
+            content="private prompt",
+            headers={"Authorization": "credential"},
+        )
+    finally:
+        client.close()
+        provider.shutdown()
+    exported = destination.get_finished_spans()[0]
+    assert exported.attributes == {
+        "http.request.method": "POST",
+        "http.response.status_code": 201,
+    }
+    assert "traceparent" in requests[0].headers
+    assert "private" not in str(exported.attributes)
+    assert "credential" not in str(exported.attributes)
