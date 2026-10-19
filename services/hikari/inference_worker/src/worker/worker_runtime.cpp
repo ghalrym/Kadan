@@ -129,6 +129,7 @@ public:
                 {{"index", index},
                  {"uuid", std::string(uuid.data())},
                  {"vram_total", memory.total},
+                 {"vram_used", memory.used},
                  {"vram_free", free[index + 1]}}
             );
         }
