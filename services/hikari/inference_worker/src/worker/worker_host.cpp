@@ -229,7 +229,8 @@ void WorkerHost::handle(const std::string& line) {
                                     std::int64_t start,
                                     std::int64_t end,
                                     bool failed,
-                                    const TextPhaseMetrics* metrics
+                                    const TextPhaseMetrics* metrics,
+                                    const CudaPhaseMetrics* cuda
                                 ) {
                     std::lock_guard guard(buffer->mutex);
                     if (buffer->spans.size() < 16) {
@@ -268,6 +269,31 @@ void WorkerHost::handle(const std::string& line) {
                                 {"large_row_seconds", metrics->large_row_seconds},
                                 {"unsupported_seconds", metrics->unsupported_seconds}
                             };
+                        if (cuda) {
+                            Json kernels = Json::array(), copies = Json::array();
+                            for (const auto& k : cuda->kernels)
+                                kernels.push_back(
+                                    Json::array(
+                                        {k.calls,
+                                         k.host_seconds,
+                                         k.measured,
+                                         k.gpu_seconds}
+                                    )
+                                );
+                            for (const auto& c : cuda->copies)
+                                copies.push_back(
+                                    Json::array({c.calls, c.host_seconds})
+                                );
+                            span["cuda"] = {
+                                {"kernels", std::move(kernels)},
+                                {"copies", std::move(copies)},
+                                {"sync_calls", cuda->sync.calls},
+                                {"sync_seconds", cuda->sync.host_seconds},
+                                {"dropped", cuda->dropped},
+                                {"unavailable", cuda->unavailable},
+                                {"shared_batch_size", cuda->shared_batch_size}
+                            };
+                        }
                         buffer->spans.push_back(std::move(span));
                     }
                 };

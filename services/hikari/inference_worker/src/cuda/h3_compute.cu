@@ -17,6 +17,7 @@
 #include <cuda_runtime.h>
 
 #include "../models/image/image_activation.hpp"
+#include "cuda_telemetry.cuh"
 #include "kadan/bf16_projection.hpp"
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"
@@ -295,9 +296,15 @@ template <class F> void with_matvec_kind(int kind, F&& f) {
 // One column-chunk launch.
 void launch_matvec(const MatvecJob& job) {
     with_matvec_kind(matvec_kind(job), [&](auto kind) {
-        gguf_matvec_kernel<decltype(kind)::value>
-            <<<unsigned((job.columns + gguf_matvec_columns - 1) / gguf_matvec_columns),
-               gguf_matvec_threads>>>(job);
+        cuda_trace::kernel(
+            serving::CudaKernel::gguf_matvec_kernel, cudaStreamLegacy, [&] {
+                gguf_matvec_kernel<decltype(kind)::value>
+                    <<<unsigned(
+                           (job.columns + gguf_matvec_columns - 1) / gguf_matvec_columns
+                       ),
+                       gguf_matvec_threads>>>(job);
+            }
+        );
     });
     checked(cudaGetLastError());
 }
@@ -336,10 +343,14 @@ void launch_matvec(
 ) {
     for (const auto& launch : launches) {
         with_matvec_kind(matvec_kind(chunks[launch.first]), [&](auto kind) {
-            gguf_matvec_batch_kernel<decltype(kind)::value>
-                <<<launch.blocks, gguf_matvec_threads>>>(
-                    table + launch.first, unsigned(launch.end - launch.first)
-                );
+            cuda_trace::kernel(
+                serving::CudaKernel::gguf_matvec_batch_kernel, cudaStreamLegacy, [&] {
+                    gguf_matvec_batch_kernel<decltype(kind)::value>
+                        <<<launch.blocks, gguf_matvec_threads>>>(
+                            table + launch.first, unsigned(launch.end - launch.first)
+                        );
+                }
+            );
         });
         checked(cudaGetLastError());
     }
@@ -350,9 +361,14 @@ void launch_matvec(std::vector<MatvecJob>& chunks, MatvecJob* table) {
     if (chunks.empty())
         return;
     const auto launches = plan_matvec(chunks);
-    checked(cudaMemcpy(
-        table, chunks.data(), chunks.size() * sizeof(MatvecJob), cudaMemcpyHostToDevice
-    ));
+    checked(
+        cuda_trace::copy(
+            table,
+            chunks.data(),
+            chunks.size() * sizeof(MatvecJob),
+            cudaMemcpyHostToDevice
+        )
+    );
     launch_matvec(launches, chunks, table);
 }
 
@@ -1003,15 +1019,22 @@ public:
             return nullptr;
         const auto valid = m.valid;
         if (valid) {
-            checked(cudaMemcpy(
-                data, m.data, valid * width * sizeof(float), cudaMemcpyDeviceToDevice
-            ));
-            checked(cudaMemcpy(
-                data + capacity * width,
-                m.data + m.capacity * width,
-                valid * width * sizeof(float),
-                cudaMemcpyDeviceToDevice
-            ));
+            checked(
+                cuda_trace::copy(
+                    data,
+                    m.data,
+                    valid * width * sizeof(float),
+                    cudaMemcpyDeviceToDevice
+                )
+            );
+            checked(
+                cuda_trace::copy(
+                    data + capacity * width,
+                    m.data + m.capacity * width,
+                    valid * width * sizeof(float),
+                    cudaMemcpyDeviceToDevice
+                )
+            );
         }
         release_mirror(m);
         m = {data, capacity, valid, width, reservation};
@@ -1092,7 +1115,7 @@ private:
 
     void release_recurrent(Recurrent& r) {
         if (r.data) {
-            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cuda_trace::synchronize(cudaStreamLegacy));
             checked(cudaFree(r.data));
         }
         if (r.reservation) {
@@ -1105,7 +1128,7 @@ private:
 
     void release_mirror(KvMirror& m) {
         if (m.data) {
-            checked(cudaStreamSynchronize(cudaStreamLegacy));
+            checked(cuda_trace::synchronize(cudaStreamLegacy));
             checked(cudaFree(m.data));
         }
         if (m.reservation) {
@@ -1141,23 +1164,27 @@ public:
     void copy_weight(
         void* pointer, std::size_t offset, std::span<const std::byte> source
     ) override {
-        checked(cudaMemcpy(
-            static_cast<char*>(pointer) + offset,
-            source.data(),
-            source.size(),
-            cudaMemcpyHostToDevice
-        ));
+        checked(
+            cuda_trace::copy(
+                static_cast<char*>(pointer) + offset,
+                source.data(),
+                source.size(),
+                cudaMemcpyHostToDevice
+            )
+        );
     }
 
     void copy_weight_device(
         void* pointer, std::size_t offset, const void* source, std::size_t bytes
     ) override {
-        checked(cudaMemcpy(
-            static_cast<char*>(pointer) + offset,
-            static_cast<const char*>(source) + offset,
-            bytes,
-            cudaMemcpyDeviceToDevice
-        ));
+        checked(
+            cuda_trace::copy(
+                static_cast<char*>(pointer) + offset,
+                static_cast<const char*>(source) + offset,
+                bytes,
+                cudaMemcpyDeviceToDevice
+            )
+        );
     }
 
     void free_weight(void* pointer) override {
@@ -1175,7 +1202,7 @@ public:
     }
 
     void synchronize_weights() override {
-        checked(cudaStreamSynchronize(cudaStreamLegacy));
+        checked(cuda_trace::synchronize(cudaStreamLegacy));
     }
 
     void release_weights() override {
@@ -1184,7 +1211,7 @@ public:
     }
 
     void select(int device) override {
-        checked(cudaSetDevice(device));
+        checked(cuda_trace::set_device(device));
         checked(cudaDeviceGetAttribute(
             &compute_major, cudaDevAttrComputeCapabilityMajor, device
         ));
@@ -1238,7 +1265,7 @@ public:
     }
 
     void synchronize() override {
-        checked(cudaStreamSynchronize(cudaStreamLegacy));
+        checked(cuda_trace::synchronize(cudaStreamLegacy));
     }
 
     void reset() override {
@@ -1341,9 +1368,11 @@ void launch_bf16_projection(
     std::size_t in,
     std::size_t out
 ) {
-    bf16_input<<<unsigned((rows * in + 255) / 256), 256, 0, stream>>>(
-        input, rounded, rows * in
-    );
+    cuda_trace::kernel(serving::CudaKernel::bf16_input, stream, [&] {
+        bf16_input<<<unsigned((rows * in + 255) / 256), 256, 0, stream>>>(
+            input, rounded, rows * in
+        );
+    });
     checked(cudaGetLastError());
     const float one = 1, zero = 0;
     with_projection_math(
@@ -1379,9 +1408,11 @@ void launch_bf16_projection(
             ));
         }
     );
-    add_bias<<<unsigned((rows * out + 255) / 256), 256, 0, stream>>>(
-        output, bias, rows * out, out, status
-    );
+    cuda_trace::kernel(serving::CudaKernel::add_bias, stream, [&] {
+        add_bias<<<unsigned((rows * out + 255) / 256), 256, 0, stream>>>(
+            output, bias, rows * out, out, status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -1947,33 +1978,42 @@ class Compute final : public H3Compute {
                     group_region =
                         upload_patch(convolution->first + begin, end - begin);
                 }
-                auto upload_input = [&](float* target,
-                                        std::size_t start,
-                                        std::size_t rows) {
-                    if (!convolution) {
-                        checked(cudaMemcpy(
-                            target,
-                            x.data() + start * in,
-                            rows * in * sizeof(float),
-                            cudaMemcpyHostToDevice
-                        ));
-                        return;
-                    }
-                    const auto& shape = convolution->shape;
-                    const auto first = convolution->first + start;
-                    const auto region =
-                        group_region ? *group_region : upload_patch(first, rows);
-                    image_vae_gather_kernel<<<unsigned((rows * in + 255) / 256), 256>>>(
-                        arena.at<float>(raw_input),
-                        target,
-                        nonfinite,
-                        shape,
-                        region,
-                        first,
-                        rows
-                    );
-                    checked(cudaGetLastError());
-                };
+                auto upload_input =
+                    [&](float* target, std::size_t start, std::size_t rows) {
+                        if (!convolution) {
+                            checked(
+                                cuda_trace::copy(
+                                    target,
+                                    x.data() + start * in,
+                                    rows * in * sizeof(float),
+                                    cudaMemcpyHostToDevice
+                                )
+                            );
+                            return;
+                        }
+                        const auto& shape = convolution->shape;
+                        const auto first = convolution->first + start;
+                        const auto region =
+                            group_region ? *group_region : upload_patch(first, rows);
+                        cuda_trace::kernel(
+                            serving::CudaKernel::image_vae_gather_kernel,
+                            cudaStreamLegacy,
+                            [&] {
+                                image_vae_gather_kernel<<<
+                                    unsigned((rows * in + 255) / 256),
+                                    256>>>(
+                                    arena.at<float>(raw_input),
+                                    target,
+                                    nonfinite,
+                                    shape,
+                                    region,
+                                    first,
+                                    rows
+                                );
+                            }
+                        );
+                        checked(cudaGetLastError());
+                    };
                 if (keep_input)
                     for (auto start = begin; start < end; start += plan.rows) {
                         stop(cancel, failed);
@@ -2104,14 +2144,16 @@ class Compute final : public H3Compute {
                     unsigned* decode_status = nullptr;
                     // Runs after every kernel that decodes the packed rows.
                     auto admit_packed = [&] {
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cuda_trace::synchronize(cudaStreamLegacy));
                         unsigned invalid = 0;
-                        checked(cudaMemcpy(
-                            &invalid,
-                            decode_status,
-                            sizeof(invalid),
-                            cudaMemcpyDeviceToHost
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                &invalid,
+                                decode_status,
+                                sizeof(invalid),
+                                cudaMemcpyDeviceToHost
+                            )
+                        );
                         require(!invalid, "h3_cuda_nonfinite_weight");
                         stop(cancel, failed);
                         // Admission follows successful decoding, so invalid source
@@ -2125,55 +2167,75 @@ class Compute final : public H3Compute {
                     if (packed_source) {
                         packed_pointer = retained ? retained : arena.at<void>(packed);
                         if (!retained)
-                            checked(cudaMemcpy(
-                                packed_pointer,
-                                host_packed.data(),
-                                packed_bytes,
-                                cudaMemcpyHostToDevice
-                            ));
+                            checked(
+                                cuda_trace::copy(
+                                    packed_pointer,
+                                    host_packed.data(),
+                                    packed_bytes,
+                                    cudaMemcpyHostToDevice
+                                )
+                            );
                         decode_status = arena.at<unsigned>(packed_status);
                         checked(cudaMemset(decode_status, 0, sizeof(unsigned)));
                         if (!matvec) {
-                            gguf_decode_kernel<<<
-                                unsigned((weight_count + 255) / 256),
-                                256>>>(
-                                static_cast<const unsigned char*>(packed_pointer),
-                                static_cast<float*>(weight_pointer),
-                                decode_status,
-                                encoding,
-                                weight_count
+                            cuda_trace::kernel(
+                                serving::CudaKernel::gguf_decode_kernel,
+                                cudaStreamLegacy,
+                                [&] {
+                                    gguf_decode_kernel<<<
+                                        unsigned((weight_count + 255) / 256),
+                                        256>>>(
+                                        static_cast<const unsigned char*>(
+                                            packed_pointer
+                                        ),
+                                        static_cast<float*>(weight_pointer),
+                                        decode_status,
+                                        encoding,
+                                        weight_count
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
                             admit_packed();
                         }
                     } else if (!retained)
-                        checked(cudaMemcpy(
-                            weight_pointer,
-                            weights.data(),
-                            weights.size_bytes(),
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                weight_pointer,
+                                weights.data(),
+                                weights.size_bytes(),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                     if (bias.empty())
                         checked(cudaMemset(arena.at<void>(b), 0, out * 4));
                     else
-                        checked(cudaMemcpy(
-                            arena.at<void>(b),
-                            bias.data(),
-                            out * 4,
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(b),
+                                bias.data(),
+                                out * 4,
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                     if constexpr (quant)
-                        checked(cudaMemcpy(
-                            arena.at<void>(s),
-                            scales.data(),
-                            out * 4,
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(s),
+                                scales.data(),
+                                out * 4,
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                     else if (precise) {
-                        widen<<<unsigned((weight_count + 255) / 256), 256>>>(
-                            static_cast<float*>(weight_pointer),
-                            arena.at<double>(wide_weights),
-                            weight_count
+                        cuda_trace::kernel(
+                            serving::CudaKernel::widen, cudaStreamLegacy, [&] {
+                                widen<<<unsigned((weight_count + 255) / 256), 256>>>(
+                                    static_cast<float*>(weight_pointer),
+                                    arena.at<double>(wide_weights),
+                                    weight_count
+                                );
+                            }
                         );
                         checked(cudaGetLastError());
                     }
@@ -2185,20 +2247,32 @@ class Compute final : public H3Compute {
                         if (!keep_input)
                             upload_input(input_pointer, start, rows);
                         if constexpr (quant) {
-                            rotate_kernel<<<
-                                dim3(unsigned(rows), unsigned(in / group)),
-                                unsigned(group)>>>(
-                                input_pointer,
-                                arena.at<float>(rotated),
-                                in,
-                                unsigned(group)
+                            cuda_trace::kernel(
+                                serving::CudaKernel::rotate_kernel,
+                                cudaStreamLegacy,
+                                [&] {
+                                    rotate_kernel<<<
+                                        dim3(unsigned(rows), unsigned(in / group)),
+                                        unsigned(group)>>>(
+                                        input_pointer,
+                                        arena.at<float>(rotated),
+                                        in,
+                                        unsigned(group)
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
-                            quantize_kernel<<<unsigned(rows), 256>>>(
-                                arena.at<float>(rotated),
-                                arena.at<std::int8_t>(codes),
-                                arena.at<float>(row_scales),
-                                in
+                            cuda_trace::kernel(
+                                serving::CudaKernel::quantize_kernel,
+                                cudaStreamLegacy,
+                                [&] {
+                                    quantize_kernel<<<unsigned(rows), 256>>>(
+                                        arena.at<float>(rotated),
+                                        arena.at<std::int8_t>(codes),
+                                        arena.at<float>(row_scales),
+                                        in
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
                             const std::int32_t one = 1, zero = 0;
@@ -2223,14 +2297,22 @@ class Compute final : public H3Compute {
                                 CUBLAS_COMPUTE_32I,
                                 CUBLAS_GEMM_DEFAULT
                             ));
-                            finish_int8<<<unsigned((rows * out + 255) / 256), 256>>>(
-                                arena.at<std::int32_t>(sums),
-                                arena.at<float>(row_scales),
-                                arena.at<float>(s),
-                                arena.at<float>(b),
-                                arena.at<float>(output),
-                                rows * out,
-                                out
+                            cuda_trace::kernel(
+                                serving::CudaKernel::finish_int8,
+                                cudaStreamLegacy,
+                                [&] {
+                                    finish_int8<<<
+                                        unsigned((rows * out + 255) / 256),
+                                        256>>>(
+                                        arena.at<std::int32_t>(sums),
+                                        arena.at<float>(row_scales),
+                                        arena.at<float>(s),
+                                        arena.at<float>(b),
+                                        arena.at<float>(output),
+                                        rows * out,
+                                        out
+                                    );
+                                }
                             );
                         } else if constexpr (bf16) {
                             // Mutually exclusive with INT8 rotation; reuse its larger
@@ -2249,8 +2331,14 @@ class Compute final : public H3Compute {
                                 out
                             );
                         } else if (precise) {
-                            widen<<<unsigned((rows * in + 255) / 256), 256>>>(
-                                input_pointer, arena.at<double>(wide_input), rows * in
+                            cuda_trace::kernel(
+                                serving::CudaKernel::widen, cudaStreamLegacy, [&] {
+                                    widen<<<unsigned((rows * in + 255) / 256), 256>>>(
+                                        input_pointer,
+                                        arena.at<double>(wide_input),
+                                        rows * in
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
                             checked(
@@ -2271,12 +2359,20 @@ class Compute final : public H3Compute {
                                     int(out)
                                 )
                             );
-                            narrow_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
-                                arena.at<double>(wide_output),
-                                arena.at<float>(b),
-                                arena.at<float>(output),
-                                rows * out,
-                                out
+                            cuda_trace::kernel(
+                                serving::CudaKernel::narrow_bias,
+                                cudaStreamLegacy,
+                                [&] {
+                                    narrow_bias<<<
+                                        unsigned((rows * out + 255) / 256),
+                                        256>>>(
+                                        arena.at<double>(wide_output),
+                                        arena.at<float>(b),
+                                        arena.at<float>(output),
+                                        rows * out,
+                                        out
+                                    );
+                                }
                             );
                         } else if (matvec) {
                             const MatvecJob job{
@@ -2295,12 +2391,18 @@ class Compute final : public H3Compute {
                             };
                             launch_matvec(job);
                             checked(cudaGetLastError());
-                            add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
-                                arena.at<float>(output),
-                                arena.at<float>(b),
-                                rows * out,
-                                out,
-                                nonfinite
+                            cuda_trace::kernel(
+                                serving::CudaKernel::add_bias, cudaStreamLegacy, [&] {
+                                    add_bias<<<
+                                        unsigned((rows * out + 255) / 256),
+                                        256>>>(
+                                        arena.at<float>(output),
+                                        arena.at<float>(b),
+                                        rows * out,
+                                        out,
+                                        nonfinite
+                                    );
+                                }
                             );
                         } else {
                             const float one = 1, zero = 0;
@@ -2336,31 +2438,43 @@ class Compute final : public H3Compute {
                                     ));
                                 }
                             );
-                            add_bias<<<unsigned((rows * out + 255) / 256), 256>>>(
-                                arena.at<float>(output),
-                                arena.at<float>(b),
-                                rows * out,
-                                out,
-                                nonfinite
+                            cuda_trace::kernel(
+                                serving::CudaKernel::add_bias, cudaStreamLegacy, [&] {
+                                    add_bias<<<
+                                        unsigned((rows * out + 255) / 256),
+                                        256>>>(
+                                        arena.at<float>(output),
+                                        arena.at<float>(b),
+                                        rows * out,
+                                        out,
+                                        nonfinite
+                                    );
+                                }
                             );
                         }
                         checked(cudaGetLastError());
                         if (convolution) {
                             // The F32 path does not use INT8 sums: reuse that
                             // admitted slice for the bit-preserving planar tile.
-                            image_vae_scatter_kernel<<<
-                                unsigned((rows * out + 255) / 256),
-                                256>>>(
-                                arena.at<float>(output),
-                                arena.at<float>(sums),
-                                rows,
-                                out,
-                                grouped ? start - begin : 0,
-                                grouped ? input_rows : rows
+                            cuda_trace::kernel(
+                                serving::CudaKernel::image_vae_scatter_kernel,
+                                cudaStreamLegacy,
+                                [&] {
+                                    image_vae_scatter_kernel<<<
+                                        unsigned((rows * out + 255) / 256),
+                                        256>>>(
+                                        arena.at<float>(output),
+                                        arena.at<float>(sums),
+                                        rows,
+                                        out,
+                                        grouped ? start - begin : 0,
+                                        grouped ? input_rows : rows
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
                         }
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cuda_trace::synchronize(cudaStreamLegacy));
                         stop(cancel, failed);
                         if (convolution && !grouped)
                             checked(cudaMemcpy2D(
@@ -2402,9 +2516,11 @@ class Compute final : public H3Compute {
                 }
                 if (nonfinite) {
                     unsigned invalid = 0;
-                    checked(cudaMemcpy(
-                        &invalid, nonfinite, sizeof(invalid), cudaMemcpyDeviceToHost
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            &invalid, nonfinite, sizeof(invalid), cudaMemcpyDeviceToHost
+                        )
+                    );
                     if (invalid)
                         nonfinite_output = true;
                 }
@@ -2569,12 +2685,14 @@ public:
                                 hq[t * dim + c] =
                                     q[((start + t) * heads + h) * dim + c];
                         }
-                        checked(cudaMemcpy(
-                            arena.at<void>(dq),
-                            hq,
-                            rows * dim * sizeof(Real),
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(dq),
+                                hq,
+                                rows * dim * sizeof(Real),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                     };
                     auto pack_keys = [&](std::size_t start, std::size_t rows) {
                         for (std::size_t t = 0; t < rows; ++t) {
@@ -2587,18 +2705,22 @@ public:
                                     v[((start + t) * kv_heads + kh) * dim + c];
                             }
                         }
-                        checked(cudaMemcpy(
-                            arena.at<void>(dk),
-                            hk,
-                            rows * dim * sizeof(Real),
-                            cudaMemcpyHostToDevice
-                        ));
-                        checked(cudaMemcpy(
-                            arena.at<void>(dv),
-                            hv,
-                            rows * dim * sizeof(Real),
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(dk),
+                                hk,
+                                rows * dim * sizeof(Real),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(dv),
+                                hv,
+                                rows * dim * sizeof(Real),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                     };
                     if (plan.full_heads) {
                         pack_query(0, n);
@@ -2614,10 +2736,16 @@ public:
                         checked(
                             cudaMemset(arena.at<void>(dy), 0, rows * dim * sizeof(Real))
                         );
-                        initialize_attention<<<1, 128>>>(
-                            arena.at<Real>(maximum),
-                            arena.at<Real>(total),
-                            unsigned(rows)
+                        cuda_trace::kernel(
+                            serving::CudaKernel::initialize_attention,
+                            cudaStreamLegacy,
+                            [&] {
+                                initialize_attention<<<1, 128>>>(
+                                    arena.at<Real>(maximum),
+                                    arena.at<Real>(total),
+                                    unsigned(rows)
+                                );
+                            }
                         );
                         checked(cudaGetLastError());
                         for (std::size_t key = 0; key < key_tokens; key += key_tile) {
@@ -2647,18 +2775,24 @@ public:
                                     int(keys)
                                 )
                             );
-                            online_softmax<<<unsigned(rows), 256>>>(
-                                arena.at<Real>(scores),
-                                arena.at<Real>(dy),
-                                arena.at<Real>(maximum),
-                                arena.at<Real>(total),
-                                unsigned(keys),
-                                unsigned(dim),
-                                unsigned(start),
-                                unsigned(key),
-                                unsigned(causal_queries),
-                                unsigned(window),
-                                unsigned(offset)
+                            cuda_trace::kernel(
+                                serving::CudaKernel::online_softmax,
+                                cudaStreamLegacy,
+                                [&] {
+                                    online_softmax<<<unsigned(rows), 256>>>(
+                                        arena.at<Real>(scores),
+                                        arena.at<Real>(dy),
+                                        arena.at<Real>(maximum),
+                                        arena.at<Real>(total),
+                                        unsigned(keys),
+                                        unsigned(dim),
+                                        unsigned(start),
+                                        unsigned(key),
+                                        unsigned(causal_queries),
+                                        unsigned(window),
+                                        unsigned(offset)
+                                    );
+                                }
                             );
                             checked(cudaGetLastError());
                             checked(
@@ -2681,21 +2815,31 @@ public:
                                 )
                             );
                         }
-                        divide_attention<<<unsigned((rows * dim + 255) / 256), 256>>>(
-                            arena.at<Real>(dy),
-                            arena.at<Real>(total),
-                            unsigned(rows),
-                            unsigned(dim)
+                        cuda_trace::kernel(
+                            serving::CudaKernel::divide_attention,
+                            cudaStreamLegacy,
+                            [&] {
+                                divide_attention<<<
+                                    unsigned((rows * dim + 255) / 256),
+                                    256>>>(
+                                    arena.at<Real>(dy),
+                                    arena.at<Real>(total),
+                                    unsigned(rows),
+                                    unsigned(dim)
+                                );
+                            }
                         );
                         checked(cudaGetLastError());
                         // The legacy stream orders all key tiles; this blocking copy
                         // waits for the complete query tile before host consumption.
-                        checked(cudaMemcpy(
-                            hy,
-                            arena.at<void>(dy),
-                            rows * dim * sizeof(Real),
-                            cudaMemcpyDeviceToHost
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                hy,
+                                arena.at<void>(dy),
+                                rows * dim * sizeof(Real),
+                                cudaMemcpyDeviceToHost
+                            )
+                        );
                         stop(cancel, failed);
                         for (std::size_t t = 0; t < rows; ++t)
                             for (std::size_t c = 0; c < dim; ++c)
@@ -2968,12 +3112,14 @@ public:
                            status = layout.add(sizeof(unsigned));
                 require(layout.bytes <= plan.bytes, "image_vae_norm_scratch");
                 workspace.ensure(layout.bytes);
-                checked(cudaMemcpy(
-                    arena.at<void>(g),
-                    gamma.data(),
-                    gamma.size_bytes(),
-                    cudaMemcpyHostToDevice
-                ));
+                checked(
+                    cuda_trace::copy(
+                        arena.at<void>(g),
+                        gamma.data(),
+                        gamma.size_bytes(),
+                        cudaMemcpyHostToDevice
+                    )
+                );
                 checked(cudaMemset(arena.at<void>(status), 0, sizeof(unsigned)));
                 for (std::size_t first = begin; first < end; first += plan.points) {
                     stop(cancel, failed);
@@ -2987,25 +3133,35 @@ public:
                         gamma.size(),
                         cudaMemcpyHostToDevice
                     ));
-                    image_vae_norm_kernel<<<unsigned((count + 255) / 256), 256>>>(
-                        arena.at<float>(x),
-                        arena.at<float>(g),
-                        arena.at<float>(y),
-                        arena.at<unsigned>(status),
-                        gamma.size(),
-                        plan.points,
-                        count,
-                        activate
+                    cuda_trace::kernel(
+                        serving::CudaKernel::image_vae_norm_kernel,
+                        cudaStreamLegacy,
+                        [&] {
+                            image_vae_norm_kernel<<<
+                                unsigned((count + 255) / 256),
+                                256>>>(
+                                arena.at<float>(x),
+                                arena.at<float>(g),
+                                arena.at<float>(y),
+                                arena.at<unsigned>(status),
+                                gamma.size(),
+                                plan.points,
+                                count,
+                                activate
+                            );
+                        }
                     );
                     checked(cudaGetLastError());
-                    checked(cudaStreamSynchronize(cudaStreamLegacy));
+                    checked(cuda_trace::synchronize(cudaStreamLegacy));
                     unsigned invalid = 0;
-                    checked(cudaMemcpy(
-                        &invalid,
-                        arena.at<void>(status),
-                        sizeof(invalid),
-                        cudaMemcpyDeviceToHost
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            &invalid,
+                            arena.at<void>(status),
+                            sizeof(invalid),
+                            cudaMemcpyDeviceToHost
+                        )
+                    );
                     if (invalid) {
                         nonfinite = true;
                         return;
@@ -3093,20 +3249,26 @@ public:
                 auto upload_input =
                     [&](std::size_t first, std::size_t count, std::size_t offset) {
                         stop(cancel, failed);
-                        checked(cudaMemcpy(
-                            arena.at<float>(input) + offset * in,
-                            x.data() + first * in,
-                            count * in * 4,
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<float>(input) + offset * in,
+                                x.data() + first * in,
+                                count * in * 4,
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                         stop(cancel, failed);
-                        bf16_input<<<unsigned((count * in + 255) / 256), 256>>>(
-                            arena.at<float>(input) + offset * in,
-                            arena.at<__nv_bfloat16>(bf16) + offset * in,
-                            count * in
+                        cuda_trace::kernel(
+                            serving::CudaKernel::bf16_input, cudaStreamLegacy, [&] {
+                                bf16_input<<<unsigned((count * in + 255) / 256), 256>>>(
+                                    arena.at<float>(input) + offset * in,
+                                    arena.at<__nv_bfloat16>(bf16) + offset * in,
+                                    count * in
+                                );
+                            }
                         );
                         checked(cudaGetLastError());
-                        checked(cudaStreamSynchronize(cudaStreamLegacy));
+                        checked(cuda_trace::synchronize(cudaStreamLegacy));
                         stop(cancel, failed);
                     };
                 if (keep_input)
@@ -3149,12 +3311,14 @@ public:
                                 key, std::as_bytes(values), cancel
                             ))
                             return retained;
-                        checked(cudaMemcpy(
-                            arena.at<void>(destination),
-                            staging.get(),
-                            count * 2,
-                            cudaMemcpyHostToDevice
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                arena.at<void>(destination),
+                                staging.get(),
+                                count * 2,
+                                cudaMemcpyHostToDevice
+                            )
+                        );
                         stop(cancel, failed);
                         return arena.at<void>(destination);
                     };
@@ -3193,7 +3357,7 @@ public:
                                 CUBLAS_COMPUTE_32F,
                                 CUBLAS_GEMM_DEFAULT
                             ));
-                            checked(cudaStreamSynchronize(cudaStreamLegacy));
+                            checked(cuda_trace::synchronize(cudaStreamLegacy));
                             stop(cancel, failed);
                         };
                         with_projection_math(
@@ -3214,22 +3378,30 @@ public:
                         );
                         stop(cancel, failed);
                         checked(cudaMemset(arena.at<void>(status), 0, sizeof(int)));
-                        image_silu_pair_kernel<<<
-                            unsigned((tile_rows * columns + 255) / 256),
-                            256>>>(
-                            arena.at<float>(gate),
-                            arena.at<float>(up),
-                            tile_rows * columns,
-                            arena.at<unsigned>(status)
+                        cuda_trace::kernel(
+                            serving::CudaKernel::image_silu_pair_kernel,
+                            cudaStreamLegacy,
+                            [&] {
+                                image_silu_pair_kernel<<<
+                                    unsigned((tile_rows * columns + 255) / 256),
+                                    256>>>(
+                                    arena.at<float>(gate),
+                                    arena.at<float>(up),
+                                    tile_rows * columns,
+                                    arena.at<unsigned>(status)
+                                );
+                            }
                         );
                         checked(cudaGetLastError());
                         int result = 0;
-                        checked(cudaMemcpy(
-                            &result,
-                            arena.at<void>(status),
-                            sizeof(result),
-                            cudaMemcpyDeviceToHost
-                        ));
+                        checked(
+                            cuda_trace::copy(
+                                &result,
+                                arena.at<void>(status),
+                                sizeof(result),
+                                cudaMemcpyDeviceToHost
+                            )
+                        );
                         stop(cancel, failed);
                         require(!(result & 1), "h3_cuda_nonfinite_output");
                         require(!(result & 2), "h3_cuda_nonfinite_input");
@@ -3396,18 +3568,22 @@ public:
                 for (float v : values.subspan(first * width, count))
                     require(std::isfinite(v), "h3_cuda_nonfinite_input");
                 m->valid = first;
-                checked(cudaMemcpy(
-                    m->data + first * width,
-                    keys.data() + first * width,
-                    count * sizeof(float),
-                    cudaMemcpyHostToDevice
-                ));
-                checked(cudaMemcpy(
-                    m->data + m->capacity * width + first * width,
-                    values.data() + first * width,
-                    count * sizeof(float),
-                    cudaMemcpyHostToDevice
-                ));
+                checked(
+                    cuda_trace::copy(
+                        m->data + first * width,
+                        keys.data() + first * width,
+                        count * sizeof(float),
+                        cudaMemcpyHostToDevice
+                    )
+                );
+                checked(
+                    cuda_trace::copy(
+                        m->data + m->capacity * width + first * width,
+                        values.data() + first * width,
+                        count * sizeof(float),
+                        cudaMemcpyHostToDevice
+                    )
+                );
                 m->valid = positions;
                 const auto segments = unsigned(
                     (longest + cached_attention_segment - 1) / cached_attention_segment
@@ -3423,58 +3599,78 @@ public:
                 require(l.bytes <= arena.scratch_limit, "h3_cuda_attention_scratch");
                 device_workspace.ensure(l.bytes);
                 stop(cancel, failed);
-                checked(cudaMemcpy(
-                    arena.at<void>(query),
-                    q.data(),
-                    q.size_bytes(),
-                    cudaMemcpyHostToDevice
-                ));
+                checked(
+                    cuda_trace::copy(
+                        arena.at<void>(query),
+                        q.data(),
+                        q.size_bytes(),
+                        cudaMemcpyHostToDevice
+                    )
+                );
                 if (!selected.empty()) {
-                    checked(cudaMemcpy(
-                        arena.at<void>(indices),
-                        selected.data(),
-                        selected.size_bytes(),
-                        cudaMemcpyHostToDevice
-                    ));
-                    checked(cudaMemcpy(
-                        arena.at<void>(starts),
-                        offsets.data(),
-                        offsets.size_bytes(),
-                        cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            arena.at<void>(indices),
+                            selected.data(),
+                            selected.size_bytes(),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
+                    checked(
+                        cuda_trace::copy(
+                            arena.at<void>(starts),
+                            offsets.data(),
+                            offsets.size_bytes(),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                 }
-                cached_attention_kernel<<<
-                    dim3(unsigned(rows), unsigned(heads), segments),
-                    cached_attention_threads>>>(
-                    arena.at<float>(query),
-                    m->data,
-                    m->data + m->capacity * width,
-                    arena.at<float>(partial),
-                    unsigned(position),
-                    unsigned(heads),
-                    unsigned(kv_heads),
-                    unsigned(dim),
-                    scale,
-                    selected.empty() ? nullptr : arena.at<unsigned>(indices),
-                    selected.empty() ? nullptr : arena.at<unsigned>(starts)
+                cuda_trace::kernel(
+                    serving::CudaKernel::cached_attention_kernel,
+                    cudaStreamLegacy,
+                    [&] {
+                        cached_attention_kernel<<<
+                            dim3(unsigned(rows), unsigned(heads), segments),
+                            cached_attention_threads>>>(
+                            arena.at<float>(query),
+                            m->data,
+                            m->data + m->capacity * width,
+                            arena.at<float>(partial),
+                            unsigned(position),
+                            unsigned(heads),
+                            unsigned(kv_heads),
+                            unsigned(dim),
+                            scale,
+                            selected.empty() ? nullptr : arena.at<unsigned>(indices),
+                            selected.empty() ? nullptr : arena.at<unsigned>(starts)
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
-                cached_attention_combine<<<
-                    dim3(unsigned(rows), unsigned(heads)),
-                    256>>>(
-                    arena.at<float>(partial),
-                    arena.at<float>(result),
-                    unsigned(heads),
-                    unsigned(dim),
-                    segments
+                cuda_trace::kernel(
+                    serving::CudaKernel::cached_attention_combine,
+                    cudaStreamLegacy,
+                    [&] {
+                        cached_attention_combine<<<
+                            dim3(unsigned(rows), unsigned(heads)),
+                            256>>>(
+                            arena.at<float>(partial),
+                            arena.at<float>(result),
+                            unsigned(heads),
+                            unsigned(dim),
+                            segments
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
-                checked(cudaMemcpy(
-                    output.data(),
-                    arena.at<void>(result),
-                    output.size_bytes(),
-                    cudaMemcpyDeviceToHost
-                ));
+                checked(
+                    cuda_trace::copy(
+                        output.data(),
+                        arena.at<void>(result),
+                        output.size_bytes(),
+                        cudaMemcpyDeviceToHost
+                    )
+                );
             }
         );
         if (admitted)
@@ -3533,12 +3729,14 @@ public:
                     constants.reserve(constant_floats);
                     for (const auto part : {step.conv, step.dt, step.a, step.norm})
                         constants.insert(constants.end(), part.begin(), part.end());
-                    checked(cudaMemcpy(
-                        weights,
-                        constants.data(),
-                        constant_floats * sizeof(float),
-                        cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            weights,
+                            constants.data(),
+                            constant_floats * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                 }
                 Layout l;
                 const auto qkv = l.add(step.qkv.size_bytes()),
@@ -3559,23 +3757,29 @@ public:
                           std::pair{alpha, step.alpha},
                           std::pair{beta, step.beta}})
                         std::memcpy(upload.data() + at, part.data(), part.size_bytes());
-                    checked(cudaMemcpy(
-                        arena.at<void>(0),
-                        upload.data(),
-                        upload.size(),
-                        cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            arena.at<void>(0),
+                            upload.data(),
+                            upload.size(),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                 }
                 const auto count = std::max(rows, past) * channels;
-                delta_conv_kernel<<<unsigned((count + 255) / 256), 256>>>(
-                    arena.at<float>(qkv),
-                    history,
-                    weights,
-                    arena.at<float>(mixed),
-                    arena.at<float>(next),
-                    unsigned(rows),
-                    unsigned(channels),
-                    unsigned(step.kernel)
+                cuda_trace::kernel(
+                    serving::CudaKernel::delta_conv_kernel, cudaStreamLegacy, [&] {
+                        delta_conv_kernel<<<unsigned((count + 255) / 256), 256>>>(
+                            arena.at<float>(qkv),
+                            history,
+                            weights,
+                            arena.at<float>(mixed),
+                            arena.at<float>(next),
+                            unsigned(rows),
+                            unsigned(channels),
+                            unsigned(step.kernel)
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
                 checked(cudaMemcpyAsync(
@@ -3585,41 +3789,51 @@ public:
                     cudaMemcpyDeviceToDevice,
                     cudaStreamLegacy
                 ));
-                delta_l2_kernel<<<
-                    dim3(unsigned(rows), unsigned(2 * step.key_heads)),
-                    128>>>(
-                    arena.at<float>(mixed),
-                    unsigned(channels),
-                    unsigned(step.key_heads),
-                    unsigned(dim),
-                    step.eps
+                cuda_trace::kernel(
+                    serving::CudaKernel::delta_l2_kernel, cudaStreamLegacy, [&] {
+                        delta_l2_kernel<<<
+                            dim3(unsigned(rows), unsigned(2 * step.key_heads)),
+                            128>>>(
+                            arena.at<float>(mixed),
+                            unsigned(channels),
+                            unsigned(step.key_heads),
+                            unsigned(dim),
+                            step.eps
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
-                delta_heads_kernel<<<unsigned(heads), unsigned(dim)>>>(
-                    arena.at<float>(mixed),
-                    arena.at<float>(z),
-                    arena.at<float>(alpha),
-                    arena.at<float>(beta),
-                    dt,
-                    a,
-                    norm,
-                    state,
-                    arena.at<float>(output),
-                    unsigned(rows),
-                    unsigned(channels),
-                    unsigned(step.key_heads),
-                    unsigned(heads),
-                    unsigned(dim),
-                    step.eps,
-                    step.sigmoid_gate
+                cuda_trace::kernel(
+                    serving::CudaKernel::delta_heads_kernel, cudaStreamLegacy, [&] {
+                        delta_heads_kernel<<<unsigned(heads), unsigned(dim)>>>(
+                            arena.at<float>(mixed),
+                            arena.at<float>(z),
+                            arena.at<float>(alpha),
+                            arena.at<float>(beta),
+                            dt,
+                            a,
+                            norm,
+                            state,
+                            arena.at<float>(output),
+                            unsigned(rows),
+                            unsigned(channels),
+                            unsigned(step.key_heads),
+                            unsigned(heads),
+                            unsigned(dim),
+                            step.eps,
+                            step.sigmoid_gate
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
-                checked(cudaMemcpy(
-                    step.output.data(),
-                    arena.at<void>(output),
-                    step.output.size_bytes(),
-                    cudaMemcpyDeviceToHost
-                ));
+                checked(
+                    cuda_trace::copy(
+                        step.output.data(),
+                        arena.at<void>(output),
+                        step.output.size_bytes(),
+                        cudaMemcpyDeviceToHost
+                    )
+                );
                 done = true;
             }
         );
@@ -3744,12 +3958,14 @@ public:
                 ));
                 auto read_status = [&](std::size_t at) {
                     unsigned invalid = 0;
-                    checked(cudaMemcpy(
-                        &invalid,
-                        arena.at<void>(at),
-                        sizeof(invalid),
-                        cudaMemcpyDeviceToHost
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            &invalid,
+                            arena.at<void>(at),
+                            sizeof(invalid),
+                            cudaMemcpyDeviceToHost
+                        )
+                    );
                     require(!invalid, "h3_cuda_nonfinite_weight");
                 };
                 // A missing chunk is read, validated and only then retained.
@@ -3824,12 +4040,14 @@ public:
                         resident.data(),
                         resident.size() * sizeof(MatvecJob)
                     );
-                    checked(cudaMemcpy(
-                        arena.at<void>(input),
-                        upload.data(),
-                        upload.size(),
-                        cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            arena.at<void>(input),
+                            upload.data(),
+                            upload.size(),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                 }
                 // Misses stream through the pinned staging buffer. A tile larger
                 // than half of it runs alone; the rest form groups in two halves:
@@ -3871,9 +4089,14 @@ public:
                     else
                         (*miss.job->source)(miss.first, destination);
                     stop(cancel, failed);
-                    checked(cudaMemcpy(
-                        staged, destination.data(), miss.bytes, cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            staged,
+                            destination.data(),
+                            miss.bytes,
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                     checked(cudaMemset(statuses, 0, sizeof(unsigned)));
                     miss.chunk.weights = staged;
                     miss.chunk.status = statuses;
@@ -3918,12 +4141,14 @@ public:
                     k = groups.back().end;
                 }
                 if (!groups.empty()) {
-                    checked(cudaMemcpy(
-                        arena.at<void>(table),
-                        table_entries.data(),
-                        table_entries.size() * sizeof(MatvecJob),
-                        cudaMemcpyHostToDevice
-                    ));
+                    checked(
+                        cuda_trace::copy(
+                            arena.at<void>(table),
+                            table_entries.data(),
+                            table_entries.size() * sizeof(MatvecJob),
+                            cudaMemcpyHostToDevice
+                        )
+                    );
                     struct Events {
                         cudaEvent_t done[2]{};
                         ~Events() {
@@ -4004,12 +4229,14 @@ public:
                 std::vector<std::byte> download(
                     weight_status - output + sizeof(unsigned)
                 );
-                checked(cudaMemcpy(
-                    download.data(),
-                    arena.at<void>(output),
-                    download.size(),
-                    cudaMemcpyDeviceToHost
-                ));
+                checked(
+                    cuda_trace::copy(
+                        download.data(),
+                        arena.at<void>(output),
+                        download.size(),
+                        cudaMemcpyDeviceToHost
+                    )
+                );
                 stop(cancel, failed);
                 unsigned invalid = 0;
                 std::memcpy(
@@ -4124,7 +4351,7 @@ CudaBf16Projection::CudaBf16Projection(
     );
     // Initialization may touch context resources even when CUDA reports failure.
     ++activity_->owners;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     int major = 0;
     checked(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_));
     require(major >= 8, "h3_cuda_bf16_policy");
@@ -4156,9 +4383,9 @@ void CudaBf16Projection::close() {
     if (!blas_)
         return;
     try {
-        checked(cudaSetDevice(device_));
+        checked(cuda_trace::set_device(device_));
         if (stream_)
-            checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+            checked(cuda_trace::synchronize(static_cast<cudaStream_t>(stream_)));
         checked(cublasDestroy(static_cast<cublasHandle_t>(blas_)));
     } catch (...) {
         quarantined_ = true;
@@ -4190,7 +4417,7 @@ void CudaBf16Projection::launch(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     const auto handle = static_cast<cublasHandle_t>(blas_);
     // Stream binding resets cuBLAS workspace, so bind before installing the
@@ -4243,24 +4470,28 @@ void CudaBf16Projection::launch_image_silu_pair(
     launch(stream, input, gate_weight, bias, rounded, gate, workspace, gate_status);
     launch(stream, input, up_weight, bias, rounded, up, workspace, up_status);
     const auto owned_stream = static_cast<cudaStream_t>(stream);
-    image_projection_status<<<1, 1, 0, owned_stream>>>(
-        static_cast<const unsigned*>(gate_status.data),
-        static_cast<const unsigned*>(up_status.data),
-        static_cast<unsigned*>(status.data)
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_projection_status, owned_stream, [&] {
+        image_projection_status<<<1, 1, 0, owned_stream>>>(
+            static_cast<const unsigned*>(gate_status.data),
+            static_cast<const unsigned*>(up_status.data),
+            static_cast<unsigned*>(status.data)
+        );
+    });
     checked(cudaGetLastError());
     // F2 already performs the bias-free +0. Repeating it in the shared image
     // kernel is idempotent, including -0; keep its existing arithmetic unchanged.
-    image_silu_pair_kernel<<<
-        unsigned((shape.rows * shape.out + 255) / 256),
-        256,
-        0,
-        owned_stream>>>(
-        static_cast<float*>(gate.data),
-        static_cast<const float*>(up.data),
-        shape.rows * shape.out,
-        static_cast<unsigned*>(status.data)
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_silu_pair_kernel, owned_stream, [&] {
+        image_silu_pair_kernel<<<
+            unsigned((shape.rows * shape.out + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            static_cast<float*>(gate.data),
+            static_cast<const float*>(up.data),
+            shape.rows * shape.out,
+            static_cast<unsigned*>(status.data)
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4301,18 +4532,20 @@ void CudaBf16Projection::text_normalization(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_text_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
-        static_cast<const float*>(inputs[0].data),
-        inputs[1].data,
-        inputs[1].dtype == DeviceDType::bf16,
-        static_cast<float*>(outputs[0].data),
-        shape.in,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_text_norm_kernel, owned_stream, [&] {
+        image_text_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+            static_cast<const float*>(inputs[0].data),
+            inputs[1].data,
+            inputs[1].dtype == DeviceDType::bf16,
+            static_cast<float*>(outputs[0].data),
+            shape.in,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4346,28 +4579,30 @@ void CudaBf16Projection::rotary(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_rotary_kernel<<<
-        dim3(unsigned(shape.rows), unsigned(heads)),
-        64,
-        0,
-        owned_stream>>>(
-        static_cast<float*>(outputs[0].data),
-        inputs[1].data,
-        inputs[1].dtype == DeviceDType::bf16,
-        heads,
-        head_dim,
-        axes[0],
-        axes[1],
-        axes[2],
-        text,
-        height,
-        width,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_rotary_kernel, owned_stream, [&] {
+        image_rotary_kernel<<<
+            dim3(unsigned(shape.rows), unsigned(heads)),
+            64,
+            0,
+            owned_stream>>>(
+            static_cast<float*>(outputs[0].data),
+            inputs[1].data,
+            inputs[1].dtype == DeviceDType::bf16,
+            heads,
+            head_dim,
+            axes[0],
+            axes[1],
+            axes[2],
+            text,
+            height,
+            width,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4402,7 +4637,7 @@ void CudaBf16Projection::masked_attention(
     );
     require(!cancel.load(), "h3_cuda_cancelled");
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     const auto handle = static_cast<cublasHandle_t>(blas_);
     checked(cublasSetStream(handle, owned_stream));
@@ -4413,11 +4648,15 @@ void CudaBf16Projection::masked_attention(
     const ImageAttentionScratch layout(tokens, head_dim);
     const auto* key_source = static_cast<const float*>(inputs[1].data);
     const auto* value_source = static_cast<const float*>(inputs[2].data);
-    check_image_key_value<<<
-        unsigned((tokens * shape.in + 255) / 256),
-        256,
-        0,
-        owned_stream>>>(key_source, value_source, unsigned(tokens * shape.in), status);
+    cuda_trace::kernel(serving::CudaKernel::check_image_key_value, owned_stream, [&] {
+        check_image_key_value<<<
+            unsigned((tokens * shape.in + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            key_source, value_source, unsigned(tokens * shape.in), status
+        );
+    });
     checked(cudaGetLastError());
     auto at = [&](Bytes offset) {
         return reinterpret_cast<float*>(
@@ -4438,19 +4677,23 @@ void CudaBf16Projection::masked_attention(
         [&] {
             for (std::size_t head = 0; head < heads; ++head) {
                 require(!cancel.load(), "h3_cuda_cancelled");
-                pack_image_attention<<<
-                    unsigned((shape.rows * head_dim + 255) / 256),
-                    256,
-                    0,
-                    owned_stream>>>(
-                    static_cast<const float*>(inputs[0].data),
-                    at(layout.q),
-                    unsigned(shape.rows),
-                    unsigned(shape.in),
-                    unsigned(head_dim),
-                    unsigned(first),
-                    unsigned(head),
-                    status
+                cuda_trace::kernel(
+                    serving::CudaKernel::pack_image_attention, owned_stream, [&] {
+                        pack_image_attention<<<
+                            unsigned((shape.rows * head_dim + 255) / 256),
+                            256,
+                            0,
+                            owned_stream>>>(
+                            static_cast<const float*>(inputs[0].data),
+                            at(layout.q),
+                            unsigned(shape.rows),
+                            unsigned(shape.in),
+                            unsigned(head_dim),
+                            unsigned(first),
+                            unsigned(head),
+                            status
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
                 checked(cudaMemsetAsync(
@@ -4459,8 +4702,12 @@ void CudaBf16Projection::masked_attention(
                     shape.rows * head_dim * sizeof(float),
                     owned_stream
                 ));
-                initialize_attention<<<1, 128, 0, owned_stream>>>(
-                    at(layout.maximum), at(layout.total), unsigned(shape.rows)
+                cuda_trace::kernel(
+                    serving::CudaKernel::initialize_attention, owned_stream, [&] {
+                        initialize_attention<<<1, 128, 0, owned_stream>>>(
+                            at(layout.maximum), at(layout.total), unsigned(shape.rows)
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
                 for (std::size_t key = 0; key < tokens; key += layout.keys) {
@@ -4485,18 +4732,26 @@ void CudaBf16Projection::masked_attention(
                             int(keys)
                         )
                     );
-                    online_softmax<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
-                        at(layout.scores),
-                        at(layout.output),
-                        at(layout.maximum),
-                        at(layout.total),
-                        unsigned(keys),
-                        unsigned(head_dim),
-                        unsigned(first),
-                        unsigned(key),
-                        unsigned(text),
-                        0,
-                        0
+                    cuda_trace::kernel(
+                        serving::CudaKernel::online_softmax, owned_stream, [&] {
+                            online_softmax<<<
+                                unsigned(shape.rows),
+                                256,
+                                0,
+                                owned_stream>>>(
+                                at(layout.scores),
+                                at(layout.output),
+                                at(layout.maximum),
+                                at(layout.total),
+                                unsigned(keys),
+                                unsigned(head_dim),
+                                unsigned(first),
+                                unsigned(key),
+                                unsigned(text),
+                                0,
+                                0
+                            );
+                        }
                     );
                     checked(cudaGetLastError());
                     checked(
@@ -4518,30 +4773,38 @@ void CudaBf16Projection::masked_attention(
                         )
                     );
                 }
-                divide_attention<<<
-                    unsigned((shape.rows * head_dim + 255) / 256),
-                    256,
-                    0,
-                    owned_stream>>>(
-                    at(layout.output),
-                    at(layout.total),
-                    unsigned(shape.rows),
-                    unsigned(head_dim)
+                cuda_trace::kernel(
+                    serving::CudaKernel::divide_attention, owned_stream, [&] {
+                        divide_attention<<<
+                            unsigned((shape.rows * head_dim + 255) / 256),
+                            256,
+                            0,
+                            owned_stream>>>(
+                            at(layout.output),
+                            at(layout.total),
+                            unsigned(shape.rows),
+                            unsigned(head_dim)
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
-                scatter_image_attention<<<
-                    unsigned((shape.rows * head_dim + 255) / 256),
-                    256,
-                    0,
-                    owned_stream>>>(
-                    at(layout.output),
-                    at(layout.total),
-                    static_cast<float*>(outputs[0].data),
-                    unsigned(shape.rows),
-                    unsigned(shape.in),
-                    unsigned(head_dim),
-                    unsigned(head),
-                    status
+                cuda_trace::kernel(
+                    serving::CudaKernel::scatter_image_attention, owned_stream, [&] {
+                        scatter_image_attention<<<
+                            unsigned((shape.rows * head_dim + 255) / 256),
+                            256,
+                            0,
+                            owned_stream>>>(
+                            at(layout.output),
+                            at(layout.total),
+                            static_cast<float*>(outputs[0].data),
+                            unsigned(shape.rows),
+                            unsigned(shape.in),
+                            unsigned(head_dim),
+                            unsigned(head),
+                            status
+                        );
+                    }
                 );
                 checked(cudaGetLastError());
             }
@@ -4557,14 +4820,20 @@ void CudaBf16Projection::text_projection(
     standard(stream, inputs, outputs);
     const auto count = outputs[0].bytes / sizeof(float);
     // Keep the projection status so activation cannot conceal a bad producer.
-    image_text_gelu_kernel<<<
-        unsigned((count + 255) / 256),
-        256,
-        0,
-        static_cast<cudaStream_t>(stream)>>>(
-        static_cast<float*>(outputs[0].data),
-        count,
-        static_cast<unsigned*>(outputs[3].data)
+    cuda_trace::kernel(
+        serving::CudaKernel::image_text_gelu_kernel,
+        static_cast<cudaStream_t>(stream),
+        [&] {
+            image_text_gelu_kernel<<<
+                unsigned((count + 255) / 256),
+                256,
+                0,
+                static_cast<cudaStream_t>(stream)>>>(
+                static_cast<float*>(outputs[0].data),
+                count,
+                static_cast<unsigned*>(outputs[3].data)
+            );
+        }
     );
     checked(cudaGetLastError());
 }
@@ -4579,13 +4848,15 @@ void CudaBf16Projection::frequency(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_frequency_kernel<<<2, 256, 0, owned_stream>>>(
-        static_cast<float*>(outputs[0].data), timestep, status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_frequency_kernel, owned_stream, [&] {
+        image_frequency_kernel<<<2, 256, 0, owned_stream>>>(
+            static_cast<float*>(outputs[0].data), timestep, status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4598,14 +4869,20 @@ void CudaBf16Projection::timestep(
     // SiLU must not conceal a nonfinite projection behind a finite negative tail.
     standard(stream, inputs, outputs);
     const auto count = outputs[0].bytes / sizeof(float);
-    image_timestep_silu_kernel<<<
-        unsigned((count + 255) / 256),
-        256,
-        0,
-        static_cast<cudaStream_t>(stream)>>>(
-        static_cast<float*>(outputs[0].data),
-        count,
-        static_cast<unsigned*>(outputs[3].data)
+    cuda_trace::kernel(
+        serving::CudaKernel::image_timestep_silu_kernel,
+        static_cast<cudaStream_t>(stream),
+        [&] {
+            image_timestep_silu_kernel<<<
+                unsigned((count + 255) / 256),
+                256,
+                0,
+                static_cast<cudaStream_t>(stream)>>>(
+                static_cast<float*>(outputs[0].data),
+                count,
+                static_cast<unsigned*>(outputs[3].data)
+            );
+        }
     );
     checked(cudaGetLastError());
 }
@@ -4634,33 +4911,41 @@ void CudaBf16Projection::attention_residual(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[2].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_gates_kernel<<<unsigned((8 * shape.in + 255) / 256), 256, 0, owned_stream>>>(
-        static_cast<const float*>(inputs[2].data),
-        static_cast<float*>(outputs[1].data),
-        shape.in,
-        0,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_gates_kernel, owned_stream, [&] {
+        image_gates_kernel<<<
+            unsigned((8 * shape.in + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            static_cast<const float*>(inputs[2].data),
+            static_cast<float*>(outputs[1].data),
+            shape.in,
+            0,
+            status
+        );
+    });
     checked(cudaGetLastError());
     // Keep the gate producer's status; residual() would reset that certificate.
-    image_residual_kernel<<<
-        unsigned((shape.rows * shape.in + 255) / 256),
-        256,
-        0,
-        owned_stream>>>(
-        static_cast<float*>(outputs[0].data),
-        static_cast<const float*>(inputs[1].data),
-        static_cast<const float*>(outputs[1].data),
-        shape.rows * shape.in,
-        shape.in,
-        0,
-        text,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_residual_kernel, owned_stream, [&] {
+        image_residual_kernel<<<
+            unsigned((shape.rows * shape.in + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            static_cast<float*>(outputs[0].data),
+            static_cast<const float*>(inputs[1].data),
+            static_cast<const float*>(outputs[1].data),
+            shape.rows * shape.in,
+            shape.in,
+            0,
+            text,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4685,28 +4970,36 @@ void CudaBf16Projection::prepare(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[2].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_gates_kernel<<<unsigned((8 * shape.in + 255) / 256), 256, 0, owned_stream>>>(
-        static_cast<const float*>(inputs[1].data),
-        static_cast<float*>(outputs[1].data),
-        shape.in,
-        std::size_t(stage),
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_gates_kernel, owned_stream, [&] {
+        image_gates_kernel<<<
+            unsigned((8 * shape.in + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            static_cast<const float*>(inputs[1].data),
+            static_cast<float*>(outputs[1].data),
+            shape.in,
+            std::size_t(stage),
+            status
+        );
+    });
     checked(cudaGetLastError());
-    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
-        static_cast<const float*>(inputs[0].data),
-        static_cast<const float*>(inputs[1].data),
-        static_cast<float*>(outputs[0].data),
-        shape.in,
-        text,
-        false,
-        std::size_t(stage),
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_norm_kernel, owned_stream, [&] {
+        image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+            static_cast<const float*>(inputs[0].data),
+            static_cast<const float*>(inputs[1].data),
+            static_cast<float*>(outputs[0].data),
+            shape.in,
+            text,
+            false,
+            std::size_t(stage),
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4726,20 +5019,22 @@ void CudaBf16Projection::final_normalization(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
-    image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
-        static_cast<const float*>(inputs[0].data),
-        static_cast<const float*>(inputs[1].data),
-        static_cast<float*>(outputs[0].data),
-        shape.in,
-        0,
-        true,
-        0,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_norm_kernel, owned_stream, [&] {
+        image_norm_kernel<<<unsigned(shape.rows), 256, 0, owned_stream>>>(
+            static_cast<const float*>(inputs[0].data),
+            static_cast<const float*>(inputs[1].data),
+            static_cast<float*>(outputs[0].data),
+            shape.in,
+            0,
+            true,
+            0,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4759,18 +5054,20 @@ void CudaBf16Projection::scheduler(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(outputs[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), owned_stream));
     const float dt = next - current;
-    image_scheduler_kernel<<<unsigned((count + 255) / 256), 256, 0, owned_stream>>>(
-        static_cast<float*>(outputs[0].data),
-        static_cast<const float*>(inputs[1].data),
-        count,
-        dt,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_scheduler_kernel, owned_stream, [&] {
+        image_scheduler_kernel<<<unsigned((count + 255) / 256), 256, 0, owned_stream>>>(
+            static_cast<float*>(outputs[0].data),
+            static_cast<const float*>(inputs[1].data),
+            count,
+            dt,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -4832,23 +5129,25 @@ void CudaBf16Projection::residual(
         "bf16_projection_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     const auto owned_stream = static_cast<cudaStream_t>(stream);
     checked(cudaMemsetAsync(status.data, 0, sizeof(unsigned), owned_stream));
-    image_residual_kernel<<<
-        unsigned((shape.rows * shape.in + 255) / 256),
-        256,
-        0,
-        owned_stream>>>(
-        static_cast<float*>(hidden.data),
-        static_cast<const float*>(projected.data),
-        static_cast<const float*>(gates.data),
-        shape.rows * shape.in,
-        shape.in,
-        first,
-        text,
-        static_cast<unsigned*>(status.data)
-    );
+    cuda_trace::kernel(serving::CudaKernel::image_residual_kernel, owned_stream, [&] {
+        image_residual_kernel<<<
+            unsigned((shape.rows * shape.in + 255) / 256),
+            256,
+            0,
+            owned_stream>>>(
+            static_cast<float*>(hidden.data),
+            static_cast<const float*>(projected.data),
+            static_cast<const float*>(gates.data),
+            shape.rows * shape.in,
+            shape.in,
+            first,
+            text,
+            static_cast<unsigned*>(status.data)
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5243,7 +5542,7 @@ CudaH3Launcher::CudaH3Launcher(
     );
     // Initialization may touch context resources even when CUDA reports failure.
     ++activity_->owners;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
     std::size_t before = 0, after = 0, total = 0;
     checked(cudaMemGetInfo(&before, &total));
     cublasHandle_t handle = nullptr;
@@ -5272,9 +5571,9 @@ void CudaH3Launcher::close() {
     if (!blas_)
         return;
     try {
-        checked(cudaSetDevice(device_));
+        checked(cuda_trace::set_device(device_));
         if (stream_)
-            checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+            checked(cuda_trace::synchronize(static_cast<cudaStream_t>(stream_)));
         checked(cublasDestroy(static_cast<cublasHandle_t>(blas_)));
     } catch (...) {
         quarantined_ = true;
@@ -5292,8 +5591,8 @@ void CudaH3Launcher::release_stream() {
     if (!stream_)
         return;
     try {
-        checked(cudaSetDevice(device_));
-        checked(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)));
+        checked(cuda_trace::set_device(device_));
+        checked(cuda_trace::synchronize(static_cast<cudaStream_t>(stream_)));
     } catch (...) {
         // Never touch a stream its session may already have destroyed.
         stream_ = nullptr;
@@ -5309,7 +5608,7 @@ void CudaH3Launcher::own(void* stream) {
         "h3_resident_owned_stream"
     );
     stream_ = stream;
-    checked(cudaSetDevice(device_));
+    checked(cuda_trace::set_device(device_));
 }
 
 void CudaH3Launcher::bind(void* stream, const MediaDeviceSpan& workspace) {
@@ -5347,15 +5646,21 @@ void CudaH3Launcher::convrot(
     auto* sums =
         reinterpret_cast<std::byte*>(row_scales) + detail::h3_aligned(Bytes(rows) * 4);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    cuda_trace::kernel(serving::CudaKernel::h3_finite_kernel, s, [&] {
+        h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    });
     checked(cudaGetLastError());
-    rotate_kernel<<<
-        dim3(unsigned(rows), unsigned(in / group)),
-        unsigned(group),
-        0,
-        s>>>(input, rotated, in, unsigned(group));
+    cuda_trace::kernel(serving::CudaKernel::rotate_kernel, s, [&] {
+        rotate_kernel<<<
+            dim3(unsigned(rows), unsigned(in / group)),
+            unsigned(group),
+            0,
+            s>>>(input, rotated, in, unsigned(group));
+    });
     checked(cudaGetLastError());
-    quantize_kernel<<<unsigned(rows), 256, 0, s>>>(rotated, codes, row_scales, in);
+    cuda_trace::kernel(serving::CudaKernel::quantize_kernel, s, [&] {
+        quantize_kernel<<<unsigned(rows), 256, 0, s>>>(rotated, codes, row_scales, in);
+    });
     checked(cudaGetLastError());
     double* low = nullptr;
     const double* lora_b = nullptr;
@@ -5400,19 +5705,21 @@ void CudaH3Launcher::convrot(
             CUBLAS_COMPUTE_32I,
             CUBLAS_GEMM_DEFAULT
         ));
-        h3_finish_int8_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            reinterpret_cast<const std::int32_t*>(sums),
-            row_scales,
-            static_cast<const float*>(read[2].data),
-            output,
-            rows,
-            tile,
-            out,
-            first,
-            read.size() == 4 ? static_cast<const std::uint16_t*>(read[3].data)
-                             : nullptr,
-            status
-        );
+        cuda_trace::kernel(serving::CudaKernel::h3_finish_int8_kernel, s, [&] {
+            h3_finish_int8_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+                reinterpret_cast<const std::int32_t*>(sums),
+                row_scales,
+                static_cast<const float*>(read[2].data),
+                output,
+                rows,
+                tile,
+                out,
+                first,
+                read.size() == 4 ? static_cast<const std::uint16_t*>(read[3].data)
+                                 : nullptr,
+                status
+            );
+        });
         checked(cudaGetLastError());
         if (!lora)
             continue;
@@ -5434,16 +5741,18 @@ void CudaH3Launcher::convrot(
             reinterpret_cast<double*>(sums),
             int(tile)
         ));
-        h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            reinterpret_cast<const double*>(sums),
-            output,
-            rows,
-            tile,
-            out,
-            first,
-            lora_scale,
-            status
-        );
+        cuda_trace::kernel(serving::CudaKernel::h3_lora_add_kernel, s, [&] {
+            h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+                reinterpret_cast<const double*>(sums),
+                output,
+                rows,
+                tile,
+                out,
+                first,
+                lora_scale,
+                status
+            );
+        });
         checked(cudaGetLastError());
     }
 }
@@ -5463,21 +5772,27 @@ void CudaH3Launcher::lora(
 ) {
     const auto s = static_cast<cudaStream_t>(stream);
     auto* widened = static_cast<double*>(weights.data);
-    h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
-        static_cast<const std::uint16_t*>(a.data), widened, rank * in, status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_widen_kernel, s, [&] {
+        h3_widen_kernel<<<blocks(rank * in), 256, 0, s>>>(
+            static_cast<const std::uint16_t*>(a.data), widened, rank * in, status
+        );
+    });
     checked(cudaGetLastError());
-    h3_widen_kernel<<<blocks(out * rank), 256, 0, s>>>(
-        static_cast<const std::uint16_t*>(b.data),
-        widened + rank * in,
-        out * rank,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_widen_kernel, s, [&] {
+        h3_widen_kernel<<<blocks(out * rank), 256, 0, s>>>(
+            static_cast<const std::uint16_t*>(b.data),
+            widened + rank * in,
+            out * rank,
+            status
+        );
+    });
     checked(cudaGetLastError());
     auto* wide_input = widened + rank * in + out * rank;
-    widen<<<blocks(rows * in), 256, 0, s>>>(
-        static_cast<const float*>(input.data), wide_input, rows * in
-    );
+    cuda_trace::kernel(serving::CudaKernel::widen, s, [&] {
+        widen<<<blocks(rows * in), 256, 0, s>>>(
+            static_cast<const float*>(input.data), wide_input, rows * in
+        );
+    });
     checked(cudaGetLastError());
     auto* result = static_cast<double*>(low.data);
     const double one = 1, zero = 0;
@@ -5497,7 +5812,9 @@ void CudaH3Launcher::lora(
         result,
         int(rank)
     ));
-    h3_zero_bias_kernel<<<blocks(rows * rank), 256, 0, s>>>(result, rows * rank);
+    cuda_trace::kernel(serving::CudaKernel::h3_zero_bias_kernel, s, [&] {
+        h3_zero_bias_kernel<<<blocks(rows * rank), 256, 0, s>>>(result, rows * rank);
+    });
     checked(cudaGetLastError());
 }
 
@@ -5528,9 +5845,13 @@ void CudaH3Launcher::dense(
     const bool bf16 = read[1].dtype == DeviceDType::bf16;
     const auto* weight = static_cast<const std::byte*>(read[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    cuda_trace::kernel(serving::CudaKernel::h3_finite_kernel, s, [&] {
+        h3_finite_kernel<<<blocks(rows * in), 256, 0, s>>>(input, rows * in, status);
+    });
     checked(cudaGetLastError());
-    widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
+    cuda_trace::kernel(serving::CudaKernel::widen, s, [&] {
+        widen<<<blocks(rows * in), 256, 0, s>>>(input, wide_input, rows * in);
+    });
     checked(cudaGetLastError());
     const double* low = nullptr;
     const double* lora_b = nullptr;
@@ -5553,9 +5874,15 @@ void CudaH3Launcher::dense(
     }
     for (std::size_t first = 0; first < out; first += shape.tile) {
         const auto tile = std::min(shape.tile, out - first);
-        h3_widen_real_kernel<<<blocks(tile * in), 256, 0, s>>>(
-            weight + first * in * (bf16 ? 2 : 4), bf16, wide_weight, tile * in, status
-        );
+        cuda_trace::kernel(serving::CudaKernel::h3_widen_real_kernel, s, [&] {
+            h3_widen_real_kernel<<<blocks(tile * in), 256, 0, s>>>(
+                weight + first * in * (bf16 ? 2 : 4),
+                bf16,
+                wide_weight,
+                tile * in,
+                status
+            );
+        });
         checked(cudaGetLastError());
         const double one = 1, zero = 0;
         checked(cublasDgemm(
@@ -5574,17 +5901,19 @@ void CudaH3Launcher::dense(
             wide_output,
             int(tile)
         ));
-        h3_narrow_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            wide_output,
-            shape.bias ? read[2].data : nullptr,
-            shape.bias && read[2].dtype == DeviceDType::bf16,
-            output,
-            rows,
-            tile,
-            out,
-            first,
-            status
-        );
+        cuda_trace::kernel(serving::CudaKernel::h3_narrow_kernel, s, [&] {
+            h3_narrow_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+                wide_output,
+                shape.bias ? read[2].data : nullptr,
+                shape.bias && read[2].dtype == DeviceDType::bf16,
+                output,
+                rows,
+                tile,
+                out,
+                first,
+                status
+            );
+        });
         checked(cudaGetLastError());
         if (!lora)
             continue;
@@ -5605,9 +5934,11 @@ void CudaH3Launcher::dense(
             wide_output,
             int(tile)
         ));
-        h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
-            wide_output, output, rows, tile, out, first, lora_scale, status
-        );
+        cuda_trace::kernel(serving::CudaKernel::h3_lora_add_kernel, s, [&] {
+            h3_lora_add_kernel<<<blocks(rows * tile), 256, 0, s>>>(
+                wide_output, output, rows, tile, out, first, lora_scale, status
+            );
+        });
         checked(cudaGetLastError());
     }
 }
@@ -5622,12 +5953,14 @@ void CudaH3Launcher::silu_gate(
     const auto s = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(write[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    h3_silu_gate_kernel<<<blocks(count), 256, 0, s>>>(
-        static_cast<float*>(write[0].data),
-        static_cast<const float*>(read[1].data),
-        count,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_silu_gate_kernel, s, [&] {
+        h3_silu_gate_kernel<<<blocks(count), 256, 0, s>>>(
+            static_cast<float*>(write[0].data),
+            static_cast<const float*>(read[1].data),
+            count,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5643,18 +5976,20 @@ void CudaH3Launcher::gated_residual(
     const auto s = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(write[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    h3_gated_residual_kernel<<<blocks(count), 256, 0, s>>>(
-        static_cast<float*>(write[0].data),
-        static_cast<const float*>(read[1].data),
-        static_cast<const float*>(read[2].data),
-        static_cast<const std::uint32_t*>(read[3].data),
-        count,
-        read[0].dimensions[1],
-        read[2].dimensions[0] * h3_modulation_tags,
-        first,
-        index,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_gated_residual_kernel, s, [&] {
+        h3_gated_residual_kernel<<<blocks(count), 256, 0, s>>>(
+            static_cast<float*>(write[0].data),
+            static_cast<const float*>(read[1].data),
+            static_cast<const float*>(read[2].data),
+            static_cast<const std::uint32_t*>(read[3].data),
+            count,
+            read[0].dimensions[1],
+            read[2].dimensions[0] * h3_modulation_tags,
+            first,
+            index,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5673,20 +6008,23 @@ void CudaH3Launcher::normalize(
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
     const bool modulated = read.size() == 4;
     const auto width = read[0].dimensions[1];
-    h3_normalize_kernel<<<unsigned(rows), 256, 0, s>>>(
-        static_cast<const float*>(read[0].data),
-        static_cast<const std::uint16_t*>(read[1].data),
-        modulated ? static_cast<const float*>(read[2].data) : nullptr,
-        modulated ? static_cast<const std::uint32_t*>(read[3].data) : nullptr,
-        static_cast<float*>(write[0].data),
-        width,
-        modulated ? h3_modulation(device_, read[2], read[3], width, first, rows, stride)
-                  : 0,
-        first,
-        shift,
-        stride,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_normalize_kernel, s, [&] {
+        h3_normalize_kernel<<<unsigned(rows), 256, 0, s>>>(
+            static_cast<const float*>(read[0].data),
+            static_cast<const std::uint16_t*>(read[1].data),
+            modulated ? static_cast<const float*>(read[2].data) : nullptr,
+            modulated ? static_cast<const std::uint32_t*>(read[3].data) : nullptr,
+            static_cast<float*>(write[0].data),
+            width,
+            modulated
+                ? h3_modulation(device_, read[2], read[3], width, first, rows, stride)
+                : 0,
+            first,
+            shift,
+            stride,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5700,12 +6038,14 @@ void CudaH3Launcher::add(
     const auto s = static_cast<cudaStream_t>(stream);
     auto* status = static_cast<unsigned*>(write[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    h3_add_kernel<<<blocks(count), 256, 0, s>>>(
-        static_cast<float*>(write[0].data),
-        static_cast<const float*>(read[1].data),
-        count,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_add_kernel, s, [&] {
+        h3_add_kernel<<<blocks(count), 256, 0, s>>>(
+            static_cast<float*>(write[0].data),
+            static_cast<const float*>(read[1].data),
+            count,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5721,14 +6061,16 @@ void CudaH3Launcher::qk_rotary(
     auto* status = static_cast<unsigned*>(write[1].data);
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
     const auto rows = read[0].dimensions[0], width = read[0].dimensions[1];
-    h3_qk_rotary_kernel<<<dim3(unsigned(rows), unsigned(width / 128)), 128, 0, s>>>(
-        static_cast<float*>(write[0].data),
-        static_cast<const std::uint16_t*>(read[1].data),
-        read.size() == 3 ? static_cast<const double*>(read[2].data) : nullptr,
-        width,
-        first,
-        status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_qk_rotary_kernel, s, [&] {
+        h3_qk_rotary_kernel<<<dim3(unsigned(rows), unsigned(width / 128)), 128, 0, s>>>(
+            static_cast<float*>(write[0].data),
+            static_cast<const std::uint16_t*>(read[1].data),
+            read.size() == 3 ? static_cast<const double*>(read[2].data) : nullptr,
+            width,
+            first,
+            status
+        );
+    });
     checked(cudaGetLastError());
 }
 
@@ -5759,20 +6101,32 @@ void CudaH3Launcher::attention(
     auto* wide_key = output + queries * ld;
     auto* wide_value = wide_key + key_tile * ld;
     checked(cudaMemsetAsync(status, 0, sizeof(unsigned), s));
-    widen<<<blocks(queries * ld), 256, 0, s>>>(query, wide_query, queries * ld);
+    cuda_trace::kernel(serving::CudaKernel::widen, s, [&] {
+        widen<<<blocks(queries * ld), 256, 0, s>>>(query, wide_query, queries * ld);
+    });
     checked(cudaGetLastError());
-    h3_attention_init_kernel<<<dim3(unsigned(queries), unsigned(heads)), 128, 0, s>>>(
-        query, output, ld, maxima, totals, unsigned(queries), status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_attention_init_kernel, s, [&] {
+        h3_attention_init_kernel<<<
+            dim3(unsigned(queries), unsigned(heads)),
+            128,
+            0,
+            s>>>(query, output, ld, maxima, totals, unsigned(queries), status);
+    });
     checked(cudaGetLastError());
     const double scale = 1 / std::sqrt(128.0), zero = 0, one = 1;
     for (std::size_t first = 0; first < shape.keys; first += key_tile) {
         const auto keys = std::min(key_tile, shape.keys - first);
-        widen<<<blocks(keys * ld), 256, 0, s>>>(key + first * ld, wide_key, keys * ld);
+        cuda_trace::kernel(serving::CudaKernel::widen, s, [&] {
+            widen<<<blocks(keys * ld), 256, 0, s>>>(
+                key + first * ld, wide_key, keys * ld
+            );
+        });
         checked(cudaGetLastError());
-        widen<<<blocks(keys * ld), 256, 0, s>>>(
-            value + first * ld, wide_value, keys * ld
-        );
+        cuda_trace::kernel(serving::CudaKernel::widen, s, [&] {
+            widen<<<blocks(keys * ld), 256, 0, s>>>(
+                value + first * ld, wide_value, keys * ld
+            );
+        });
         checked(cudaGetLastError());
         checked(cublasDgemmStridedBatched(
             handle,
@@ -5794,11 +6148,15 @@ void CudaH3Launcher::attention(
             (long long)(queries * keys),
             int(heads)
         ));
-        h3_online_softmax_kernel<<<
-            dim3(unsigned(queries), unsigned(heads)),
-            256,
-            0,
-            s>>>(scores, output, ld, maxima, totals, unsigned(keys), unsigned(queries));
+        cuda_trace::kernel(serving::CudaKernel::h3_online_softmax_kernel, s, [&] {
+            h3_online_softmax_kernel<<<
+                dim3(unsigned(queries), unsigned(heads)),
+                256,
+                0,
+                s>>>(
+                scores, output, ld, maxima, totals, unsigned(keys), unsigned(queries)
+            );
+        });
         checked(cudaGetLastError());
         checked(cublasDgemmStridedBatched(
             handle,
@@ -5821,9 +6179,11 @@ void CudaH3Launcher::attention(
             int(heads)
         ));
     }
-    h3_attention_divide_kernel<<<blocks(queries * heads * 128), 256, 0, s>>>(
-        output, destination, ld, totals, unsigned(queries), unsigned(heads), status
-    );
+    cuda_trace::kernel(serving::CudaKernel::h3_attention_divide_kernel, s, [&] {
+        h3_attention_divide_kernel<<<blocks(queries * heads * 128), 256, 0, s>>>(
+            output, destination, ld, totals, unsigned(queries), unsigned(heads), status
+        );
+    });
     checked(cudaGetLastError());
 }
 

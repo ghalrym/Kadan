@@ -2,6 +2,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include "cuda_telemetry.cuh"
 #include "kadan/media_session.hpp"
 
 namespace kadan {
@@ -26,7 +27,7 @@ public:
                 auto [it, inserted] = streams_.emplace(device, nullptr);
                 if (!inserted)
                     throw std::invalid_argument("media_cuda_duplicate_device");
-                checked(cudaSetDevice(device));
+                checked(cuda_trace::set_device(device));
                 checked(cudaStreamCreateWithFlags(&it->second, cudaStreamNonBlocking));
             }
         } catch (...) {
@@ -98,7 +99,7 @@ public:
     }
 
     void synchronize(int device) override {
-        checked(cudaStreamSynchronize(selected(device)));
+        checked(cuda_trace::synchronize(selected(device)));
     }
 
     void release_events(int device) override {
@@ -181,7 +182,7 @@ private:
         const auto it = streams_.find(device);
         if (it == streams_.end())
             throw std::invalid_argument("media_cuda_device");
-        checked(cudaSetDevice(device));
+        checked(cuda_trace::set_device(device));
         return it->second;
     }
 
@@ -199,7 +200,7 @@ private:
         // Physical allocations are session-owned. Failed cleanup does not
         // acknowledge their release or reset a context shared by another request.
         for (const auto& [device, stream] : streams_)
-            if (stream && cudaSetDevice(device) == cudaSuccess)
+            if (stream && cuda_trace::set_device(device) == cudaSuccess)
                 cudaStreamDestroy(stream);
     }
 };

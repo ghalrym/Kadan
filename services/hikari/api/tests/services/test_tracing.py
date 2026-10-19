@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from kadan_tracing.cuda_metrics import CUDA_KERNELS
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -71,6 +72,57 @@ class JobTracingTests(unittest.TestCase):
         self.assertEqual(len(spans[0].attributes), 28)
         self.assertFalse(spans[0].events)
         job.end()
+
+    def cuda_metrics(self):
+        return {
+            "kernels": [[0, 0.0, 0, 0.0] for _ in CUDA_KERNELS],
+            "copies": [[0, 0.0] for _ in range(5)],
+            "sync_calls": 1,
+            "sync_seconds": 0.1,
+            "dropped": 2,
+            "unavailable": 3,
+            "shared_batch_size": 2,
+        }
+
+    def test_cuda_details_keep_gpu_and_host_times_separate_on_shared_execute(self):
+        job = JobTracing()
+        cuda = self.cuda_metrics()
+        cuda["kernels"][CUDA_KERNELS.index("gguf_matvec_kernel")] = [9, 0.2, 4, 0.3]
+        cuda["copies"][4] = [3, 0.4]
+        message = self.native_message(job, None) | {"phase": "execute", "cuda": cuda}
+        job.native(SimpleNamespace(kind="image"), message)
+        spans = self.exporter.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        attributes = spans[0].attributes
+        self.assertEqual(attributes["kadan.cuda.gguf_matvec_kernel.gpu_seconds"], 0.3)
+        self.assertEqual(attributes["kadan.cuda.gguf_matvec_kernel.host_seconds"], 0.2)
+        self.assertEqual(attributes["kadan.cuda.gguf_matvec_kernel.measured"], 4)
+        self.assertEqual(attributes["kadan.cuda.shared_batch_size"], 2)
+        self.assertEqual(attributes["kadan.cuda.copy4.calls"], 3)
+        self.assertEqual(attributes["kadan.cuda.dropped"], 2)
+        self.assertEqual(attributes["kadan.cuda.unavailable"], 3)
+        job.end()
+
+    def test_invalid_cuda_details_do_not_discard_text_details_or_span(self):
+        invalids = [None, "private", {"prompt": "private"}]
+        for key, bad in [
+            ("kernels", [[0, 0.0, 0, 0.0]]),
+            ("copies", [[True, 0.0] for _ in range(5)]),
+            ("sync_seconds", float("nan")),
+            ("sync_seconds", -1),
+            ("shared_batch_size", 33),
+            ("dropped", 2**63),
+        ]:
+            invalids.append(self.cuda_metrics() | {key: bad})
+        for invalid in invalids:
+            job = JobTracing()
+            message = self.native_message(job, self.text_metrics()) | {"cuda": invalid}
+            job.native(SimpleNamespace(kind="llm"), message)
+            span = self.exporter.get_finished_spans()[-1]
+            self.assertEqual(span.name, "kadan.native.prefill")
+            self.assertIn("kadan.text.tokens", span.attributes)
+            self.assertFalse(any(k.startswith("kadan.cuda.") for k in span.attributes))
+            job.end()
 
     def test_invalid_metrics_preserve_the_valid_phase_span(self):
         for invalid in [

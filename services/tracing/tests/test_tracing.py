@@ -14,6 +14,7 @@ from kadan_tracing import (
     span,
     traced_job,
 )
+from kadan_tracing.cuda_metrics import CUDA_ATTRIBUTES
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
@@ -254,4 +255,28 @@ def test_text_metric_export_is_fixed_numeric_and_finite():
         "kadan.text.tokens": 9,
         "kadan.text.large_row_seconds": 0.5,
     }
-    assert len(TEXT_ATTRIBUTES) + 3 <= 32
+    assert len(TEXT_ATTRIBUTES) + 3 <= 256
+
+
+def test_cuda_attribute_allowlist_is_bounded_and_numeric():
+    destination = Mock()
+    values = {key: 1 for key in TEXT_ATTRIBUTES | CUDA_ATTRIBUTES}
+    values.update(
+        {
+            "kadan.cuda.gguf_matvec_kernel.calls": True,
+            "kadan.cuda.copy0.host_seconds": float("inf"),
+            "kadan.cuda.dynamic_tensor": 8,
+        }
+    )
+    source = ReadableSpan(
+        name="kadan.native.prefill",
+        resource=Resource({"service.name": "unit"}),
+        attributes=values,
+    )
+    PrivateExporter(destination).export([source])
+    result = destination.export.call_args.args[0][0]
+    assert len(TEXT_ATTRIBUTES | CUDA_ATTRIBUTES) + 3 <= 256
+    assert "kadan.cuda.gguf_matvec_kernel.calls" not in result.attributes
+    assert "kadan.cuda.copy0.host_seconds" not in result.attributes
+    assert "kadan.cuda.dynamic_tensor" not in result.attributes
+    assert result.attributes["kadan.cuda.gguf_matvec_kernel.gpu_seconds"] == 1

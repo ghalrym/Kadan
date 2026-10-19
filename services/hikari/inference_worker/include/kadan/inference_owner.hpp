@@ -384,12 +384,20 @@ public:
                 batch.push_back({&current->request, &current->cancel});
             for (;;) {
                 try {
+                    CudaPhaseScope shared_cuda(
+                        std::any_of(
+                            batch.begin(),
+                            batch.end(),
+                            [](const auto& item) { return bool(item.request->trace); }
+                        ),
+                        batch.size()
+                    );
                     std::vector<std::unique_ptr<InferenceTrace>> tracing;
                     tracing.reserve(batch.size());
                     for (const auto& item : batch)
                         tracing.push_back(
                             std::make_unique<InferenceTrace>(
-                                item.request->trace, "admission"
+                                item.request->trace, "admission", shared_cuda.context()
                             )
                         );
                     engine_->prepare_batch(batch, available);
@@ -414,14 +422,26 @@ public:
                 if (!current->cancel.load())
                     publish_(current->request.id, JobState::running, "");
             execution_started = true;
-            std::vector<std::unique_ptr<InferenceTrace>> tracing;
-            tracing.reserve(batch.size());
-            for (const auto& item : batch)
-                tracing.push_back(
-                    std::make_unique<InferenceTrace>(item.request->trace, "execute")
+            std::vector<InferenceBatchResult> results;
+            {
+                CudaPhaseScope shared_cuda(
+                    std::any_of(
+                        batch.begin(),
+                        batch.end(),
+                        [](const auto& item) { return bool(item.request->trace); }
+                    ),
+                    batch.size()
                 );
-            auto results = engine_->execute_batch(batch);
-            tracing.clear();
+                std::vector<std::unique_ptr<InferenceTrace>> tracing;
+                tracing.reserve(batch.size());
+                for (const auto& item : batch)
+                    tracing.push_back(
+                        std::make_unique<InferenceTrace>(
+                            item.request->trace, "execute", shared_cuda.context()
+                        )
+                    );
+                results = engine_->execute_batch(batch);
+            }
             if (results.size() != jobs.size())
                 throw std::runtime_error("batch_result_count");
             if (std::any_of(
