@@ -4,16 +4,20 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import timedelta
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from .config import StorageError
 from .models import (
     Activity,
     Agent,
     AgentInput,
+    AgentRun,
+    AgentRunState,
     Asset,
     ExportManifest,
     ExportRevision,
+    ImageJob,
+    ImageJobState,
     Message,
     Metadata,
     PetJob,
@@ -103,6 +107,21 @@ class Repository:
                 );
                 CREATE INDEX IF NOT EXISTS pet_jobs_namespace ON pet_jobs(agent_key, updated_at);
                 CREATE INDEX IF NOT EXISTS pet_jobs_status ON pet_jobs(status);
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    conversation_id TEXT NOT NULL REFERENCES resources(id),
+                    status TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS agent_runs_conversation ON agent_runs(agent_key, conversation_id);
+                CREATE INDEX IF NOT EXISTS agent_runs_status ON agent_runs(status);
+                CREATE TABLE IF NOT EXISTS image_jobs (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    run_id TEXT NOT NULL REFERENCES agent_runs(id),
+                    conversation_id TEXT NOT NULL REFERENCES resources(id),
+                    request_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS image_jobs_status ON image_jobs(status);
                 CREATE TABLE IF NOT EXISTS activity (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_key TEXT NOT NULL REFERENCES agents(key), data TEXT NOT NULL
@@ -135,6 +154,499 @@ class Repository:
     def health(self) -> None:
         with self.connect() as db:
             db.execute("SELECT count(*) FROM agents").fetchone()
+
+    @staticmethod
+    def _run(db: sqlite3.Connection, key: str, run_id: UUID) -> AgentRun:
+        row = db.execute(
+            "SELECT data FROM agent_runs WHERE agent_key = ? AND id = ?",
+            (key, str(run_id)),
+        ).fetchone()
+        if row is None:
+            raise StorageError("Agent run not found", 404)
+        return AgentRun.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_run(db: sqlite3.Connection, run: AgentRun) -> None:
+        db.execute(
+            """INSERT INTO agent_runs VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                updated_at=excluded.updated_at, data=excluded.data""",
+            (
+                str(run.id),
+                run.agent_key,
+                str(run.conversation_id),
+                run.status,
+                run.updated_at.isoformat(),
+                run.model_dump_json(),
+            ),
+        )
+
+    @staticmethod
+    def _image_job(db: sqlite3.Connection, key: str, job_id: UUID) -> ImageJob:
+        row = db.execute(
+            "SELECT data FROM image_jobs WHERE agent_key = ? AND id = ?",
+            (key, str(job_id)),
+        ).fetchone()
+        if row is None:
+            raise StorageError("Image job not found", 404)
+        return ImageJob.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_image_job(db: sqlite3.Connection, job: ImageJob) -> None:
+        db.execute(
+            """INSERT INTO image_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                updated_at=excluded.updated_at, data=excluded.data""",
+            (
+                str(job.id),
+                job.agent_key,
+                str(job.run_id),
+                str(job.conversation_id),
+                str(job.request_id),
+                job.status,
+                job.updated_at.isoformat(),
+                job.model_dump_json(),
+            ),
+        )
+
+    def _conversation(
+        self, db: sqlite3.Connection, key: str, conversation_id: UUID
+    ) -> Resource:
+        conversation = self._resource(db, key, conversation_id)
+        self._active(conversation)
+        if conversation.kind != ResourceKind.CONVERSATION:
+            raise StorageError("Agent runs require an active conversation", 409)
+        return conversation
+
+    def _append_run_message(
+        self, db: sqlite3.Connection, key: str, conversation: Resource, message: Message
+    ) -> Resource:
+        for existing in conversation.messages:
+            if existing.id == message.id:
+                if existing.model_dump(exclude={"created_at"}) != message.model_dump(
+                    exclude={"created_at"}
+                ):
+                    raise StorageError("This message ID is already in use", 409)
+                return conversation
+        value = resource_input_adapter.validate_python(
+            {
+                **conversation.model_dump(exclude=set(ResourceRecord.model_fields)),
+                "messages": [*conversation.messages, message],
+            }
+        )
+        return self._update_resource(
+            db, key, conversation, value, conversation.version, "message_added"
+        )
+
+    def create_run(
+        self,
+        key: str,
+        conversation_id: UUID,
+        message: Message,
+        expected_version: int,
+        persona_id: UUID | None = None,
+    ) -> AgentRun:
+        if message.role != "user":
+            raise StorageError("An agent run must start with a user message", 409)
+        with self.connect(write=True) as db:
+            conversation = self._conversation(db, key, conversation_id)
+            row = db.execute(
+                "SELECT data FROM agent_runs WHERE id = ?", (str(message.id),)
+            ).fetchone()
+            if row is not None:
+                existing = AgentRun.model_validate_json(row[0])
+                if (
+                    existing.agent_key == key
+                    and existing.conversation_id == conversation_id
+                    and existing.trigger_message_id == message.id
+                    and existing.persona_id == persona_id
+                    and any(
+                        item.model_dump(exclude={"created_at"})
+                        == message.model_dump(exclude={"created_at"})
+                        for item in conversation.messages
+                    )
+                ):
+                    return existing
+                raise StorageError("This agent run ID is already in use", 409)
+            self._check_version(conversation, expected_version)
+            if persona_id is not None:
+                persona = self._resource(db, key, persona_id)
+                self._active(persona)
+                if persona.kind != ResourceKind.PERSONA:
+                    raise StorageError("Persona must be a persona resource", 409)
+            self._append_run_message(db, key, conversation, message)
+            now = utc_now()
+            run = AgentRun(
+                id=message.id,
+                agent_key=key,
+                conversation_id=conversation_id,
+                trigger_message_id=message.id,
+                persona_id=persona_id,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_run(db, run)
+            return run
+
+    def get_run(self, key: str, run_id: UUID) -> AgentRun:
+        with self.connect() as db:
+            return self._run(db, key, run_id)
+
+    def active_runs(self) -> list[AgentRun]:
+        with self.connect() as db:
+            return sorted(
+                (
+                    AgentRun.model_validate_json(row[0])
+                    for row in db.execute(
+                        "SELECT data FROM agent_runs WHERE status IN ('queued', 'running')"
+                    )
+                ),
+                key=lambda run: (run.created_at, run.id),
+            )
+
+    def conversation_runs(self, key: str, conversation_id: UUID) -> list[AgentRun]:
+        with self.connect() as db:
+            self._conversation(db, key, conversation_id)
+            return [
+                AgentRun.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? ORDER BY updated_at, id",
+                    (key, str(conversation_id)),
+                )
+            ]
+
+    @staticmethod
+    def _owned_run(run: AgentRun, worker_id: UUID) -> None:
+        if (
+            run.status != "running"
+            or run.owner_id != worker_id
+            or run.lease_expires_at <= utc_now()
+        ):
+            raise StorageError("Agent run lease is not owned by this worker", 409)
+
+    def update_run(
+        self,
+        key: str,
+        run_id: UUID,
+        value: AgentRunState,
+        expected_version: int,
+        worker_id: UUID,
+    ) -> AgentRun:
+        with self.connect(write=True) as db:
+            current = self._run(db, key, run_id)
+            self._check_version(current, expected_version)
+            now = utc_now()
+            claiming = current.status == "queued" or (
+                current.status == "running" and current.lease_expires_at <= now
+            )
+            if claiming:
+                if value.status != "running":
+                    raise StorageError("Claim the agent run before updating it", 409)
+                if (
+                    current.status == "running"
+                    and value.transcript != current.transcript
+                ):
+                    raise StorageError(
+                        "Recovering a run cannot change its transcript", 409
+                    )
+            else:
+                self._owned_run(current, worker_id)
+                if value.status not in {"running", "completed", "failed", "cancelled"}:
+                    raise StorageError("Invalid agent run state transition", 409)
+                if value.transcript[: len(current.transcript)] != current.transcript:
+                    raise StorageError("Persisted agent transcript is immutable", 409)
+            if value.status == "running":
+                if value.owner_id != worker_id:
+                    raise StorageError("A worker must own its agent run lease", 409)
+                if not now < value.lease_expires_at <= now + timedelta(minutes=5):
+                    raise StorageError(
+                        "Agent run lease must expire within five minutes", 409
+                    )
+                self._conversation(db, key, current.conversation_id)
+                for row in db.execute(
+                    "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status IN ('queued', 'running') AND id != ?",
+                    (key, str(current.conversation_id), str(run_id)),
+                ):
+                    other = AgentRun.model_validate_json(row[0])
+                    if other.status == "running" and other.lease_expires_at > now:
+                        raise StorageError("Another run owns this conversation", 409)
+                    # Heartbeats change updated_at, but cannot move unfinished
+                    # work behind a later message after a worker restart.
+                    if claiming and (other.created_at, other.id) < (
+                        current.created_at,
+                        current.id,
+                    ):
+                        raise StorageError(
+                            "An earlier run must finish before this run can claim the conversation",
+                            409,
+                        )
+            updated = AgentRun.model_validate(
+                {
+                    **current.model_dump(),
+                    **value.model_dump(),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_run(db, updated)
+            return updated
+
+    def cancel_run(self, key: str, run_id: UUID) -> AgentRun:
+        with self.connect(write=True) as db:
+            current = self._run(db, key, run_id)
+            if current.status in {"completed", "failed", "cancelled"}:
+                return current
+            updated = current.model_copy(
+                update={
+                    "status": "cancelled",
+                    "owner_id": None,
+                    "lease_expires_at": None,
+                    "version": current.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_run(db, updated)
+            return updated
+
+    def deliver_run_message(
+        self,
+        key: str,
+        run_id: UUID,
+        worker_id: UUID,
+        message: Message,
+        image_job_id: UUID | None = None,
+    ) -> Resource:
+        if message.role != "assistant":
+            raise StorageError("The messaging tool delivers assistant messages", 409)
+        with self.connect(write=True) as db:
+            run = self._run(db, key, run_id)
+            conversation = self._conversation(db, key, run.conversation_id)
+            job = None
+            if image_job_id is not None:
+                job = self._image_job(db, key, image_job_id)
+                if (
+                    job.conversation_id != run.conversation_id
+                    or job.status != "completed"
+                ):
+                    raise StorageError(
+                        "Only completed images from this conversation can be delivered",
+                        409,
+                    )
+                message = message.model_copy(
+                    update={
+                        "attachment_ids": list(
+                            dict.fromkeys([*message.attachment_ids, job.asset_id])
+                        )
+                    }
+                )
+            if message.id in run.delivered_message_ids:
+                return self._append_run_message(db, key, conversation, message)
+            self._owned_run(run, worker_id)
+            if job is not None and job.delivered_message_id is not None:
+                return conversation
+            conversation = self._append_run_message(db, key, conversation, message)
+            now = utc_now()
+            self._save_run(
+                db,
+                run.model_copy(
+                    update={
+                        "delivered_message_ids": [
+                            *run.delivered_message_ids,
+                            message.id,
+                        ],
+                        "version": run.version + 1,
+                        "updated_at": now,
+                    }
+                ),
+            )
+            if job is not None:
+                self._save_image_job(
+                    db,
+                    job.model_copy(
+                        update={
+                            "delivered_message_id": message.id,
+                            "version": job.version + 1,
+                            "updated_at": now,
+                        }
+                    ),
+                )
+            return conversation
+
+    def create_image_job(
+        self,
+        key: str,
+        run_id: UUID,
+        job_id: UUID,
+        prompt: str,
+        request_id: UUID,
+        worker_id: UUID,
+    ) -> ImageJob:
+        if not prompt.strip():
+            raise StorageError("Describe the image to create", 409)
+        with self.connect(write=True) as db:
+            run = self._run(db, key, run_id)
+            row = db.execute(
+                "SELECT data FROM image_jobs WHERE id = ?", (str(job_id),)
+            ).fetchone()
+            if row is not None:
+                current = ImageJob.model_validate_json(row[0])
+                if (
+                    current.agent_key == key
+                    and current.run_id == run_id
+                    and current.prompt == prompt
+                    and current.request_id == request_id
+                ):
+                    return current
+                raise StorageError("This image job ID is already in use", 409)
+            self._owned_run(run, worker_id)
+            self._conversation(db, key, run.conversation_id)
+            if db.execute(
+                "SELECT 1 FROM image_jobs WHERE request_id = ?", (str(request_id),)
+            ).fetchone():
+                raise StorageError("This inference request ID is already in use", 409)
+            now = utc_now()
+            job = ImageJob(
+                id=job_id,
+                agent_key=key,
+                run_id=run_id,
+                conversation_id=run.conversation_id,
+                prompt=prompt,
+                request_id=request_id,
+                event_run_id=uuid5(job_id, "event"),
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_image_job(db, job)
+            return job
+
+    def get_image_job(self, key: str, job_id: UUID) -> ImageJob:
+        with self.connect() as db:
+            return self._image_job(db, key, job_id)
+
+    def active_image_jobs(self) -> list[ImageJob]:
+        with self.connect() as db:
+            return [
+                ImageJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM image_jobs WHERE status IN ('queued', 'running', 'cancelling') ORDER BY updated_at, id"
+                )
+            ]
+
+    def conversation_image_jobs(
+        self, key: str, conversation_id: UUID
+    ) -> list[ImageJob]:
+        with self.connect() as db:
+            self._conversation(db, key, conversation_id)
+            return [
+                ImageJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM image_jobs WHERE agent_key = ? AND conversation_id = ? ORDER BY updated_at, id",
+                    (key, str(conversation_id)),
+                )
+            ]
+
+    def _image_event(self, db: sqlite3.Connection, job: ImageJob) -> None:
+        # The terminal result and its wake-up event share one transaction: a
+        # restart can neither lose the event nor enqueue it a second time.
+        origin = self._run(db, job.agent_key, job.run_id)
+        if db.execute(
+            "SELECT 1 FROM agent_runs WHERE id = ?", (str(job.event_run_id),)
+        ).fetchone():
+            raise StorageError("The image event run ID is already in use", 409)
+        now = utc_now()
+        self._save_run(
+            db,
+            AgentRun(
+                id=job.event_run_id,
+                agent_key=job.agent_key,
+                conversation_id=job.conversation_id,
+                trigger_job_id=job.id,
+                persona_id=origin.persona_id,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+
+    def update_image_job(
+        self,
+        key: str,
+        job_id: UUID,
+        value: ImageJobState,
+        expected_version: int,
+        worker_id: UUID,
+    ) -> ImageJob:
+        with self.connect(write=True) as db:
+            current = self._image_job(db, key, job_id)
+            terminal = {"completed", "failed", "cancelled"}
+            if current.status in terminal:
+                state = ImageJobState.model_validate(
+                    current.model_dump(include=set(ImageJobState.model_fields))
+                )
+                if state == value:
+                    return current
+                raise StorageError("Completed image job state is immutable", 409)
+            self._check_version(current, expected_version)
+            now = utc_now()
+            claiming = current.status == "queued" or current.lease_expires_at <= now
+            if claiming:
+                target = "cancelling" if current.status == "cancelling" else "running"
+                if value.status != target:
+                    raise StorageError("Claim the image job before updating it", 409)
+            elif current.owner_id != worker_id:
+                raise StorageError("Image job lease is not owned by this worker", 409)
+            elif value.status not in (
+                {"cancelling", "cancelled", "failed"}
+                if current.status == "cancelling"
+                else {"running", "completed", "failed", "cancelled"}
+            ):
+                raise StorageError("Invalid image job state transition", 409)
+            if value.status in {"running", "cancelling"}:
+                if value.owner_id != worker_id:
+                    raise StorageError("A worker must own its image job lease", 409)
+                if not now < value.lease_expires_at <= now + timedelta(minutes=5):
+                    raise StorageError(
+                        "Image job lease must expire within five minutes", 409
+                    )
+            if value.status == "completed":
+                asset = self._asset(db, key, value.asset_id)
+                if asset.deleted_at or not asset.is_image:
+                    raise StorageError(
+                        "Completed image jobs require an active image asset", 409
+                    )
+            updated = ImageJob.model_validate(
+                {
+                    **current.model_dump(),
+                    **value.model_dump(),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_image_job(db, updated)
+            if updated.status in terminal:
+                self._image_event(db, updated)
+            return updated
+
+    def cancel_image_job(self, key: str, job_id: UUID) -> ImageJob:
+        with self.connect(write=True) as db:
+            current = self._image_job(db, key, job_id)
+            if current.status in {"completed", "failed", "cancelled", "cancelling"}:
+                return current
+            updated = current.model_copy(
+                update={
+                    "status": "cancelled"
+                    if current.status == "queued"
+                    else "cancelling",
+                    "version": current.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_image_job(db, updated)
+            if updated.status == "cancelled":
+                self._image_event(db, updated)
+            return updated
 
     @staticmethod
     def _agent(db: sqlite3.Connection, key: str) -> Agent:
@@ -600,7 +1112,7 @@ class Repository:
 
     @staticmethod
     def _check_version(
-        current: Resource | Asset | PetJob, expected_version: int
+        current: Resource | Asset | PetJob | AgentRun | ImageJob, expected_version: int
     ) -> None:
         if current.version != expected_version:
             raise StorageError("This item changed. Reload it before saving again.", 409)
@@ -1071,6 +1583,20 @@ class Repository:
                 PetJob.model_validate_json(row[0])
                 for row in db.execute(
                     "SELECT data FROM pet_jobs WHERE agent_key = ? ORDER BY id", (key,)
+                )
+            ],
+            agent_runs=[
+                AgentRun.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM agent_runs WHERE agent_key = ? ORDER BY id",
+                    (key,),
+                )
+            ],
+            image_jobs=[
+                ImageJob.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM image_jobs WHERE agent_key = ? ORDER BY id",
+                    (key,),
                 )
             ],
             activity=[

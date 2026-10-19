@@ -540,6 +540,86 @@ class PetJob(PetState):
     updated_at: datetime
 
 
+class RunMessage(Model):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(max_length=1000000)
+
+
+class AgentRunState(Model):
+    status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
+    transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+    error: str | None = Field(default=None, max_length=10000)
+
+    @model_validator(mode="after")
+    def valid_lease(self) -> Self:
+        if self.status == "running":
+            if self.owner_id is None or self.lease_expires_at is None:
+                raise ValueError("Running agent runs require an owner and lease")
+        elif self.owner_id is not None or self.lease_expires_at is not None:
+            raise ValueError("Only running agent runs can retain an owner or lease")
+        if (
+            self.lease_expires_at is not None
+            and self.lease_expires_at.utcoffset() is None
+        ):
+            raise ValueError("Lease timestamps require a timezone")
+        return self
+
+
+class AgentRun(AgentRunState):
+    id: UUID
+    agent_key: AgentKey
+    conversation_id: UUID
+    trigger_message_id: UUID | None = None
+    trigger_job_id: UUID | None = None
+    persona_id: UUID | None = None
+    delivered_message_ids: list[UUID] = Field(default_factory=list)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ImageJobState(Model):
+    status: Literal[
+        "queued", "running", "completed", "failed", "cancelling", "cancelled"
+    ] = "queued"
+    owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+    asset_id: UUID | None = None
+    error: str | None = Field(default=None, max_length=10000)
+
+    @model_validator(mode="after")
+    def valid_result_and_lease(self) -> Self:
+        if self.status in {"running", "cancelling"}:
+            if self.owner_id is None or self.lease_expires_at is None:
+                raise ValueError("Active image jobs require an owner and lease")
+        elif self.owner_id is not None or self.lease_expires_at is not None:
+            raise ValueError("Only active image jobs can retain an owner or lease")
+        if (
+            self.lease_expires_at is not None
+            and self.lease_expires_at.utcoffset() is None
+        ):
+            raise ValueError("Lease timestamps require a timezone")
+        if (self.status == "completed") != (self.asset_id is not None):
+            raise ValueError("Only completed image jobs require an image asset")
+        return self
+
+
+class ImageJob(ImageJobState):
+    id: UUID
+    agent_key: AgentKey
+    run_id: UUID
+    conversation_id: UUID
+    prompt: str = Field(min_length=1, max_length=10000)
+    request_id: UUID
+    event_run_id: UUID
+    delivered_message_id: UUID | None = None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
 class ExportManifest(Model):
     schema_version: Literal[1] = 1
     exported_at: datetime
@@ -549,3 +629,5 @@ class ExportManifest(Model):
     assets: list[Asset] = Field(default_factory=list)
     activity: list[Activity] = Field(default_factory=list)
     pet_jobs: list[PetJob] = Field(default_factory=list)
+    agent_runs: list[AgentRun] = Field(default_factory=list)
+    image_jobs: list[ImageJob] = Field(default_factory=list)
