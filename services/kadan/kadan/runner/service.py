@@ -35,6 +35,15 @@ class AgentRunner:
         self.owner = services.runs.owner
         self.work: dict[str, tuple[AgentRun, asyncio.Task]] = {}
 
+    def rollout_status(self) -> dict[str, object]:
+        return {
+            "runner": {
+                "runner_id": self.settings.id,
+                "worker_id": str(self.owner),
+                "capacity": self.settings.capacity,
+            }
+        }
+
     async def renew_assignment_lease(self) -> None:
         path = f"/api/runners/{self.settings.id}"
         # This renews only infrastructure ownership. It never wakes an agent.
@@ -150,6 +159,7 @@ class AgentRunner:
 async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio.Event):
     services = RunnerServices(client, settings, uuid4())
     runner = AgentRunner(services, runner_settings)
+    admission.extra_status = runner.rollout_status
     services.images.start()
     services.pets.start()
     try:

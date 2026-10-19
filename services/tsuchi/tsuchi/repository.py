@@ -193,6 +193,29 @@ class Repository:
                 )
             ]
 
+    def rollout_status(self) -> dict[str, object]:
+        runners = self.list_runners()
+        return {
+            "runner_leases": {
+                "observed_at": utc_now().isoformat(),
+                "runners": [
+                    {
+                        **runner.model_dump(
+                            mode="json",
+                            include={
+                                "runner_id",
+                                "worker_id",
+                                "lease_expires_at",
+                                "capacity",
+                            },
+                        ),
+                        "assigned_agent_count": len(runner.agent_keys),
+                    }
+                    for runner in runners
+                ],
+            }
+        }
+
     def _expire_agent_runs(self, db: sqlite3.Connection, key: str) -> None:
         for row in db.execute(
             "SELECT data FROM agent_runs WHERE agent_key = ? AND status = 'running'",

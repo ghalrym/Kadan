@@ -28,14 +28,20 @@ installation or prove a native worker's initial queue state.
 
 1. Use the canonical `compose.yaml` topology with exactly one instance of each
    managed service. Runner overrides, alternate Compose files, replicas and
-   topology changes require a separate manual rollout. Keep the existing project
+   topology changes require a separate manual rollout. The owner must attest
+   `detached-independent` supervision: containers run detached and no attached
+   `compose up` session, abort-on-container-exit policy or whole-stack supervisor
+   can stop/restart other services when one container exits. Docker inspection
+   cannot prove that external supervisor policy, so unsupported supervision must
+   be removed before enrollment. Keep the existing project
    name, `.env`, volume names, database credentials and model/data mounts.
 2. Establish the initial complete release with pinned images, including the
    admission code. Hikari and every native worker must start together from a
    verified idle baseline; never replace the API over workers with unknown work.
 3. Create a protected host state directory, outside the checkout, with
    `installation.json` containing `{"project":"EXISTING_PROJECT_NAME",
-   "env_sha256":"SHA256_OF_EXISTING_ENV_FILE"}` and
+   "env_sha256":"SHA256_OF_EXISTING_ENV_FILE",
+   "supervision":"detached-independent"}` and
    `state.json` containing `{"good": RELEASE_OBJECT, "pending": null}`. Keep this
    state durable and do not edit it while a controller holds its `lock` file.
    `RELEASE_OBJECT` follows the `Release` model in `bin/rollout.py`: source commit,
@@ -88,18 +94,48 @@ owner readiness and non-mutating frontend/root/proxied-health smoke requests.
 These smoke requests never submit inference or create stored data.
 
 A journal precedes draining and replacement. Drain failure before mutation clears
-the journal and reopens admission without replacing anything. Once replacement
+the journal and reopens admission only after proving every recorded service process
+epoch is unchanged, running and ready. Unknown stops/restarts preserve the fence
+and journal for attention. Once replacement
 may have started, failure or process interruption restores only affected services
 to the previous pinned images after proving they drained. Conclusively stopped
 failed replacement containers count as drained; running/restarting containers
 without a usable status socket do not. A newly started failed target owner can
 be stopped only when its target image, enrolled read-only gate mount and service
 identity prove it started after the completed old drain and has never admitted
-work. Unknown old owners are never stopped by recovery. Failed recovery leaves the journal and
+work. Unknown old owners are never stopped by recovery. A full service/container-ID
+and process-start baseline is persisted before the first fence. After mutation
+begins, recovery and pre-open verification require every **unaffected** epoch to
+remain unchanged and running; a supervisor stop/restart is not hidden by a later
+healthy status. The controller never restarts an unproven entire stack. Failed recovery leaves the journal and
 fence in place. Invoke the same command to retry recovery; investigate a running
 unobservable process manually rather than forcing it down. An interruption after
 committing the healthy release but before reopening revalidates and reopens on the
 next invocation. Protect the state directory from cleanup or restore mistakes.
+
+## Natural runner lease handoff
+
+Tsuchi gives a runner process a 60-second infrastructure lease. A replacement uses
+the same configured runner ID and a fresh worker UUID; the normal ownership check
+rejects it while the old UUID's lease is live. The controller therefore records
+the drained runner's exact container ID/start time, UUID, capacity, assigned-agent
+count and existing lease expiry before stopping only that runner. Other services
+stay running. It polls a read-only Tsuchi local status observation until that
+**unchanged** lease naturally expires according to Tsuchi's own clock; it never
+forces ownership transfer, rewrites assignment rows or bypasses HTTP admission.
+Changed owner, renewed expiry, capacity/assignment drift, missing rows or missing
+observations fail closed.
+
+The fresh fenced runner exposes its configured ID, capacity and new process UUID.
+Immediately before reopening, the controller proves that its UUID does not own
+another runner, its capacity still fits the existing assignments and the old
+recorded lease is expired (or the expected fresh UUID already legitimately owns
+the row). This is a **registration eligibility** proof under the single-canonical-
+runner enrollment assumption, not an observation of new-owner registration:
+Tsuchi stays fenced and the ordinary registration PUT still runs after admission
+reopens, preserving its existing 409 ownership checks. The same stop/expiry
+handoff runs during recovery, including any known replacement lease. A failed
+supervisor or unknown runner epoch retains the fence and journal for investigation.
 
 ## Proven-idle native replacement
 
@@ -110,6 +146,8 @@ and proves a complete, stable connected cohort. Every native inference **and sto
 lane must report `busy=false`, `queued=0` and `releasing=false`; API HTTP, job and
 completion-task counts must also be zero. A disconnect, missing/duplicate worker,
 unknown status, busy lane or changed process identity cannot authorize a stop.
+Expected native cleanup may be polled within the bounded 20-second barrier budget;
+unknown connection/status history fails immediately.
 There is no snapshot, transfer or adoption of unfinished work.
 
 The controller durably records this idle receipt, API/process generation UUIDs

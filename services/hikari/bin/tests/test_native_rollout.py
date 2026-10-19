@@ -58,7 +58,7 @@ class NativeRolloutTests(unittest.TestCase):
         self.backend.command = Mock(return_value="")
         self.backend.overlay = Mock()
         self.backend.stopped = Mock(return_value=False)
-        self.backend.stop_native_ids = Mock()
+        self.backend.stop_ids = Mock()
         self.native = {
             "proof": proof().model_dump(mode="json"),
             "old": {name: value.model_dump() for name, value in self.old.items()},
@@ -88,18 +88,18 @@ class NativeRolloutTests(unittest.TestCase):
         self.backend.barrier.side_effect = ValueError("connection lost")
         with self.assertRaises(ValueError):
             self.backend.replace_native(self.target, self.journal)
-        self.backend.stop_native_ids.assert_not_called()
+        self.backend.stop_ids.assert_not_called()
         self.backend.overlay.assert_not_called()
 
     def test_workers_stop_before_api_and_new_cohort_has_fresh_proof(self):
         with patch.object(rollout, "uuid4", return_value=TOKEN):
             self.backend.replace_native(self.target, self.journal)
         self.assertEqual(
-            self.backend.stop_native_ids.call_args_list[0].args,
+            self.backend.stop_ids.call_args_list[0].args,
             (tuple(self.old[name].id for name in rollout.WORKERS),),
         )
         self.assertEqual(
-            self.backend.stop_native_ids.call_args_list[1].args,
+            self.backend.stop_ids.call_args_list[1].args,
             ((self.old["hikari-api"].id,),),
         )
         self.assertFalse(
@@ -125,12 +125,12 @@ class NativeRolloutTests(unittest.TestCase):
                 set(record["pending"]["native"]["old"]), set(rollout.NATIVE)
             )
 
-        self.backend.stop_native_ids.side_effect = stopped
+        self.backend.stop_ids.side_effect = stopped
         with patch.object(rollout, "uuid4", return_value=TOKEN):
             self.backend.replace_native(self.target, self.journal)
 
     def test_cold_marker_is_not_written_if_worker_stop_unconfirmed(self):
-        self.backend.stop_native_ids.side_effect = RuntimeError("still running")
+        self.backend.stop_ids.side_effect = RuntimeError("still running")
         with self.assertRaises(RuntimeError):
             self.backend.replace_native(self.target, self.journal)
         self.assertFalse((self.state / "gate/native.json").exists())
@@ -146,7 +146,7 @@ class NativeRolloutTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(ValueError, "hidden"):
             self.backend.replace_native(self.target, self.journal)
-        self.backend.stop_native_ids.assert_not_called()
+        self.backend.stop_ids.assert_not_called()
 
     def test_unknown_restarted_container_epoch_is_never_stopped(self):
         self.backend.persisted_old.side_effect = None
@@ -160,7 +160,7 @@ class NativeRolloutTests(unittest.TestCase):
         self.backend.containers.side_effect = [unknown]
         with self.assertRaisesRegex(ValueError, "Unknown native"):
             self.backend.replace_native(self.target, self.journal)
-        self.backend.stop_native_ids.assert_not_called()
+        self.backend.stop_ids.assert_not_called()
 
     def test_old_native_generation_in_cold_cohort_is_refused(self):
         self.backend.barrier.side_effect = [
@@ -208,6 +208,7 @@ class NativeRolloutTests(unittest.TestCase):
 
     def test_unknown_disconnect_during_first_barrier_never_stops_anything(self):
         backend = Mock(spec=rollout.Compose)
+        backend.snapshot_epochs.return_value = {}
         backend.drain.side_effect = lambda: rollout.fence(
             self.state, list(rollout.OWNERS)
         )
@@ -230,6 +231,7 @@ class NativeRolloutTests(unittest.TestCase):
 
     def test_interrupted_native_stop_keeps_proof_for_restart_recovery(self):
         backend = Mock(spec=rollout.Compose)
+        backend.snapshot_epochs.return_value = {}
         backend.drain.side_effect = lambda: rollout.fence(
             self.state, list(rollout.OWNERS)
         )
@@ -252,6 +254,7 @@ class NativeRolloutTests(unittest.TestCase):
 
     def test_failed_fresh_health_restores_complete_previous_cohort(self):
         backend = Mock(spec=rollout.Compose)
+        backend.snapshot_epochs.return_value = {}
         backend.native_transition.return_value = self.native
         backend.verify.side_effect = [RuntimeError("bad smoke"), None]
         rollout.atomic_json(

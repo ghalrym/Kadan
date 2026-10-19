@@ -29,6 +29,22 @@ Operational logs identify release source, affected service names and recovery ph
 request tracing remains with the existing request spans and does not acquire
 parallel deployment performance counters.
 
+Runner replacement respects Tsuchi's existing infrastructure lease. A durable
+handoff receipt binds the old idle process, configured identity/capacity and
+unchanged lease to a server-clock observation. The controller stops only that
+runner, waits natural expiry and proves the fresh process is eligible before
+reopening; it does not force ownership, mutate assignments or introduce an
+admission exception. Actual ordinary registration still occurs after reopening.
+Recovery follows the same lease handoff for a known replacement process.
+
+Enrollment requires independently supervised detached containers. External
+whole-stack stop-on-exit behavior is unsupported and must be attested absent;
+Docker metadata cannot prove the policy of a separate supervisor. A complete
+process-epoch baseline precedes fencing. Drain failure may reopen only over an
+unchanged healthy baseline; replacement/recovery require unaffected epochs to
+remain unchanged and running. Unknown stops/restarts preserve the journal and
+fence instead of causing an unproven whole-stack restart.
+
 The API and its seven native workers are one connection-lifecycle group. A change
 to any member replaces the group with previous pins retained for unchanged images.
 A strict idle barrier freezes maintenance and control admission, requires every

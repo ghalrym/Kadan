@@ -36,6 +36,7 @@ class RolloutTests(unittest.TestCase):
         )
         rollout.fence(self.state, [])
         self.backend = Mock(spec=rollout.Compose)
+        self.backend.snapshot_epochs.return_value = {}
 
     def record(self):
         return json.loads((self.state / "state.json").read_text())
@@ -476,6 +477,7 @@ class FinalSafetyTests(unittest.TestCase):
                 },
             )
             backend = Mock(spec=rollout.Compose)
+            backend.snapshot_epochs.return_value = {}
             backend.configuration.side_effect = ValueError("environment changed")
             with self.assertRaises(ValueError):
                 rollout.rollout(manifest("b"), state, backend)
@@ -509,6 +511,7 @@ class CachedRecoveryTests(unittest.TestCase):
             )
             rollout.fence(state, [])
             backend = Mock(spec=rollout.Compose)
+            backend.snapshot_epochs.return_value = {}
             backend.prepare_images.side_effect = OSError("registry unavailable")
             with self.assertRaises(OSError):
                 rollout.rollout(target, state, backend)
@@ -560,6 +563,7 @@ class CachedRecoveryTests(unittest.TestCase):
     def test_missing_cached_recovery_pin_never_stops_any_container(self):
         with tempfile.TemporaryDirectory() as directory:
             backend = Mock(spec=rollout.Compose)
+            backend.snapshot_epochs.return_value = {}
             backend.cached_images.side_effect = OSError("cached old image removed")
             journal = {
                 "previous": manifest().model_dump(),
@@ -589,6 +593,7 @@ class CachedRecoveryTests(unittest.TestCase):
             state = Path(directory)
             current = manifest()
             backend = Mock(spec=rollout.Compose)
+            backend.snapshot_epochs.return_value = {}
             journal = {
                 "previous": current.model_dump(),
                 "target": manifest("b", "2").model_dump(),
@@ -612,6 +617,9 @@ class CachedRecoveryTests(unittest.TestCase):
             backend = object.__new__(rollout.Compose)
             backend.state, backend.timeout = state, 1
             backend.configuration = Mock()
+            backend.snapshot_epochs = Mock(return_value={})
+            backend.unchanged_epochs = Mock()
+            backend.unaffected_running = Mock()
             backend.preflight = Mock()
             backend.prepare_images = Mock()
             backend.overlay = Mock()

@@ -23,6 +23,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         repository.initialize()
         files.initialize()
+        admission.extra_status = repository.rollout_status
         provider = configure("tsuchi-api")
         try:
             async with admission.observe():

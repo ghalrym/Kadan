@@ -331,3 +331,26 @@ def test_fenced_runner_counts_lease_renewal_after_last_graph_finishes(
         assert gate.active == 0
 
     asyncio.run(scenario())
+
+
+def test_rollout_status_identifies_configured_runner_and_process_owner():
+    boundary = Boundary()
+    runner = AgentRunner(
+        boundary, RunnerSettings(id="custom-runner", capacity=7, _env_file=None)
+    )
+    assert runner.rollout_status() == {
+        "runner": {
+            "runner_id": "custom-runner",
+            "worker_id": str(boundary.owner),
+            "capacity": 7,
+        }
+    }
+    assert boundary.calls == []
+    replacement = Boundary()
+    other = AgentRunner(
+        replacement, RunnerSettings(id="custom-runner", capacity=7, _env_file=None)
+    )
+    assert (
+        other.rollout_status()["runner"]["worker_id"]
+        != runner.rollout_status()["runner"]["worker_id"]
+    )

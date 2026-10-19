@@ -11,12 +11,13 @@ import re
 import subprocess
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 import typer
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(no_args_is_help=True)
@@ -99,6 +100,41 @@ class NativeProof(BaseModel):
         return self
 
 
+class RunnerIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    runner_id: str
+    worker_id: UUID
+    capacity: int = Field(gt=0, strict=True)
+
+
+class RunnerLease(RunnerIdentity):
+    lease_expires_at: datetime
+    assigned_agent_count: int = Field(ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def aware_expiry(self):
+        if (
+            self.lease_expires_at.utcoffset() is None
+            or self.assigned_agent_count > self.capacity
+        ):
+            raise ValueError("Runner expiry requires an authoritative timezone")
+        return self
+
+
+class RunnerLeases(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    observed_at: datetime
+    runners: tuple[RunnerLease, ...]
+
+    @model_validator(mode="after")
+    def valid_snapshot(self):
+        if self.observed_at.utcoffset() is None or len(
+            {row.runner_id for row in self.runners}
+        ) != len(self.runners):
+            raise ValueError("Runner lease observation is malformed")
+        return self
+
+
 class ContainerIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str
@@ -146,6 +182,10 @@ class Compose:
         self.timeout = timeout
         self.installation = json.loads((state / "installation.json").read_text())
         self.project = self.installation["project"]
+        if self.installation.get("supervision") != "detached-independent":
+            raise ValueError(
+                "Rollout requires detached-independent supervision enrollment"
+            )
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", self.project):
             raise ValueError("Invalid enrolled Compose project")
 
@@ -202,6 +242,11 @@ class Compose:
                 services[name].setdefault("environment", {})[
                     "KADAN_ROLLOUT_GENERATION"
                 ] = generation
+        runner_marker = self.state / "gate" / "runner.json"
+        if runner_marker.exists():
+            services["kadan-runner"].setdefault("environment", {})[
+                "KADAN_ROLLOUT_GENERATION"
+            ] = json.loads(runner_marker.read_text())["generation"]
         atomic_json(self.state / "images.json", {"services": services})
 
     def preflight(self, current: Release, target: Release) -> None:
@@ -495,11 +540,9 @@ class Compose:
             save_pending(self.state, journal)
         # Every old epoch was proven idle; every new epoch was born under this
         # transaction's still-closed fence and has never accepted application work.
-        self.stop_native_ids(
-            tuple(cohort[name].id for name in WORKERS if name in cohort)
-        )
+        self.stop_ids(tuple(cohort[name].id for name in WORKERS if name in cohort))
         if "hikari-api" in cohort:
-            self.stop_native_ids((cohort["hikari-api"].id,))
+            self.stop_ids((cohort["hikari-api"].id,))
         if self.containers(NATIVE) != cohort:
             raise RuntimeError("Native container identity changed while stopping")
         if any(
@@ -588,7 +631,7 @@ class Compose:
                     ) from None
                 time.sleep(0.2)
 
-    def stop_native_ids(self, ids: tuple[str, ...]) -> None:
+    def stop_ids(self, ids: tuple[str, ...]) -> None:
         if not ids:
             return
         subprocess.run(
@@ -621,6 +664,233 @@ class Compose:
             for value in values
         ):
             raise RuntimeError("Native container IDs are not conclusively stopped")
+
+    def lease_snapshot(self, runner_id: str) -> tuple[datetime, RunnerLease]:
+        snapshot = RunnerLeases(**self.status("tsuchi-api")["runner_leases"])
+        rows = [row for row in snapshot.runners if row.runner_id == runner_id]
+        if len(rows) != 1:
+            raise ValueError("Enrolled runner has no known persistent lease")
+        return snapshot.observed_at, rows[0]
+
+    def runner_transition(self) -> dict:
+        status = self.status("kadan-runner")
+        if not status["fenced"] or status["active"]:
+            raise ValueError("Runner handoff requires drained admission")
+        identity = RunnerIdentity(**status["runner"])
+        _, lease = self.lease_snapshot(identity.runner_id)
+        if identity.worker_id != lease.worker_id or identity.capacity != lease.capacity:
+            raise ValueError("Runner process does not own its recorded lease")
+        cohort = self.containers(("kadan-runner",))
+        if set(cohort) != {"kadan-runner"}:
+            raise ValueError("Runner handoff requires one known process epoch")
+        return {
+            "runner_id": identity.runner_id,
+            "capacity": identity.capacity,
+            "assigned_agent_count": lease.assigned_agent_count,
+            "old": cohort["kadan-runner"].model_dump(),
+            "leases": {str(lease.worker_id): lease.lease_expires_at.isoformat()},
+            "generations": [],
+        }
+
+    def snapshot_epochs(self) -> dict:
+        cohort = self.containers(SERVICES)
+        if set(cohort) != set(SERVICES):
+            raise ValueError("Cannot record the complete deployment process baseline")
+        return {name: value.model_dump() for name, value in cohort.items()}
+
+    def unchanged_epochs(self, baseline: dict, affected: tuple[str, ...] = ()) -> None:
+        if set(baseline) != set(SERVICES):
+            raise ValueError("Deployment process baseline is incomplete")
+        names = tuple(name for name in SERVICES if name not in affected)
+        if not names:
+            return
+        cohort = self.containers(names)
+        expected = {name: ContainerIdentity(**baseline[name]) for name in names}
+        if cohort != expected:
+            raise RuntimeError(
+                "Unproven service process epoch changed; keep fence and journal"
+            )
+        values = json.loads(
+            subprocess.run(
+                [
+                    "docker",
+                    "--host",
+                    "unix:///var/run/docker.sock",
+                    "inspect",
+                    *(value.id for value in cohort.values()),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            ).stdout
+        )
+        if {value["Id"] for value in values} != {
+            value.id for value in cohort.values()
+        } or not all(value["State"]["Running"] for value in values):
+            raise RuntimeError(
+                "Unproven service stopped unexpectedly; keep fence and journal"
+            )
+
+    def unaffected_running(self, journal: dict) -> None:
+        self.unchanged_epochs(journal["baseline"], tuple(journal["affected"]))
+
+    def handoff_runner(self, journal: dict) -> None:
+        runner = journal["runner"]
+        if set(
+            json.loads((self.state / "gate/fence.json").read_text())["closed"]
+        ) != set(OWNERS):
+            raise ValueError("Runner handoff requires the complete persistent fence")
+        old = ContainerIdentity(**runner["old"])
+        cohort = self.containers(("kadan-runner",))
+        persisted = self.persisted_old({"old": {"kadan-runner": runner["old"]}})
+        if any(
+            value["State"]["Running"]
+            and (
+                "kadan-runner" not in cohort or cohort["kadan-runner"].id != value["Id"]
+            )
+            for value in persisted.values()
+        ):
+            raise ValueError(
+                "An old runner process is hidden from the enrolled topology"
+            )
+        if cohort:
+            current = cohort["kadan-runner"]
+            original = current.id == old.id and current.started == old.started
+            expected = {
+                Release(**journal[key]).images["kadan-runner"]
+                for key in ("previous", "target")
+            }
+            replacement = (
+                current.generation in runner["generations"]
+                and current.image in expected
+            )
+            if not (original or replacement):
+                raise ValueError("Unknown runner process epoch; keep fence")
+            if original:
+                status = (
+                    self.status("kadan-runner")
+                    if not self.stopped("kadan-runner")
+                    else None
+                )
+                if status and (not status["fenced"] or status["active"]):
+                    raise ValueError("Old runner is no longer drained")
+            else:
+                try:
+                    status = self.status("kadan-runner")
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    status = None
+                if status:
+                    identity = RunnerIdentity(**status["runner"])
+                    if (
+                        identity.runner_id != runner["runner_id"]
+                        or not status["fenced"]
+                        or status["active"]
+                    ):
+                        raise ValueError(
+                            "Replacement runner identity/admission changed"
+                        )
+                    _, lease = self.lease_snapshot(runner["runner_id"])
+                    if lease.worker_id == identity.worker_id:
+                        recorded = runner["leases"].get(str(lease.worker_id))
+                        if (
+                            recorded is not None
+                            and lease.lease_expires_at
+                            != datetime.fromisoformat(recorded)
+                        ):
+                            raise ValueError(
+                                "Replacement runner renewed its recorded lease unexpectedly"
+                            )
+                        runner["leases"][str(lease.worker_id)] = (
+                            lease.lease_expires_at.isoformat()
+                        )
+            save_pending(self.state, journal)
+            self.stop_ids((current.id,))
+        if any(
+            value["State"]["Running"]
+            for value in self.persisted_old(
+                {"old": {"kadan-runner": runner["old"]}}
+            ).values()
+        ):
+            raise RuntimeError("Old runner did not stop conclusively")
+        self.unaffected_running(journal)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            observed, lease = self.lease_snapshot(runner["runner_id"])
+            if (
+                lease.capacity != runner["capacity"]
+                or lease.assigned_agent_count != runner["assigned_agent_count"]
+            ):
+                raise ValueError("Runner assignment capacity changed during handoff")
+            expected_expiry = runner["leases"].get(str(lease.worker_id))
+            if (
+                expected_expiry is None
+                or lease.lease_expires_at != datetime.fromisoformat(expected_expiry)
+            ):
+                raise ValueError("Runner lease owner or expiry changed unexpectedly")
+            if lease.lease_expires_at <= observed:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Runner lease did not expire naturally")
+            time.sleep(0.2)
+        generation = str(uuid4())
+        runner["generations"].append(generation)
+        save_pending(self.state, journal)
+        atomic_json(self.state / "gate/runner.json", {"generation": generation})
+
+    def verify_runner(self, journal: dict, release: Release) -> None:
+        runner = journal["runner"]
+        status = self.status("kadan-runner")
+        identity = RunnerIdentity(**status["runner"])
+        cohort = self.containers(("kadan-runner",))
+        current = cohort.get("kadan-runner")
+        if (
+            not status["fenced"]
+            or status["active"]
+            or identity.runner_id != runner["runner_id"]
+            or identity.capacity != runner["capacity"]
+            or str(identity.worker_id) in runner["leases"]
+            or current is None
+            or current.generation != runner["generations"][-1]
+            or current.image != release.images["kadan-runner"]
+            or current.id == runner["old"]["id"]
+        ):
+            raise ValueError("Fresh runner identity is not eligible for lease handoff")
+        snapshot = RunnerLeases(**self.status("tsuchi-api")["runner_leases"])
+        rows = [row for row in snapshot.runners if row.runner_id == identity.runner_id]
+        if len(rows) != 1 or any(
+            row.runner_id != identity.runner_id and row.worker_id == identity.worker_id
+            for row in snapshot.runners
+        ):
+            raise ValueError(
+                "Fresh runner UUID is missing or already owns another runner"
+            )
+        observed, lease = snapshot.observed_at, rows[0]
+        if (
+            lease.capacity != runner["capacity"]
+            or lease.assigned_agent_count != runner["assigned_agent_count"]
+            or identity.capacity < lease.assigned_agent_count
+        ):
+            raise ValueError(
+                "Fresh runner capacity is incompatible with persistent assignments"
+            )
+        if lease.worker_id != identity.worker_id:
+            expiry = runner["leases"].get(str(lease.worker_id))
+            if (
+                expiry is None
+                or lease.lease_expires_at != datetime.fromisoformat(expiry)
+                or lease.lease_expires_at > observed
+            ):
+                raise ValueError(
+                    "Prior runner lease is not proven expired before reopening"
+                )
+        self.unaffected_running(journal)
+
+    def safe_reopen(self, release: Release, journal: dict) -> None:
+        self.unchanged_epochs(journal["baseline"])
+        self.assert_running(release)
+        if not all(self.status(owner)["ready"] for owner in OWNERS):
+            raise RuntimeError("Owner readiness is uncertain; keep fence and journal")
 
     def status(self, service: str) -> dict:
         return json.loads(
@@ -809,19 +1079,43 @@ def recover(state: Path, backend: Compose, journal: dict) -> None:
     previous = Release(**journal["previous"])
     logger.warning("Recovering release %s phase %s", previous.source, journal["phase"])
     if journal["phase"] != "draining":
+        backend.unaffected_running(journal)
         backend.cached_images(previous, tuple(journal["affected"]))
         if journal.get("native"):
             backend.replace_native(previous, journal)
             others = tuple(name for name in journal["affected"] if name not in NATIVE)
             if others:
-                backend.stop_failed_replacements({**journal, "affected": others})
+                if journal.get("runner"):
+                    backend.handoff_runner(journal)
+                backend.stop_failed_replacements(
+                    {
+                        **journal,
+                        "affected": tuple(
+                            name for name in others if name != "kadan-runner"
+                        ),
+                    }
+                )
                 backend.drain(others)
                 backend.replace(previous, others)
         else:
-            backend.stop_failed_replacements(journal)
+            if journal.get("runner"):
+                backend.handoff_runner(journal)
+            backend.stop_failed_replacements(
+                {
+                    **journal,
+                    "affected": tuple(
+                        name for name in journal["affected"] if name != "kadan-runner"
+                    ),
+                }
+            )
             backend.drain(tuple(journal["affected"]))
             backend.replace(previous, tuple(journal["affected"]))
         backend.verify(tuple(journal["affected"]))
+        if journal.get("runner"):
+            backend.verify_runner(journal, previous)
+        backend.unaffected_running(journal)
+    else:
+        backend.safe_reopen(previous, journal)
     atomic_json(state / "state.json", {"good": previous.model_dump(), "pending": None})
     fence(state, [])
 
@@ -860,10 +1154,15 @@ def rollout_locked(target: Release, state: Path, backend: Compose) -> None:
         "affected": affected,
         "phase": "draining",
         "native": None,
+        "runner": None,
+        "baseline": backend.snapshot_epochs(),
     }
     save_pending(state, journal)
     try:
         backend.drain()
+        backend.unchanged_epochs(journal["baseline"])
+        if "kadan-runner" in affected:
+            journal["runner"] = backend.runner_transition()
         if set(affected).intersection(NATIVE):
             journal["native"] = backend.native_transition(current)
             journal["phase"] = "native_stopping"
@@ -877,10 +1176,17 @@ def rollout_locked(target: Release, state: Path, backend: Compose) -> None:
             backend.replace_native(target, journal)
             others = tuple(name for name in affected if name not in NATIVE)
             if others:
+                if journal["runner"]:
+                    backend.handoff_runner(journal)
                 backend.replace(target, others)
         else:
+            if journal["runner"]:
+                backend.handoff_runner(journal)
             backend.replace(target, affected)
         backend.verify(affected)
+        if journal["runner"]:
+            backend.verify_runner(journal, target)
+        backend.unaffected_running(journal)
     except Exception:
         recover(state, backend, journal)
         raise
