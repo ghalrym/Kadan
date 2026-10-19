@@ -51,9 +51,9 @@ class MetricsResponse(BaseModel):
     error_rate_percent: float | None
 
 
-def memory_meters():
+async def memory_meters():
     """Sample physical usage; native reservation snapshots are admission state."""
-    readings, errors = physical_memory()
+    readings, errors = await physical_memory(inference.worker.workers)
     return [
         ResourceMeter(
             label=reading.label,
@@ -65,12 +65,12 @@ def memory_meters():
 
 
 @router.get("", operation_id="getMetrics")
-def get_metrics(image_request_id: UUID | None = None) -> MetricsResponse:
+async def get_metrics(image_request_id: UUID | None = None) -> MetricsResponse:
     """Combine a fresh memory sample with the bounded telemetry snapshot.
 
     This monitoring read is excluded from generation telemetry, so polling
     does not increase request counts or feed back into latency statistics."""
-    resources, errors = memory_meters()
+    resources, errors = await memory_meters()
     memory = inference.worker.memory
     reservations = (
         []

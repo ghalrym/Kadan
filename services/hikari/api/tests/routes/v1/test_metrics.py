@@ -9,9 +9,10 @@ from api.services.inference_worker import InferenceJob, InferenceTask, WorkerEve
 from api.services.memory_telemetry import MemoryReading
 
 
-class MemoryDisplayTests(unittest.TestCase):
-    def test_fresh_physical_readings_are_separate_from_old_reservations(self):
+class MemoryDisplayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_physical_readings_are_separate_from_old_reservations(self):
         worker = SimpleNamespace(
+            workers={},
             memory=SimpleNamespace(used=[1024**3, 400 * 1024**2]),
             memory_observed_at="2026-10-11T10:00:00+00:00",
         )
@@ -35,7 +36,7 @@ class MemoryDisplayTests(unittest.TestCase):
                 ],
             ),
         ):
-            first, second = metrics.get_metrics(), metrics.get_metrics()
+            first, second = await metrics.get_metrics(), await metrics.get_metrics()
         self.assertEqual(first.resources[0].used, 22175 / 1024)
         self.assertEqual(first.reservations[1].reserved_gib, 400 / 1024)
         self.assertEqual(first.reservations_observed_at, worker.memory_observed_at)
@@ -59,19 +60,23 @@ class ImageRequestProgressTests(unittest.IsolatedAsyncioTestCase):
             patch.object(metrics, "physical_memory", return_value=([], [])),
         ):
             self.assertEqual(
-                metrics.get_metrics(UUID(image.request.id)).inference_progress,
+                (await metrics.get_metrics(UUID(image.request.id))).inference_progress,
                 image_progress,
             )
-            self.assertEqual(metrics.get_metrics().inference_progress, other.progress)
-            self.assertIsNone(
-                metrics.get_metrics(UUID(other.request.id)).inference_progress
+            self.assertEqual(
+                (await metrics.get_metrics()).inference_progress, other.progress
             )
-            self.assertIsNone(metrics.get_metrics(UUID("f" * 32)).inference_progress)
+            self.assertIsNone(
+                (await metrics.get_metrics(UUID(other.request.id))).inference_progress
+            )
+            self.assertIsNone(
+                (await metrics.get_metrics(UUID("f" * 32))).inference_progress
+            )
             image.result.set_result({})
             self.assertIsNone(
-                metrics.get_metrics(UUID(image.request.id)).inference_progress
+                (await metrics.get_metrics(UUID(image.request.id))).inference_progress
             )
             service.worker.jobs.pop(image.request.id)
             self.assertIsNone(
-                metrics.get_metrics(UUID(image.request.id)).inference_progress
+                (await metrics.get_metrics(UUID(image.request.id))).inference_progress
             )
