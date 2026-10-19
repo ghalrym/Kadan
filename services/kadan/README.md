@@ -157,6 +157,7 @@ Requires Python 3.12 or newer and Node.js 24. From `services/kadan`:
 
 ```sh
 python -m venv .venv
+.venv/bin/python -m pip install -e ../tracing
 .venv/bin/python -m pip install -r requirements-dev.txt
 npm ci --prefix web
 npm run build --prefix web
