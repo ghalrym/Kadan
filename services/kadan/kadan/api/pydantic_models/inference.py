@@ -2,8 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from .resources import Message, Resource
-
 
 class Checkpoint(BaseModel):
     id: str
@@ -36,10 +34,3 @@ class HikariModelLifecycle(BaseModel):
 class CompletionMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
-
-
-class PreparedChat(BaseModel):
-    conversation: Resource
-    user_message: Message
-    messages: list[CompletionMessage]
-    model_id: str

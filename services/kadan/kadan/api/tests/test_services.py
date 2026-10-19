@@ -1,18 +1,16 @@
 import asyncio
 import json
-from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 import pytest
 
-from kadan.api.config import ServiceError, Settings
+from kadan.api.config import Settings
 from kadan.api.pydantic_models.resources import Message, Resource
-from kadan.api.routes.agents.conversations.chat import ChatInput
 from kadan.api.routes.agents.conversations.notes import NoteInput
 from kadan.api.routes.agents.resources import PersonaUpdate
-from kadan.api.services import LocalServices, completion_messages, sse_data
+from kadan.api.services import LocalServices
 
 CONVERSATION_ID = UUID("10000000-0000-4000-8000-000000000001")
 PERSONA_ID = UUID("10000000-0000-4000-8000-000000000002")
@@ -55,32 +53,11 @@ def ready_settings(status="complete", available=True):
     }
 
 
-def chunk(text=None, finish=None):
-    delta = {"content": text} if text is not None else {}
-    return (
-        "data: "
-        + json.dumps(
-            {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-        )
-        + "\n\n"
-    )
-
-
-SUCCESS = (
-    chunk("")
-    + chunk("Hello ")
-    + chunk("there")
-    + chunk(finish="stop")
-    + "data: [DONE]\n\n"
-)
-
-
 class Boundary:
-    def __init__(self, stream=SUCCESS, settings=None):
+    def __init__(self, settings=None):
         self.current = resource()
         self.persona = resource("persona", markdown="Be precise.")
         self.settings = settings if settings is not None else ready_settings()
-        self.stream = stream
         self.requests = []
         self.appends = []
         self.inference_body = None
@@ -94,21 +71,6 @@ class Boundary:
             return httpx.Response(200, json=self.settings)
         if request.url.path == "/api/health":
             return httpx.Response(200, json={"status": "ok"})
-        if request.url.path == "/v1/chat/completions":
-            self.inference_body = json.loads(request.content)
-            if self.inference_status != 200:
-                return httpx.Response(
-                    self.inference_status, json={"detail": "Model became unavailable"}
-                )
-            if isinstance(self.stream, httpx.AsyncByteStream):
-                return httpx.Response(
-                    200,
-                    stream=self.stream,
-                    headers={"content-type": "text/event-stream"},
-                )
-            return httpx.Response(
-                200, text=self.stream, headers={"content-type": "text/event-stream"}
-            )
         if request.url.path.endswith(f"/{PERSONA_ID}") and request.method == "GET":
             return httpx.Response(200, json=self.persona.model_dump(mode="json"))
         if request.url.path.endswith(f"/{CONVERSATION_ID}") and request.method == "GET":
@@ -144,22 +106,6 @@ def run(boundary, operation):
     return asyncio.run(with_services(boundary, operation))
 
 
-async def generate(service, persona_id=PERSONA_ID):
-    value = ChatInput(
-        content="Hi", expected_version=1, message_id=MESSAGE_ID, persona_id=persona_id
-    )
-    prepared = await service.prepare_chat("test", CONVERSATION_ID, value)
-    saved = await service.save_chat_user("test", prepared)
-    frames = [frame async for frame in service.chat_events("test", prepared, saved)]
-    return [
-        (
-            frame.splitlines()[0].removeprefix("event: "),
-            json.loads(frame.splitlines()[1].removeprefix("data: ")),
-        )
-        for frame in frames
-    ]
-
-
 @pytest.mark.parametrize(
     ("settings", "state"),
     [
@@ -189,15 +135,6 @@ def test_unavailable_services_return_actionable_status():
     assert "local service is running" in status.hikari.message
 
 
-def test_chat_preflight_does_not_save_or_infer_without_tier():
-    boundary = Boundary(settings={"tier": None, "tiers": []})
-    with pytest.raises(ServiceError, match="Choose a tier") as raised:
-        run(boundary, generate)
-    assert raised.value.status == 503
-    assert boundary.appends == []
-    assert boundary.inference_body is None
-
-
 def test_note_persists_without_contacting_hikari():
     boundary = Boundary()
     result = run(
@@ -213,201 +150,6 @@ def test_note_persists_without_contacting_hikari():
     assert result.version == 2
     assert result.messages[0].content == "A saved thought"
     assert all(not path.startswith("/v1/") for _, path in boundary.requests)
-
-
-def test_stream_persists_user_then_successful_assistant_and_replays_persona():
-    boundary = Boundary()
-    frames = run(boundary, generate)
-    assert [name for name, _ in frames] == ["user_saved", "delta", "delta", "done"]
-    assert [entry["message"]["role"] for entry in boundary.appends] == [
-        "user",
-        "assistant",
-    ]
-    assert [entry["expected_version"] for entry in boundary.appends] == [1, 2]
-    assert boundary.current.messages[-1].content == "Hello there"
-    assert boundary.current.messages[0].resource_ids == [PERSONA_ID]
-    assert boundary.inference_body == {
-        "messages": [
-            {"role": "system", "content": "Be precise."},
-            {"role": "user", "content": "Hi"},
-        ],
-        "model": "test-model",
-        "stream": True,
-        "conversation_id": f"kadan:test:{CONVERSATION_ID}",
-    }
-    assert frames[-1][1]["conversation"]["version"] == 3
-
-
-def test_length_terminal_event_is_success_and_exposes_finish_reason():
-    boundary = Boundary(
-        stream=chunk("Truncated answer") + chunk(finish="length") + "data: [DONE]\n\n"
-    )
-    frames = run(boundary, generate)
-    assert frames[-1][0] == "done"
-    assert frames[-1][1]["finish_reason"] == "length"
-    assert boundary.current.messages[-1].content == "Truncated answer"
-
-
-@pytest.mark.parametrize(
-    "suffix",
-    [
-        "",
-        "data: [DONE]\n\n",
-        chunk(finish="stop"),
-        'data: {"error":{"message":"GPU is unavailable"}}\n\ndata: [DONE]\n\n',
-        "data: not-json\n\n",
-        chunk(finish="tool_calls") + "data: [DONE]\n\n",
-        chunk(finish="stop") + chunk("after finish") + "data: [DONE]\n\n",
-    ],
-)
-def test_incomplete_or_failed_stream_keeps_partial_visible_and_never_saves_assistant(
-    suffix,
-):
-    boundary = Boundary(stream=chunk("Partial") + suffix)
-    frames = run(boundary, generate)
-    assert frames[1] == ("delta", {"content": "Partial"})
-    assert frames[-1][0] == "error"
-    assert frames[-1][1]["user_saved"] is True
-    assert [message.role for message in boundary.current.messages] == ["user"]
-    assert all(name != "done" for name, _ in frames)
-
-
-def test_save_conflict_after_inference_reports_reply_unsaved():
-    boundary = Boundary()
-    boundary.assistant_conflict = True
-    frames = run(boundary, generate)
-    assert frames[-1][0] == "error"
-    assert frames[-1][1]["code"] == "version_conflict"
-    assert "this reply was not saved" in frames[-1][1]["message"]
-    assert len(boundary.current.messages) == 1
-
-
-def test_inference_http_error_after_user_saved_does_not_save_assistant():
-    boundary = Boundary()
-    boundary.inference_status = 503
-    frames = run(boundary, generate)
-    assert frames[-1][1]["message"] == "Model became unavailable"
-    assert len(boundary.appends) == 1
-
-
-def test_stale_conversation_version_rejected_before_any_write_or_inference():
-    boundary = Boundary()
-    boundary.current = boundary.current.model_copy(update={"version": 2})
-    with pytest.raises(ServiceError) as raised:
-        run(boundary, generate)
-    assert raised.value.code == "version_conflict"
-    assert boundary.appends == []
-    assert boundary.inference_body is None
-
-
-def test_race_at_user_save_stops_before_generation():
-    boundary = Boundary()
-    boundary.note_conflict = True
-    with pytest.raises(ServiceError) as raised:
-        run(boundary, generate)
-    assert raised.value.status == 409
-    assert boundary.inference_body is None
-
-
-def test_duplicate_user_id_cannot_start_second_generation():
-    boundary = Boundary()
-    boundary.current = resource(
-        messages=[Message(id=MESSAGE_ID, role="user", content="Already saved")]
-    )
-    with pytest.raises(ServiceError) as raised:
-        run(boundary, generate)
-    assert raised.value.code == "duplicate_message"
-    assert boundary.appends == []
-
-
-def test_no_persona_is_an_explicit_request_and_replays_existing_text():
-    boundary = Boundary()
-    boundary.current = resource(
-        messages=[
-            Message(role="user", content="Earlier"),
-            Message(role="assistant", content="Answer"),
-        ]
-    )
-    run(boundary, lambda service: generate(service, persona_id=None))
-    assert boundary.inference_body["messages"] == [
-        {"role": "user", "content": "Earlier"},
-        {"role": "assistant", "content": "Answer"},
-        {"role": "user", "content": "Hi"},
-    ]
-    assert not any(path.endswith(str(PERSONA_ID)) for _, path in boundary.requests)
-
-
-def exchanges(count, size=1):
-    return [
-        Message(role=role, content=f"{role} {index} " + "x" * size)
-        for index in range(count)
-        for role in ("user", "assistant")
-    ]
-
-
-def test_long_chain_replays_only_recent_history_without_changing_it():
-    current = resource(messages=exchanges(60))
-    before = deepcopy(current)
-    messages = completion_messages(current, None, Message(role="user", content="Next"))
-    assert len(messages) <= 100
-    assert messages[0].role == "user"
-    assert messages[-2].content == current.messages[-1].content
-    assert messages[-1].content == "Next"
-    assert current == before
-
-
-def test_window_start_holds_still_while_the_chain_grows():
-    def first(count):
-        current = resource(messages=exchanges(count))
-        return completion_messages(current, None, Message(role="user", content="Next"))[
-            0
-        ].content
-
-    assert len({first(count) for count in range(50, 60)}) <= 2
-    assert first(50) == first(51)
-
-
-def test_character_budget_trims_oldest_history_and_keeps_persona():
-    current = resource(messages=exchanges(10, size=6000))
-    persona = resource("persona", markdown="Be precise.")
-    messages = completion_messages(
-        current, persona, Message(role="user", content="Next")
-    )
-    assert messages[0].content == "Be precise."
-    assert messages[1].role == "user"
-    assert sum(len(message.content) for message in messages) <= 48000
-    assert messages[-2].content == current.messages[-1].content
-
-
-def test_oversized_newest_message_is_dropped_instead_of_blocking_the_chain():
-    current = resource(
-        messages=[
-            Message(role="user", content="Old"),
-            Message(role="assistant", content="x" * 48000),
-        ]
-    )
-    messages = completion_messages(current, None, Message(role="user", content="Next"))
-    assert [message.content for message in messages] == ["Next"]
-
-
-def test_empty_saved_messages_are_skipped():
-    current = resource(
-        messages=[
-            Message(role="user", content="Earlier"),
-            Message(role="assistant", content=""),
-        ]
-    )
-    messages = completion_messages(current, None, Message(role="user", content="Next"))
-    assert [message.content for message in messages] == ["Earlier", "Next"]
-
-
-def test_persona_and_message_over_budget_are_rejected():
-    persona = resource("persona", markdown="x" * 40000)
-    with pytest.raises(ServiceError) as error:
-        completion_messages(
-            resource(), persona, Message(role="user", content="y" * 9000)
-        )
-    assert error.value.code == "prompt_too_large"
 
 
 class ChainBoundary:
@@ -502,68 +244,6 @@ def test_edit_persona_preserves_existing_metadata():
     assert calls[0]["parent_id"] == str(CONVERSATION_ID)
 
 
-def test_sse_parser_handles_multiline_data_comments_and_unterminated_frame():
-    async def lines():
-        for line in [
-            ": keepalive",
-            "event: message",
-            "data: one",
-            "data: two",
-            "",
-            "data: incomplete",
-        ]:
-            yield line
-
-    async def collect():
-        return [value async for value in sse_data(lines())]
-
-    assert asyncio.run(collect()) == ["one\ntwo"]
-
-
-class InterruptedStream(httpx.AsyncByteStream):
-    def __init__(self):
-        self.closed = False
-
-    async def __aiter__(self):
-        yield chunk("Partial").encode()
-        raise httpx.ReadError("Connection lost")
-
-    async def aclose(self):
-        self.closed = True
-
-
-def test_network_failure_mid_stream_is_visible_and_closes_upstream():
-    stream = InterruptedStream()
-    boundary = Boundary(stream=stream)
-    frames = run(boundary, generate)
-    assert frames[-1][1]["code"] == "inference_unavailable"
-    assert len(boundary.current.messages) == 1
-    assert stream.closed
-
-
-def test_client_cancellation_closes_upstream_and_keeps_only_user_message():
-    stream = InterruptedStream()
-    boundary = Boundary(stream=stream)
-
-    async def cancel(service):
-        prepared = await service.prepare_chat(
-            "test",
-            CONVERSATION_ID,
-            ChatInput(
-                content="Hi", expected_version=1, message_id=MESSAGE_ID, persona_id=None
-            ),
-        )
-        saved = await service.save_chat_user("test", prepared)
-        events = service.chat_events("test", prepared, saved)
-        assert (await anext(events)).startswith("event: user_saved")
-        assert (await anext(events)).startswith("event: delta")
-        await events.aclose()
-
-    run(boundary, cancel)
-    assert len(boundary.current.messages) == 1
-    assert stream.closed
-
-
 @pytest.mark.parametrize("unavailable", [False, True])
 def test_docker_status_requests_internal_origins_and_returns_browser_links(unavailable):
     requests = []
@@ -626,19 +306,3 @@ def test_status_reports_whether_the_selected_model_is_loaded(lifecycle, state):
     status = run(transport, lambda service: service.status())
     assert status.hikari.state == "ready"
     assert status.hikari.model_state == state
-
-
-def test_saved_tool_activity_is_not_sent_to_the_model():
-    current = resource(
-        messages=[
-            Message(role="user", content="Find my notes"),
-            Message(role="tool", content='{"name":"kadan__memory_search"}'),
-            Message(role="assistant", content="Here they are"),
-        ]
-    )
-    messages = completion_messages(current, None, Message(role="user", content="Next"))
-    assert [(m.role, m.content) for m in messages] == [
-        ("user", "Find my notes"),
-        ("assistant", "Here they are"),
-        ("user", "Next"),
-    ]

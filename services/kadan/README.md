@@ -7,14 +7,22 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Create and select agents, with each agent's records kept in its own Tsuchi namespace.
 - Text each agent in one continuous message chain. There are no threads: the chain is the agent's whole history with you.
 - Create and edit personas and select one for a message.
-- Save a note without inference, or stream a response through Hikari's `/v1/chat/completions` API when the selected language model is available.
-- Search memories and Spaces by text, browse Space children, and search file metadata or download a file.
-- See actionable storage, tier, download and inference availability states, with links to the supporting operator interfaces.
-- Each agent has an animated pet that reacts to chat activity. The player reads the Codex pet atlas (8 columns of 192x208 cells; v1 9 rows, v2 11 rows with look directions). Until an agent has its own pet, Kadan draws a pixel hatchling coloured from the agent key.
+- Save a note without inference, or enqueue a durable agent run through Kadan.
+- Continue the same conversation while an image is being generated.
+- Receive text and images through the agent's explicit messaging tool.
+- Browse existing memories, Spaces and file metadata without changing them.
 
-A user message is saved before generation starts. An assistant response is saved only after a valid terminal event and stream completion; interrupted text remains visible as unsaved. Version checks prevent silently overwriting concurrent changes. Pending messages and drafts stay separately in browser session storage so an uncertain save can be reconciled after reload. An unsent message remains available to retry with its original ID and persona, or explicitly discard, while the next draft stays editable. Resolve that message before sending the next draft.
+Kadan owns the run queue and continuation loop. Hikari supplies text and image
+inference through its existing API and workers; Tsuchi stores conversations,
+runs, image jobs and assets. No new model runtime is installed. Tier selection,
+model downloads and settings remain explicit Hikari operations.
 
-Selecting a tier and managing model downloads remain explicit actions in Hikari Settings. Kadan does not perform them automatically. The model has no tools: chat sends only the persona and conversation text to Hikari. Kadan does not install servers, execute shell commands, manage authentication, edit arbitrary binary files, render slide decks, or run unrelated autonomous background tasks. Pet creation is a durable background job started explicitly through the UI. The workspace browser remains read-only. Files are searched by metadata, not their contents. Each request replays at most the latest 100 messages and 48,000 characters of the chain, and the UI accepts 16,000 characters per message. Persona selection applies to the next request and is not a saved agent default.
+[AGENT.md](AGENT.md) is the directly editable, human-maintained instruction file.
+Kadan reads it once when each run starts; resumed runs keep their saved snapshot.
+The Docker image includes `/app/AGENT.md`; a read-only bind mount there permits
+edits without rebuilding. `KADAN_AGENT_INSTRUCTION_FILE` can select another file.
+The agent cannot modify it. This file is separate from memories, which this flow
+does not write. Tool schemas, limits, leases and delivery rules remain in code.
 
 ## Pet creation
 
@@ -73,27 +81,37 @@ runtime is installed by this feature.
 
 ## Chat
 
-Each agent has exactly one conversation, the chain, which `GET /api/agents/{key}/chain`
-returns and creates on first use. The resources API does not create conversations.
-The UI reads like texting: a timestamp separates messages more than four hours
-apart, the newest message you sent shows **Sending…**, **Delivered** once saved,
-then **Read** once Hikari is working on it or has replied. While it works the agent
-shows as typing, and its reply appears whole when it is saved. A note is delivered
-but stays unread until the next reply.
+Each agent has one continuous conversation, returned by `GET /api/agents/{key}/chain`.
+Sending a message atomically saves it and queues its run. Closing the browser does
+not cancel work. The interface polls saved run and conversation state, keeps the
+composer available, and shows text as soon as the messaging tool delivers it.
+Run completion never appends an answer.
 
-Each message is one streamed completion: Kadan sends the optional persona as a
-system message, then the chain's recent user and assistant text. The chain never
-ends, so older messages drop out of the prompt: the replayed window opens on a
-multiple of 20 messages, so its start, and the prompt prefix, stays put for many
-turns. Saved history is never trimmed. Tsuchi has no fixed message-count ceiling; the existing conversation record and version snapshots retain the complete history. Storage and load costs therefore grow with the chain. There is no
-planning step and the model cannot call tools. Conversations saved while the
-retired plugin system existed may contain `tool` messages; Kadan keeps them in
-Tsuchi but neither shows them nor sends them to the model.
+Hikari currently exposes text completions. Kadan sends a strict JSON command
+protocol alongside the instruction file, validates one complete command per
+inference, executes it, persists its result, and continues. The initial tools are
+`send_message` (optionally attaching a completed image job) and `generate_image`.
+`finish` ends the current run without a user message. Invalid commands receive at
+most two corrections; a run is bounded to 24 commands and 48,000 context characters.
+The recent conversation window contains at most 97 messages. Saved history remains
+intact. Only user and assistant chat messages enter this window.
 
-Hikari serves one request at a time and loads the selected model on demand, so
-the first reply can wait for a model load. Kadan sets no read deadline on chat
-requests; while it waits, the chat shows when Hikari reports the model loading.
-Stop disconnects, which cancels the request in Hikari.
+Image submission returns a durable job ID immediately. A separate Kadan task waits
+on Hikari, stores its output in Tsuchi, then atomically records completion or
+failure with a new run event in the same conversation. That event wakes the agent,
+which delivers the image using `send_message`. Idle queues perform no inference.
+Image events and delivery receipts are idempotent. Uncertain interrupted image
+requests are cancelled and checked for saved artwork; they are never silently
+submitted again. If no saved output is recoverable, the agent receives a failure.
+
+One run at a time owns each conversation. Leases and persisted commands support
+restart recovery, and message/job IDs prevent duplicate side effects on replay.
+Stop cancels queued/running conversation runs; image controls cancel their jobs
+separately. Cancellation fences delivery immediately and closes inference at the
+next ownership check (within the worker heartbeat interval). Image cleanup must
+be acknowledged by Hikari before cancellation completes. Failures remain visible.
+A queued run uses the current selected Hikari model when it starts; no model setting
+is changed. Model loading may delay the first reply.
 
 ## Docker integration
 
@@ -151,9 +169,16 @@ Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 an
 | `GET /api/agents/{key}/assets/{id}` | Read file metadata |
 | `GET /api/agents/{key}/assets/{id}/content` | Stream content; `download=true` requests an attachment |
 | `POST /api/agents/{key}/conversations/{id}/notes` | Append a user note with an expected version and message ID |
-| `POST /api/agents/{key}/conversations/{id}/chat` | Save a user message, then stream inference and save a completed response |
+| `POST /api/agents/{key}/conversations/{id}/runs` | Atomically save the user message and queue a run; HTTP 202 |
+| `GET /api/agents/{key}/conversations/{id}/runs` | Read runs, image jobs and saved conversation |
+| `POST /api/agents/{key}/runs/{id}/cancel` | Cancel a queued/running run |
+| `POST /api/agents/{key}/image-jobs/{id}/cancel` | Request image cancellation |
 
-Chat requests include `content`, `expected_version`, an optional `message_id`, and an explicit `persona_id` UUID or `null`. Streaming events are `user_saved`, `status`, `delta`, `done`, and `error`; `status` carries a progress message. `done` includes the persisted conversation and `finish_reason`; a missing `done` must not be presented as a saved response. The service's `/docs` exposes the request schemas.
+Run requests include `content`, `expected_version`, `message_id`, and an explicit
+`persona_id` UUID or `null`. Repeating the same message ID and payload returns the
+original run, even if the conversation version has advanced. The response contains
+`run` and `conversation`; polling returns `runs`, `images` and `conversation`.
+The service's `/docs` exposes the request and response schemas.
 
 ## Validation
 
@@ -165,6 +190,6 @@ npm test --prefix web
 npm run build --prefix web
 ```
 
-Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise SSE parsing with synthetic streams. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
+Automated checks are isolated unit tests: Python uses an in-memory mocked HTTP transport; frontend tests exercise outbox and run-state helpers. They never persist fixtures or call a model. Root `python services/hikari/bin/hikari.py check format` also covers this service.
 
 The standalone prototype was manually checked on desktop against temporary isolated storage for agent/persona creation, persona editing, conversation persistence, memory search, Space navigation and file metadata browsing. This monorepo packaging still needs owner verification with the combined Compose stack. Mobile rendering, browser download completion and real inference have not been verified. No model was downloaded or tier selected during prototype work.

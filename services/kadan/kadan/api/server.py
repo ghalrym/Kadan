@@ -11,7 +11,7 @@ from .http_safety import LocalRequestSafety
 from .routes import agents, health, status
 from .routes.agents import assets, chain, pets, resources
 from .routes.agents.assets import content
-from .routes.agents.conversations import chat, notes
+from .routes.agents.conversations import notes, runs
 from .services import LocalServices
 
 
@@ -27,9 +27,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ) as client:
             app.state.services = LocalServices(client, config)
             app.state.services.pets.start()
+            app.state.services.runs.start()
+            app.state.services.images.start()
             try:
                 yield
             finally:
+                await app.state.services.runs.close()
+                await app.state.services.images.close()
                 await app.state.services.pets.close()
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
@@ -51,7 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         assets.router,
         content.router,
         notes.router,
-        chat.router,
+        runs.router,
     ):
         app.include_router(router)
 
