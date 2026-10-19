@@ -200,6 +200,9 @@ connect(const websocket::Url& url, const std::string& token) {
 
 int serve(const WorkerProgram& program) {
     const auto name = std::string(worker_name(program.workload));
+    std::string generation;
+    std::ifstream("/proc/sys/kernel/random/uuid") >> generation;
+    require(!generation.empty(), "worker_generation");
     const auto token = environment("HIKARI_WORKER_TOKEN");
     require(!token.empty(), "HIKARI_WORKER_TOKEN is required");
     const auto url = websocket::Url::parse(environment("HIKARI_API_URL"));
@@ -296,14 +299,16 @@ int serve(const WorkerProgram& program) {
     WorkerHost host(program.workload, memory.devices(), hooks);
     send(
         {{"state", "hello"},
-         {"protocol", 4},
+         {"protocol", 5},
          {"pid", getpid()},
          {"worker", name},
          {"instance", instance},
+         {"generation", generation},
+         {"rollout_generation", environment("KADAN_ROLLOUT_GENERATION")},
          {"machine", hooks.machine()}}
     );
     send({{"state", "models"}, {"models", store.status()}});
-    send({{"state", "ready"}, {"protocol", 4}, {"pid", getpid()}});
+    send({{"state", "ready"}, {"protocol", 5}, {"pid", getpid()}});
     host.start();
     int status = 0;
     try {

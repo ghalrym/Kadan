@@ -13,6 +13,7 @@ from uuid import UUID, uuid4, uuid5
 
 import httpx
 from kadan_tracing import job_span, traced
+from kadan_tracing.rollout import admission
 
 from ..api.config import ServiceError
 from ..api.pet_artwork import (
@@ -70,62 +71,66 @@ class PetJobs(PetClient):
         while not self.stopping:
             self.wakeup.clear()
             try:
-                values = await self.services.json_request(
-                    "Tsuchi", "GET", "/api/pet-jobs"
-                )
-                for value in values:
-                    job = self.checked(value)
-                    if job.status in {"running", "cancelling"}:
-                        if (
-                            job.lease_expires_at
-                            and job.lease_expires_at <= datetime.now(UTC)
-                        ):
-                            await self.stop_pending(job)
-                            await self.save(
-                                job,
-                                status="cancelled"
-                                if job.cancel_requested
-                                else "interrupted",
-                                stage="cancelled"
-                                if job.cancel_requested
-                                else "interrupted",
-                                owner_id=None,
-                                lease_expires_at=None,
-                                error="The worker stopped. Saved artwork is retained; resume to continue."
-                                if not job.cancel_requested
-                                else None,
-                            )
-                        continue
-                    if job.status == "queued":
-                        with job_span(
-                            "kadan.pet_jobs.process",
-                            job,
-                            queued_at=job.updated_at,
-                            recovering=False,
-                        ):
-                            try:
-                                job = await self.save(
+                if admission.enter():
+                    try:
+                        values = await self.services.json_request(
+                            "Tsuchi", "GET", "/api/pet-jobs"
+                        )
+                        for value in values:
+                            job = self.checked(value)
+                            if job.status in {"running", "cancelling"}:
+                                if (
+                                    job.lease_expires_at
+                                    and job.lease_expires_at <= datetime.now(UTC)
+                                ):
+                                    await self.stop_pending(job)
+                                    await self.save(
+                                        job,
+                                        status="cancelled"
+                                        if job.cancel_requested
+                                        else "interrupted",
+                                        stage="cancelled"
+                                        if job.cancel_requested
+                                        else "interrupted",
+                                        owner_id=None,
+                                        lease_expires_at=None,
+                                        error="The worker stopped. Saved artwork is retained; resume to continue."
+                                        if not job.cancel_requested
+                                        else None,
+                                    )
+                                continue
+                            if job.status == "queued":
+                                with job_span(
+                                    "kadan.pet_jobs.process",
                                     job,
-                                    worker_id=self.owner,
-                                    status="running",
-                                    stage="preparing",
-                                    owner_id=self.owner,
-                                    lease_expires_at=datetime.now(UTC)
-                                    + timedelta(seconds=LEASE_SECONDS),
-                                )
-                            except ServiceError as error:
-                                if error.status == 409:
-                                    continue
-                                raise
-                            self.active = asyncio.create_task(
-                                self.process(job), name=f"pet-{job.id}"
-                            )
-                            try:
-                                await self.active
-                            finally:
-                                self.active = None
-                        self.wakeup.set()
-                        break
+                                    queued_at=job.updated_at,
+                                    recovering=False,
+                                ):
+                                    try:
+                                        job = await self.save(
+                                            job,
+                                            worker_id=self.owner,
+                                            status="running",
+                                            stage="preparing",
+                                            owner_id=self.owner,
+                                            lease_expires_at=datetime.now(UTC)
+                                            + timedelta(seconds=LEASE_SECONDS),
+                                        )
+                                    except ServiceError as error:
+                                        if error.status == 409:
+                                            continue
+                                        raise
+                                    self.active = asyncio.create_task(
+                                        self.process(job), name=f"pet-{job.id}"
+                                    )
+                                    try:
+                                        await self.active
+                                    finally:
+                                        self.active = None
+                                self.wakeup.set()
+                                break
+                    finally:
+                        admission.leave()
             except asyncio.CancelledError:
                 raise
             except Exception:

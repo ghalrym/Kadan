@@ -1,9 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from tsuchi import repository as repository_module
 from tsuchi.config import StorageError
 from tsuchi.models import (
     AgentInput,
@@ -11,6 +13,7 @@ from tsuchi.models import (
     ConversationContent,
     Message,
     RunMessage,
+    Runner,
     utc_now,
 )
 from tsuchi.repository import Repository
@@ -146,3 +149,44 @@ def test_ownership_change_expires_runs_preserving_transcript(repository, change)
         ).owner_id
         == replacement
     )
+
+
+def test_rollout_status_reads_runner_leases_using_server_clock(tmp_path, monkeypatch):
+    storage = Repository(tmp_path)
+    now = datetime(2026, 10, 19, 12, tzinfo=UTC)
+    owner = uuid4()
+    runner = Runner(
+        runner_id="one",
+        worker_id=owner,
+        lease_expires_at=now + timedelta(seconds=60),
+        capacity=7,
+        agent_keys=["one", "two"],
+    )
+    rows = Mock(return_value=[runner])
+    monkeypatch.setattr(storage, "list_runners", rows)
+    monkeypatch.setattr(repository_module, "utc_now", lambda: now)
+    first = storage.rollout_status()
+    assert first == {
+        "runner_leases": {
+            "observed_at": now.isoformat(),
+            "runners": [
+                {
+                    "runner_id": "one",
+                    "capacity": 7,
+                    "assigned_agent_count": 2,
+                    "worker_id": str(owner),
+                    "lease_expires_at": runner.lease_expires_at.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                }
+            ],
+        }
+    }
+    rows.assert_called_once_with()
+    later = now + timedelta(seconds=61)
+    monkeypatch.setattr(repository_module, "utc_now", lambda: later)
+    second = storage.rollout_status()
+    assert second["runner_leases"]["observed_at"] == later.isoformat()
+    assert second["runner_leases"]["runners"] == first["runner_leases"]["runners"]
+    assert runner.worker_id == owner
+    assert runner.lease_expires_at == now + timedelta(seconds=60)

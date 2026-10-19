@@ -12,6 +12,7 @@ from uuid import UUID, uuid4, uuid5
 
 import httpx
 from kadan_tracing import job_span, traced
+from kadan_tracing.rollout import admission
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -109,39 +110,46 @@ class ImageJobs:
         while not self.stopping:
             self.wakeup.clear()
             try:
-                values = await self.services.json_request(
-                    "Tsuchi", "GET", "/api/image-jobs", params={"active": "true"}
-                )
-                for value in values:
-                    job = ImageJob.model_validate(value)
-                    recovering = job.status in {"running", "cancelling"}
-                    if recovering and job.lease_expires_at > datetime.now(UTC):
-                        continue
-                    if job.status not in {"queued", "running", "cancelling"}:
-                        continue
-                    with job_span(
-                        "kadan.image_jobs.process",
-                        job,
-                        queued_at=job.updated_at if not recovering else None,
-                        recovering=recovering,
-                    ):
-                        try:
-                            job = await self.save(
-                                job,
-                                status="cancelling"
-                                if job.status == "cancelling"
-                                else "running",
-                                owner_id=self.owner,
-                                lease_expires_at=datetime.now(UTC)
-                                + timedelta(seconds=LEASE_SECONDS),
-                            )
-                        except ServiceError as error:
-                            if error.status == 409:
+                if admission.enter():
+                    try:
+                        values = await self.services.json_request(
+                            "Tsuchi",
+                            "GET",
+                            "/api/image-jobs",
+                            params={"active": "true"},
+                        )
+                        for value in values:
+                            job = ImageJob.model_validate(value)
+                            recovering = job.status in {"running", "cancelling"}
+                            if recovering and job.lease_expires_at > datetime.now(UTC):
                                 continue
-                            raise
-                        await self.process(job, recovering=recovering)
-                    self.wakeup.set()
-                    break
+                            if job.status not in {"queued", "running", "cancelling"}:
+                                continue
+                            with job_span(
+                                "kadan.image_jobs.process",
+                                job,
+                                queued_at=job.updated_at if not recovering else None,
+                                recovering=recovering,
+                            ):
+                                try:
+                                    job = await self.save(
+                                        job,
+                                        status="cancelling"
+                                        if job.status == "cancelling"
+                                        else "running",
+                                        owner_id=self.owner,
+                                        lease_expires_at=datetime.now(UTC)
+                                        + timedelta(seconds=LEASE_SECONDS),
+                                    )
+                                except ServiceError as error:
+                                    if error.status == 409:
+                                        continue
+                                    raise
+                                await self.process(job, recovering=recovering)
+                            self.wakeup.set()
+                            break
+                    finally:
+                        admission.leave()
             except asyncio.CancelledError:
                 raise
             except Exception:
