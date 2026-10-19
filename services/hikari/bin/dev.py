@@ -182,29 +182,26 @@ def worker(name: str) -> None:
     try:
         while True:
             time.sleep(1)
-            # The worker exits when its API connection drops, e.g. on API reload.
-            if process.poll() is not None:
-                typer.echo(f"{target(name)} exited; restarting.", err=True)
-                process = start_worker(env, name)
-                continue
+            # Check edits even after an early exit so a source fix can recover it.
+            restart = process.poll() is not None
             current = snapshot()
-            if current == known:
+            if current != known:
+                current = settled(current)
+                changed = {
+                    path
+                    for path in known.keys() | current.keys()
+                    if known.get(path) != current.get(path)
+                }
+                known = current
+                if any(native(path) for path in changed):
+                    before = fingerprint(name)
+                    rebuilt = build(env, name) and fingerprint(name) != before
+                    restart = restart or rebuilt
+                elif any(data(path) for path in changed):
+                    restart = True
+            if not restart:
                 continue
-            current = settled(current)
-            changed = {
-                path
-                for path in known.keys() | current.keys()
-                if known.get(path) != current.get(path)
-            }
-            known = current
-            if any(native(path) for path in changed):
-                before = fingerprint(name)
-                if not build(env, name) or fingerprint(name) == before:
-                    # A failed build, or an edit that does not touch this program.
-                    continue
-            elif not any(data(path) for path in changed):
-                continue
-            typer.echo(f"Restarting {target(name)} with the updated build.", err=True)
+            typer.echo(f"Restarting {target(name)}.", err=True)
             stop(process)
             process = start_worker(env, name)
     finally:

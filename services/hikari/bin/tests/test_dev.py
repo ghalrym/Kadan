@@ -74,5 +74,38 @@ class WorkerReloadTests(unittest.TestCase):
         self.assertEqual(self.run_worker("tests/worker.cpp", [True], []), (1, 1, 1))
 
     def test_an_exited_worker_is_restarted(self):
-        builds, starts, _ = self.run_worker("worker.cpp", [True], [], exits=True)
+        builds, starts, _ = self.run_worker("tests/worker.cpp", [True], [], exits=True)
         self.assertEqual((builds, starts), (1, 2))
+
+    def test_source_fix_rebuilds_a_worker_after_repeated_early_exits(self):
+        broken = {Path("worker.cpp"): 1}
+        fixed = {Path("worker.cpp"): 2}
+        crashed = Mock()
+        crashed.poll.return_value = 1
+        recovered = Mock()
+        recovered.poll.return_value = None
+        with (
+            patch.object(dev.signal, "signal"),
+            patch.object(dev, "environment", return_value={}),
+            patch.object(dev, "snapshot", side_effect=[broken, broken, fixed, fixed]),
+            patch.object(dev, "settled", return_value=fixed),
+            patch.object(dev, "build", return_value=True) as build,
+            patch.object(dev, "fingerprint", side_effect=[1, 2]),
+            patch.object(
+                dev, "start_worker", side_effect=[crashed, crashed, recovered]
+            ) as start,
+            patch.object(dev, "stop"),
+            patch.object(
+                dev.time, "sleep", side_effect=[None, None, None, KeyboardInterrupt]
+            ),
+            patch.object(dev.typer, "echo"),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            dev.worker("llm")
+        self.assertEqual(build.call_count, 2)
+        self.assertEqual(start.call_count, 3)
+
+    def test_failed_rebuild_still_restarts_an_exited_worker(self):
+        self.assertEqual(
+            self.run_worker("worker.cpp", [True, False], [1], exits=True), (2, 2, 2)
+        )

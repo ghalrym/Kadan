@@ -147,7 +147,9 @@ std::int64_t fetch(
 struct StoreLock {
     int descriptor;
 
-    StoreLock(const fs::path& path, const std::atomic_bool& cancel)
+    StoreLock(
+        const fs::path& path, const std::atomic_bool& cancel = std::atomic_bool{false}
+    )
         : descriptor(
               open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)
           ) {
@@ -819,6 +821,7 @@ const HardwareTier& ModelStore::hardware_tier(const std::string& id) const {
 void ModelStore::select_tier(const std::string& id) {
     hardware_tier(id);
     fs::create_directories(root_);
+    StoreLock lock(root_ / ".settings.lock");
     atomic_document(root_ / "tier.json", {{"tier", id}});
 }
 
@@ -881,6 +884,8 @@ void ModelStore::set_context(const std::string& model, const Json& value) {
         422
     );
     fs::create_directories(root_);
+    // Hold the shared-volume lock across the read as well as the atomic rename.
+    StoreLock lock(root_ / ".settings.lock");
     auto values = fs::exists(root_ / "context.json")
                       ? read_document(root_ / "context.json")
                       : Json::object();
@@ -891,6 +896,7 @@ void ModelStore::set_context(const std::string& model, const Json& value) {
 void ModelStore::select_whisper(const std::string& name) {
     const auto model = whisper_model(name);
     fs::create_directories(root_);
+    StoreLock lock(root_ / ".settings.lock");
     atomic_document(root_ / "whisper-selection.json", {{"model", model}});
 }
 
@@ -901,6 +907,7 @@ bool ModelStore::whisper_formatting() const {
 
 void ModelStore::set_whisper_formatting(bool enabled) {
     fs::create_directories(root_);
+    StoreLock lock(root_ / ".settings.lock");
     atomic_document(root_ / "whisper-formatting.json", {{"enabled", enabled}});
 }
 

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "kadan/chat_prompt.hpp"
@@ -175,6 +176,57 @@ void pinned_catalog_units() {
     const auto& video = store.entry("h3-fl2va-int8-turbo");
     store.validate_files(video, video.manifest);
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
+}
+
+void shared_settings_units() {
+    Directory tmp;
+    ModelStore store(tmp.path, worker_data_directory());
+    const std::array<std::string, 3> tiers{"go", "plus", "pro"};
+    int start[2];
+    assert(pipe(start) == 0);
+    std::vector<pid_t> children;
+    for (std::size_t index = 0; index < tiers.size(); ++index) {
+        const auto child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            close(start[1]);
+            char signal = 0;
+            if (read(start[0], &signal, 1) != 1)
+                _exit(1);
+            close(start[0]);
+            try {
+                ModelStore worker(tmp.path, worker_data_directory());
+                const auto model = *worker.hardware_tier(tiers[index]).models.at("llm");
+                for (int repeat = 0; repeat < 10; ++repeat) {
+                    worker.select_tier("go");
+                    worker.set_context(model, 4096 + index);
+                    worker.select_whisper("medium");
+                    worker.set_whisper_formatting(false);
+                }
+                _exit(0);
+            } catch (const std::exception&) {
+                _exit(1);
+            }
+        }
+        children.push_back(child);
+    }
+    close(start[0]);
+    assert(write(start[1], "xxx", tiers.size()) == ssize_t(tiers.size()));
+    close(start[1]);
+    bool succeeded = true;
+    for (const auto child : children) {
+        int status = 0;
+        const auto waited = waitpid(child, &status, 0);
+        succeeded &= waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    assert(succeeded);
+    assert(store.tier() == "go");
+    assert(store.whisper_selected() == "medium");
+    assert(!store.whisper_formatting());
+    for (std::size_t index = 0; index < tiers.size(); ++index) {
+        const auto model = *store.hardware_tier(tiers[index]).models.at("llm");
+        assert(store.context(model) == 4096 + index);
+    }
 }
 
 void whisper_formatting_setting_units() {
@@ -1729,6 +1781,7 @@ void tokenizer_asset_units() {
 int main() {
     manifest_model_units();
     pinned_catalog_units();
+    shared_settings_units();
     whisper_formatting_setting_units();
     whisper_formatting_request_units();
     whisper_formatting_response_units();
