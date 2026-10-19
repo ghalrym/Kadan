@@ -1,3 +1,4 @@
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import ValidationInfo, field_validator
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
     hikari_browser_url: str = "http://127.0.0.1:8088"
     frontend_directory: str = "web/dist"
+    agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
 
     @field_validator(
         "tsuchi_url", "hikari_url", "tsuchi_browser_url", "hikari_browser_url"
