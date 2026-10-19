@@ -153,7 +153,10 @@ The activation PR must have a write-capable reviewer's GitHub approval of its ex
 head before merge: the publisher checks that review and all three required
 exact-master CI workflows. It uses only ephemeral `GITHUB_TOKEN` permissions
 `contents: read`, `actions: read` and `packages: write`. No personal publication
-token, host credential or repository permission change is required.
+token, host credential or repository permission change is required. The publisher
+builds each affected image locally, explicitly pushes its immutable commit tag,
+then resolves the registry digest; this supports hosted Compose versions whose
+combined build/push path exports only to the local Docker image store.
 
 New GHCR packages default to private. The approved public bootstrap requires the
 package owner to open each of the thirteen `ghalrym/kadan/*` package settings and
@@ -356,7 +359,7 @@ images, submits inference, logs into GHCR, or pushes packages. Its token has onl
 `contents: read`; it has no access to the deployment server.
 
 The check runs for PR changes to its own workflow file and can subsequently be
-invoked manually. It does not enable the inactive publication workflow, add a
+invoked manually. It does not publish images or activate a host dispatcher, add a
 self-hosted runner, or select a paid builder. Successful completion is an enrollment
 gate, not evidence of a live rollout or disposable recovery run.
 
