@@ -102,6 +102,9 @@ class NativeRolloutTests(unittest.TestCase):
             self.backend.stop_native_ids.call_args_list[1].args,
             ((self.old["hikari-api"].id,),),
         )
+        self.assertFalse(
+            any(call.args[0] == "pull" for call in self.backend.command.call_args_list)
+        )
         self.assertEqual(self.journal["phase"], "replacing")
         self.assertEqual(
             self.native["fresh_proof"], proof(True).model_dump(mode="json")

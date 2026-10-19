@@ -2,7 +2,10 @@
 
 A release is a complete immutable service-image map bound to one reviewed,
 CI-passing master commit and the canonical Compose topology. Publication owns
-builds and registry pushes; a server only pulls digest pins. The fixed GitHub
+builds and registry pushes; a server only pulls digest pins. Target downloads and
+local verification of previous recovery pins precede admission fencing. Replacement
+and recovery use cached images without registry access; missing local recovery
+pins cannot authorize a stop. The fixed GitHub
 publication workflow is the provenance boundary. The host retains its existing
 Compose project, environment and persistent volumes. No release can introduce
 arbitrary service commands or rewrite host deployment topology.

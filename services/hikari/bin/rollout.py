@@ -276,9 +276,37 @@ class Compose:
                 "Live images differ from last-known-good pins; manual enrollment required"
             )
 
+    def cached_images(self, release: Release, services: tuple[str, ...]) -> None:
+        references = sorted({release.images[name] for name in services})
+        subprocess.run(
+            [
+                "docker",
+                "--host",
+                "unix:///var/run/docker.sock",
+                "image",
+                "inspect",
+                *references,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout,
+        )
+
+    def prepare_images(
+        self, current: Release, target: Release, services: tuple[str, ...]
+    ) -> None:
+        # A running container does not prove its digest reference remains cached.
+        self.cached_images(current, services)
+        self.overlay(target)
+        try:
+            self.command("pull", *services)
+            self.cached_images(target, services)
+        finally:
+            self.overlay(current)
+
     def replace(self, release: Release, services: tuple[str, ...]) -> None:
         self.overlay(release)
-        self.command("pull", *services)
         self.command(
             "up",
             "-d",
@@ -493,7 +521,6 @@ class Compose:
             },
         )
         self.overlay(release)
-        self.command("pull", *NATIVE)
         self.command(
             "up",
             "-d",
@@ -782,6 +809,7 @@ def recover(state: Path, backend: Compose, journal: dict) -> None:
     previous = Release(**journal["previous"])
     logger.warning("Recovering release %s phase %s", previous.source, journal["phase"])
     if journal["phase"] != "draining":
+        backend.cached_images(previous, tuple(journal["affected"]))
         if journal.get("native"):
             backend.replace_native(previous, journal)
             others = tuple(name for name in journal["affected"] if name not in NATIVE)
@@ -825,6 +853,7 @@ def rollout_locked(target: Release, state: Path, backend: Compose) -> None:
             state / "state.json", {"good": target.model_dump(), "pending": None}
         )
         return
+    backend.prepare_images(current, target, affected)
     journal = {
         "previous": current.model_dump(),
         "target": target.model_dump(),

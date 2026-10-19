@@ -497,3 +497,154 @@ class FinalSafetyTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             release.approved("a" * 40)
+
+
+class CachedRecoveryTests(unittest.TestCase):
+    def test_registry_outage_during_prefetch_never_closes_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            current, target = manifest(), manifest("b", "2")
+            rollout.atomic_json(
+                state / "state.json", {"good": current.model_dump(), "pending": None}
+            )
+            rollout.fence(state, [])
+            backend = Mock(spec=rollout.Compose)
+            backend.prepare_images.side_effect = OSError("registry unavailable")
+            with self.assertRaises(OSError):
+                rollout.rollout(target, state, backend)
+            backend.drain.assert_not_called()
+            backend.replace.assert_not_called()
+            backend.replace_native.assert_not_called()
+            self.assertIsNone(json.loads((state / "state.json").read_text())["pending"])
+            self.assertEqual(
+                json.loads((state / "gate/fence.json").read_text())["closed"], []
+            )
+
+    def test_cached_rollback_is_verified_before_target_registry_access(self):
+        backend = object.__new__(rollout.Compose)
+        backend.timeout = 1
+        backend.command = Mock()
+        backend.overlay = Mock()
+        with (
+            patch.object(
+                rollout.subprocess, "run", side_effect=OSError("rollback image missing")
+            ),
+            self.assertRaises(OSError),
+        ):
+            backend.prepare_images(manifest(), manifest("b", "2"), ("kadan-frontend",))
+        backend.command.assert_not_called()
+        backend.overlay.assert_not_called()
+
+    def test_failed_target_pull_restores_previous_overlay(self):
+        backend = object.__new__(rollout.Compose)
+        backend.timeout = 1
+        current, target = manifest(), manifest("b", "2")
+        backend.command = Mock(side_effect=OSError("registry unavailable"))
+        backend.overlay = Mock()
+        with patch.object(rollout.subprocess, "run"), self.assertRaises(OSError):
+            backend.prepare_images(current, target, ("kadan-frontend",))
+        self.assertEqual(
+            [call.args[0] for call in backend.overlay.call_args_list], [target, current]
+        )
+
+    def test_replacement_uses_cached_pins_without_registry(self):
+        backend = object.__new__(rollout.Compose)
+        backend.timeout = 1
+        backend.command = Mock()
+        backend.overlay = Mock()
+        backend.replace(manifest(), ("kadan-frontend",))
+        commands = [call.args for call in backend.command.call_args_list]
+        self.assertFalse(any(command[0] == "pull" for command in commands))
+        self.assertEqual(commands[0][commands[0].index("--pull") + 1], "never")
+
+    def test_missing_cached_recovery_pin_never_stops_any_container(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(spec=rollout.Compose)
+            backend.cached_images.side_effect = OSError("cached old image removed")
+            journal = {
+                "previous": manifest().model_dump(),
+                "target": manifest("b", "2").model_dump(),
+                "affected": ["kadan-frontend"],
+                "phase": "replacing",
+                "native": None,
+            }
+            state = Path(directory)
+            rollout.fence(state, list(rollout.OWNERS))
+            rollout.save_pending(state, journal)
+            with self.assertRaises(OSError):
+                rollout.recover(state, backend, journal)
+            self.assertEqual(
+                set(json.loads((state / "gate/fence.json").read_text())["closed"]),
+                set(rollout.OWNERS),
+            )
+            self.assertIsNotNone(
+                json.loads((state / "state.json").read_text())["pending"]
+            )
+            backend.stop_failed_replacements.assert_not_called()
+            backend.drain.assert_not_called()
+            backend.replace.assert_not_called()
+
+    def test_recovery_never_prefetches_or_contacts_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            current = manifest()
+            backend = Mock(spec=rollout.Compose)
+            journal = {
+                "previous": current.model_dump(),
+                "target": manifest("b", "2").model_dump(),
+                "affected": ["kadan-frontend"],
+                "phase": "replacing",
+                "native": None,
+            }
+            rollout.recover(state, backend, journal)
+            backend.cached_images.assert_called_once_with(current, ("kadan-frontend",))
+            backend.prepare_images.assert_not_called()
+            backend.replace.assert_called_once_with(current, ("kadan-frontend",))
+
+    def test_failed_health_recovers_cached_old_images_during_registry_outage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            current, target = manifest(), manifest("b", "2")
+            rollout.atomic_json(
+                state / "state.json", {"good": current.model_dump(), "pending": None}
+            )
+            rollout.fence(state, [])
+            backend = object.__new__(rollout.Compose)
+            backend.state, backend.timeout = state, 1
+            backend.configuration = Mock()
+            backend.preflight = Mock()
+            backend.prepare_images = Mock()
+            backend.overlay = Mock()
+            backend.drain = Mock(
+                side_effect=lambda *args: rollout.fence(state, list(rollout.OWNERS))
+            )
+            backend.stop_failed_replacements = Mock()
+            backend.verify = Mock(
+                side_effect=[RuntimeError("failed target smoke"), None]
+            )
+
+            def command(*args):
+                if args[0] == "pull":
+                    raise OSError("registry offline after prefetch")
+                return ""
+
+            backend.command = Mock(side_effect=command)
+            with (
+                patch.object(rollout.subprocess, "run"),
+                self.assertRaises(RuntimeError),
+            ):
+                rollout.rollout(target, state, backend)
+            self.assertEqual(
+                json.loads((state / "state.json").read_text())["good"],
+                current.model_dump(),
+            )
+            self.assertEqual(
+                json.loads((state / "gate/fence.json").read_text())["closed"], []
+            )
+            self.assertEqual(
+                [call.args[0] for call in backend.overlay.call_args_list],
+                [target, current],
+            )
+            self.assertTrue(
+                all(call.args[0] == "up" for call in backend.command.call_args_list)
+            )

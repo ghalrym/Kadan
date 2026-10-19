@@ -77,6 +77,12 @@ Before replacement, a durable fence closes Kadan API and runner admission, waits
 for complete HTTP responses/background tasks and accepted runner jobs, then
 closes Hikari and drains HTTP/native work, then closes Tsuchi and drains storage
 requests. Already accepted upstream work can still reach its downstream owner.
+Before fencing, the controller proves previous pins are cached locally, downloads
+and verifies target pins, then restores the current overlay. Registry failure at
+this stage does not close admission or stop containers. Replacement and recovery
+use only cached pins with `--pull never`; recovery verifies its previous pins
+locally before any stop and never depends on registry availability.
+
 The controller holds all fences through replacement, container health checks,
 owner readiness and non-mutating frontend/root/proxied-health smoke requests.
 These smoke requests never submit inference or create stored data.
