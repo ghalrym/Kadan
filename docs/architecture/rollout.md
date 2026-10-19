@@ -26,8 +26,26 @@ Operational logs identify release source, affected service names and recovery ph
 request tracing remains with the existing request spans and does not acquire
 parallel deployment performance counters.
 
-The current native protocol cannot prove or adopt pre-existing work after a
-Hikari API restart. Automatic Hikari API/native replacements are therefore blocked;
-a native queue-idle/snapshot contract is a prerequisite. Enrollment also requires a
-manually verified native idle baseline. The implemented draft can replace compatible
-Kadan, Tsuchi and frontend images while retaining all inference processes and data.
+The API and its seven native workers are one connection-lifecycle group. A change
+to any member replaces the group with previous pins retained for unchanged images.
+A strict idle barrier freezes maintenance and control admission, requires every
+inference and store lane to have no busy, queued or releasing work, and binds the
+proof to stable worker generations and immutable container identities. The proof
+precedes every stop. No unfinished-job state is snapshotted or adopted.
+
+A controller cold-start marker is valid only after the recorded old cohort is
+conclusively stopped. A fresh API and fresh native process generations must match
+that marker and prove idle before readiness can reopen admission. Recovery can
+stop only proven old epochs or transaction-bound new epochs which have never
+admitted work. Unknown disconnects, hidden processes, restarted epochs and daemon
+errors preserve the fence and journal rather than turning uncertainty into a stop.
+Native protocol version 5 and manual initial enrollment are prerequisites.
+
+The host-local dispatcher polls only the fixed successful publication workflow,
+shares the rollout lock and recovers pending transactions before network discovery.
+Commit ancestry decides ordering independently of workflow run numbers. Delivery
+receipts prevent duplicate work without hiding late completions. Discovery errors
+retry with bounded backoff; deployment failures stop polling and surface a logged
+reason/nonzero exit for operator attention. The source is inactive until explicitly
+started; host access, activation and notification integration are outside this
+architecture change.

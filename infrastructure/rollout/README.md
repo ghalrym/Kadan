@@ -6,6 +6,8 @@ The developer command is:
 
 ```sh
 python services/hikari/bin/hikari.py rollout apply RUN_ID STATE_DIRECTORY CHECKOUT
+# Optional host-local dispatcher; no service unit or process is installed here:
+python services/hikari/bin/hikari.py rollout watch STATE_DIRECTORY CHECKOUT
 ```
 
 The run must be the successful `push` to `master` run of the exact
@@ -53,7 +55,7 @@ installation or prove a native worker's initial queue state.
    manual request, streaming, runner, failure/restart and recovery checks on a
    disposable installation before enabling a real host dispatcher.
 6. Only then consider installing the template at its exact workflow path and
-   connecting successful publication run IDs to the host-local command. Host
+   starting the host-local `watch` command or passing successful run IDs to `apply`. Host
    access, registry access, policy, secrets and dispatcher setup are separate
    owner work. A suitable builder must support the native image build; the draft
    does not provision one.
@@ -64,8 +66,10 @@ The controller serializes through an OS file lock. Git ancestry rejects stale or
 out-of-order releases. It checks live container image references against the last
 known good release, rejects replicas/stopped containers and refuses changed
 Compose topology, compatibility epoch, Hikari migrations or Tsuchi repository
-code. A commit cannot be republished with altered pins. Only changed digest
-services are passed to `pull` and `up --no-deps --no-build --pull never --wait`.
+code. A commit cannot be republished with altered pins. Changed digest services are passed to `pull` and
+`up --no-deps --no-build --pull never --wait`. A Hikari API or native worker
+change also restarts their coupled API-plus-seven-worker connection group;
+unchanged images keep their existing digest pins and are not rebuilt.
 It never runs migrations, removes containers/volumes, prunes, or rebuilds on the
 server. CI reuses unchanged service pins and versions newly built images by SHA.
 
@@ -91,12 +95,69 @@ unobservable process manually rather than forcing it down. An interruption after
 committing the healthy release but before reopening revalidates and reopens on the
 next invocation. Protect the state directory from cleanup or restore mistakes.
 
-**Automatic Hikari API and native worker image changes are refused.** Their
-current protocol cannot snapshot or adopt pre-existing native queues after an API
-restart. Hikari readiness fails closed on fenced startup or a worker disconnect.
-Supporting these updates requires a native idle/snapshot protocol first. Shared
-tracing or tooling changes that rebuild these images therefore also need a manual
-rollout. This draft supports compatible Kadan, Tsuchi and frontend replacements;
-it does not promise zero downtime, automatic data rollback, or full native rollout.
+## Proven-idle native replacement
+
+Hikari API and all seven native workers form a coupled replacement group because
+an API disconnect ends the native transport lifecycle. Before stopping any member,
+the fixed local `barrier` command freezes internal maintenance/control submission
+and proves a complete, stable connected cohort. Every native inference **and store**
+lane must report `busy=false`, `queued=0` and `releasing=false`; API HTTP, job and
+completion-task counts must also be zero. A disconnect, missing/duplicate worker,
+unknown status, busy lane or changed process identity cannot authorize a stop.
+There is no snapshot, transfer or adoption of unfinished work.
+
+The controller durably records this idle receipt, API/process generation UUIDs
+and immutable Docker container IDs/start times, then revalidates the live receipt
+before the first stop. It stops the recorded worker IDs before the API ID and
+proves every persisted old container stopped or conclusively removed, including
+IDs absent from Compose's current listing. Unknown/restarted/hidden old processes
+keep the fence closed and require attention.
+
+Only after the old group is stopped does the controller write a fresh cold-start
+UUID marker to the read-only mounted gate directory. It recreates the pinned API
+and all native workers with that transaction UUID, waits for a new complete idle
+barrier and checks fresh API/native generations, Docker container IDs, hostnames,
+image pins and marker binding. An old process cannot be accepted into the cold
+cohort. The API stays fenced until this proof, health and smoke checks pass.
+Protocol version 5 is required; manual enrollment must install it across the whole
+group before automatic operation. Model files, downloads and database volumes stay
+mounted with their existing identities.
+
+Recovery repeats the same coupled cold start using the previous pinned release.
+It may stop only the original proven-idle epochs or replacement epochs carrying a
+recorded transaction UUID under the complete persistent fence. The journal survives
+interruption before/after each stop/start boundary. A daemon error is never treated
+as a missing old container. Unknown epochs or failed recovery preserve the journal
+and fence. After a crash/reboot, unexpected automatic container restarts may change
+an original epoch; that uncertainty requires manual investigation rather than a
+forced deployment.
+
+## Local polling and attention
+
+`watch` is an explicit host-local process, inactive until the owner starts it.
+It polls the fixed successful publication workflow every minute and shares the
+same durable lock as `apply`. Pending recovery always runs before any network
+lookup. Artifact provenance and Git source ancestry govern admission; workflow run
+numbers do not stand in for commit order. A bounded receipt history suppresses
+repeat deliveries, while late completions at lower run numbers are still examined.
+A proven older commit is recorded and skipped without hiding another descendant.
+The cursor advances only after verified stale/idempotent delivery or successful
+application. The checkout is never switched; only commit objects are fetched from
+the fixed repository for ancestry checks.
+
+Read-only discovery failures use bounded subprocess timeouts and retry with a
+one-to-five-minute backoff. Deployment, compatibility, proof or recovery failures
+log the reason and terminate the dispatcher for operator attention; a bad image
+is not redeployed endlessly after recovery. Restart the command explicitly after
+investigation to retry the unconsumed candidate. KeyboardInterrupt/SIGTERM leave
+the durable journal for the next invocation. Logs and nonzero exit are the supplied
+attention signal; notification/supervision and all host activation/access setup
+remain separate owner work. Reset the dispatcher receipt history when manually
+enrolling a different last-known-good baseline.
+
 Storage-format and cross-version compatibility still require reviewer judgement;
 change the compatibility epoch whenever mixed versions or rollback cannot be safe.
+This draft does not promise zero downtime or automatic data rollback. All runtime,
+publication and dispatcher validation here is unit-level with external boundaries
+mocked; no live rollout, package publication, GPU run or service installation was
+performed.

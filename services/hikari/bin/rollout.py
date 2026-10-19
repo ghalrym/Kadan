@@ -321,6 +321,60 @@ class Compose:
             )
         return result
 
+    def persisted_old(self, native: dict) -> dict[str, dict]:
+        observed = {}
+        for name, identity in native["old"].items():
+            old = ContainerIdentity(**identity)
+            # A successful daemon listing with this exact full ID proves removal;
+            # daemon/permission errors never mean that an old process is absent.
+            visible = subprocess.run(
+                [
+                    "docker",
+                    "--host",
+                    "unix:///var/run/docker.sock",
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--no-trunc",
+                    "--filter",
+                    "id=" + old.id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            ).stdout.split()
+            if not visible:
+                continue
+            if visible != [old.id]:
+                raise ValueError("Ambiguous persisted native container ID")
+            values = json.loads(
+                subprocess.run(
+                    [
+                        "docker",
+                        "--host",
+                        "unix:///var/run/docker.sock",
+                        "inspect",
+                        old.id,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                ).stdout
+            )
+            if len(values) != 1 or values[0]["Id"] != old.id:
+                raise ValueError("Persisted native container observation changed")
+            value = values[0]
+            if (
+                value["State"]["StartedAt"] != old.started
+                or value["Config"]["Image"] != old.image
+                or value["Config"]["Hostname"] != old.hostname
+            ):
+                raise ValueError("Persisted native process epoch changed; keep fence")
+            observed[name] = value
+        return observed
+
     def barrier(self) -> NativeProof:
         return NativeProof.model_validate_json(
             self.command(
@@ -358,6 +412,7 @@ class Compose:
             "old": {name: value.model_dump() for name, value in after.items()},
             "generations": [],
             "fresh_proof": None,
+            "stop_authorized": False,
         }
 
     def replace_native(self, release: Release, journal: dict) -> None:
@@ -375,6 +430,14 @@ class Compose:
             raise ValueError("Persisted native idle proof is incomplete")
         previous, target = Release(**journal["previous"]), Release(**journal["target"])
         cohort = self.containers(NATIVE)
+        persisted = self.persisted_old(native)
+        for name, value in persisted.items():
+            if value["State"]["Running"] and (
+                name not in cohort or cohort[name].id != value["Id"]
+            ):
+                raise ValueError(
+                    "An old native process is hidden from the enrolled cohort"
+                )
         for name, container in cohort.items():
             original = (
                 container.id == old[name].id and container.started == old[name].started
@@ -386,6 +449,22 @@ class Compose:
                 raise ValueError(
                     "Unknown native process epoch; preserve fence for manual recovery"
                 )
+        originals = all(
+            name in cohort
+            and cohort[name].id == old[name].id
+            and cohort[name].started == old[name].started
+            for name in NATIVE
+        )
+        if not native["stop_authorized"] or (
+            originals and all(not self.stopped(name) for name in NATIVE)
+        ):
+            live = self.barrier()
+            if live != proof:
+                raise ValueError(
+                    "Native idle receipt changed before stopping; keep fence"
+                )
+            native["stop_authorized"] = True
+            save_pending(self.state, journal)
         # Every old epoch was proven idle; every new epoch was born under this
         # transaction's still-closed fence and has never accepted application work.
         self.stop_native_ids(
@@ -395,6 +474,10 @@ class Compose:
             self.stop_native_ids((cohort["hikari-api"].id,))
         if self.containers(NATIVE) != cohort:
             raise RuntimeError("Native container identity changed while stopping")
+        if any(
+            value["State"]["Running"] for value in self.persisted_old(native).values()
+        ):
+            raise RuntimeError("A persisted old native process remains running")
         generation = str(uuid4())
         native["generations"].append(generation)
         journal["phase"] = "native_stopped"
@@ -724,6 +807,7 @@ def resume_locked(state: Path, backend: Compose) -> Release:
     current = Release(**record["good"])
     gate = state / "gate" / "fence.json"
     if gate.exists() and json.loads(gate.read_text())["closed"]:
+        backend.assert_running(current)
         backend.drain()
         backend.verify(SERVICES)
         fence(state, [])

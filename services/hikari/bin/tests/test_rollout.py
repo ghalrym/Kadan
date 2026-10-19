@@ -132,10 +132,15 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rollout.Release(**value)
 
-    def test_native_change_refused_before_docker_or_git(self):
-        backend = object.__new__(rollout.Compose)
-        with self.assertRaisesRegex(ValueError, "Native queue"):
-            backend.preflight(manifest(), manifest("b", "2", "hikari-api"))
+    def test_native_change_expands_only_coupled_inference_group(self):
+        self.assertEqual(
+            set(
+                rollout.affected_services(
+                    manifest("a", "1", "hikari-api"), manifest("b", "2", "hikari-api")
+                )
+            ),
+            set(rollout.NATIVE),
+        )
 
     def test_republished_commit_is_refused(self):
         backend = object.__new__(rollout.Compose)

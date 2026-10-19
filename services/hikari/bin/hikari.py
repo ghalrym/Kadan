@@ -10,7 +10,17 @@ import typer
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, dev, generate, inference, native, publishing, rollout
+from bin import (
+    assets,
+    checks,
+    dev,
+    dispatch,
+    generate,
+    inference,
+    native,
+    publishing,
+    rollout,
+)
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -40,6 +50,8 @@ app.add_typer(
 app.add_typer(
     rollout.app, name="rollout", help="Apply a verified immutable Compose release."
 )
+
+rollout.app.command("watch")(dispatch.watch)
 
 
 def main() -> None:
