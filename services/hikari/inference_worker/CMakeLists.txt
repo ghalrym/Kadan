@@ -149,6 +149,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 include(CTest)
+if(BUILD_TESTING)
+  add_test(NAME worker-packaging
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/worker_packaging.cmake)
+endif()
 
 # Original CPU H3 VAE decoder-input component; not a full video generator.
 add_library(kadan_video src/models/video/video.cpp)
