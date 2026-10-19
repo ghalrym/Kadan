@@ -251,7 +251,7 @@ serving::Token Engine::prefill(
 
 Engine::Timing Engine::take_timing() {
     const auto& w = *impl_->weights;
-    const auto timing = w.take_timing();
+    auto timing = w.take_timing();
     const auto placement = w.placement();
     return {
         timing.projection,
@@ -268,7 +268,8 @@ Engine::Timing Engine::take_timing() {
         placement.device,
         placement.ram,
         placement.device_slices,
-        placement.ram_slices
+        placement.ram_slices,
+        std::move(timing.projection_detail)
     };
 }
 

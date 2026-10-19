@@ -372,7 +372,30 @@ void activations() {
 }
 }  // namespace
 
+void projection_timing_aggregates() {
+    using kadan::text::ProjectionTiming;
+    ProjectionTiming t;
+    for (const auto rows : {1u, 8u, 9u, 32u, 64u}) {
+        t.add("blk.0.attn_q.weight", 12, 256, 512, rows, "source_rows_gt_8", .25);
+        t.add("blk.39.attn_q.weight", 12, 256, 512, rows, "source_rows_gt_8", .25);
+    }
+    check(t.groups.size() == 4, "projection_row_buckets");
+    const auto& nine =
+        t.groups.at({"attn_q.weight", 12, 256, 512, 32, "source_rows_gt_8"});
+    check(
+        nine.calls == 4 && nine.rows == 82 && nine.source_wall_seconds == 1,
+        "projection_aggregate"
+    );
+    t.add("output.weight", 12, 256, 512, 8, "packed_batch");
+    t.add("output.weight", 12, 256, 512, 8, "source_batch_unsupported", .5);
+    check(t.groups.size() == 6, "projection_dispatch_separation");
+    for (unsigned i = 0; i < 1100; ++i)
+        t.add("output.weight", i, 256, 512, 1, "packed_batch");
+    check(t.groups.size() == 1024 && t.dropped == 82, "projection_aggregate_bound");
+}
+
 int main() {
+    projection_timing_aggregates();
     try {
         norms();
         rotation();

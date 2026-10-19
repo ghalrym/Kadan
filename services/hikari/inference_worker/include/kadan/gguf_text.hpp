@@ -8,6 +8,7 @@
 #include "kadan/checkpoint.hpp"
 #include "kadan/gguf_checkpoint.hpp"
 #include "kadan/model_worker.hpp"
+#include "kadan/text_projection_timing.hpp"
 #include "kadan/worker_compute.hpp"
 
 namespace kadan::text {
@@ -65,6 +66,7 @@ public:
         std::size_t projections, batches;
         std::uint64_t streamed_bytes, host_bytes, packed_bytes, device_bytes, ram_bytes;
         std::size_t device_slices, ram_slices;
+        ProjectionTiming projection_detail;
     };
 
     Timing take_timing();

@@ -271,3 +271,81 @@ protection or preserving residency across existing retirement boundaries.
 All inference is executed by the API-owned worker. Developer generation commands
 use `python bin/hikari.py infer` to submit requests through the live API and its
 existing queue. There are no standalone model execution tools.
+
+## Text projection measurement (owner-run)
+
+Set `KADAN_TEXT_PROJECTION_TIMING=1` in an explicitly authorized diagnostic
+worker environment **before loading the text model**. It is off by default and
+read once per model load. This does not select a model or change roles, prompts,
+tools, cache behavior, kernels, row limits, or math. No extra CUDA synchronization
+or events are inserted. Existing `KADAN_TEXT_TIMING` fields retain their meaning;
+an optional versioned `projection_detail` object is added to each existing
+prefill/decode phase record. No per-token records are added.
+
+Groups collapse `blk.<layer>.` and retain only model-owned projection family,
+GGUF encoding ID, input/output dimensions, activation row bucket, dispatch, call
+count and row sum. Bucket upper bounds are 1, 8, 32, 64; 65 means greater than 64.
+There are at most 1024 groups per phase; `dropped` counts omitted observations,
+so a nonzero value means the inventory is incomplete. Expert IDs, activations,
+tokens and message text are never recorded. This includes the common Qwen35
+projections and Qwen4 mixer, PLE and QSA projections when actually executed.
+Catalog quantization labels describe mixed checkpoints: compare actual GGUF IDs.
+
+`packed_batch` means the backend accepted the batch, `host_expert` means the
+existing host worker completed it, `source_rows_gt_8` means row-limit bypass,
+and `source_batch_unsupported` means an eligible batch was declined. A source
+call may itself select a small packed matvec; these labels describe dispatch at
+GgufWeights, not an observed CUDA kernel. F32 source calls are distinguished by
+GGUF type 0. `batch_calls` and `batch_unsupported` count backend submissions,
+not matrices. Batch time is recorded once for the whole submission and is never
+attributed to individual matrices. Source wall time is recorded per group.
+
+All durations are steady-clock **completed-call wall seconds**, including
+preparation inside the backend, source reads, transfers, validation, existing
+synchronization and output copies. The current CUDA source and batch interfaces
+return completed host outputs, so CUDA asynchrony is already bounded by their
+existing synchronization. These are not GPU kernel durations. Host experts run
+concurrently with device work; their count has no invented per-expert timing.
+Legacy `device_seconds` still covers only batch submission, including rejection.
+Preparation and host-wait totals remain separate existing phase fields. Nested
+and overlapping durations must not be added to estimate total elapsed time.
+Decode, SGEMM, copies and synchronization are **not** separated by this minimal
+instrumentation; use a separately authorized device profiler for that question.
+
+For a later hardware comparison, use the same worker commit, checkpoint content
+hashes, context/memory budget and one saved realistic role-preserving request JSON
+on representative Go, Plus and Pro hardware. Keep the existing API/worker queue;
+never run a separate executor. Do not change the live tier merely to benchmark.
+Save hardware/driver/CUDA versions, model/build identity, actual token counts,
+residency/streaming fields, queue timings and request SHA256 alongside the report.
+Keep sensitive request/response files private. This tooling runs no inference
+unless the owner explicitly invokes the existing `infer chat` command.
+
+From the repository root, after the owner approves that runtime experiment:
+
+```sh
+sha256sum request.json
+.venv/bin/python services/hikari/bin/hikari.py infer chat request.json warmup.json
+.venv/bin/python services/hikari/bin/hikari.py infer chat request.json sample-1.json
+```
+
+Run the sample command manually for five resident repetitions (distinct output
+filenames), and retain the same count on each hardware configuration. Save a
+worker log covering only this serial experiment to `worker.log`; keep model-load
+and warm-up records outside the resident sample log. Use a matching uninstrumented
+control to estimate measurement overhead. Alternate hardware/configuration order
+when practical; report all samples and their spread, not a single speedup number.
+Do not count a failed or cancelled request as a complete sample or retry blindly.
+
+```sh
+.venv/bin/python services/hikari/bin/hikari.py profile projections worker.log projection-samples.json
+```
+
+The offline extractor preserves separate prefill/decode samples and ignores
+unrelated log records. Compare source wall totals and dispatch/row distributions
+within each phase, then inspect which actual families/shapes/encodings dominate.
+A fixed history does not force routed expert occupancies or QSA execution; missing
+groups mean unobserved work, not zero-cost work. Row buckets cover the 8/9 boundary
+but do not establish CUDA path numerical equivalence. Device-only attribution,
+per-encoding crossover, output/logit parity, scratch/occupancy costs and cross-tier
+latency remain unmeasured until a separately authorized experiment supplies them.

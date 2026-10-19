@@ -14,7 +14,7 @@ namespace {
 void timing_record(
     const char* phase, std::size_t tokens, double seconds, text::Engine::Timing t
 ) {
-    const Json record{
+    Json record{
         {"phase", phase},
         {"tokens", tokens},
         {"seconds", seconds},
@@ -35,6 +35,32 @@ void timing_record(
         {"ram_bytes", t.ram_bytes},
         {"ram_slices", t.ram_slices}
     };
+    const auto& detail = t.projection_detail;
+    if (!detail.groups.empty() || detail.dropped || detail.batch_calls) {
+        Json groups = Json::array();
+        for (const auto& [key, sample] : detail.groups) {
+            const auto& [family, encoding, in, out, bucket, dispatch] = key;
+            groups.push_back(
+                {{"family", family},
+                 {"gguf_type", encoding},
+                 {"input_columns", in},
+                 {"output_columns", out},
+                 {"row_bucket_upper", bucket},
+                 {"dispatch", dispatch},
+                 {"calls", sample.calls},
+                 {"rows", sample.rows},
+                 {"source_wall_seconds", sample.source_wall_seconds}}
+            );
+        }
+        record["projection_detail"] = {
+            {"version", 1},
+            {"groups", std::move(groups)},
+            {"dropped", detail.dropped},
+            {"batch_calls", detail.batch_calls},
+            {"batch_unsupported", detail.batch_unsupported},
+            {"batch_wall_seconds", detail.batch_wall_seconds}
+        };
+    }
     std::fprintf(stderr, "KADAN_TEXT_TIMING %s\n", record.dump().c_str());
     std::fflush(stderr);
 }
