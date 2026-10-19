@@ -180,6 +180,24 @@ original run, even if the conversation version has advanced. The response contai
 `run` and `conversation`; polling returns `runs`, `images` and `conversation`.
 The service's `/docs` exposes the request and response schemas.
 
+## Run boundaries
+
+`generate_image` persists the job ID and completes its submitting run immediately.
+`send_message` requires an explicit `end_run` boolean: true saves its delivery result
+and completes the run without another inference call; false continues immediate tool
+work. `finish` ends a run that needs no visible message. Completion itself never
+creates a chat message. Tool result and run completion are saved together; interrupted
+side effects replay with the same IDs. New turns see pending image jobs in context.
+
+User messages and image events retain creation order within a conversation. A pending
+image owns no agent turn; its terminal event wakes the idle scheduler. Events never
+bypass earlier turns. Application logs record run claim, inference start/end and yield
+with run IDs and UTC times, without prompts or responses. Inference elapsed time includes
+Hikari queueing/loading/processing; it is separate from Kadan scheduling delay.
+
+This command schema requires `end_run`; deploy at an idle boundary with no queued or
+running runs. Existing completed transcripts remain stored without reinterpretation.
+
 ## Validation
 
 From this directory:

@@ -610,3 +610,34 @@ def test_jobs_and_runs_are_exported_and_survive_reinitialization(repository):
         repository.get_image_job("beta", job.id)
     with pytest.raises(StorageError):
         repository.get_run("beta", job.run_id)
+
+
+def test_image_event_waits_for_earlier_user_turn_then_claims_idle_conversation(
+    repository,
+):
+    origin = claim(repository, enqueue(repository))
+    job = claim_image(repository, image_job(repository, origin))
+    repository.update_run(
+        "alpha",
+        origin.id,
+        run_state(origin, status="completed", owner_id=None, lease_expires_at=None),
+        origin.version,
+        origin.owner_id,
+    )
+    user = enqueue(repository, repository.get_resource("alpha", origin.conversation_id))
+    completed = complete_image(repository, job)
+    event = repository.get_run("alpha", completed.event_run_id)
+    with pytest.raises(StorageError, match="earlier run"):
+        claim(repository, event)
+    user = claim(repository, user)
+    with pytest.raises(StorageError, match="Another run owns"):
+        claim(repository, event)
+    repository.update_run(
+        "alpha",
+        user.id,
+        run_state(user, status="completed", owner_id=None, lease_expires_at=None),
+        user.version,
+        user.owner_id,
+    )
+    assert claim(repository, event).status == "running"
+    assert len(repository.conversation_runs("alpha", origin.conversation_id)) == 3
