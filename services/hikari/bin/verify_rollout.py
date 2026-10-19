@@ -361,9 +361,7 @@ class DisposableInstallation:
         self.preservation()
         fault = self.control / "unhealthy-kadan-api"
         fault.touch()
-        previous_timeout = backend.timeout
         try:
-            backend.timeout = 3
             try:
                 backend.verify(tuple(journal["affected"]))
             except TimeoutError:
@@ -373,7 +371,6 @@ class DisposableInstallation:
                     "Unhealthy fixture passed replacement verification"
                 )
         finally:
-            backend.timeout = previous_timeout
             fault.unlink(missing_ok=True)
         context = multiprocessing.get_context("spawn")
         process = context.Process(
