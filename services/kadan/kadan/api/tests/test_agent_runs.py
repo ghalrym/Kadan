@@ -192,6 +192,27 @@ def test_finish_completes_without_delivering_a_message(boundary):
     assert len(boundary.conversation.messages) == 1
 
 
+def test_delivered_assistant_history_is_data_not_a_command_response(boundary):
+    asset_id = uuid4()
+    previous = Message(role="assistant", content="OK", attachment_ids=[asset_id])
+    current = Message(role="user", content="Reply exactly OK and end the run.")
+    boundary.conversation.messages.extend([previous, current])
+    run = boundary.current.model_copy(update={"trigger_message_id": current.id})
+
+    context = asyncio.run(boundary.controller.context(run))
+
+    assert context[-3].role == "user"
+    assert "delivered assistant message" in context[-3].content
+    assert f"[message {previous.id}] OK" in context[-3].content
+    assert f"[Attached assets: {asset_id}]" in context[-3].content
+    assert context[-2] == RunMessage(
+        role="user", content=f"[message {current.id}] {current.content}"
+    )
+    assert str(current.id) in context[-1].content
+    assert all(message.role != "assistant" for message in context)
+    assert boundary.conversation.messages[-2] == previous
+
+
 def test_message_is_delivered_while_run_is_still_running(boundary):
     def finish_after_visible_delivery():
         assert boundary.current.status == "running"

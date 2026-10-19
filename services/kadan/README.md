@@ -105,6 +105,8 @@ inference, executes it, persists its result, and continues. The initial tools ar
 most two corrections; a run is bounded to 24 commands and 48,000 context characters.
 The recent conversation window contains at most 97 messages. Saved history remains
 intact. Only user and assistant chat messages enter this window.
+Delivered assistant replies are labeled as history data in user-role messages,
+keeping assistant-role responses in a run reserved for JSON commands.
 
 Image submission returns a durable job ID immediately. A separate runner queue task waits
 on Hikari, stores its output in Tsuchi, then atomically records completion or

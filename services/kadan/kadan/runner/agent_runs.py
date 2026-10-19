@@ -227,9 +227,12 @@ class AgentRuns(RunClient):
                     + ", ".join(map(str, message.attachment_ids))
                     + "]"
                 )
+            # Delivered prose is history data, not an example command response.
+            if message.role == "assistant":
+                text = "Previously delivered assistant message: " + text
             if len(text) > budget or len(history) >= 97:
                 break
-            history.append(RunMessage(role=message.role, content=text))
+            history.append(RunMessage(role="user", content=text))
             budget -= len(text)
         if run.trigger_message_id and not any(
             str(run.trigger_message_id) in item.content for item in history

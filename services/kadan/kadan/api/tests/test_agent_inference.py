@@ -111,6 +111,7 @@ def test_saved_commands_use_the_same_validation():
     "content",
     [
         "Hello there",
+        "[message 19c853ce-19e3-51a1-8efd-0df2b9e0362e] OK",
         '```json\n{"tool":"finish"}\n```',
         '{"tool":"finish"} trailing text',
         '[{"tool":"finish"}]',
