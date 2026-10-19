@@ -498,3 +498,111 @@ def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
     boundary.jobs = jobs
     with pytest.raises(ServiceError, match="context limit"):
         asyncio.run(boundary.controller.context(boundary.current))
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_image_event_resumes_graph_in_same_conversation(boundary, status):
+    job_id = uuid4()
+    boundary.jobs[job_id] = ImageJob(
+        id=job_id,
+        agent_key="test",
+        run_id=uuid4(),
+        conversation_id=boundary.conversation.id,
+        prompt="Blue bird",
+        request_id=uuid4(),
+        event_run_id=boundary.current.id,
+        status=status,
+        asset_id=uuid4() if status == "completed" else None,
+        error="Worker failed" if status == "failed" else None,
+        version=1,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    boundary.current = boundary.current.model_copy(
+        update={"trigger_job_id": job_id, "trigger_message_id": None}
+    )
+    boundary.controller.inference = Commands(
+        SendMessage(
+            tool="send_message",
+            content="Here it is" if status == "completed" else "Image failed",
+            image_job_id=job_id if status == "completed" else None,
+            end_run=True,
+        )
+    )
+    receipts = []
+    original = boundary.json_request
+
+    async def record_delivery(service, method, path, **kwargs):
+        if method == "POST" and path.endswith("/messages"):
+            receipts.append(kwargs["json"])
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = record_delivery
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert boundary.current.conversation_id == boundary.conversation.id
+    assert len(receipts) == len(boundary.deliveries) == 1
+    assert receipts[0]["image_job_id"] == (
+        str(job_id) if status == "completed" else None
+    )
+    context = boundary.controller.inference.calls[0]
+    assert f'"status": "{status}"' in context[-1].content
+    assert len(boundary.controller.inference.calls) == 1
+
+
+@pytest.mark.parametrize("invalid_attempts", [2, 3])
+def test_graph_retains_invalid_command_correction_limit(boundary, invalid_attempts):
+    boundary.controller.inference = Commands(
+        *[
+            ServiceError("Invalid command", 502, "invalid_command")
+            for _ in range(invalid_attempts)
+        ],
+        Finish(tool="finish"),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == (
+        "completed" if invalid_attempts == 2 else "failed"
+    )
+    assert len(boundary.controller.inference.calls) == 3
+    assert boundary.deliveries == []
+
+
+def test_cancelling_graph_task_cancels_inflight_inference(boundary):
+    async def check():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def infer(*args):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        boundary.controller.inference = SimpleNamespace(call=infer)
+        task = asyncio.create_task(boundary.controller.advance(boundary.start_owned()))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+
+    asyncio.run(check())
+    assert boundary.deliveries == []
+    assert boundary.current.transcript[-1].role == "user"
+
+
+def test_graph_allows_full_command_budget_and_corrections(boundary):
+    boundary.controller.inference = Commands(
+        ServiceError("Invalid command", 502, "invalid_command"),
+        ServiceError("Invalid command", 502, "invalid_command"),
+        *[
+            SendMessage(tool="send_message", content=f"Message {index}", end_run=False)
+            for index in range(23)
+        ],
+        Finish(tool="finish"),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.deliveries) == 23
+    assert len(boundary.controller.inference.calls) == 26

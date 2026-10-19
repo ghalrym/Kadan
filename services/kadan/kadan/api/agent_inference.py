@@ -2,10 +2,17 @@
 
 import json
 from collections.abc import AsyncIterator
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForLLMRun,
+    CallbackManagerForLLMRun,
+)
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from .config import ServiceError
@@ -102,17 +109,52 @@ async def stream_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
     # An unterminated SSE frame is incomplete and must never execute a command.
 
 
-class AgentInference:
-    def __init__(self, client: httpx.AsyncClient, hikari_url: str):
-        self.client = client
-        self.hikari_url = hikari_url
+class HikariChatModel(BaseChatModel):
+    """Hikari's text-only API; tools remain in the agent's JSON protocol."""
 
-    async def call(
+    client: httpx.AsyncClient = Field(exclude=True)
+    hikari_url: str
+    model_id: str
+    conversation_key: str
+
+    @property
+    def _llm_type(self) -> str:
+        return "hikari"
+
+    @staticmethod
+    def _wire_message(message: BaseMessage) -> dict[str, str]:
+        roles = {SystemMessage: "system", HumanMessage: "user", AIMessage: "assistant"}
+        role = roles.get(type(message))
+        if role is None or not isinstance(message.content, str):
+            raise ValueError(
+                "Hikari accepts only system, user and assistant text messages"
+            )
+        if isinstance(message, AIMessage) and (
+            message.tool_calls or message.invalid_tool_calls
+        ):
+            raise ValueError("Hikari does not support native tool calls")
+        return {"role": role, "content": message.content}
+
+    def _generate(
         self,
-        messages: list[CompletionMessage],
-        model_id: str,
-        conversation_key: str,
-    ) -> AgentCommand:
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise NotImplementedError(
+            "HikariChatModel supports asynchronous inference only"
+        )
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if stop is not None or kwargs:
+            raise ValueError("Hikari does not support stop sequences or model options")
         content: list[str] = []
         length = 0
         finished = False
@@ -122,10 +164,10 @@ class AgentInference:
                 "POST",
                 self.hikari_url + "/v1/chat/completions",
                 json={
-                    "messages": [message.model_dump() for message in messages],
-                    "model": model_id,
+                    "messages": [self._wire_message(message) for message in messages],
+                    "model": self.model_id,
                     "stream": True,
-                    "conversation_id": conversation_key,
+                    "conversation_id": self.conversation_key,
                 },
                 timeout=INFERENCE_TIMEOUT,
             ) as response:
@@ -192,4 +234,30 @@ class AgentInference:
                 503,
                 "inference_unavailable",
             ) from error
-        return parse_command("".join(content))
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="".join(content)))]
+        )
+
+
+class AgentInference:
+    def __init__(self, client: httpx.AsyncClient, hikari_url: str):
+        self.client = client
+        self.hikari_url = hikari_url
+
+    async def call(
+        self,
+        messages: list[CompletionMessage],
+        model_id: str,
+        conversation_key: str,
+    ) -> AgentCommand:
+        roles = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
+        model = HikariChatModel(
+            client=self.client,
+            hikari_url=self.hikari_url,
+            model_id=model_id,
+            conversation_key=conversation_key,
+        )
+        response = await model.ainvoke(
+            [roles[message.role](content=message.content) for message in messages]
+        )
+        return parse_command(response.text)

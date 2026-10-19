@@ -4,12 +4,14 @@ from uuid import UUID
 
 import httpx
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from kadan.api.agent_inference import (
     MAX_COMMAND_CHARACTERS,
     AgentInference,
     Finish,
     GenerateImage,
+    HikariChatModel,
     SendMessage,
     parse_command,
 )
@@ -211,3 +213,73 @@ def test_message_requires_explicit_boolean_run_boundary(end_run):
     with pytest.raises(ServiceError) as error:
         parse_command(json.dumps(command))
     assert error.value.code == "invalid_command"
+
+
+def test_hikari_chat_model_preserves_text_message_roles():
+    async def check():
+        def respond(request):
+            assert json.loads(request.content) == {
+                "messages": [
+                    {"role": "system", "content": "Instructions"},
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Previous command"},
+                ],
+                "model": "selected-model",
+                "stream": True,
+                "conversation_id": "conversation",
+            }
+            return httpx.Response(
+                200,
+                text=completed('{"tool":"finish"}'),
+                headers={"content-type": "text/event-stream"},
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            model = HikariChatModel(
+                client=client,
+                hikari_url="http://hikari",
+                model_id="selected-model",
+                conversation_key="conversation",
+            )
+            result = await model.ainvoke(
+                [
+                    SystemMessage(content="Instructions"),
+                    HumanMessage(content="Hello"),
+                    AIMessage(content="Previous command"),
+                ]
+            )
+            assert isinstance(result, AIMessage)
+            assert result.content == '{"tool":"finish"}'
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("options", [{"stop": ["end"]}, {"tools": []}])
+def test_hikari_chat_model_rejects_unsupported_options(options):
+    async def check():
+        async with httpx.AsyncClient() as client:
+            model = HikariChatModel(
+                client=client,
+                hikari_url="http://hikari",
+                model_id="model",
+                conversation_key="conversation",
+            )
+            with pytest.raises(ValueError, match="does not support"):
+                await model.ainvoke([HumanMessage(content="Hello")], **options)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        ToolMessage(content="result", tool_call_id="call"),
+        HumanMessage(content=[{"type": "text", "text": "Hello"}]),
+        AIMessage(
+            content="", tool_calls=[{"name": "finish", "args": {}, "id": "call"}]
+        ),
+    ],
+)
+def test_hikari_chat_model_rejects_non_text_protocol_messages(message):
+    with pytest.raises(ValueError):
+        HikariChatModel._wire_message(message)
