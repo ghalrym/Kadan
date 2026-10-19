@@ -41,6 +41,8 @@ logging.basicConfig(
 )
 
 app = FastAPI(
+    # The shared tracing package owns exporters and their privacy boundary.
+    telemetry={"auto_configure": False},
     lifespan=lifespan,
     title="Hikari API",
     version="0.0.1",
