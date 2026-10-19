@@ -812,9 +812,32 @@ main:focus {
   color: var(--warn);
   border-color: #f3c46b40;
 }
-.message.unsaved .body {
-  border-style: dashed;
-  border-color: #f3c46b66;
+.message-image {
+  display: block;
+  max-width: min(82%, 600px);
+}
+.message-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 20px;
+  border: 1px solid var(--line-strong);
+}
+.image-job {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.image-job button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+.image-job button:hover:not(:disabled) {
+  background: var(--surface);
 }
 .typing {
   align-self: flex-start;

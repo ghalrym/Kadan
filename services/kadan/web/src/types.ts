@@ -53,23 +53,25 @@ export interface Status {
     settings_url: string | null;
   };
 }
-export type ChatEvent =
-  | { event: "user_saved"; data: { conversation: Resource } }
-  | { event: "status"; data: { message: string } }
-  | { event: "delta"; data: { content: string } }
-  | {
-      event: "done";
-      data: { conversation: Resource; finish_reason: "stop" | "length" };
-    }
-  | {
-      event: "error";
-      data: {
-        code: string;
-        message: string;
-        status: number;
-        user_saved: boolean;
-      };
-    };
+export interface AgentRun {
+  id: string;
+  conversation_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  error: string | null;
+  created_at: string;
+}
+export interface ImageJob {
+  id: string;
+  conversation_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
+  error: string | null;
+  delivered_message_id: string | null;
+}
+export interface RunSnapshot {
+  runs: AgentRun[];
+  images: ImageJob[];
+  conversation: Resource;
+}
 
 export interface PetManifest {
   schema_version: 1;
