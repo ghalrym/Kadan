@@ -95,13 +95,13 @@ class RolloutTests(unittest.TestCase):
         self.assertEqual(self.backend.replace.call_args_list[0].args[0], self.current)
         self.assertEqual(self.backend.replace.call_args_list[1].args[0], self.target)
 
-    def test_commit_before_open_interruption_reopens_only_after_verification(self):
+    def test_closed_gate_without_opening_receipt_fails_closed(self):
         rollout.fence(self.state, list(rollout.OWNERS))
-        rollout.rollout(self.current, self.state, self.backend)
-        self.backend.drain.assert_called_once()
-        self.backend.verify.assert_called_once_with(rollout.SERVICES)
+        with self.assertRaisesRegex(ValueError, "no durable opening receipt"):
+            rollout.rollout(self.current, self.state, self.backend)
+        self.backend.drain.assert_not_called()
         self.backend.replace.assert_not_called()
-        self.assertFalse(
+        self.assertTrue(
             json.loads((self.state / "gate/fence.json").read_text())["closed"]
         )
 
@@ -601,6 +601,7 @@ class CachedRecoveryTests(unittest.TestCase):
                 "phase": "replacing",
                 "native": None,
             }
+            rollout.fence(state, list(rollout.OWNERS))
             rollout.recover(state, backend, journal)
             backend.cached_images.assert_called_once_with(current, ("kadan-frontend",))
             backend.prepare_images.assert_not_called()

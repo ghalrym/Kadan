@@ -1068,7 +1068,51 @@ def save_pending(state: Path, journal: dict) -> None:
     atomic_json(state / "state.json", {"good": journal["previous"], "pending": journal})
 
 
+def complete_opening(
+    state: Path,
+    backend: Compose,
+    journal: dict,
+    release: Release | None = None,
+    baseline: dict | None = None,
+) -> None:
+    fresh_verification = release is not None
+    if fresh_verification:
+        journal["opening"] = {
+            "release": release.model_dump(),
+            "baseline": baseline,
+            "require_idle": journal["phase"] != "draining",
+        }
+        journal["phase"] = "opening"
+        atomic_json(
+            state / "state.json", {"good": release.model_dump(), "pending": journal}
+        )
+    opening = journal["opening"]
+    resolved = Release(**opening["release"])
+    closed = json.loads((state / "gate/fence.json").read_text())["closed"]
+    if closed:
+        if opening["require_idle"] and set(closed) != set(OWNERS):
+            raise ValueError("Opening receipt requires the complete preserved fence")
+        backend.unchanged_epochs(opening["baseline"])
+        if not fresh_verification:
+            if opening["require_idle"]:
+                backend.verify(SERVICES)
+                if journal.get("runner"):
+                    backend.verify_runner(journal, resolved)
+            else:
+                backend.safe_reopen(
+                    resolved, {**journal, "baseline": opening["baseline"]}
+                )
+            backend.unchanged_epochs(opening["baseline"])
+        fence(state, [])
+    # An already-open fence can have admitted work. Finalize the durable chosen
+    # release without draining, revalidating idle state or rolling it back.
+    atomic_json(state / "state.json", {"good": resolved.model_dump(), "pending": None})
+
+
 def recover(state: Path, backend: Compose, journal: dict) -> None:
+    if journal["phase"] == "opening":
+        complete_opening(state, backend, journal)
+        return
     if journal["phase"] not in {
         "draining",
         "native_stopping",
@@ -1110,14 +1154,17 @@ def recover(state: Path, backend: Compose, journal: dict) -> None:
             )
             backend.drain(tuple(journal["affected"]))
             backend.replace(previous, tuple(journal["affected"]))
+        backend.unaffected_running(journal)
+        verified_baseline = backend.snapshot_epochs()
         backend.verify(tuple(journal["affected"]))
         if journal.get("runner"):
             backend.verify_runner(journal, previous)
+        backend.unchanged_epochs(verified_baseline)
         backend.unaffected_running(journal)
     else:
+        verified_baseline = journal["baseline"]
         backend.safe_reopen(previous, journal)
-    atomic_json(state / "state.json", {"good": previous.model_dump(), "pending": None})
-    fence(state, [])
+    complete_opening(state, backend, journal, previous, verified_baseline)
 
 
 def resume_locked(state: Path, backend: Compose) -> Release:
@@ -1129,10 +1176,9 @@ def resume_locked(state: Path, backend: Compose) -> Release:
     current = Release(**record["good"])
     gate = state / "gate" / "fence.json"
     if gate.exists() and json.loads(gate.read_text())["closed"]:
-        backend.assert_running(current)
-        backend.drain()
-        backend.verify(SERVICES)
-        fence(state, [])
+        raise ValueError(
+            "Closed admission has no durable opening receipt; manual investigation required"
+        )
     return current
 
 
@@ -1183,15 +1229,17 @@ def rollout_locked(target: Release, state: Path, backend: Compose) -> None:
             if journal["runner"]:
                 backend.handoff_runner(journal)
             backend.replace(target, affected)
+        backend.unaffected_running(journal)
+        verified_baseline = backend.snapshot_epochs()
         backend.verify(affected)
         if journal["runner"]:
             backend.verify_runner(journal, target)
+        backend.unchanged_epochs(verified_baseline)
         backend.unaffected_running(journal)
     except Exception:
         recover(state, backend, journal)
         raise
-    atomic_json(state / "state.json", {"good": target.model_dump(), "pending": None})
-    fence(state, [])
+    complete_opening(state, backend, journal, target, verified_baseline)
 
 
 def rollout(target: Release, state: Path, backend: Compose) -> None:

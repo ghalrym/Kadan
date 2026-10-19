@@ -43,7 +43,11 @@ Docker metadata cannot prove the policy of a separate supervisor. A complete
 process-epoch baseline precedes fencing. Drain failure may reopen only over an
 unchanged healthy baseline; replacement/recovery require unaffected epochs to
 remain unchanged and running. Unknown stops/restarts preserve the journal and
-fence instead of causing an unproven whole-stack restart.
+fence instead of causing an unproven whole-stack restart. The resolved release
+keeps a durable opening receipt, full verified process baseline and runner lease
+evidence until admission opens. Closed-gate recovery must revalidate that receipt;
+already-open recovery only finalizes the record so newly admitted work is never
+drained or rolled back. Missing receipt or uncertain epochs cannot authorize reopening.
 
 The API and its seven native workers are one connection-lifecycle group. A change
 to any member replaces the group with previous pins retained for unchanged images.

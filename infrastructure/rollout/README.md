@@ -109,9 +109,14 @@ begins, recovery and pre-open verification require every **unaffected** epoch to
 remain unchanged and running; a supervisor stop/restart is not hidden by a later
 healthy status. The controller never restarts an unproven entire stack. Failed recovery leaves the journal and
 fence in place. Invoke the same command to retry recovery; investigate a running
-unobservable process manually rather than forcing it down. An interruption after
-committing the healthy release but before reopening revalidates and reopens on the
-next invocation. Protect the state directory from cleanup or restore mistakes.
+unobservable process manually rather than forcing it down. A durable `opening` receipt retains the resolved release, verified full process
+baseline and runner eligibility evidence until admission has actually reopened.
+Its baseline is captured before final health/lease verification and checked again
+afterward. A closed-gate resume rechecks that exact baseline before and after
+readiness/runner checks; failure preserves the receipt and fence without rolling
+back the chosen release. If admission already opened before a crash, resume only
+clears the receipt and never drains or rolls back newly accepted work. A closed
+gate without an opening receipt requires manual investigation. Protect the state directory from cleanup or restore mistakes.
 
 ## Natural runner lease handoff
 

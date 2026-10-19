@@ -75,6 +75,7 @@ class RunnerHandoffTests(unittest.TestCase):
             "phase": "replacing",
             "runner": self.runner,
             "native": None,
+            "baseline": {},
         }
         self.backend = object.__new__(rollout.Compose)
         self.backend.state, self.backend.timeout = self.state, 300
