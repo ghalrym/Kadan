@@ -657,7 +657,7 @@ void telemetry_context_follows_device_tasks() {
     DeviceThread device(resources, 0, Workload::image, fake(resources, counts));
     {
         serving::CudaPhaseScope phase(true);
-        const auto context = phase.context();
+        const auto& context = phase.context();
         device
             .submit_work([context](DeviceWorkspace&) {
                 check(serving::cuda_phase == context);
