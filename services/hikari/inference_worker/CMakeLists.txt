@@ -481,7 +481,8 @@ endif()
 function(kadan_install_worker target)
   install(TARGETS ${target}
     RUNTIME_DEPENDENCIES
-      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux"
+      # The NVIDIA runtime supplies the host driver; never bundle its link stub.
+      PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux" "^libcuda[.]so[.]1$"
       POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
     RUNTIME DESTINATION libexec COMPONENT ${target}
     LIBRARY DESTINATION lib COMPONENT ${target})
