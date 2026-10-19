@@ -4,12 +4,16 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 from typing import Literal
 from uuid import UUID, uuid4
 
 from api.services.inference_errors import InferenceFailure
 from kadan_tracing.rollout import Admission
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+NATIVE_IDLE_TIMEOUT = 20
+NATIVE_IDLE_POLL_SECONDS = 0.1
 
 WORKER_KINDS = frozenset(
     {"llm", "decision", "tts", "speech", "formatting", "image", "video"}
@@ -161,35 +165,71 @@ class NativeBarrier:
             self.proof = None
             if any(worker.controls for worker in workers):
                 raise InferenceFailure("Native controls are still in flight.", 409)
-            replies = await asyncio.gather(
-                *(worker.control("status", timeout=5) for worker in workers)
-            )
-            for worker, reply in zip(workers, replies, strict=True):
-                try:
-                    lanes = [
-                        NativeLane.model_validate(value) for value in reply["workers"]
-                    ]
-                except (KeyError, TypeError, ValidationError) as error:
-                    raise InferenceFailure(
-                        "Native status did not establish idle lanes.", 503
-                    ) from error
+            deadline = monotonic() + NATIVE_IDLE_TIMEOUT
+            while True:
                 if (
-                    len(lanes) != 2
-                    or {lane.worker for lane in lanes} != {"store", worker.kind}
-                    or any(lane.busy or lane.queued or lane.releasing for lane in lanes)
+                    not self.gate.fenced
+                    or self.active()
+                    or epoch != self.hub.rollout_epoch
+                    or workers != self.cohort()
                 ):
                     raise InferenceFailure(
-                        "Native store or inference lane is not idle.", 409
+                        "Native cohort changed during its idle proof.", 409
                     )
-            if (
-                not self.gate.fenced
-                or self.active()
-                or epoch != self.hub.rollout_epoch
-                or workers != self.cohort()
-            ):
-                raise InferenceFailure(
-                    "Native cohort changed during its idle proof.", 409
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise InferenceFailure(
+                        "Native lanes did not become idle before the barrier deadline.",
+                        409,
+                    )
+                replies = await asyncio.gather(
+                    *(
+                        worker.control("status", timeout=min(5, remaining))
+                        for worker in workers
+                    )
                 )
+                busy = False
+                for worker, reply in zip(workers, replies, strict=True):
+                    try:
+                        if reply["state"] != "status":
+                            raise ValueError("Unknown native status state")
+                        lanes = [
+                            NativeLane.model_validate(value)
+                            for value in reply["workers"]
+                        ]
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise InferenceFailure(
+                            "Native status did not establish idle lanes.", 503
+                        ) from error
+                    if len(lanes) != 2 or {lane.worker for lane in lanes} != {
+                        "store",
+                        worker.kind,
+                    }:
+                        raise InferenceFailure(
+                            "Native status did not establish both idle lanes.", 503
+                        )
+                    busy = busy or any(
+                        lane.busy or lane.queued or lane.releasing for lane in lanes
+                    )
+                if (
+                    not self.gate.fenced
+                    or self.active()
+                    or epoch != self.hub.rollout_epoch
+                    or workers != self.cohort()
+                ):
+                    raise InferenceFailure(
+                        "Native cohort changed during its idle proof.", 409
+                    )
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise InferenceFailure(
+                        "Native lanes did not become idle before the barrier deadline.",
+                        409,
+                    )
+                if not busy:
+                    break
+                # Native cleanup progresses on its owner thread while API maintenance stays frozen.
+                await asyncio.sleep(min(NATIVE_IDLE_POLL_SECONDS, remaining))
             self.cold_start_proven = True
             self.proof_epoch = epoch
             self.proof = {

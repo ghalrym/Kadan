@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -87,8 +88,18 @@ class NativeBarrierTests(unittest.IsolatedAsyncioTestCase):
                         worker = next(iter(hub.workers.values()))
                         worker.control.return_value["workers"][lane][field] = value
                         close_gate(gate)
-                        with self.assertRaisesRegex(InferenceFailure, "not idle"):
+                        with (
+                            patch(
+                                "api.services.rollout.monotonic",
+                                side_effect=[0, 0, 1, 21],
+                            ),
+                            patch(
+                                "api.services.rollout.asyncio.sleep", AsyncMock()
+                            ) as sleep,
+                            self.assertRaisesRegex(InferenceFailure, "deadline"),
+                        ):
                             await barrier.prove()
+                        sleep.assert_awaited_once_with(0.1)
                         self.assertTrue(hub.rollout_paused())
                         self.assertFalse(barrier.status()["native_idle"])
 
@@ -99,6 +110,7 @@ class NativeBarrierTests(unittest.IsolatedAsyncioTestCase):
             "invalid_count",
             "missing_field",
             "duplicate_kind",
+            "unknown_state",
         ]:
             with self.subTest(fault=fault):
                 hub, gate, barrier = fake_cohort(tmp_path)
@@ -110,6 +122,8 @@ class NativeBarrierTests(unittest.IsolatedAsyncioTestCase):
                     lanes[0]["queued"] = "0"
                 elif fault == "missing_field":
                     del lanes[0]["busy"]
+                elif fault == "unknown_state":
+                    worker.control.return_value["state"] = "unknown"
                 else:
                     lanes[1]["worker"] = "store"
                 close_gate(gate)
@@ -277,3 +291,32 @@ class NativeBarrierTests(unittest.IsolatedAsyncioTestCase):
         worker.websocket.close.assert_awaited_once_with(code=1013)
         self.assertFalse(barrier.proof_valid())
         self.assertFalse(barrier.ready())
+
+    async def test_transient_release_is_polled_until_native_lanes_are_idle(self):
+        hub, gate, barrier = fake_cohort(self.path)
+        worker = next(iter(hub.workers.values()))
+        idle = worker.control.return_value
+        releasing = deepcopy(idle)
+        releasing["workers"][0]["releasing"] = True
+        worker.control.side_effect = [releasing, idle]
+        close_gate(gate)
+        with patch("api.services.rollout.asyncio.sleep", AsyncMock()) as sleep:
+            proof = await barrier.prove()
+        self.assertTrue(proof["native_idle"])
+        self.assertTrue(barrier.proof_valid())
+        self.assertEqual(worker.control.await_count, 2)
+        sleep.assert_awaited_once_with(0.1)
+
+    async def test_native_status_timeout_is_not_retried(self):
+        hub, gate, barrier = fake_cohort(self.path)
+        worker = next(iter(hub.workers.values()))
+        worker.control.side_effect = TimeoutError
+        close_gate(gate)
+        with (
+            patch("api.services.rollout.asyncio.sleep", AsyncMock()) as sleep,
+            self.assertRaises(TimeoutError),
+        ):
+            await barrier.prove()
+        self.assertEqual(worker.control.await_count, 1)
+        sleep.assert_not_awaited()
+        self.assertFalse(barrier.proof_valid())
