@@ -12,8 +12,13 @@ from .models import (
     Agent,
     AgentInput,
     AgentKey,
+    AgentRun,
+    AgentRunState,
     Asset,
     AssetUpdate,
+    ImageJob,
+    ImageJobState,
+    Message,
     MessageAppend,
     Metadata,
     Model,
@@ -81,6 +86,35 @@ class PetSelection(Model):
     pet_id: UUID | None
 
 
+class RunCreate(Model):
+    expected_version: int = Field(ge=1)
+    message: Message
+    persona_id: UUID | None = None
+
+
+class RunUpdate(AgentRunState):
+    expected_version: int = Field(ge=1)
+    worker_id: UUID
+
+
+class RunDelivery(Model):
+    worker_id: UUID
+    message: Message
+    image_job_id: UUID | None = None
+
+
+class ImageJobCreate(Model):
+    id: UUID
+    prompt: str = Field(min_length=1, max_length=10000)
+    request_id: UUID
+    worker_id: UUID
+
+
+class ImageJobUpdate(ImageJobState):
+    expected_version: int = Field(ge=1)
+    worker_id: UUID
+
+
 class ExportResponse(FileResponse):
     async def __call__(self, scope, receive, send) -> None:
         try:
@@ -104,6 +138,91 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents", response_model=Agent, status_code=201)
     def create_agent(value: AgentInput):
         return repository.create_agent(value)
+
+    @router.get("/agent-runs", response_model=list[AgentRun])
+    def active_runs():
+        return repository.active_runs()
+
+    @router.get(
+        "/agents/{key}/resources/{conversation_id}/runs", response_model=list[AgentRun]
+    )
+    def conversation_runs(key: AgentKey, conversation_id: UUID):
+        return repository.conversation_runs(key, conversation_id)
+
+    @router.post(
+        "/agents/{key}/resources/{conversation_id}/runs",
+        response_model=AgentRun,
+        status_code=201,
+    )
+    def create_run(key: AgentKey, conversation_id: UUID, value: RunCreate):
+        return repository.create_run(
+            key,
+            conversation_id,
+            value.message,
+            value.expected_version,
+            value.persona_id,
+        )
+
+    @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
+    def get_run(key: AgentKey, run_id: UUID):
+        return repository.get_run(key, run_id)
+
+    @router.put("/agents/{key}/runs/{run_id}", response_model=AgentRun)
+    def update_run(key: AgentKey, run_id: UUID, value: RunUpdate):
+        state = AgentRunState.model_validate(
+            value.model_dump(exclude={"expected_version", "worker_id"})
+        )
+        return repository.update_run(
+            key, run_id, state, value.expected_version, value.worker_id
+        )
+
+    @router.post("/agents/{key}/runs/{run_id}/cancel", response_model=AgentRun)
+    def cancel_run(key: AgentKey, run_id: UUID):
+        return repository.cancel_run(key, run_id)
+
+    @router.post("/agents/{key}/runs/{run_id}/messages", response_model=Resource)
+    def deliver_run_message(key: AgentKey, run_id: UUID, value: RunDelivery):
+        return repository.deliver_run_message(
+            key, run_id, value.worker_id, value.message, value.image_job_id
+        )
+
+    @router.post(
+        "/agents/{key}/runs/{run_id}/image-jobs",
+        response_model=ImageJob,
+        status_code=201,
+    )
+    def create_image_job(key: AgentKey, run_id: UUID, value: ImageJobCreate):
+        return repository.create_image_job(
+            key, run_id, value.id, value.prompt, value.request_id, value.worker_id
+        )
+
+    @router.get("/image-jobs", response_model=list[ImageJob])
+    def active_image_jobs():
+        return repository.active_image_jobs()
+
+    @router.get(
+        "/agents/{key}/resources/{conversation_id}/image-jobs",
+        response_model=list[ImageJob],
+    )
+    def conversation_image_jobs(key: AgentKey, conversation_id: UUID):
+        return repository.conversation_image_jobs(key, conversation_id)
+
+    @router.get("/agents/{key}/image-jobs/{job_id}", response_model=ImageJob)
+    def get_image_job(key: AgentKey, job_id: UUID):
+        return repository.get_image_job(key, job_id)
+
+    @router.put("/agents/{key}/image-jobs/{job_id}", response_model=ImageJob)
+    def update_image_job(key: AgentKey, job_id: UUID, value: ImageJobUpdate):
+        state = ImageJobState.model_validate(
+            value.model_dump(exclude={"expected_version", "worker_id"})
+        )
+        return repository.update_image_job(
+            key, job_id, state, value.expected_version, value.worker_id
+        )
+
+    @router.post("/agents/{key}/image-jobs/{job_id}/cancel", response_model=ImageJob)
+    def cancel_image_job(key: AgentKey, job_id: UUID):
+        return repository.cancel_image_job(key, job_id)
 
     @router.get("/pet-jobs", response_model=list[PetJob])
     def active_pet_jobs():

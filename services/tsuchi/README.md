@@ -39,6 +39,8 @@ docker compose stop
 | Attachments | Audio, video, PDF, and general files, with original filenames and SHA-256 checksums |
 | Conversations | Ordered messages with roles, timestamps, attachments, sources, and stored-resource links |
 | Pets | Creation jobs, generation provenance, imported v1/v2 atlases, atlas manifests, and explicit agent selection |
+| Agent runs | Conversation triggers, persisted inference transcripts, worker leases, status, and message delivery receipts |
+| Image jobs | Conversation-scoped generation requests, worker leases, saved image assets, and completion events |
 
 The image library stores generated images supplied by Hikari, Kadan, or the owner. Tsuchi does not generate them. Images referenced by decks stay separate assets. Slide layouts are `title`, `text`, `split`, and `image`; decks remain editable in the UI and JSON export. This is a defined v1 format, not full ChatGPT feature parity or PowerPoint round-trip support.
 
@@ -74,6 +76,18 @@ curl -o research.zip http://127.0.0.1:8620/api/agents/research/export
 ```
 
 Update a resource with `PUT /resources/{id}`, its complete editable fields, and `expected_version` from the last read. Append a conversation message using `POST /resources/{id}/messages` with `{expected_version,message}`. Each message needs a stable UUID and UTC timestamp. Message IDs cannot repeat. Sources accept HTTP(S) links only. Binary uploads are immutable; upload a new asset to replace a file.
+
+### Durable agent work
+
+Kadan owns agent decisions and inference; Tsuchi stores their state. `POST /api/agents/{key}/resources/{conversation_id}/runs` accepts `{expected_version,message,persona_id?}`. It appends the user message and enqueues its run in one transaction. The message UUID is also the run UUID. Retrying the same input returns the existing run before checking the conversation version; timestamps supplied by a retry do not replace the original message timestamp.
+
+Kadan claims or updates a run with `PUT /api/agents/{key}/runs/{run_id}`, supplying its complete mutable state, `expected_version`, and `worker_id`. Only one unexpired run lease can own a conversation. A new owner can reclaim an expired lease while retaining the persisted transcript. Kadan persists each tool command before executing it and derives stable operation IDs from that checkpoint. Finishing a run changes its status without appending a chat answer.
+
+`POST /api/agents/{key}/runs/{run_id}/messages` takes `{worker_id,message,image_job_id?}`. It appends an assistant message and its delivery receipt atomically. With an image job ID, storage attaches that job's completed image and records delivery. Retries return the existing message; subsequent runs cannot deliver the same image job a second time. Lease checks fence cancelled or superseded workers before new delivery.
+
+`POST /api/agents/{key}/runs/{run_id}/image-jobs` accepts `{id,prompt,request_id,worker_id}` and durably queues work. It does not deliver an image. Kadan updates the image state through `PUT /api/agents/{key}/image-jobs/{job_id}` with `expected_version` and `worker_id`. A terminal image result and its deterministic event run are saved together. Kadan resumes on that event to decide what to communicate. An expired image lease preserves the inference request ID; Kadan must reconcile saved output and confirm inference cleanup before ending uncertain work.
+
+`GET /api/agent-runs` and `/api/image-jobs` list active work for reconciliation without running inference. Conversation-scoped `GET /api/agents/{key}/resources/{conversation_id}/runs` and `/image-jobs` include terminal records for UI polling. `POST /api/agents/{key}/runs/{run_id}/cancel` immediately fences that run. Image cancellation at `POST /api/agents/{key}/image-jobs/{job_id}/cancel` finishes queued work immediately; running work enters `cancelling` until its owner confirms cleanup. Runs, image jobs, and delivery receipts are included in namespace exports.
 
 ## Export and backup
 
