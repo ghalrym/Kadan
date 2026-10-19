@@ -1,8 +1,8 @@
 #include "kadan/inference_owner.hpp"
 
 #include <cassert>
-#include <iostream>
 #include <future>
+#include <iostream>
 #include <thread>
 #include <tuple>
 

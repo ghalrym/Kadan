@@ -243,6 +243,7 @@ class WorkerHub:
         self.rollout_frozen = False
         self.maintenance = asyncio.Lock()
         self.submitting = 0
+        self.admission = admission
 
     async def start(self):
         if not worker_token():
@@ -317,6 +318,12 @@ class WorkerHub:
                 self.models = worker.models
             return
         if state == "ready":
+            self.rollout_epoch += 1
+            if self.rollout_paused():
+                self.rollout_safe = False
+                await worker.websocket.close(code=1013)
+                return
+            worker.ready.clear()
             # Routable only once its settings match the primary's.
             worker.preparing = asyncio.create_task(self._prepare(worker))
             return
@@ -687,7 +694,7 @@ class WorkerHub:
                 self.jobs.pop(job.request.id, None)
 
     def rollout_paused(self):
-        if self.rollout_frozen and not admission.fenced:
+        if self.rollout_frozen and not self.admission.fenced:
             self.rollout_frozen = False
         return self.rollout_frozen
 

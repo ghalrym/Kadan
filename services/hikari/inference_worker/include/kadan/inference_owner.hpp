@@ -263,11 +263,13 @@ public:
         if (release) {
             struct Releasing {
                 InferenceOwner& owner;
+
                 ~Releasing() {
                     std::lock_guard guard(owner.mutex_);
                     owner.releasing_ = false;
                 }
             } releasing{*this};
+
             cleanup();
             {
                 std::lock_guard guard(mutex_);

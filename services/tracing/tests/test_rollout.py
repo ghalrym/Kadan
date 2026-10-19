@@ -1,9 +1,10 @@
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from kadan_tracing.rollout import Admission, RolloutAdmission, smoke
+from kadan_tracing.rollout import Admission, RolloutAdmission, smoke, status
 
 
 def gate_at(tmp_path):
@@ -136,3 +137,45 @@ def test_smoke_refuses_unknown_service(monkeypatch):
     monkeypatch.setenv("KADAN_ROLLOUT_SERVICE", "unknown")
     with pytest.raises(ValueError, match="not enrolled"):
         smoke()
+
+
+def test_fixed_barrier_command_uses_local_socket_and_checks_result(capsys):
+    async def scenario():
+        reader = SimpleNamespace(
+            readline=AsyncMock(return_value=b'{"native_idle":true}\n')
+        )
+        writer = SimpleNamespace(
+            write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock()
+        )
+        with patch(
+            "kadan_tracing.rollout.asyncio.open_unix_connection",
+            AsyncMock(return_value=(reader, writer)),
+        ) as connect:
+            await status("barrier")
+        connect.assert_awaited_once_with("/tmp/kadan-rollout.sock")
+        writer.write.assert_called_once_with(b"barrier\n")
+        writer.close.assert_called_once()
+
+    asyncio.run(scenario())
+    assert json.loads(capsys.readouterr().out) == {"native_idle": True}
+
+
+def test_barrier_command_failure_exits_nonzero(capsys):
+    async def scenario():
+        reader = SimpleNamespace(
+            readline=AsyncMock(return_value=b'{"native_idle":false,"error":"failed"}\n')
+        )
+        writer = SimpleNamespace(
+            write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock()
+        )
+        with patch(
+            "kadan_tracing.rollout.asyncio.open_unix_connection",
+            AsyncMock(return_value=(reader, writer)),
+        ):
+            with pytest.raises(SystemExit) as error:
+                await status("barrier")
+            assert error.value.code == 1
+        writer.close.assert_called_once()
+
+    asyncio.run(scenario())
+    assert json.loads(capsys.readouterr().out)["native_idle"] is False

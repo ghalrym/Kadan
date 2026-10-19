@@ -61,6 +61,7 @@ class NativeBarrier:
         marker: Path | None = None,
     ):
         self.hub = hub
+        hub.admission = gate
         self.gate = gate
         self.active = active
         self.api_generation = str(uuid4())

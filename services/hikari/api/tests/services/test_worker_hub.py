@@ -188,7 +188,7 @@ class HubTestCase(unittest.IsolatedAsyncioTestCase):
         socket = FakeSocket(replies={"submit": queued, **(replies or {})})
         socket.push(hello(kind, **identity))
         socket.push({"state": "models", "models": store or models()})
-        socket.push({"state": "ready", "protocol": 4, "pid": 1})
+        socket.push({"state": "ready", "protocol": 5, "pid": 1})
         known = set(self.hub.workers)
         task = asyncio.create_task(self.hub.serve(socket))
         task.socket = socket
@@ -315,7 +315,7 @@ class RegistrationTests(HubTestCase):
         )
         socket.push(hello("image", computer="boot-2"))
         socket.push({"state": "models", "models": models(tier="go")})
-        socket.push({"state": "ready", "protocol": 4, "pid": 1})
+        socket.push({"state": "ready", "protocol": 5, "pid": 1})
         with self.assertLogs("api.services.worker_hub", level="ERROR"):
             await self.hub.serve(socket)
         self.assertEqual(socket.closed, 1011)
