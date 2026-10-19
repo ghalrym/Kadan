@@ -385,6 +385,7 @@ public:
             for (;;) {
                 try {
                     std::vector<std::unique_ptr<InferenceTrace>> tracing;
+                    tracing.reserve(batch.size());
                     for (const auto& item : batch)
                         tracing.push_back(
                             std::make_unique<InferenceTrace>(
@@ -414,6 +415,7 @@ public:
                     publish_(current->request.id, JobState::running, "");
             execution_started = true;
             std::vector<std::unique_ptr<InferenceTrace>> tracing;
+            tracing.reserve(batch.size());
             for (const auto& item : batch)
                 tracing.push_back(
                     std::make_unique<InferenceTrace>(item.request->trace, "execute")
