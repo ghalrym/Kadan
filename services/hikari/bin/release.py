@@ -175,7 +175,6 @@ def publish(
                 "-f",
                 str(overlay),
                 "build",
-                "--push",
                 name,
             ],
             cwd=checkout,
@@ -189,6 +188,9 @@ def publish(
                 "HIKARI_WORKER_TOKEN": "build-placeholder-not-a-secret",
             },
         )
+        # Compose 2.38 exports single-platform builds through the Docker loader
+        # even with --push. Push explicitly before resolving the registry pin.
+        subprocess.run(["docker", "push", tags[name]], check=True)
         digest = subprocess.run(
             [
                 "docker",

@@ -1,6 +1,7 @@
 """Exercise release ordering and recovery without Docker, a network, or inference."""
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -334,12 +335,50 @@ class PublicationTests(unittest.TestCase):
                 target = release.publish(
                     root, previous, root / "release.json", "b" * 40
                 )
-            builds = [call for call in calls.call_args_list if "--push" in call.args[0]]
+            builds = [call for call in calls.call_args_list if "build" in call.args[0]]
             self.assertEqual(len(builds), 1)
             self.assertEqual(builds[0].args[0][-1], "kadan-frontend")
+            self.assertNotIn("--push", builds[0].args[0])
+            docker_calls = [
+                call.args[0]
+                for call in calls.call_args_list
+                if call.args[0][0] == "docker"
+            ]
+            self.assertEqual(
+                docker_calls[1],
+                ["docker", "push", "ghcr.io/ghalrym/kadan/kadan-frontend:" + "b" * 40],
+            )
+            self.assertEqual(docker_calls[2][1:4], ["buildx", "imagetools", "inspect"])
             self.assertEqual(target.images["hikari-api"], previous.images["hikari-api"])
             self.assertTrue(
                 target.images["kadan-frontend"].endswith("@sha256:" + "2" * 64)
+            )
+
+    def test_failed_push_does_not_resolve_or_publish_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "compose.yaml").write_text("name: kadan\n")
+
+            def run(command, **kwargs):
+                if command[:2] == ["git", "rev-parse"]:
+                    return Mock(stdout="b" * 40)
+                if command[:2] == ["docker", "push"]:
+                    raise subprocess.CalledProcessError(1, command)
+                return Mock(stdout="")
+
+            with (
+                patch.object(
+                    release, "github", return_value={"commit": {"sha": "b" * 40}}
+                ),
+                patch.object(release, "approved", return_value=True),
+                patch.object(release, "require_ci"),
+                patch.object(release.subprocess, "run", side_effect=run) as calls,
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                release.publish(root, None, root / "release.json", "b" * 40)
+            self.assertFalse((root / "release.json").exists())
+            self.assertFalse(
+                any("imagetools" in call.args[0] for call in calls.call_args_list)
             )
 
 
