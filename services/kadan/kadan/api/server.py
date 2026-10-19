@@ -10,7 +10,7 @@ from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
 from .http_safety import LocalRequestSafety
-from .routes import agents, health, status
+from .routes import agents, health, runners, status
 from .routes.agents import assets, chain, pets, resources
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, runs
@@ -29,15 +29,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trust_env=False,
         ) as client:
             app.state.services = LocalServices(client, config)
-            app.state.services.pets.start()
-            app.state.services.runs.start()
-            app.state.services.images.start()
             try:
                 yield
             finally:
-                await app.state.services.runs.close()
-                await app.state.services.images.close()
-                await app.state.services.pets.close()
                 await shutdown(provider)
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
@@ -52,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         health.router,
+        runners.router,
         status.router,
         agents.router,
         resources.router,

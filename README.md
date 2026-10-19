@@ -67,7 +67,7 @@ API container and a frontend container, named after the app:
 
 | App | Containers |
 | --- | --- |
-| Kadan | `kadan-api`, `kadan-frontend` |
+| Kadan | `kadan-api`, `kadan-frontend`, `kadan-runner` |
 | Tsuchi | `tsuchi-api`, `tsuchi-frontend` |
 | Hikari | `hikari-api`, `hikari-frontend`, plus `hikari-postgres` and the one-shot `hikari-migrate` |
 
@@ -90,9 +90,37 @@ Copy `.env.example` to `.env` to change browser ports or the Tsuchi upload limit
 in sync with the published ports. The inference API retains its local port 8000.
 
 ```sh
-docker compose logs --tail=100 kadan-api kadan-frontend tsuchi-api tsuchi-frontend hikari-api hikari-frontend
+docker compose logs --tail=100 kadan-api kadan-runner kadan-frontend tsuchi-api tsuchi-frontend hikari-api hikari-frontend
 docker compose stop
 ```
+
+### Agent runners
+
+`kadan-api` manages agents, conversations, messages, cancellation and events.
+`kadan-runner` executes LangGraph work and the independent image/pet queues through
+Tsuchi and Hikari. Hikari retains inference resource management and its separate
+workload workers. The runner has no published port and uses the Kadan API image
+with `python -m kadan.runner`; its API HTTP healthcheck is disabled.
+
+Each stable `KADAN_RUNNER_ID` owns at most `KADAN_RUNNER_CAPACITY` distinct registered
+agent keys (default **5**, a validated positive integer). Idle agents retain their
+slots. This is assignment capacity, not active-run concurrency, OS threads, inference
+workers or one container per agent. Excess agents remain durably unassigned until a
+slot becomes available or an operator explicitly reassigns them. Stopping a runner
+does not release its assignments. See [assignment and recovery](services/kadan/README.md#runner-assignment-and-recovery).
+
+For two owners, the following configuration adds `runner-2` alongside the default
+`runner-1`, with five slots each. These commands validate configuration only:
+
+```sh
+docker compose -f compose.yaml -f compose.runners.yaml config
+KADAN_RUNNER_CAPACITY=8 docker compose -f compose.yaml -f compose.runners.yaml config
+```
+
+Keep runner IDs stable across restarts and unique among live processes. Do not
+use `--scale kadan-runner=2`: those replicas would share an ID and compete for the
+same ownership. Add explicit services with distinct IDs as shown by the override.
+A rollout remains an owner action; this configuration does not start services.
 
 ### Existing installations and data
 
@@ -200,7 +228,7 @@ when collectors or workers disconnect or processes terminate abruptly.
 | Service / boundary | Waterfall coverage | Limits |
 | --- | --- | --- |
 | Kadan frontend | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and nginx serving time are not measured |
-| Kadan API | HTTP ingress through the last response body; outgoing HTTPX calls; graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
+| Kadan API and runner | API HTTP ingress through the last response body; outgoing HTTPX calls; runner graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
 | Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; queue wait uses the persisted preclaim enqueue timestamp; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
 | Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
 | Tsuchi frontend | API ingress traces in `tsuchi-api` | Browser/nginx timing is not measured |

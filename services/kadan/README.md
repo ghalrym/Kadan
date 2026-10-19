@@ -1,6 +1,6 @@
 # Kadan agent app
 
-Kadan is the everyday agent interface in this repository. This service coordinates conversations and workspace browsing; Tsuchi stores the records and Hikari supplies inference. The React interface and FastAPI coordinator ship as separate frontend and API images.
+Kadan is the everyday agent interface in this repository. This service coordinates conversations and workspace browsing; Tsuchi stores the records and Hikari supplies inference. The React interface and FastAPI coordinator ship as separate frontend and API images. A separate runner process uses the API image to execute durable work.
 
 ## Available in this prototype
 
@@ -12,7 +12,8 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Receive text and images through the agent's explicit messaging tool.
 - Browse existing memories, Spaces and file metadata without changing them.
 
-Kadan owns the run queue and continuation loop. Hikari supplies text and image
+Kadan keeps API management separate from runner execution. The API queues durable
+work and exposes saved state; the runner owns the continuation loop. Hikari supplies text and image
 inference through its existing API and workers; Tsuchi stores conversations,
 runs, image jobs and assets. No new model runtime is installed. Tier selection,
 model downloads and settings remain explicit Hikari operations.
@@ -105,7 +106,7 @@ most two corrections; a run is bounded to 24 commands and 48,000 context charact
 The recent conversation window contains at most 97 messages. Saved history remains
 intact. Only user and assistant chat messages enter this window.
 
-Image submission returns a durable job ID immediately. A separate Kadan task waits
+Image submission returns a durable job ID immediately. A separate runner queue task waits
 on Hikari, stores its output in Tsuchi, then atomically records completion or
 failure with a new run event in the same conversation. That event wakes the agent,
 which delivers the image using `send_message`. Idle queues perform no inference.
@@ -117,7 +118,7 @@ One run at a time owns each conversation. Leases and persisted commands support
 restart recovery, and message/job IDs prevent duplicate side effects on replay.
 Stop cancels queued/running conversation runs; image controls cancel their jobs
 separately. Cancellation fences delivery immediately and closes inference at the
-next ownership check (within the worker heartbeat interval). Image cleanup must
+next ownership check (within the infrastructure lease renewal interval). Image cleanup must
 be acknowledged by Hikari before cancellation completes. Failures remain visible.
 A queued run uses the current selected Hikari model when it starts; no model setting
 is changed. Model loading may delay the first reply.
@@ -127,16 +128,18 @@ is changed. Model loading may delay the first reply.
 Build from the repository root:
 
 ```sh
-docker build -t kadan-api:local services/kadan
+docker build --build-context tracing=services/tracing -t kadan-api:local services/kadan
 docker build -t kadan-frontend:local services/kadan/web
 ```
 
-Compose runs these as `kadan-api` and `kadan-frontend`. The frontend image serves the compiled interface with nginx and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
+Compose runs these as `kadan-api`, `kadan-runner` and `kadan-frontend`. The runner uses the API image with `python -m kadan.runner`, has no HTTP listener or published port, and disables the image’s API healthcheck. The frontend image serves the compiled interface with nginx and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
 
 The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs point at the loopback ports published on the host.
 
 | Variable | Compose value | Purpose |
 | --- | --- | --- |
+| `KADAN_RUNNER_ID` | `runner-1` | Stable runner identity, unique among live runner processes |
+| `KADAN_RUNNER_CAPACITY` | `5` | Strict positive integer; maximum assigned agent keys, including idle agents |
 | `KADAN_TSUCHI_URL` | `http://tsuchi-api:8000` | Storage API inside Docker |
 | `KADAN_HIKARI_URL` | `http://hikari-api:8000` | Inference API inside Docker |
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
@@ -164,12 +167,55 @@ npm run build --prefix web
 .venv/bin/python -m uvicorn kadan.api.server:app --host 127.0.0.1 --port 8630
 ```
 
+In another terminal from `services/kadan`, start execution separately:
+
+```sh
+.venv/bin/python -m kadan.runner
+```
+
 Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 and Hikari on port 8088. `.env.example` lists the available settings. For frontend development, `npm run dev --prefix web` starts Vite on loopback and proxies `/api` to port 8630.
+
+## Runner assignment and recovery
+
+Tsuchi atomically assigns registered agent keys to stable runner identities, up to
+`KADAN_RUNNER_CAPACITY` per runner (default five). All assigned agents count,
+including agents with no queued work. Agents are logical records, not permanent OS
+threads. One runner serves multiple agents; Hikari still schedules inference across
+its existing workload workers. Image and pet queue loops remain independent of
+LangGraph turns and do not consume additional agent slots.
+
+When every runner is full, excess registered agents and their queued work wait in
+durable storage. Idle owners keep their slots; stopping a process does not free them.
+Each process registers a fresh session UUID and renews a 60-second infrastructure
+ownership lease. After expiry, a replacement with the same stable runner ID can
+claim ownership and recover expired work. A concurrent live process with that ID
+cannot take over. Ownership and run claims fence stale sessions before durable
+state-changing work. Lease renewal performs no agent inference or Decisions API
+calls; periodic agent wakes and the future agent heartbeat are deferred.
+
+A different runner does not automatically inherit a stopped runner’s agents.
+Inspect `GET /api/runners`, then explicitly move an agent with
+`POST /api/agents/{key}/runner`, supplying both `runner_id` and
+`expected_runner_id` (the current owner, or `null` for an unassigned agent).
+`runner_id: null` releases the assignment; an available runner can subsequently
+claim it. Reassignment compares the expected owner atomically, checks destination
+capacity and fences earlier ownership. A capacity reduction below the number of
+existing assignments is rejected; explicitly move agents before reducing it.
+Assignments are durable across process restarts; they are not queue leases.
+
+Keep IDs unique and stable. The root `compose.runners.yaml` provides a second
+explicit service with ID `runner-2`; do not scale identical copies of `runner-1`.
+When mounting a custom instruction file, mount it in every runner: snapshots are
+read at run start by the executing process, and resumed runs retain their snapshot.
+Tracing uses the existing durable W3C parent across the API/runner boundary, stays
+disabled without an OTLP endpoint and excludes prompt/tool payloads.
 
 ## API boundary
 
 | Route | Behavior |
 | --- | --- |
+| `GET /api/runners` | Inspect durable runner ownership and assignments |
+| `POST /api/agents/{key}/runner` | Explicitly compare and reassign an agent owner |
 | `GET /api/health` | Coordinator liveness |
 | `GET /api/status` | Storage and inference readiness, including browser links and whether the selected model is loaded (`hikari.model_state`) |
 | `GET, POST /api/agents` | List or create agents |

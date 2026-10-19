@@ -1,4 +1,4 @@
-"""Durable, agent-scoped pet creation. HTTP and MCP calls only enqueue work."""
+"""Durable, agent-scoped pet artwork worker."""
 
 from __future__ import annotations
 
@@ -13,10 +13,9 @@ from uuid import UUID, uuid4, uuid5
 
 import httpx
 from kadan_tracing import job_span, traced
-from pydantic import TypeAdapter, ValidationError
 
-from .config import ServiceError
-from .pet_artwork import (
+from ..api.config import ServiceError
+from ..api.pet_artwork import (
     ROWS,
     SOURCE_CELL,
     PetRow,
@@ -28,38 +27,35 @@ from .pet_artwork import (
     prepare_frame,
     validate_row,
 )
-from .pydantic_models.pets import (
+from ..api.pet_client import PetClient
+from ..api.pydantic_models.pets import (
     GeneratedImage,
     PetAsset,
     PetJob,
     PetManifest,
     PetPendingFrame,
-    PetState,
     PetStep,
 )
-from .pydantic_models.resources import AgentKey
 
 if TYPE_CHECKING:
-    from .services import LocalServices
+    from ..api.services import LocalServices
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
+LEASE_RENEWAL_SECONDS = 10
 MAX_IMAGE_BYTES = 20 * 1024**2
 IMAGE_MODEL = "qwen-image-2.1-turbo"
 MAX_PENDING_FRAMES = 32
-TERMINAL = {"ready", "failed", "cancelled", "interrupted"}
 
 
-class PetJobs:
+class PetJobs(PetClient):
     def __init__(self, services: LocalServices):
-        self.services = services
+        super().__init__(services)
         self.owner = uuid4()
         self.wakeup = asyncio.Event()
         self.runner: asyncio.Task | None = None
         self.active: asyncio.Task | None = None
-        self.active_id: UUID | None = None
         self.stopping = False
-        self.lock = asyncio.Lock()
 
     def start(self) -> None:
         self.runner = asyncio.create_task(self.run(), name="pet-queue")
@@ -69,163 +65,6 @@ class PetJobs:
         if self.runner:
             self.runner.cancel()
             await asyncio.gather(self.runner, return_exceptions=True)
-
-    @staticmethod
-    def path(key: str, pet_id: UUID | None = None) -> str:
-        TypeAdapter(AgentKey).validate_python(key, strict=True)
-        return f"/api/agents/{key}/pets" + (f"/{pet_id}" if pet_id else "")
-
-    @staticmethod
-    def checked(
-        value: Any, key: str | None = None, pet_id: UUID | None = None
-    ) -> PetJob:
-        try:
-            job = PetJob.model_validate(value)
-            if (key is not None and job.agent_key != key) or (
-                pet_id is not None and job.id != pet_id
-            ):
-                raise ValueError("Wrong pet namespace or ID")
-            return job
-        except (ValueError, ValidationError) as error:
-            raise ServiceError(
-                "Tsuchi returned an invalid pet job.", 502, "invalid_response"
-            ) from error
-
-    async def get(self, key: str, pet_id: UUID) -> PetJob:
-        return self.checked(
-            await self.services.json_request("Tsuchi", "GET", self.path(key, pet_id)),
-            key,
-            pet_id,
-        )
-
-    async def list(self, key: str) -> list[PetJob]:
-        values = await self.services.json_request("Tsuchi", "GET", self.path(key))
-        return [self.checked(value, key) for value in values]
-
-    async def create(self, key: str, pet_id: UUID, prompt: str) -> PetJob:
-        value = await self.services.json_request(
-            "Tsuchi", "POST", self.path(key), json={"id": str(pet_id), "prompt": prompt}
-        )
-        job = self.checked(value, key, pet_id)
-        self.wakeup.set()
-        return job
-
-    async def import_atlas(
-        self, key: str, pet_id: UUID, prompt: str, atlas: bytes, sprite_version: int
-    ) -> PetJob:
-        # Asset and job IDs derive from the caller's UUID, so a retry is idempotent.
-        atlas_id = await self.upload_asset(
-            key, pet_id, uuid5(pet_id, "atlas"), "atlas", atlas, "image/webp"
-        )
-        manifest = PetManifest(
-            sprite_version=sprite_version,
-            rows=11 if sprite_version == 2 else 9,
-            atlas_asset_id=atlas_id,
-            animations=[
-                {"name": row.name, "row": row.index, "durations": list(row.durations)}
-                for row in ROWS[:9]
-            ],
-        )
-        value = await self.services.json_request(
-            "Tsuchi",
-            "POST",
-            self.path(key) + "/imports",
-            json={
-                "id": str(pet_id),
-                "prompt": prompt,
-                "manifest": manifest.model_dump(mode="json"),
-            },
-        )
-        return self.checked(value, key, pet_id)
-
-    async def revise(
-        self,
-        key: str,
-        pet_id: UUID,
-        revision_id: UUID,
-        expected_version: int,
-        frame_names: list[str],
-        reason: str,
-    ) -> PetJob:
-        value = await self.services.json_request(
-            "Tsuchi",
-            "POST",
-            self.path(key, pet_id) + "/revisions",
-            json={
-                "id": str(revision_id),
-                "expected_version": expected_version,
-                "frame_names": frame_names,
-                "reason": reason,
-            },
-        )
-        job = self.checked(value, key, revision_id)
-        self.wakeup.set()
-        return job
-
-    async def selected(self, key: str) -> PetJob | None:
-        self.path(key)
-        value = await self.services.json_request(
-            "Tsuchi", "GET", f"/api/agents/{key}/pet"
-        )
-        return self.checked(value, key) if value is not None else None
-
-    async def select(self, key: str, pet_id: UUID | None) -> PetJob | None:
-        self.path(key)
-        value = await self.services.json_request(
-            "Tsuchi",
-            "PUT",
-            f"/api/agents/{key}/pet",
-            json={"pet_id": str(pet_id) if pet_id else None},
-        )
-        return self.checked(value, key, pet_id) if value is not None else None
-
-    async def save(
-        self, job: PetJob, *, worker: bool = False, **changes: Any
-    ) -> PetJob:
-        state = PetState.model_validate(job.model_dump()).model_dump(mode="json")
-        state.update(changes)
-        # Revalidate/serialize UUIDs and dates without including immutable job fields.
-        state = PetState.model_validate(state).model_dump(mode="json")
-        value = await self.services.json_request(
-            "Tsuchi",
-            "PUT",
-            self.path(job.agent_key, job.id),
-            json={
-                **state,
-                "expected_version": job.version,
-                "worker_id": str(self.owner) if worker else None,
-            },
-        )
-        return self.checked(value, job.agent_key, job.id)
-
-    async def cancel(self, key: str, pet_id: UUID) -> PetJob:
-        async with self.lock:
-            job = await self.get(key, pet_id)
-            if job.status in TERMINAL:
-                return job
-            status = "cancelled" if job.status == "queued" else "cancelling"
-            job = await self.save(
-                job, status=status, stage=status, cancel_requested=True
-            )
-            if self.active_id == pet_id and self.active:
-                self.active.cancel()
-            self.wakeup.set()
-            return job
-
-    async def resume(self, key: str, pet_id: UUID) -> PetJob:
-        async with self.lock:
-            job = await self.get(key, pet_id)
-            if job.status not in {"failed", "cancelled", "interrupted"}:
-                raise ServiceError(
-                    "Only a stopped pet job can be resumed.", 409, "pet_not_stopped"
-                )
-            # All old requests are fenced before any new inference can be submitted.
-            await self.stop_pending(job)
-            job = await self.save(
-                job, status="queued", stage="queued", cancel_requested=False, error=None
-            )
-            self.wakeup.set()
-            return job
 
     async def run(self) -> None:
         while not self.stopping:
@@ -267,7 +106,7 @@ class PetJobs:
                             try:
                                 job = await self.save(
                                     job,
-                                    worker=True,
+                                    worker_id=self.owner,
                                     status="running",
                                     stage="preparing",
                                     owner_id=self.owner,
@@ -278,7 +117,6 @@ class PetJobs:
                                 if error.status == 409:
                                     continue
                                 raise
-                            self.active_id = job.id
                             self.active = asyncio.create_task(
                                 self.process(job), name=f"pet-{job.id}"
                             )
@@ -286,7 +124,6 @@ class PetJobs:
                                 await self.active
                             finally:
                                 self.active = None
-                                self.active_id = None
                         self.wakeup.set()
                         break
             except asyncio.CancelledError:
@@ -317,7 +154,7 @@ class PetJobs:
     async def owned_update(self, job: PetJob, **changes: Any) -> PetJob:
         async with self.lock:
             current = await self.owned_job(job)
-            return await self.save(current, worker=True, **changes)
+            return await self.save(current, worker_id=self.owner, **changes)
 
     @staticmethod
     def pending_state(frames: list[PetPendingFrame]) -> dict[str, Any]:
@@ -329,21 +166,10 @@ class PetJobs:
             "additional_pending_frames": frames[1:],
         }
 
-    async def stop_pending(self, job: PetJob) -> None:
-        # Attempt every cancellation even when one confirmation fails. Keep the
-        # durable cohort intact until all requests are confirmed stopped.
-        results = await asyncio.gather(
-            *(self.stop_request(frame.request_id) for frame in job.pending_images),
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-
     async def heartbeat(self, job: PetJob, work: asyncio.Task) -> None:
         try:
             while True:
-                await asyncio.sleep(10)
+                await asyncio.sleep(LEASE_RENEWAL_SECONDS)
                 await self.owned_update(
                     job,
                     lease_expires_at=datetime.now(UTC)
@@ -378,7 +204,7 @@ class PetJobs:
                         )
                         await self.save(
                             current,
-                            worker=True,
+                            worker_id=self.owner,
                             status=status,
                             stage=status,
                             owner_id=None,
@@ -395,18 +221,6 @@ class PetJobs:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
-
-    async def stop_request(self, request_id: UUID) -> None:
-        result = await self.services.json_request(
-            "Hikari", "POST", f"/v1/images/requests/{request_id}/cancel"
-        )
-        if not isinstance(result, dict) or result.get("status") not in {
-            "cancelled",
-            "not_active",
-        }:
-            raise ServiceError(
-                "Hikari did not confirm image cleanup.", 502, "invalid_response"
-            )
 
     async def content(self, key: str, asset_id: UUID) -> bytes:
         value = await self.services.json_request(
@@ -438,44 +252,6 @@ class PetJobs:
         return await self.upload_asset(
             job.agent_key, job.id, asset_id, label, data, media_type
         )
-
-    async def upload_asset(
-        self,
-        key: str,
-        pet_id: UUID,
-        asset_id: UUID,
-        label: str,
-        data: bytes,
-        media_type: str,
-    ) -> UUID:
-        suffix = {"image/png": "png", "image/webp": "webp", "application/json": "json"}[
-            media_type
-        ]
-        value = await self.services.json_request(
-            "Tsuchi",
-            "POST",
-            f"/api/agents/{key}/assets",
-            files={"file": (f"{label.replace('/', '-')}.{suffix}", data, media_type)},
-            data={
-                "title": f"Pet {label}",
-                "tags": json.dumps(["pet", str(pet_id)]),
-                "asset_id": str(asset_id),
-            },
-        )
-        asset = PetAsset.model_validate(value)
-        if (
-            asset.id != asset_id
-            or asset.agent_key != key
-            or asset.deleted_at
-            or asset.sha256 != hashlib.sha256(data).hexdigest()
-            or asset.media_type != media_type
-        ):
-            raise ServiceError(
-                "Tsuchi did not confirm the saved pet artwork.",
-                502,
-                "invalid_pet_asset",
-            )
-        return asset.id
 
     async def image(
         self,
@@ -630,7 +406,7 @@ class PetJobs:
             pending = PetPendingFrame(name=name, request_id=request_id, seed=seed)
             job = await self.save(
                 current,
-                worker=True,
+                worker_id=self.owner,
                 lease_expires_at=datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS),
                 **self.pending_state(
                     [
@@ -701,7 +477,7 @@ class PetJobs:
             await self.validate_completed_row(current, output, row, frame)
             await self.save(
                 current,
-                worker=True,
+                worker_id=self.owner,
                 steps=sorted(
                     [*current.steps, step], key=lambda saved: order.index(saved.name)
                 ),

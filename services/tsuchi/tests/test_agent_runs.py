@@ -56,7 +56,18 @@ def image_state(job, **changes):
 
 
 def claim(repository, run, owner=None):
-    owner = owner or uuid4()
+    runners = repository.list_runners()
+    current = runners[0] if runners else None
+    owner = owner or (
+        current.worker_id
+        if current and (run.status != "running" or run.lease_expires_at > utc_now())
+        else uuid4()
+    )
+    repository.register_runner(
+        "test", owner, expected_worker_id=current.worker_id if current else None
+    )
+    repository.assign_runner("test", owner)
+    run = repository.get_run("alpha", run.id)
     return repository.update_run(
         "alpha",
         run.id,
@@ -273,7 +284,7 @@ def test_run_order_uses_uuid_to_break_creation_timestamp_ties(repository):
 
 def test_recovery_cannot_change_persisted_transcript(repository):
     run = expire_run(repository, claim(repository, enqueue(repository)))
-    owner = uuid4()
+    owner = run.owner_id
     with pytest.raises(StorageError, match="cannot change"):
         repository.update_run(
             "alpha",

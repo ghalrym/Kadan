@@ -7,12 +7,17 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4, uuid5
 
 import pytest
+from kadan_tracing import carrier
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from kadan.api.agent_inference import Finish, GenerateImage, SendMessage
-from kadan.api.agent_runs import AgentRuns
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.runner.agent_inference import Finish, GenerateImage, SendMessage
+from kadan.runner.agent_runs import AgentRuns
 
 
 class Boundary:
@@ -173,7 +178,7 @@ def boundary(tmp_path, monkeypatch):
 
     # Thread-pool scheduling is an external boundary; these tests cover the read
     # and instruction lifetime without relying on executor-thread wakeups.
-    monkeypatch.setattr("kadan.api.agent_runs.asyncio.to_thread", read_file)
+    monkeypatch.setattr("kadan.runner.agent_runs.asyncio.to_thread", read_file)
     instruction_file = tmp_path / "AGENT.md"
     instruction_file.write_text("Be clear and helpful.")
     return Boundary(instruction_file)
@@ -493,7 +498,7 @@ def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
     boundary.jobs = {}
     baseline = asyncio.run(boundary.controller.context(boundary.current))
     budget = sum(len(message.content) for message in baseline) + 10
-    monkeypatch.setattr("kadan.api.agent_runs.MAX_CONTEXT", budget)
+    monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
     assert asyncio.run(boundary.controller.context(boundary.current)) == baseline
     boundary.jobs = jobs
     with pytest.raises(ServiceError, match="context limit"):
@@ -606,3 +611,32 @@ def test_graph_allows_full_command_budget_and_corrections(boundary):
     assert boundary.current.status == "completed"
     assert len(boundary.deliveries) == 23
     assert len(boundary.controller.inference.calls) == 26
+
+
+def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
+
+    provider = TracerProvider(shutdown_on_exit=False)
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("unit")
+    with trace.use_span(tracer.start_span("api.enqueue"), end_on_exit=True) as parent:
+        parent_id = parent.get_span_context().span_id
+        boundary.current = boundary.current.model_copy(
+            update={"trace_parent": carrier()["traceparent"]}
+        )
+    monkeypatch.setattr(trace, "get_tracer", lambda *args, **kwargs: tracer)
+    boundary.controller.inference = Commands(Finish(tool="finish"))
+    asyncio.run(boundary.controller.process(boundary.current))
+    execution = next(
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == "kadan.agent_runs.process"
+    )
+    assert execution.parent.span_id == parent_id
+    assert boundary.current.status == "completed"
+    assert not any(
+        "prompt" in key or "content" in key
+        for span in exporter.get_finished_spans()
+        for key in span.attributes
+    )
+    provider.shutdown()

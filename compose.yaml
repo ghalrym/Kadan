@@ -316,6 +316,37 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  # Stable logical-agent owner. Replicas need distinct KADAN_RUNNER_ID values.
+  kadan-runner:
+    build:
+      additional_contexts:
+        tracing: ./services/tracing
+      context: ./services/kadan
+    command: [python, -m, kadan.runner]
+    init: true
+    environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
+      KADAN_TSUCHI_URL: http://tsuchi-api:8000
+      KADAN_HIKARI_URL: http://hikari-api:8000
+      KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
+      KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
+    depends_on:
+      tsuchi-api:
+        condition: service_healthy
+      hikari-api:
+        condition: service_healthy
+    # This process has no HTTP server; the shared image's API probe does not apply.
+    healthcheck:
+      disable: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
   kadan-frontend:
     build:
       context: ./services/kadan/web

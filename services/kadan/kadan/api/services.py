@@ -4,10 +4,8 @@ from uuid import UUID
 import httpx
 from pydantic import ValidationError
 
-from .agent_runs import AgentRuns
 from .config import ServiceError, Settings
-from .image_jobs import ImageJobs
-from .pet_jobs import PetJobs
+from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
     HikariSettings,
@@ -16,6 +14,7 @@ from .pydantic_models.resources import Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
+from .run_client import RunClient
 
 CHAIN_TITLE = "Chain"
 
@@ -35,9 +34,8 @@ class LocalServices:
     def __init__(self, client: httpx.AsyncClient, settings: Settings):
         self.client = client
         self.settings = settings
-        self.pets = PetJobs(self)
-        self.runs = AgentRuns(self)
-        self.images = ImageJobs(self)
+        self.pets = PetClient(self)
+        self.runs = RunClient(self)
         self.chain_locks: dict[str, asyncio.Lock] = {}
 
     async def json_request(self, service: str, method: str, path: str, **kwargs):
@@ -56,6 +54,8 @@ class LocalServices:
             ) from error
         if not response.is_success:
             raise response_error(response, service)
+        if response.status_code == 204:
+            return None
         try:
             return response.json()
         except ValueError as error:

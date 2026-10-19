@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        service: [kadan-api, kadan-frontend, tsuchi-api, tsuchi-frontend, hikari-frontend]
+        service: [kadan-api, kadan-runner, kadan-frontend, tsuchi-api, tsuchi-frontend, hikari-frontend]
     steps:
       - uses: actions/checkout@v7
       - run: docker compose build ${{ matrix.service }}
@@ -79,5 +79,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: docker compose --profile tracing config --quiet
       - run: docker compose -f compose.yaml -f compose.development.yaml --profile tracing config --quiet
+      - run: docker compose -f compose.yaml -f compose.runners.yaml config --quiet
+      - run: KADAN_RUNNER_CAPACITY=8 docker compose -f compose.yaml -f compose.runners.yaml config --quiet
       - name: Validate Jaeger configuration without starting a collector
         run: docker compose run --rm --no-deps -T jaeger validate --config /etc/jaeger/config.yaml

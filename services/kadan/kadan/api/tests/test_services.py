@@ -306,3 +306,25 @@ def test_status_reports_whether_the_selected_model_is_loaded(lifecycle, state):
     status = run(transport, lambda service: service.status())
     assert status.hikari.state == "ready"
     assert status.hikari.model_state == state
+
+
+def test_assignment_proxy_accepts_storage_no_content_response():
+    async def check():
+        def respond(request):
+            assert request.method == "POST"
+            assert request.url.path == "/api/agents/test/runner"
+            return httpx.Response(204)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            services = LocalServices(client, Settings(_env_file=None))
+            assert (
+                await services.json_request(
+                    "Tsuchi",
+                    "POST",
+                    "/api/agents/test/runner",
+                    json={"runner_id": "runner-2", "expected_runner_id": "runner-1"},
+                )
+                is None
+            )
+
+    asyncio.run(check())

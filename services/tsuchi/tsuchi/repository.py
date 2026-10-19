@@ -31,6 +31,7 @@ from .models import (
     ResourceKind,
     ResourceRecord,
     ResourceVersion,
+    Runner,
     Stats,
     resource_adapter,
     resource_input_adapter,
@@ -81,6 +82,14 @@ class Repository:
                 PRAGMA journal_mode = WAL;
                 CREATE TABLE IF NOT EXISTS agents (
                     key TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS runners (
+                    runner_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL UNIQUE,
+                    capacity INTEGER NOT NULL CHECK(capacity > 0), lease_expires_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS runner_assignments (
+                    agent_key TEXT PRIMARY KEY REFERENCES agents(key),
+                    runner_id TEXT NOT NULL REFERENCES runners(runner_id)
                 );
                 CREATE TABLE IF NOT EXISTS resources (
                     id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
@@ -156,6 +165,163 @@ class Repository:
     def health(self) -> None:
         with self.connect() as db:
             db.execute("SELECT count(*) FROM agents").fetchone()
+
+    @staticmethod
+    def _runner(db: sqlite3.Connection, runner_id: str) -> Runner:
+        row = db.execute(
+            "SELECT * FROM runners WHERE runner_id = ?", (runner_id,)
+        ).fetchone()
+        if row is None:
+            raise StorageError("Runner not found", 404)
+        return Runner(
+            **dict(row),
+            agent_keys=[
+                r[0]
+                for r in db.execute(
+                    "SELECT agent_key FROM runner_assignments WHERE runner_id = ? ORDER BY agent_key",
+                    (runner_id,),
+                )
+            ],
+        )
+
+    def list_runners(self) -> list[Runner]:
+        with self.connect() as db:
+            return [
+                self._runner(db, row[0])
+                for row in db.execute(
+                    "SELECT runner_id FROM runners ORDER BY runner_id"
+                )
+            ]
+
+    def _expire_agent_runs(self, db: sqlite3.Connection, key: str) -> None:
+        for row in db.execute(
+            "SELECT data FROM agent_runs WHERE agent_key = ? AND status = 'running'",
+            (key,),
+        ).fetchall():
+            run = AgentRun.model_validate_json(row[0])
+            self._save_run(
+                db,
+                run.model_copy(
+                    update={
+                        "lease_expires_at": utc_now(),
+                        "version": run.version + 1,
+                        "updated_at": utc_now(),
+                    }
+                ),
+            )
+
+    def register_runner(
+        self,
+        runner_id: str,
+        worker_id: UUID,
+        capacity: int = 5,
+        expected_worker_id: UUID | None = None,
+    ) -> Runner:
+        Runner(
+            runner_id=runner_id,
+            worker_id=worker_id,
+            capacity=capacity,
+            lease_expires_at=utc_now() + timedelta(seconds=60),
+        )
+        with self.connect(write=True) as db:
+            duplicate = db.execute(
+                "SELECT runner_id FROM runners WHERE worker_id = ? AND runner_id != ?",
+                (str(worker_id), runner_id),
+            ).fetchone()
+            if duplicate:
+                raise StorageError("Worker already owns another runner identity", 409)
+            row = db.execute(
+                "SELECT worker_id FROM runners WHERE runner_id = ?", (runner_id,)
+            ).fetchone()
+            if row is None:
+                if expected_worker_id is not None:
+                    raise StorageError("Runner ownership changed", 409)
+                db.execute(
+                    "INSERT INTO runners VALUES (?, ?, ?, ?)",
+                    (
+                        runner_id,
+                        str(worker_id),
+                        capacity,
+                        (utc_now() + timedelta(seconds=60)).isoformat(),
+                    ),
+                )
+            else:
+                current = self._runner(db, runner_id)
+                if (
+                    current.worker_id != worker_id
+                    and current.worker_id != expected_worker_id
+                    and current.lease_expires_at > utc_now()
+                ):
+                    raise StorageError(
+                        "Runner replacement requires its current worker ID", 409
+                    )
+                if capacity < len(current.agent_keys):
+                    raise StorageError("Capacity is below assigned agent count", 409)
+                if current.worker_id != worker_id:
+                    for key in current.agent_keys:
+                        self._expire_agent_runs(db, key)
+                db.execute(
+                    "UPDATE runners SET worker_id = ?, capacity = ?, lease_expires_at = ? WHERE runner_id = ?",
+                    (
+                        str(worker_id),
+                        capacity,
+                        (utc_now() + timedelta(seconds=60)).isoformat(),
+                        runner_id,
+                    ),
+                )
+            return self._runner(db, runner_id)
+
+    def assign_runner(self, runner_id: str, worker_id: UUID) -> Runner:
+        with self.connect(write=True) as db:
+            runner = self._runner(db, runner_id)
+            if runner.worker_id != worker_id or runner.lease_expires_at <= utc_now():
+                raise StorageError("Runner ownership changed", 409)
+            rows = db.execute(
+                "SELECT key FROM agents WHERE key NOT IN (SELECT agent_key FROM runner_assignments) "
+                "ORDER BY created_at, key LIMIT ?",
+                (runner.capacity - len(runner.agent_keys),),
+            ).fetchall()
+            db.executemany(
+                "INSERT INTO runner_assignments VALUES (?, ?)",
+                [(row[0], runner_id) for row in rows],
+            )
+            return self._runner(db, runner_id)
+
+    def reassign_agent(
+        self, key: str, runner_id: str | None, expected_runner_id: str | None
+    ) -> None:
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            row = db.execute(
+                "SELECT runner_id FROM runner_assignments WHERE agent_key = ?", (key,)
+            ).fetchone()
+            current = row[0] if row else None
+            if current != expected_runner_id:
+                raise StorageError("Agent assignment changed", 409)
+            if current == runner_id:
+                return
+            if runner_id is not None:
+                runner = self._runner(db, runner_id)
+                if len(runner.agent_keys) >= runner.capacity:
+                    raise StorageError("Runner is at capacity", 409)
+            self._expire_agent_runs(db, key)
+            db.execute("DELETE FROM runner_assignments WHERE agent_key = ?", (key,))
+            if runner_id is not None:
+                db.execute(
+                    "INSERT INTO runner_assignments VALUES (?, ?)", (key, runner_id)
+                )
+
+    @staticmethod
+    def _assigned_worker(db: sqlite3.Connection, key: str, worker_id: UUID) -> None:
+        row = db.execute(
+            "SELECT r.lease_expires_at FROM runner_assignments a JOIN runners r USING (runner_id) "
+            "WHERE a.agent_key = ? AND r.worker_id = ?",
+            (key, str(worker_id)),
+        ).fetchone()
+        if row is None or row[0] <= utc_now().isoformat():
+            raise StorageError(
+                "Agent run is not owned by this assigned runner worker", 409
+            )
 
     @staticmethod
     def _run(db: sqlite3.Connection, key: str, run_id: UUID) -> AgentRun:
@@ -320,8 +486,10 @@ class Repository:
                 )
             ]
 
-    @staticmethod
-    def _owned_run(run: AgentRun, worker_id: UUID) -> None:
+    def _owned_run(
+        self, db: sqlite3.Connection, run: AgentRun, worker_id: UUID
+    ) -> None:
+        self._assigned_worker(db, run.agent_key, worker_id)
         if (
             run.status != "running"
             or run.owner_id != worker_id
@@ -340,6 +508,7 @@ class Repository:
     ) -> AgentRun:
         with self.connect(write=True) as db:
             current = self._run(db, key, run_id)
+            self._assigned_worker(db, key, worker_id)
             self._check_version(current, expected_version)
             now = utc_now()
             claiming = current.status == "queued" or (
@@ -356,7 +525,7 @@ class Repository:
                         "Recovering a run cannot change its transcript", 409
                     )
             else:
-                self._owned_run(current, worker_id)
+                self._owned_run(db, current, worker_id)
                 if value.status not in {"running", "completed", "failed", "cancelled"}:
                     raise StorageError("Invalid agent run state transition", 409)
                 if value.transcript[: len(current.transcript)] != current.transcript:
@@ -448,7 +617,7 @@ class Repository:
                 )
             if message.id in run.delivered_message_ids:
                 return self._append_run_message(db, key, conversation, message)
-            self._owned_run(run, worker_id)
+            self._owned_run(db, run, worker_id)
             if job is not None and job.delivered_message_id is not None:
                 return conversation
             conversation = self._append_run_message(db, key, conversation, message)
@@ -506,7 +675,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This image job ID is already in use", 409)
-            self._owned_run(run, worker_id)
+            self._owned_run(db, run, worker_id)
             self._conversation(db, key, run.conversation_id)
             if db.execute(
                 "SELECT 1 FROM image_jobs WHERE request_id = ?", (str(request_id),)

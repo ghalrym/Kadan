@@ -69,6 +69,4 @@ async def cancel_image(key: AgentKey, job_id: UUID, request: Request) -> ImageJo
     value = await services.json_request(
         "Tsuchi", "POST", f"/api/agents/{key}/image-jobs/{job_id}/cancel", json={}
     )
-    services.images.wakeup.set()
-    services.runs.wakeup.set()
     return ImageJob.model_validate(value)

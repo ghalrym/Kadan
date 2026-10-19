@@ -30,6 +30,7 @@ from .models import (
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
+    Runner,
     Stats,
     VersionInput,
     resource_input_adapter,
@@ -123,8 +124,39 @@ class ExportResponse(FileResponse):
             self.path.unlink(missing_ok=True)
 
 
+class RunnerRegistration(Model):
+    worker_id: UUID
+    capacity: int = Field(default=5, ge=1, strict=True)
+    expected_worker_id: UUID | None = None
+
+
+class RunnerAssignment(Model):
+    worker_id: UUID
+
+
+class AgentRunnerAssignment(Model):
+    runner_id: AgentKey | None
+    expected_runner_id: AgentKey | None
+
+
 def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     router = APIRouter(prefix="/api")
+
+    @router.get("/runners", response_model=list[Runner])
+    def list_runners():
+        return repository.list_runners()
+
+    @router.put("/runners/{runner_id}", response_model=Runner)
+    def register_runner(runner_id: AgentKey, value: RunnerRegistration):
+        return repository.register_runner(runner_id, **value.model_dump())
+
+    @router.post("/runners/{runner_id}/assign", response_model=Runner)
+    def assign_runner(runner_id: AgentKey, value: RunnerAssignment):
+        return repository.assign_runner(runner_id, value.worker_id)
+
+    @router.post("/agents/{key}/runner", status_code=204)
+    def reassign_agent(key: AgentKey, value: AgentRunnerAssignment):
+        repository.reassign_agent(key, **value.model_dump())
 
     @router.get("/health")
     def health() -> dict[str, str]:

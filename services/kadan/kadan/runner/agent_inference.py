@@ -16,8 +16,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from .config import ServiceError
-from .pydantic_models.inference import CompletionMessage
+from ..api.config import ServiceError
+from ..api.pydantic_models.inference import CompletionMessage
 
 MAX_COMMAND_CHARACTERS = 48000
 MAX_EVENT_CHARACTERS = 300000

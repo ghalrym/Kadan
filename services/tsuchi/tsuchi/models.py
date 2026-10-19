@@ -42,6 +42,14 @@ class Agent(AgentInput):
     selected_pet_id: UUID | None = None
 
 
+class Runner(Model):
+    runner_id: AgentKey
+    worker_id: UUID
+    capacity: int = Field(default=5, ge=1, strict=True)
+    lease_expires_at: datetime
+    agent_keys: list[AgentKey] = Field(default_factory=list)
+
+
 class SourceLink(Model):
     label: str = Field(max_length=500)
     url: HttpUrl

@@ -15,9 +15,9 @@ from kadan_tracing import job_span, traced
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from .config import ServiceError
-from .pydantic_models.agent_runs import ImageJob, ImageJobState
-from .pydantic_models.resources import AgentKey
+from ..api.config import ServiceError
+from ..api.pydantic_models.agent_runs import ImageJob, ImageJobState
+from ..api.pydantic_models.resources import AgentKey
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60

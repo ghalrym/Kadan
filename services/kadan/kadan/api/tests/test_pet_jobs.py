@@ -11,13 +11,14 @@ import pytest
 
 from kadan.api.config import ServiceError
 from kadan.api.pet_artwork import ROWS, SOURCE_CELL
-from kadan.api.pet_jobs import IMAGE_MODEL, PetJobs
+from kadan.api.pet_client import PetClient
 from kadan.api.pydantic_models.pets import (
     GeneratedImage,
     PetJob,
     PetPendingFrame,
     PetStep,
 )
+from kadan.runner.pet_jobs import IMAGE_MODEL, PetJobs
 
 KEY = "andrew"
 PET_ID = UUID("10000000-0000-4000-8000-000000000003")
@@ -74,7 +75,7 @@ async def setup_running():
     job = await pets.create(KEY, PET_ID, "An ink-painted owl")
     job = await pets.save(
         job,
-        worker=True,
+        worker_id=pets.owner,
         status="running",
         owner_id=pets.owner,
         lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
@@ -85,7 +86,7 @@ async def setup_running():
 def test_create_persists_idempotent_job_without_inference_or_selection():
     async def run():
         services = Storage()
-        pets = PetJobs(services)
+        pets = PetClient(services)
         one = await pets.create(KEY, PET_ID, "A fox")
         two = await pets.create(KEY, PET_ID, "A fox")
         assert one.id == two.id == PET_ID
@@ -93,7 +94,7 @@ def test_create_persists_idempotent_job_without_inference_or_selection():
         assert all(
             call[0] == "Tsuchi" and call[2].endswith("/pets") for call in services.calls
         )
-        assert pets.wakeup.is_set()
+        assert not hasattr(pets, "wakeup")
 
     asyncio.run(run())
 
@@ -128,7 +129,7 @@ def test_resume_fences_old_request_before_requeueing():
         request_id = uuid4()
         job = await pets.save(
             job,
-            worker=True,
+            worker_id=pets.owner,
             status="interrupted",
             owner_id=None,
             lease_expires_at=None,
@@ -152,7 +153,7 @@ def test_resume_does_not_claim_recovery_when_cancel_confirmation_fails():
         pets, services, job = await setup_running()
         await pets.save(
             job,
-            worker=True,
+            worker_id=pets.owner,
             status="interrupted",
             owner_id=None,
             lease_expires_at=None,
@@ -182,7 +183,10 @@ def test_cleanup_failure_retains_cancelling_instead_of_claiming_cancelled():
     async def run():
         pets, services, job = await setup_running()
         await pets.save(
-            job, worker=True, pending_step_name="base", pending_request_id=uuid4()
+            job,
+            worker_id=pets.owner,
+            pending_step_name="base",
+            pending_request_id=uuid4(),
         )
         await pets.cancel(KEY, job.id)
         pets.generate = AsyncMock(side_effect=asyncio.CancelledError)
@@ -197,7 +201,7 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
     async def inline_thread(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
 
     async def run():
         pets, services, job = await setup_running()
@@ -234,15 +238,17 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
         pets.content = content
         pets.image = image
         monkeypatch.setattr(
-            "kadan.api.pet_jobs.prepare_base", lambda raw: b"canonical-base"
+            "kadan.runner.pet_jobs.prepare_base", lambda raw: b"canonical-base"
         )
         monkeypatch.setattr(
-            "kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
+            "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
         )
         monkeypatch.setattr(
-            "kadan.api.pet_jobs.assemble_atlas", lambda strips: b"webp-atlas"
+            "kadan.runner.pet_jobs.assemble_atlas", lambda strips: b"webp-atlas"
         )
-        monkeypatch.setattr("kadan.api.pet_jobs.validate_row", lambda row, frames: None)
+        monkeypatch.setattr(
+            "kadan.runner.pet_jobs.validate_row", lambda row, frames: None
+        )
         await asyncio.wait_for(pets.generate(job), timeout=5)
         saved = services.jobs[job.id]
         assert saved.status == "ready"
@@ -367,11 +373,13 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
     async def inline_thread(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
-    monkeypatch.setattr("kadan.api.pet_jobs.prepare_base", lambda raw: b"base")
-    monkeypatch.setattr("kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: PNG)
-    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
-    monkeypatch.setattr("kadan.api.pet_jobs.validate_row", lambda row, frames: None)
+    monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.runner.pet_jobs.prepare_base", lambda raw: b"base")
+    monkeypatch.setattr(
+        "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
+    )
+    monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+    monkeypatch.setattr("kadan.runner.pet_jobs.validate_row", lambda row, frames: None)
 
     async def run():
         pets, services, job = await setup_running()
@@ -431,7 +439,7 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
         resumed = await pets.resume(KEY, job.id)
         resumed = await pets.save(
             resumed,
-            worker=True,
+            worker_id=pets.owner,
             status="running",
             owner_id=pets.owner,
             lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
@@ -458,7 +466,7 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
     async def inline_thread(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
 
     async def run():
         pets = PetJobs(Storage())
@@ -476,7 +484,7 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
             side_effect=[b"one", b"two", b"three", b"four", b"five"]
         )
         monkeypatch.setattr(
-            "kadan.api.pet_jobs.prepare_frame", lambda raw, row, frame: b"six"
+            "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: b"six"
         )
         seen = []
 
@@ -484,7 +492,7 @@ def test_last_frame_is_validated_with_saved_row_before_commit(monkeypatch):
             seen.append(frames)
             raise ValueError("repeated row")
 
-        monkeypatch.setattr("kadan.api.pet_jobs.validate_row", reject_repeated)
+        monkeypatch.setattr("kadan.runner.pet_jobs.validate_row", reject_repeated)
         with pytest.raises(ValueError, match="repeated row"):
             await pets.prepare_output(job, PNG, ROWS[0], 5)
         assert seen == [[b"one", b"two", b"three", b"four", b"five", PNG]]
@@ -510,7 +518,7 @@ def test_rejected_saved_frame_persists_new_seed_before_retry():
         old_request = uuid4()
         job = await pets.save(
             job,
-            worker=True,
+            worker_id=pets.owner,
             steps=[base, neutral],
             completed_steps=2,
             pending_step_name="idle/1",
@@ -552,8 +560,8 @@ def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
     async def inline_thread(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
-    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+    monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", lambda frames: b"atlas")
 
     async def run():
         pets, services, job = await setup_running()
@@ -578,7 +586,7 @@ def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
         retained = [step for step in previous if step != rejected]
         job = await pets.save(
             job,
-            worker=True,
+            worker_id=pets.owner,
             steps=retained,
             completed_steps=73,
             rejections=[{"step": rejected.model_dump(), "reason": "wrong eyelids"}],
@@ -736,7 +744,11 @@ def test_cohort_persists_out_of_order_successes_when_one_frame_fails(monkeypatch
     asyncio.run(run())
 
 
-def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds():
+def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds(
+    monkeypatch,
+):
+    monkeypatch.setattr("kadan.runner.pet_jobs.LEASE_RENEWAL_SECONDS", 0.01)
+
     async def run():
         pets, services, job = await setup_running()
         base = PetStep(
@@ -774,10 +786,9 @@ def test_cancel_cohort_fences_every_request_and_resume_preserves_pending_seeds()
 
         pets.image = image
         task = asyncio.create_task(pets.process(job))
-        pets.active_id, pets.active = job.id, task
         await asyncio.wait_for(started.wait(), timeout=2)
         pending = deepcopy(services.jobs[job.id].pending_images)
-        await pets.cancel(KEY, job.id)
+        await PetClient(services).cancel(KEY, job.id)
         await asyncio.wait_for(task, timeout=2)
         cancelled = services.jobs[job.id]
         assert cancelled.status == "cancelled"
@@ -802,7 +813,7 @@ def test_failed_cohort_cleanup_attempts_every_request_before_refusing_resume():
         pets, services, job = await setup_running()
         job = await pets.save(
             job,
-            worker=True,
+            worker_id=pets.owner,
             status="failed",
             owner_id=None,
             lease_expires_at=None,
@@ -828,10 +839,10 @@ def test_producer_tracks_reference_capacity_and_pressure_without_base_hint(monke
     async def inline_thread(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("kadan.api.pet_jobs.asyncio.to_thread", inline_thread)
+    monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
     rows = ROWS[1:]
-    monkeypatch.setattr("kadan.api.pet_jobs.ROWS", rows)
-    monkeypatch.setattr("kadan.api.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+    monkeypatch.setattr("kadan.runner.pet_jobs.ROWS", rows)
+    monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", lambda frames: b"atlas")
 
     async def run():
         pets, services, job = await setup_running()
