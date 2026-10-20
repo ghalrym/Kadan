@@ -12,7 +12,7 @@ across VRAM, RAM and disk (the Strata/FreeToken approach).
   the model store.
 - Its own image, built by `workers/llm/Dockerfile`: CUDA; no LibTorch, no FFmpeg.
 - Its own Compose service, `hikari-worker-llm` (GPU). It can be scaled, and
-  run on another computer with `compose.worker.yaml`.
+  run on another computer using the same services in `compose.yaml`.
 - It connects to the API and takes memory only as the API grants it. Workers on
   one computer share its RAM and GPUs in the API's ledger.
 

@@ -51,12 +51,9 @@ separate server-side data volume.
 
 Use a Linux NVIDIA host with a compatible driver, Docker Compose and NVIDIA
 Container Toolkit. The Hikari image builds its native inference executable and
-runtime libraries. The other images build their browser applications and need
-no model downloads.
+runtime libraries. The browser containers run Vite with hot reload and need no model downloads.
 
-For a new installation, copy `.env.example` to `.env`, set `HIKARI_WORKER_TOKEN`
-and `KADAN_SANDBOX_API_KEY` (for example `openssl rand -hex 32` for each), then run
-from the repository root:
+Run from the repository root; no `.env` file is required:
 
 ```sh
 docker compose up --build -d
@@ -82,11 +79,12 @@ All published ports bind to `127.0.0.1`. This is a local, single-owner prototype
 namespace keys are storage selectors, not credentials. Keep these services off
 the public internet. Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
-URLs above. Each frontend container serves its built assets with nginx and proxies
-its API paths, including unbuffered streaming responses, through the same browser
-origin. Only the frontends and Hikari's API publish ports.
+URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
+responses, through the same browser origin. Only the frontends and Hikari's API publish ports.
 
-Copy `.env.example` to `.env` to change browser ports or the Tsuchi upload limit.
+Optionally copy `.env.example` to `.env` to change browser ports, credentials or
+the Tsuchi upload limit. The default worker token and sandbox API key are public
+local-use values.
 `KADAN_PORT`, `TSUCHI_PORT` and `HIKARI_FRONTEND_PORT` keep Kadan's operator links
 in sync with the published ports. The inference API retains its local port 8000.
 
@@ -101,7 +99,7 @@ docker compose stop
 `kadan-runner` executes LangGraph work and the independent image/pet queues through
 Tsuchi and Hikari. Hikari retains inference resource management and its separate
 workload workers. The runner has no published port and uses the Kadan API image
-with `python -m kadan.runner`; its API HTTP healthcheck is disabled.
+with watchfiles restarting it after Python edits; its API HTTP healthcheck is disabled.
 
 Each stable `KADAN_RUNNER_ID` owns at most `KADAN_RUNNER_CAPACITY` distinct registered
 agent keys (default **5**, a validated positive integer). Idle agents retain their
@@ -110,18 +108,18 @@ workers or one container per agent. Excess agents remain durably unassigned unti
 slot becomes available or an operator explicitly reassigns them. Stopping a runner
 does not release its assignments. See [assignment and recovery](services/kadan/README.md#runner-assignment-and-recovery).
 
-For two owners, the following configuration adds `runner-2` alongside the default
-`runner-1`, with five slots each. These commands validate configuration only:
+The optional `runners` profile adds `runner-2` alongside the default `runner-1`,
+with five slots each. Enable it with:
 
 ```sh
-docker compose -f compose.yaml -f compose.runners.yaml config
-KADAN_RUNNER_CAPACITY=8 docker compose -f compose.yaml -f compose.runners.yaml config
+docker compose --profile runners up --build -d
 ```
 
 Keep runner IDs stable across restarts and unique among live processes. Do not
 use `--scale kadan-runner=2`: those replicas would share an ID and compete for the
-same ownership. Add explicit services with distinct IDs as shown by the override.
-A rollout remains an owner action; this configuration does not start services.
+same ownership. The second runner inherits the first runner's hot-reload settings
+and capacity, with its own fixed ID `runner-2`. Keep `KADAN_RUNNER_ID` distinct
+from `runner-2` when enabling the profile.
 
 ### Existing installations and data
 
@@ -231,18 +229,18 @@ when collectors or workers disconnect or processes terminate abruptly.
 
 | Service / boundary | Waterfall coverage | Limits |
 | --- | --- | --- |
-| Kadan frontend | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and nginx serving time are not measured |
+| Kadan frontend | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and Vite serving time are not measured |
 | Kadan API and runner | API HTTP ingress through the last response body; outgoing HTTPX calls; runner graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
 | Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; queue wait uses the persisted preclaim enqueue timestamp; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
 | Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
-| Tsuchi frontend | API ingress traces in `tsuchi-api` | Browser/nginx timing is not measured |
+| Tsuchi frontend | API ingress traces in `tsuchi-api` | Browser/proxy timing is not measured |
 | Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
-| Hikari frontend | API ingress traces in `hikari-api` | Browser/nginx timing is not measured |
+| Hikari frontend | API ingress traces in `hikari-api` | Browser/proxy timing is not measured |
 | All seven native workload workers: llm, decision, tts, speech, formatting, image, video | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
 | Language and formatting workers | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
 | Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
 | Image, video, decision and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec, decision-stage and TTS subphases are not split in this change |
-| Postgres, migration job, Jaeger and nginx containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |
+| Postgres, migration job, Jaeger and frontend containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |
 
 Native workers receive W3C `traceparent` in the existing job envelope and retain it
 through the FIFO and engine calls. Each sampled request buffers at most 16 fixed
@@ -305,19 +303,19 @@ Configuration references: [official deployment guide](https://www.jaegertracing.
 [memory storage](https://www.jaegertracing.io/docs/2.22/storage/memory/), and
 [v2.22.0 configuration](https://www.jaegertracing.io/docs/2.22/deployment/configuration/).
 
-### Development hot reload
+### Hot reload
 
-`compose.development.yaml` bind-mounts source into every service on the same
-published ports. The frontends run Vite dev servers, and the APIs run uvicorn
-with `--reload`, so local edits apply without rebuilding images. Copy
-`.env.example` to `.env`: its `COMPOSE_FILE` line makes plain `docker compose`
-commands include the override.
+`compose.yaml` uses hot reload by default. It bind-mounts application source;
+the frontends run Vite, the APIs run uvicorn with `--reload`, and watchfiles
+restarts agent runners after Python edits. No override file is needed. Existing
+installations should remove any `COMPOSE_FILE` setting that selects the deleted
+override files from `.env` or their shell environment.
 
 ```sh
 docker compose up --build -d
 ```
 
-Each Hikari worker's development container rebuilds only its own program from
+Each Hikari worker container rebuilds only its own program from
 the source mount and restarts it when its binary changes, so other workers keep
 running. To pick up only frontend or Kadan/Tsuchi API edits, replace just those
 services and leave `hikari-api` running:
@@ -328,5 +326,5 @@ docker compose up -d --no-deps --build --force-recreate --wait hikari-frontend k
 
 Frontend dependencies install into per-frontend `node_modules` volumes on start,
 so `package.json` changes need only a container restart. Python dependency
-changes need an image rebuild. Remove `COMPOSE_FILE` from `.env` to run the
-nginx frontends and baked API images.
+changes need an image rebuild. Every Dockerfile runs the same hot-reloading
+setup used by Compose.

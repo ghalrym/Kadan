@@ -157,7 +157,7 @@ agent is told it may or may not have run.
 
 The sandbox joins only the `computer` network with `kadan-api` and
 `kadan-runner`; it has no direct access to the default service network.
-In both normal and development Compose configurations, Kadan's API binds only
+In Compose, Kadan's API binds only
 to its `kadan-api-internal` address on the default network, leaving no control
 API listener on the computer-facing interface. Kadan can still make outbound
 HTTP and VNC connections to the sandbox. This separation does not block access
@@ -174,7 +174,7 @@ docker build --build-context tracing=services/tracing -t kadan-api:local service
 docker build -t kadan-frontend:local services/kadan/web
 ```
 
-Compose runs these as `kadan-api`, `kadan-runner` and `kadan-frontend`. The runner uses the API image with `python -m kadan.runner`, has no HTTP listener or published port, and disables the image’s API healthcheck. The frontend image serves the compiled interface with nginx and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
+Compose runs these as `kadan-api`, `kadan-runner` and `kadan-frontend`. The runner uses the API image with watchfiles restarting it after source edits, has no HTTP listener or published port, and disables the image’s API healthcheck. The frontend image runs Vite with hot reload and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
 
 The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs point at the loopback ports published on the host.
 
@@ -207,7 +207,7 @@ For owner-authorized access from another computer on a trusted LAN, use a deploy
 
 On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 
-## Local development
+## Running locally
 
 Requires Python 3.12 or newer and Node.js 24. From `services/kadan`:
 
@@ -226,7 +226,7 @@ In another terminal from `services/kadan`, start execution separately:
 .venv/bin/python -m kadan.runner
 ```
 
-Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 and Hikari on port 8088. `.env.example` lists the available settings. For frontend development, `npm run dev --prefix web` starts Vite on loopback and proxies `/api` to port 8630.
+Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 and Hikari on port 8088. `.env.example` lists the available settings. To run the frontend separately, `npm run dev --prefix web` starts Vite on loopback and proxies `/api` to port 8630.
 
 ## Runner assignment and recovery
 
@@ -256,8 +256,8 @@ capacity and fences earlier ownership. A capacity reduction below the number of
 existing assignments is rejected; explicitly move agents before reducing it.
 Assignments are durable across process restarts; they are not queue leases.
 
-Keep IDs unique and stable. The root `compose.runners.yaml` provides a second
-explicit service with ID `runner-2`; do not scale identical copies of `runner-1`.
+Keep IDs unique and stable. The root `compose.yaml` provides a second explicit service behind the
+`runners` profile with ID `runner-2`; do not scale identical copies of `runner-1`.
 When mounting a custom instruction file, mount it in every runner: snapshots are
 read at run start by the executing process, and resumed runs retain their snapshot.
 Tracing uses the existing durable W3C parent across the API/runner boundary, stays

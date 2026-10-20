@@ -17,15 +17,9 @@ RUN cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_
     && cmake --build /build --target kadan-worker-tts --parallel 4 \
     && cmake --install /build --prefix /out --component kadan-worker-tts
 
-FROM build AS development
+FROM build AS runtime
 COPY bin/requirements.txt /app/bin/requirements.txt
 RUN pip install --no-cache-dir -r /app/bin/requirements.txt && cp -a /out /opt/kadan
 COPY bin/*.py /app/bin/
 WORKDIR /app
-CMD ["python", "bin/hikari.py", "dev", "worker", "tts"]
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/ /opt/kadan/
-CMD ["/opt/kadan/bin/kadan-worker-tts"]
+CMD ["python", "bin/hikari.py", "run", "worker", "tts"]

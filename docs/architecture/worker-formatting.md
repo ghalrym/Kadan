@@ -11,7 +11,7 @@ prose. It is optional per request and saved as a setting.
   the model store.
 - Its own image, built by `workers/formatting/Dockerfile`: no CUDA; OpenBLAS.
 - Its own Compose service, `hikari-worker-formatting` (CPU only). It can be scaled, and
-  run on another computer with `compose.worker.yaml`.
+  run on another computer using the same services in `compose.yaml`.
 - It connects to the API and takes memory only as the API grants it. Workers on
   one computer share its RAM and GPUs in the API's ledger.
 

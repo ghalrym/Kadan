@@ -10,7 +10,7 @@ import typer
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, dev, generate, inference, native, publishing
+from bin import assets, checks, generate, inference, native, publishing, run
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -28,8 +28,8 @@ app.add_typer(
     assets.app, name="assets", help="Export local checkpoint and tokenizer assets."
 )
 app.add_typer(
-    dev.app,
-    name="dev",
+    run.app,
+    name="run",
     help="Serve the API, or run one worker program rebuilt on source edits.",
 )
 app.add_typer(checks.app, name="check", help="Run formatting, builds, and unit checks.")

@@ -5,34 +5,36 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import typer
-from bin import dev
+from bin import run
 
 
 class BuildTests(unittest.TestCase):
     def test_failed_compile_does_not_install(self):
         with (
-            patch.object(dev.subprocess, "run", return_value=Mock(returncode=1)) as run,
-            patch.object(dev.typer, "echo"),
+            patch.object(
+                run.subprocess, "run", return_value=Mock(returncode=1)
+            ) as execute,
+            patch.object(run.typer, "echo"),
         ):
-            self.assertFalse(dev.build({}, "image"))
-        self.assertEqual(run.call_count, 1)
-        command = run.call_args.args[0]
+            self.assertFalse(run.build({}, "image"))
+        self.assertEqual(execute.call_count, 1)
+        command = execute.call_args.args[0]
         self.assertIn("--build", command)
         self.assertEqual(command[command.index("--target") + 1], "kadan-worker-image")
 
     def test_install_is_limited_to_the_worker_component(self):
         with patch.object(
-            dev.subprocess, "run", return_value=Mock(returncode=0)
-        ) as run:
-            self.assertTrue(dev.build({}, "video"))
-        install = run.call_args_list[1].args[0]
+            run.subprocess, "run", return_value=Mock(returncode=0)
+        ) as execute:
+            self.assertTrue(run.build({}, "video"))
+        install = execute.call_args_list[1].args[0]
         self.assertEqual(
             install[install.index("--component") + 1], "kadan-worker-video"
         )
 
     def test_unknown_worker_is_rejected(self):
         with self.assertRaises(typer.BadParameter):
-            dev.worker("gpu")
+            run.worker("gpu")
 
 
 class WorkerReloadTests(unittest.TestCase):
@@ -43,19 +45,19 @@ class WorkerReloadTests(unittest.TestCase):
         process = Mock()
         process.poll.return_value = 0 if exits else None
         with (
-            patch.object(dev.signal, "signal"),
-            patch.object(dev, "environment", return_value={}),
-            patch.object(dev, "snapshot", side_effect=[before, after]),
-            patch.object(dev, "settled", return_value=after),
-            patch.object(dev, "build", side_effect=builds) as build,
-            patch.object(dev, "fingerprint", side_effect=fingerprints),
-            patch.object(dev, "start_worker", return_value=process) as start,
-            patch.object(dev, "stop") as stop,
-            patch.object(dev.time, "sleep", side_effect=[None, KeyboardInterrupt]),
-            patch.object(dev.typer, "echo"),
+            patch.object(run.signal, "signal"),
+            patch.object(run, "environment", return_value={}),
+            patch.object(run, "snapshot", side_effect=[before, after]),
+            patch.object(run, "settled", return_value=after),
+            patch.object(run, "build", side_effect=builds) as build,
+            patch.object(run, "fingerprint", side_effect=fingerprints),
+            patch.object(run, "start_worker", return_value=process) as start,
+            patch.object(run, "stop") as stop,
+            patch.object(run.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            patch.object(run.typer, "echo"),
             self.assertRaises(KeyboardInterrupt),
         ):
-            dev.worker("llm")
+            run.worker("llm")
         return build.call_count, start.call_count, stop.call_count
 
     def test_a_changed_binary_restarts_only_this_worker(self):
@@ -85,23 +87,23 @@ class WorkerReloadTests(unittest.TestCase):
         recovered = Mock()
         recovered.poll.return_value = None
         with (
-            patch.object(dev.signal, "signal"),
-            patch.object(dev, "environment", return_value={}),
-            patch.object(dev, "snapshot", side_effect=[broken, broken, fixed, fixed]),
-            patch.object(dev, "settled", return_value=fixed),
-            patch.object(dev, "build", return_value=True) as build,
-            patch.object(dev, "fingerprint", side_effect=[1, 2]),
+            patch.object(run.signal, "signal"),
+            patch.object(run, "environment", return_value={}),
+            patch.object(run, "snapshot", side_effect=[broken, broken, fixed, fixed]),
+            patch.object(run, "settled", return_value=fixed),
+            patch.object(run, "build", return_value=True) as build,
+            patch.object(run, "fingerprint", side_effect=[1, 2]),
             patch.object(
-                dev, "start_worker", side_effect=[crashed, crashed, recovered]
+                run, "start_worker", side_effect=[crashed, crashed, recovered]
             ) as start,
-            patch.object(dev, "stop"),
+            patch.object(run, "stop"),
             patch.object(
-                dev.time, "sleep", side_effect=[None, None, None, KeyboardInterrupt]
+                run.time, "sleep", side_effect=[None, None, None, KeyboardInterrupt]
             ),
-            patch.object(dev.typer, "echo"),
+            patch.object(run.typer, "echo"),
             self.assertRaises(KeyboardInterrupt),
         ):
-            dev.worker("llm")
+            run.worker("llm")
         self.assertEqual(build.call_count, 2)
         self.assertEqual(start.call_count, 3)
 
