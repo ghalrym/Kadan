@@ -12,7 +12,7 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Receive text and images through the agent's explicit messaging tool.
 - Browse existing memories, Spaces and file metadata without changing them.
 - Give the agent its own computer, an [AIO Sandbox](https://github.com/agent-infra/sandbox),
-  for browser, shell and file tools.
+  and watch or control it live from the agent's card.
 
 Kadan keeps API management separate from runner execution. The API queues durable
 work and exposes saved state; the runner owns the continuation loop. Hikari supplies text and image
@@ -132,6 +132,12 @@ is changed. Model loading may delay the first reply.
 
 ## Computer
 
+Choose the agent's pet at the top of the chat (or on the home stage) to open its
+card: its activity, a **Call** button (not available yet; it reports that) and its
+computers. **{Agent}'s computer** shows the sandbox's state and a screenshot.
+Choose it for a live VNC view. The view starts watch-only; **Take control** passes
+your mouse and keyboard to the computer.
+
 The computer is the `kadan-sandbox` Compose service, the pinned
 `ghcr.io/agent-infra/sandbox` image. `kadan/runner/tools/` defines wrappers for its
 `/v1` routes as LangChain tools: one module per area (`browser`, `shell`, `bash`,
@@ -151,7 +157,8 @@ agent is told it may or may not have run.
 
 The sandbox joins only the `computer` network with `kadan-api` and
 `kadan-runner`, so code the agent runs cannot reach Tsuchi, Hikari or Postgres. It
-publishes no port. The sandbox API key stays in Kadan and the sandbox.
+publishes no port. Kadan relays the screenshot and VNC stream, so the browser never
+holds `KADAN_SANDBOX_API_KEY`. The VNC WebSocket accepts only the page's own origin.
 
 ## Docker integration
 
@@ -261,6 +268,9 @@ disabled without an OTLP endpoint and excludes prompt/tool payloads.
 | `GET /api/agents/{key}/conversations/{id}/runs` | Read runs, image jobs and saved conversation |
 | `POST /api/agents/{key}/runs/{id}/cancel` | Cancel a queued/running run |
 | `POST /api/agents/{key}/image-jobs/{id}/cancel` | Request image cancellation |
+| `GET /api/computer` | Whether the agent's computer is `ready`, `unavailable` or `not_configured` |
+| `GET /api/computer/screenshot` | Current screen as JPEG, not cached |
+| `WS /api/computer/vnc` | VNC relay to the computer; same-origin only |
 
 Run requests include `content`, `expected_version`, `message_id`, and an explicit
 `persona_id` UUID or `null`. Repeating the same message ID and payload returns the

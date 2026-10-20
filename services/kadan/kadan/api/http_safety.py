@@ -44,26 +44,29 @@ class LocalRequestSafety:
         self.app = app
         self.allowed_hosts = {host.lower().strip("[]") for host in allowed_hosts}
 
+    def allowed_host(self, host: str) -> bool:
+        try:
+            parsed = urlsplit(f"http://{host}")
+            return (
+                parsed.hostname in self.allowed_hosts
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.port != 0
+                and not (parsed.path or parsed.query or parsed.fragment)
+            )
+        except ValueError:
+            return False
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            await self.websocket(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         headers = dict(scope["headers"])
         host = headers.get(b"host", b"").decode("latin-1")
-        try:
-            parsed = urlsplit(f"http://{host}")
-            allowed = (
-                parsed.hostname in self.allowed_hosts
-                and parsed.username is None
-                and parsed.password is None
-            )
-            if parsed.port == 0:
-                allowed = False
-            if parsed.path or parsed.query or parsed.fragment:
-                allowed = False
-        except ValueError:
-            allowed = False
-        if not allowed:
+        if not self.allowed_host(host):
             await JSONResponse(
                 {"detail": "Host is not allowed for this local service"},
                 status_code=400,
@@ -125,3 +128,15 @@ class LocalRequestSafety:
             await JSONResponse({"detail": error.detail}, status_code=error.status_code)(
                 scope, receive, secure_send
             )
+
+    async def websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Browsers let any page open a WebSocket to localhost; CORS never applies.
+        # Require this exact origin so other sites cannot drive the computer.
+        headers = dict(scope["headers"])
+        host = headers.get(b"host", b"").decode("latin-1")
+        origin = headers.get(b"origin", b"").decode("latin-1")
+        scheme = "https" if scope.get("scheme") == "wss" else "http"
+        if not self.allowed_host(host) or not same_origin(origin, host, scheme):
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self.app(scope, receive, send)

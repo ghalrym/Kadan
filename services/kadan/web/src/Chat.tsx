@@ -1,8 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
+import AgentCard from "./AgentCard";
+import ComputerViewer from "./ComputerViewer";
+import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
@@ -107,6 +110,9 @@ export default function Chat({
   const [outgoing, setOutgoing] = useState<Message | null>(null);
   const [error, setError] = useState("");
   const [shown, setShown] = useState(PAGE);
+  const [card, setCard] = useState(false);
+  const [computer, setComputer] = useState(false);
+  const closeCard = useCallback(() => setCard(false), []);
   // Tool activity saved by the retired plugin system is history the model no longer sees.
   const saved = chain.messages.filter((message) => message.role !== "tool");
   const currentChain = useRef(chain);
@@ -322,25 +328,51 @@ export default function Chat({
         : imagePending ? "Image pending…"
           : !ready.chat ? "Notes only" : agentName;
   const empty = items.length === 0;
+  const working = modelLoading || typing || generating || imagePending;
+  const agentCard = card && (
+    <AgentCard
+      agentName={agentName}
+      sheet={petSheet}
+      mood={mood}
+      presence={working ? perchStatus : activeLabel(saved)}
+      onClose={closeCard}
+      onOpenComputer={() => {
+        setCard(false);
+        setComputer(true);
+      }}
+    />
+  );
+  function toggleCard() {
+    if (!card) react("waving");
+    setCard(!card);
+  }
   return (
+    <div className={`chat-split ${computer ? "with-computer" : ""}`}>
     <section className="chat" aria-label={`Messages with ${agentName}`}>
       {!empty && (
         <div className={`lookout ${(generating || imagePending) ? "working" : ""}`}>
-          <button type="button" className="lookout-pet" aria-label={`Wave to ${agentName}`} title={`Wave to ${agentName}`}
-            onClick={() => react("waving")}>
+          <button type="button" className="lookout-pet" aria-label={`Open ${agentName}’s card`}
+            title={agentName} aria-expanded={card} aria-haspopup="dialog" onClick={toggleCard}>
             <Pet sheet={petSheet} state={mood} size={96} look className="hero-pet" />
           </button>
           <span className="lookout-ledge" role="status" aria-live="polite">
             {(generating || imagePending) && <i aria-hidden="true" />}
             {perchStatus}
           </span>
+          {agentCard}
         </div>
       )}
       <div className="messages">
         <div className={`messages-inner ${empty ? "is-empty" : ""}`}>
           {empty ? (
             <div className="home-stage">
-              <Pet sheet={petSheet} state={mood} size={192} look grounded className="hero-pet" />
+              <div className="home-pet">
+                <button type="button" className="lookout-pet" aria-label={`Open ${agentName}’s card`}
+                  title={agentName} aria-expanded={card} aria-haspopup="dialog" onClick={toggleCard}>
+                  <Pet sheet={petSheet} state={mood} size={192} look grounded className="hero-pet" />
+                </button>
+                {agentCard}
+              </div>
               <h2>{agentName}</h2>
               <button className="pet-edit-link" onClick={onEditPet}>Edit pet</button>
             </div>
@@ -470,5 +502,7 @@ export default function Chat({
         autoFocus
       />
     </section>
+    {computer && <ComputerViewer agentName={agentName} onClose={() => setComputer(false)} />}
+    </div>
   );
 }

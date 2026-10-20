@@ -97,3 +97,37 @@ def test_only_pet_imports_accept_large_bodies():
     assert body_limit("/api/agents/a1/pets/imports") == 64 * 1024 * 1024
     for path in ("/api/agents/a1/pets", "/api/agents/a1/pets/imports/x", "/api/x"):
         assert body_limit(path) == 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("headers", "accepted"),
+    [
+        ([(b"host", b"127.0.0.1:8630"), (b"origin", b"http://127.0.0.1:8630")], True),
+        ([(b"host", b"127.0.0.1:8630")], False),
+        ([(b"host", b"127.0.0.1:8630"), (b"origin", b"http://evil.example")], False),
+        ([(b"host", b"127.0.0.1:8630"), (b"origin", b"null")], False),
+        ([(b"host", b"evil.example"), (b"origin", b"http://evil.example")], False),
+    ],
+)
+def test_websockets_require_an_allowed_host_and_this_exact_origin(headers, accepted):
+    called = []
+    sent = []
+
+    async def app(scope, receive, send):
+        called.append(scope)
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(
+        LocalRequestSafety(app, ["127.0.0.1", "localhost", "::1"])(
+            {"type": "websocket", "scheme": "ws", "headers": headers},
+            receive,
+            send,
+        )
+    )
+    assert bool(called) is accepted
+    assert sent == ([] if accepted else [{"type": "websocket.close", "code": 1008}])

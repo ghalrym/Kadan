@@ -1868,3 +1868,286 @@ dialog::backdrop {
   .pet-repair-body { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .pet-editor button:not(.pet-look-ring button), .pet-editor select, .pet-edit-link { min-height: 44px; }
 }
+
+/* Agent card: opened from the pet, like a contact card. */
+.home-pet {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+.home-pet .lookout-pet {
+  margin-bottom: 0;
+}
+.agent-card {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 5;
+  width: min(340px, calc(100vw - 32px));
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 30px 70px -24px #000;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  transform-origin: top center;
+  animation: card-in 280ms var(--spring);
+  outline: none;
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px) scale(0.96);
+  }
+}
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.agent-card-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.agent-card-head p {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+.agent-card-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 10px;
+}
+.agent-card-actions button {
+  min-height: 44px;
+  border-radius: var(--r);
+  background: var(--raised);
+  font-weight: 500;
+}
+.agent-card-actions button:hover {
+  background: var(--hover);
+}
+.agent-card-error {
+  margin: -4px 0 0;
+  color: var(--error);
+  font-size: 13px;
+}
+.agent-card-computers h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.computer-row {
+  padding: 6px 8px;
+  margin: 0 -8px;
+  width: calc(100% + 16px);
+  gap: 12px;
+  justify-content: flex-start;
+  border-radius: var(--r);
+}
+.computer-row:hover:not(:disabled) {
+  background: var(--raised);
+}
+.computer-row:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.computer-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.computer-icon i {
+  position: absolute;
+  right: -3px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--faint);
+}
+.computer-icon.ready i {
+  background: var(--ok);
+}
+.computer-icon.unavailable i {
+  background: var(--error);
+}
+.computer-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+.computer-text > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.computer-state {
+  color: var(--muted);
+}
+.computer-thumb {
+  width: 72px;
+  height: 46px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: linear-gradient(160deg, var(--hover), var(--raised));
+  border: 1px solid var(--line-strong);
+}
+.computer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 240ms var(--out);
+}
+.computer-thumb img.loaded {
+  opacity: 1;
+}
+
+/* Live view of the agent's computer, split beside the chat. */
+.chat-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.chat-split > .chat {
+  min-width: 0;
+}
+.computer-panel {
+  position: relative;
+  width: 55%;
+  min-width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 12px 12px 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: 0 30px 80px -30px #000;
+  overflow: hidden;
+  animation: panel-in 420ms var(--out);
+}
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+}
+.computer-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.computer-resize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 4px;
+  height: 40px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 160ms var(--out);
+}
+.computer-resize:hover::after,
+.computer-resize:focus-visible::after {
+  opacity: 1;
+  background: var(--accent-line);
+}
+.computer-resize:focus-visible {
+  outline: none;
+}
+.computer-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.computer-panel-head h2 {
+  margin: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.computer-connection {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.computer-connection i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.computer-connection.connected i {
+  background: var(--ok);
+}
+.computer-connection.disconnected i {
+  background: var(--error);
+}
+.computer-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.computer-panel-actions button:not(.icon) {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+.computer-panel-actions button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.computer-screen {
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+/* Too narrow to split: the computer covers the chat until closed. */
+@media (max-width: 760px) {
+  .computer-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    width: auto !important;
+    min-width: 0;
+    margin: 0;
+    border-radius: 0;
+    border: 0;
+  }
+  .computer-resize {
+    display: none;
+  }
+  .computer-panel-head {
+    flex-wrap: wrap;
+  }
+}
