@@ -37,6 +37,7 @@ from .agent_inference import (
     AgentInference,
     ToolCommand,
     parse_command,
+    tool_characters,
 )
 from .tools import CONVERSATION_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
@@ -327,7 +328,12 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
-        budget = MAX_CONTEXT - len(system.content) - len(trigger.content)
+        budget = (
+            MAX_CONTEXT
+            - tool_characters(self.bound_tools())
+            - len(system.content)
+            - len(trigger.content)
+        )
         if budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
@@ -395,7 +401,11 @@ class AgentRuns(RunClient):
             status = await self.services.inference_status()
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
-            if sum(len(item.content) for item in run.transcript) > MAX_CONTEXT:
+            if (
+                sum(len(item.content) for item in run.transcript)
+                + tool_characters(self.bound_tools())
+                > MAX_CONTEXT
+            ):
                 raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
             logger.info(
