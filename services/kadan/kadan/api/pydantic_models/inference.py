@@ -9,6 +9,9 @@ class Checkpoint(BaseModel):
         "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
     ]
     inference_available: bool
+    # Tokens. The configured window, else the checkpoint's own.
+    context_limit: int | None = None
+    architecture_context_limit: int | None = None
 
 
 class TierModel(BaseModel):

@@ -48,8 +48,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
+# Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
+# Tool results are JSON, which tokenizes densely; three characters per token
+# keeps a transcript inside the window. The reserve covers the reply and template.
+CHARACTERS_PER_TOKEN = 3
+RESERVED_TOKENS = 1024
 TOOL_RESULT = "Tool result: "
+
+
+def context_characters(context_limit: int | None) -> int:
+    """The agent's transcript budget, sized to the selected model's window."""
+    if context_limit is None:
+        return MAX_CONTEXT
+    return max(0, (context_limit - RESERVED_TOKENS) * CHARACTERS_PER_TOKEN)
 
 
 def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
@@ -270,7 +282,9 @@ class AgentRuns(RunClient):
             await asyncio.gather(work, heartbeat, return_exceptions=True)
 
     @traced("kadan.agent_runs.context")
-    async def context(self, run: AgentRun) -> list[RunMessage]:
+    async def context(
+        self, run: AgentRun, limit: int | None = None
+    ) -> list[RunMessage]:
         instructions = await asyncio.to_thread(
             Path(self.services.settings.agent_instruction_file).read_text
         )
@@ -328,12 +342,9 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
-        budget = (
-            MAX_CONTEXT
-            - tool_characters(self.bound_tools())
-            - len(system.content)
-            - len(trigger.content)
-        )
+        if limit is None:
+            limit = MAX_CONTEXT - tool_characters(self.bound_tools())
+        budget = limit - len(system.content) - len(trigger.content)
         if budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
@@ -379,7 +390,9 @@ class AgentRuns(RunClient):
     async def prepare(self, state: RunState) -> dict:
         run = state.run
         if not run.transcript:
-            run = await self.update(run, transcript=await self.context(run))
+            status = await self.services.inference_status()
+            limit = self.transcript_limit(status)
+            run = await self.update(run, transcript=await self.context(run, limit))
         return {"run": run}
 
     @traced("kadan.agent_runs.infer_command")
@@ -401,11 +414,8 @@ class AgentRuns(RunClient):
             status = await self.services.inference_status()
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
-            if (
-                sum(len(item.content) for item in run.transcript)
-                + tool_characters(self.bound_tools())
-                > MAX_CONTEXT
-            ):
+            limit = self.transcript_limit(status)
+            if sum(len(item.content) for item in run.transcript) > limit:
                 raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
             logger.info(
@@ -438,6 +448,19 @@ class AgentRuns(RunClient):
                 ],
             )
         return {"run": run, "command": command, "replayed": replayed}
+
+    def transcript_limit(self, status) -> int:
+        """The transcript budget left after the bound tool definitions."""
+        limit = context_characters(
+            getattr(status, "context_limit", None)
+        ) - tool_characters(self.bound_tools())
+        if limit <= 0:
+            raise ServiceError(
+                "The model context limit leaves no room for agent instructions "
+                "after reserving tools and a reply.",
+                422,
+            )
+        return limit
 
     def bound_tools(self) -> list[StructuredTool]:
         """The conversation tools available to this run."""
