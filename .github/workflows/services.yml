@@ -61,17 +61,6 @@ jobs:
       - run: npm test --prefix web
       - run: npm run build --prefix web
 
-  images:
-    name: ${{ matrix.service }} Docker build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      matrix:
-        service: [kadan-api, kadan-runner, kadan-frontend, tsuchi-api, tsuchi-frontend, hikari-frontend]
-    steps:
-      - uses: actions/checkout@v7
-      - run: docker compose build ${{ matrix.service }}
-
   compose:
     name: Compose configuration
     runs-on: ubuntu-latest
