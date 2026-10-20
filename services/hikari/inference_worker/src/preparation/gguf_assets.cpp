@@ -97,7 +97,10 @@ Json tokenizer(
 }  // namespace
 
 void prepare_gguf_assets(
-    const fs::path& root, const std::string& first_file, const std::atomic_bool& cancel
+    const fs::path& root,
+    const std::string& first_file,
+    const std::atomic_bool& cancel,
+    std::optional<GgufAssetValidation>* validation
 ) {
     preparation_cancel(cancel);
     preparation_check(
@@ -105,21 +108,32 @@ void prepare_gguf_assets(
             && !fs::is_symlink(root / first_file),
         "Invalid GGUF metadata filename"
     );
-    checkpoint::GgufMetadata metadata((root / first_file).string(), cancel);
-    std::string type;
-    try {
-        type = text::validate_metadata(metadata);
-    } catch (const std::exception& error) {
-        throw RequestError(
-            std::string("Unsupported GGUF checkpoint: ") + error.what(), 422
-        );
+    const auto path = (root / first_file).string();
+    const auto identity = checkpoint::GgufMetadata::file_identity(path);
+    std::unique_ptr<checkpoint::GgufMetadata> metadata;
+    GgufAssetValidation prepared;
+    if (validation && *validation && (*validation)->identity == identity
+        && fs::exists(root / "tokenizer.json")) {
+        prepared = **validation;
+    } else {
+        metadata = std::make_unique<checkpoint::GgufMetadata>(path, cancel);
+        std::string type;
+        try {
+            type = text::validate_metadata(*metadata);
+        } catch (const std::exception& error) {
+            throw RequestError(
+                std::string("Unsupported GGUF checkpoint: ") + error.what(), 422
+            );
+        }
+        const auto architecture = metadata->string("general.architecture");
+        prepared = {
+            metadata->identity(),
+            {{"model_type", type},
+             {"kadan_checkpoint_format", "gguf"},
+             {"max_position_embeddings",
+              metadata->integer(architecture + ".context_length")}}
+        };
     }
-    const auto architecture = metadata.string("general.architecture");
-    const Json config = {
-        {"model_type", type},
-        {"kadan_checkpoint_format", "gguf"},
-        {"max_position_embeddings", metadata.integer(architecture + ".context_length")}
-    };
     const auto publish = [&](const fs::path& path, const Json& value) {
         preparation_check(!fs::is_symlink(path), "Derived GGUF asset is a symlink");
         if (fs::exists(path)) {
@@ -140,8 +154,22 @@ void prepare_gguf_assets(
     };
     // Derived assets sit beside the hashed downloads; the exact architecture
     // contract is validated before any remaining split is acquired.
-    publish(root / "config.json", config);
-    if (!fs::exists(root / "tokenizer.json"))
-        publish(root / "tokenizer.json", tokenizer(metadata, cancel));
+    publish(root / "config.json", prepared.config);
+    if (!fs::exists(root / "tokenizer.json")) {
+        // A disappearing tokenizer must take the full preparation path on retry.
+        // A cache hit holds no vocabulary from which to regenerate it.
+        if (metadata)
+            publish(root / "tokenizer.json", tokenizer(*metadata, cancel));
+        else
+            throw RequestError("GGUF tokenizer changed during preparation.", 503);
+    }
+    preparation_cancel(cancel);
+    preparation_check(
+        checkpoint::GgufMetadata::file_identity(path) == prepared.identity,
+        "GGUF metadata changed during preparation.",
+        503
+    );
+    if (validation)
+        *validation = std::move(prepared);
 }
 }  // namespace kadan::serving

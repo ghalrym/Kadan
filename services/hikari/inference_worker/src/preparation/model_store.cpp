@@ -623,6 +623,29 @@ ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) 
     return files;
 }
 
+void ModelStore::prepare_gguf(
+    const CatalogEntry& catalog,
+    const fs::path& destination,
+    const std::atomic_bool& cancel
+) {
+    std::optional<GgufAssetValidation> validation;
+    const auto key = destination.string();
+    {
+        // Download and inference preparation can acquire the same store at once.
+        std::lock_guard guard(gguf_mutex_);
+        const auto found = gguf_validations_.find(key);
+        if (found != gguf_validations_.end())
+            validation = found->second;
+    }
+    prepare_gguf_assets(destination, catalog.asset_name, cancel, &validation);
+    validate_text_checkpoint(destination);
+    preparation_cancel(cancel);
+    {
+        std::lock_guard guard(gguf_mutex_);
+        gguf_validations_.insert_or_assign(key, std::move(*validation));
+    }
+}
+
 fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& cancel) {
     const auto& catalog = entry(model);
     const auto revision = catalog.revision;
@@ -630,8 +653,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     preparation_cancel(cancel);
     if (complete(catalog)) {
         if (catalog.layout == "gguf")
-            prepare_gguf_assets(destination, catalog.asset_name, cancel);
-        if (catalog.kind == "llm")
+            prepare_gguf(catalog, destination, cancel);
+        else if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
     }
@@ -639,8 +662,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     StoreLock lock(root_ / ".download.lock", cancel);
     if (complete(catalog)) {
         if (catalog.layout == "gguf")
-            prepare_gguf_assets(destination, catalog.asset_name, cancel);
-        if (catalog.kind == "llm")
+            prepare_gguf(catalog, destination, cancel);
+        else if (catalog.kind == "llm")
             validate_text_checkpoint(destination);
         return destination;
     }

@@ -30,6 +30,10 @@ public:
     ~GgufMetadata();
     GgufMetadata(const GgufMetadata&) = delete;
     GgufMetadata& operator=(const GgufMetadata&) = delete;
+    // Whole-file identity of the descriptor whose metadata was parsed.
+    WeightIdentity identity() const;
+    // Opens a regular file without following a leaf symlink; reads no metadata.
+    static WeightIdentity file_identity(const std::string& path);
     std::size_t tensor_count() const;
     std::string string(std::string_view key) const;
     std::uint64_t integer(std::string_view key) const;

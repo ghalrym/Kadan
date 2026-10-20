@@ -154,6 +154,7 @@ group and command supports `--help` with its arguments and options.
 | `generate schema` / `generate client` | Run either generation step separately. |
 | `assets whisper` / `assets whisper-assets` / `assets tts-tokenizer` | Export local model assets using the API's serializers. |
 | `native build` | Compile CPU-only checkpoint inspectors and metadata planners. |
+| `native preparation-benchmark MODELS MODEL` | Measure GGUF preparation substeps and acquisition without inference. |
 | `native --help` | List checkpoint inspection and weight-cache replay commands. |
 | `infer chat` / `infer image` / `infer video` | Submit a JSON request file through the live API to its worker queue. |
 | `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
@@ -164,6 +165,11 @@ group and command supports `--help` with its arguments and options.
 Native inspection tool builds require CMake and a C++20 compiler. They only read
 checkpoint metadata and plan memory; they do not load or execute models. Use
 `native --build-dir PATH` before the subcommand to select another build directory.
+For preparation measurements, provide a read-only mount of a complete model store
+with existing configuration and tokenizer assets. The benchmark reports wall and
+CPU milliseconds as JSON lines. Sample zero includes the first acquisition;
+later samples measure reuse. Substep probes run separately and are not additive
+parts of the acquisition sample. These timings do not measure generation latency.
 Request performance details belong to existing spans in Jaeger; see the
 [observability architecture](../../docs/architecture/observability.md).
 
