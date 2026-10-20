@@ -2139,7 +2139,7 @@ class Compute final : public H3Compute {
                                       : (retained ? retained : arena.at<void>(w));
                     void* packed_pointer = nullptr;
                     unsigned* decode_status = nullptr;
-                    // Runs after every kernel that decodes the packed rows.
+                    // Validate decoded packed bytes before any new bank admission.
                     auto admit_packed = [&] {
                         checked(cuda_trace::synchronize(cudaStreamLegacy));
                         unsigned invalid = 0;
@@ -2193,7 +2193,14 @@ class Compute final : public H3Compute {
                                 }
                             );
                             checked(cudaGetLastError());
-                            admit_packed();
+                            // Bank entries were validated before admission, as
+                            // in dense_gguf_batch. Decode and SGEMM stay ordered
+                            // on this stream; retain the cancellation boundary
+                            // without downloading their weight status again.
+                            if (retained)
+                                stop(cancel, failed);
+                            else
+                                admit_packed();
                         }
                     } else if (!retained)
                         checked(
