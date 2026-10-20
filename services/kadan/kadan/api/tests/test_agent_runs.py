@@ -642,7 +642,13 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
 
 @pytest.mark.parametrize(
     ("tokens", "expected"),
-    [(None, MAX_CONTEXT), (4096, MAX_CONTEXT), (65536, (65536 - 1024) * 3)],
+    [
+        (None, MAX_CONTEXT),
+        (1, 0),
+        (1024, 0),
+        (4096, (4096 - 1024) * 3),
+        (65536, (65536 - 1024) * 3),
+    ],
 )
 def test_transcript_budget_follows_the_models_context_window(tokens, expected):
     assert context_characters(tokens) == expected
@@ -653,6 +659,72 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
     ) - tool_characters(CONVERSATION_TOOLS)
+
+
+def test_smaller_model_window_drops_history_before_inference(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=4096
+        )
+
+    boundary.inference_status = inference_status
+    older = Message(role="assistant", content="x" * 10000)
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": [older, *boundary.conversation.messages]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+    assert not any(
+        str(older.id) in item.content for item in boundary.current.transcript
+    )
+
+
+def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=4096
+        )
+
+    boundary.inference_status = inference_status
+    boundary.current = boundary.current.model_copy(
+        update={"transcript": [RunMessage(role="user", content="x" * 10000)]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "context limit" in boundary.current.error
+    assert boundary.controller.inference.calls == []
+
+
+@pytest.mark.parametrize("context_limit", [1, 1024, 1025])
+@pytest.mark.parametrize("saved_transcript", [False, True])
+def test_window_without_room_for_tools_fails_before_inference(
+    boundary, context_limit, saved_transcript
+):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=context_limit
+        )
+
+    boundary.inference_status = inference_status
+    if saved_transcript:
+        boundary.current = boundary.current.model_copy(
+            update={"transcript": [RunMessage(role="user", content="Hello")]}
+        )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "context" in boundary.current.error
+    assert boundary.controller.inference.calls == []
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+
+
+def test_zero_context_budget_does_not_fall_back_to_default(boundary):
+    with pytest.raises(ServiceError, match="context limit"):
+        asyncio.run(boundary.controller.context(boundary.current, limit=0))
 
 
 def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):
