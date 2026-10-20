@@ -23,6 +23,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "quantization-tests",
     "checkpoint-tests",
     "checkpoint-floats-tests",
+    "gguf-batch-partition-tests",
     "projection-validation-tests",
     "h3-resident-block-tests",
     "image-activation-tests",
