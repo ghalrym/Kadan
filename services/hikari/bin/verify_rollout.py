@@ -206,11 +206,20 @@ class DisposableInstallation:
                     },
                 ],
                 "healthcheck": {
-                    "test": ["CMD", "python", "/fixture/service.py", "health"],
+                    # Avoid importing the server in a probe under the CPU quota.
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        "import os; raise SystemExit(0 if "
+                        "os.path.exists('/tmp/fixture-ready') and not "
+                        "os.path.exists('/control/unhealthy-' + "
+                        "os.environ['FIXTURE_SERVICE']) else 1)",
+                    ],
                     "interval": "1s",
                     "timeout": "2s",
-                    "retries": 1,
-                    "start_period": "1s",
+                    "retries": 3,
+                    "start_period": "10s",
                 },
             }
         topology = {"services": services, "volumes": {"verification": {}}}
@@ -352,9 +361,7 @@ class DisposableInstallation:
         self.preservation()
         fault = self.control / "unhealthy-kadan-api"
         fault.touch()
-        previous_timeout = backend.timeout
         try:
-            backend.timeout = 3
             try:
                 backend.verify(tuple(journal["affected"]))
             except TimeoutError:
@@ -364,7 +371,6 @@ class DisposableInstallation:
                     "Unhealthy fixture passed replacement verification"
                 )
         finally:
-            backend.timeout = previous_timeout
             fault.unlink(missing_ok=True)
         context = multiprocessing.get_context("spawn")
         process = context.Process(
