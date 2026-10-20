@@ -210,6 +210,59 @@ class HostOverlayTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.backend()
 
+    def test_api_preserves_readonly_checkpoint_bind(self):
+        mounts = [
+            {
+                "type": "bind",
+                "source": str(self.data),
+                "target": target,
+                "read_only": True,
+            }
+            for target in ("/var/lib/kadan/models", "/mnt/glm-models")
+        ]
+        self.document["services"]["hikari-api"] = {"volumes": mounts}
+        self.enroll(self.document)
+        self.backend()
+        self.assertEqual(
+            json.loads(self.config.read_text())["services"]["hikari-api"]["volumes"],
+            mounts,
+        )
+
+    def test_api_checkpoint_bind_requires_explicit_readonly(self):
+        for readonly in (None, False, "true"):
+            with self.subTest(readonly=readonly):
+                mount = {
+                    "type": "bind",
+                    "source": str(self.data),
+                    "target": "/mnt/glm-models",
+                }
+                if readonly is not None:
+                    mount["read_only"] = readonly
+                self.enroll({"services": {"hikari-api": {"volumes": [mount]}}})
+                with self.assertRaises(ValueError):
+                    self.backend()
+
+    def test_api_checkpoint_mount_keeps_source_and_target_validation(self):
+        for changes in (
+            {"source": "relative-models"},
+            {"source": str(self.host / "missing-models")},
+            {"source": str(self.host / "$MODEL_PATH")},
+            {"target": "/mnt/glm-models/../app"},
+            {"target": "/mnt/glm-models-other"},
+            {"type": "volume", "source": "model_data"},
+        ):
+            with self.subTest(changes=changes):
+                mount = {
+                    "type": "bind",
+                    "source": str(self.data),
+                    "target": "/mnt/glm-models",
+                    "read_only": True,
+                    **changes,
+                }
+                self.enroll({"services": {"hikari-api": {"volumes": [mount]}}})
+                with self.assertRaises(ValueError):
+                    self.backend()
+
     def test_protected_runtime_overrides_are_refused(self):
         for key in (
             "image",

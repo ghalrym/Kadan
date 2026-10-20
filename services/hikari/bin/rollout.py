@@ -330,7 +330,11 @@ class HostOverlay(HostFilePin):
                 "/var/lib/kadan/media",
                 "/var/lib/kadan/videos",
             ]
-            if service in WORKERS:
+            if service in WORKERS or (
+                service == "hikari-api"
+                and mount.get("type") == "bind"
+                and mount.get("read_only") is True
+            ):
                 roots.append("/mnt/glm-models")
         if not file_target and not any(
             target_path.is_relative_to(root) for root in roots

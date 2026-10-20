@@ -122,8 +122,10 @@ owner-controlled `.env` can; inspect them during enrollment.
 Bind sources must be absolute, already exist and use explicit long Compose
 syntax. Supported data targets are Postgres `/var/lib/postgresql`, Tsuchi `/data`,
 and Hikari `/var/lib/kadan/models`, `/var/lib/kadan/media` and `/var/lib/kadan/videos`,
-including descendants. Native workers also support `/mnt/glm-models`. Arbitrary
-application/executable/runtime mounts are rejected. Kadan API/runner may bind
+including descendants. Native workers also support `/mnt/glm-models`. Hikari API
+mounts at `/mnt/glm-models` must be read-only binds; the same source and target
+validation applies. Arbitrary application/executable/runtime mounts are rejected.
+Kadan API/runner may bind
 `/app/AGENT.md` and Jaeger may bind `/etc/jaeger/config.yaml`; these specific file
 binds must be read-only and their sources must have matching `content_pins`.
 
