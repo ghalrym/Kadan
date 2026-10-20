@@ -16,8 +16,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource
-from kadan.runner.agent_inference import Finish, GenerateImage, SendMessage
-from kadan.runner.agent_runs import AgentRuns
+from kadan.runner.agent_inference import ToolCommand, tool_characters
+from kadan.runner.agent_runs import (
+    MAX_CONTEXT,
+    AgentRuns,
+    context_characters,
+    transcript_messages,
+)
+from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS
 
 
 class Boundary:
@@ -28,6 +34,7 @@ class Boundary:
             hikari_url="http://unused", agent_instruction_file=str(instruction_file)
         )
         self.images = SimpleNamespace(wakeup=asyncio.Event())
+        self.sandbox = SimpleNamespace(configured=False)
         user = Message(role="user", content="Hello")
         self.conversation = Resource(
             id=uuid4(),
@@ -156,13 +163,33 @@ class Boundary:
         raise AssertionError(f"Unexpected {method} {path}")
 
 
+def command(tool, **arguments):
+    return ToolCommand(
+        tool=tool, arguments=json.loads(json.dumps(arguments, default=str))
+    )
+
+
+def finish():
+    return command("finish")
+
+
+def send(**arguments):
+    return command("send_message", **arguments)
+
+
+def image_request(**arguments):
+    return command("generate_image", **arguments)
+
+
 class Commands:
     def __init__(self, *results):
         self.results = list(results)
         self.calls = []
+        self.tools = []
 
-    async def call(self, messages, model_id, conversation_key):
+    async def call(self, messages, model_id, conversation_key, tools):
         self.calls.append(messages)
+        self.tools.append([tool.name for tool in tools])
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -185,7 +212,7 @@ def boundary(tmp_path, monkeypatch):
 
 
 def test_finish_completes_without_delivering_a_message(boundary):
-    boundary.controller.inference = Commands(Finish(tool="finish"))
+    boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
     assert boundary.deliveries == []
@@ -196,10 +223,10 @@ def test_message_is_delivered_while_run_is_still_running(boundary):
     def finish_after_visible_delivery():
         assert boundary.current.status == "running"
         assert [item.content for item in boundary.deliveries] == ["Hello back"]
-        return Finish(tool="finish")
+        return finish()
 
     boundary.controller.inference = Commands(
-        SendMessage(tool="send_message", end_run=False, content="Hello back"),
+        send(end_run=False, content="Hello back"),
         finish_after_visible_delivery,
     )
     asyncio.run(boundary.controller.process(boundary.current))
@@ -209,9 +236,7 @@ def test_message_is_delivered_while_run_is_still_running(boundary):
 
 def test_crash_after_delivery_replays_same_message_identity_once(boundary):
     boundary.crash_after_delivery = True
-    boundary.controller.inference = Commands(
-        SendMessage(tool="send_message", end_run=True, content="Saved answer")
-    )
+    boundary.controller.inference = Commands(send(end_run=True, content="Saved answer"))
 
     async def check():
         with pytest.raises(asyncio.CancelledError):
@@ -228,7 +253,7 @@ def test_crash_after_delivery_replays_same_message_identity_once(boundary):
 
 def test_image_submission_returns_queued_job_without_waiting_or_delivery(boundary):
     boundary.controller.inference = Commands(
-        GenerateImage(tool="generate_image", prompt="A little blue bird"),
+        image_request(prompt="A little blue bird"),
     )
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
@@ -295,7 +320,7 @@ def test_image_event_context_carries_result_and_delivery_state(
 
 def test_failure_after_visible_message_does_not_append_an_answer(boundary):
     boundary.controller.inference = Commands(
-        SendMessage(tool="send_message", end_run=False, content="Already delivered"),
+        send(end_run=False, content="Already delivered"),
         ServiceError("Hikari failed", 503),
     )
     asyncio.run(boundary.controller.process(boundary.current))
@@ -307,9 +332,7 @@ def test_failure_after_visible_message_does_not_append_an_answer(boundary):
 def test_cancellation_during_inference_prevents_its_message_delivery(boundary):
     def cancelled_result():
         boundary.cancel()
-        return SendMessage(
-            tool="send_message", end_run=False, content="Should not be sent"
-        )
+        return send(end_run=False, content="Should not be sent")
 
     boundary.controller.inference = Commands(cancelled_result)
     asyncio.run(boundary.controller.process(boundary.current))
@@ -322,9 +345,7 @@ def test_cancelled_run_cannot_execute_persisted_command(boundary):
         transcript=[
             RunMessage(
                 role="assistant",
-                content=SendMessage(
-                    tool="send_message", end_run=False, content="No"
-                ).model_dump_json(),
+                content=send(end_run=False, content="No").model_dump_json(),
             )
         ]
     )
@@ -357,7 +378,7 @@ def test_instructions_are_reread_when_a_new_context_is_built(boundary):
 
 
 def test_recovery_uses_persisted_instructions_without_reloading_file(boundary):
-    boundary.controller.inference = Commands(Finish(tool="finish"))
+    boundary.controller.inference = Commands(finish())
     run = boundary.start_owned(
         transcript=[RunMessage(role="user", content="Existing context")]
     )
@@ -408,8 +429,8 @@ def test_lease_renewal_waits_for_delivery_before_reading_run_version(boundary):
 
         boundary.json_request = delayed_request
         boundary.controller.inference = Commands(
-            SendMessage(tool="send_message", end_run=False, content="Delivered once"),
-            Finish(tool="finish"),
+            send(end_run=False, content="Delivered once"),
+            finish(),
         )
         run = boundary.start_owned()
         advance = asyncio.create_task(boundary.controller.advance(run))
@@ -433,9 +454,7 @@ def test_lease_renewal_waits_for_delivery_before_reading_run_version(boundary):
 
 
 def test_final_message_releases_ownership_without_completion_inference(boundary):
-    boundary.controller.inference = Commands(
-        SendMessage(tool="send_message", content="Done", end_run=True)
-    )
+    boundary.controller.inference = Commands(send(content="Done", end_run=True))
     asyncio.run(boundary.controller.process(boundary.current))
     assert len(boundary.controller.inference.calls) == 1
     assert [message.content for message in boundary.deliveries] == ["Done"]
@@ -458,9 +477,7 @@ def test_crash_after_image_submission_replays_job_without_inference(boundary):
         return result
 
     boundary.json_request = crash_after_job
-    boundary.controller.inference = Commands(
-        GenerateImage(tool="generate_image", prompt="A blue bird")
-    )
+    boundary.controller.inference = Commands(image_request(prompt="A blue bird"))
 
     async def check():
         with pytest.raises(asyncio.CancelledError):
@@ -478,9 +495,7 @@ def test_crash_after_image_submission_replays_job_without_inference(boundary):
 
 
 def test_next_context_sees_pending_image_after_submitting_run_finishes(boundary):
-    boundary.controller.inference = Commands(
-        GenerateImage(tool="generate_image", prompt="A blue bird")
-    )
+    boundary.controller.inference = Commands(image_request(prompt="A blue bird"))
     asyncio.run(boundary.controller.process(boundary.current))
     context = asyncio.run(boundary.controller.context(boundary.current))
     image = next(iter(boundary.jobs.values()))
@@ -490,19 +505,43 @@ def test_next_context_sees_pending_image_after_submitting_run_finishes(boundary)
 
 
 def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
-    boundary.controller.inference = Commands(
-        GenerateImage(tool="generate_image", prompt="A blue bird")
-    )
+    boundary.controller.inference = Commands(image_request(prompt="A blue bird"))
     asyncio.run(boundary.controller.process(boundary.current))
     jobs = boundary.jobs
     boundary.jobs = {}
     baseline = asyncio.run(boundary.controller.context(boundary.current))
-    budget = sum(len(message.content) for message in baseline) + 10
+    budget = (
+        sum(len(message.content) for message in baseline)
+        + tool_characters(boundary.controller.bound_tools())
+        + 10
+    )
     monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
     assert asyncio.run(boundary.controller.context(boundary.current)) == baseline
     boundary.jobs = jobs
     with pytest.raises(ServiceError, match="context limit"):
         asyncio.run(boundary.controller.context(boundary.current))
+
+
+def test_history_budget_reserves_bound_tool_definitions(boundary, monkeypatch):
+    baseline = asyncio.run(boundary.controller.context(boundary.current))
+    budget = sum(len(message.content) for message in baseline)
+    monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
+    with pytest.raises(ServiceError, match="context"):
+        asyncio.run(boundary.controller.context(boundary.current))
+
+
+def test_saved_context_reserves_bound_tool_definitions_before_inference(
+    boundary, monkeypatch
+):
+    transcript = [RunMessage(role="user", content="Existing context")]
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.MAX_CONTEXT", len(transcript[0].content)
+    )
+    boundary.controller.inference = Commands(finish())
+    run = boundary.start_owned(transcript=transcript)
+    with pytest.raises(ServiceError, match="context limit"):
+        asyncio.run(boundary.controller.advance(run))
+    assert boundary.controller.inference.calls == []
 
 
 @pytest.mark.parametrize("status", ["completed", "failed"])
@@ -527,8 +566,7 @@ def test_image_event_resumes_graph_in_same_conversation(boundary, status):
         update={"trigger_job_id": job_id, "trigger_message_id": None}
     )
     boundary.controller.inference = Commands(
-        SendMessage(
-            tool="send_message",
+        send(
             content="Here it is" if status == "completed" else "Image failed",
             image_job_id=job_id if status == "completed" else None,
             end_run=True,
@@ -555,20 +593,13 @@ def test_image_event_resumes_graph_in_same_conversation(boundary, status):
     assert len(boundary.controller.inference.calls) == 1
 
 
-@pytest.mark.parametrize("invalid_attempts", [2, 3])
-def test_graph_retains_invalid_command_correction_limit(boundary, invalid_attempts):
+def test_invalid_commands_fail_the_run_without_a_retry(boundary):
     boundary.controller.inference = Commands(
-        *[
-            ServiceError("Invalid command", 502, "invalid_command")
-            for _ in range(invalid_attempts)
-        ],
-        Finish(tool="finish"),
+        ServiceError("Invalid command", 502, "invalid_command"), finish()
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == (
-        "completed" if invalid_attempts == 2 else "failed"
-    )
-    assert len(boundary.controller.inference.calls) == 3
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 1
     assert boundary.deliveries == []
 
 
@@ -597,20 +628,15 @@ def test_cancelling_graph_task_cancels_inflight_inference(boundary):
     assert boundary.current.transcript[-1].role == "user"
 
 
-def test_graph_allows_full_command_budget_and_corrections(boundary):
+def test_graph_allows_full_command_budget(boundary):
     boundary.controller.inference = Commands(
-        ServiceError("Invalid command", 502, "invalid_command"),
-        ServiceError("Invalid command", 502, "invalid_command"),
-        *[
-            SendMessage(tool="send_message", content=f"Message {index}", end_run=False)
-            for index in range(23)
-        ],
-        Finish(tool="finish"),
+        *[send(content=f"Message {index}", end_run=False) for index in range(23)],
+        finish(),
     )
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
     assert len(boundary.deliveries) == 23
-    assert len(boundary.controller.inference.calls) == 26
+    assert len(boundary.controller.inference.calls) == 24
 
 
 def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
@@ -625,7 +651,7 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
             update={"trace_parent": carrier()["traceparent"]}
         )
     monkeypatch.setattr(trace, "get_tracer", lambda *args, **kwargs: tracer)
-    boundary.controller.inference = Commands(Finish(tool="finish"))
+    boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     execution = next(
         span
@@ -640,3 +666,241 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
         for key in span.attributes
     )
     provider.shutdown()
+
+
+class Computer:
+    """The sandbox client boundary; records calls instead of reaching a computer."""
+
+    configured = True
+
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    async def run(self, method, path, **request):
+        self.calls.append((method, path, request))
+        if self.error:
+            raise self.error
+        return {"status": 200, "body": {"output": "hi"}}
+
+
+def tool_result(boundary, index=-1):
+    return json.loads(
+        boundary.current.transcript[index].content.removeprefix("Tool result: ")
+    )
+
+
+def test_every_conversation_and_computer_tool_is_bound(boundary):
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools == [
+        [tool.name for tool in CONVERSATION_TOOLS]
+    ]
+
+    boundary.sandbox = Computer()
+    boundary.current = boundary.current.model_copy(
+        update={"status": "queued", "transcript": []}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools == [[tool.name for tool in ALL_TOOLS]]
+
+
+def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
+    boundary.sandbox = Computer()
+
+    def finish_after_result():
+        assert boundary.current.status == "running"
+        assert tool_result(boundary) == {
+            "tool": "bash_exec",
+            "status": 200,
+            "body": {"output": "hi"},
+        }
+        return finish()
+
+    boundary.controller.inference = Commands(
+        command("bash_exec", command="echo hi"), finish_after_result
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    method, path, request = boundary.sandbox.calls[0]
+    assert (method, path) == ("POST", "/v1/bash/exec")
+    assert request["json_body"]["command"] == "echo hi"
+    assert boundary.current.status == "completed"
+    assert boundary.deliveries == []
+    replay = transcript_messages(boundary.current.transcript)
+    assert replay[-3].tool_calls[0]["name"] == "bash_exec"
+    assert replay[-2].tool_call_id == replay[-3].tool_calls[0]["id"]
+
+
+def test_computer_errors_become_tool_results(boundary):
+    boundary.sandbox = Computer(ServiceError("The computer is unavailable"))
+    boundary.controller.inference = Commands(
+        command("bash_exec", command="ls"), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert tool_result(boundary, -2)["error"] == "The computer is unavailable"
+    assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        command("shell_exec_command", command="ls"),
+        command("missing_tool"),
+        command("browser_navigate", address="https://example.com"),
+        send(content="Hi"),
+        image_request(prompt=""),
+    ],
+)
+def test_unknown_tools_and_invalid_arguments_fail_the_run(boundary, invalid):
+    boundary.controller.inference = Commands(invalid, finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize(
+    ("tool", "repeated"),
+    [("bash_exec", False), ("browser_get_markdown", True)],
+)
+def test_restart_never_repeats_an_unconfirmed_computer_side_effect(
+    boundary, tool, repeated
+):
+    boundary.sandbox = Computer()
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="instructions"),
+            RunMessage(role="user", content="Do it"),
+            RunMessage(
+                role="assistant",
+                content=command(
+                    tool, **({"command": "ls"} if tool == "bash_exec" else {})
+                ).model_dump_json(),
+            ),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    result = tool_result(boundary, -2)
+    assert bool(boundary.sandbox.calls) is repeated
+    assert ("error" in result) is not repeated
+    assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (None, MAX_CONTEXT),
+        (1, 0),
+        (1024, 0),
+        (4096, (4096 - 1024) * 3),
+        (65536, (65536 - 1024) * 3),
+    ],
+)
+def test_transcript_budget_follows_the_models_context_window(tokens, expected):
+    assert context_characters(tokens) == expected
+
+
+def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
+    status = SimpleNamespace(context_limit=65536)
+    assert boundary.controller.transcript_limit(status) == context_characters(
+        65536
+    ) - tool_characters(CONVERSATION_TOOLS)
+    boundary.controller.services.sandbox.configured = True
+    assert boundary.controller.transcript_limit(status) == context_characters(
+        65536
+    ) - tool_characters(ALL_TOOLS)
+
+
+def test_smaller_model_window_drops_history_before_inference(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=4096
+        )
+
+    boundary.inference_status = inference_status
+    older = Message(role="assistant", content="x" * 10000)
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": [older, *boundary.conversation.messages]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+    assert not any(
+        str(older.id) in item.content for item in boundary.current.transcript
+    )
+
+
+def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=4096
+        )
+
+    boundary.inference_status = inference_status
+    boundary.current = boundary.current.model_copy(
+        update={"transcript": [RunMessage(role="user", content="x" * 10000)]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "context limit" in boundary.current.error
+    assert boundary.controller.inference.calls == []
+
+
+@pytest.mark.parametrize("context_limit", [1, 1024, 1025])
+@pytest.mark.parametrize("saved_transcript", [False, True])
+def test_window_without_room_for_tools_fails_before_inference(
+    boundary, context_limit, saved_transcript
+):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=context_limit
+        )
+
+    boundary.inference_status = inference_status
+    if saved_transcript:
+        boundary.current = boundary.current.model_copy(
+            update={"transcript": [RunMessage(role="user", content="Hello")]}
+        )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "context" in boundary.current.error
+    assert boundary.controller.inference.calls == []
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+
+
+def test_zero_context_budget_does_not_fall_back_to_default(boundary):
+    with pytest.raises(ServiceError, match="context limit"):
+        asyncio.run(boundary.controller.context(boundary.current, limit=0))
+
+
+def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=65536
+        )
+
+    boundary.inference_status = inference_status
+    long = Message(role="assistant", content="x" * 60000)
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": [long, *boundary.conversation.messages]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert any("x" * 60000 in item.content for item in boundary.current.transcript)
+
+
+def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.deliveries == []

@@ -10,10 +10,11 @@ from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
 from .http_safety import LocalRequestSafety
-from .routes import agents, health, runners, status
+from .routes import agents, computer, health, runners, status
 from .routes.agents import assets, chain, pets, resources
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, runs
+from .routes.computer import screenshot, vnc
 from .services import LocalServices
 
 
@@ -56,6 +57,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         content.router,
         notes.router,
         runs.router,
+        computer.router,
+        screenshot.router,
+        vnc.router,
     ):
         app.include_router(router)
 

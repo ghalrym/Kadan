@@ -121,7 +121,21 @@ services:
       - ./services/tsuchi/tsuchi:/app/tsuchi:ro
 
   kadan-api:
-    command: [uvicorn, kadan.api.server:app, --host, 0.0.0.0, --port, "8630", --reload, --reload-dir, /app/kadan]
+    command: [uvicorn, kadan.api.server:app, --host, kadan-api-internal, --port, "8630", --reload, --reload-dir, /app/kadan]
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
+
+  # Watchfiles owns the runner process directly; the development entry point
+  # retries crashes without leaving a shell's child behind during reload.
+  kadan-runner:
+    command:
+      - watchfiles
+      - --filter
+      - python
+      - kadan.runner.__main__.run_development
+      - /app/kadan
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ./services/kadan/kadan:/app/kadan:ro
 

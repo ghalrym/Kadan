@@ -328,3 +328,20 @@ def test_assignment_proxy_accepts_storage_no_content_response():
             )
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("limits", "expected"),
+    [
+        ({"context_limit": 65536, "architecture_context_limit": 262144}, 65536),
+        ({"context_limit": None, "architecture_context_limit": 262144}, 262144),
+        ({}, None),
+    ],
+)
+def test_ready_status_reports_the_selected_models_context_window(limits, expected):
+    settings = ready_settings()
+    settings["tiers"][0]["models"][0]["model"].update(limits)
+    status = run(
+        Boundary(settings=settings), lambda service: service.inference_status()
+    )
+    assert status.context_limit == expected

@@ -5,10 +5,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# Compose requires the worker token when it parses the file. CI only builds and
-# validates configuration; this placeholder is not a secret and never serves.
+# Compose requires service keys when parsing the file. CI only builds and
+# validates configuration; these placeholders are not secrets and never serve.
 env:
   HIKARI_WORKER_TOKEN: ci-placeholder-not-a-secret
+  KADAN_SANDBOX_API_KEY: ci-placeholder-not-a-secret
 concurrency:
   group: services-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
