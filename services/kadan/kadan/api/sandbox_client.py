@@ -29,6 +29,13 @@ TEXT_TYPES = ("application/json", "text/", "application/xml", "application/javas
 # then answers 504 after 60 seconds until the browser is restarted.
 BROWSER_RESTART_PATH = "/v1/browser/restart"
 BROWSER_RESTART_SECONDS = 60
+# Only these reads can be safely repeated after an uncertain gateway timeout.
+# A GET alone is not sufficient: reading console logs can also clear them.
+BROWSER_RETRY_PATHS = {
+    "/v1/browser/tabs",
+    "/v1/browser/page/markdown",
+    "/v1/browser/screenshot",
+}
 BROWSER_RECOVERED = (
     "The browser stopped responding, so Kadan restarted it and retried. "
     "Open tabs and page state were reset."
@@ -134,7 +141,8 @@ class SandboxClient:
         """Call one sandbox route for a tool and summarize the response for the agent.
 
         Failed HTTP statuses are returned, not raised, so the agent can correct
-        itself. A jammed browser is restarted once and the call retried.
+        itself. Known browser reads can restart a jammed browser and retry once.
+        Other browser timeouts preserve the state for inspection before retrying.
         """
         request: dict[str, Any] = {"params": params, "data": data, "files": files}
         if json_body is not None:
@@ -145,6 +153,12 @@ class SandboxClient:
             and path != BROWSER_RESTART_PATH
             and result["status"] == 504
         ):
+            if method != "GET" or path not in BROWSER_RETRY_PATHS:
+                return {
+                    **result,
+                    "error": "The browser did not confirm this operation. It may "
+                    "or may not have run; inspect the current state before retrying.",
+                }
             try:
                 await self.request(
                     "POST", BROWSER_RESTART_PATH, seconds=BROWSER_RESTART_SECONDS
