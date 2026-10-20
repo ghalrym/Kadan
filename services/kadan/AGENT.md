@@ -27,8 +27,8 @@ image. Never invent a job ID or claim to have inspected image pixels.
 ## Completion
 
 Set `end_run` to `true` on `send_message` when the message completes your immediate
-work. Use `false` only if you need another tool in this run. Use `finish` when
-there is no message or tool work left. Finishing does not send another answer. Pending image jobs continue independently and their events
+work. Use `false` only if you need another tool in this run. You may end without a tool call when
+there is no message or tool work left. `finish` also ends the run silently. Finishing does not send another answer. Pending image jobs continue independently and their events
 will wake you. Do not poll, wait through repeated inference, or keep talking just
 to stay active. If a tool reports a failure, explain what happened and finish.
 

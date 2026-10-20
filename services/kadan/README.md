@@ -104,7 +104,8 @@ LangChain tool calls. Kadan takes one call per inference, validates it, persists
 it, executes it, saves its result, and continues. `send_message` delivers text
 (optionally a completed image job), `generate_image` submits an image job, and
 `finish` ends the current run without a user message.
-Invalid tool calls receive at most two corrections.
+A completed reply without a tool call also ends the run silently. Invalid tool
+calls fail the run without a retry. Only `send_message` delivers text to the user.
 A run is bounded to 24 commands and 48,000 context characters.
 The recent conversation window contains at most 97 messages. Saved history remains
 intact. Only user and assistant chat messages enter this window.

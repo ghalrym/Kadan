@@ -560,20 +560,13 @@ def test_image_event_resumes_graph_in_same_conversation(boundary, status):
     assert len(boundary.controller.inference.calls) == 1
 
 
-@pytest.mark.parametrize("invalid_attempts", [2, 3])
-def test_graph_retains_invalid_command_correction_limit(boundary, invalid_attempts):
+def test_invalid_commands_fail_the_run_without_a_retry(boundary):
     boundary.controller.inference = Commands(
-        *[
-            ServiceError("Invalid command", 502, "invalid_command")
-            for _ in range(invalid_attempts)
-        ],
-        finish(),
+        ServiceError("Invalid command", 502, "invalid_command"), finish()
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == (
-        "completed" if invalid_attempts == 2 else "failed"
-    )
-    assert len(boundary.controller.inference.calls) == 3
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 1
     assert boundary.deliveries == []
 
 
@@ -602,17 +595,15 @@ def test_cancelling_graph_task_cancels_inflight_inference(boundary):
     assert boundary.current.transcript[-1].role == "user"
 
 
-def test_graph_allows_full_command_budget_and_corrections(boundary):
+def test_graph_allows_full_command_budget(boundary):
     boundary.controller.inference = Commands(
-        ServiceError("Invalid command", 502, "invalid_command"),
-        ServiceError("Invalid command", 502, "invalid_command"),
         *[send(content=f"Message {index}", end_run=False) for index in range(23)],
         finish(),
     )
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
     assert len(boundary.deliveries) == 23
-    assert len(boundary.controller.inference.calls) == 26
+    assert len(boundary.controller.inference.calls) == 24
 
 
 def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
@@ -642,3 +633,13 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
         for key in span.attributes
     )
     provider.shutdown()
+
+
+def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.deliveries == []
