@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource
-from kadan.runner.agent_inference import ToolCommand
+from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import AgentRuns
 
 
@@ -503,12 +503,38 @@ def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
     jobs = boundary.jobs
     boundary.jobs = {}
     baseline = asyncio.run(boundary.controller.context(boundary.current))
-    budget = sum(len(message.content) for message in baseline) + 10
+    budget = (
+        sum(len(message.content) for message in baseline)
+        + tool_characters(boundary.controller.bound_tools())
+        + 10
+    )
     monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
     assert asyncio.run(boundary.controller.context(boundary.current)) == baseline
     boundary.jobs = jobs
     with pytest.raises(ServiceError, match="context limit"):
         asyncio.run(boundary.controller.context(boundary.current))
+
+
+def test_history_budget_reserves_bound_tool_definitions(boundary, monkeypatch):
+    baseline = asyncio.run(boundary.controller.context(boundary.current))
+    budget = sum(len(message.content) for message in baseline)
+    monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
+    with pytest.raises(ServiceError, match="context"):
+        asyncio.run(boundary.controller.context(boundary.current))
+
+
+def test_saved_context_reserves_bound_tool_definitions_before_inference(
+    boundary, monkeypatch
+):
+    transcript = [RunMessage(role="user", content="Existing context")]
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.MAX_CONTEXT", len(transcript[0].content)
+    )
+    boundary.controller.inference = Commands(finish())
+    run = boundary.start_owned(transcript=transcript)
+    with pytest.raises(ServiceError, match="context limit"):
+        asyncio.run(boundary.controller.advance(run))
+    assert boundary.controller.inference.calls == []
 
 
 @pytest.mark.parametrize("status", ["completed", "failed"])
