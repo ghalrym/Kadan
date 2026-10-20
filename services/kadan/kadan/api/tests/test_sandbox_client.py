@@ -161,21 +161,71 @@ def routes(seen):
     return [(request.method, request.url.path) for request in seen]
 
 
-def test_jammed_browser_is_restarted_and_the_call_retried_once():
+@pytest.mark.parametrize(
+    "path",
+    ["/v1/browser/tabs", "/v1/browser/page/markdown", "/v1/browser/screenshot"],
+)
+def test_jammed_browser_read_is_restarted_and_retried_once(path):
     handler, seen = serving(
         GATEWAY_TIMEOUT,
         httpx.Response(200, json={"success": True}),
         httpx.Response(200, json={"data": [{"index": 0}]}),
     )
-    result = asyncio.run(sandbox(handler).run("GET", "/v1/browser/tabs"))
+    result = asyncio.run(sandbox(handler).run("GET", path))
     assert routes(seen) == [
-        ("GET", "/v1/browser/tabs"),
+        ("GET", path),
         ("POST", "/v1/browser/restart"),
-        ("GET", "/v1/browser/tabs"),
+        ("GET", path),
     ]
     assert result["status"] == 200
     assert result["body"] == {"data": [{"index": 0}]}
     assert result["recovered"] == BROWSER_RECOVERED
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "options"),
+    [
+        (
+            "POST",
+            "/v1/browser/actions",
+            {"json_body": {"action_type": "CLICK", "x": 10, "y": 20}},
+        ),
+        (
+            "POST",
+            "/v1/browser/page/navigate",
+            {"json_body": {"url": "https://example.com"}},
+        ),
+        (
+            "GET",
+            "/v1/browser/page/console",
+            {"params": {"clear": True}},
+        ),
+    ],
+)
+def test_unconfirmed_browser_operation_preserves_state_without_replay(
+    method, path, options
+):
+    handler, seen = serving(GATEWAY_TIMEOUT)
+    result = asyncio.run(sandbox(handler).run(method, path, **options))
+    assert routes(seen) == [(method, path)]
+    assert result["status"] == 504
+    assert "may or may not have run" in result["error"]
+    assert "recovered" not in result
+
+
+def test_browser_read_that_times_out_again_is_not_retried_twice():
+    handler, seen = serving(
+        GATEWAY_TIMEOUT,
+        httpx.Response(200, json={"success": True}),
+        GATEWAY_TIMEOUT,
+    )
+    result = asyncio.run(sandbox(handler).run("GET", "/v1/browser/page/markdown"))
+    assert routes(seen) == [
+        ("GET", "/v1/browser/page/markdown"),
+        ("POST", "/v1/browser/restart"),
+        ("GET", "/v1/browser/page/markdown"),
+    ]
+    assert result["status"] == 504
 
 
 def test_failed_browser_restart_is_reported_without_a_retry():
