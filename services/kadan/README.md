@@ -11,6 +11,8 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Continue the same conversation while an image is being generated.
 - Receive text and images through the agent's explicit messaging tool.
 - Browse existing memories, Spaces and file metadata without changing them.
+- Give the agent its own computer, an [AIO Sandbox](https://github.com/agent-infra/sandbox),
+  for browser, shell and file tools.
 
 Kadan keeps API management separate from runner execution. The API queues durable
 work and exposes saved state; the runner owns the continuation loop. Hikari supplies text and image
@@ -128,6 +130,34 @@ be acknowledged by Hikari before cancellation completes. Failures remain visible
 A queued run uses the current selected Hikari model when it starts; no model setting
 is changed. Model loading may delay the first reply.
 
+## Computer
+
+The computer is the `kadan-sandbox` Compose service, the pinned
+`ghcr.io/agent-infra/sandbox` image. `kadan/runner/tools/` defines wrappers for its
+`/v1` routes as LangChain tools: one module per area (`browser`, `shell`, `bash`,
+`file`, `code`, `jupyter`, `nodejs`, `mcp`, `sandbox`, `proxy`, `skills`,
+`display`, `util`), each tool a Pydantic argument model and an async function
+whose docstring is its description, named `<area>_<action>` (for example
+`browser_navigate`, `shell_exec_command`). `conversation.py` holds
+`send_message`, `generate_image` and `finish`. Each module's `TOOLS` list
+selects the enabled computer tools. When a computer is configured, `ALL_TOOLS`
+is bound to inference with `HikariChatModel.bind_tools()`; otherwise only the
+conversation tools are bound.
+Results are truncated to 4000 characters; binary content is reported by size
+only. Sandbox errors are returned to the agent as tool results so it can correct
+itself, and they do not fail the run. The sandbox has no idempotency keys, so
+after a runner restart an unconfirmed non-GET operation is not repeated; the
+agent is told it may or may not have run.
+
+The sandbox joins only the `computer` network with `kadan-api` and
+`kadan-runner`; it has no direct access to the default service network.
+In both normal and development Compose configurations, Kadan's API binds only
+to its `kadan-api-internal` address on the default network, leaving no control
+API listener on the computer-facing interface. Kadan can still make outbound
+HTTP and VNC connections to the sandbox. This separation does not block access
+through separately reachable LAN addresses. The sandbox publishes no port, and
+its API key stays in Kadan and the sandbox.
+
 ## Docker integration
 
 Build from the repository root:
@@ -150,12 +180,23 @@ The root Compose integration supplies the following environment. The upstream na
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
 | `KADAN_HIKARI_BROWSER_URL` | `http://127.0.0.1:8088` | Hikari operator interface; Settings is `/settings` |
 | `KADAN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","::1"]` (default) | Exact HTTP request hosts and additional browser-link hosts |
+| `KADAN_SANDBOX_URL` | `http://kadan-sandbox:8080` | The agent's computer; unset leaves the agent without one |
+| `KADAN_SANDBOX_API_KEY` | from `.env` | Shared with `kadan-sandbox` as `SANDBOX_API_KEY` |
 
-The API image listens on `0.0.0.0:8630` inside its container and is not published; the frontend publishes `127.0.0.1:8630:8080`. It runs as UID/GID `10001:10001`, supports a read-only filesystem, and requires no volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`. The image healthcheck requests `http://127.0.0.1:8630/api/health`; this checks the coordinator process. `/api/status` separately reports upstream availability without starting inference.
+Compose binds the API to `kadan-api-internal:8630` on the default network and
+does not publish it; the frontend publishes `127.0.0.1:8630:8080`. The API runs
+as UID/GID `10001:10001`, supports a read-only filesystem, and requires no
+volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`,
+`security_opt: [no-new-privileges:true]` and `restart: unless-stopped`.
+The Compose healthcheck requests `/api/health` at that bound address with
+`Host: localhost`, which the existing host guard accepts. This checks only the
+coordinator process. `/api/status` separately reports upstream availability
+without starting inference. Outside Compose, the image retains its
+`0.0.0.0:8630` listener and loopback healthcheck.
 
 Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. The service rejects other HTTP Host headers and cross-origin writes; these guards do not replace authentication.
 
-For owner-authorized access from another computer on a trusted LAN, use a deployment-specific Compose override to publish `kadan-frontend` on the server's exact LAN address, mapping host port 8630 to container port 8080. Publish `tsuchi-frontend` and `hikari-frontend` on that address at their respective host ports, also targeting container port 8080. Keep the API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining loopback for the image healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
+For owner-authorized access from another computer on a trusted LAN, use a deployment-specific Compose override to publish `kadan-frontend` on the server's exact LAN address, mapping host port 8630 to container port 8080. Publish `tsuchi-frontend` and `hikari-frontend` on that address at their respective host ports, also targeting container port 8080. Keep the API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining localhost for the Compose healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
 
 On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 

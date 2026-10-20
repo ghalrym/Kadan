@@ -121,7 +121,7 @@ services:
       - ./services/tsuchi/tsuchi:/app/tsuchi:ro
 
   kadan-api:
-    command: [uvicorn, kadan.api.server:app, --host, 0.0.0.0, --port, "8630", --reload, --reload-dir, /app/kadan]
+    command: [uvicorn, kadan.api.server:app, --host, kadan-api-internal, --port, "8630", --reload, --reload-dir, /app/kadan]
     volumes:
       - ./services/kadan/kadan:/app/kadan:ro
 

@@ -39,7 +39,7 @@ from .agent_inference import (
     parse_command,
     tool_characters,
 )
-from .tools import CONVERSATION_TOOLS, TOOLS_BY_NAME
+from .tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 
 if TYPE_CHECKING:
@@ -463,8 +463,8 @@ class AgentRuns(RunClient):
         return limit
 
     def bound_tools(self) -> list[StructuredTool]:
-        """The conversation tools available to this run."""
-        return CONVERSATION_TOOLS
+        """All tools; the computer's only when one is configured."""
+        return ALL_TOOLS if self.services.sandbox.configured else CONVERSATION_TOOLS
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
@@ -475,11 +475,16 @@ class AgentRuns(RunClient):
         conversation = RunConversation(self, run)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
-        else:
+        elif tool in CONVERSATION_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},
             )
+        else:
+            result = {
+                "tool": tool.name,
+                **await self.use_computer(tool, command, state.replayed),
+            }
         if conversation.finished:
             run = await self.update(
                 run, status="completed", owner_id=None, lease_expires_at=None
@@ -489,6 +494,26 @@ class AgentRuns(RunClient):
                 run, command.tool, result, conversation.end_run
             )
         return {"run": run, "command": None, "replayed": False}
+
+    async def use_computer(
+        self, tool: StructuredTool, command: ToolCommand, replayed: bool
+    ) -> dict:
+        if not self.services.sandbox.configured:
+            return {"error": "No computer is configured for this agent."}
+        if replayed and tool.metadata["method"] != "GET":
+            # The sandbox has no idempotency keys, so a restart must not
+            # repeat a side effect that may already have happened.
+            return {
+                "error": "The runner restarted before this operation reported "
+                "a result. It may or may not have run; check before retrying."
+            }
+        try:
+            return await tool.ainvoke(
+                command.arguments,
+                config={"configurable": {"computer": self.services.sandbox}},
+            )
+        except (ServiceError, ValidationError) as error:
+            return {"error": str(error)}
 
     async def save_result(
         self, run: AgentRun, name: str, result: dict, end_run: bool

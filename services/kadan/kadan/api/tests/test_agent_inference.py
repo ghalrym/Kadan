@@ -4,7 +4,6 @@ import json
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import StructuredTool
 
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
@@ -19,14 +18,7 @@ from kadan.runner.agent_inference import (
     render_tool_call,
 )
 from kadan.runner.tools import CONVERSATION_TOOLS
-
-
-async def shell_exec_command(command: str, timeout: int = 30) -> dict:
-    """A fake tool used only to check argument parsing."""
-    return {}
-
-
-shell_exec_command = StructuredTool.from_function(coroutine=shell_exec_command)
+from kadan.runner.tools.shell import shell_exec_command
 
 TOOLS = [*CONVERSATION_TOOLS, shell_exec_command]
 

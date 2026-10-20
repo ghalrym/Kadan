@@ -295,7 +295,15 @@ services:
       additional_contexts:
         tracing: ./services/tracing
       context: ./services/kadan
+    # Bind only the service-network address, not the sandbox-facing interface.
+    command: [uvicorn, kadan.api.server:app, --host, kadan-api-internal, --port, "8630"]
     init: true
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://kadan-api-internal:8630/api/health', headers={'Host': 'localhost'}), timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     environment:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
@@ -304,11 +312,17 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
+      KADAN_SANDBOX_URL: http://kadan-sandbox:8080
+      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
     depends_on:
       tsuchi-api:
         condition: service_healthy
       hikari-api:
         condition: service_healthy
+    networks:
+      default:
+        aliases: [kadan-api-internal]
+      computer:
     tmpfs:
       - /tmp:size=64m,mode=1777
     read_only: true
@@ -332,11 +346,14 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
       KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
+      KADAN_SANDBOX_URL: http://kadan-sandbox:8080
+      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
     depends_on:
       tsuchi-api:
         condition: service_healthy
       hikari-api:
         condition: service_healthy
+    networks: [default, computer]
     # This process has no HTTP server; the shared image's API probe does not apply.
     healthcheck:
       disable: true
@@ -345,6 +362,26 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  # The computer has no direct service-network access. Kadan's control API binds
+  # only on that network; Kadan can still reach the sandbox API and VNC here.
+  # This does not block access through separately reachable LAN addresses.
+  kadan-sandbox:
+    image: ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
+    environment:
+      SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
+      TZ: ${TZ:-UTC}
+      DISPLAY_WIDTH: "1280"
+      DISPLAY_HEIGHT: "800"
+    # Chromium's own sandbox needs these, as in the upstream Compose file.
+    security_opt: [seccomp:unconfined]
+    shm_size: 2gb
+    mem_limit: 4g
+    cpus: 2
+    volumes:
+      - sandbox_home:/home/gem
+    networks: [computer]
     restart: unless-stopped
 
   kadan-frontend:
@@ -358,7 +395,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+networks:
+  computer:
+
 volumes:
+  sandbox_home:
   model_data:
   postgres_data:
   frontend_node_modules:

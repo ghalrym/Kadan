@@ -1,8 +1,39 @@
-"""Conversation tools bound to the agent model."""
+"""Every tool the agent has, bound to the model with `bind_tools`."""
 
 from langchain_core.tools import StructuredTool
 
-from . import conversation
+from . import (
+    bash,
+    browser,
+    code,
+    conversation,
+    display,
+    file,
+    jupyter,
+    mcp,
+    nodejs,
+    proxy,
+    sandbox,
+    shell,
+    skills,
+    util,
+)
 
 CONVERSATION_TOOLS: list[StructuredTool] = conversation.TOOLS
-TOOLS_BY_NAME = {tool.name: tool for tool in CONVERSATION_TOOLS}
+COMPUTER_TOOLS: list[StructuredTool] = [
+    *browser.TOOLS,
+    *shell.TOOLS,
+    *bash.TOOLS,
+    *file.TOOLS,
+    *code.TOOLS,
+    *jupyter.TOOLS,
+    *nodejs.TOOLS,
+    *mcp.TOOLS,
+    *sandbox.TOOLS,
+    *proxy.TOOLS,
+    *skills.TOOLS,
+    *display.TOOLS,
+    *util.TOOLS,
+]
+ALL_TOOLS = [*CONVERSATION_TOOLS, *COMPUTER_TOOLS]
+TOOLS_BY_NAME = {tool.name: tool for tool in ALL_TOOLS}
