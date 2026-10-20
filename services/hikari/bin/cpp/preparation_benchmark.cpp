@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
                  )
                      .count()},
                 {"cpu_ms", 1000.0 * (std::clock() - cpu) / CLOCKS_PER_SEC}
-            }.dump() << std::endl;
+            }.dump() << '\n';
         };
         // Substeps are independent probes, not additive spans of acquire.
         // Sample zero includes the store's first acquisition; retain it separately.
