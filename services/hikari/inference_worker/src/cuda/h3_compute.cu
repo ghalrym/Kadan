@@ -3923,20 +3923,16 @@ public:
                 if (!chunks)
                     return;
                 Layout l;
-                // Inputs and the resident table go up in one copy; outputs and
-                // their weight status come back in one copy.
+                // Inputs and the resident table go up in one copy; outputs
+                // come back in one copy. Misses check their own status below.
                 const auto input = l.add(inputs * sizeof(float)),
                            resident_table = l.add(chunks * sizeof(MatvecJob)),
                            output = l.add(device_outputs * sizeof(float)),
-                           weight_status = l.add(sizeof(unsigned)),
                            miss_status = l.add(chunks * sizeof(unsigned)),
                            staging = l.add(gguf_projection_staging_bytes),
                            table = l.add(chunks * sizeof(MatvecJob));
                 require(l.bytes <= arena.scratch_limit, "h3_cuda_projection_scratch");
                 device_workspace.ensure(l.bytes);
-                checked(cudaMemsetAsync(
-                    arena.at<void>(weight_status), 0, sizeof(unsigned), cudaStreamLegacy
-                ));
                 auto read_status = [&](std::size_t at) {
                     unsigned invalid = 0;
                     checked(
@@ -3985,7 +3981,7 @@ public:
                             nullptr,
                             arena.at<float>(input) + input_offsets[j],
                             arena.at<float>(output) + output_at + offset,
-                            arena.at<unsigned>(weight_status),
+                            nullptr,
                             row_bytes,
                             partition.count,
                             unsigned(job.in),
@@ -3999,7 +3995,6 @@ public:
                         if (auto* hit = arena.weights.find(key, job.retain_misses)) {
                             // Validated when the bank admitted it.
                             chunk.weights = static_cast<const unsigned char*>(hit);
-                            chunk.status = nullptr;
                             resident.push_back(chunk);
                         } else
                             misses.push_back(
@@ -4212,9 +4207,7 @@ public:
                 launch_matvec(
                     resident_launches, resident, arena.at<MatvecJob>(resident_table)
                 );
-                std::vector<std::byte> download(
-                    weight_status - output + sizeof(unsigned)
-                );
+                std::vector<std::byte> download(device_outputs * sizeof(float));
                 checked(
                     cuda_trace::copy(
                         download.data(),
@@ -4224,13 +4217,6 @@ public:
                     )
                 );
                 stop(cancel, failed);
-                unsigned invalid = 0;
-                std::memcpy(
-                    &invalid,
-                    download.data() + (weight_status - output),
-                    sizeof(invalid)
-                );
-                require(!invalid, "h3_cuda_nonfinite_weight");
                 std::size_t local_at = 0, host_at = 0;
                 for (std::size_t j = 0; j < jobs.size(); ++j) {
                     const auto count =
