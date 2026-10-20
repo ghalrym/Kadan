@@ -1,7 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import ValidationInfo, field_validator
+from pydantic import SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,17 +15,27 @@ class Settings(BaseSettings):
     hikari_url: str = "http://127.0.0.1:8088"
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
     hikari_browser_url: str = "http://127.0.0.1:8088"
+    # The agent's AIO sandbox computer. Unset leaves the agent without one.
+    sandbox_url: str | None = None
+    sandbox_api_key: SecretStr | None = None
     frontend_directory: str = "web/dist"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
 
     @field_validator(
-        "tsuchi_url", "hikari_url", "tsuchi_browser_url", "hikari_browser_url"
+        "tsuchi_url",
+        "hikari_url",
+        "tsuchi_browser_url",
+        "hikari_browser_url",
+        "sandbox_url",
     )
     @classmethod
-    def local_service_url(cls, value: str, info: ValidationInfo) -> str:
+    def local_service_url(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if info.field_name == "sandbox_url" and not value:
+            return None
         internal_origins = {
             "tsuchi_url": "http://tsuchi-api:8000",
             "hikari_url": "http://hikari-api:8000",
+            "sandbox_url": "http://kadan-sandbox:8080",
         }
         origin = value.removesuffix("/")
         if origin == internal_origins.get(info.field_name):

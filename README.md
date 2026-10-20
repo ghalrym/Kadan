@@ -55,7 +55,8 @@ runtime libraries. The other images build their browser applications and need
 no model downloads.
 
 For a new installation, copy `.env.example` to `.env`, set `HIKARI_WORKER_TOKEN`
-(for example `openssl rand -hex 32`), then run from the repository root:
+and `KADAN_SANDBOX_API_KEY` (for example `openssl rand -hex 32` for each), then run
+from the repository root:
 
 ```sh
 docker compose up --build -d
@@ -67,7 +68,7 @@ API container and a frontend container, named after the app:
 
 | App | Containers |
 | --- | --- |
-| Kadan | `kadan-api`, `kadan-frontend`, `kadan-runner` |
+| Kadan | `kadan-api`, `kadan-frontend`, `kadan-runner`, plus `kadan-sandbox` (the agent's computer) |
 | Tsuchi | `tsuchi-api`, `tsuchi-frontend` |
 | Hikari | `hikari-api`, `hikari-frontend`, plus `hikari-postgres` and the one-shot `hikari-migrate` |
 

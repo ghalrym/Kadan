@@ -15,6 +15,7 @@ from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
+from .sandbox_client import SandboxClient
 
 CHAIN_TITLE = "Chain"
 
@@ -36,6 +37,7 @@ class LocalServices:
         self.settings = settings
         self.pets = PetClient(self)
         self.runs = RunClient(self)
+        self.sandbox = SandboxClient(self)
         self.chain_locks: dict[str, asyncio.Lock] = {}
 
     async def json_request(self, service: str, method: str, path: str, **kwargs):
@@ -146,7 +148,6 @@ class LocalServices:
                     state="model_required",
                     tier=tier,
                     model_id=model.id,
-                context_limit=model.context_limit or model.architecture_context_limit,
                     settings_url=settings_url,
                     message=f"The selected language model {progress}. Check Hikari Settings. You can save notes now.",
                 )
@@ -155,7 +156,6 @@ class LocalServices:
                     state="unavailable",
                     tier=tier,
                     model_id=model.id,
-                context_limit=model.context_limit or model.architecture_context_limit,
                     settings_url=settings_url,
                     message="The selected language model does not support inference. Check Hikari Settings.",
                 )

@@ -21,8 +21,9 @@ from kadan.runner.agent_runs import (
     MAX_CONTEXT,
     AgentRuns,
     context_characters,
+    transcript_messages,
 )
-from kadan.runner.tools import CONVERSATION_TOOLS
+from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS
 
 
 class Boundary:
@@ -33,6 +34,7 @@ class Boundary:
             hikari_url="http://unused", agent_instruction_file=str(instruction_file)
         )
         self.images = SimpleNamespace(wakeup=asyncio.Event())
+        self.sandbox = SimpleNamespace(configured=False)
         user = Message(role="user", content="Hello")
         self.conversation = Resource(
             id=uuid4(),
@@ -640,6 +642,126 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
     provider.shutdown()
 
 
+class Computer:
+    """The sandbox client boundary; records calls instead of reaching a computer."""
+
+    configured = True
+
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    async def run(self, method, path, **request):
+        self.calls.append((method, path, request))
+        if self.error:
+            raise self.error
+        return {"status": 200, "body": {"output": "hi"}}
+
+
+def tool_result(boundary, index=-1):
+    return json.loads(
+        boundary.current.transcript[index].content.removeprefix("Tool result: ")
+    )
+
+
+def test_every_conversation_and_computer_tool_is_bound(boundary):
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools == [
+        [tool.name for tool in CONVERSATION_TOOLS]
+    ]
+
+    boundary.sandbox = Computer()
+    boundary.current = boundary.current.model_copy(
+        update={"status": "queued", "transcript": []}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools == [[tool.name for tool in ALL_TOOLS]]
+
+
+def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
+    boundary.sandbox = Computer()
+
+    def finish_after_result():
+        assert boundary.current.status == "running"
+        assert tool_result(boundary) == {
+            "tool": "bash_exec",
+            "status": 200,
+            "body": {"output": "hi"},
+        }
+        return finish()
+
+    boundary.controller.inference = Commands(
+        command("bash_exec", command="echo hi"), finish_after_result
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    method, path, request = boundary.sandbox.calls[0]
+    assert (method, path) == ("POST", "/v1/bash/exec")
+    assert request["json_body"]["command"] == "echo hi"
+    assert boundary.current.status == "completed"
+    assert boundary.deliveries == []
+    replay = transcript_messages(boundary.current.transcript)
+    assert replay[-3].tool_calls[0]["name"] == "bash_exec"
+    assert replay[-2].tool_call_id == replay[-3].tool_calls[0]["id"]
+
+
+def test_computer_errors_become_tool_results(boundary):
+    boundary.sandbox = Computer(ServiceError("The computer is unavailable"))
+    boundary.controller.inference = Commands(
+        command("bash_exec", command="ls"), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert tool_result(boundary, -2)["error"] == "The computer is unavailable"
+    assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        command("shell_exec_command", command="ls"),
+        command("missing_tool"),
+        command("browser_navigate", address="https://example.com"),
+        send(content="Hi"),
+        image_request(prompt=""),
+    ],
+)
+def test_unknown_tools_and_invalid_arguments_fail_the_run(boundary, invalid):
+    boundary.controller.inference = Commands(invalid, finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize(
+    ("tool", "repeated"),
+    [("bash_exec", False), ("browser_get_markdown", True)],
+)
+def test_restart_never_repeats_an_unconfirmed_computer_side_effect(
+    boundary, tool, repeated
+):
+    boundary.sandbox = Computer()
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="instructions"),
+            RunMessage(role="user", content="Do it"),
+            RunMessage(
+                role="assistant",
+                content=command(
+                    tool, **({"command": "ls"} if tool == "bash_exec" else {})
+                ).model_dump_json(),
+            ),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    result = tool_result(boundary, -2)
+    assert bool(boundary.sandbox.calls) is repeated
+    assert ("error" in result) is not repeated
+    assert boundary.current.status == "completed"
+
+
 @pytest.mark.parametrize(
     ("tokens", "expected"),
     [(None, MAX_CONTEXT), (4096, MAX_CONTEXT), (65536, (65536 - 1024) * 3)],
@@ -653,6 +775,10 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
     ) - tool_characters(CONVERSATION_TOOLS)
+    boundary.controller.services.sandbox.configured = True
+    assert boundary.controller.transcript_limit(status) == context_characters(
+        65536
+    ) - tool_characters(ALL_TOOLS)
 
 
 def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):

@@ -68,3 +68,25 @@ def test_browser_host_allowlist_does_not_expand_upstream_origins(field):
             **{field: "http://192.0.2.10:8000"},
             _env_file=None,
         )
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://kadan-sandbox:8080", "http://kadan-sandbox:8080"),
+        ("http://127.0.0.1:18080/", "http://127.0.0.1:18080"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_computer_is_optional_and_only_local_or_owned(url, expected):
+    assert Settings(sandbox_url=url, _env_file=None).sandbox_url == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://kadan-sandbox:8081", "http://example.com:8080", "http://tsuchi-api:8000"],
+)
+def test_computer_rejects_unowned_origins(url):
+    with pytest.raises(ValidationError):
+        Settings(sandbox_url=url, _env_file=None)
