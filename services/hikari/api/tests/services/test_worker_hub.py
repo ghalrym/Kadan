@@ -5,7 +5,6 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from uuid import uuid4
 
 from fastapi import WebSocketDisconnect
 
@@ -55,13 +54,11 @@ class FakeSocket:
         return [message for message in self.sent if message.get("command") == command]
 
 
-def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), protocol=5):
+def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), protocol=4):
     return {
         "state": "hello",
         "protocol": protocol,
         "pid": 1,
-        "generation": str(uuid4()),
-        "rollout_generation": "",
         "worker": kind,
         "instance": instance or kind + "-1",
         "machine": {
@@ -188,7 +185,7 @@ class HubTestCase(unittest.IsolatedAsyncioTestCase):
         socket = FakeSocket(replies={"submit": queued, **(replies or {})})
         socket.push(hello(kind, **identity))
         socket.push({"state": "models", "models": store or models()})
-        socket.push({"state": "ready", "protocol": 5, "pid": 1})
+        socket.push({"state": "ready", "protocol": 4, "pid": 1})
         known = set(self.hub.workers)
         task = asyncio.create_task(self.hub.serve(socket))
         task.socket = socket
@@ -315,7 +312,7 @@ class RegistrationTests(HubTestCase):
         )
         socket.push(hello("image", computer="boot-2"))
         socket.push({"state": "models", "models": models(tier="go")})
-        socket.push({"state": "ready", "protocol": 5, "pid": 1})
+        socket.push({"state": "ready", "protocol": 4, "pid": 1})
         with self.assertLogs("api.services.worker_hub", level="ERROR"):
             await self.hub.serve(socket)
         self.assertEqual(socket.closed, 1011)
@@ -468,15 +465,6 @@ class DisconnectTests(HubTestCase):
         await asyncio.wait_for(self.hub.cancel_and_join(job), 1)
         with self.assertRaises(InferenceFailure):
             await job.result
-
-    async def test_disconnect_invalidates_rollout_queue_knowledge(self):
-        socket, _ = await self.connect("llm")
-        self.assertTrue(self.hub.rollout_safe)
-        await socket.close()
-        await self.settle()
-        self.assertFalse(self.hub.rollout_safe)
-        await self.connect("llm")
-        self.assertFalse(self.hub.rollout_safe)
 
     async def test_pending_controls_fail_on_disconnect(self):
         socket, worker = await self.connect("llm")

@@ -10,18 +10,7 @@ import typer
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import (
-    assets,
-    checks,
-    dev,
-    dispatch,
-    generate,
-    inference,
-    native,
-    publishing,
-    rollout,
-    verify_rollout,
-)
+from bin import assets, checks, dev, generate, inference, native, publishing
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -48,20 +37,13 @@ app.add_typer(
     publishing.app, name="pr", help="Run the restricted GitHub workflow publisher."
 )
 
-app.add_typer(
-    rollout.app, name="rollout", help="Apply a verified immutable Compose release."
-)
-
-rollout.app.command("watch")(dispatch.watch)
-rollout.app.command("verify-disposable")(verify_rollout.run)
-
 
 def main() -> None:
     try:
         app()
     except subprocess.CalledProcessError as error:
         sys.exit(error.returncode if error.returncode > 0 else 128 - error.returncode)
-    except (OSError, ValueError, inference.InferenceError) as error:
+    except (OSError, inference.InferenceError) as error:
         typer.echo(str(error), err=True)
         sys.exit(1)
 
