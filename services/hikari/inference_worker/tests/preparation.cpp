@@ -4,12 +4,16 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include <array>
+#include <barrier>
 #include <bit>
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -17,6 +21,42 @@
 #include "kadan/s1_mini_prompt.hpp"
 
 using namespace kadan::serving;
+
+namespace {
+struct MetadataReads;
+thread_local MetadataReads* metadata_reads = nullptr;
+
+struct MetadataReads {
+    std::size_t calls = 0;
+    struct stat source{};
+    bool present;
+
+    explicit MetadataReads(const fs::path& path)
+        : present(::stat(path.c_str(), &source) == 0) {
+        assert(!metadata_reads);
+        metadata_reads = this;
+    }
+
+    ~MetadataReads() {
+        metadata_reads = nullptr;
+    }
+};
+}  // namespace
+
+extern "C" ssize_t original_pread(int, void*, size_t, off_t) asm("__real_pread");
+extern "C" ssize_t observed_pread(int, void*, size_t, off_t) asm("__wrap_pread");
+
+extern "C" ssize_t observed_pread(int fd, void* output, size_t count, off_t offset) {
+    if (metadata_reads && metadata_reads->present) {
+        const auto saved_errno = errno;
+        struct stat file{};
+        if (::fstat(fd, &file) == 0 && file.st_dev == metadata_reads->source.st_dev
+            && file.st_ino == metadata_reads->source.st_ino)
+            ++metadata_reads->calls;
+        errno = saved_errno;
+    }
+    return original_pread(fd, output, count, offset);
+}
 
 namespace {
 const std::atomic_bool running{false};
@@ -1192,6 +1232,165 @@ std::string qwen35moe_metadata(bool valid) {
     return w.finish();
 }
 
+struct GgufAcquisitionFixture {
+    Directory temporary;
+    const fs::path root = temporary.path / "models/text-revision";
+    const fs::path metadata = root / "model.gguf";
+    const std::string valid_metadata = qwen35moe_metadata(true);
+    std::unique_ptr<ModelStore> store;
+
+    GgufAcquisitionFixture() {
+        const auto files = local_manifest(root, {{"model.gguf", valid_metadata}});
+        auto model = entry("text", files);
+        model["kind"] = "llm";
+        model["layout"] = "gguf";
+        model["asset_name"] = "model.gguf";
+        catalog(temporary.path / "data", Json::array({model}));
+        write_document(
+            root / "complete.json", {{"revision", "revision"}, {"files", files}}
+        );
+        prepare_gguf_assets(root, "model.gguf", running);
+        store = std::make_unique<ModelStore>(
+            temporary.path / "models",
+            temporary.path / "data",
+            [](const auto&, const auto&, const auto&, bool, auto) -> std::int64_t {
+                throw std::runtime_error("Unexpected metadata fixture download");
+            }
+        );
+    }
+
+    std::size_t acquire_reads(const std::atomic_bool& cancel = running) {
+        MetadataReads reads(metadata);
+        assert(store->acquire("text", cancel) == root);
+        return reads.calls;
+    }
+};
+
+void gguf_validation_reuse_unit() {
+    GgufAcquisitionFixture fixture;
+    assert(fixture.acquire_reads() > 0);
+    assert(fixture.acquire_reads() == 0);
+}
+
+void gguf_validation_changed_metadata_unit() {
+    GgufAcquisitionFixture fixture;
+    fixture.acquire_reads();
+    const auto modified = fs::last_write_time(fixture.metadata);
+    struct stat before{};
+    assert(::stat(fixture.metadata.c_str(), &before) == 0);
+    const auto invalid = qwen35moe_metadata(false);
+    assert(invalid.size() == fixture.valid_metadata.size());
+    bytes(fixture.metadata, invalid);
+    fs::last_write_time(fixture.metadata, modified);
+    struct stat after{};
+    assert(::stat(fixture.metadata.c_str(), &after) == 0);
+    assert(after.st_size == before.st_size);
+    assert(
+        after.st_mtim.tv_sec == before.st_mtim.tv_sec
+        && after.st_mtim.tv_nsec == before.st_mtim.tv_nsec
+    );
+    assert(
+        after.st_ctim.tv_sec != before.st_ctim.tv_sec
+        || after.st_ctim.tv_nsec != before.st_ctim.tv_nsec
+    );
+    rejects([&] { fixture.acquire_reads(); });
+    // A failed validation must not prevent a corrected checkpoint from loading.
+    bytes(fixture.metadata, fixture.valid_metadata);
+    assert(fixture.acquire_reads() > 0);
+    assert(fixture.acquire_reads() == 0);
+}
+
+void gguf_validation_replaced_metadata_unit() {
+    GgufAcquisitionFixture fixture;
+    fixture.acquire_reads();
+    struct stat before{};
+    assert(::stat(fixture.metadata.c_str(), &before) == 0);
+    const auto replacement = fixture.temporary.path / "replacement.gguf";
+    bytes(replacement, fixture.valid_metadata);
+    fs::last_write_time(replacement, fs::last_write_time(fixture.metadata));
+    fs::rename(replacement, fixture.metadata);
+    struct stat after{};
+    assert(::stat(fixture.metadata.c_str(), &after) == 0);
+    assert(after.st_ino != before.st_ino || after.st_dev != before.st_dev);
+    assert(fixture.acquire_reads() > 0);
+    assert(fixture.acquire_reads() == 0);
+}
+
+void gguf_validation_metadata_path_units() {
+    for (const bool symlink : {false, true}) {
+        GgufAcquisitionFixture fixture;
+        fixture.acquire_reads();
+        const auto outside = fixture.temporary.path / "outside.gguf";
+        fs::rename(fixture.metadata, outside);
+        if (symlink)
+            fs::create_symlink(outside, fixture.metadata);
+        rejects([&] { fixture.acquire_reads(); });
+    }
+}
+
+void gguf_validation_config_units() {
+    for (const bool symlink : {false, true}) {
+        GgufAcquisitionFixture fixture;
+        fixture.acquire_reads();
+        const auto path = fixture.root / "config.json";
+        const auto expected = read_document(path);
+        if (symlink) {
+            const auto outside = fixture.temporary.path / "config.json";
+            fs::rename(path, outside);
+            fs::create_symlink(outside, path);
+        } else {
+            auto changed = expected;
+            // The text engine's required-field validation alone accepts this.
+            changed["unexpected"] = true;
+            write_document(path, changed);
+        }
+        rejects([&] { fixture.acquire_reads(); });
+        fs::remove(path);
+        fixture.acquire_reads();
+        assert(read_document(path) == expected);
+    }
+}
+
+void gguf_validation_missing_tokenizer_unit() {
+    GgufAcquisitionFixture fixture;
+    fixture.acquire_reads();
+    const auto tokenizer = fixture.root / "tokenizer.json";
+    const auto expected = read_document(tokenizer);
+    fs::remove(tokenizer);
+    assert(fixture.acquire_reads() > 0);
+    assert(read_document(tokenizer) == expected);
+    assert(fixture.acquire_reads() == 0);
+}
+
+void gguf_validation_cancelled_unit() {
+    GgufAcquisitionFixture fixture;
+    fixture.acquire_reads();
+    const std::atomic_bool cancelled{true};
+    try {
+        fixture.acquire_reads(cancelled);
+        assert(false);
+    } catch (const RequestError& error) {
+        assert(error.status == 499);
+    }
+    assert(fixture.acquire_reads() == 0);
+}
+
+void gguf_validation_concurrent_unit() {
+    GgufAcquisitionFixture fixture;
+    // Both lanes see complete assets, but race their first cache publication.
+    std::barrier start(2);
+    auto acquire = [&] {
+        start.arrive_and_wait();
+        fixture.acquire_reads();
+        for (unsigned i = 0; i < 8; ++i)
+            assert(fixture.acquire_reads() == 0);
+    };
+    auto first = std::async(std::launch::async, acquire);
+    auto second = std::async(std::launch::async, acquire);
+    first.get();
+    second.get();
+}
+
 void gguf_acquisition_units() {
     // Metadata-only fixtures: the fetch boundary is fake and no checkpoint
     // tensors exist, so this validates acquisition without inference.
@@ -1799,6 +1998,14 @@ int main() {
     single_file_acquisition_units();
     upstream_manifest_units();
     gguf_acquisition_units();
+    gguf_validation_reuse_unit();
+    gguf_validation_changed_metadata_unit();
+    gguf_validation_replaced_metadata_unit();
+    gguf_validation_metadata_path_units();
+    gguf_validation_config_units();
+    gguf_validation_missing_tokenizer_unit();
+    gguf_validation_cancelled_unit();
+    gguf_validation_concurrent_unit();
     job_units();
     whisper_conversion_units();
     tokenizer_asset_units();

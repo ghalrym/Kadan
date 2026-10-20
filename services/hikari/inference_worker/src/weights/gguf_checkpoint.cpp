@@ -83,6 +83,21 @@ struct File {
         );
     }
 
+    WeightIdentity identity() const {
+        const auto& s = initial;
+        return {
+            std::uint64_t(s.st_dev),
+            std::uint64_t(s.st_ino),
+            std::uint64_t(s.st_size),
+            std::uint64_t(s.st_mtim.tv_sec),
+            std::uint64_t(s.st_mtim.tv_nsec),
+            std::uint64_t(s.st_ctim.tv_sec),
+            std::uint64_t(s.st_ctim.tv_nsec),
+            0,
+            0
+        };
+    }
+
     void read(
         std::uint64_t at,
         std::span<std::uint8_t> output,
@@ -807,6 +822,7 @@ bool GgufCheckpoint::has(std::string_view key) const {
 
 struct GgufMetadata::Impl {
     Context metadata;
+    WeightIdentity identity;
 };
 
 GgufMetadata::GgufMetadata(const std::string& path, const std::atomic_bool& cancel)
@@ -815,10 +831,20 @@ GgufMetadata::GgufMetadata(const std::string& path, const std::atomic_bool& canc
     File file(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
     Header header(file, cancel);
     impl_->metadata = parse_metadata(file, header);
+    impl_->identity = file.identity();
     stop(cancel);
 }
 
 GgufMetadata::~GgufMetadata() = default;
+
+WeightIdentity GgufMetadata::identity() const {
+    return impl_->identity;
+}
+
+WeightIdentity GgufMetadata::file_identity(const std::string& path) {
+    File file(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
+    return file.identity();
+}
 
 std::size_t GgufMetadata::tensor_count() const {
     return gguf_get_n_tensors(impl_->metadata.get());

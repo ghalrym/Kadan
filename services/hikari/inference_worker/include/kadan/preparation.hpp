@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "kadan/inference_owner.hpp"
+#include "kadan/weight_identity.hpp"
 
 namespace kadan::serving {
 using Json = nlohmann::json;
@@ -26,10 +28,21 @@ std::string
 base64_decode(std::string_view encoded, std::size_t maximum = 3 * 1024 * 1024);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
+
+// Only the validated identity and expected configuration survive preparation;
+// the tokenizer vocabulary and merge table are released after parsing.
+struct GgufAssetValidation {
+    WeightIdentity identity;
+    Json config;
+};
+
 // Validate the GGUF architecture and derive config.json and tokenizer.json
 // from the first file's metadata before any remaining split is downloaded.
 void prepare_gguf_assets(
-    const fs::path&, const std::string& first_file, const std::atomic_bool& cancel
+    const fs::path&,
+    const std::string& first_file,
+    const std::atomic_bool& cancel,
+    std::optional<GgufAssetValidation>* validation = nullptr
 );
 
 struct ManifestFile {
@@ -119,6 +132,8 @@ public:
     ) const;
 
 private:
+    void
+    prepare_gguf(const CatalogEntry&, const fs::path&, const std::atomic_bool& cancel);
     std::vector<ManifestFile>
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
@@ -127,6 +142,8 @@ private:
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
+    std::mutex gguf_mutex_;
+    std::map<std::string, GgufAssetValidation> gguf_validations_;
 };
 
 // What a worker needs before the API grants its budget, from the catalog or,
