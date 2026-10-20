@@ -3540,8 +3540,8 @@ public:
                         return false;
             }
         }
-        if (threads_.size() != 1 || !rows || rows > 65535 || !heads || !kv_heads
-            || heads % kv_heads || heads > 65535 || !dim || dim > cached_attention_dim
+        if (!rows || rows > 65535 || !heads || !kv_heads || heads % kv_heads
+            || heads > 65535 || !dim || dim > cached_attention_dim
             || positions > std::size_t(INT_MAX) / std::max<std::size_t>(width, 1)
             || q.size() != rows * heads * dim || output.size() != q.size()
             || keys.size() < positions * width || values.size() < positions * width)
@@ -3549,6 +3549,8 @@ public:
         for (float v : q)
             require(std::isfinite(v), "h3_cuda_nonfinite_input");
         bool admitted = false;
+        // split(1) keeps the complete mirror on the last selected device,
+        // including when projections use several devices.
         split(
             1,
             cancel,
@@ -3687,10 +3689,10 @@ public:
         require(!cancel.load(), "h3_cuda_cancelled");
         const auto rows = step.rows, dim = step.dim, heads = step.value_heads;
         const auto channels = dim * (2 * step.key_heads + heads), inner = heads * dim;
-        if (threads_.size() != 1 || !rows || !dim || dim > 256 || dim % 32
-            || !step.key_heads || !heads || heads > 65535 || step.kernel < 2
-            || step.qkv.size() != rows * channels || step.z.size() != rows * inner
-            || step.alpha.size() != rows * heads || step.beta.size() != rows * heads
+        if (!rows || !dim || dim > 256 || dim % 32 || !step.key_heads || !heads
+            || heads > 65535 || step.kernel < 2 || step.qkv.size() != rows * channels
+            || step.z.size() != rows * inner || step.alpha.size() != rows * heads
+            || step.beta.size() != rows * heads
             || step.conv.size() != channels * step.kernel || step.dt.size() != heads
             || step.a.size() != heads || step.norm.size() != dim
             || step.output.size() != rows * inner)
@@ -3703,6 +3705,8 @@ public:
                           history_floats = past * channels,
                           constant_floats = channels * step.kernel + 2 * heads + dim;
         bool done = false;
+        // The single task keeps this layer's state on the same selected device
+        // for every step; projection partitioning does not change its owner.
         split(
             1,
             cancel,
