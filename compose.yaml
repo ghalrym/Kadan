@@ -283,7 +283,7 @@ services:
       context: ./services/hikari/frontend
     init: true
     ports:
-      - "127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}:8080"
+      - "0.0.0.0:${HIKARI_FRONTEND_PORT:-8088}:8080"
     depends_on:
       hikari-api:
         condition: service_healthy
@@ -291,6 +291,7 @@ services:
     environment:
       WATCH_POLLING: "true"
       API_PROXY_TARGET: http://hikari-api:8000
+      ALLOWED_HOSTS: ${HIKARI_ALLOWED_HOSTS:-[]}
     volumes:
       - ./services/hikari/frontend:/app
       - frontend_node_modules:/app/node_modules
@@ -314,7 +315,7 @@ services:
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       TSUCHI_DATA_DIR: /data
       TSUCHI_MAX_UPLOAD_BYTES: ${TSUCHI_MAX_UPLOAD_BYTES:-104857600}
-      TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi-api"]'
+      TSUCHI_ALLOWED_HOSTS: ${TSUCHI_ALLOWED_HOSTS:-["localhost","127.0.0.1","::1","tsuchi-api"]}
     volumes:
       - tsuchi_data:/data
       - ./services/tsuchi/tsuchi:/app/tsuchi:ro
@@ -331,7 +332,7 @@ services:
       context: ./services/tsuchi/web
     init: true
     ports:
-      - "127.0.0.1:${TSUCHI_PORT:-8620}:8080"
+      - "0.0.0.0:${TSUCHI_PORT:-8620}:8080"
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -339,6 +340,7 @@ services:
     environment:
       WATCH_POLLING: "true"
       API_PROXY_TARGET: http://tsuchi-api:8000
+      ALLOWED_HOSTS: ${TSUCHI_ALLOWED_HOSTS:-[]}
     volumes:
       - ./services/tsuchi/web:/app
       - tsuchi_frontend_node_modules:/app/node_modules
@@ -368,6 +370,7 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
+      KADAN_ALLOWED_HOSTS: ${KADAN_ALLOWED_HOSTS:-["localhost","127.0.0.1","::1"]}
       KADAN_TSUCHI_URL: http://tsuchi-api:8000
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
@@ -459,7 +462,7 @@ services:
       context: ./services/kadan/web
     init: true
     ports:
-      - "127.0.0.1:${KADAN_PORT:-8630}:8080"
+      - "0.0.0.0:${KADAN_PORT:-8630}:8080"
     depends_on:
       kadan-api:
         condition: service_healthy
@@ -467,6 +470,7 @@ services:
     environment:
       WATCH_POLLING: "true"
       API_PROXY_TARGET: http://kadan-api:8630
+      ALLOWED_HOSTS: ${KADAN_ALLOWED_HOSTS:-[]}
     volumes:
       - ./services/kadan/web:/app
       - kadan_frontend_node_modules:/app/node_modules

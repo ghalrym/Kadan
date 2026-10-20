@@ -176,7 +176,7 @@ docker build -t kadan-frontend:local services/kadan/web
 
 Compose runs these as `kadan-api`, `kadan-runner` and `kadan-frontend`. The runner uses the API image with watchfiles restarting it after source edits, has no HTTP listener or published port, and disables the image’s API healthcheck. The frontend image runs Vite with hot reload and proxies `/api`, `/docs` and `/openapi.json` to `kadan-api`.
 
-The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs point at the loopback ports published on the host.
+The root Compose integration supplies the following environment. The upstream names are specific to the shared Compose network; browser URLs supply the published operator ports. Status responses replace their loopback hostname with the validated browser hostname. Explicit non-loopback browser URLs remain unchanged.
 
 | Variable | Compose value | Purpose |
 | --- | --- | --- |
@@ -186,12 +186,12 @@ The root Compose integration supplies the following environment. The upstream na
 | `KADAN_HIKARI_URL` | `http://hikari-api:8000` | Inference API inside Docker |
 | `KADAN_TSUCHI_BROWSER_URL` | `http://127.0.0.1:8620` | Storage operator interface |
 | `KADAN_HIKARI_BROWSER_URL` | `http://127.0.0.1:8088` | Hikari operator interface; Settings is `/settings` |
-| `KADAN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","::1"]` (default) | Exact HTTP request hosts and additional browser-link hosts |
+| `KADAN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","::1"]` (default) | Explicit DNS request hosts and additional browser-link hosts; IP request hosts are accepted |
 | `KADAN_SANDBOX_URL` | `http://kadan-sandbox:8080` | The agent's computer; unset leaves the agent without one |
 | `KADAN_SANDBOX_API_KEY` | from `.env` | Shared with `kadan-sandbox` as `SANDBOX_API_KEY` |
 
 Compose binds the API to `kadan-api-internal:8630` on the default network and
-does not publish it; the frontend publishes `127.0.0.1:8630:8080`. The API runs
+does not publish it; the frontend publishes `0.0.0.0:8630:8080`. The API runs
 as UID/GID `10001:10001`, supports a read-only filesystem, and requires no
 volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`,
 `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`.
@@ -201,9 +201,9 @@ coordinator process. `/api/status` separately reports upstream availability
 without starting inference. Outside Compose, the image retains its
 `0.0.0.0:8630` listener and loopback healthcheck.
 
-Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. The service rejects other HTTP Host headers and cross-origin writes; these guards do not replace authentication.
+Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Configured browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. Requests accept IP literals and configured DNS hosts. Cross-origin writes and VNC WebSockets from another origin remain rejected; these guards do not replace authentication.
 
-For owner-authorized access from another computer on a trusted LAN, use a deployment-specific Compose override to publish `kadan-frontend` on the server's exact LAN address, mapping host port 8630 to container port 8080. Publish `tsuchi-frontend` and `hikari-frontend` on that address at their respective host ports, also targeting container port 8080. Keep the API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining localhost for the Compose healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
+Root Compose exposes all three frontend ports on `0.0.0.0`; open `http://HOST_IP:8630` from another computer on a trusted network. No Compose override or fixed LAN IP is needed. Browser links follow that host and the configured Tsuchi/Hikari ports. For a DNS name, set the optional host lists documented in the root README and `.env.example`, retaining localhost and Tsuchi's internal `tsuchi-api` entry. The frontend proxies preserve the browser's Host header, so no CORS relaxation is needed. The direct Hikari model API stays loopback-only and the sandbox has no published host port, but Hikari's frontend exposes its proxied API controls. Interfaces are reachable wherever routing and firewall rules permit; keep them off the public internet. This does not add authentication or change firewall rules.
 
 On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 

@@ -74,12 +74,33 @@ The supporting interfaces are [Tsuchi](http://127.0.0.1:8620),
 Select/download the required checkpoints in Hikari Settings before asking an agent
 to generate a response. Startup does not generate content or load a model.
 
-All published ports bind to `127.0.0.1`. This is a local, single-owner prototype;
-namespace keys are storage selectors, not credentials. Keep these services off
-the public internet. Within Compose, Kadan uses `http://tsuchi-api:8000` for
-storage and `http://hikari-api:8000` for inference. Browser links use the loopback
-URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
-responses, through the same browser origin. Only the frontends and Hikari's API publish ports.
+The three browser interfaces bind to `0.0.0.0`: Kadan on port 8630, Tsuchi on
+8620, and Hikari on 8088. From another computer, open `http://HOST_IP:8630`;
+Kadan's storage and settings links follow that browser hostname and retain the
+configured frontend ports. Explicit non-loopback browser URLs remain unchanged.
+Hikari's direct model API stays on `127.0.0.1:8000`, and the sandbox has no
+published host port. Each frontend proxies API traffic through the same browser
+origin; Hikari's frontend therefore also exposes its proxied API controls.
+
+Use a trusted network: this single-owner prototype has no user authentication,
+and namespace keys are storage selectors, not credentials. Binding to all IPv4
+interfaces makes the frontends available wherever host routing and firewall rules
+permit, including to the sandbox if it can reach the host's LAN address. Do not
+expose these interfaces to the public internet.
+
+IP addresses work without configuration. For a DNS name, add that exact name to
+the optional JSON host lists in `.env` (no wildcard is needed):
+
+```dotenv
+KADAN_ALLOWED_HOSTS=["localhost","127.0.0.1","::1","kadan.home"]
+TSUCHI_ALLOWED_HOSTS=["localhost","127.0.0.1","::1","tsuchi-api","kadan.home"]
+HIKARI_ALLOWED_HOSTS=["kadan.home"]
+```
+
+Compose shares each list with its frontend and, for Kadan/Tsuchi, its API. Retain
+`tsuchi-api` for internal storage calls. Unknown DNS hosts remain rejected. Kadan and Tsuchi reject cross-origin writes;
+Kadan VNC WebSockets require the exact browser origin. Internal service
+URLs remain `http://tsuchi-api:8000` and `http://hikari-api:8000`.
 
 Optionally copy `.env.example` to `.env` to change browser ports, credentials or
 the Tsuchi upload limit. The default worker token and sandbox API key are public

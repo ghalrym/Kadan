@@ -1,3 +1,4 @@
+from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from starlette.exceptions import HTTPException
@@ -27,6 +28,16 @@ def allowed_request_origin(origin: str, host: str, scheme: str) -> bool:
         return False
 
 
+def is_ip_host(hostname: str | None) -> bool:
+    # Numeric hosts cannot be DNS-rebound; named hosts still need an explicit entry.
+    try:
+        return (
+            hostname is not None and "%" not in hostname and bool(ip_address(hostname))
+        )
+    except ValueError:
+        return False
+
+
 class LocalRequestSafety:
     """Local Host/Origin checks and bounded bodies, without an account system."""
 
@@ -44,14 +55,15 @@ class LocalRequestSafety:
         try:
             parsed_host = urlsplit(f"http://{host}")
             host_is_allowed = (
-                parsed_host.hostname in self.allowed_hosts
-                and not parsed_host.username
-                and not parsed_host.password
+                (
+                    parsed_host.hostname in self.allowed_hosts
+                    or is_ip_host(parsed_host.hostname)
+                )
+                and parsed_host.username is None
+                and parsed_host.password is None
+                and parsed_host.port != 0
+                and not (parsed_host.path or parsed_host.query or parsed_host.fragment)
             )
-            # Accessing port rejects malformed numbers and out-of-range values.
-            parsed_host.port
-            if parsed_host.path or parsed_host.query or parsed_host.fragment:
-                host_is_allowed = False
         except ValueError:
             host_is_allowed = False
         if not host_is_allowed:

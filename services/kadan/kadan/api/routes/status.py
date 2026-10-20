@@ -1,4 +1,6 @@
+from ipaddress import ip_address
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -32,6 +34,38 @@ class Status(BaseModel):
     hikari: InferenceState
 
 
+def browser_link(url: str, hostname: str) -> str:
+    """Use the validated browser host for local links; retain explicit remote URLs."""
+    parsed = urlsplit(url)
+    local = parsed.hostname == "localhost"
+    try:
+        local = local or ip_address(parsed.hostname or "").is_loopback
+    except ValueError:
+        pass
+    if not local:
+        return url
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return parsed._replace(netloc=netloc).geturl()
+
+
 @router.get("/api/status")
 async def status(request: Request) -> Status:
-    return await request.app.state.services.status()
+    result = await request.app.state.services.status()
+    # LocalRequestSafety validates Host before routing. Do not trust forwarded hosts.
+    hostname = request.url.hostname
+    assert hostname is not None
+    return result.model_copy(
+        update={
+            "tsuchi": result.tsuchi.model_copy(
+                update={
+                    "browser_url": browser_link(result.tsuchi.browser_url, hostname),
+                }
+            ),
+            "hikari": result.hikari.model_copy(
+                update={
+                    "settings_url": browser_link(result.hikari.settings_url, hostname),
+                }
+            ),
+        }
+    )

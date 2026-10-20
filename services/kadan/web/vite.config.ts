@@ -7,12 +7,19 @@ const apiTarget = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8630";
 // ws relays the agent computer's VNC stream.
 const apiProxy = { target: apiTarget, changeOrigin: false, ws: true };
 
+const allowedHosts: unknown = JSON.parse(process.env.ALLOWED_HOSTS ?? "[]");
+if (!Array.isArray(allowedHosts) || !allowedHosts.every((host): host is string => typeof host === "string")) {
+  throw new Error("ALLOWED_HOSTS must be a JSON array of hostnames");
+}
+
 export default defineConfig({
   plugins: [react()],
   // noVNC (the computer viewer) uses top-level await.
   build: { target: "es2022" },
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
   server: {
+    // Vite already accepts IP literals; DNS names require explicit configuration.
+    allowedHosts,
     host: "127.0.0.1",
     proxy: { "/api": apiProxy, "/openapi.json": apiProxy, "/docs": apiProxy },
     // Poll bind-mounted files when running inside Docker.

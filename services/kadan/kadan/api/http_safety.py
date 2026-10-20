@@ -1,4 +1,5 @@
 import re
+from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from starlette.exceptions import HTTPException
@@ -37,6 +38,16 @@ def same_origin(origin: str, host: str, scheme: str) -> bool:
         return False
 
 
+def is_ip_host(hostname: str | None) -> bool:
+    # Numeric hosts cannot be DNS-rebound; named hosts still need an explicit entry.
+    try:
+        return (
+            hostname is not None and "%" not in hostname and bool(ip_address(hostname))
+        )
+    except ValueError:
+        return False
+
+
 class LocalRequestSafety:
     """Restrict request hosts and reject cross-origin writes."""
 
@@ -48,7 +59,7 @@ class LocalRequestSafety:
         try:
             parsed = urlsplit(f"http://{host}")
             return (
-                parsed.hostname in self.allowed_hosts
+                (parsed.hostname in self.allowed_hosts or is_ip_host(parsed.hostname))
                 and parsed.username is None
                 and parsed.password is None
                 and parsed.port != 0
