@@ -12,6 +12,13 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced, traced_job
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import StructuredTool
 from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
@@ -24,17 +31,16 @@ from ..api.pydantic_models.agent_runs import (
     ImageJob,
     RunMessage,
 )
-from ..api.pydantic_models.inference import CompletionMessage
 from ..api.pydantic_models.resources import Message, ResourceKind
 from ..api.run_client import RunClient
 from .agent_inference import (
-    TOOL_PROTOCOL,
-    AgentCommand,
     AgentInference,
-    Finish,
-    GenerateImage,
+    ToolCommand,
     parse_command,
+    tool_characters,
 )
+from .tools import CONVERSATION_TOOLS, TOOLS_BY_NAME
+from .tools.conversation import GenerateImageArguments, SendMessageArguments
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -43,11 +49,123 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
 MAX_CONTEXT = 48000
+TOOL_RESULT = "Tool result: "
+
+
+def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
+    """The saved transcript as LangChain messages, with tool calls and results."""
+    messages: list[BaseMessage] = []
+    call = 0
+    for item in transcript:
+        if item.role == "system":
+            messages.append(SystemMessage(content=item.content))
+        elif item.role == "assistant" and item.content.startswith('{"tool":'):
+            command = parse_command(item.content)
+            call += 1
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": command.tool,
+                            "args": command.arguments,
+                            "id": f"call_{call}",
+                        }
+                    ],
+                )
+            )
+        elif item.role == "assistant":
+            messages.append(AIMessage(content=item.content))
+        elif item.content.startswith(TOOL_RESULT) and call:
+            messages.append(
+                ToolMessage(
+                    content=item.content.removeprefix(TOOL_RESULT),
+                    tool_call_id=f"call_{call}",
+                )
+            )
+        else:
+            messages.append(HumanMessage(content=item.content))
+    return messages
+
+
+def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
+    """Reject unknown tools and invalid arguments before the call is saved."""
+    if command.tool not in {tool.name for tool in tools}:
+        raise ServiceError(f"unknown tool {command.tool!r}", 502, "invalid_command")
+    try:
+        TOOLS_BY_NAME[command.tool].args_schema.model_validate(command.arguments)
+    except ValidationError as error:
+        raise ServiceError(
+            f"invalid {command.tool} arguments: {error.errors()[0]['msg']}",
+            502,
+            "invalid_command",
+        ) from error
+
+
+class RunConversation:
+    """The conversation tools' view of one run, at the step being executed."""
+
+    def __init__(self, runs: AgentRuns, run: AgentRun):
+        self.runs = runs
+        self.run = run
+        self.action_id = uuid5(run.id, f"command:{len(run.transcript)}")
+        self.end_run = False
+        self.finished = False
+
+    async def send_message(self, args: SendMessageArguments) -> dict:
+        message = Message(id=self.action_id, role="assistant", content=args.content)
+        async with self.runs.lock:
+            await self.runs.services.json_request(
+                "Tsuchi",
+                "POST",
+                self.runs.path(self.run.agent_key, self.run.id) + "/messages",
+                json={
+                    "worker_id": str(self.runs.owner),
+                    "message": message.model_dump(mode="json"),
+                    "image_job_id": str(args.image_job_id)
+                    if args.image_job_id
+                    else None,
+                },
+            )
+        self.end_run = args.end_run
+        return {
+            "tool": "send_message",
+            "delivered": True,
+            "message_id": str(self.action_id),
+        }
+
+    async def generate_image(self, args: GenerateImageArguments) -> dict:
+        image = ImageJob.model_validate(
+            await self.runs.services.json_request(
+                "Tsuchi",
+                "POST",
+                self.runs.path(self.run.agent_key, self.run.id) + "/image-jobs",
+                json={
+                    "id": str(self.action_id),
+                    "prompt": args.prompt,
+                    "request_id": str(uuid5(self.action_id, "request")),
+                    "worker_id": str(self.runs.owner),
+                },
+            )
+        )
+        self.runs.services.images.wakeup.set()
+        self.end_run = True
+        return {
+            "tool": "generate_image",
+            "job_id": str(image.id),
+            "status": image.status,
+            "delivered": image.delivered_message_id is not None,
+        }
+
+    async def finish(self) -> None:
+        self.finished = True
 
 
 class RunState(BaseModel):
     run: AgentRun
-    command: AgentCommand | None = None
+    command: ToolCommand | None = None
+    # True when the command was read back from the transcript after a restart.
+    replayed: bool = False
     corrections: int = 0
 
 
@@ -165,7 +283,7 @@ class AgentRuns(RunClient):
             if persona.kind != ResourceKind.PERSONA or persona.deleted_at:
                 raise ServiceError("The selected persona is no longer available.", 409)
             instructions += "\nSelected persona:\n" + persona.markdown
-        system = RunMessage(role="system", content=instructions + "\n" + TOOL_PROTOCOL)
+        system = RunMessage(role="system", content=instructions)
         if run.trigger_job_id:
             image = ImageJob.model_validate(
                 await self.services.json_request(
@@ -211,7 +329,12 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
-        budget = MAX_CONTEXT - len(system.content) - len(trigger.content)
+        budget = (
+            MAX_CONTEXT
+            - tool_characters(self.bound_tools())
+            - len(system.content)
+            - len(trigger.content)
+        )
         if budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
@@ -267,7 +390,8 @@ class AgentRuns(RunClient):
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
-        if run.transcript[-1].role == "assistant":
+        replayed = run.transcript[-1].role == "assistant"
+        if replayed:
             command = parse_command(run.transcript[-1].content)
         else:
             if (
@@ -278,11 +402,15 @@ class AgentRuns(RunClient):
                 >= MAX_COMMANDS
             ):
                 raise ServiceError("The agent reached its 24-command run limit.", 422)
-            if sum(len(item.content) for item in run.transcript) > MAX_CONTEXT:
-                raise ServiceError("The agent run exceeded its context limit.", 422)
             status = await self.services.inference_status()
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
+            if (
+                sum(len(item.content) for item in run.transcript)
+                + tool_characters(self.bound_tools())
+                > MAX_CONTEXT
+            ):
+                raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
             logger.info(
                 "Agent inference started run=%s at=%s",
@@ -290,11 +418,14 @@ class AgentRuns(RunClient):
                 datetime.now(UTC).isoformat(),
             )
             try:
+                tools = self.bound_tools()
                 command = await self.inference.call(
-                    [CompletionMessage(**item.model_dump()) for item in run.transcript],
+                    transcript_messages(run.transcript),
                     status.model_id,
                     f"kadan:{run.agent_key}:{run.conversation_id}",
+                    tools,
                 )
+                validate(command, tools)
             except ServiceError as error:
                 if error.code != "invalid_command" or state.corrections >= 2:
                     raise
@@ -304,7 +435,8 @@ class AgentRuns(RunClient):
                         *run.transcript,
                         RunMessage(
                             role="user",
-                            content="Your response was not a valid command. Return exactly one JSON object using the documented tool schema. No user message was delivered.",
+                            content="Your response was not a valid tool call. Return one "
+                            "call using the documented tool schema. No user message was delivered.",
                         ),
                     ],
                 )
@@ -328,81 +460,46 @@ class AgentRuns(RunClient):
                     RunMessage(role="assistant", content=command.model_dump_json()),
                 ],
             )
-        return {"run": run, "command": command}
+        return {"run": run, "command": command, "replayed": replayed}
+
+    def bound_tools(self) -> list[StructuredTool]:
+        """The conversation tools available to this run."""
+        return CONVERSATION_TOOLS
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
         command = state.command
         assert command is not None
-
-        async def execute(**arguments):
-            return await self.execute_command(state.run, type(command)(**arguments))
-
-        tool = StructuredTool.from_function(
-            coroutine=execute,
-            name=command.tool,
-            description=f"Execute the persisted {command.tool} command.",
-            args_schema=type(command),
-        )
-        run = await tool.ainvoke(command.model_dump())
-        return {"run": run, "command": None}
-
-    @traced("kadan.agent_runs.execute_command")
-    async def execute_command(self, run: AgentRun, command: AgentCommand) -> AgentRun:
-        if isinstance(command, Finish):
-            return await self.update(
+        run = state.run
+        tool = TOOLS_BY_NAME.get(command.tool)
+        conversation = RunConversation(self, run)
+        if tool is None:
+            result = {"tool": command.tool, "error": "This tool no longer exists."}
+        else:
+            result = await tool.ainvoke(
+                command.arguments,
+                config={"configurable": {"conversation": conversation}},
+            )
+        if conversation.finished:
+            run = await self.update(
                 run, status="completed", owner_id=None, lease_expires_at=None
             )
-        action_id = uuid5(run.id, f"command:{len(run.transcript)}")
-        if isinstance(command, GenerateImage):
-            image = ImageJob.model_validate(
-                await self.services.json_request(
-                    "Tsuchi",
-                    "POST",
-                    self.path(run.agent_key, run.id) + "/image-jobs",
-                    json={
-                        "id": str(action_id),
-                        "prompt": command.prompt,
-                        "request_id": str(uuid5(action_id, "request")),
-                        "worker_id": str(self.owner),
-                    },
-                )
-            )
-            self.services.images.wakeup.set()
-            result = {
-                "tool": "generate_image",
-                "job_id": str(image.id),
-                "status": image.status,
-                "delivered": image.delivered_message_id is not None,
-            }
         else:
-            message = Message(id=action_id, role="assistant", content=command.content)
-            async with self.lock:
-                await self.services.json_request(
-                    "Tsuchi",
-                    "POST",
-                    self.path(run.agent_key, run.id) + "/messages",
-                    json={
-                        "worker_id": str(self.owner),
-                        "message": message.model_dump(mode="json"),
-                        "image_job_id": str(command.image_job_id)
-                        if command.image_job_id
-                        else None,
-                    },
-                )
-            result = {
-                "tool": "send_message",
-                "delivered": True,
-                "message_id": str(action_id),
-            }
-        end_run = isinstance(command, GenerateImage) or command.end_run
+            run = await self.save_result(
+                run, command.tool, result, conversation.end_run
+            )
+        return {"run": run, "command": None, "replayed": False}
+
+    async def save_result(
+        self, run: AgentRun, name: str, result: dict, end_run: bool
+    ) -> AgentRun:
         # Save the result and release ownership together. Recovery before this
         # write replays the same action ID; after it no inference is scheduled.
         run = await self.update(
             run,
             transcript=[
                 *run.transcript,
-                RunMessage(role="user", content="Tool result: " + json.dumps(result)),
+                RunMessage(role="user", content=TOOL_RESULT + json.dumps(result)),
             ],
             **(
                 {"status": "completed", "owner_id": None, "lease_expires_at": None}
@@ -414,7 +511,7 @@ class AgentRuns(RunClient):
             logger.info(
                 "Agent run yielded run=%s tool=%s at=%s",
                 run.id,
-                command.tool,
+                name,
                 datetime.now(UTC).isoformat(),
             )
         return run

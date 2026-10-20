@@ -95,14 +95,17 @@ commands are saved before tool execution, and retries reuse their action IDs.
 The graph ends at the existing tool boundaries; image events enqueue a new run in
 the same conversation. No graph runs or inference are scheduled while idle.
 
-Hikari currently exposes text completions. Its request schema does not accept native tool binding. The async
-`HikariChatModel` adapter sends text messages through the existing stream, and
-Kadan sends a strict JSON command
-protocol alongside the instruction file, validates one complete command per
-inference, executes it, persists its result, and continues. The initial tools are
-`send_message` (optionally attaching a completed image job) and `generate_image`.
-`finish` ends the current run without a user message. Invalid commands receive at
-most two corrections; a run is bounded to 24 commands and 48,000 context characters.
+Hikari currently exposes text completions. Its request schema does not accept
+native tool binding; the async `HikariChatModel` adapter streams through it.
+Kadan binds its tools with `bind_tools()`. Hikari accepts only text, so the
+adapter renders the tool definitions into the system message in the Qwen
+checkpoint's tool format and parses `<tool_call>` blocks in the reply into
+LangChain tool calls. Kadan takes one call per inference, validates it, persists
+it, executes it, saves its result, and continues. `send_message` delivers text
+(optionally a completed image job), `generate_image` submits an image job, and
+`finish` ends the current run without a user message.
+Invalid tool calls receive at most two corrections.
+A run is bounded to 24 commands and 48,000 context characters.
 The recent conversation window contains at most 97 messages. Saved history remains
 intact. Only user and assistant chat messages enter this window.
 

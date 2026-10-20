@@ -1,9 +1,15 @@
-"""The agent's small command protocol over Hikari's text-only chat stream."""
+"""Hikari chat with LangChain tool binding over its text-only stream.
+
+Hikari accepts only text messages, so `bind_tools` renders the tool definitions
+into the system message in the Qwen checkpoint's own tool format and parses
+`<tool_call>` blocks in the reply back into LangChain tool calls.
+"""
 
 import json
-from collections.abc import AsyncIterator
-from typing import Annotated, Any, Literal
-from uuid import UUID
+import logging
+import re
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import Any
 
 import httpx
 from kadan_tracing import traced
@@ -11,61 +17,58 @@ from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
+from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from ..api.config import ServiceError
-from ..api.pydantic_models.inference import CompletionMessage
 
 MAX_COMMAND_CHARACTERS = 48000
 MAX_EVENT_CHARACTERS = 300000
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
+logger = logging.getLogger(__name__)
 
-TOOL_PROTOCOL = """You control this conversation through exactly one JSON command per response.
-Return only a JSON object, without Markdown, reasoning, or text outside the object.
-The available commands are:
-{"tool":"send_message","content":"Text to show the user","image_job_id":null,"end_run":true}
-{"tool":"generate_image","prompt":"Image description"}
-{"tool":"finish"}
-send_message delivers visible text immediately. To deliver a completed image, set
-image_job_id to its job UUID. Only deliver images whose completion event you received.
-Set end_run=true when this message completes the immediate work. This delivers the
-message and ends the run without another inference call. Use false only when you
-need another tool now.
-generate_image saves a background job and its ID, then ends this run immediately;
-submission is not delivery. Submit directly without a separate acknowledgment.
-Tool results and image completion or failure events arrive as user-role messages.
-finish ends this run without sending text. Image events will wake you again.
-Use precisely the documented fields. Content must be nonblank and at most 16000
-characters; an image prompt must be nonblank and at most 8000 characters.
-"""
+# The checkpoint chat template's tool section, verbatim.
+TOOLS_HEADER = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
+TOOLS_FOOTER = (
+    "\n</tools>\n\nIf you choose to call a function ONLY reply in the following "
+    "format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n"
+    "<parameter=example_parameter_1>\nvalue_1\n</parameter>\n"
+    "<parameter=example_parameter_2>\nThis is the value for the second parameter\n"
+    "that can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n"
+    "<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an "
+    "inner <function=...></function> block must be nested within "
+    "<tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n"
+    "- You may provide optional reasoning for your function call in natural "
+    "language BEFORE the function call, but NOT after\n- If there is no function "
+    "call available, answer the question like normal with your current knowledge "
+    "and do not tell the user about function calls\n</IMPORTANT>"
+)
+# Hikari drops special tokens, so the <tool_call> wrapper may not arrive.
+TOOL_CALL = re.compile(
+    r"(?:<tool_call>\s*)?<function=([^>\s]+)>(.*?)</function>(?:\s*</tool_call>)?",
+    re.DOTALL,
+)
+PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
 
 
-class SendMessage(BaseModel):
+class ToolCommand(BaseModel):
+    """One tool call, persisted in the run transcript before it executes."""
+
     model_config = ConfigDict(extra="forbid")
-    tool: Literal["send_message"]
-    content: str = Field(min_length=1, max_length=16000, pattern=r"\S")
-    image_job_id: UUID | None = None
-    end_run: bool = Field(strict=True)
-
-
-class GenerateImage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    tool: Literal["generate_image"]
-    prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
-
-
-class Finish(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    tool: Literal["finish"]
-
-
-AgentCommand = Annotated[
-    SendMessage | GenerateImage | Finish, Field(discriminator="tool")
-]
-COMMAND = TypeAdapter(AgentCommand)
+    tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def unique_fields(pairs: list[tuple[str, object]]) -> dict:
@@ -77,18 +80,92 @@ def unique_fields(pairs: list[tuple[str, object]]) -> dict:
     return value
 
 
-def parse_command(text: str) -> AgentCommand:
+def parse_command(text: str) -> ToolCommand:
+    """Read a saved command. Runs saved before tool binding used flat fields."""
     if len(text) > MAX_COMMAND_CHARACTERS:
         raise ServiceError(
             "The agent command exceeded its size limit.", 502, "command_too_large"
         )
     try:
         value = json.loads(text, object_pairs_hook=unique_fields)
-        return COMMAND.validate_python(value)
+        if isinstance(value, dict) and "arguments" not in value:
+            value = {
+                "tool": value.get("tool"),
+                "arguments": {
+                    key: item for key, item in value.items() if key != "tool"
+                },
+            }
+        elif isinstance(value, dict) and value.get("tool") == "computer":
+            value = {
+                "tool": str(value.get("operation", "")).replace(".", "_"),
+                "arguments": value.get("arguments", {}),
+            }
+        return ToolCommand.model_validate(value)
     except (ValueError, ValidationError) as error:
         raise ServiceError(
             "The agent returned an invalid tool command.", 502, "invalid_command"
         ) from error
+
+
+def render_tool_call(name: str, arguments: dict[str, Any]) -> str:
+    parameters = "".join(
+        f"<parameter={key}>\n"
+        + (value if isinstance(value, str) else json.dumps(value))
+        + "\n</parameter>\n"
+        for key, value in arguments.items()
+    )
+    return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
+
+
+def is_string(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    options = schema.get("anyOf") or schema.get("oneOf")
+    if options:
+        kinds = {option.get("type") for option in options if isinstance(option, dict)}
+        return kinds - {"null"} == {"string"}
+    return schema.get("type") == "string"
+
+
+def tool_section(tools: Sequence[dict]) -> str:
+    """The system prompt's tool definitions, as the checkpoint template renders them."""
+    return (
+        TOOLS_HEADER + "".join("\n" + json.dumps(tool) for tool in tools) + TOOLS_FOOTER
+    )
+
+
+def tool_characters(tools: Sequence[BaseTool]) -> int:
+    """Characters the bound tools add to the prompt."""
+    return len(tool_section([convert_to_openai_tool(tool) for tool in tools]))
+
+
+def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]:
+    """Split a reply into its text and `<tool_call>` blocks."""
+    parameters = {
+        tool["function"]["name"]: tool["function"]
+        .get("parameters", {})
+        .get("properties", {})
+        for tool in tools
+    }
+    calls = []
+    for index, match in enumerate(TOOL_CALL.finditer(text)):
+        name, body = match.groups()
+        properties = parameters.get(name, {})
+        arguments: dict[str, Any] = {}
+        for key, raw in PARAMETER.findall(body):
+            if is_string(properties.get(key)):
+                schema = properties[key]
+                options = schema.get("anyOf") or schema.get("oneOf") or []
+                nullable = any(option.get("type") == "null" for option in options)
+                arguments[key] = None if nullable and raw.strip() == "null" else raw
+                continue
+            try:
+                arguments[key] = json.loads(raw)
+            except ValueError:
+                arguments[key] = raw
+        calls.append({"name": name, "args": arguments, "id": f"call_{index}"})
+    first = TOOL_CALL.search(text)
+    return (text[: first.start()] if first else text).strip(), calls
 
 
 async def stream_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -111,7 +188,7 @@ async def stream_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
 
 
 class HikariChatModel(BaseChatModel):
-    """Hikari's text-only API; tools remain in the agent's JSON protocol."""
+    """Hikari's text-only API with tools rendered in the checkpoint's format."""
 
     client: httpx.AsyncClient = Field(exclude=True)
     hikari_url: str
@@ -122,19 +199,63 @@ class HikariChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "hikari"
 
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        return super().bind(
+            tools=[convert_to_openai_tool(tool) for tool in tools], **kwargs
+        )
+
     @staticmethod
-    def _wire_message(message: BaseMessage) -> dict[str, str]:
-        roles = {SystemMessage: "system", HumanMessage: "user", AIMessage: "assistant"}
-        role = roles.get(type(message))
-        if role is None or not isinstance(message.content, str):
-            raise ValueError(
-                "Hikari accepts only system, user and assistant text messages"
-            )
-        if isinstance(message, AIMessage) and (
-            message.tool_calls or message.invalid_tool_calls
-        ):
-            raise ValueError("Hikari does not support native tool calls")
-        return {"role": role, "content": message.content}
+    def _wire_messages(
+        messages: list[BaseMessage], tools: Sequence[dict]
+    ) -> list[dict[str, str]]:
+        wire: list[dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message.content, str):
+                raise TypeError("Hikari accepts only text messages")
+            if isinstance(message, ToolMessage):
+                response = f"<tool_response>\n{message.content}\n</tool_response>"
+                if (
+                    wire
+                    and wire[-1]["role"] == "user"
+                    and wire[-1]["content"].startswith("<tool_response>")
+                ):
+                    wire[-1]["content"] += "\n" + response
+                else:
+                    wire.append({"role": "user", "content": response})
+            elif isinstance(message, AIMessage):
+                if message.invalid_tool_calls:
+                    raise ValueError("Hikari cannot replay invalid tool calls")
+                content = "\n\n".join(
+                    part
+                    for part in [
+                        message.content.strip(),
+                        *(
+                            render_tool_call(call["name"], call["args"])
+                            for call in message.tool_calls
+                        ),
+                    ]
+                    if part
+                )
+                wire.append({"role": "assistant", "content": content})
+            elif isinstance(message, SystemMessage):
+                wire.append({"role": "system", "content": message.content})
+            elif isinstance(message, HumanMessage):
+                wire.append({"role": "user", "content": message.content})
+            else:
+                raise TypeError(
+                    "Hikari accepts system, user, assistant and tool messages"
+                )
+        if tools:
+            section = tool_section(tools)
+            if wire and wire[0]["role"] == "system":
+                wire[0]["content"] = section + "\n\n" + wire[0]["content"].strip()
+            else:
+                wire.insert(0, {"role": "system", "content": section})
+        return wire
 
     def _generate(
         self,
@@ -154,6 +275,7 @@ class HikariChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        tools = kwargs.pop("tools", [])
         if stop is not None or kwargs:
             raise ValueError("Hikari does not support stop sequences or model options")
         content: list[str] = []
@@ -165,7 +287,7 @@ class HikariChatModel(BaseChatModel):
                 "POST",
                 self.hikari_url + "/v1/chat/completions",
                 json={
-                    "messages": [self._wire_message(message) for message in messages],
+                    "messages": self._wire_messages(messages, tools),
                     "model": self.model_id,
                     "stream": True,
                     "conversation_id": self.conversation_key,
@@ -235,8 +357,11 @@ class HikariChatModel(BaseChatModel):
                 503,
                 "inference_unavailable",
             ) from error
+        text, calls = parse_tool_calls("".join(content), tools)
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content="".join(content)))]
+            generations=[
+                ChatGeneration(message=AIMessage(content=text, tool_calls=calls))
+            ]
         )
 
 
@@ -248,18 +373,28 @@ class AgentInference:
     @traced("kadan.agent_inference.call")
     async def call(
         self,
-        messages: list[CompletionMessage],
+        messages: list[BaseMessage],
         model_id: str,
         conversation_key: str,
-    ) -> AgentCommand:
-        roles = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
+        tools: Sequence[BaseTool],
+    ) -> ToolCommand:
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
             model_id=model_id,
             conversation_key=conversation_key,
-        )
-        response = await model.ainvoke(
-            [roles[message.role](content=message.content) for message in messages]
-        )
-        return parse_command(response.text)
+        ).bind_tools(tools)
+        response = await model.ainvoke(messages)
+        if not response.tool_calls:
+            raise ServiceError(
+                "The agent returned no tool call.", 502, "invalid_command"
+            )
+        # Runs execute and persist one action at a time; the transcript keeps
+        # only this call, so the model never sees later calls as done.
+        call = response.tool_calls[0]
+        try:
+            return ToolCommand(tool=call["name"], arguments=call["args"])
+        except ValidationError as error:
+            raise ServiceError(
+                "The agent returned an invalid tool command.", 502, "invalid_command"
+            ) from error

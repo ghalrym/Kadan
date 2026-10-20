@@ -1,22 +1,34 @@
 import asyncio
 import json
-from uuid import UUID
 
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.inference import CompletionMessage
 from kadan.runner.agent_inference import (
     MAX_COMMAND_CHARACTERS,
+    TOOLS_FOOTER,
+    TOOLS_HEADER,
     AgentInference,
-    Finish,
-    GenerateImage,
     HikariChatModel,
-    SendMessage,
+    ToolCommand,
     parse_command,
+    parse_tool_calls,
+    render_tool_call,
 )
+from kadan.runner.tools import CONVERSATION_TOOLS
+
+
+async def shell_exec_command(command: str, timeout: int = 30) -> dict:
+    """A fake tool used only to check argument parsing."""
+    return {}
+
+
+shell_exec_command = StructuredTool.from_function(coroutine=shell_exec_command)
+
+TOOLS = [*CONVERSATION_TOOLS, shell_exec_command]
 
 
 def chunk(content="", finish=None):
@@ -33,16 +45,19 @@ def completed(content):
     return chunk(content) + chunk(finish="stop") + "data: [DONE]\n\n"
 
 
-def invoke(stream, status=200, media_type="text/event-stream"):
-    async def call():
+def call(name, **arguments):
+    return render_tool_call(name, arguments)
+
+
+def invoke(stream, status=200, media_type="text/event-stream", seen=None):
+    async def run():
         def respond(request):
             body = json.loads(request.content)
-            assert body == {
-                "messages": [{"role": "user", "content": "Hello"}],
-                "model": "selected-model",
-                "stream": True,
-                "conversation_id": "kadan:test:conversation",
-            }
+            if seen is not None:
+                seen.append(body)
+            assert body["model"] == "selected-model"
+            assert body["stream"] is True
+            assert body["conversation_id"] == "kadan:test:conversation"
             assert request.extensions["timeout"]["read"] is None
             return httpx.Response(
                 status, text=stream, headers={"content-type": media_type}
@@ -50,85 +65,134 @@ def invoke(stream, status=200, media_type="text/event-stream"):
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await AgentInference(client, "http://hikari").call(
-                [CompletionMessage(role="user", content="Hello")],
+                [SystemMessage(content="Instructions"), HumanMessage(content="Hello")],
                 "selected-model",
                 "kadan:test:conversation",
+                TOOLS,
             )
 
-    return asyncio.run(call())
+    return asyncio.run(run())
+
+
+def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
+    seen = []
+    invoke(completed(call("finish")), seen=seen)
+    system = seen[0]["messages"][0]
+    assert system["role"] == "system"
+    assert system["content"].startswith(TOOLS_HEADER)
+    assert TOOLS_FOOTER + "\n\nInstructions" in system["content"]
+    rendered = [
+        json.loads(line)["function"]["name"]
+        for line in system["content"].split("\n")
+        if line.startswith('{"type": "function"')
+    ]
+    assert rendered == [tool.name for tool in TOOLS]
+    assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
 
 
 @pytest.mark.parametrize(
-    "command,expected",
+    ("reply", "expected"),
     [
         (
-            {
-                "tool": "send_message",
-                "end_run": True,
-                "content": "Hello",
-                "image_job_id": None,
-            },
-            SendMessage,
+            call("send_message", content="Hello", end_run=True),
+            ToolCommand(
+                tool="send_message", arguments={"content": "Hello", "end_run": True}
+            ),
         ),
         (
-            {
-                "tool": "send_message",
-                "end_run": True,
-                "content": "Here it is",
-                "image_job_id": "10000000-0000-4000-8000-000000000001",
-            },
-            SendMessage,
+            call("generate_image", prompt="A little blue bird"),
+            ToolCommand(
+                tool="generate_image", arguments={"prompt": "A little blue bird"}
+            ),
         ),
-        ({"tool": "generate_image", "prompt": "A little blue bird"}, GenerateImage),
-        ({"tool": "finish"}, Finish),
+        (call("finish"), ToolCommand(tool="finish")),
+        (
+            "I will list the files.\n\n"
+            + call("shell_exec_command", command="ls -la", timeout=30),
+            ToolCommand(
+                tool="shell_exec_command",
+                arguments={"command": "ls -la", "timeout": 30},
+            ),
+        ),
     ],
 )
-def test_valid_commands(command, expected):
-    result = invoke(completed(json.dumps(command)))
-    assert isinstance(result, expected)
-    if command.get("image_job_id"):
-        assert result.image_job_id == UUID(command["image_job_id"])
+def test_tool_calls_are_parsed_with_schema_typed_arguments(reply, expected):
+    assert invoke(completed(reply)) == expected
 
 
-def test_command_can_span_multiple_deltas():
-    result = invoke(
-        chunk('{"tool":')
-        + chunk('"finish"}')
-        + chunk(finish="stop")
-        + "data: [DONE]\n\n"
+@pytest.mark.parametrize("value", ["42", "null", "true"])
+def test_string_parameters_stay_strings_even_when_they_look_like_json(value):
+    reply = call("shell_exec_command", command=value)
+    assert invoke(completed(reply)).arguments == {"command": value}
+
+
+@pytest.mark.parametrize("image_job_id", [None, "10000000-0000-4000-8000-000000000001"])
+def test_nullable_image_id_retains_null_or_uuid(image_job_id):
+    reply = call(
+        "send_message", content="Hello", end_run=True, image_job_id=image_job_id
     )
-    assert isinstance(result, Finish)
+    command = invoke(completed(reply))
+    assert command.arguments["image_job_id"] == image_job_id
+    tool = next(tool for tool in CONVERSATION_TOOLS if tool.name == "send_message")
+    validated = tool.args_schema.model_validate(command.arguments)
+    assert validated.model_dump(mode="json")["image_job_id"] == image_job_id
 
 
-def test_saved_commands_use_the_same_validation():
-    assert isinstance(parse_command('{"tool":"finish"}'), Finish)
-    with pytest.raises(ServiceError) as error:
-        parse_command(" " * (MAX_COMMAND_CHARACTERS + 1))
-    assert error.value.code == "command_too_large"
+def test_multiline_parameter_values_are_preserved():
+    text, calls = parse_tool_calls(
+        "<tool_call>\n<function=send_message>\n<parameter=content>\nline one\n"
+        "line two\n</parameter>\n<parameter=end_run>\ntrue\n</parameter>\n"
+        "</function>\n</tool_call>",
+        [{"function": {"name": tool.name}} for tool in TOOLS],
+    )
+    assert text == ""
+    assert calls[0]["args"] == {"content": "line one\nline two", "end_run": True}
+
+
+def test_calls_without_the_tool_call_wrapper_are_parsed():
+    text, calls = parse_tool_calls(
+        "\n<function=send_message>\n<parameter=content>\nHello!\n</parameter>\n"
+        "<parameter=end_run>\ntrue\n</parameter>\n</function>\n",
+        [{"function": {"name": tool.name}} for tool in TOOLS],
+    )
+    assert text == ""
+    assert calls[0]["args"] == {"content": "Hello!", "end_run": True}
+
+
+def test_only_the_first_of_several_calls_is_taken():
+    reply = call("finish") + "\n" + call("send_message", content="x", end_run=True)
+    assert invoke(completed(reply)) == ToolCommand(tool="finish")
 
 
 @pytest.mark.parametrize(
-    "content",
+    "reply",
     [
         "Hello there",
-        '```json\n{"tool":"finish"}\n```',
-        '{"tool":"finish"} trailing text',
-        '[{"tool":"finish"}]',
-        '{"tool":"finish","content":"duplicate answer"}',
-        '{"tool":"send_message","content":" "}',
-        '{"tool":"send_message","content":1}',
-        '{"tool":"send_message","content":"Here","image_job_id":"wrong"}',
-        '{"tool":"generate_image","prompt":""}',
-        '{"tool":"unknown"}',
-        '{"tool":"finish","tool":"send_message","content":"hi"}',
-        '{"tool":"finish"',
+        '{"tool":"finish"}',
+        "<tool_call>\n<function=finish>\n</tool_call>",
+        "<tool_call>\n<function=bad name!>\n</function>\n</tool_call>",
         "",
     ],
 )
-def test_malformed_command_is_not_executed(content):
+def test_replies_without_a_tool_call_are_invalid(reply):
     with pytest.raises(ServiceError) as error:
-        invoke(completed(content))
+        invoke(completed(reply))
     assert error.value.code == "invalid_command"
+
+
+def test_saved_commands_round_trip_and_accept_older_formats():
+    command = ToolCommand(tool="send_message", arguments={"content": "Hi"})
+    assert parse_command(command.model_dump_json()) == command
+    assert parse_command('{"tool":"finish"}') == ToolCommand(tool="finish")
+    assert parse_command(
+        '{"tool":"send_message","content":"Hi","end_run":true}'
+    ) == ToolCommand(tool="send_message", arguments={"content": "Hi", "end_run": True})
+    assert parse_command(
+        '{"tool":"computer","operation":"shell.exec_command","arguments":{"command":"ls"}}'
+    ) == ToolCommand(tool="shell_exec_command", arguments={"command": "ls"})
+    with pytest.raises(ServiceError) as error:
+        parse_command(" " * (MAX_COMMAND_CHARACTERS + 1))
+    assert error.value.code == "command_too_large"
 
 
 @pytest.mark.parametrize(
@@ -148,7 +212,7 @@ def test_malformed_command_is_not_executed(content):
 )
 def test_incomplete_or_invalid_stream_cannot_execute_even_a_valid_command(ending):
     with pytest.raises(ServiceError) as error:
-        invoke(chunk('{"tool":"finish"}') + ending)
+        invoke(chunk(call("finish")) + ending)
     assert error.value.code in {"incomplete_stream", "invalid_stream"}
 
 
@@ -163,7 +227,7 @@ def test_command_size_is_bounded_across_deltas():
 )
 def test_bad_http_response_cannot_execute_command(status, media_type):
     with pytest.raises(ServiceError):
-        invoke(completed('{"tool":"finish"}'), status, media_type)
+        invoke(completed(call("finish")), status, media_type)
 
 
 def test_cancel_closes_silent_hikari_stream():
@@ -191,9 +255,7 @@ def test_cancel_closes_silent_hikari_stream():
         ) as client:
             task = asyncio.create_task(
                 AgentInference(client, "http://hikari").call(
-                    [CompletionMessage(role="user", content="Hello")],
-                    "model",
-                    "conversation",
+                    [HumanMessage(content="Hello")], "model", "conversation", TOOLS
                 )
             )
             await stream.waiting.wait()
@@ -205,57 +267,39 @@ def test_cancel_closes_silent_hikari_stream():
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("end_run", [None, "true", 1, [], {}])
-def test_message_requires_explicit_boolean_run_boundary(end_run):
-    command = {"tool": "send_message", "content": "Hello"}
-    if end_run is not None:
-        command["end_run"] = end_run
-    with pytest.raises(ServiceError) as error:
-        parse_command(json.dumps(command))
-    assert error.value.code == "invalid_command"
-
-
-def test_hikari_chat_model_preserves_text_message_roles():
-    async def check():
-        def respond(request):
-            assert json.loads(request.content) == {
-                "messages": [
-                    {"role": "system", "content": "Instructions"},
-                    {"role": "user", "content": "Hello"},
-                    {"role": "assistant", "content": "Previous command"},
+def test_tool_calls_and_results_replay_as_checkpoint_text():
+    wire = HikariChatModel._wire_messages(
+        [
+            SystemMessage(content="Instructions"),
+            HumanMessage(content="Hello"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "shell_exec_command", "args": {"command": "ls"}, "id": "1"}
                 ],
-                "model": "selected-model",
-                "stream": True,
-                "conversation_id": "conversation",
-            }
-            return httpx.Response(
-                200,
-                text=completed('{"tool":"finish"}'),
-                headers={"content-type": "text/event-stream"},
-            )
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            model = HikariChatModel(
-                client=client,
-                hikari_url="http://hikari",
-                model_id="selected-model",
-                conversation_key="conversation",
-            )
-            result = await model.ainvoke(
-                [
-                    SystemMessage(content="Instructions"),
-                    HumanMessage(content="Hello"),
-                    AIMessage(content="Previous command"),
-                ]
-            )
-            assert isinstance(result, AIMessage)
-            assert result.content == '{"tool":"finish"}'
-
-    asyncio.run(check())
+            ),
+            ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"),
+            HumanMessage(content="Thanks"),
+        ],
+        [],
+    )
+    assert wire == [
+        {"role": "system", "content": "Instructions"},
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "<tool_call>\n<function=shell_exec_command>\n"
+            "<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        },
+        {
+            "role": "user",
+            "content": '<tool_response>\n{"output": "a.txt"}\n</tool_response>',
+        },
+        {"role": "user", "content": "Thanks"},
+    ]
 
 
-@pytest.mark.parametrize("options", [{"stop": ["end"]}, {"tools": []}])
-def test_hikari_chat_model_rejects_unsupported_options(options):
+def test_hikari_chat_model_rejects_stop_sequences():
     async def check():
         async with httpx.AsyncClient() as client:
             model = HikariChatModel(
@@ -265,21 +309,13 @@ def test_hikari_chat_model_rejects_unsupported_options(options):
                 conversation_key="conversation",
             )
             with pytest.raises(ValueError, match="does not support"):
-                await model.ainvoke([HumanMessage(content="Hello")], **options)
+                await model.ainvoke([HumanMessage(content="Hello")], stop=["end"])
 
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        ToolMessage(content="result", tool_call_id="call"),
-        HumanMessage(content=[{"type": "text", "text": "Hello"}]),
-        AIMessage(
-            content="", tool_calls=[{"name": "finish", "args": {}, "id": "call"}]
-        ),
-    ],
-)
-def test_hikari_chat_model_rejects_non_text_protocol_messages(message):
-    with pytest.raises(ValueError):
-        HikariChatModel._wire_message(message)
+def test_hikari_chat_model_rejects_non_text_messages():
+    with pytest.raises(TypeError):
+        HikariChatModel._wire_messages(
+            [HumanMessage(content=[{"type": "text", "text": "Hello"}])], []
+        )
