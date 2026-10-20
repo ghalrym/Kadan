@@ -15,7 +15,7 @@ import os
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import ModelStoreStatus
@@ -44,12 +44,11 @@ from api.services.memory_scheduler import (
 )
 from api.services.tracing import JobTracing
 from fastapi import WebSocket, WebSocketDisconnect
-from kadan_tracing.rollout import admission
 from pydantic import ValidationError
 
 log = logging.getLogger(__name__)
 
-PROTOCOL = 5
+PROTOCOL = 4
 
 # Features served by an inference worker; settings go to every worker and a
 # download goes to a worker of its checkpoint's type.
@@ -161,8 +160,6 @@ class Worker:
         if self.kind not in PRIORITY:
             raise ValueError(f"Unknown worker type {self.kind!r}")
         self.instance: str = hello["instance"]
-        self.generation = str(UUID(hello["generation"]))
-        self.rollout_generation = hello["rollout_generation"]
         self.name = f"{self.kind}@{self.instance}"
         self.computer = computer
         # The worker's own GPU order mapped onto its computer's ledger.
@@ -175,7 +172,6 @@ class Worker:
         self.preparing: asyncio.Task | None = None
         self.jobs: set[str] = set()
         self.write_lock = asyncio.Lock()
-        self.hub = None
 
     @property
     def slot(self) -> WorkerSlot:
@@ -193,16 +189,9 @@ class Worker:
             budget[index] = value
         return budget
 
-    async def send(self, message: dict):
-        text = encode_request(message)
+    async def send(self, message: dict | bytes):
+        text = message if isinstance(message, bytes) else encode_request(message)
         async with self.write_lock:
-            # Recheck after the transport lock: a queued send cannot pass a proof.
-            if (
-                self.hub is not None
-                and self.hub.rollout_paused()
-                and message["command"] != "status"
-            ):
-                raise InferenceFailure("Native cohort is frozen for rollout.", 503)
             await asyncio.wait_for(self.websocket.send_text(text.decode()), 10)
 
     async def control(self, command: str, timeout: float = 30, **fields) -> dict:
@@ -237,13 +226,6 @@ class WorkerHub:
         self.joined = asyncio.Condition()
         self.scheduler: asyncio.Task | None = None
         self.closing = False
-        # A lost connection can leave native work outside this hub's view.
-        self.rollout_safe = True
-        self.rollout_epoch = 0
-        self.rollout_frozen = False
-        self.maintenance = asyncio.Lock()
-        self.submitting = 0
-        self.admission = admission
 
     async def start(self):
         if not worker_token():
@@ -271,11 +253,6 @@ class WorkerHub:
             info = hello["machine"]
             computer = self.computers.get(info["id"]) or Computer(info)
             worker = Worker(websocket, hello, computer)
-            worker.hub = self
-            if self.rollout_paused():
-                self.rollout_epoch += 1
-                self.rollout_safe = False
-                raise ValueError("Native cohort is frozen for rollout")
         except (TimeoutError, ValueError, KeyError, TypeError) as error:
             log.warning("Rejected worker: %s", error)
             await websocket.close(code=1008)
@@ -288,7 +265,6 @@ class WorkerHub:
             budget=[0] * len(computer.ledger.capacity),
         )
         self.workers[worker.id] = worker
-        self.rollout_epoch += 1
         if self.primary is None:
             self.primary = worker.id
         log.info("Worker %s connected on %s", worker.name, computer.name)
@@ -318,12 +294,6 @@ class WorkerHub:
                 self.models = worker.models
             return
         if state == "ready":
-            self.rollout_epoch += 1
-            if self.rollout_paused():
-                self.rollout_safe = False
-                await worker.websocket.close(code=1013)
-                return
-            worker.ready.clear()
             # Routable only once its settings match the primary's.
             worker.preparing = asyncio.create_task(self._prepare(worker))
             return
@@ -370,8 +340,6 @@ class WorkerHub:
         self._job_event(worker, WorkerEvent.model_validate(message))
 
     async def _disconnected(self, worker: Worker):
-        self.rollout_safe = False
-        self.rollout_epoch += 1
         self.workers.pop(worker.id, None)
         computer = worker.computer
         computer.ledger.workers.pop(worker.id, None)
@@ -440,8 +408,6 @@ class WorkerHub:
         return targets
 
     async def _send_job(self, job: InferenceJob):
-        if self.rollout_paused():
-            raise InferenceFailure("Native cohort is frozen for rollout.", 503)
         message = job.request.model_dump(mode="json")
         if job.tracing is not None:
             message.update(job.tracing.parent)
@@ -472,13 +438,6 @@ class WorkerHub:
                     await asyncio.wait_for(self.joined.wait(), remaining)
 
     async def submit(self, request: InferenceTask, *, streaming=False) -> InferenceJob:
-        self.submitting += 1
-        try:
-            return await self._submit(request, streaming=streaming)
-        finally:
-            self.submitting -= 1
-
-    async def _submit(self, request: InferenceTask, *, streaming=False) -> InferenceJob:
         if self.closing:
             raise InferenceFailure("Inference is stopping.")
         await self._wait_for_worker(request)
@@ -505,14 +464,11 @@ class WorkerHub:
 
     async def offload(self, kind: str):
         """Releases every worker of a type, e.g. after an unload."""
-        async with self.maintenance:
-            if self.rollout_paused():
-                raise InferenceFailure("Native cohort is frozen for rollout.", 503)
-            for worker in tuple(self.workers.values()):
-                slot = worker.slot
-                if worker.kind != kind or not slot.loaded or slot.releasing:
-                    continue
-                await self._apply(worker.computer, [Action("offload", worker.id)])
+        for worker in tuple(self.workers.values()):
+            slot = worker.slot
+            if worker.kind != kind or not slot.loaded or slot.releasing:
+                continue
+            await self._apply(worker.computer, [Action("offload", worker.id)])
 
     async def cancel(self, job_id: str):
         job = self.jobs.get(job_id)
@@ -693,20 +649,7 @@ class WorkerHub:
                 worker.jobs.discard(job.request.id)
                 self.jobs.pop(job.request.id, None)
 
-    def rollout_paused(self):
-        if self.rollout_frozen and not self.admission.fenced:
-            self.rollout_frozen = False
-        return self.rollout_frozen
-
     async def _prepare(self, worker: Worker):
-        while self.rollout_paused():
-            await asyncio.sleep(0.1)
-        async with self.maintenance:
-            if self.rollout_paused():
-                return
-            await self._prepare_locked(worker)
-
-    async def _prepare_locked(self, worker: Worker):
         """Synchronizes settings, then makes the worker routable."""
         try:
             await self._synchronize(worker)
@@ -728,9 +671,7 @@ class WorkerHub:
             self.wake.clear()
             for computer in tuple(self.computers.values()):
                 try:
-                    async with self.maintenance:
-                        if not self.rollout_paused():
-                            await self._schedule(computer)
+                    await self._schedule(computer)
                 except InferenceFailure as error:
                     log.warning("Scheduling on %s failed: %s", computer.name, error)
                 except Exception:

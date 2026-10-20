@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from kadan_tracing import RequestTracing, configure, shutdown
-from kadan_tracing.rollout import RolloutAdmission, admission
 
 from .config import ServiceError, Settings
 from .http_safety import LocalRequestSafety
@@ -31,14 +30,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ) as client:
             app.state.services = LocalServices(client, config)
             try:
-                async with admission.observe():
-                    yield
+                yield
             finally:
                 await shutdown(provider)
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestTracing)
-    app.add_middleware(RolloutAdmission)
     app.add_middleware(LocalRequestSafety, allowed_hosts=config.allowed_hosts)
 
     @app.exception_handler(ServiceError)

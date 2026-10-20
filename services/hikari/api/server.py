@@ -3,7 +3,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from kadan_tracing import RequestTracing, configure, shutdown
-from kadan_tracing.rollout import RolloutAdmission, admission
 
 from api.routes import health, model_lifecycle
 from api.routes.v1 import (
@@ -23,7 +22,6 @@ from api.routes.v1.images import generations as image_generations
 from api.routes.v1.images import requests as image_requests
 from api.routes.v1.videos import generations as video_generations
 from api.services.inference import inference
-from api.services.rollout import NativeBarrier
 from api.services.telemetry import TelemetryMiddleware
 
 
@@ -34,21 +32,7 @@ async def lifespan(app: FastAPI):
         cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)
         await inference.start()
-        admission.extra_active = lambda: (
-            sum(not job.result.done() for job in inference.worker.jobs.values())
-            + sum(not task.done() for task in inference.tasks.values())
-            + inference.worker.submitting
-        )
-        barrier = NativeBarrier(
-            inference.worker,
-            admission,
-            lambda: admission.active + admission.extra_active(),
-        )
-        admission.check_ready = barrier.ready
-        admission.extra_status = barrier.status
-        admission.prove_idle = barrier.prove
-        async with admission.observe():
-            yield
+        yield
 
 
 # Uvicorn configures only its own loggers; scheduling decisions log at INFO.
@@ -68,7 +52,6 @@ app = FastAPI(
 # Observe only generation POST handlers; dashboard polling is excluded.
 app.add_middleware(TelemetryMiddleware)
 app.add_middleware(RequestTracing)
-app.add_middleware(RolloutAdmission)
 
 for router in (
     health.router,

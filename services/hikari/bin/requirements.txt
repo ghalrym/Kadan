@@ -1,2 +1,1 @@
 typer==0.27.3
-pydantic==2.13.5
