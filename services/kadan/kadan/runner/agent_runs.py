@@ -343,7 +343,7 @@ class AgentRuns(RunClient):
                 ]
             )
         if limit is None:
-            limit = MAX_CONTEXT
+            limit = MAX_CONTEXT - tool_characters(self.bound_tools())
         budget = limit - len(system.content) - len(trigger.content)
         if budget < 0:
             raise ServiceError(
