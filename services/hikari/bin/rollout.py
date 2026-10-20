@@ -153,9 +153,11 @@ def affected_services(current: Release, target: Release) -> tuple[str, ...]:
     return tuple(name for name in SERVICES if name in affected)
 
 
-def atomic_json(path: Path, value: dict) -> None:
+def atomic_json(path: Path, value: dict, *, mode: int | None = None) -> None:
     temporary = path.with_suffix(".tmp")
     with temporary.open("w") as stream:
+        if mode is not None:
+            os.fchmod(stream.fileno(), mode)
         json.dump(value, stream, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
@@ -1100,6 +1102,12 @@ class Compose:
         if not all(self.status(owner)["ready"] for owner in OWNERS):
             raise RuntimeError("Owner readiness is uncertain; keep fence and journal")
 
+    def verify_open(self) -> None:
+        if any(self.status(owner)["fenced"] for owner in OWNERS):
+            raise RuntimeError(
+                "Owner admission remains fenced; preserve opening receipt"
+            )
+
     def status(self, service: str) -> dict:
         return json.loads(
             self.command(
@@ -1269,7 +1277,9 @@ class Compose:
 def fence(state: Path, closed: list[str]) -> None:
     gate = state / "gate"
     gate.mkdir(exist_ok=True)
-    atomic_json(gate / "fence.json", {"closed": closed})
+    # This non-secret control file is mounted read-only into non-root owners.
+    gate.chmod(0o755)
+    atomic_json(gate / "fence.json", {"closed": closed}, mode=0o644)
 
 
 def save_pending(state: Path, journal: dict) -> None:
@@ -1312,6 +1322,7 @@ def complete_opening(
                 )
             backend.unchanged_epochs(opening["baseline"])
         fence(state, [])
+    backend.verify_open()
     # An already-open fence can have admitted work. Finalize the durable chosen
     # release without draining, revalidating idle state or rolling it back.
     atomic_json(state / "state.json", {"good": resolved.model_dump(), "pending": None})

@@ -62,7 +62,14 @@ class OpeningTests(unittest.TestCase):
         rollout.recover(self.state, self.backend, journal)
         calls = [call[0] for call in self.backend.mock_calls]
         self.assertEqual(
-            calls, ["unchanged_epochs", "verify", "verify_runner", "unchanged_epochs"]
+            calls,
+            [
+                "unchanged_epochs",
+                "verify",
+                "verify_runner",
+                "unchanged_epochs",
+                "verify_open",
+            ],
         )
         self.backend.verify_runner.assert_called_once_with(journal, self.target)
         self.backend.replace.assert_not_called()
@@ -97,7 +104,7 @@ class OpeningTests(unittest.TestCase):
         self.backend.reset_mock()
         self.backend.verify.side_effect = RuntimeError("new admitted work is active")
         rollout.recover(self.state, self.backend, journal)
-        self.assertEqual(self.backend.mock_calls, [])
+        self.assertEqual([call[0] for call in self.backend.mock_calls], ["verify_open"])
         self.assertIsNone(self.record()["pending"])
         self.assertEqual(self.record()["good"], self.target.model_dump())
 

@@ -1,6 +1,8 @@
 """Exercise release ordering and recovery without Docker, a network, or inference."""
 
 import json
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -41,6 +43,63 @@ class RolloutTests(unittest.TestCase):
 
     def record(self):
         return json.loads((self.state / "state.json").read_text())
+
+    def test_fence_remains_readable_after_replacement_under_private_umask(self):
+        previous = os.umask(0o077)
+        try:
+            for closed in (list(rollout.OWNERS), [], list(rollout.OWNERS), []):
+                rollout.fence(self.state, closed)
+                gate = self.state / "gate"
+                self.assertEqual(stat.S_IMODE(gate.stat().st_mode), 0o755)
+                self.assertEqual(
+                    stat.S_IMODE((gate / "fence.json").stat().st_mode), 0o644
+                )
+                self.assertEqual(
+                    json.loads((gate / "fence.json").read_text())["closed"], closed
+                )
+            rollout.atomic_json(self.state / "private.json", {"private": True})
+            self.assertEqual(
+                stat.S_IMODE((self.state / "private.json").stat().st_mode), 0o600
+            )
+        finally:
+            os.umask(previous)
+
+    def test_unreadable_open_gate_preserves_receipt_until_owners_observe_open(self):
+        journal = {
+            "previous": self.current.model_dump(),
+            "target": self.target.model_dump(),
+            "phase": "replacing",
+            "affected": ["kadan-frontend"],
+            "native": None,
+            "runner": None,
+            "baseline": {},
+        }
+        rollout.fence(self.state, list(rollout.OWNERS))
+        self.backend.verify_open.side_effect = RuntimeError("still fenced")
+        with self.assertRaisesRegex(RuntimeError, "still fenced"):
+            rollout.complete_opening(self.state, self.backend, journal, self.target, {})
+        self.assertEqual(self.record()["pending"]["phase"], "opening")
+        self.assertEqual(
+            json.loads((self.state / "gate/fence.json").read_text())["closed"], []
+        )
+        self.backend.reset_mock()
+        self.backend.verify_open.side_effect = None
+        self.assertEqual(rollout.resume_locked(self.state, self.backend), self.target)
+        self.assertIsNone(self.record()["pending"])
+        self.backend.verify.assert_not_called()
+        self.backend.replace.assert_not_called()
+
+    def test_open_verification_checks_each_owner_without_requiring_idle(self):
+        backend = object.__new__(rollout.Compose)
+        backend.status = Mock(return_value={"fenced": False, "active": 3})
+        backend.verify_open()
+        self.assertEqual(backend.status.call_count, len(rollout.OWNERS))
+        for owner in rollout.OWNERS:
+            backend.status = Mock(
+                side_effect=lambda name, owner=owner: {"fenced": name == owner}
+            )
+            with self.assertRaisesRegex(RuntimeError, "preserve opening receipt"):
+                backend.verify_open()
 
     def test_only_changed_service_is_replaced(self):
         rollout.rollout(self.target, self.state, self.backend)
@@ -657,6 +716,7 @@ class CachedRecoveryTests(unittest.TestCase):
             backend = object.__new__(rollout.Compose)
             backend.state, backend.timeout = state, 1
             backend.configuration = Mock()
+            backend.verify_open = Mock()
             backend.snapshot_epochs = Mock(return_value={})
             backend.unchanged_epochs = Mock()
             backend.unaffected_running = Mock()

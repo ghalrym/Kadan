@@ -49,7 +49,10 @@ installation or prove a native worker's initial queue state.
    `RELEASE_OBJECT` follows the `Release` model in `bin/rollout.py`: source commit,
    SHA-256 of canonical `compose.yaml`, compatibility epoch `"1"`, and the complete
    service-to-image digest map. API and runner share the Kadan image.
-4. Create `gate/fence.json` with `{"closed":[]}`. Generate an initial image
+4. Create `gate/fence.json` with `{"closed":[]}`. The host-owned gate directory
+   is mode `0755` and this non-secret file is mode `0644`, including after every
+   atomic replacement under a private dispatcher umask. Containers mount it
+   read-only; private installation, journal and credential files remain protected. Generate an initial image
    overlay using `Compose.overlay(release)`, inspect it, then manually enroll
    the running containers with that overlay. It mounts the **directory** `gate`
    read-only at `/run/kadan/rollout` and sets `KADAN_ROLLOUT_SERVICE` on all four
@@ -296,7 +299,9 @@ numbers do not stand in for commit order. A bounded receipt history suppresses
 repeat deliveries, while late completions at lower run numbers are still examined.
 A proven older commit is recorded and skipped without hiding another descendant.
 The cursor advances only after verified stale/idempotent delivery or successful
-application. The checkout is never switched; only commit objects are fetched from
+application. Reopening also checks that every owner observes admission as open;
+failed observation preserves the opening receipt for recovery without stopping
+newly admitted work. The checkout is never switched; only commit objects are fetched from
 the fixed repository for ancestry checks.
 
 Read-only discovery failures use bounded subprocess timeouts and retry with a
