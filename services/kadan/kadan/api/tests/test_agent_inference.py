@@ -112,9 +112,22 @@ def test_tool_calls_are_parsed_with_schema_typed_arguments(reply, expected):
     assert invoke(completed(reply)) == expected
 
 
-def test_string_parameters_stay_strings_even_when_they_look_like_json():
-    reply = call("shell_exec_command", command="42")
-    assert invoke(completed(reply)).arguments == {"command": "42"}
+@pytest.mark.parametrize("value", ["42", "null", "true"])
+def test_string_parameters_stay_strings_even_when_they_look_like_json(value):
+    reply = call("shell_exec_command", command=value)
+    assert invoke(completed(reply)).arguments == {"command": value}
+
+
+@pytest.mark.parametrize("image_job_id", [None, "10000000-0000-4000-8000-000000000001"])
+def test_nullable_image_id_retains_null_or_uuid(image_job_id):
+    reply = call(
+        "send_message", content="Hello", end_run=True, image_job_id=image_job_id
+    )
+    command = invoke(completed(reply))
+    assert command.arguments["image_job_id"] == image_job_id
+    tool = next(tool for tool in CONVERSATION_TOOLS if tool.name == "send_message")
+    validated = tool.args_schema.model_validate(command.arguments)
+    assert validated.model_dump(mode="json")["image_job_id"] == image_job_id
 
 
 def test_multiline_parameter_values_are_preserved():

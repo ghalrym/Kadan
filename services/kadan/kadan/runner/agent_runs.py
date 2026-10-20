@@ -59,9 +59,9 @@ TOOL_RESULT = "Tool result: "
 
 def context_characters(context_limit: int | None) -> int:
     """The agent's transcript budget, sized to the selected model's window."""
-    if not context_limit:
+    if context_limit is None:
         return MAX_CONTEXT
-    return max(MAX_CONTEXT, (context_limit - RESERVED_TOKENS) * CHARACTERS_PER_TOKEN)
+    return max(0, (context_limit - RESERVED_TOKENS) * CHARACTERS_PER_TOKEN)
 
 
 def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
@@ -342,7 +342,9 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
-        budget = (limit or MAX_CONTEXT) - len(system.content) - len(trigger.content)
+        if limit is None:
+            limit = MAX_CONTEXT - tool_characters(self.bound_tools())
+        budget = limit - len(system.content) - len(trigger.content)
         if budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
@@ -449,9 +451,16 @@ class AgentRuns(RunClient):
 
     def transcript_limit(self, status) -> int:
         """The transcript budget left after the bound tool definitions."""
-        return context_characters(
+        limit = context_characters(
             getattr(status, "context_limit", None)
         ) - tool_characters(self.bound_tools())
+        if limit <= 0:
+            raise ServiceError(
+                "The model context limit leaves no room for agent instructions "
+                "after reserving tools and a reply.",
+                422,
+            )
+        return limit
 
     def bound_tools(self) -> list[StructuredTool]:
         """All tools; the computer's only when one is configured."""

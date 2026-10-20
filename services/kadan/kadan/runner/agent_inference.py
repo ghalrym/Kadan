@@ -154,7 +154,10 @@ def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]
         arguments: dict[str, Any] = {}
         for key, raw in PARAMETER.findall(body):
             if is_string(properties.get(key)):
-                arguments[key] = raw
+                schema = properties[key]
+                options = schema.get("anyOf") or schema.get("oneOf") or []
+                nullable = any(option.get("type") == "null" for option in options)
+                arguments[key] = None if nullable and raw.strip() == "null" else raw
                 continue
             try:
                 arguments[key] = json.loads(raw)
