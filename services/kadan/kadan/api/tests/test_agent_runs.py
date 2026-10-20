@@ -16,8 +16,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource
-from kadan.runner.agent_inference import ToolCommand
-from kadan.runner.agent_runs import AgentRuns
+from kadan.runner.agent_inference import ToolCommand, tool_characters
+from kadan.runner.agent_runs import (
+    MAX_CONTEXT,
+    AgentRuns,
+    context_characters,
+)
+from kadan.runner.tools import CONVERSATION_TOOLS
 
 
 class Boundary:
@@ -633,6 +638,38 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
         for key in span.attributes
     )
     provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [(None, MAX_CONTEXT), (4096, MAX_CONTEXT), (65536, (65536 - 1024) * 3)],
+)
+def test_transcript_budget_follows_the_models_context_window(tokens, expected):
+    assert context_characters(tokens) == expected
+
+
+def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
+    status = SimpleNamespace(context_limit=65536)
+    assert boundary.controller.transcript_limit(status) == context_characters(
+        65536
+    ) - tool_characters(CONVERSATION_TOOLS)
+
+
+def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):
+    async def inference_status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=65536
+        )
+
+    boundary.inference_status = inference_status
+    long = Message(role="assistant", content="x" * 60000)
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": [long, *boundary.conversation.messages]}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert any("x" * 60000 in item.content for item in boundary.current.transcript)
 
 
 def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):

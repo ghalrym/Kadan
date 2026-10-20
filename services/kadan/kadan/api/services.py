@@ -146,6 +146,7 @@ class LocalServices:
                     state="model_required",
                     tier=tier,
                     model_id=model.id,
+                context_limit=model.context_limit or model.architecture_context_limit,
                     settings_url=settings_url,
                     message=f"The selected language model {progress}. Check Hikari Settings. You can save notes now.",
                 )
@@ -154,6 +155,7 @@ class LocalServices:
                     state="unavailable",
                     tier=tier,
                     model_id=model.id,
+                context_limit=model.context_limit or model.architecture_context_limit,
                     settings_url=settings_url,
                     message="The selected language model does not support inference. Check Hikari Settings.",
                 )
@@ -161,6 +163,7 @@ class LocalServices:
                 state="ready",
                 tier=tier,
                 model_id=model.id,
+                context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
                 message="The selected language model is downloaded. Hikari loads it when chat starts.",
             )

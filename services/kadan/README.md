@@ -106,7 +106,8 @@ it, executes it, saves its result, and continues. `send_message` delivers text
 `finish` ends the current run without a user message.
 A completed reply without a tool call also ends the run silently. Invalid tool
 calls fail the run without a retry. Only `send_message` delivers text to the user.
-A run is bounded to 24 commands and 48,000 context characters.
+A run is bounded to 24 commands and to the selected model's context window,
+less the bound tool definitions (48,000 characters when Hikari does not report one).
 The recent conversation window contains at most 97 messages. Saved history remains
 intact. Only user and assistant chat messages enter this window.
 
