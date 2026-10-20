@@ -125,6 +125,21 @@ services:
     volumes:
       - ./services/kadan/kadan:/app/kadan:ro
 
+  # Restarts the runner process when its source changes. The loop stands in for
+  # restart: unless-stopped, since a crashed runner no longer exits the container;
+  # the trap passes watchfiles' stop signal on to the runner.
+  kadan-runner:
+    command:
+      - watchfiles
+      - --filter
+      - python
+      - 'sh -c ''trap "kill \$$pid; exit" INT TERM; while :; do python -m kadan.runner & pid=$$!; wait $$pid; sleep 5; done'''
+      - /app/kadan
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
+
   tsuchi-frontend:
     build:
       target: development
