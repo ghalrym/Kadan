@@ -166,7 +166,6 @@ group and command supports `--help` with its arguments and options.
 | `infer speech` / `infer transcribe` / `infer decisions` | Submit speech, transcription, or decision requests to the same queue. |
 | `infer video-status` / `infer video-cancel` / `infer video-download` | Inspect, cancel, or download a server-owned video job. |
 | `check --help` | List formatting, frontend builds, and unit-test commands. |
-| `pr preflight` / `pr publish` | Run the restricted owner-dispatched GitHub publisher with workflow inputs. |
 
 Native inspection tool builds require CMake and a C++20 compiler. They only read
 checkpoint metadata and plan memory; they do not load or execute models. Use
