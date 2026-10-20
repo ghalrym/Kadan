@@ -22,6 +22,7 @@
 #include "kadan/device_placement.hpp"
 #include "kadan/device_weights.hpp"
 #include "kadan/device_workspace.hpp"
+#include "kadan/gguf_batch_partition.hpp"
 #include "kadan/gguf_quantization.hpp"
 #include "kadan/h3_compute.hpp"
 #include "kadan/h3_resident.hpp"
@@ -105,10 +106,6 @@ constexpr unsigned gguf_matvec_rows = DenseCompute::gguf_batch_rows,
 // At most 16MiB of F32 source staging per active device, independent of free
 // VRAM; whole rows bound each source chunk.
 constexpr std::size_t source_staging_bytes = 16 * 1024 * 1024;
-
-inline std::size_t source_bytes_per_chunk(std::size_t in) {
-    return source_staging_bytes / (in * sizeof(float));
-}
 
 struct MatvecJob {
     const unsigned char* weights;
@@ -3847,27 +3844,11 @@ public:
         std::span<const GgufBatchJob> jobs, const std::atomic_bool& cancel
     ) override {
         require(!cancel.load(), "h3_cuda_cancelled");
-        // Bank slices follow per-device column splits on multiple devices.
-        if (threads_.size() != 1 || jobs.empty())
+        if (!gguf_batch_supported(jobs, threads_.size()))
             return ProjectionResult::unsupported;
         std::size_t inputs = 0, outputs = 0;
-        for (const auto& job : jobs) {
-            if (!job.identity || !job.source || !job.in || !job.out
-                || job.in > std::size_t(INT_MAX) || job.out > std::size_t(INT_MAX)
-                || job.input.empty() || job.input.size() % job.in
-                || job.input.size() / job.in > gguf_matvec_rows
-                || job.output.size() != product(job.input.size() / job.in, job.out)
-                || (job.encoding
-                    && (!gguf::supported(*job.encoding)
-                        || job.in % gguf::block_values(*job.encoding)
-                        || job.in / gguf::block_values(*job.encoding)
-                               > gguf_projection_staging_bytes
-                                     / gguf::block_bytes(*job.encoding)))
-                || (!job.encoding && job.in * sizeof(float) > source_staging_bytes)
-                || job.in % 8)
-                return ProjectionResult::unsupported;
+        for (const auto& job : jobs)
             outputs += job.output.size();
-        }
         // Jobs that share an input span (every expert of a token) upload and
         // check it once; input_offsets[j] is job j's float offset.
         std::vector<std::size_t> input_offsets(jobs.size());
@@ -3905,48 +3886,37 @@ public:
         );
         std::vector<float> host_output(outputs);
         split(
-            1,
+            threads_.size(),
             cancel,
             [&](DeviceWorkspace& device_workspace,
-                std::size_t,
+                std::size_t device,
                 std::size_t,
                 const std::atomic_bool& failed) {
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
-                // The same column chunks as dense_source/dense_gguf_source, so
-                // bank entries are shared. Each resident chunk is one table entry.
-                std::vector<std::size_t> columns;
-                std::size_t chunks = 0;
+                std::vector<GgufBatchPartition> partitions;
+                std::size_t chunks = 0, device_outputs = 0;
                 for (const auto& job : jobs) {
-                    columns.push_back(
-                        job.encoding ? gguf_projection_plan(
-                                           job.in,
-                                           job.out,
-                                           *job.encoding,
-                                           false,
-                                           arena.scratch_limit
-                                       )
-                                           .columns
-                                     : projection_plan(
-                                           job.in,
-                                           std::min<std::size_t>(
-                                               job.out, source_bytes_per_chunk(job.in)
-                                           ),
-                                           sizeof(float),
-                                           false,
-                                           1,
-                                           arena.scratch_limit
-                                       )
-                                           .columns
-                    );
-                    chunks += (job.out + columns.back() - 1) / columns.back();
+                    partitions.push_back(gguf_batch_partition(
+                        job.in,
+                        job.out,
+                        job.encoding,
+                        weight_capacities_,
+                        device,
+                        arena.scratch_limit
+                    ));
+                    chunks += partitions.back().chunks();
+                    device_outputs +=
+                        partitions.back().count * (job.input.size() / job.in);
                 }
+                if (!chunks)
+                    return;
                 Layout l;
                 // Inputs and the resident table go up in one copy; outputs and
                 // their weight status come back in one copy.
                 const auto input = l.add(inputs * sizeof(float)),
                            resident_table = l.add(chunks * sizeof(MatvecJob)),
-                           output = l.add(outputs * sizeof(float)),
+                           output = l.add(device_outputs * sizeof(float)),
                            weight_status = l.add(sizeof(unsigned)),
                            miss_status = l.add(chunks * sizeof(unsigned)),
                            staging = l.add(gguf_projection_staging_bytes),
@@ -3987,8 +3957,13 @@ public:
                                                   : gguf::block_bytes(encoding),
                                       row_bytes = job.in / values * block,
                                       rows = job.input.size() / job.in;
-                    for (std::size_t first = 0; first < job.out; first += columns[j]) {
-                        const auto count = std::min(columns[j], job.out - first);
+                    const auto& partition = partitions[j];
+                    for (std::size_t offset = 0; offset < partition.count;
+                         offset += partition.chunk_columns) {
+                        const auto first = partition.first + offset,
+                                   count = std::min(
+                                       partition.chunk_columns, partition.count - offset
+                                   );
                         const DeviceWeights::Key key{
                             *job.identity,
                             first * (job.in / values),
@@ -3998,10 +3973,10 @@ public:
                         MatvecJob chunk{
                             nullptr,
                             arena.at<float>(input) + input_offsets[j],
-                            arena.at<float>(output) + output_at + first,
+                            arena.at<float>(output) + output_at + offset,
                             arena.at<unsigned>(weight_status),
                             row_bytes,
-                            job.out,
+                            partition.count,
                             unsigned(job.in),
                             unsigned(count),
                             unsigned(rows),
@@ -4025,7 +4000,7 @@ public:
                                  product(count, row_bytes)}
                             );
                     }
-                    output_at += job.output.size();
+                    output_at += rows * partition.count;
                 }
                 const auto resident_launches = plan_matvec(resident);
                 {
@@ -4245,11 +4220,23 @@ public:
                     sizeof(invalid)
                 );
                 require(!invalid, "h3_cuda_nonfinite_weight");
-                std::memcpy(
-                    host_output.data(), download.data(), outputs * sizeof(float)
-                );
-            },
-            true
+                std::size_t local_at = 0, host_at = 0;
+                for (std::size_t j = 0; j < jobs.size(); ++j) {
+                    const auto count =
+                        partitions[j].count * (jobs[j].input.size() / jobs[j].in);
+                    if (count)
+                        partitions[j].scatter(
+                            std::span<const std::byte>(download).subspan(
+                                local_at * sizeof(float), count * sizeof(float)
+                            ),
+                            std::span<float>(host_output)
+                                .subspan(host_at, jobs[j].output.size()),
+                            jobs[j].out
+                        );
+                    local_at += count;
+                    host_at += jobs[j].output.size();
+                }
+            }
         );
         std::size_t at = 0;
         for (const auto& job : jobs) {
