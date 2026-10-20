@@ -125,6 +125,20 @@ services:
     volumes:
       - ./services/kadan/kadan:/app/kadan:ro
 
+  # Watchfiles owns the runner process directly; the development entry point
+  # retries crashes without leaving a shell's child behind during reload.
+  kadan-runner:
+    command:
+      - watchfiles
+      - --filter
+      - python
+      - kadan.runner.__main__.run_development
+      - /app/kadan
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
+
   tsuchi-frontend:
     build:
       target: development
