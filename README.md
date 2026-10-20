@@ -20,7 +20,7 @@ NVIDIA host.
 
 Hikari is the inference service formerly named Kadan. The user-facing agent app
 now owns the Kadan name. All three services ship together in `ghalrym/Kadan`;
-the repository, webhooks and publishing configuration keep that name. The
+the repository and webhooks keep that name. The
 inference service, agent application and storage service live in
 `services/hikari/`, `services/kadan/` and `services/tsuchi/`.
 
@@ -42,8 +42,7 @@ Workers return finished videos to the API, which writes them to
 Keep the old `/kadan.svg` asset URL for already-open clients; the application now
 uses `/hikari.svg`. Historical benchmark names and evidence remain unchanged.
 
-Existing repository integrations, the `kadan-pr-publishing` environment and its
-secret references stay in place. The combined Compose project keeps the existing
+The combined Compose project keeps the existing
 Hikari storage identifiers and adds Tsuchi's dedicated store. Kadan has no
 separate server-side data volume.
 

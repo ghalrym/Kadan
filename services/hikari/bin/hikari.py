@@ -10,7 +10,7 @@ import typer
 # Direct execution must resolve the repository packages from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bin import assets, checks, generate, inference, native, publishing, run
+from bin import assets, checks, generate, inference, native, run
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 app.add_typer(generate.app, name="generate", help="Generate API schemas and clients.")
@@ -33,9 +33,6 @@ app.add_typer(
     help="Serve the API, or run one worker program rebuilt on source edits.",
 )
 app.add_typer(checks.app, name="check", help="Run formatting, builds, and unit checks.")
-app.add_typer(
-    publishing.app, name="pr", help="Run the restricted GitHub workflow publisher."
-)
 
 
 def main() -> None:
