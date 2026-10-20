@@ -1,4 +1,4 @@
-"""Development restart policy with fake runner, tracing and signal boundaries."""
+"""Runner restart policy with fake runner, tracing and signal boundaries."""
 
 import asyncio
 import signal
@@ -31,20 +31,20 @@ def boundary(monkeypatch):
     return values
 
 
-async def run_main(monkeypatch, boundary, **kwargs):
+async def run_main(monkeypatch, boundary):
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", boundary.signals.__setitem__)
-    await runner.main(**kwargs)
+    await runner.main()
 
 
-def test_development_returns_after_runner_stops(monkeypatch, boundary):
-    asyncio.run(run_main(monkeypatch, boundary, restart_on_failure=True))
+def test_runner_returns_after_runner_stops(monkeypatch, boundary):
+    asyncio.run(run_main(monkeypatch, boundary))
 
     boundary.serve.assert_awaited_once()
     boundary.shutdown.assert_awaited_once_with(boundary.provider)
 
 
-def test_development_keeps_tracing_alive_across_retries(monkeypatch, boundary):
+def test_runner_keeps_tracing_alive_across_retries(monkeypatch, boundary):
     attempts = 0
 
     async def serve(*args):
@@ -63,7 +63,7 @@ def test_development_keeps_tracing_alive_across_retries(monkeypatch, boundary):
     boundary.serve.side_effect = serve
     monkeypatch.setattr(runner.asyncio, "wait_for", delay)
 
-    asyncio.run(run_main(monkeypatch, boundary, restart_on_failure=True))
+    asyncio.run(run_main(monkeypatch, boundary))
 
     assert attempts == 2
     assert boundary.client.__aexit__.await_count == 2
@@ -83,17 +83,7 @@ def test_stop_during_retry_delay_prevents_another_attempt(
 
     monkeypatch.setattr(runner.asyncio, "wait_for", stop_during_delay)
 
-    asyncio.run(run_main(monkeypatch, boundary, restart_on_failure=True))
-
-    boundary.serve.assert_awaited_once()
-    boundary.shutdown.assert_awaited_once_with(boundary.provider)
-
-
-def test_production_failure_is_not_retried(monkeypatch, boundary):
-    boundary.serve.side_effect = OSError("runner failed")
-
-    with pytest.raises(OSError, match="runner failed"):
-        asyncio.run(run_main(monkeypatch, boundary))
+    asyncio.run(run_main(monkeypatch, boundary))
 
     boundary.serve.assert_awaited_once()
     boundary.shutdown.assert_awaited_once_with(boundary.provider)
@@ -102,20 +92,20 @@ def test_production_failure_is_not_retried(monkeypatch, boundary):
 @pytest.mark.parametrize(
     "stop", [KeyboardInterrupt, SystemExit, asyncio.CancelledError]
 )
-def test_development_does_not_restart_process_stops(monkeypatch, boundary, stop):
+def test_runner_does_not_restart_process_stops(monkeypatch, boundary, stop):
     boundary.serve.side_effect = stop
 
     with pytest.raises(stop):
-        asyncio.run(run_main(monkeypatch, boundary, restart_on_failure=True))
+        asyncio.run(run_main(monkeypatch, boundary))
 
     boundary.serve.assert_awaited_once()
     boundary.shutdown.assert_awaited_once_with(boundary.provider)
 
 
-def test_watchfiles_entry_point_enables_development_retries(monkeypatch):
+def test_watchfiles_entry_point_runs_runner(monkeypatch):
     main = AsyncMock()
     monkeypatch.setattr(runner, "main", main)
 
-    runner.run_development()
+    runner.run()
 
-    main.assert_awaited_once_with(restart_on_failure=True)
+    main.assert_awaited_once_with()

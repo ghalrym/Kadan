@@ -1,4 +1,4 @@
-"""Development servers: the API with reload, and each worker program rebuilt on source edits."""
+"""Hot-reloading processes: the API with reload, and each worker program rebuilt on source edits."""
 
 import os
 import signal
@@ -14,7 +14,7 @@ from bin.process import ROOT
 
 app = typer.Typer(no_args_is_help=True)
 
-# Each worker's development image keeps its own release build tree; see
+# Each worker image keeps its own build tree; see
 # inference_worker/workers/<name>/Dockerfile.
 WORKER_SOURCE = Path(os.getenv("HIKARI_WORKER_SOURCE", "/src/inference_worker"))
 WORKER_BUILD = Path(os.getenv("HIKARI_WORKER_BUILD", "/build"))
@@ -24,7 +24,7 @@ WORKERS = ("llm", "decision", "tts", "speech", "formatting", "image", "video")
 
 
 def environment() -> dict[str, str]:
-    """Expose the toolchain's CUDA libraries, which release images copy beside the worker."""
+    """Expose the toolchain's CUDA libraries to the worker process."""
     env = os.environ.copy()
     nvidia = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
     libraries = [str(path) for path in sorted(nvidia.glob("*/lib"))]

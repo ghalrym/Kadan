@@ -15,7 +15,7 @@ Kadan at <http://127.0.0.1:8630> is the everyday agent interface. Tsuchi's site 
 
 Open <http://127.0.0.1:8620>. Create an agent namespace using a name and a key such as `research`. No accounts, passwords, API credentials, or sample data are created. Interactive API documentation is at <http://127.0.0.1:8620/docs> and the schema is at `/openapi.json`.
 
-Compose publishes **127.0.0.1 only**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Keep the service on loopback or a private container network. Do not publish it to the internet. Compose runs `tsuchi-api`, whose `0.0.0.0:8000` listener stays inside Docker, and `tsuchi-frontend`, an nginx container that serves the site and proxies `/api`, `/docs` and `/openapi.json` to it. Only the frontend publishes a port, on loopback.
+Compose publishes **127.0.0.1 only**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Keep the service on loopback or a private container network. Do not publish it to the internet. Compose runs `tsuchi-api`, whose `0.0.0.0:8000` listener stays inside Docker, and `tsuchi-frontend`, a Vite container that serves the site with hot reload and proxies `/api`, `/docs` and `/openapi.json` to it. Only the frontend publishes a port, on loopback.
 
 The service runs as UID 10001 with a read-only application filesystem. The `tsuchi_tsuchi_data` Docker volume holds SQLite and uploaded files. Restarting or rebuilding the containers preserves data. `docker compose down` preserves the volume; **do not use `down -v` with data you want to keep**.
 
@@ -131,7 +131,7 @@ Inspect the restored instance at <http://127.0.0.1:8621> before switching anythi
 
 ## Development
 
-Python 3.14 and Node 24 or later are used for the verified build. Outside Docker, the backend serves the built frontend from `web/dist`, so one process and one local port are enough. In Compose the frontend runs in its own nginx container.
+Python 3.14 and Node 24 or later are used for the verified build. Outside Docker, the backend serves the built frontend from `web/dist`, so one process and one local port are enough. In Compose the frontend runs in its own Vite container.
 
 Run from `services/tsuchi`:
 
@@ -147,7 +147,7 @@ cd ..
 .venv/bin/uvicorn tsuchi.main:app --host 127.0.0.1 --port 8620
 ```
 
-For frontend development, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Keep development listeners local. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
+To run the frontend separately, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Keep listeners local. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
 
 The backend has explicit Pydantic models, SQLite transactions, and namespace-qualified lookups. Uploaded filenames never become disk paths. Raster images are verified before inline display. HTML, SVG, and general files download as attachments. The server checks allowed hosts and unsafe browser origins. These safeguards support a local app; they are not an authentication system.
 

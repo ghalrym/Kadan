@@ -1,9 +1,0 @@
-# Add a second stable owner. Do not use --scale with a shared runner ID.
-# docker compose -f compose.yaml -f compose.runners.yaml config
-services:
-  kadan-runner-2:
-    extends:
-      file: compose.yaml
-      service: kadan-runner
-    environment:
-      KADAN_RUNNER_ID: runner-2

@@ -12,7 +12,7 @@ GPU memory from generation.
   the model store.
 - Its own image, built by `workers/decision/Dockerfile`: no CUDA.
 - Its own Compose service, `hikari-worker-decision` (CPU only). It can be scaled, and
-  run on another computer with `compose.worker.yaml`.
+  run on another computer using the same services in `compose.yaml`.
 - It connects to the API and takes memory only as the API grants it. Workers on
   one computer share its RAM and GPUs in the API's ledger.
 

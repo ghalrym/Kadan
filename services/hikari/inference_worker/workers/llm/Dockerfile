@@ -18,17 +18,10 @@ RUN cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_
     && cmake --build /build --target kadan-worker-llm --parallel 4 \
     && cmake --install /build --prefix /out --component kadan-worker-llm
 
-# Development keeps the toolchain and build tree so the worker rebuilds
-# incrementally from mounted source.
-FROM build AS development
+# Keep the toolchain and build tree for incremental rebuilds from mounted source.
+FROM build AS runtime
 COPY bin/requirements.txt /app/bin/requirements.txt
 RUN pip install --no-cache-dir -r /app/bin/requirements.txt && cp -a /out /opt/kadan
 COPY bin/*.py /app/bin/
 WORKDIR /app
-CMD ["python", "bin/hikari.py", "dev", "worker", "llm"]
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/ /opt/kadan/
-CMD ["/opt/kadan/bin/kadan-worker-llm"]
+CMD ["python", "bin/hikari.py", "run", "worker", "llm"]

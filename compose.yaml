@@ -68,7 +68,8 @@ services:
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       <<: *database_environment
       # Every worker container authenticates with this token.
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
+      WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       hikari-postgres:
         condition: service_healthy
@@ -82,21 +83,28 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+    volumes:
+      - ./services/hikari/api:/app/api:ro
+      - ./services/hikari/bin:/app/bin:ro
 
   # Language worker: the tier's mixture-of-experts model for chat.
   hikari-worker-llm:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/llm/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-llm]
+    command: [python, bin/hikari.py, run, worker, llm]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_llm_build:/build
     deploy:
       resources:
         reservations:
@@ -113,15 +121,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/decision/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-decision]
+    command: [python, bin/hikari.py, run, worker, decision]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_decision_build:/build
     # CPU only: no GPU reservation.
     depends_on:
       hikari-api:
@@ -132,15 +144,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/tts/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-tts]
+    command: [python, bin/hikari.py, run, worker, tts]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_tts_build:/build
     deploy:
       resources:
         reservations:
@@ -157,15 +173,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/speech/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-speech]
+    command: [python, bin/hikari.py, run, worker, speech]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_speech_build:/build
     deploy:
       resources:
         reservations:
@@ -182,15 +202,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/formatting/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-formatting]
+    command: [python, bin/hikari.py, run, worker, formatting]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_formatting_build:/build
     # CPU only: no GPU reservation.
     depends_on:
       hikari-api:
@@ -201,15 +225,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/image/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-image]
+    command: [python, bin/hikari.py, run, worker, image]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_image_build:/build
     deploy:
       resources:
         reservations:
@@ -226,15 +254,19 @@ services:
     build:
       context: ./services/hikari
       dockerfile: inference_worker/workers/video/Dockerfile
-    command: [/opt/kadan/bin/kadan-worker-video]
+    command: [python, bin/hikari.py, run, worker, video]
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ws://hikari-api:8000/v1/workers
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:?Set HIKARI_WORKER_TOKEN in .env; see .env.example}
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-unsecure-default-token}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
       - model_data:/var/lib/kadan/models
+      - ./services/hikari/bin:/app/bin:ro
+      - ./services/hikari/inference_worker:/src/inference_worker:ro
+      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
+      - hikari_worker_video_build:/build
     deploy:
       resources:
         reservations:
@@ -256,6 +288,19 @@ services:
       hikari-api:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      WATCH_POLLING: "true"
+      API_PROXY_TARGET: http://hikari-api:8000
+    volumes:
+      - ./services/hikari/frontend:/app
+      - frontend_node_modules:/app/node_modules
+    command: [sh, -c, "npm ci && exec npm run dev -- --host 0.0.0.0 --port 8080 --strictPort"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   tsuchi-api:
     build:
@@ -272,12 +317,14 @@ services:
       TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi-api"]'
     volumes:
       - tsuchi_data:/data
+      - ./services/tsuchi/tsuchi:/app/tsuchi:ro
     tmpfs:
       - /tmp:size=256m,mode=1777
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    command: [uvicorn, tsuchi.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers, --reload, --reload-dir, /app/tsuchi]
 
   tsuchi-frontend:
     build:
@@ -289,6 +336,19 @@ services:
       tsuchi-api:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      WATCH_POLLING: "true"
+      API_PROXY_TARGET: http://tsuchi-api:8000
+    volumes:
+      - ./services/tsuchi/web:/app
+      - tsuchi_frontend_node_modules:/app/node_modules
+    command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   kadan-api:
     build:
@@ -296,7 +356,7 @@ services:
         tracing: ./services/tracing
       context: ./services/kadan
     # Bind only the service-network address, not the sandbox-facing interface.
-    command: [uvicorn, kadan.api.server:app, --host, kadan-api-internal, --port, "8630"]
+    command: [uvicorn, kadan.api.server:app, --host, kadan-api-internal, --port, "8630", --reload, --reload-dir, /app/kadan]
     init: true
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://kadan-api-internal:8630/api/health', headers={'Host': 'localhost'}), timeout=3)"]
@@ -313,7 +373,7 @@ services:
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
-      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
+      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-default-sandbox-api-key}
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -329,16 +389,23 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
 
   # Stable logical-agent owner. Replicas need distinct KADAN_RUNNER_ID values.
-  kadan-runner:
+  kadan-runner: &kadan_runner
     build:
       additional_contexts:
         tracing: ./services/tracing
       context: ./services/kadan
-    command: [python, -m, kadan.runner]
+    command:
+      - watchfiles
+      - --filter
+      - python
+      - kadan.runner.__main__.run
+      - /app/kadan
     init: true
-    environment:
+    environment: &runner_environment
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
@@ -347,7 +414,8 @@ services:
       KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
       KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
-      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
+      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-default-sandbox-api-key}
+      WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -363,6 +431,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    volumes:
+      - ./services/kadan/kadan:/app/kadan:ro
 
   # The computer has no direct service-network access. Kadan's control API binds
   # only on that network; Kadan can still reach the sandbox API and VNC here.
@@ -370,7 +440,7 @@ services:
   kadan-sandbox:
     image: ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
     environment:
-      SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:?Set KADAN_SANDBOX_API_KEY in .env; see .env.example}
+      SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-default-sandbox-api-key}
       TZ: ${TZ:-UTC}
       DISPLAY_WIDTH: "1280"
       DISPLAY_HEIGHT: "800"
@@ -394,6 +464,27 @@ services:
       kadan-api:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      WATCH_POLLING: "true"
+      API_PROXY_TARGET: http://kadan-api:8630
+    volumes:
+      - ./services/kadan/web:/app
+      - kadan_frontend_node_modules:/app/node_modules
+    command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # Explicit owners need unique, stable IDs; never scale a shared runner ID.
+  kadan-runner-2:
+    <<: *kadan_runner
+    profiles: [runners]
+    environment:
+      <<: *runner_environment
+      KADAN_RUNNER_ID: runner-2
 
 networks:
   computer:
@@ -401,8 +492,18 @@ networks:
 volumes:
   sandbox_home:
   model_data:
+    name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}
   postgres_data:
   frontend_node_modules:
   tsuchi_data:
     # Reuse the standalone Tsuchi store when the owner switches to combined Compose.
     name: ${TSUCHI_DATA_VOLUME:-tsuchi_tsuchi_data}
+  tsuchi_frontend_node_modules:
+  kadan_frontend_node_modules:
+  hikari_worker_llm_build:
+  hikari_worker_decision_build:
+  hikari_worker_tts_build:
+  hikari_worker_speech_build:
+  hikari_worker_formatting_build:
+  hikari_worker_image_build:
+  hikari_worker_video_build:

@@ -67,14 +67,20 @@ system memory.
 
 ### Workers on another computer
 
-`compose.worker.yaml` holds the same worker services for a computer other than
-the API's. Start only the workers that computer should run, pointed at the API
-with the same token; they use that computer's own model volume:
+`compose.yaml` also runs workers on a computer other than the API's. Configure
+`.env` as described in the root README, then start selected workers with
+`--no-deps` so the local API and database stay stopped. Set the remote API URL
+and its worker token; source edits rebuild and restart these workers too:
 
 ```sh
 HIKARI_API_URL=ws://API_HOST:8000/v1/workers HIKARI_WORKER_TOKEN=... \
-  docker compose -f compose.worker.yaml up -d hikari-worker-image hikari-worker-video
+  docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-video
 ```
+
+To reuse a model store created by the former standalone worker configuration,
+set `HIKARI_MODEL_VOLUME=kadan-workers_worker_models` in that computer's `.env`.
+Otherwise the workers project uses `kadan-workers_model_data`. Keep the existing
+project name if it differs from `kadan-workers`.
 
 Compose publishes the API on `127.0.0.1` only; expose it on a reachable address
 (behind TLS for `wss://`) before connecting remote workers.
@@ -133,10 +139,10 @@ options in its `inference_worker/workers/<type>/Dockerfile`, install its
 `HIKARI_API_URL`, `HIKARI_WORKER_TOKEN` and `KADAN_MODEL_DIR` (writable checkpoint
 storage) set. Install `api/requirements.txt` in a virtual environment with the
 same `HIKARI_WORKER_TOKEN` before starting one Uvicorn worker for the API.
-`API_PROXY_TARGET` selects the Vite development proxy destination; the production
-frontend reaches the Compose `hikari-api` service.
+`API_PROXY_TARGET` selects the Vite proxy destination. In Compose it points at
+the `hikari-api` service.
 
-## Development
+## Tooling
 
 Install the tooling dependencies and use the central command from the repository root:
 
@@ -208,26 +214,27 @@ generation requires the API dependencies. Asset export uses the C++
 `kadan-prepare-assets` tool built by `native build`; CLI help needs only
 `bin/requirements.txt`.
 
-Use the development override for API, inference worker and frontend hot reload
-with source bind mounts. The frontend keeps the same local port 8088. Explicit
-file selection avoids loading an unrelated local `compose.override.yaml`.
+The root `compose.yaml` enables API, inference worker and frontend hot reload
+with source bind mounts by default. The frontend keeps local port 8088.
 
 ```sh
-docker compose -f compose.yaml -f compose.development.yaml build hikari-migrate hikari-api hikari-frontend
-docker compose -f compose.yaml -f compose.development.yaml up -d --no-build hikari-api hikari-frontend
+docker compose build hikari-migrate hikari-api hikari-frontend
+docker compose up -d --no-build hikari-api hikari-frontend
 ```
 
-The development API runs `bin/hikari.py dev serve`. Python and frontend edits
-reload automatically. Inference worker C++ edits rebuild the worker incrementally
-in the container (`docker compose logs -f hikari-api` shows the build); a
-successful build, or a catalog or asset edit, restarts the API with the new
-worker. A failed build keeps the previous worker running. Edit only when
-inference is idle or cancellation is acceptable: every restart replaces the
-owned inference worker. The `hikari_worker_build` volume keeps the build tree;
-remove it after changing the worker's toolchain or build options.
+The API runs `bin/hikari.py run serve`. Python and frontend edits
+reload automatically. Each inference worker independently rebuilds its own C++
+program inside its container and restarts after a successful build or catalog or
+asset edit. A failed build keeps the previous worker running. Inspect builds with
+`docker compose logs -f hikari-worker-llm` (or the affected worker service).
+Edit only when inference is idle or cancellation is acceptable: restarting a
+worker interrupts its work. Each `hikari_worker_<name>_build` volume keeps that
+worker's incremental build tree; remove it after changing its toolchain or build
+options.
 
-The migration service uses the release image. Release images install the worker
-at build time; no separately deployed native binary is needed. Existing model and
+The migration service uses the API image with an Alembic command. Worker images
+install their native programs at build time and retain the toolchain for reloads;
+no separately deployed native binary is needed. Existing model and
 database volumes remain attached. On a recovered server, include its reviewed
 storage override in every command and preserve its mount dependencies before
 switching service supervision. These commands alone do not migrate an existing

@@ -12,7 +12,7 @@ from .service import serve
 logger = logging.getLogger(__name__)
 
 
-async def main(*, restart_on_failure: bool = False) -> None:
+async def main() -> None:
     # OpenTelemetry's global provider can be installed only once per process.
     provider = configure("kadan-runner")
     stop = asyncio.Event()
@@ -31,8 +31,6 @@ async def main(*, restart_on_failure: bool = False) -> None:
                     await serve(client, settings, runner_settings, stop)
                 return
             except Exception:
-                if not restart_on_failure:
-                    raise
                 logger.exception("Runner crashed; restarting in five seconds.")
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=5)
@@ -42,12 +40,11 @@ async def main(*, restart_on_failure: bool = False) -> None:
         await shutdown(provider)
 
 
-def run_development() -> None:
-    """Run inside watchfiles' child, retrying crashes until stopped or reloaded."""
+def run() -> None:
+    """Retry crashes until stopped or reloaded by watchfiles."""
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main(restart_on_failure=True))
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    run()
