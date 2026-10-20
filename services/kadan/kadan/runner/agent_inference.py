@@ -386,9 +386,9 @@ class AgentInference:
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:
-            raise ServiceError(
-                "The agent returned no tool call.", 502, "invalid_command"
-            )
+            # Not responding is allowed: a reply without a tool call ends the run.
+            logger.info("Agent reply had no tool call: %r", response.content[:2000])
+            return ToolCommand(tool="finish")
         # Runs execute and persist one action at a time; the transcript keeps
         # only this call, so the model never sees later calls as done.
         call = response.tool_calls[0]

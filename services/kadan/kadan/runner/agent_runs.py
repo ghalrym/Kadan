@@ -166,7 +166,6 @@ class RunState(BaseModel):
     command: ToolCommand | None = None
     # True when the command was read back from the transcript after a restart.
     replayed: bool = False
-    corrections: int = 0
 
 
 class AgentRuns(RunClient):
@@ -182,7 +181,7 @@ class AgentRuns(RunClient):
         graph.add_node("tool", self.invoke_tool)
         graph.add_edge(START, "prepare")
         graph.add_edge("prepare", "model")
-        graph.add_conditional_edges("model", self.after_model)
+        graph.add_edge("model", "tool")
         graph.add_conditional_edges("tool", self.after_tool)
         # Tsuchi owns checkpoints and side-effect receipts. A second persistence
         # store here would compete with its version/lease fencing.
@@ -364,7 +363,7 @@ class AgentRuns(RunClient):
 
     @traced("kadan.agent_runs.advance")
     async def advance(self, run: AgentRun) -> None:
-        # At most three invalid-command attempts plus two nodes per command.
+        # Preparation plus two nodes per command.
         try:
             await self.graph.ainvoke(
                 {"run": run}, {"recursion_limit": MAX_COMMANDS * 2 + 8}
@@ -373,9 +372,6 @@ class AgentRuns(RunClient):
             # A cancelled boundary must leave the durable action recoverable,
             # just like cancellation of the enclosing task.
             raise asyncio.CancelledError() from error
-
-    async def after_model(self, state: RunState) -> str:
-        return "tool" if state.command is not None else "model"
 
     async def after_tool(self, state: RunState) -> str:
         return END if state.run.status == "completed" else "model"
@@ -426,25 +422,6 @@ class AgentRuns(RunClient):
                     tools,
                 )
                 validate(command, tools)
-            except ServiceError as error:
-                if error.code != "invalid_command" or state.corrections >= 2:
-                    raise
-                run = await self.update(
-                    run,
-                    transcript=[
-                        *run.transcript,
-                        RunMessage(
-                            role="user",
-                            content="Your response was not a valid tool call. Return one "
-                            "call using the documented tool schema. No user message was delivered.",
-                        ),
-                    ],
-                )
-                return {
-                    "run": run,
-                    "command": None,
-                    "corrections": state.corrections + 1,
-                }
             finally:
                 logger.info(
                     "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",

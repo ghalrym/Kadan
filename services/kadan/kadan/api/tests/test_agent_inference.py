@@ -174,10 +174,8 @@ def test_only_the_first_of_several_calls_is_taken():
         "",
     ],
 )
-def test_replies_without_a_tool_call_are_invalid(reply):
-    with pytest.raises(ServiceError) as error:
-        invoke(completed(reply))
-    assert error.value.code == "invalid_command"
+def test_replies_without_a_tool_call_finish_the_run(reply):
+    assert invoke(completed(reply)) == ToolCommand(tool="finish")
 
 
 def test_saved_commands_round_trip_and_accept_older_formats():
