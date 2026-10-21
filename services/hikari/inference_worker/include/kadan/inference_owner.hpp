@@ -527,7 +527,8 @@ public:
                     finish(current, JobState::failed, results[index].failure);
                 else {
                     if (request.workload == Workload::llm
-                        && request.operation == Operation::generate)
+                        && (request.operation == Operation::completion
+                            || request.operation == Operation::generate))
                         cache_used_ = clock_();
                     finish(current, JobState::succeeded, results[index].result);
                 }

@@ -1430,6 +1430,12 @@ void offloaded_owner_retires_a_cancelled_head() {
 }
 
 // Fake state transfers only: no model graph, generation or device execution.
+InferenceRequest cache_request(std::string id) {
+    auto result = request(std::move(id), Workload::llm);
+    result.operation = Operation::completion;
+    return result;
+}
+
 struct FakePrefixCache final : InferenceCache {
     std::array<float, 4> recurrent{1.f, -2.f, 3.f, 4.f};
 
@@ -1504,7 +1510,7 @@ void ram_cache_lifecycle() {
         {},
         [&] { return now; }
     );
-    auto prompt = request("conversation", Workload::llm);
+    auto prompt = cache_request("conversation");
     owner.submit(prompt);
     assert(owner.advance());
     now += seconds(3599);
@@ -1538,7 +1544,7 @@ void explicit_unload_preserves_cache_when_returning_budget() {
         [] { return Footprint{100, 100}; },
         [](auto, auto, auto) {}
     );
-    auto prompt = request("conversation", Workload::llm);
+    auto prompt = cache_request("conversation");
     owner.submit(prompt);
     assert(owner.advance());
     auto unload = prompt;
@@ -1568,7 +1574,7 @@ void offload_does_not_restart_cache_timer() {
         {},
         [&] { return now; }
     );
-    owner.submit(request("conversation", Workload::llm));
+    owner.submit(cache_request("conversation"));
     assert(owner.advance());
     now += seconds(3599);
     assert(owner.offload() && owner.advance());
@@ -1577,8 +1583,35 @@ void offload_does_not_restart_cache_timer() {
     assert(owner.snapshot().used == Footprint({0, 0}));
     assert(owner.status().budget == Footprint({0, 0}));
     assert(owner.load({100, 100}));
-    owner.submit(request("conversation", Workload::llm));
+    owner.submit(cache_request("conversation"));
     assert(owner.advance() && state.restored == 0);
+    owner.shutdown();
+}
+
+void model_load_does_not_extend_completion_cache_timer() {
+    using namespace std::chrono;
+    CacheState state;
+    auto now = steady_clock::time_point{};
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {},
+        32,
+        {},
+        [&] { return now; }
+    );
+    assert(owner.load({100, 100}, seconds(60)));
+    auto prompt = cache_request("conversation");
+    owner.submit(prompt);
+    assert(owner.advance());
+    now += seconds(59);
+    auto load = prompt;
+    load.operation = Operation::load;
+    owner.submit(load);
+    assert(owner.advance() && state.restored == 1);
+    now += seconds(1);
+    assert(owner.advance() && state.discarded == 1);
     owner.shutdown();
 }
 
@@ -1595,7 +1628,7 @@ void cache_timer_yields_to_queued_and_active_work() {
         {},
         [&] { return now; }
     );
-    owner.submit(request("conversation", Workload::llm));
+    owner.submit(cache_request("conversation"));
     assert(owner.advance());
     now += seconds(3600);
     state.during_execute = [&] {
@@ -1604,7 +1637,7 @@ void cache_timer_yields_to_queued_and_active_work() {
         assert(!owner.load({50, 50}));
         assert(state.discarded == 0);
     };
-    owner.submit(request("conversation", Workload::llm));
+    owner.submit(cache_request("conversation"));
     assert(owner.advance() && state.discarded == 0);
     assert(!owner.advance());
     owner.shutdown();
@@ -1621,7 +1654,7 @@ void incompatible_ram_state_is_discarded() {
             [] { return Footprint{100, 100}; },
             [](auto, auto, auto) {}
         );
-        auto next = request("conversation", Workload::llm);
+        auto next = cache_request("conversation");
         owner.submit(next);
         assert(owner.advance());
         assert(owner.offload() && owner.advance());
@@ -1657,7 +1690,7 @@ void ram_pressure_reclaims_optional_cache() {
             {},
             [&] { return now; }
         );
-        owner.submit(request("conversation", Workload::llm));
+        owner.submit(cache_request("conversation"));
         assert(owner.advance());
         assert(owner.offload() && owner.advance());
         assert(owner.snapshot().used[0] == 4);
@@ -1680,7 +1713,7 @@ void device_pressure_keeps_completed_state_before_retry() {
         [] { return Footprint{100, 100}; },
         [](auto, auto, auto) {}
     );
-    auto prompt = request("conversation", Workload::llm);
+    auto prompt = cache_request("conversation");
     owner.submit(prompt);
     assert(owner.advance());
     state.prepare_pressure = true;
@@ -1700,7 +1733,7 @@ void failed_snapshot_still_unloads_model() {
         [] { return Footprint{100, 100}; },
         [](auto, auto, auto) {}
     );
-    owner.submit(request("conversation", Workload::llm));
+    owner.submit(cache_request("conversation"));
     assert(owner.advance());
     assert(owner.offload() && owner.advance());
     assert(owner.snapshot().residents == 0 && owner.snapshot().used[0] == 0);
@@ -1711,6 +1744,7 @@ int main() {
     ram_cache_lifecycle();
     explicit_unload_preserves_cache_when_returning_budget();
     offload_does_not_restart_cache_timer();
+    model_load_does_not_extend_completion_cache_timer();
     cache_timer_yields_to_queued_and_active_work();
     incompatible_ram_state_is_discarded();
     ram_pressure_reclaims_optional_cache();
