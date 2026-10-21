@@ -7,7 +7,7 @@ Kadan is the everyday agent interface in this repository. This service coordinat
 - Create and select agents, with each agent's records kept in its own Tsuchi namespace.
 - Text each agent in one continuous message chain. There are no threads: the chain is the agent's whole history with you.
 - Create and edit personas and select one for a message.
-- Save a note without inference, or enqueue a durable agent run through Kadan.
+- [Save a chat note without a reply](../../docs/user-expectations/kadan/saving-chat-notes.md), or enqueue a durable agent run through Kadan.
 - Continue the same conversation while an image is being generated.
 - Receive text and images through the agent's explicit messaging tool.
 - Browse existing memories, Spaces and file metadata without changing them.
