@@ -28,6 +28,8 @@ Hikari tries to keep room for chat while other work runs, but chat has no uncond
 
 Models load on demand. A first request, a change of hardware tier, or returning to a previously unloaded inference type can incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
 
+Every inference type unloads its resident model after one hour without work, measured from the last request's completion. Set `HIKARI_MODEL_IDLE_SECONDS` to a positive number of seconds to change this period. Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
+
 A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Hikari does not guarantee a fixed response time or that every combination of inference requests fits.

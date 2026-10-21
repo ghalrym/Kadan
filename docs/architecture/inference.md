@@ -42,6 +42,8 @@ Models load on demand. Moving individual MoE experts between memory tiers is dis
 
 When work is no longer waiting for memory, idle workers can regain available capacity, with higher-priority types favored. Extra memory may allow more experts to remain resident, but does not establish a fixed throughput improvement.
 
+The API hub also expires resident models after `HIKARI_MODEL_IDLE_SECONDS` (default 3600, positive integer). Its monotonic clock resets when an inference or lifecycle request finishes, for every worker type. A reconnect starts a fresh idle period because completion history is unavailable. Request scheduling runs first; expiry waits while any worker on that computer has outstanding inference or lifecycle requests. It uses the same confirmed offload path as memory reclamation, retaining the old allocation charge until cleanup completes. An unloaded worker receives another budget only when a request needs it.
+
 Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
