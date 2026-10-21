@@ -3697,6 +3697,42 @@ public:
         return admitted;
     }
 
+    void copy_recurrent_state(
+        std::uint64_t layer, std::span<float> state, std::span<float> history
+    ) override {
+        std::lock_guard guard(operation_mutex_);
+        std::atomic_bool found{false};
+        all_devices([&](DeviceWorkspace& workspace) {
+            auto& ops = static_cast<CudaDeviceOperations&>(workspace.operations());
+            const auto it = ops.recurrent.find(layer);
+            if (it == ops.recurrent.end())
+                return;
+            const auto& recurrent = it->second;
+            require(
+                recurrent.floats >= state.size() + history.size(),
+                "h3_cuda_snapshot_shape"
+            );
+            checked(
+                cuda_trace::copy(
+                    state.data(),
+                    recurrent.data,
+                    state.size_bytes(),
+                    cudaMemcpyDeviceToHost
+                )
+            );
+            checked(
+                cuda_trace::copy(
+                    history.data(),
+                    recurrent.data + state.size(),
+                    history.size_bytes(),
+                    cudaMemcpyDeviceToHost
+                )
+            );
+            found = true;
+        });
+        require(found.load(), "h3_cuda_recurrent_state_lost");
+    }
+
     bool delta_step(const DeltaStep& step, const std::atomic_bool& cancel) override {
         require(!cancel.load(), "h3_cuda_cancelled");
         const auto rows = step.rows, dim = step.dim, heads = step.value_heads;
@@ -3745,6 +3781,29 @@ public:
                 float* a = dt + heads;
                 float* norm = a + heads;
                 if (step.fresh) {
+                    if (!step.initial_state.empty() || !step.initial_history.empty()) {
+                        require(
+                            step.initial_state.size() == state_floats
+                                && step.initial_history.size() == history_floats,
+                            "h3_cuda_snapshot_shape"
+                        );
+                        checked(
+                            cuda_trace::copy(
+                                state,
+                                step.initial_state.data(),
+                                step.initial_state.size_bytes(),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
+                        checked(
+                            cuda_trace::copy(
+                                history,
+                                step.initial_history.data(),
+                                step.initial_history.size_bytes(),
+                                cudaMemcpyHostToDevice
+                            )
+                        );
+                    }
                     std::vector<float> constants;
                     constants.reserve(constant_floats);
                     for (const auto part : {step.conv, step.dt, step.a, step.norm})

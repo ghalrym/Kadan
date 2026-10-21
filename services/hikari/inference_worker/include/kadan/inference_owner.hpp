@@ -6,10 +6,12 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
 
+#include "kadan/inference_cache.hpp"
 #include "kadan/inference_request.hpp"
 
 namespace kadan::serving {
@@ -77,6 +79,16 @@ public:
     virtual Json execute(const InferenceRequest&, const std::atomic_bool&) = 0;
     virtual void close() = 0;
 
+    virtual std::unique_ptr<InferenceCache> take_cache() {
+        return {};
+    }
+
+    virtual void restore_cache(std::unique_ptr<InferenceCache>) {
+    }
+
+    virtual void discard_cache() {
+    }
+
     virtual std::size_t batch_capacity(const InferenceRequest&, const Footprint&) {
         return 1;
     }
@@ -132,10 +144,13 @@ public:
     // still load lazily from the queue head, bounded by this ceiling. Shrinking
     // a budget is refused while a job runs, because the API frees that memory
     // in its own ledger as soon as the call returns.
-    bool load(Footprint budget) {
+    bool
+    load(Footprint budget, std::chrono::seconds cache_idle = std::chrono::hours(1)) {
         std::lock_guard guard(mutex_);
         if (budget.size() != ceiling_.size())
             throw std::invalid_argument("budget_shape");
+        if (cache_idle.count() <= 0)
+            throw std::invalid_argument("kv_cache_idle_seconds");
         bool shrinks = false;
         for (std::size_t i = 0; i < budget.size(); ++i)
             shrinks = shrinks || budget[i] < ceiling_[i];
@@ -147,6 +162,7 @@ public:
         // API never credits memory an engine still holds.
         if (shrinks || (budget != ceiling_ && !model_.empty()))
             release_requested_ = true;
+        cache_idle_ = cache_idle;
         ceiling_ = std::move(budget);
         loaded_ = true;
         return true;
@@ -158,6 +174,7 @@ public:
         std::lock_guard guard(mutex_);
         if (executing_)
             return false;
+        discard_requested_ = !loaded_;
         loaded_ = false;
         release_requested_ = true;
         std::fill(ceiling_.begin(), ceiling_.end(), 0);
@@ -187,7 +204,7 @@ public:
             queue_.size(),
             model_,
             ceiling_,
-            resources_->snapshot()
+            memory_snapshot()
         };
     }
 
@@ -241,29 +258,41 @@ public:
     // another job.
     bool advance() {
         std::shared_ptr<Job> job;
-        bool release = false;
+        bool release = false, discard = false, idle = false;
         std::function<void(const char*)> control;
         {
             std::lock_guard guard(mutex_);
             if (poisoned_)
                 throw std::runtime_error("cleanup_unconfirmed");
             release = std::exchange(release_requested_, false);
+            discard = std::exchange(discard_requested_, false);
             control = control_;
             // An offloaded owner still retires a cancelled head so callers are
             // not left waiting for a load that may never come.
             if (!release
                 && (queue_.empty() || (!loaded_ && !queue_.front()->cancel.load())))
-                return false;
-            if (!release) {
+                idle = true;
+            if (!release && !idle) {
                 job = queue_.front();
                 executing_ = true;
             }
         }
+        if (idle)
+            return maintain_cache(control);
         if (release) {
-            cleanup();
+            if (discard)
+                clear_detached();  // A second offload reclaims the remaining RAM.
+            cleanup(true);
             {
                 std::lock_guard guard(mutex_);
                 model_.clear();
+                // Optional state must fit the acknowledged host grant.
+                if (loaded_ && cached_bytes_ > ceiling_[0]) {
+                    cache_.reset();
+                    cached_bytes_ = 0;
+                }
+                if (!loaded_)
+                    ceiling_[0] = cached_bytes_;
             }
             if (control)
                 control(loaded() ? "resized" : "offloaded");
@@ -299,7 +328,7 @@ public:
                 return true;
             }
             if (request.operation == Operation::unload) {
-                cleanup();
+                cleanup(true);
                 finish(job, JobState::succeeded, Json::object());
                 return true;
             }
@@ -307,8 +336,12 @@ public:
                 || resident_workload_ != request.workload
                 || resident_configuration_ != request.configuration
                 || request.operation == Operation::load) {
-                cleanup();  // Physical release precedes the fresh probe: never add
-                            // logical reclaim credit.
+                cleanup(true);  // Preserve completed state before freeing the model.
+                if (cache_
+                    && (cache_->model != request.model
+                        || cache_->configuration != request.configuration
+                        || cache_->workload != request.workload))
+                    clear_detached();
                 auto free = bounded_probe();
                 resources_->reset_capacity(free);
                 engine_ = factory_(request.workload, resources_);
@@ -318,6 +351,10 @@ public:
                 {
                     InferenceTrace tracing(request.trace, "load");
                     engine_->load(request, free, job->cancel);
+                }
+                if (cache_) {
+                    engine_->restore_cache(std::move(cache_->state));
+                    clear_detached();
                 }
                 resident_model_ = request.model;
                 resident_workload_ = request.workload;
@@ -493,8 +530,13 @@ public:
                     finish(current, JobState::cancelled, "");
                 } else if (!results[index].failure.is_null())
                     finish(current, JobState::failed, results[index].failure);
-                else
+                else {
+                    if (request.workload == Workload::llm
+                        && (request.operation == Operation::completion
+                            || request.operation == Operation::generate))
+                        cache_used_ = clock_();
                     finish(current, JobState::succeeded, results[index].result);
+                }
             }
             return true;
         } catch (const CleanupFailure&) {
@@ -502,7 +544,11 @@ public:
         } catch (const PublicationFailure&) {
             throw;
         } catch (const ResourceExhausted& error) {
-            cleanup();
+            clear_detached();  // Optional RAM state must never block admission.
+            const std::string reason = error.what();
+            const bool host_pressure = reason.find("host_headroom") != std::string::npos
+                                       || reason == "chat_request_headroom";
+            cleanup(!execution_started && !host_pressure && !job->cancel.load());
             if (execution_started) {
                 finish_batch(jobs, "admission_after_execution");
                 return true;
@@ -538,6 +584,7 @@ public:
         }
         while (pending())
             advance();
+        clear_detached();
         cleanup();
     }
 
@@ -547,7 +594,8 @@ public:
     }
 
     Snapshot snapshot() const {
-        return resources_->snapshot();
+        std::lock_guard guard(mutex_);
+        return memory_snapshot();
     }
 
     // Physical free memory bounded by the granted budget, for engines that
@@ -557,8 +605,10 @@ public:
         std::lock_guard guard(mutex_);
         if (free.size() != ceiling_.size())
             throw std::runtime_error("probe_shape");
-        for (std::size_t i = 0; i < free.size(); ++i)
-            free[i] = std::min(free[i], ceiling_[i]);
+        for (std::size_t i = 0; i < free.size(); ++i) {
+            const auto kept = i == 0 ? cached_bytes_ : 0;
+            free[i] = std::min(free[i], ceiling_[i] > kept ? ceiling_[i] - kept : 0);
+        }
         return free;
     }
 
@@ -611,8 +661,90 @@ private:
             );
     }
 
-    void cleanup() {
+    struct SavedCache {
+        std::unique_ptr<InferenceCache> state;
+        std::string model;
+        EngineConfiguration configuration;
+        Workload workload;
+    };
+
+    // Called with mutex_ held; detached bytes stay charged after model cleanup.
+    Snapshot memory_snapshot() const {
+        auto state = resources_->snapshot();
+        state.used[0] += cached_bytes_;
+        state.residents += cached_bytes_ ? 1 : 0;
+        return state;
+    }
+
+    void clear_detached() {
+        cache_.reset();
+        std::lock_guard guard(mutex_);
+        cached_bytes_ = 0;
+    }
+
+    bool maintain_cache(const std::function<void(const char*)>& control) {
+        const auto now = clock_();
+        std::chrono::seconds idle;
+        {
+            std::lock_guard guard(mutex_);
+            if (!queue_.empty() || now < next_cache_probe_)
+                return false;
+            next_cache_probe_ = now + std::chrono::seconds(1);
+            idle = cache_idle_;
+            executing_ = true;
+        }
         try {
+            const bool expired = cache_used_ && now - *cache_used_ >= idle;
+            const bool pressure = (cache_ || cache_used_) && probe_().at(0) == 0;
+            if (expired || pressure) {
+                clear_detached();
+                if (engine_)
+                    engine_->discard_cache();
+                cache_used_.reset();
+            }
+            {
+                std::lock_guard guard(mutex_);
+                if (!loaded_)
+                    ceiling_[0] = cached_bytes_;
+                executing_ = false;
+            }
+            if ((expired || pressure) && control)
+                control("cache_released");
+            return expired || pressure;
+        } catch (...) {
+            std::lock_guard guard(mutex_);
+            executing_ = false;
+            throw;
+        }
+    }
+
+    void cleanup(bool preserve = false) {
+        if (!preserve)
+            clear_detached();
+        try {
+            if (engine_ && preserve) {
+                clear_detached();
+                // State is optional. Failure to snapshot still permits model
+                // eviction; physical cleanup remains mandatory below.
+                try {
+                    if (probe_().at(0) > 0) {
+                        auto state = engine_->take_cache();
+                        if (state) {
+                            const auto bytes = state->bytes();
+                            cache_ = std::make_unique<SavedCache>(SavedCache{
+                                std::move(state),
+                                resident_model_,
+                                resident_configuration_,
+                                resident_workload_
+                            });
+                            std::lock_guard guard(mutex_);
+                            cached_bytes_ = bytes;
+                        }
+                    }
+                } catch (const std::exception&) {
+                    clear_detached();
+                }
+            }
             if (engine_)
                 engine_->close();
             engine_.reset();
@@ -652,6 +784,12 @@ private:
         }
     }
 
+    std::unique_ptr<SavedCache> cache_;
+    Bytes cached_bytes_ =
+        0;  // Protected by mutex_; state itself is execution-thread owned.
+    std::optional<std::chrono::steady_clock::time_point> cache_used_;
+    std::chrono::steady_clock::time_point next_cache_probe_{};
+    std::chrono::seconds cache_idle_{3600};
     Footprint ceiling_;
     std::shared_ptr<Resources> resources_;
     Factory factory_;
@@ -668,6 +806,7 @@ private:
     Workload resident_workload_ = Workload::llm;
     bool stopping_ = false, poisoned_ = false;
     bool loaded_, executing_ = false, release_requested_ = false;
+    bool discard_requested_ = false;
     std::string model_;
     std::function<void(const char*)> control_;
 };

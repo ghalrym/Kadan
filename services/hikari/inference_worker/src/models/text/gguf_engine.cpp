@@ -214,6 +214,67 @@ void Engine::end_request() {
     m.active = false;
 }
 
+Bytes PrefixSnapshot::bytes() const {
+    Bytes bytes = sizeof(*this) + prefix.memory_bytes()
+                  + weights.capacity() * sizeof(WeightIdentity)
+                  + state.layers.capacity() * sizeof(decltype(state.layers)::value_type)
+                  + state.ple.capacity() * sizeof(float)
+                  + state.recent.capacity() * sizeof(unsigned);
+    const auto attention_bytes = [](const AttentionState& s) {
+        return (s.keys.capacity() + s.values.capacity()) * sizeof(float);
+    };
+    for (const auto& layer : state.layers)
+        std::visit(
+            [&](const auto& s) {
+                using T = std::decay_t<decltype(s)>;
+                if constexpr (std::is_same_v<T, AttentionState>)
+                    bytes += attention_bytes(s);
+                else if constexpr (std::is_same_v<T, RecurrentState>)
+                    bytes += (s.convolution.capacity() + s.recurrent.capacity())
+                             * sizeof(float);
+                else
+                    bytes +=
+                        attention_bytes(s.attention)
+                        + (s.raw_keys.capacity() + s.pooled.capacity()) * sizeof(float);
+            },
+            layer
+        );
+    return bytes;
+}
+
+std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
+    auto& m = *impl_;
+    if (m.active || m.poisoned || !m.prefix.stored())
+        return {};
+    m.weights->check_unchanged();
+    auto saved = std::make_unique<PrefixSnapshot>();
+    const auto& gguf = m.weights->gguf();
+    saved->weights.reserve(gguf.tensor_count());
+    for (std::size_t i = 0; i < gguf.tensor_count(); ++i)
+        saved->weights.push_back(gguf.identity(gguf.tensor_at(i).name));
+    saved->context = m.p.context;
+    saved->state = m.model->take_state();
+    saved->prefix = std::move(m.prefix);
+    m.prefix = Prefix{};
+    return saved;
+}
+
+bool Engine::restore_prefix(std::unique_ptr<PrefixSnapshot> saved) {
+    auto& m = *impl_;
+    const auto& gguf = m.weights->gguf();
+    if (!saved || saved->context != m.p.context
+        || saved->weights.size() != gguf.tensor_count())
+        return false;
+    m.weights->check_unchanged();
+    for (std::size_t i = 0; i < gguf.tensor_count(); ++i)
+        if (saved->weights[i] != gguf.identity(gguf.tensor_at(i).name))
+            return false;
+    m.model->restore_state(std::move(saved->state));
+    m.prefix = std::move(saved->prefix);
+    m.tokens = m.prefix.stored();
+    return true;
+}
+
 Footprint Engine::prefix_memory() const {
     const auto& m = *impl_;
     if (!m.prefix.stored())

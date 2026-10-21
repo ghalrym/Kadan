@@ -130,6 +130,38 @@ public:
                 delta->reset();
     }
 
+    ModelState take_state() override {
+        ModelState state;
+        state.layers.reserve(layers_.size());
+        for (auto& layer : layers_) {
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                state.layers.emplace_back(delta->take_state(compute_));
+            else {
+                state.layers.emplace_back(
+                    std::get<AttentionLayer>(layer.attention).take_state()
+                );
+            }
+        }
+        return state;
+    }
+
+    void restore_state(ModelState state) override {
+        need(state.layers.size() == layers_.size(), "gguf_text_snapshot_layers");
+        for (std::size_t i = 0; i < layers_.size(); ++i) {
+            auto& layer = layers_[i];
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                delta->restore_state(
+                    std::get<RecurrentState>(std::move(state.layers[i]))
+                );
+            else {
+                std::get<AttentionLayer>(layer.attention)
+                    .restore_state(
+                        std::get<AttentionState>(std::move(state.layers[i]))
+                    );
+            }
+        }
+    }
+
     Vec forward(
         std::span<const unsigned> tokens,
         std::size_t position,

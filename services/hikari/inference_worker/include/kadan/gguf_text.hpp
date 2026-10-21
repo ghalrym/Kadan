@@ -7,8 +7,11 @@
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/gguf_checkpoint.hpp"
+#include "kadan/inference_cache.hpp"
 #include "kadan/model_worker.hpp"
+#include "kadan/text_prefix.hpp"
 #include "kadan/text_projection_timing.hpp"
+#include "kadan/text_state.hpp"
 #include "kadan/worker_compute.hpp"
 
 namespace kadan::text {
@@ -32,6 +35,14 @@ Plan plan(
     const char* root, std::size_t context, const std::atomic_bool* cancel = nullptr
 );
 
+struct PrefixSnapshot final : serving::InferenceCache {
+    Prefix prefix;
+    ModelState state;
+    std::vector<WeightIdentity> weights;
+    std::size_t context = 0;
+    Bytes bytes() const override;
+};
+
 class Engine final : public serving::ResidentEngine {
 public:
     Engine(
@@ -51,6 +62,8 @@ public:
     ) override;
     void end_request() override;
     Footprint prefix_memory() const;
+    std::unique_ptr<PrefixSnapshot> take_prefix();
+    bool restore_prefix(std::unique_ptr<PrefixSnapshot>);
     std::size_t stored_prefix_tokens() const;
     std::string_view prefix_reason() const;
     void park() override;

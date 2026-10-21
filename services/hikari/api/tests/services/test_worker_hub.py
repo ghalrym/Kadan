@@ -276,6 +276,15 @@ class RegistrationTests(HubTestCase):
         self.assertEqual(loads, [[GIB, 8 * GIB]])
         self.assertEqual(picture.slot.budget, [GIB, 0, 8 * GIB])
 
+    async def test_cache_idle_setting_is_sent_with_worker_budget(self):
+        self.hub.kv_cache_idle_seconds = 45
+        socket, worker = await self.connect(
+            "llm", replies={"load": ok, "requirement": needs((1, 6), (1, 6))}
+        )
+        await self.hub.submit(chat())
+        await self.hub._schedule(worker.computer)
+        self.assertEqual(socket.commands("load")[-1]["kv_cache_idle_seconds"], 45)
+
     async def test_computer_ledger_goes_when_its_last_worker_leaves(self):
         socket, worker = await self.connect("llm")
         await socket.close()
@@ -497,6 +506,28 @@ class ModelIdleSettingsTests(unittest.TestCase):
             with (
                 self.subTest(value=value),
                 patch.dict(os.environ, {"HIKARI_MODEL_IDLE_SECONDS": value}),
+                self.assertRaises(ValidationError),
+            ):
+                WorkerSettings(_env_file=None)
+
+
+class KvIdleSettingsTests(unittest.TestCase):
+    def test_default_and_configured_period_are_independent(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(WorkerSettings(_env_file=None).kv_cache_idle_seconds, 3600)
+        with patch.dict(
+            os.environ,
+            {"HIKARI_KV_CACHE_IDLE_SECONDS": "60", "HIKARI_MODEL_IDLE_SECONDS": "120"},
+        ):
+            settings = WorkerSettings(_env_file=None)
+            self.assertEqual(settings.kv_cache_idle_seconds, 60)
+            self.assertEqual(settings.model_idle_seconds, 120)
+
+    def test_period_must_be_positive_whole_seconds(self):
+        for value in ("0", "-1", "1.5", "nan", "inf", "later"):
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {"HIKARI_KV_CACHE_IDLE_SECONDS": value}),
                 self.assertRaises(ValidationError),
             ):
                 WorkerSettings(_env_file=None)

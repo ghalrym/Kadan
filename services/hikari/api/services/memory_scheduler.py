@@ -255,7 +255,7 @@ def _plan(
             slot
             for slot in ledger.workers.values()
             if slot.name != target.name
-            and slot.loaded
+            and any(slot.budget)
             and not slot.busy
             and not slot.releasing
             and (slot.pending == 0 or slot.priority > target.priority)
@@ -264,7 +264,7 @@ def _plan(
     )
     actions: list[Action] = []
     for slot in candidates:
-        for option in [*_shrink_options(slot), None]:
+        for option in [*(_shrink_options(slot) if slot.loaded else []), None]:
             released = slot.budget if option is None else option
             trial = list(free)
             for index, value in enumerate(slot.budget):
@@ -294,7 +294,7 @@ def plan_load(ledger: MachineLedger, name: str) -> list[Action] | None:
     target = ledger.workers[name]
     if target.requirement is None:
         return None
-    if target.loaded:
+    if any(target.budget):
         ledger = deepcopy(ledger)
         target = ledger.workers[name]
         target.budget = [0] * len(ledger.capacity)

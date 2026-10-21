@@ -39,6 +39,15 @@ TextPhaseMetrics phase_metrics(std::size_t tokens, const text::Engine::Timing& t
     };
 }
 
+struct ChatCache final : InferenceCache {
+    std::unique_ptr<text::PrefixSnapshot> prefix;
+    WeightIdentity tokenizer;
+
+    Bytes bytes() const override {
+        return sizeof(*this) + prefix->bytes();
+    }
+};
+
 class ChatEngine final : public InferenceEngine {
 public:
     ChatEngine(
@@ -73,6 +82,8 @@ public:
             root.c_str(), layout, plan, resources_, &cancel
         );
         tokenizer_ = std::make_unique<text::Tokenizer>(resources_, Workload::llm);
+        tokenizer_identity_ =
+            checkpoint::GgufMetadata::file_identity(root + "/tokenizer.json");
         tokenizer_->load(root + "/tokenizer.json", cancel);
     }
 
@@ -193,11 +204,14 @@ public:
                 {"stored_tokens", model_->stored_prefix_tokens()},
                 {"host_bytes", memory[0]},
                 {"device_bytes", std::move(devices)},
-                {"reason", std::string(model_->prefix_reason())},
+                {"reason",
+                 reused_tokens_ && restored_ ? "ram_hit"
+                                             : std::string(model_->prefix_reason())},
                 {"retention_reason",
                  input.reuse_prefix ? "resident_engine" : "disabled"}
             };
         }
+        restored_ = false;
         std::vector<std::uint32_t>().swap(prompt_);
         request_memory_.reset();
         const auto milliseconds = [](auto duration) {
@@ -224,6 +238,30 @@ public:
         );
     }
 
+    std::unique_ptr<InferenceCache> take_cache() override {
+        if (!model_)
+            return {};
+        auto prefix = model_->take_prefix();
+        if (!prefix)
+            return {};
+        auto cache = std::make_unique<ChatCache>();
+        cache->prefix = std::move(prefix);
+        cache->tokenizer = tokenizer_identity_;
+        return cache;
+    }
+
+    void restore_cache(std::unique_ptr<InferenceCache> state) override {
+        auto* cache = dynamic_cast<ChatCache*>(state.get());
+        if (cache && cache->tokenizer == tokenizer_identity_)
+            restored_ = model_->restore_prefix(std::move(cache->prefix));
+    }
+
+    void discard_cache() override {
+        if (model_)
+            model_->reset();
+        restored_ = false;
+    }
+
     void close() override {
         std::vector<std::uint32_t>().swap(prompt_);
         request_memory_.reset();
@@ -234,6 +272,8 @@ public:
     }
 
 private:
+    bool restored_ = false;
+    WeightIdentity tokenizer_identity_;
     std::size_t prompt_tokens_ = 0, reused_tokens_ = 0;
     std::shared_ptr<Resources> resources_;
     Progress progress_;

@@ -36,4 +36,8 @@ Concurrent throughput, model quality and physical memory fit require manual vali
 
 ## Conversation prefix reuse
 
-Chat requests with the same `conversation_id` can reuse the resident worker's last completed prefix when its exact committed tokens start the new prompt. Requests without an ID or with `reuse_prefix=false` do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation, model changes and unloading require a fresh prefill. A different worker may also miss the cache. Responses report actual reused and stored tokens; reuse does not guarantee a measured latency improvement.
+Chat requests with the same `conversation_id` can reuse the worker's last completed prefix when its exact committed tokens start a longer prompt. Requests without an ID or with `reuse_prefix=false` do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
+
+When an idle model unloads or yields VRAM, Hikari can keep its reusable KV and recurrent state in RAM. A compatible later request restores that state after loading the model. Each worker retains at most one prefix; it can discard it sooner when RAM is needed for work. No reusable state is written to disk, and restarting the worker loses it.
+
+`HIKARI_KV_CACHE_IDLE_SECONDS` defaults to `3600` positive seconds without reuse. This cache timer is separate from `HIKARI_MODEL_IDLE_SECONDS`: unloading a model does not restart the cache timer, and discarding its cache does not unload the model. Expiry waits for active and queued work. Conversation history and downloaded checkpoints are unaffected. Responses report actual reused/stored tokens and `ram_hit` for a restored prefix; reuse does not guarantee a measured latency improvement.
