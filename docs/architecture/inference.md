@@ -1,0 +1,47 @@
+# Inference architecture
+
+Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user-visible contract is described in [Inference operations](../user-expectations/hikari/inference.md).
+
+## Mixture-of-experts language models
+
+Every hardware tier uses a mixture-of-experts (MoE) language checkpoint. Hikari is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
+
+Frequently used routed experts should stay in VRAM where capacity permits. Other routed experts can remain in RAM, with disk holding those that do not fit in either memory tier. Placement adapts to expert use within the memory available to the language model. Only routed experts move between these tiers. Non-expert matrices, including shared experts, remain pinned in VRAM while the language model is loaded, so sufficient VRAM for those weights and execution state is still required.
+
+Experts held in RAM execute on the CPU alongside GPU work. Hikari balances that work against streaming experts to the GPU using measured execution and transfer rates. It should not send every RAM-resident expert across the GPU connection by default.
+
+Offloading preserves the selected checkpoint rather than substituting a smaller or dense language model. This allows models larger than VRAM to run, with performance depending on the memory available and the execution and transfer rates of the hardware.
+
+## Memory accounting
+
+Workers on the same computer share that computer's memory capacity, including when they run in separate containers. Hikari accounts for RAM and each physical GPU separately. Several GPUs may participate where supported, but their VRAM is not one contiguous allocation; each GPU must satisfy its own placement requirements. Workers on different computers use their respective computers' resources.
+
+Concurrent requests require enough RAM and VRAM for each worker. Requests wait when their combined requirements exceed available memory. Placement admission must remain independent of the total number of expert slices.
+
+## Memory priority and reclamation
+
+Priority governs access to memory in this order, highest first:
+
+1. Chat and decisions.
+2. Speech synthesis.
+3. Transcription and transcription formatting.
+4. Image generation.
+5. Video generation.
+
+A higher-priority request does not interrupt inference already running. It may wait for an active image or video request to finish if there is insufficient memory to run alongside it.
+
+Hikari first tries to make room by reducing an idle worker's memory allocation before unloading its model entirely. It reclaims memory from lower-priority workers first, and from the least recently used workers within a priority. An idle worker with no queued requests can yield memory even to a lower-priority type. A worker with queued requests yields only to a strictly higher-priority type. Memory becomes available to another worker only after its release is confirmed.
+
+Where possible, Hikari keeps enough room for the selected language tier's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
+
+For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active video request continues to completion even if chat is waiting for its memory.
+
+## Allocation changes and model lifecycle
+
+Models load on demand. Moving individual MoE experts between memory tiers is distinct from changing a worker's overall memory allocation. Currently, shrinking or growing a resident worker's allocation unloads its whole engine; its next request reloads the model within the new allocation. Switching workloads under memory pressure can therefore incur a full model reload.
+
+When work is no longer waiting for memory, idle workers can regain available capacity, with higher-priority types favored. Extra memory may allow more experts to remain resident, but does not establish a fixed throughput improvement.
+
+Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
+
+Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
