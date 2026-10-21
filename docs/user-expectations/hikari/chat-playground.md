@@ -2,7 +2,7 @@
 
 Hikari's Chat page tests text inference directly. It starts empty and keeps its conversation and draft only in the open page's memory. Reloading or leaving the page loses that history. It is separate from Kadan's durable agent conversations and does not execute agent tools or save messages in Tsuchi.
 
-Enter sends a nonblank message; Shift+Enter inserts a newline. One response runs at a time. The page sends its full current conversation to Hikari and shows streamed assistant text. Model selection comes from Hikari's saved configuration rather than a model picker in this composer. A missing tier or unavailable checkpoint produces an error; a downloaded model can still require loading time.
+Enter sends a nonblank message; Shift+Enter inserts a newline. One response runs at a time. The page sends its full current conversation to Hikari and shows streamed assistant text. Model selection comes from Hikari's saved configuration rather than a model picker in this composer. A missing tier or failed checkpoint acquisition produces an error; a downloaded model can still require loading time.
 
 Conversation capacity depends on the selected model's configured token context. The displayed character count is not a token budget. Requests that exceed capacity must fail explicitly rather than silently dropping old messages. A response can also reach the model's output limit; receiving text is not a guarantee that every requested detail was completed.
 
