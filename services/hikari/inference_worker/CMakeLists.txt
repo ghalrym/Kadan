@@ -1,38 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
-project(kadan_inference_worker LANGUAGES CXX)
+project(kadan_inference_worker LANGUAGES C CXX)
 option(KADAN_TRACE_WEIGHT_CACHE "Emit bounded developer weight-cache traces to stderr" OFF)
 if(KADAN_TRACE_WEIGHT_CACHE)
   # DeviceWeights is header-defined: every worker, CUDA and unit target must see
   # the same layout. This developer build does not change runtime settings.
   add_compile_definitions(KADAN_TRACE_WEIGHT_CACHE)
 endif()
-# GGUF metadata, row dequantization and ggml-cpu's quantized dot kernels for
-# host-resident experts. Kadan retains execution, placement, request state and
-# sampling; no llama.cpp model graph runs. The CPU kernels target the AVX2, FMA
-# and F16C baseline (GGML_NATIVE stays off).
-include(FetchContent)
-set(BUILD_SHARED_LIBS OFF)
-set(GGML_CPU ON CACHE BOOL "" FORCE)
-set(GGML_CPU_REPACK OFF CACHE BOOL "" FORCE)
-set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
-set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
-set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
-set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(kadan_ggml
-  URL https://codeload.github.com/ggml-org/llama.cpp/tar.gz/443fc4f6d733d5cd52d151e102390c61f25547eb
-  URL_HASH SHA256=ef88afda9da1665ca066956bd326c9d9461dc7ddc027a7a4a3aa92880a12a3dc
-  SOURCE_SUBDIR ggml)
-# ggml otherwise forces an unspecified parent build type to Release, disabling
-# assertion-based unit checks during lint. Preserve Kadan's caller-owned value.
-set(kadan_build_type "${CMAKE_BUILD_TYPE}")
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug)
-endif()
-FetchContent_MakeAvailable(kadan_ggml)
-set(CMAKE_BUILD_TYPE "${kadan_build_type}")
 option(KADAN_ENABLE_CUDA "Build original SM86 NVFP4/FP8 projections" OFF)
 option(KADAN_ENABLE_IMAGE_GENERATION "Build C++ ATen CUDA image generation" OFF)
 if(KADAN_ENABLE_IMAGE_GENERATION AND NOT KADAN_ENABLE_CUDA)
@@ -53,6 +26,10 @@ if(KADAN_ENABLE_CUDA)
   target_compile_features(kadan_cuda INTERFACE cuda_std_20)
 endif()
 find_package(Threads REQUIRED)
+# GGUF metadata, row dequantization and ggml-cpu's quantized dot kernels for
+# host-resident experts, vendored from llama.cpp. Kadan retains execution,
+# placement, request state and sampling; no llama.cpp model graph runs.
+add_subdirectory(third_party/ggml)
 add_library(kadan_resources INTERFACE)
 target_include_directories(kadan_resources INTERFACE include)
 target_compile_features(kadan_resources INTERFACE cxx_std_20)
@@ -500,7 +477,7 @@ function(kadan_install_worker target)
     RUNTIME DESTINATION libexec COMPONENT ${target}
     LIBRARY DESTINATION lib COMPONENT ${target})
   install(FILES catalog.json DESTINATION share/kadan COMPONENT ${target})
-  install(FILES "${kadan_ggml_SOURCE_DIR}/LICENSE"
+  install(FILES third_party/ggml/LICENSE
     DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT ${target})
   install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT ${target})
   install(PROGRAMS packaging/run_worker.sh DESTINATION bin RENAME ${target} COMPONENT ${target})
