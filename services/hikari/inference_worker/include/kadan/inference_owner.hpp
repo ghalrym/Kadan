@@ -286,6 +286,11 @@ public:
             {
                 std::lock_guard guard(mutex_);
                 model_.clear();
+                // Optional state must fit the acknowledged host grant.
+                if (loaded_ && cached_bytes_ > ceiling_[0]) {
+                    cache_.reset();
+                    cached_bytes_ = 0;
+                }
                 if (!loaded_)
                     ceiling_[0] = cached_bytes_;
             }

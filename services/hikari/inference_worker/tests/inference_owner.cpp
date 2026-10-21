@@ -1740,7 +1740,30 @@ void failed_snapshot_still_unloads_model() {
     owner.shutdown();
 }
 
+void resized_budget_drops_snapshot_it_cannot_cover() {
+    for (bool already_offloaded : {false, true}) {
+        CacheState state;
+        InferenceOwner owner(
+            {100, 100},
+            [&](auto, auto ledger) {
+                return std::make_unique<CacheEngine>(state, ledger);
+            },
+            [] { return Footprint{100, 100}; },
+            [](auto, auto, auto) {}
+        );
+        owner.submit(cache_request("conversation"));
+        assert(owner.advance());
+        if (already_offloaded)
+            assert(owner.offload() && owner.advance());
+        assert(owner.load({2, 0}) && owner.advance());
+        assert(owner.snapshot().used[0] == 0);
+        assert(owner.status().budget == Footprint({2, 0}));
+        owner.shutdown();
+    }
+}
+
 int main() {
+    resized_budget_drops_snapshot_it_cannot_cover();
     ram_cache_lifecycle();
     explicit_unload_preserves_cache_when_returning_budget();
     offload_does_not_restart_cache_timer();
