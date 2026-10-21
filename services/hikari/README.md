@@ -61,7 +61,8 @@ The API runs no inference and needs no GPU. Workers start without loading a
 model. Settings saves a hardware tier, which selects its language model and queues its
 downloads; requests load the tier's model on demand. Changing tiers unloads a
 resident language model of the previous tier. The tier persists;
-chat conversations stay in the browser. Native prefix reuse is currently unavailable.
+chat conversations stay in the browser. Native prefix reuse has the compatibility,
+retention and expiry limits described in [Inference operations](../../docs/user-expectations/hikari/inference.md#conversation-prefix-reuse).
 HTTP request observations and native reservations are distinct from measured
 system memory.
 
