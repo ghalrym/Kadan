@@ -27,8 +27,7 @@ separate network, and lets the owner watch or take over that computer from Kadan
   to the default network, while outbound sandbox HTTP and VNC remain available.
   This blocks direct internal access; it does not isolate separately reachable
   LAN addresses.
-- The API key stays server-side. Browsers reach the computer only through Kadan,
-  and the VNC WebSocket accepts only Kadan's own origin.
+- The API key stays server-side. Browsers reach the computer only through Kadan.
 - Tool definitions and the enabled `TOOLS` lists stay separate; only enabled
   tools are bound to the model.
 - Results entering the agent transcript stay bounded, and sandbox failures are tool

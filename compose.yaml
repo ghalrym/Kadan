@@ -314,7 +314,6 @@ services:
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       TSUCHI_DATA_DIR: /data
       TSUCHI_MAX_UPLOAD_BYTES: ${TSUCHI_MAX_UPLOAD_BYTES:-104857600}
-      TSUCHI_ALLOWED_HOSTS: '["localhost","127.0.0.1","[::1]","tsuchi-api"]'
     volumes:
       - tsuchi_data:/data
       - ./services/tsuchi/tsuchi:/app/tsuchi:ro

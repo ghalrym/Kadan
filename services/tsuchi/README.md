@@ -149,7 +149,7 @@ cd ..
 
 To run the frontend separately, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Keep listeners local. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
 
-The backend has explicit Pydantic models, SQLite transactions, and namespace-qualified lookups. Uploaded filenames never become disk paths. Raster images are verified before inline display. HTML, SVG, and general files download as attachments. The server checks allowed hosts and unsafe browser origins. These safeguards support a local app; they are not an authentication system.
+The backend has explicit Pydantic models, SQLite transactions, and namespace-qualified lookups. Uploaded filenames never become disk paths. Raster images are verified before inline display. HTML, SVG, and general files download as attachments. The server does not restrict request hosts or origins. These safeguards support a local app; they are not an authentication system.
 
 ## Manual check
 

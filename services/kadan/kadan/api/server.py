@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
-from .http_safety import LocalRequestSafety
 from .routes import agents, computer, health, runners, status
 from .routes.agents import assets, chain, pets, resources
 from .routes.agents.assets import content
@@ -37,7 +36,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Kadan", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestTracing)
-    app.add_middleware(LocalRequestSafety, allowed_hosts=config.allowed_hosts)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, error: ServiceError):
