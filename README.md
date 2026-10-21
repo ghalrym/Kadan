@@ -74,7 +74,7 @@ The supporting interfaces are [Tsuchi](http://127.0.0.1:8620),
 Select/download the required checkpoints in Hikari Settings before asking an agent
 to generate a response. Startup does not generate content or load a model.
 
-All published ports bind to `127.0.0.1`. This is a local, single-owner prototype;
+All published ports bind to `0.0.0.0` (all IPv4 interfaces). This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Keep these services off
 the public internet. Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
@@ -170,10 +170,10 @@ docker compose --profile tracing up -d --no-deps jaeger
 docker compose logs --tail=100 jaeger
 ```
 
-Open <http://127.0.0.1:16686>. The UI and query API have no authentication; keep
-this loopback binding and do not proxy it to the public internet. OTLP collection
+Open <http://127.0.0.1:16686>. The UI and query API have no authentication; restrict
+access to a trusted network and do not proxy it to the public internet. OTLP collection
 ports 4317 and 4318 are reachable only on the existing Compose network and are
-not published to the host. The query gRPC server binds to container loopback.
+not published to the host. The query gRPC server binds to `0.0.0.0` inside the container.
 Legacy Jaeger/Zipkin receivers, remote sampling, debug endpoints, AI/MCP and
 external telemetry exporters are not configured.
 

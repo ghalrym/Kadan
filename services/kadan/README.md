@@ -191,7 +191,7 @@ The root Compose integration supplies the following environment. The upstream na
 | `KADAN_SANDBOX_API_KEY` | from `.env` | Shared with `kadan-sandbox` as `SANDBOX_API_KEY` |
 
 Compose binds the API to `kadan-api-internal:8630` on the default network and
-does not publish it; the frontend publishes `127.0.0.1:8630:8080`. The API runs
+does not publish it; the frontend publishes `0.0.0.0:8630:8080`. The API runs
 as UID/GID `10001:10001`, supports a read-only filesystem, and requires no
 volume: durable application records live in Tsuchi. Use `cap_drop: [ALL]`,
 `security_opt: [no-new-privileges:true]` and `restart: unless-stopped`.
@@ -203,7 +203,7 @@ without starting inference. Outside Compose, the image retains its
 
 Upstream URLs accept loopback HTTP or their respective exact Compose endpoint above. Browser URLs accept loopback HTTP and hosts explicitly listed in `KADAN_ALLOWED_HOSTS`. The service rejects other HTTP Host headers and cross-origin writes; these guards do not replace authentication.
 
-For owner-authorized access from another computer on a trusted LAN, use a deployment-specific Compose override to publish `kadan-frontend` on the server's exact LAN address, mapping host port 8630 to container port 8080. Publish `tsuchi-frontend` and `hikari-frontend` on that address at their respective host ports, also targeting container port 8080. Keep the API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining localhost for the Compose healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
+For access from another computer on a trusted LAN, use the server's LAN address. Compose publishes all three frontends on all IPv4 interfaces at their respective host ports, targeting container port 8080. Keep the Kadan and Tsuchi API services internal. Add the address to `KADAN_ALLOWED_HOSTS` on `kadan-api`, retaining localhost for the Compose healthcheck. Set both browser URLs there to that server address and the published Tsuchi/Hikari ports; keep the upstream URLs on Docker DNS. Add the address to `TSUCHI_ALLOWED_HOSTS` on `tsuchi-api`, retaining its existing loopback and `tsuchi-api` entries. The frontend proxies preserve the browser's Host header, and the frontend APIs use their current page origin, so no CORS relaxation is needed. Keep the services off public interfaces and do not configure router forwarding. Root Compose defaults and durable volumes remain unchanged.
 
 On plain HTTP LAN pages, Hikari microphone recording and clipboard actions remain subject to browser secure-context requirements. Those features need trusted HTTPS; ordinary API access and audio-file upload do not require enabling microphone access. This change does not configure HTTPS.
 
@@ -217,7 +217,7 @@ python -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 npm ci --prefix web
 npm run build --prefix web
-.venv/bin/python -m uvicorn kadan.api.server:app --host 127.0.0.1 --port 8630
+.venv/bin/python -m uvicorn kadan.api.server:app --host 0.0.0.0 --port 8630
 ```
 
 In another terminal from `services/kadan`, start execution separately:
@@ -226,7 +226,7 @@ In another terminal from `services/kadan`, start execution separately:
 .venv/bin/python -m kadan.runner
 ```
 
-Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 and Hikari on port 8088. `.env.example` lists the available settings. To run the frontend separately, `npm run dev --prefix web` starts Vite on loopback and proxies `/api` to port 8630.
+Open `http://127.0.0.1:8630`. Local upstream defaults are Tsuchi on port 8620 and Hikari on port 8088. `.env.example` lists the available settings. To run the frontend separately, `npm run dev --prefix web` starts Vite on all IPv4 interfaces and proxies `/api` to port 8630.
 
 ## Runner assignment and recovery
 

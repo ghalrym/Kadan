@@ -7,6 +7,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: '0.0.0.0',
     proxy: {
       '/v1': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
       '/model-lifecycle': process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000',

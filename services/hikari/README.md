@@ -82,8 +82,8 @@ set `HIKARI_MODEL_VOLUME=kadan-workers_worker_models` in that computer's `.env`.
 Otherwise the workers project uses `kadan-workers_model_data`. Keep the existing
 project name if it differs from `kadan-workers`.
 
-Compose publishes the API on `127.0.0.1` only; expose it on a reachable address
-(behind TLS for `wss://`) before connecting remote workers.
+Compose publishes the API on `0.0.0.0` (all IPv4 interfaces). Remote workers
+connect using the server's reachable address; use TLS for `wss://`.
 
 ## Supported native capabilities
 

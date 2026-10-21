@@ -13,7 +13,7 @@ export default defineConfig({
   build: { target: "es2022" },
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
   server: {
-    host: "127.0.0.1",
+    host: "0.0.0.0",
     proxy: { "/api": apiProxy, "/openapi.json": apiProxy, "/docs": apiProxy },
     // Poll bind-mounted files when running inside Docker.
     watch: { usePolling: process.env.WATCH_POLLING === "true", interval: 250 },

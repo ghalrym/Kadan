@@ -9,7 +9,7 @@ const apiProxy = { target: apiTarget, changeOrigin: false };
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: "127.0.0.1",
+    host: "0.0.0.0",
     proxy: { "/api": apiProxy, "/openapi.json": apiProxy, "/docs": apiProxy },
     // Poll bind-mounted files when running inside Docker.
     watch: { usePolling: process.env.WATCH_POLLING === "true", interval: 250 },

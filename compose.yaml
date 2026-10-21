@@ -8,9 +8,9 @@ services:
     command: [--config, /etc/jaeger/config.yaml]
     volumes:
       - ./infrastructure/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
-    # OTLP stays on the existing Compose network; only the local UI is published.
+    # OTLP stays on the existing Compose network; only the UI is published.
     ports:
-      - "127.0.0.1:16686:16686"
+      - "0.0.0.0:16686:16686"
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 128
@@ -76,7 +76,7 @@ services:
       hikari-migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:8000:8000"
+      - "0.0.0.0:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 10s
@@ -283,7 +283,7 @@ services:
       context: ./services/hikari/frontend
     init: true
     ports:
-      - "127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}:8080"
+      - "0.0.0.0:${HIKARI_FRONTEND_PORT:-8088}:8080"
     depends_on:
       hikari-api:
         condition: service_healthy
@@ -331,7 +331,7 @@ services:
       context: ./services/tsuchi/web
     init: true
     ports:
-      - "127.0.0.1:${TSUCHI_PORT:-8620}:8080"
+      - "0.0.0.0:${TSUCHI_PORT:-8620}:8080"
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -459,7 +459,7 @@ services:
       context: ./services/kadan/web
     init: true
     ports:
-      - "127.0.0.1:${KADAN_PORT:-8630}:8080"
+      - "0.0.0.0:${KADAN_PORT:-8630}:8080"
     depends_on:
       kadan-api:
         condition: service_healthy
