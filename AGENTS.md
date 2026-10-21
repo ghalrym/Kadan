@@ -2,10 +2,27 @@
 
 ## Documentation
 
-Documentation should be used sparingly. Documentation should not explain code paths or patterns. It should be used as follows:
-- `README.md` - A breif summary with screenshot about what Kadan is along with a subsection that explains the subservices under Kadan and what they do
-- `docs/architecture` - Folder for architecture to be explained in detail. Why are things designed the way they are
-- `docs/user-expectations/{service}` - This folder explains user expectation for each feature we have. Each feature should be its own markdown file
+Use documentation sparingly. Do not narrate code paths or document routine coding patterns.
+
+- `README.md` gives a brief summary of Kadan with a screenshot and a subsection describing its services and their roles.
+- `docs/user-expectations/{service}/{feature}.md` describes what users can do and what behavior they can expect. Give each feature its own page.
+- `docs/architecture/{service}/{topic}.md` explains how a service is designed and why. Place service-specific architecture documents inside that service's folder, including worker documents.
+
+### User expectations
+
+Write for someone using the feature without knowing its implementation. Describe observable behavior, guarantees, limitations, and what happens when an operation waits, fails, or is cancelled. Name the service responsible for the feature.
+
+Keep this at the product level. For example: "Users can save a context limit for each model. Larger contexts require more memory, and requests that do not fit must report an error."
+
+Do not turn these pages into API references or implementation guides. Endpoint paths, HTTP methods and status codes, request fields, omitted-versus-null semantics, configuration variables, worker protocols, and memory accounting belong in architecture documentation. Include a numeric limit or default only when it is needed to explain the user-facing expectation.
+
+### Architecture
+
+Write for someone maintaining or extending the service. Explain responsibilities, service boundaries, data ownership, scheduling, resource management, and the reasons behind design decisions. API contracts and configuration details belong here when they help explain the design.
+
+For example: "Saved context settings and per-load overrides are separate so a temporary load does not change future loads." The associated endpoint and field semantics can follow that explanation.
+
+When a topic needs both kinds of documentation, keep the user-visible behavior in user expectations and put the technical detail in the service's architecture folder. Link the pages rather than copying the technical explanation into both. Before adding a paragraph, ask whether it explains what the user should experience or how and why the service delivers it.
 
 ## Security
 
