@@ -94,7 +94,8 @@ connect using the server's reachable address; use TLS for `wss://`.
   SSE responses. Context admission uses the configured token capacity; it never
   silently truncates history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
-- Images: Qwen Image generation. Editing is unavailable.
+- Images: Qwen Image generation, source editing and reference-conditioned generation.
+  See [image editing expectations](../../docs/user-expectations/hikari/image-editing.md) for controls, defaults and limits.
 - Video: H3 FL2VA INT8 + Turbo with audio across all three hardware tiers,
   480p/768p, 16:9/9:16/1:1, 24 fps and integer durations from 1–15 seconds.
   Omitted clip settings use the selected tier's defaults; explicit settings
@@ -434,24 +435,7 @@ remain separate owner-coordinated actions.
 
 ### Image editing
 
-The Images page accepts a PNG, JPEG or WebP source and an optional opaque mask.
-Uploads are normalized to PNG on the model's 32-pixel grid, with at most 3072
-pixels per side and 4,718,592 pixels total. A mask must match the original source
-dimensions; both receive the same resize. Black preserves source pixels, white
-allows editing, and gray blends. Each upload is limited to 20 MiB.
-
-`POST /v1/images/edits` accepts PNG data URLs in `image` and optional `mask`, plus
-the generation settings and `strength` from zero to one (default 0.65). API
-clients must supply already normalized dimensions; output follows the source
-size. Describe the desired result in `prompt`. Zero strength returns source
-pixels; one starts the editable area from noise. Intermediate strengths encode
-the source with the installed checkpoint's VAE and use the corresponding suffix
-of its sampling schedule, including Turbo's saved sigma grid.
-
-This is source-conditioned image-to-image denoising (SDEdit), with latent mask
-restoration and a final source-pixel composite. It does not implement Qwen's
-separate vision/reference-image attention pipeline. Encoding, text conditioning,
-denoising and decoding run sequentially through the existing worker and shared
-resource admission. Real-model editing quality and GPU memory behavior still
-require owner-coordinated manual validation; unit checks and compilation do not
-establish those results.
+Source and reference conditioning, upload normalization, masks and cancellation
+are described in [Image worker architecture](../../docs/architecture/hikari/worker-image.md#generation-and-editing-contracts).
+The [image editing expectations](../../docs/user-expectations/hikari/image-editing.md)
+describe the browser controls and result limitations.
