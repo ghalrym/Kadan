@@ -1,14 +1,61 @@
-name: Inference worker unit tests
+name: Hikari
 on:
   push:
+    paths:
+      - 'services/hikari/**'
+      - 'services/tracing/**'
+      - '.github/workflows/hikari.yml'
   pull_request:
+    paths:
+      - 'services/hikari/**'
+      - 'services/tracing/**'
+      - '.github/workflows/hikari.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: inference-worker-units-${{ github.workflow }}-${{ github.ref }}
+  group: hikari-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  backend:
+    name: API unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/hikari/api/requirements*.txt
+      - name: Install unit-test dependencies
+        run: |
+          python -m pip install services/tracing
+          python -m pip install -r services/hikari/api/requirements.txt -r services/hikari/bin/requirements.txt
+      - name: Run isolated unit tests
+        run: |
+          python services/hikari/bin/hikari.py check api
+  frontend:
+    name: Frontend lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/hikari/frontend/package-lock.json
+      - run: npm ci --prefix services/hikari/frontend
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r services/hikari/bin/requirements.txt
+      - run: python3 services/hikari/bin/hikari.py check frontend-lint
+      - run: python3 services/hikari/bin/hikari.py check frontend-unit
   inference-worker:
     name: C++ unit tests
     runs-on: ubuntu-latest
