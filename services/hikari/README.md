@@ -93,7 +93,8 @@ connect using the server's reachable address; use TLS for `wss://`.
   SSE responses. Context admission uses the configured token capacity; it never
   silently truncates history.
 - Decisions: pinned Laya on CPU, typed choice, score and Noul answers.
-- Images: Qwen Image generation. Editing is unavailable.
+- Images: Qwen Image generation, source editing and reference-conditioned generation.
+  See [image editing expectations](../../docs/user-expectations/hikari/image-editing.md) for controls, defaults and limits.
 - Video: H3 FL2VA INT8 + Turbo with audio across all three hardware tiers,
   480p/768p, 16:9/9:16/1:1, 24 fps and integer durations from 1–15 seconds.
   Omitted clip settings use the selected tier's defaults; explicit settings
@@ -455,9 +456,10 @@ pixels; one starts the editable area from noise. Intermediate strengths encode
 the source with the installed checkpoint's VAE and use the corresponding suffix
 of its sampling schedule, including Turbo's saved sigma grid.
 
-This is source-conditioned image-to-image denoising (SDEdit), with latent mask
-restoration and a final source-pixel composite. It does not implement Qwen's
-separate vision/reference-image attention pipeline. Encoding, text conditioning,
+Source mode uses image-to-image denoising (SDEdit), with latent mask
+restoration and a final source-pixel composite. API reference mode separately
+conditions a new image on the reference's character and appearance; it does not
+accept a mask or strength. Encoding, text conditioning,
 denoising and decoding run sequentially through the existing worker and shared
 resource admission. Real-model editing quality and GPU memory behavior still
 require owner-coordinated manual validation; unit checks and compilation do not
