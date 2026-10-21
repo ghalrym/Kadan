@@ -23,4 +23,14 @@ These receipts do not make every external effect repeatable. The [agent computer
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
-Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](hikari/inference.md); conversation ownership must remain independent of those execution policies.
+Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.
+
+## Conversation selection and context
+
+Kadan opens the oldest active conversation in the agent's Tsuchi namespace. Additional stored conversations do not create a thread picker. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
+
+The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
+
+Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
+
+See [Agent conversations](../../user-expectations/kadan/agent-conversations.md) for the product behavior and [Persona instructions](personas.md) for instruction snapshots.
