@@ -85,7 +85,16 @@ def llvm_tool(name: str) -> str:
 
 def cpp_sources() -> list[Path]:
     listed = subprocess.run(
-        ["git", "ls-files", "-z", "--", "inference_worker", "bin/cpp"],
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--",
+            "inference_worker",
+            "bin/cpp",
+            # Vendored upstream sources keep their own style.
+            ":(exclude)inference_worker/third_party",
+        ],
         cwd=ROOT,
         capture_output=True,
         check=True,
