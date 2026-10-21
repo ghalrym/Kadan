@@ -1,9 +1,11 @@
 # Stored conversations
 
-Tsuchi's Conversations view manages saved records. Creating a conversation or appending a message there stores data; it does not queue an agent response or contact Hikari. Use Kadan chat to ask an agent to act or reply.
+Tsuchi's Conversations view manages saved records. Creating a conversation or adding a message stores data without asking an agent to reply or running inference. Use Kadan chat to ask an agent to act.
 
-A new message defaults to the user role. The editor also permits system, assistant and tool roles, text, file attachments, stored-resource links and source links. Messages receive identifiers and timestamps when appended. The conversation must be saved before messages can be appended. Referenced files and resources must belong to the same namespace.
+Save the conversation before adding messages. Messages can represent users, assistants, system instructions or tools, and can include text, attachments and links to stored content. Referenced content must belong to the same agent.
 
-Appending checks the conversation's version. A conflicting edit produces an error rather than silently replacing the newer conversation. Saved messages remain ordered records; editing them in storage does not replay the corresponding tool action or inference.
+Conflicting edits produce an error rather than silently replacing newer changes. Editing a stored message does not repeat the action or inference it describes.
 
-Tsuchi can hold several conversation records in a namespace. Kadan currently presents one continuous chat and opens the oldest active conversation for that agent. Creating an additional conversation in Tsuchi does not add a thread selector to Kadan. Trashing or restoring storage records can therefore affect which conversation Kadan opens; preserve the active chat unless that change is intended.
+Tsuchi can store several conversations for an agent. Kadan currently opens the oldest active one and has no thread selector. Trashing or restoring a conversation can change which chat Kadan opens.
+
+See [Conversation storage](../../architecture/tsuchi/conversations.md) for identifiers and version checks.
