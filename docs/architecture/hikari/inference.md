@@ -1,6 +1,6 @@
 # Inference architecture
 
-Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user-visible contract is described in [Inference operations](../user-expectations/hikari/inference.md).
+Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user-visible contract is described in [Inference operations](../../user-expectations/hikari/inference.md).
 
 ## Mixture-of-experts language models
 
