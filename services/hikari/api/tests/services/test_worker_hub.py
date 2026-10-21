@@ -4,14 +4,14 @@ import os
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import WebSocketDisconnect
 from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.services.inference_errors import InferenceFailure
-from api.services.memory_scheduler import GIB, Requirement
+from api.services.memory_scheduler import GIB, MachineLedger, Requirement, WorkerSlot
 from api.services.worker_hub import (
     RELEASE_TIMEOUT,
     WorkerHub,
@@ -956,3 +956,86 @@ class LoadContextTests(HubTestCase):
         worker.slot.busy = True
         await self.hub._schedule(worker.computer)
         self.assertEqual(asked[-1], {"model": None, "context": 4096})
+
+
+class FullDuplexResidencyTests(unittest.TestCase):
+    def test_session_cleanup_restores_priorities_after_last_overlapping_call(self):
+        hub = WorkerHub()
+        slots = {
+            kind: WorkerSlot(
+                name=kind,
+                kind=kind,
+                requirement=Requirement(model=model, minimum=(1, 1), preferred=(1, 1)),
+            )
+            for kind, model in (
+                ("llm", "chat"),
+                ("tts", "voice"),
+                ("speech", "whisper"),
+                ("formatting", "formatter"),
+            )
+        }
+        hub.computers["box"] = SimpleNamespace(ledger=MachineLedger([100, 100], slots))
+        with (
+            self.assertRaisesRegex(RuntimeError, "disconnect"),
+            hub.full_duplex(frozenset(("chat", "voice", "whisper"))),
+        ):
+            self.assertEqual(
+                [slots[k].priority for k in ("llm", "tts", "speech")], [1, 1, 1]
+            )
+            self.assertFalse(slots["formatting"].full_duplex)
+            with hub.full_duplex(frozenset(("chat", "voice", "whisper"))):
+                pass
+            self.assertTrue(slots["tts"].full_duplex)
+            raise RuntimeError("disconnect")
+        self.assertEqual(
+            [slots[k].priority for k in ("llm", "tts", "speech")], [1, 2, 3]
+        )
+        self.assertGreater(slots["tts"].last_used, 0)
+        self.assertFalse(hub.calls)
+
+    def test_other_checkpoint_does_not_inherit_call_retention(self):
+        hub = WorkerHub()
+        slot = WorkerSlot(
+            name="llm",
+            kind="llm",
+            requirement=Requirement(model="other", minimum=(1, 1), preferred=(1, 1)),
+        )
+        hub.computers["box"] = SimpleNamespace(
+            ledger=MachineLedger([100, 100], {"llm": slot})
+        )
+        with hub.full_duplex(frozenset(("chat", "voice", "whisper"))):
+            self.assertFalse(slot.full_duplex)
+
+    def test_active_call_skips_idle_expiry_then_restores_it(self):
+        async def check():
+            hub = WorkerHub()
+            slot = WorkerSlot(
+                name="tts",
+                kind="tts",
+                loaded=True,
+                budget=[1, 1],
+                requirement=Requirement(
+                    model="voice", minimum=(1, 1), preferred=(1, 1)
+                ),
+            )
+            computer = SimpleNamespace(ledger=MachineLedger([100, 100], {"tts": slot}))
+            ready = asyncio.Event()
+            ready.set()
+            hub.workers["tts"] = SimpleNamespace(slot=slot, ready=ready)
+            hub.computers["box"] = computer
+            hub._apply = AsyncMock(return_value=True)
+            with hub.full_duplex(frozenset(("voice",))):
+                await hub._schedule(computer)
+                self.assertFalse(
+                    any(
+                        action.kind == "offload"
+                        for call in hub._apply.call_args_list
+                        for action in call.args[1]
+                    )
+                )
+            slot.last_used = 0
+            hub._apply.reset_mock()
+            await hub._schedule(computer)
+            self.assertEqual(hub._apply.call_args.args[1][0].kind, "offload")
+
+        asyncio.run(check())
