@@ -7,6 +7,13 @@
 - Docs in `docs/user-expectations/` describe the behavior and experience users expect. Preserve these expectations when changing the product.
 - Do not create other Markdown documentation, plans, reports, or notes in this project.
 
+## Security
+
+- The project is intentionally bare bones and provides only basic API-key authentication where needed, with the default key `insecure-api-key`. It provides no built-in security guarantees. Users are responsible for adding and maintaining any security they require on their machines or in deployments at scale.
+- Prioritize development speed while the project is still being fleshed out. Built-in security is the lowest priority during this phase.
+- Keep security limited to simple API-key checks with the default `insecure-api-key`. Do not add host or origin allowlists, network isolation, container hardening, accounts, or other security layers unless explicitly requested. Users secure their own environments independently.
+- Preserve the expectations in [Security and operator responsibility](docs/user-expectations/security.md).
+
 ## API
 
 Hikari lives in `services/hikari/`. Paths in the API, Database and Developer tooling sections are relative to that directory.

@@ -203,7 +203,7 @@ class HubTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthorizationTests(unittest.TestCase):
-    def test_token_must_be_configured_and_match(self):
+    def test_token_must_match(self):
         socket = SimpleNamespace(headers={"authorization": "Bearer secret"})
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(authorized(socket))
@@ -212,6 +212,14 @@ class AuthorizationTests(unittest.TestCase):
         with patch.dict(os.environ, {"HIKARI_WORKER_TOKEN": "secret"}):
             self.assertTrue(authorized(socket))
             self.assertFalse(authorized(SimpleNamespace(headers={})))
+
+    def test_default_api_key_is_used_when_unset_or_empty(self):
+        socket = SimpleNamespace(headers={"authorization": "Bearer insecure-api-key"})
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(authorized(socket))
+            self.assertFalse(authorized(SimpleNamespace(headers={})))
+        with patch.dict(os.environ, {"HIKARI_WORKER_TOKEN": ""}):
+            self.assertTrue(authorized(socket))
 
     def test_requested_model_reads_either_field(self):
         video = InferenceTask(input={"feature": "video", "prompt": "sea"})

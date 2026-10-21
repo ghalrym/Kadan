@@ -17,11 +17,11 @@ from kadan.api.sandbox_client import (
 )
 
 
-def sandbox(handler, api_key: str | None = "secret"):
+def sandbox(handler, api_key: str = "secret"):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     settings = SimpleNamespace(
         sandbox_url="http://kadan-sandbox:8080",
-        sandbox_api_key=SecretStr(api_key) if api_key is not None else None,
+        sandbox_api_key=SecretStr(api_key),
     )
     return SandboxClient(SimpleNamespace(client=client, settings=settings))
 
@@ -123,10 +123,10 @@ def test_unreachable_computer_is_a_service_error():
     assert error.value.code == "computer_unavailable"
 
 
-def test_requests_omit_authorization_without_a_key():
+def test_requests_use_default_api_key_when_empty():
     handler, seen = serving(httpx.Response(200, json={}))
     asyncio.run(sandbox(handler, api_key="").run("GET", "/v1/browser/tabs"))
-    assert "authorization" not in seen[0].headers
+    assert seen[0].headers["authorization"] == "Bearer insecure-api-key"
 
 
 def test_vnc_relay_targets_websockify_on_the_sandbox():
