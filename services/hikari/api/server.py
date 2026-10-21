@@ -15,7 +15,7 @@ from api.routes.v1 import (
     videos,
     workers,
 )
-from api.routes.v1.audio import speech, transcriptions
+from api.routes.v1.audio import calls, speech, transcriptions
 from api.routes.v1.chat import completions, messages
 from api.routes.v1.images import edits
 from api.routes.v1.images import generations as image_generations
@@ -64,6 +64,7 @@ for router in (
     image_requests.router,
     video_generations.router,
     videos.router,
+    calls.router,
     speech.router,
     transcriptions.router,
     metrics.router,
