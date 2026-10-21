@@ -353,3 +353,40 @@ class RamCachePressureTests(unittest.TestCase):
                 setattr(cache, attr, 1)
                 machine.workers["video"].requirement = requirement(6, 8)
                 self.assertIsNone(plan_load(machine, "video"))
+
+
+class FullDuplexTests(unittest.TestCase):
+    def test_call_models_have_equal_priority_without_equal_budgets(self):
+        machine = ledger(vram=(24,))
+        for name in ("llm", "tts", "speech"):
+            machine.workers[name].full_duplex = True
+        load(machine, "llm", [16, 12], need=requirement(8, 6, 16, 12))
+        load(machine, "tts", [2, 4], need=requirement(2, 4))
+        machine.workers["speech"].requirement = requirement(1, 3)
+        self.assertEqual(
+            [machine.workers[n].priority for n in ("llm", "tts", "speech")], [1, 1, 1]
+        )
+        self.assertEqual(
+            plan_load(machine, "speech"), [Action("load", "speech", [GIB, 3 * GIB])]
+        )
+        self.assertEqual(plan_growth(machine), [])
+
+    def test_call_priority_cannot_displace_busy_or_queued_equal_participants(self):
+        machine = ledger(vram=(8,))
+        for name in ("llm", "tts", "speech"):
+            machine.workers[name].full_duplex = True
+        load(machine, "llm", [8, 4], pending=1, need=requirement(8, 4))
+        load(machine, "tts", [2, 4], busy=True, need=requirement(2, 4))
+        machine.workers["speech"].requirement = requirement(1, 3)
+        self.assertIsNone(plan_load(machine, "speech"))
+
+    def test_memory_pressure_can_evict_an_idle_call_model(self):
+        machine = ledger(vram=(8,))
+        machine.workers["llm"].full_duplex = True
+        machine.workers["speech"].full_duplex = True
+        load(machine, "llm", [8, 8], need=requirement(8, 8))
+        machine.workers["speech"].requirement = requirement(1, 3)
+        self.assertEqual(
+            plan_load(machine, "speech"),
+            [Action("offload", "llm"), Action("load", "speech", [GIB, 3 * GIB])],
+        )
