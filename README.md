@@ -172,7 +172,7 @@ docker compose logs --tail=100 jaeger
 
 Open <http://127.0.0.1:16686>. The UI and query API have no authentication; operators control access to them. OTLP collection
 ports 4317 and 4318 are reachable only on the existing Compose network and are
-not published to the host. The query gRPC server binds to container loopback.
+not published to the host. The query gRPC server binds to `0.0.0.0` inside the container.
 Legacy Jaeger/Zipkin receivers, remote sampling, debug endpoints, AI/MCP and
 external telemetry exporters are not configured.
 

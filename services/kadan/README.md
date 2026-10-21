@@ -208,7 +208,7 @@ python -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 npm ci --prefix web
 npm run build --prefix web
-.venv/bin/python -m uvicorn kadan.api.server:app --host 127.0.0.1 --port 8630
+.venv/bin/python -m uvicorn kadan.api.server:app --host 0.0.0.0 --port 8630
 ```
 
 In another terminal from `services/kadan`, start execution separately:

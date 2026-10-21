@@ -10,7 +10,7 @@ extensions:
     http:
       endpoint: 0.0.0.0:16686
     grpc:
-      endpoint: 127.0.0.1:16685
+      endpoint: 0.0.0.0:16685
 
 receivers:
   otlp:

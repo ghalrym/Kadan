@@ -144,7 +144,7 @@ npm ci
 npm run build
 cd ..
 .venv/bin/python -m pytest
-.venv/bin/uvicorn tsuchi.main:app --host 127.0.0.1 --port 8620
+.venv/bin/uvicorn tsuchi.main:app --host 0.0.0.0 --port 8620
 ```
 
 To run the frontend separately, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
