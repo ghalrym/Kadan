@@ -40,7 +40,15 @@ class LocalServices:
         self.sandbox = SandboxClient(self)
         self.chain_locks: dict[str, asyncio.Lock] = {}
 
-    async def json_request(self, service: str, method: str, path: str, **kwargs):
+    async def json_request(
+        self,
+        service: str,
+        method: str,
+        path: str,
+        *,
+        timeout: float = 15,
+        **kwargs,
+    ):
         base = (
             self.settings.tsuchi_url
             if service == "Tsuchi"
@@ -48,7 +56,7 @@ class LocalServices:
         )
         try:
             response = await self.client.request(
-                method, base + path, timeout=httpx.Timeout(15, connect=3), **kwargs
+                method, base + path, timeout=httpx.Timeout(timeout, connect=3), **kwargs
             )
         except httpx.RequestError as error:
             raise ServiceError(

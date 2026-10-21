@@ -1,6 +1,7 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { ArrowUp, ArrowUpRight, ChevronDown, NotebookPen, Square, UserRound } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Square, UserRound, X } from "lucide-react";
 import type { Resource, Status } from "./types";
+import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
 
 export function readiness(status: Status | null) {
   const storage = status?.tsuchi.state === "ready";
@@ -59,10 +60,40 @@ export default function Composer({
   autoFocus,
 }: Props) {
   const field = useRef<HTMLTextAreaElement>(null);
+  const microphone = useRef<VoiceInput | null>(null);
+  const [voice, setVoice] = useState<VoiceState | null>(null);
+  const [voiceError, setVoiceError] = useState("");
+  const draft = useRef({ value, onChange });
+  draft.current = { value, onChange };
   const ready = readiness(status);
   const issue = attention(status);
   const empty = !value.trim();
-  const locked = sending || blocked;
+  const locked = sending || blocked || voice !== null;
+  useEffect(() => () => microphone.current?.cancel(), []);
+  useEffect(() => {
+    if (blocked || sending || !ready.chat) {
+      microphone.current?.cancel();
+      microphone.current = null;
+      setVoice(null);
+    }
+  }, [blocked, sending, ready.chat]);
+
+  function record() {
+    if (microphone.current) { microphone.current.finish(); return; }
+    setVoiceError("");
+    const session = new VoiceInput(
+      (text) => {
+        const current = draft.current;
+        const next = current.value ? `${current.value}\n${text}` : text;
+        if (next.length > 16000) throw new Error("The transcript would exceed the message limit. Shorten the draft and try again.");
+        current.onChange(next);
+      },
+      setVoice,
+      (error) => { microphone.current = null; setVoice(null); setVoiceError(error ?? ""); },
+    );
+    microphone.current = session;
+    void session.start();
+  }
   useLayoutEffect(() => {
     const node = field.current;
     if (!node) return;
@@ -72,6 +103,8 @@ export default function Composer({
 
   return (
     <div className="composer-wrap">
+      {voiceError && <p role="alert">{voiceError}</p>}
+      {voice && <p role="status">{voice === "requesting" ? "Waiting for microphone permission…" : voice === "recording" ? "Recording · up to 20 seconds. Stop to transcribe." : "Transcribing…"}</p>}
       {issue && (
         <a
           className="attention"
@@ -90,7 +123,7 @@ export default function Composer({
         className={`composer ${sending ? "is-sending" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
-          onSend(ready.chat);
+          if (!voice) onSend(ready.chat);
         }}
       >
         <span className="perch">{pet}</span>
@@ -111,7 +144,7 @@ export default function Composer({
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              onSend(ready.chat);
+              if (!voice) onSend(ready.chat);
             }
           }}
         />
@@ -138,6 +171,23 @@ export default function Composer({
             <span />
           )}
           <div className="send-actions">
+            {ready.chat && (
+              <button
+                className="icon"
+                type="button"
+                aria-label={voice === "recording" ? "Stop recording and transcribe" : "Record a voice message"}
+                title={microphoneUnavailable() ?? "Record a voice message · review the text before sending"}
+                disabled={sending || blocked || voice === "requesting" || voice === "transcribing" || !!microphoneUnavailable()}
+                onClick={record}
+              >
+                {voice === "recording" ? <Square size={16} /> : <Mic size={16} />}
+              </button>
+            )}
+            {voice && (
+              <button className="icon" type="button" aria-label="Discard recording" onClick={() => {
+                microphone.current?.cancel(); microphone.current = null; setVoice(null);
+              }}><X size={16} /></button>
+            )}
             {ready.chat && (
               <button
                 className="icon note"
