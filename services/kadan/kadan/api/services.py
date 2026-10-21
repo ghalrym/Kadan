@@ -3,6 +3,7 @@ from uuid import UUID
 
 import httpx
 from pydantic import ValidationError
+from pydantic_core import from_json
 
 from .config import ServiceError, Settings
 from .pet_client import PetClient
@@ -59,7 +60,7 @@ class LocalServices:
         if response.status_code == 204:
             return None
         try:
-            return response.json()
+            return from_json(response.content, cache_strings="keys")
         except ValueError as error:
             raise ServiceError(
                 f"{service} returned an invalid response.", 502, "invalid_response"

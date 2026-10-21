@@ -6,7 +6,7 @@ from uuid import UUID
 import httpx
 import pytest
 
-from kadan.api.config import Settings
+from kadan.api.config import ServiceError, Settings
 from kadan.api.pydantic_models.resources import Message, Resource
 from kadan.api.routes.agents.conversations.notes import NoteInput
 from kadan.api.routes.agents.resources import PersonaUpdate
@@ -16,6 +16,43 @@ CONVERSATION_ID = UUID("10000000-0000-4000-8000-000000000001")
 PERSONA_ID = UUID("10000000-0000-4000-8000-000000000002")
 MESSAGE_ID = UUID("10000000-0000-4000-8000-000000000003")
 NOW = datetime(2026, 10, 17, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "text": "Café 東京 🎤\nsecond line",
+            "metadata": {"ready": True, "error": None},
+        },
+        [{"version": 9223372036854775808, "ratio": 0.125}, [], False],
+        None,
+        "A response",
+    ],
+)
+def test_upstream_json_preserves_utf8_text_numbers_and_nested_values(value):
+    result = run(
+        lambda request: httpx.Response(
+            200,
+            content=json.dumps(value, ensure_ascii=False).encode(),
+            headers={"content-type": "application/json"},
+        ),
+        lambda service: service.json_request("Tsuchi", "GET", "/example"),
+    )
+    assert result == value
+
+
+@pytest.mark.parametrize("body", [b"", b'{"unfinished":', b'{"ok": true} extra'])
+def test_malformed_upstream_json_remains_an_invalid_response_error(body):
+    with pytest.raises(
+        ServiceError, match="Tsuchi returned an invalid response"
+    ) as error:
+        run(
+            lambda request: httpx.Response(200, content=body),
+            lambda service: service.json_request("Tsuchi", "GET", "/example"),
+        )
+    assert error.value.status == 502
+    assert error.value.code == "invalid_response"
 
 
 def resource(kind="conversation", messages=None, **changes):
