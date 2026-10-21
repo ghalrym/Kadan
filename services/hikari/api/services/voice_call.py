@@ -193,7 +193,9 @@ class VoiceCall:
                 stream=True,
             )
         )
-        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
+        # The 8000-character reply limit bounds this queue. Do not block chat
+        # completion when synthesis is waiting for the same physical memory.
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
 
         async def generate():
             pending = ""
