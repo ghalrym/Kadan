@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request
+import asyncio
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter()
@@ -18,11 +20,30 @@ class TranscriptionResult(BaseModel):
 async def transcribe(
     value: TranscriptionInput, request: Request
 ) -> TranscriptionResult:
-    result = await request.app.state.services.json_request(
-        "Hikari",
-        "POST",
-        "/v1/audio/transcriptions",
-        json={"audio": value.audio, "formatting": False},
-        timeout=120,
+    async def disconnect():
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    upstream = asyncio.create_task(
+        request.app.state.services.json_request(
+            "Hikari",
+            "POST",
+            "/v1/audio/transcriptions",
+            json={"audio": value.audio, "formatting": False},
+            timeout=120,
+        )
     )
-    return TranscriptionResult.model_validate(result)
+    watcher = asyncio.create_task(disconnect())
+    try:
+        done, _ = await asyncio.wait(
+            (upstream, watcher), return_when=asyncio.FIRST_COMPLETED
+        )
+        if upstream not in done:
+            raise HTTPException(499, "Client disconnected; transcription cancelled.")
+        return TranscriptionResult.model_validate(await upstream)
+    finally:
+        # Cancelling HTTPX closes its upstream connection, letting Hikari cancel work.
+        for task in (upstream, watcher):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(upstream, watcher, return_exceptions=True)
