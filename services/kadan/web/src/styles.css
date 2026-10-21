@@ -2151,3 +2151,24 @@ dialog::backdrop {
     flex-wrap: wrap;
   }
 }
+
+.call-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.call-controls > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  color: var(--muted);
+}
+.call-controls .end-call {
+  color: var(--error);
+}
+@media (max-width: 760px) {
+  .call-controls button { min-height: 44px; }
+}

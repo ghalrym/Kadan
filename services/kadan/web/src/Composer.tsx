@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Square, UserRound, X } from "lucide-react";
 import type { Resource, Status } from "./types";
+import VoiceCallControl from "./VoiceCallControl";
 import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
 
 export function readiness(status: Status | null) {
@@ -62,13 +63,14 @@ export default function Composer({
   const field = useRef<HTMLTextAreaElement>(null);
   const microphone = useRef<VoiceInput | null>(null);
   const [voice, setVoice] = useState<VoiceState | null>(null);
+  const [callActive, setCallActive] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const draft = useRef({ value, onChange });
   draft.current = { value, onChange };
   const ready = readiness(status);
   const issue = attention(status);
   const empty = !value.trim();
-  const locked = sending || blocked || voice !== null;
+  const locked = sending || blocked || voice !== null || callActive;
   useEffect(() => () => microphone.current?.cancel(), []);
   useEffect(() => {
     if (blocked || sending || !ready.chat) {
@@ -119,11 +121,16 @@ export default function Composer({
           {issue.href && <ArrowUpRight size={13} />}
         </a>
       )}
+      {ready.chat && <VoiceCallControl
+        instruction={`You are ${agentName}. Have a spoken conversation. Keep replies short. You have no tools.\n${personas.find((item) => item.id === persona)?.markdown.slice(0, 6000) ?? ""}`}
+        disabled={sending || blocked || voice !== null}
+        onActive={setCallActive}
+      />}
       <form
         className={`composer ${sending ? "is-sending" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!voice) onSend(ready.chat);
+          if (!voice && !callActive) onSend(ready.chat);
         }}
       >
         <span className="perch">{pet}</span>
@@ -140,11 +147,11 @@ export default function Composer({
           maxLength={16000}
           rows={1}
           // Keep typing while the agent replies, as in a text conversation.
-          disabled={blocked || !ready.storage}
+          disabled={blocked || !ready.storage || callActive}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!voice) onSend(ready.chat);
+              if (!voice && !callActive) onSend(ready.chat);
             }
           }}
         />
@@ -177,7 +184,7 @@ export default function Composer({
                 type="button"
                 aria-label={voice === "recording" ? "Stop recording and transcribe" : "Record a voice message"}
                 title={microphoneUnavailable() ?? "Record a voice message · review the text before sending"}
-                disabled={sending || blocked || voice === "requesting" || voice === "transcribing" || !!microphoneUnavailable()}
+                disabled={callActive || sending || blocked || voice === "requesting" || voice === "transcribing" || !!microphoneUnavailable()}
                 onClick={record}
               >
                 {voice === "recording" ? <Square size={16} /> : <Mic size={16} />}
