@@ -1013,6 +1013,7 @@ class FullDuplexResidencyTests(unittest.TestCase):
                 name="tts",
                 kind="tts",
                 loaded=True,
+                last_used=time.monotonic() - hub.model_idle_seconds - 1,
                 budget=[1, 1],
                 requirement=Requirement(
                     model="voice", minimum=(1, 1), preferred=(1, 1)
@@ -1033,7 +1034,7 @@ class FullDuplexResidencyTests(unittest.TestCase):
                         for action in call.args[1]
                     )
                 )
-            slot.last_used = 0
+            slot.last_used = time.monotonic() - hub.model_idle_seconds - 1
             hub._apply.reset_mock()
             await hub._schedule(computer)
             self.assertEqual(hub._apply.call_args.args[1][0].kind, "offload")
