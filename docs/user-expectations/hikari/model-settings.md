@@ -4,6 +4,8 @@ A new installation has no selected hardware tier. Settings highlights a suggeste
 
 The selected tier is saved and determines its modality checkpoints and video defaults. Selecting it queues incomplete model downloads; accepting the request does not mean those downloads are finished or that a model is resident in GPU memory. Models load when inference needs them. A tier's advertised hardware sizes are starting configurations, not a guarantee that every request will fit or run at a particular speed.
 
+Use Settings to download and inspect checkpoints before inference. In the current implementation, native request preparation can also acquire a missing checkpoint, so a direct inference request is not guaranteed to be free of downloads. An unusable existing checkpoint directory or failed acquisition can instead produce an error. Kadan's chat interface separately gates normal sending on the reported downloaded language-model state.
+
 The progress dialog shows each assigned checkpoint separately. Queued downloads can have no observed byte total yet, and the aggregate percentage can use catalog estimates until sizes are known. Completion is established by the checkpoint state, not a rounded percentage. Failures remain visible. Resume downloads retries the selected tier's incomplete downloads; it does not require re-downloading completed checkpoints.
 
 Continue in background, closing the dialog or leaving Settings does not cancel a download. Tier selection is disabled in this interface while the selected tier is downloading. Reopen View downloads to inspect progress. When a settings request fails or times out, refresh its state before assuming nothing changed: saving the selection and completing all downloads are separate outcomes.
