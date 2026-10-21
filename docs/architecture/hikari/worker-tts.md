@@ -40,3 +40,13 @@ CustomVoice): named speakers, supported languages and instructions.
 
 - Its minimums mirror the engine's load checks. A smaller grant would leave the
   engine waiting on memory it was promised.
+
+## Input and result contract
+
+The enabled integration is `qwen-tts-1.7b-custom`. `POST /v1/audio/speech` accepts nonblank script text up to 32,000 UTF-8 bytes and voice instructions up to 8,000 UTF-8 bytes. Character counts do not establish these byte limits. The endpoint validates the named speaker and language before execution.
+
+The browser chooses the first enabled model, defaults to Ryan and uses Auto language. API clients can also select Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish or Italian. Describe and Clone have no enabled native integration. Listing an integration does not establish checkpoint residency or memory fit.
+
+Speech is buffered into a complete WAV rather than incrementally played during synthesis. The history route is empty, and the playground retains clips and form edits in page memory only. Browser cancellation or navigation aborts the request and ignores late results while native cleanup finishes. Retry submits the current form as another inference.
+
+See [Text to speech](../../user-expectations/hikari/text-to-speech.md) for user expectations.

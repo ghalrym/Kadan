@@ -1,13 +1,13 @@
 # Speech to text and formatting
 
-Speech to text starts without a clip. Users can record with browser permission or choose an audio file their browser can decode, then preview it locally. Recording or choosing a file does not submit it automatically; press Transcribe. Microphone recording needs a browser-supported secure context such as HTTPS or localhost. Audio-file selection does not require microphone permission.
+Hikari lets users record audio with microphone permission or choose a file their browser can read. The clip can be previewed locally; **Transcribe** submits it. Recording requires a supported secure browser context, such as HTTPS or localhost.
 
-The browser converts the chosen clip to mono 16-bit PCM WAV at 16 kHz before submission. Native transcription accepts at most 30 seconds and currently supports English. The page does not automatically stop recording at that limit, trim a long clip or split it into several requests. Stop in time or choose a shorter clip; an overlong or unsupported input must fail rather than silently transcribing a truncated version.
+Transcription currently supports English clips up to 30 seconds. Recording does not stop automatically at that limit. Long or unsupported inputs must fail rather than silently lose audio; choose a shorter clip when needed.
 
-Whisper uses its saved checkpoint selection, defaulting to medium unless changed. API clients can override the model per request or save another supported selection. Choosing a model does not download it implicitly. The page follows that saved selection rather than exposing its own model picker.
+The page uses the saved transcription model and formatting preference. Optional formatting cleans up the recognized text. If formatting fails, the raw transcript remains available with a visible error. **Raw transcription** lets users compare it with a formatted result. Both versions need review for meaning and accuracy.
 
-Formatting is enabled by default unless its saved setting was changed. After Whisper, S1-mini by Superwhisper normalizes the English transcript using semi-formal prose and general context. It has a 1,000-token input limit and a 1,024-token output limit. The formatter needs its downloaded checkpoint and CPU memory admission. API clients can change the saved switch or override formatting for one request; the page uses the saved value.
+**Discard** clears the clip and transcript. **Copy transcript** can fail independently of recognition. Clips, results and form state disappear on navigation or reload.
 
-The response retains raw_text alongside the displayed text and identifies whether formatting was disabled, completed, failed or skipped for empty input. A formatting failure returns the raw transcript with a visible error rather than discarding successful recognition. An empty recognized transcript is not fabricated speech, and a formatted transcript still needs review for meaning and accuracy. Expand Raw transcription to compare a formatted result.
+**Cancel** ignores late results while cleanup finishes. Leaving the page also aborts pending work and releases microphone access.
 
-Discard clears the local clip and transcript. Copy transcript uses the browser clipboard and can fail independently of transcription. Clips and results are page-local and disappear on navigation or reload. Cancel stops the browser request and ignores late results; leaving the page also releases microphone access and aborts pending work. Server cleanup can finish later.
+See [Transcription architecture](../../architecture/hikari/worker-speech.md) for audio conversion, model selection and formatting fallback.
