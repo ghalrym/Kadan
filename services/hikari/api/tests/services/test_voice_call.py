@@ -285,3 +285,33 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(InferenceFailure, "Needs 4 GiB"):
             await call.respond("wav", 0)
         self.assertTrue(stream.closed)
+
+    async def test_chat_can_finish_when_synthesis_waits_for_the_same_memory(self):
+        chat_finished = asyncio.Event()
+
+        class ManySentences(Stream):
+            async def __aiter__(self):
+                for _ in range(12):
+                    yield {"content": "A short sentence. "}
+                chat_finished.set()
+                yield {"finish_reason": "stop"}
+
+        stream = ManySentences([])
+
+        async def submit(body, *, feature):
+            if feature == "stt":
+                return {"text": "Hello"}
+            # Physical admission can wait for the language worker to finish.
+            await chat_finished.wait()
+            return {"audio_base64": "AAAA"}
+
+        call = self.call(
+            SimpleNamespace(
+                models_status=snapshot,
+                submit=submit,
+                open_chat_stream=AsyncMock(return_value=(stream, "chat")),
+            )
+        )
+        await asyncio.wait_for(call.respond("wav", 0), 1)
+        self.assertTrue(stream.closed)
+        self.assertEqual(len(call.segments), 12)
