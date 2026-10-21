@@ -39,7 +39,9 @@ hatchling** resets selection. Selected pets appear in the roster, home and chat.
 
 To bring over a pet made for ChatGPT or Codex, choose **New pet → Import** and drop
 or choose its folder (`pet.json` plus the spritesheet), a zip of that folder, or the
-spritesheet alone. The browser previews the sheet before upload. Kadan follows
+spritesheet alone. Loose files and folders preview the sheet before upload;
+a zip is validated during import, then the imported candidate can be previewed
+before choosing **Use pet**. Kadan follows
 `spritesheetPath`, takes the name and description from `pet.json` unless you rename
 it, checks the atlas is 1536x1872 (v1) or 1536x2288 (v2), and stores it re-encoded
 as lossless WebP. The import becomes a ready candidate; choose **Use pet** to switch.
