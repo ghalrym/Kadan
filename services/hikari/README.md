@@ -61,7 +61,8 @@ The API runs no inference and needs no GPU. Workers start without loading a
 model. Settings saves a hardware tier, which selects its language model and queues its
 downloads; requests load the tier's model on demand. Changing tiers unloads a
 resident language model of the previous tier. The tier persists;
-chat conversations stay in the browser. Native prefix reuse is currently unavailable.
+chat conversations stay in the browser. Native prefix reuse has the compatibility,
+retention and expiry limits described in [Inference operations](../../docs/user-expectations/hikari/inference.md#conversation-prefix-reuse).
 HTTP request observations and native reservations are distinct from measured
 system memory.
 
@@ -267,8 +268,9 @@ python -m pip install -r services/hikari/requirements-dev.txt
 python services/hikari/bin/hikari.py check format --write
 ```
 
-CI runs `python services/hikari/bin/hikari.py check format` on every push and pull request and fails
-if any Python file needs formatting.
+CI runs `python services/hikari/bin/hikari.py check format` when Python files,
+formatter configuration, its dependencies or its workflow change, and fails if
+any Python file needs formatting. Root documentation-only changes skip code CI.
 
 The same requirements pin clang-format and clang-tidy for C++ and CUDA sources.
 `.clang-format` owns style and `.clang-tidy` lists the bug-focused checks that gate CI:
