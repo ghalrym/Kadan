@@ -104,16 +104,10 @@ connect using the server's reachable address; use TLS for `wss://`.
   not support negative prompts.
 - Speech: Qwen3-TTS 1.7B CustomVoice, named speakers, supported languages and
   instructions. Describe and clone modes have no enabled native integration.
-- Transcription: native Whisper, English, up to 30 seconds of mono 16-bit
-  16-kHz PCM WAV. The saved formatting switch runs S1-mini by Superwhisper
-  (`superwhisper/s1-mini`) after Whisper through the same worker. Disable it to
-  return Whisper's text unchanged; each API request can also override the setting.
-  S1-mini uses semi-formal prose/general context, English input up to 1,000 tokens,
-  and a 1,024-token output limit. It executes on CPU with shared memory accounting.
-  Responses retain `raw_text`, identify `formatting_model`, and report
-  `formatting_status`; a formatter failure returns raw text with `formatting_error`.
-  Download the pinned formatter from Settings before use. Model output quality and
-  latency still require validation on the installed model.
+- Transcription: native Whisper with optional transcript formatting. See the
+  [transcription worker](../../docs/architecture/hikari/worker-speech.md) and
+  [formatting worker](../../docs/architecture/hikari/worker-formatting.md) for
+  supported inputs, settings and fallback behavior.
 
 Empty history and unavailable errors are explicit; the server never fabricates
 media results. The API access page reads OpenAPI and does not create credentials.
