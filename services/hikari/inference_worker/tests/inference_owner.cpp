@@ -1077,6 +1077,27 @@ void incompatible_image_head_is_not_overtaken() {
     owner.shutdown();
 }
 
+void cancellation_during_terminal_publication_releases_resident_state() {
+    BatchState state;
+    state.image_results = true;
+    InferenceOwner owner(
+        {100, 100, 100},
+        [&](auto, auto ledger) { return std::make_unique<BatchEngine>(state, ledger); },
+        [] { return Footprint{100, 80, 70}; },
+        [&](auto id, auto event, auto) {
+            if (id == "first" && event == JobState::succeeded)
+                assert(owner.cancel("second"));
+            if (id == "second" && event == JobState::cancelled)
+                assert(owner.snapshot().used == Footprint({0, 0, 0}));
+        }
+    );
+    owner.submit(image_request("first"));
+    owner.submit(image_request("second"));
+    assert(owner.advance());
+    assert(state.close_calls == 1 && owner.pending() == 0);
+    owner.shutdown();
+}
+
 void cancellation_does_not_cancel_a_batch_sibling() {
     BatchState state;
     state.image_results = true;
@@ -1427,6 +1448,7 @@ int main() {
     physical_pressure_reduces_batch_before_launch();
     failed_batch_preserves_the_waiting_queue();
     cancellation_does_not_cancel_a_batch_sibling();
+    cancellation_during_terminal_publication_releases_resident_state();
     incompatible_image_head_is_not_overtaken();
     image_collection_deadline_uses_oldest_submission();
     full_image_batch_launches_without_waiting_and_preserves_seeds();

@@ -47,3 +47,9 @@ The API hub also expires resident models after `HIKARI_MODEL_IDLE_SECONDS` (defa
 Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
+
+## Resident conversation prefixes
+
+Each resident chat engine keeps one completed conversation prefix, its exact committed token sequence and the corresponding attention and recurrent state. Both supported GGUF architectures are recurrent, so a hit requires the entire retained sequence to match the start of a longer prompt; an arbitrary common prefix cannot safely rewind recurrence. Selected output tokens not yet fed through the engine are excluded. On a hit, only the remaining prompt suffix executes, at the retained absolute position.
+
+Request cleanup releases transient scratch while keeping prefix allocations charged to the worker's existing RAM and per-GPU budgets. Missing conversation IDs and disabled reuse retain no entry. A miss resets state; cancellation, engine replacement, model changes and offload discard it. Resident prefixes do not survive unloading or provide cross-worker affinity. Cache response counts describe actual reuse, and prefill timing counts only tokens that executed.

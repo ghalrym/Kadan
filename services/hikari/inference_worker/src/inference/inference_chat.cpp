@@ -56,7 +56,6 @@ public:
         const Footprint& available,
         const std::atomic_bool& cancel
     ) override {
-        const auto& input = std::get<ChatRequest>(request.input);
         const auto root = request.configuration.checkpoint.string();
         capacity_ = request.configuration.context_limit;
         require(capacity_ > 0 && capacity_ <= 1048576, "chat_context_limit");
@@ -112,7 +111,9 @@ public:
         // Admission belongs before execution so fresh pressure can release/replan.
         try {
             model_->set_cancel(cancel);
-            model_->begin_request();
+            reused_tokens_ = model_->begin_request(
+                prompt_, input.conversation_id.value_or(""), input.reuse_prefix
+            );
         } catch (const std::exception& error) {
             const std::string reason = error.what();
             if (reason == "exhausted" || reason == "model_physical_headroom")
@@ -135,14 +136,15 @@ public:
         const auto started = std::chrono::steady_clock::now();
         auto first = started, last = started;
         check_cancel(cancel);
-        progress_("prefill_begin", prompt_.size());
+        const auto suffix = std::span<const unsigned>(prompt_).subspan(reused_tokens_);
+        progress_("prefill_begin", suffix.size());
         model_->set_projection_timing(bool(request.trace));
         model_->take_timing();
         Token selected;
         {
             InferenceTrace tracing(request.trace, "prefill");
-            selected = model_->prefill(prompt_, progress_);
-            tracing.text_metrics(phase_metrics(prompt_.size(), model_->take_timing()));
+            selected = model_->prefill(suffix, progress_);
+            tracing.text_metrics(phase_metrics(suffix.size(), model_->take_timing()));
         }
         std::string text, pending, reason = "length";
         std::size_t generated = 0, steps = 0;
@@ -177,6 +179,25 @@ public:
             text += tail;
         }
         model_->end_request();
+        Json cache = nullptr;
+        const auto& input = std::get<ChatRequest>(request.input);
+        if (input.conversation_id) {
+            const auto memory = model_->prefix_memory();
+            Json devices = Json::object();
+            for (std::size_t i = 1; i < memory.size(); ++i)
+                if (memory[i])
+                    devices["cuda:" + std::to_string(i - 1)] = memory[i];
+            cache = {
+                {"hit", reused_tokens_ != 0},
+                {"reused_tokens", reused_tokens_},
+                {"stored_tokens", model_->stored_prefix_tokens()},
+                {"host_bytes", memory[0]},
+                {"device_bytes", std::move(devices)},
+                {"reason", std::string(model_->prefix_reason())},
+                {"retention_reason",
+                 input.reuse_prefix ? "resident_engine" : "disabled"}
+            };
+        }
         std::vector<std::uint32_t>().swap(prompt_);
         request_memory_.reset();
         const auto milliseconds = [](auto duration) {
@@ -187,13 +208,14 @@ public:
             Json{
                 {"text", text},
                 {"finish_reason", reason},
+                {"cache", std::move(cache)},
                 {"timing",
                  {{"generation_ttft_ms",
                    generated ? Json(milliseconds(first - started)) : Json(nullptr)},
                   {"prefill_ms",
                    generated ? Json(milliseconds(first - started)) : Json(nullptr)},
                   {"output_tokens", generated},
-                  {"prefill_tokens", prompt_tokens_},
+                  {"prefill_tokens", prompt_tokens_ - reused_tokens_},
                   {"decode_tokens_per_second",
                    generated > 1 && last > first
                        ? Json((generated - 1) * 1000.0 / milliseconds(last - first))
@@ -212,7 +234,7 @@ public:
     }
 
 private:
-    std::size_t prompt_tokens_ = 0;
+    std::size_t prompt_tokens_ = 0, reused_tokens_ = 0;
     std::shared_ptr<Resources> resources_;
     Progress progress_;
     std::function<void(const std::string&)> content_;

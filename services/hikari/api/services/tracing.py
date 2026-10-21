@@ -150,9 +150,6 @@ class JobTracing:
         if event.end - event.start > 7 * 24 * 3600 * 1_000_000_000:
             return
         attributes = {"kadan.stage": event.phase, "kadan.worker": worker.kind}
-        if worker.kind == "llm" and event.phase == "prefill":
-            # Engine::begin_request resets recurrent/KV state for every request.
-            attributes["kadan.kv_cache.cross_request_reuse"] = False
         if worker.kind == "llm" and event.phase in {"prefill", "decode"}:
             try:
                 metrics = TextPhaseMetrics.model_validate(event.metrics)

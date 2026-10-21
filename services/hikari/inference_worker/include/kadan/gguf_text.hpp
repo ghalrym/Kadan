@@ -44,8 +44,15 @@ public:
     ~Engine() override;
     void set_cancel(const std::atomic_bool&);
     serving::Info info() const override;
-    void begin_request() override;
+    std::size_t begin_request(
+        std::span<const unsigned> prompt,
+        std::string_view conversation,
+        bool reuse_prefix
+    ) override;
     void end_request() override;
+    Footprint prefix_memory() const;
+    std::size_t stored_prefix_tokens() const;
+    std::string_view prefix_reason() const;
     void park() override;
     void reset() override;
     // false commits a token without computing the vocabulary projection.

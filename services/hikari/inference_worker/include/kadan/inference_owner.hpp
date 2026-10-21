@@ -485,9 +485,13 @@ public:
             }
             for (std::size_t index = 0; index < jobs.size(); ++index) {
                 const auto& current = jobs[index];
-                if (current->cancel.load())
+                if (current->cancel.load()) {
+                    // Cancellation can arrive during a previous terminal's
+                    // publication, after the batch-wide cleanup check.
+                    if (engine_)
+                        cleanup();
                     finish(current, JobState::cancelled, "");
-                else if (!results[index].failure.is_null())
+                } else if (!results[index].failure.is_null())
                     finish(current, JobState::failed, results[index].failure);
                 else
                     finish(current, JobState::succeeded, results[index].result);

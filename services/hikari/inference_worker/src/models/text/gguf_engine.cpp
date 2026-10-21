@@ -4,6 +4,7 @@
 #include "../../weights/metadata_json.hpp"
 #include "gguf_model.hpp"
 #include "kadan/gguf_text.hpp"
+#include "kadan/text_prefix.hpp"
 
 namespace kadan::text {
 namespace {
@@ -34,7 +35,7 @@ std::size_t host_bytes(const std::string& name, std::size_t context) {
     need(
         context && context <= serving::max_resident_capacity, "gguf_text_context_bound"
     );
-    return fixed_bytes + architecture(name).state(context);
+    return fixed_bytes + architecture(name).state(context) + context * sizeof(unsigned);
 }
 }  // namespace
 
@@ -81,6 +82,8 @@ struct Engine::Impl {
     Handle memory = 0;
     std::unique_ptr<GgufWeights> weights;
     std::unique_ptr<Model> model;
+    Prefix prefix;
+    Footprint retained_state;
     std::size_t tokens = 0;
     bool active = false, poisoned = false;
 
@@ -97,6 +100,7 @@ struct Engine::Impl {
             Workload::llm, host_footprint(*execution.resources, p.host + p.cache)
         );
         try {
+            prefix = Prefix(p.context);
             weights = load(root, cancel);
             const auto name = weights->gguf().string("general.architecture");
             need(
@@ -116,6 +120,7 @@ struct Engine::Impl {
         } catch (...) {
             model.reset();
             weights.reset();
+            prefix = Prefix{};
             execution.resources->released(memory);
             memory = 0;
             throw;
@@ -125,6 +130,7 @@ struct Engine::Impl {
     ~Impl() {
         model.reset();
         weights.reset();
+        prefix = Prefix{};
         if (memory) {
             execution.resources->begin_eviction(memory);
             execution.resources->released(memory);
@@ -170,27 +176,68 @@ serving::Info Engine::info() const {
 
 // Every recurrent row is cleared and KV positions are rewritten before use.
 void Engine::reset() {
+    impl_->execution.idle();
     impl_->model->reset();
     impl_->tokens = 0;
     impl_->poisoned = false;
+    impl_->prefix.clear();
+    impl_->retained_state.clear();
 }
 
-void Engine::begin_request() {
-    need(!impl_->active, "gguf_text_request_state");
-    impl_->weights->check_unchanged();
-    impl_->execution.resume();
-    reset();
-    impl_->active = true;
+std::size_t Engine::begin_request(
+    std::span<const unsigned> prompt, std::string_view conversation, bool reuse_prefix
+) {
+    auto& m = *impl_;
+    need(!m.active, "gguf_text_request_state");
+    m.weights->check_unchanged();
+    m.execution.resume();
+    if (m.poisoned)
+        m.prefix.clear();
+    const auto reused = m.prefix.begin(prompt, conversation, reuse_prefix);
+    need(!reused || reused == m.tokens, "gguf_text_prefix_position");
+    if (!reused) {
+        m.execution.idle();
+        m.model->reset();
+        m.tokens = 0;
+        m.poisoned = false;
+        m.retained_state.clear();
+    }
+    m.active = true;
+    return reused;
 }
 
 void Engine::end_request() {
-    impl_->execution.idle();
-    impl_->active = false;
+    auto& m = *impl_;
+    need(m.active && !m.poisoned, "gguf_text_request_state");
+    m.retained_state = m.execution.idle({}, m.prefix.retaining());
+    m.prefix.complete();
+    m.active = false;
+}
+
+Footprint Engine::prefix_memory() const {
+    const auto& m = *impl_;
+    if (!m.prefix.stored())
+        return Footprint(m.execution.resources->snapshot().used.size());
+    auto bytes = m.retained_state;
+    bytes[0] = architecture(m.weights->gguf().string("general.architecture"))
+                   .state(m.p.context)
+               + m.p.context * sizeof(unsigned);
+    return bytes;
+}
+
+std::size_t Engine::stored_prefix_tokens() const {
+    return impl_->prefix.stored();
+}
+
+std::string_view Engine::prefix_reason() const {
+    return impl_->prefix.reason();
 }
 
 void Engine::park() {
     need(!impl_->active, "gguf_text_active_park");
     impl_->execution.park();
+    impl_->prefix.clear();
+    impl_->retained_state.clear();
 }
 
 serving::Token Engine::step(unsigned token, bool logits) {
@@ -201,11 +248,13 @@ serving::Token Engine::step(unsigned token, bool logits) {
         const auto values = m.model->forward(row, m.tokens, logits, {});
         m.weights->advance(1);
         ++m.tokens;
+        m.prefix.commit(row);
         if (!logits)
             return {0, false, m.tokens};
         return m.select(values);
     } catch (...) {
         m.poisoned = true;
+        m.prefix.clear();
         throw;
     }
 }
@@ -235,6 +284,7 @@ serving::Token Engine::prefill(
             );
             m.weights->advance(count);
             m.tokens += count;
+            m.prefix.commit(prompt.subspan(done, count));
             done += count;
             if (progress) {
                 progress("prefill_chunk", done);
@@ -245,6 +295,7 @@ serving::Token Engine::prefill(
         return m.select(logits);
     } catch (...) {
         m.poisoned = true;
+        m.prefix.clear();
         throw;
     }
 }

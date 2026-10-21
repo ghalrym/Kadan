@@ -1649,10 +1649,12 @@ class Compute final : public H3Compute {
         }
     }
 
-    void release_scratch_locked() {
-        all_devices([](DeviceWorkspace& workspace) {
-            static_cast<CudaDeviceOperations&>(workspace.operations())
-                .release_mirrors();
+    Footprint release_scratch_locked(bool retain_prefix = false) {
+        Footprint state(weight_reservations_.size());
+        all_devices([&](DeviceWorkspace& workspace) {
+            if (!retain_prefix)
+                static_cast<CudaDeviceOperations&>(workspace.operations())
+                    .release_mirrors();
             workspace.release();
         });
         weight_reservations_[0] = 0;
@@ -1665,8 +1667,18 @@ class Compute final : public H3Compute {
                     weight_reservations_[devices_[i] + 1] = bytes;
                     if (bytes)
                         weight_reservations_[0] += DeviceWeights::metadata_bytes;
+                    if (retain_prefix) {
+                        const auto& ops =
+                            static_cast<CudaDeviceOperations&>(workspace.operations());
+                        for (const auto& [layer, mirror] : ops.mirrors)
+                            state[devices_[i] + 1] +=
+                                2 * mirror.capacity * mirror.width * sizeof(float);
+                        for (const auto& [layer, recurrent] : ops.recurrent)
+                            state[devices_[i] + 1] += recurrent.floats * sizeof(float);
+                    }
                 })
                 .get();
+        return state;
     }
 
     template <class F>
@@ -2910,9 +2922,9 @@ public:
         return true;
     }
 
-    void release_scratch() override {
+    Footprint release_scratch(bool retain_prefix = false) override {
         std::lock_guard lock(operation_mutex_);
-        release_scratch_locked();
+        return release_scratch_locked(retain_prefix);
     }
 
     void release_devices() override {
