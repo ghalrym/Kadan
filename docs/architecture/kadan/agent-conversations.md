@@ -23,4 +23,4 @@ These receipts do not make every external effect repeatable. The [agent computer
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
-Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](hikari/inference.md); conversation ownership must remain independent of those execution policies.
+Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.

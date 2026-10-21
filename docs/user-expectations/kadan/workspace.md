@@ -1,13 +1,13 @@
 # Workspace browsing
 
-Workspace shows the selected agent's active Memories, Spaces and Files from Tsuchi. It starts on Memories. Search filters the current collection; changing agents opens that agent's records. A loading error must be distinguishable from an empty collection, and Retry reloads the requested data.
+Kadan's Workspace shows the selected agent's Memories, Spaces and Files stored in Tsuchi. Search filters the current collection, and changing agents opens that agent's records. A loading error must be distinguishable from an empty collection.
 
-Select a memory or Space to read its Markdown. A Space also lists its direct children, which can be opened in the same detail view. Select a file to see its original filename, media type and size, then choose Download file to retrieve it. The current file view shows metadata rather than extracting or previewing arbitrary file contents.
+Users can read memories and Spaces, open a Space's children, and download files. Files show their name, type and size; the view does not preview arbitrary file contents.
 
-This view is read-only. Use Open Tsuchi to create, edit, upload, organize or restore stored content. That link opens the configured Tsuchi interface in another tab. Changes made there may require another search or reopening Workspace to appear; this view does not continuously synchronize external edits.
+Workspace is read-only. **Open Tsuchi** opens the storage editor in another tab. Changes made there may require another search or reopening Workspace to appear.
 
-Search is lexical. Resource search covers stored titles, Markdown, tags and structured text; file search uses metadata, not extracted PDF text or transcribed audio. A missing match does not imply that a phrase is absent from a file's bytes.
+Search matches stored text and metadata. It does not search inside uploaded PDFs, recordings or other file contents, so a missing match does not prove that a file lacks the information.
 
-Opening a record does not attach it to a chat message or add its text to a response. In the current prototype, preparing a response reads recent chat history and the selected persona; it does not automatically retrieve the displayed memories or Spaces. Storage and browsing alone do not establish long-term agent recall.
+Opening a record does not attach it to chat or make the agent recall it. The current response flow does not automatically retrieve the memories or Spaces being viewed.
 
-See [Tsuchi's storage capabilities](../../../services/tsuchi/README.md#what-is-stored) for editing, search, revision and trash behavior.
+See [Workspace access](../../architecture/kadan/workspace.md) for the storage boundary and [Tsuchi's storage capabilities](../../../services/tsuchi/README.md#what-is-stored) for editing and revisions.
