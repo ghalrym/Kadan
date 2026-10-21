@@ -10,4 +10,6 @@ Results are held in the current page's gallery. Hikari currently returns an empt
 
 Cancel request aborts the browser request and ignores its late result. Leaving the page also aborts it. Native cancellation and resource cleanup can take longer than the browser action. An error is not proof that no computation occurred, and submitting again is another generation request.
 
+API clients can cancel an image request by its client-supplied request UUID. A cancelled response acknowledges cleanup of that active request. A not_active response only means the API has no active request with that identity; it does not prove that the request never ran or recover an earlier result. Clients with durable output storage must check that storage before deciding whether to submit again.
+
 See [Image editing](image-editing.md) for source uploads and reference mode, and [Inference operations](inference.md) for resource waiting and model-loading limits.
