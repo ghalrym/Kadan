@@ -1,15 +1,13 @@
 # Image generation
 
-Generate from text starts with an empty prompt, square 1:1 aspect, four images and a blank seed. Choose one, two or four images and a 1:1, 4:3, 3:4 or 16:9 aspect. The nonblank prompt accepts up to 8,000 characters. A blank seed requests random seeds; a supplied seed is recorded with the result. A seed alone is not a guarantee of identical output across different models or settings.
+Hikari's Images page generates images from a text description. Users can choose an aspect, one, two or four images, and an optional seed. A seed is recorded with the result but does not guarantee identical output across models or settings.
 
-Generation uses the image checkpoint selected through Hikari Settings. The model must be downloaded, and the request still needs memory admission. Multiple requested images are an output count, not a guarantee they all execute simultaneously. The API's base-model step default is 50; the Turbo checkpoint uses its saved eight-step schedule instead.
+Generation uses the image model selected through Settings. Loading, downloads and available memory can delay or prevent a request. Asking for several images does not promise simultaneous generation.
 
-The progress panel distinguishes waiting, model loading and generation. Percentages and remaining time are estimates from observed progress, not a completion deadline. Missing or stale progress must not be presented as completed work. A successful response supplies the requested PNG images; an error or incomplete image payload must not create substitute artwork.
+Progress distinguishes waiting, loading and generation. Percentages and remaining time are estimates. Only completed image results count as success; errors or missing image data must not become substitute artwork.
 
-Results are held in the current page's gallery. Hikari currently returns an empty image-history list and does not persist generated image bytes. Leaving or reloading the page, including switching between Generate and Edit, loses these displayed results and form state. Save the PNGs while available if they must be kept; Kadan's separate image-delivery flow saves its artwork through Tsuchi.
+The gallery and form exist only in the open page. Leaving, reloading or switching between Generate and Edit loses them. Save required images while available. Kadan's separate image-delivery flow stores its artwork through Tsuchi.
 
-Cancel request aborts the browser request and ignores its late result. Leaving the page also aborts it. Native cancellation and resource cleanup can take longer than the browser action. An error is not proof that no computation occurred, and submitting again is another generation request.
+**Cancel request** stops waiting in the browser and ignores late results. Leaving the page does the same. Cleanup can take longer, and an error does not prove that no work happened. Submitting again starts another generation, so clients that save results should check them before retrying uncertain work.
 
-API clients can cancel an image request by its client-supplied request UUID. A cancelled response acknowledges cleanup of that active request. A not_active response only means the API has no active request with that identity; it does not prove that the request never ran or recover an earlier result. Clients with durable output storage must check that storage before deciding whether to submit again.
-
-See [Image editing](image-editing.md) for source uploads and reference mode, and [Inference operations](inference.md) for resource waiting and model-loading limits.
+See [Image editing](image-editing.md) for source and reference behavior, and [Image worker architecture](../../architecture/hikari/worker-image.md) for request and cancellation contracts.
