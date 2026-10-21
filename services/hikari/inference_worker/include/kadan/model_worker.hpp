@@ -1,5 +1,7 @@
 #pragma once
 #include <cstddef>
+#include <span>
+#include <string_view>
 
 #include "kadan/weight_backing.hpp"
 
@@ -28,7 +30,11 @@ public:
 
 class ResidentEngine : public Engine {
 public:
-    virtual void begin_request() = 0;
+    virtual std::size_t begin_request(
+        std::span<const unsigned> prompt,
+        std::string_view conversation,
+        bool reuse_prefix
+    ) = 0;
     virtual void end_request() = 0;
     virtual void park() = 0;
 

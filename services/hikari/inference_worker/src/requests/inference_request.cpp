@@ -44,6 +44,7 @@ InferenceRequest parse_request(const Json& envelope) {
         if (!input.model)
             input.model = optional<std::string>(body, "model");
         input.conversation_id = optional<std::string>(body, "conversation_id");
+        input.reuse_prefix = body.value("reuse_prefix", true);
         input.context_supplied = body.contains("context_limit");
         input.context_limit = optional<std::size_t>(body, "context_limit");
         for (const auto& message : body.value("messages", Json::array()))

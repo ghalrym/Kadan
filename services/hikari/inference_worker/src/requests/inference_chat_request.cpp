@@ -39,20 +39,7 @@ void prepare_input(
 }
 
 Json present_chat(const InferenceRequest& request, Json result) {
-    const auto& input = std::get<ChatRequest>(request.input);
     result["model"] = request.model;
-    result["cache"] = nullptr;
-    if (input.conversation_id)
-        result["cache"] = {
-            {"hit", false},
-            {"reused_tokens", 0},
-            {"stored_tokens", 0},
-            {"host_bytes", 0},
-            {"device_bytes", Json::object()},
-            {"reason", "native_prefix_reuse_unavailable"},
-            {"retention_reason", "disabled"},
-            {"limit_bytes", 0}
-        };
     return result;
 }
 }  // namespace kadan::serving

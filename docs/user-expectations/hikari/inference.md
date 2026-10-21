@@ -33,3 +33,7 @@ Every inference type unloads its resident model after one hour without work, mea
 A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Hikari does not guarantee a fixed response time or that every combination of inference requests fits.
+
+## Conversation prefix reuse
+
+Chat requests with the same `conversation_id` can reuse the resident worker's last completed prefix when its exact committed tokens start the new prompt. Requests without an ID or with `reuse_prefix=false` do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation, model changes and unloading require a fresh prefill. A different worker may also miss the cache. Responses report actual reused and stored tokens; reuse does not guarantee a measured latency improvement.

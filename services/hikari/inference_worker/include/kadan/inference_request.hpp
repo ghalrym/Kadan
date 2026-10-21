@@ -40,6 +40,7 @@ struct ChatMessage {
 struct ChatRequest {
     std::vector<ChatMessage> messages;
     std::optional<std::string> model, conversation_id;
+    bool reuse_prefix = true;
     bool context_supplied = false;
     std::optional<std::size_t> context_limit;
     std::size_t max_output_tokens = 256;

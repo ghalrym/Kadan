@@ -44,7 +44,7 @@ class JobTracingTests(unittest.TestCase):
         self.assertEqual(native.parent.span_id, job.span.get_span_context().span_id)
         self.assertEqual(native.start_time, 100)
         self.assertEqual(native.end_time, 200)
-        self.assertIs(native.attributes["kadan.kv_cache.cross_request_reuse"], False)
+        self.assertNotIn("kadan.kv_cache.cross_request_reuse", native.attributes)
         job.end()
 
     def native_message(self, job, metrics):
@@ -69,7 +69,7 @@ class JobTracingTests(unittest.TestCase):
         self.assertEqual(spans[0].name, "kadan.native.prefill")
         self.assertEqual(spans[0].attributes["kadan.text.tokens"], 9)
         self.assertEqual(spans[0].attributes["kadan.text.large_row_seconds"], 0.5)
-        self.assertEqual(len(spans[0].attributes), 28)
+        self.assertEqual(len(spans[0].attributes), 27)
         self.assertFalse(spans[0].events)
         job.end()
 

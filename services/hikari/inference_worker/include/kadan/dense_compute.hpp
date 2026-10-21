@@ -61,8 +61,10 @@ class DenseCompute {
 public:
     virtual ~DenseCompute() = default;
 
-    // Request boundary: release reusable scratch before reporting completion.
-    virtual void release_scratch() {
+    // Request boundary: release scratch, optionally keeping prefix state. Return
+    // the retained state's device footprint so idle cleanup remains accounted.
+    virtual Footprint release_scratch(bool = false) {
+        return {};
     }
 
     // Dedicated worker only: synchronize and destroy its process-local contexts.

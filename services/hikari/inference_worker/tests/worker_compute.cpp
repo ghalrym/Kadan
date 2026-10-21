@@ -36,9 +36,9 @@ struct FakeContext final : DenseCompute {
     bool fail = false, scratch_fail = false;
     std::size_t releases = 0, scratch_releases = 0;
     std::shared_ptr<Resources> resources;
-    Handle scratch = 0;
+    Handle scratch = 0, prefix = 0;
 
-    void release_scratch() override {
+    Footprint release_scratch(bool retain_prefix = false) override {
         ++scratch_releases;
         if (scratch_fail)
             throw std::runtime_error("scratch_cleanup_unconfirmed");
@@ -46,6 +46,11 @@ struct FakeContext final : DenseCompute {
             resources->released(scratch);
             scratch = 0;
         }
+        if (prefix && !retain_prefix) {
+            resources->released(prefix);
+            prefix = 0;
+        }
+        return prefix ? Footprint{0, 64} : Footprint{};
     }
 
     void dense(
@@ -749,6 +754,11 @@ int main() {
     context->scratch_fail = false;
     parked.idle();
     check(!context->scratch && parked.resources->snapshot().used[1] == 512);
+    context->prefix = parked.resources->reserve(Workload::tts, {0, 64});
+    check(parked.idle({}, true) == Footprint({0, 64}));
+    check(context->prefix && parked.resources->snapshot().used[1] == 576);
+    parked.idle();
+    check(!context->prefix && parked.resources->snapshot().used[1] == 512);
     context->fail = true;
     bool failed = false;
     try {
