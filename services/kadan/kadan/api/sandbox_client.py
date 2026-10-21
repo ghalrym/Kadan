@@ -68,12 +68,14 @@ class SandboxClient:
         return url
 
     @property
-    def api_key(self) -> str | None:
-        key = self.services.settings.sandbox_api_key
-        return (key.get_secret_value() or None) if key else None
+    def api_key(self) -> str:
+        return (
+            self.services.settings.sandbox_api_key.get_secret_value()
+            or "insecure-api-key"
+        )
 
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        return {"Authorization": f"Bearer {self.api_key}"}
 
     def vnc_url(self) -> str:
         """The sandbox's websockify endpoint; Kadan relays it with the API key."""

@@ -74,16 +74,16 @@ The supporting interfaces are [Tsuchi](http://127.0.0.1:8620),
 Select/download the required checkpoints in Hikari Settings before asking an agent
 to generate a response. Startup does not generate content or load a model.
 
-All published ports bind to `0.0.0.0` (all IPv4 interfaces). This is a single-owner prototype;
-namespace keys are storage selectors, not credentials. Keep these services off
-the public internet. Within Compose, Kadan uses `http://tsuchi-api:8000` for
+All published ports bind to `0.0.0.0`. This is a single-owner prototype;
+namespace keys are storage selectors, not credentials. Operators are responsible
+for securing access to their deployment. See [security expectations](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
 URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
 responses, through the same browser origin. Only the frontends and Hikari's API publish ports.
 
 Optionally copy `.env.example` to `.env` to change browser ports, credentials or
-the Tsuchi upload limit. The default worker token and sandbox API key are public
-local-use values.
+the Tsuchi upload limit. The worker bearer API key and sandbox API key both default to
+`insecure-api-key`.
 `KADAN_PORT`, `TSUCHI_PORT` and `HIKARI_FRONTEND_PORT` keep Kadan's operator links
 in sync with the published ports. The inference API retains its local port 8000.
 
@@ -170,8 +170,7 @@ docker compose --profile tracing up -d --no-deps jaeger
 docker compose logs --tail=100 jaeger
 ```
 
-Open <http://127.0.0.1:16686>. The UI and query API have no authentication; restrict
-access to a trusted network and do not proxy it to the public internet. OTLP collection
+Open <http://127.0.0.1:16686>. The UI and query API have no authentication; operators control access to them. OTLP collection
 ports 4317 and 4318 are reachable only on the existing Compose network and are
 not published to the host. The query gRPC server binds to `0.0.0.0` inside the container.
 Legacy Jaeger/Zipkin receivers, remote sampling, debug endpoints, AI/MCP and
@@ -286,7 +285,7 @@ the Kadan graph/tool spans, HTTP child calls to Tsuchi/Hikari, native worker que
 load/admission/execute spans, and language prefill/decode siblings. Compare the
 intervals to identify where wall time is spent. Other entry points start under
 `tsuchi-api` or `hikari-api`. Absence of a sampled trace is not evidence of a fast
-request. Jaeger’s existing RAM-only retention and loopback UI limits still apply.
+request. Jaeger’s existing RAM-only retention still applies.
 
 For local Python development, install the shared package before service dependencies:
 `python -m pip install -e services/tracing`. Compose supplies it as the named

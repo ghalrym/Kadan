@@ -1,7 +1,7 @@
 # Agent computer (`kadan-sandbox`)
 
-Gives agents a real computer — shell, files, code and a visible browser — on a
-separate network, and lets the owner watch or take over that computer from Kadan.
+Gives agents a real computer — shell, files, code and a visible browser — on the
+shared Compose network, and lets the owner watch or take over that computer from Kadan.
 
 ## Components
 
@@ -22,13 +22,9 @@ separate network, and lets the owner watch or take over that computer from Kadan
 
 ## Constraints
 
-- The sandbox shares a network only with `kadan-api` and `kadan-runner`. Never put
-  it on the default network or publish its port. Kadan’s control API binds only
-  to the default network, while outbound sandbox HTTP and VNC remain available.
-  This blocks direct internal access; it does not isolate separately reachable
-  LAN addresses.
-- The API key stays server-side. Browsers reach the computer only through Kadan,
-  and the VNC WebSocket accepts only Kadan's own origin.
+- The sandbox shares the default Compose network with the other services.
+- Sandbox API-key authentication defaults to `insecure-api-key` and can be overridden.
+- The API key stays server-side. Browsers reach the computer only through Kadan.
 - Tool definitions and the enabled `TOOLS` lists stay separate; only enabled
   tools are bound to the model.
 - Results entering the agent transcript stay bounded, and sandbox failures are tool

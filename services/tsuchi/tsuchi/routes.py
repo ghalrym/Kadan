@@ -426,7 +426,6 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             else "attachment",
             headers={
                 "Cache-Control": "private, no-store",
-                "Content-Security-Policy": "default-src 'none'; sandbox",
             },
         )
 

@@ -1,29 +1,47 @@
-# Project structure
+# Agent Directions
 
 ## Documentation
 
-- Markdown files are allowed only when named `README.md`, `AGENT.md`, `AGENTS.md`, or `SKILL.md`, or when they live in `docs/architecture/` or `docs/user-expectations/`.
-- Docs in `docs/architecture/` explain only what the architecture needs and the intent behind it: what a component is for, what it depends on, and the constraints a change must keep. They do not hold plans, status, reports, how-to steps, or notes.
-- Docs in `docs/user-expectations/` describe the behavior and experience users expect. Preserve these expectations when changing the product.
-- Do not create other Markdown documentation, plans, reports, or notes in this project.
+Documentation should be used sparingly. Documentation should not explain code paths or patterns. It should be used as follows:
+- `README.md` - A breif summary with screenshot about what Kadan is along with a subsection that explains the subservices under Kadan and what they do
+- `docs/architecture` - Folder for architecture to be explained in detail. Why are things designed the way they are
+- `docs/user-expectations/{service}` - This folder explains user expectation for each feature we have. Each feature should be its own markdown file
+
+## Security
+
+- The project is intentionally bare bones and provides only basic API-key authentication where needed, with the default key `insecure-api-key`. It provides no built-in security guarantees. Users are responsible for adding and maintaining any security they require on their machines or in deployments at scale.
+- Prioritize development speed while the project is still being fleshed out. Built-in security is the lowest priority during this phase.
+- Keep security limited to simple API-key checks with the default `insecure-api-key`. Do not add host or origin allowlists, network isolation, container hardening, accounts, or other security layers unless explicitly requested. Users secure their own environments independently.
+- Preserve the expectations in [Security and operator responsibility](docs/user-expectations/security.md).
 
 ## API
 
-Hikari lives in `services/hikari/`. Paths in the API, Database and Developer tooling sections are relative to that directory.
+Current APIs: `services/hikari/`, `services/tsuchi/`, and `services/kadan/`
 
-- Keep imports at module scope. Use function-local imports only when strictly necessary, and explain why.
-- `api/routes/` owns HTTP endpoints. Mirror the URL hierarchy: `/v1/chat/completions` belongs in `api/routes/v1/chat/completions.py`.
-- Keep each route's request and response Pydantic models in that route's file.
-- `api/pydantic_models/` owns higher-level domain models, such as `ChatMessage`, that represent entities that could be stored in a database. It does not own route-specific request or response models.
-- `api/server.py` creates the FastAPI application and registers routers. `api/__main__.py` starts the server.
-- Keep API tests under `api/tests/`, mirroring the API source folder hierarchy and module names. Prefix test filenames with `test_`.
-- For example, tests for `api/routes/v1/chat/completions.py` belong in `api/tests/routes/v1/chat/test_completions.py`. Tests for `api/pydantic_models/chat.py` belong in `api/tests/pydantic_models/test_chat.py`.
-
-## Database
-
-- `api/orm_models/` owns SQLAlchemy models, mirroring `api/pydantic_models/`.
-- `api/migrations/` owns Alembic schema migrations.
-- Never insert mock data, fixtures, or demo seeds into Postgres, including during tests or migrations. Existing mock API responses must not be persisted.
+Our APIs follow the a very standard framing here is an example:
+```
+api/
+├── __main__.py                 # Starts the server
+├── server.py                   # Creates FastAPI app and registers routers
+├── routes/                     # HTTP endpoints, matching URL hierarchy
+│   └── v1/
+│       └── chat/
+│           └── completions.py  # /v1/chat/completions + request/response models
+├── pydantic_models/            # Shared domain models
+│   └── chat.py                 # e.g. ChatMessage
+├── orm_models/                 # SQLAlchemy models, mirroring domain models
+│   └── chat.py
+├── migrations/                 # Alembic schema migrations
+└── tests/                      # Unit tests, mirroring source paths
+    ├── routes/
+    │   └── v1/
+    │       └── chat/
+    │           └── test_completions.py
+    ├── pydantic_models/
+    │   └── test_chat.py
+    └── orm_models/
+        └── test_chat.py
+```
 
 ## API generation
 
@@ -42,14 +60,6 @@ The project exists to run mixture-of-experts models larger than the GPU by tieri
 - Decode-time projections go through the batched `GgufWeights::project` / `dense_gguf_batch` path with packed weights decoded in-kernel; do not reintroduce per-matrix blocking device calls or F32 weight expansion on the decode path.
 - Routed experts held in host RAM run on the host (ggml-cpu kernels) concurrently with the device batch, split against PCIe streaming by measured rates; do not route them over PCIe by default.
 - Placement admission must stay independent of the total number of slices.
-
-# Developer tooling
-
-- `bin/hikari.py` is the Typer entry point for repeatable developer commands.
-- Keep command implementations in focused modules under `bin/`; native tool sources belong in `bin/cpp/`.
-- Add tooling commands here instead of standalone scripts or diagnostic executables in application source directories. Skills remain separate.
-- Keep application runtime logic in its owning package; tooling should call that implementation rather than copy it.
-- All inference belongs to the live inference worker. CLI inference commands must submit through the API to its existing queue; never launch a separate model executor or call inference libraries locally.
 
 # Agentic Communication
 
