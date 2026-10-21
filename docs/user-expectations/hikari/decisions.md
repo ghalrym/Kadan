@@ -1,13 +1,13 @@
 # Decisions
 
-Decisions evaluates supplied text with the Laya specialist on CPU, independently of the selected chat model. The page starts with empty state and no questions. Add questions and choose Evaluate explicitly. Inputs and answers remain page-local and are not saved when the page is left or reloaded.
+Hikari's Decisions page evaluates supplied text against questions using its specialist model. Users add questions and choose **Evaluate**. Inputs and answers are kept only in the open page and disappear on navigation or reload.
 
-State accepts up to 8,000 characters. Each request needs one to eight questions and must fit 16,000 serialized characters as well as the specialist's token budget. Question keys must be unique and nonblank, and instructions must not be blank. Choice option keys must also be unique within their question. Validation errors identify the affected inputs instead of evaluating an ambiguous request.
+**Choice** selects one supplied option. **Score** evaluates an ordered rubric and can return a value between levels. **Noul** estimates how likely a criterion is to be true. These are model judgments, not verified facts or measured real-world frequencies.
 
-Choice returns one supplied option key, with probabilities when available. Score returns the expected zero-based index of an ordered rubric, so a result can be fractional rather than naming exactly one level. The page also shows the nearest level and per-level probabilities when available. Noul returns a probability from zero to one that the criterion is true, with optional True when and False when guidance. These are model judgments about the provided state, not verified facts or measured real-world frequencies.
+Questions and options must be complete and unambiguous. Invalid inputs produce an error, and unavailable specialist inference does not fall back to the chat model.
 
-The initial Choice question has one empty option; the initial Score question has two empty rubric levels. Fill these before evaluating. A Noul question starts without additional true/false guidance. A required checkpoint or worker that is unavailable produces an explicit error rather than using the chat model as a substitute.
+Answers stay paired with the inputs that produced them. Editing inputs marks old answers as outdated. **Re-evaluate** and retry use the current form, so later edits can change the request.
 
-Answers remain paired with the exact state and questions evaluated. Editing inputs marks existing answers as outdated rather than relabelling them as answers to the new inputs. Re-evaluate submits the current inputs. A retry after a runtime failure also evaluates the current form, so edits made after the failure can change the request.
+**Cancel evaluation** preserves previous answers and ignores late results. Cleanup may take longer, and leaving the page also stops its request. The waiting timer includes time spent in the queue.
 
-Cancel evaluation stops the browser request, preserves previous answers and ignores late results. The CPU worker can take a moment to finish cleanup. Leaving the page also aborts the request. The elapsed time shown while waiting includes request and queue time and is not an isolated CPU inference benchmark.
+See [Decision architecture](../../architecture/hikari/worker-decision.md) for validation and typed results.

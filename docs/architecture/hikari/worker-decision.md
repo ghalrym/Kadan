@@ -38,3 +38,13 @@ GPU memory from generation.
 
 - Keep it host-only. Giving it VRAM would compete with the language model for
   no benefit.
+
+## Typed decision contract
+
+`POST /v1/decisions` requires nonblank state of at most 8,000 characters and one to eight questions. The serialized request must fit 16,000 characters and the specialist's token budget. Question keys and Choice option keys are unique and nonblank, and instructions and Score levels must be nonblank. Rejecting ambiguity here keeps returned answers paired with their intended questions.
+
+Choice returns an option key and optional probabilities. Score is the expected zero-based rubric index and can be fractional; the UI also shows the nearest level and available level probabilities. Noul returns a probability from zero to one, with optional true/false guidance. Invalid typed model output is a failure rather than fabricated answers.
+
+The playground starts with empty state and no questions. New Choice questions have one empty option; Score questions have two empty levels. Answers remain associated with the evaluated input, and later edits mark them outdated. Retry uses the current form. Cancellation ignores late responses while native cleanup finishes.
+
+See [Decisions](../../user-expectations/hikari/decisions.md) for user expectations.
