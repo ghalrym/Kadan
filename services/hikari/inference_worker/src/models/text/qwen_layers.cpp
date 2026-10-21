@@ -52,6 +52,25 @@ void DeltaNetLayer::reset() {
     mode_ = Mode::unknown;
 }
 
+RecurrentState DeltaNetLayer::take_state(DenseCompute& compute) {
+    if (mode_ == Mode::device)
+        compute.copy_recurrent_state(
+            std::uint64_t(reinterpret_cast<std::uintptr_t>(this)), state_, conv_
+        );
+    return {std::move(conv_), std::move(state_), mode_ != Mode::host};
+}
+
+void DeltaNetLayer::restore_state(RecurrentState state) {
+    need(
+        state.convolution.size() == conv_.size()
+            && state.recurrent.size() == state_.size(),
+        "gguf_text_recurrent_snapshot_shape"
+    );
+    conv_.swap(state.convolution);
+    state_.swap(state.recurrent);
+    mode_ = state.device ? Mode::restored : Mode::host;
+}
+
 Vec DeltaNetLayer::forward(
     DenseCompute& compute, const GgufWeights& w, std::span<const float> input
 ) {
@@ -72,7 +91,7 @@ Vec DeltaNetLayer::forward(
     const auto started = std::chrono::steady_clock::now();
     Vec mixed(channels), output(rows * inner);
     if (mode_ != Mode::host) {
-        const bool fresh = mode_ == Mode::unknown;
+        const bool fresh = mode_ == Mode::unknown || mode_ == Mode::restored;
         const DenseCompute::DeltaStep step{
             std::uint64_t(reinterpret_cast<std::uintptr_t>(this)),
             fresh,
@@ -91,7 +110,11 @@ Vec DeltaNetLayer::forward(
             s.conv,
             s.eps,
             s.sigmoid_gate,
-            output
+            output,
+            mode_ == Mode::restored ? std::span<const float>(state_)
+                                    : std::span<const float>{},
+            mode_ == Mode::restored ? std::span<const float>(conv_)
+                                    : std::span<const float>{}
         };
         if (compute.delta_step(step, w.cancel())) {
             mode_ = Mode::device;

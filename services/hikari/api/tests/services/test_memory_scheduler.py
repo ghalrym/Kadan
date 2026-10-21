@@ -322,3 +322,34 @@ class MultiGpuTests(unittest.TestCase):
             plan_load(machine, "image"),
             [Action("load", "image", [4 * GIB, 0, 16 * GIB])],
         )
+
+
+class RamCachePressureTests(unittest.TestCase):
+    def test_unloaded_ram_cache_can_be_reclaimed_to_admit_work(self):
+        machine = ledger(ram=8)
+        cache = machine.workers["llm"]
+        cache.budget = [4 * GIB, 0]
+        machine.workers["video"].requirement = requirement(6, 8)
+        self.assertEqual(
+            plan_load(machine, "video"),
+            [Action("offload", "llm"), Action("load", "video", [6 * GIB, 8 * GIB])],
+        )
+
+    def test_restoring_worker_reuses_its_own_ram_budget(self):
+        machine = ledger(ram=8)
+        cache = machine.workers["llm"]
+        cache.budget = [4 * GIB, 0]
+        cache.requirement = requirement(6, 8)
+        self.assertEqual(
+            plan_load(machine, "llm"), [Action("load", "llm", [6 * GIB, 8 * GIB])]
+        )
+
+    def test_busy_or_queued_cache_is_not_reclaimed_by_lower_priority(self):
+        for attr in ("busy", "pending", "releasing"):
+            with self.subTest(attr=attr):
+                machine = ledger(ram=8)
+                cache = machine.workers["llm"]
+                cache.budget = [4 * GIB, 0]
+                setattr(cache, attr, 1)
+                machine.workers["video"].requirement = requirement(6, 8)
+                self.assertIsNone(plan_load(machine, "video"))

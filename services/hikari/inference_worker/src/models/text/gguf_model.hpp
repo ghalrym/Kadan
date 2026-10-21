@@ -1,5 +1,6 @@
 #pragma once
 #include "kadan/text_projection_timing.hpp"
+#include "kadan/text_state.hpp"
 // Shared pieces of the native GGUF text models: tensor binding, bounded device
 // projections, F32 layer math and the per-architecture model interface. Layer
 // math follows llama.cpp's GGUF graphs and uses F32 activation arithmetic.
@@ -275,6 +276,8 @@ public:
     }
 
     virtual void reset() = 0;
+    virtual ModelState take_state() = 0;
+    virtual void restore_state(ModelState) = 0;
     // Rows at positions position..position+tokens.size()-1. Returns the last
     // row's logits when requested, else an empty vector.
     virtual Vec forward(

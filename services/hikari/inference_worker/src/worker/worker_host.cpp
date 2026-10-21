@@ -327,7 +327,8 @@ void WorkerHost::handle(const std::string& line) {
                 const auto budget = command_message.at("budget").get<Footprint>();
                 if (budget.size() != devices_ + 1)
                     throw RequestError("Budget does not match this machine.", 422);
-                const bool ok = target.owner->load(budget);
+                const auto idle = command_message.value("kv_cache_idle_seconds", 3600);
+                const bool ok = target.owner->load(budget, std::chrono::seconds(idle));
                 reply(
                     {{"state", "control"},
                      {"worker", target.spec.name},

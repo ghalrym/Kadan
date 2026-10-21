@@ -25,6 +25,8 @@ public:
     // Rows of `hidden` in, rows of `hidden` out (after ssm_out).
     Vec forward(DenseCompute&, const GgufWeights&, std::span<const float> input);
     void reset();
+    RecurrentState take_state(DenseCompute&);
+    void restore_state(RecurrentState);
     static std::size_t state_bytes(const DeltaNetSpec&);
     // Device bytes of DenseCompute::delta_step state and constants.
     static std::size_t device_bytes(const DeltaNetSpec&);
@@ -38,6 +40,7 @@ private:
     enum class Mode {
         unknown,
         device,
+        restored,
         host
     } mode_ = Mode::unknown;
 };
@@ -68,6 +71,19 @@ public:
         const std::vector<std::vector<std::size_t>>* sparse = nullptr
     );
     static std::size_t state_bytes(const AttentionSpec&, std::size_t context);
+
+    AttentionState take_state() {
+        return {std::move(keys_), std::move(values_)};
+    }
+
+    void restore_state(AttentionState state) {
+        need(
+            state.keys.size() == keys_.size() && state.values.size() == values_.size(),
+            "gguf_text_attention_snapshot_shape"
+        );
+        keys_.swap(state.keys);
+        values_.swap(state.values);
+    }
 
 private:
     AttentionSpec spec_;

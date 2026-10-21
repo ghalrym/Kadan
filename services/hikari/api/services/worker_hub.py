@@ -90,6 +90,7 @@ class WorkerSettings(BaseSettings):
     )
 
     model_idle_seconds: int = Field(default=3600, ge=1)
+    kv_cache_idle_seconds: int = Field(default=3600, ge=1)
 
 
 def requirement_key(fields: dict) -> tuple:
@@ -223,7 +224,9 @@ class WorkerHub:
 
     def __init__(self, on_event=None):
         self.on_event = on_event
-        self.model_idle_seconds = WorkerSettings().model_idle_seconds
+        worker_settings = WorkerSettings()
+        self.model_idle_seconds = worker_settings.model_idle_seconds
+        self.kv_cache_idle_seconds = worker_settings.kv_cache_idle_seconds
         self.workers: dict[str, Worker] = {}
         self.computers: dict[str, Computer] = {}
         self.jobs: dict[str, InferenceJob] = {}
@@ -732,7 +735,11 @@ class WorkerHub:
             if action.kind == "offload":
                 reply = await worker.control("offload")
             else:
-                reply = await worker.control("load", budget=worker.local(action.budget))
+                reply = await worker.control(
+                    "load",
+                    budget=worker.local(action.budget),
+                    kv_cache_idle_seconds=self.kv_cache_idle_seconds,
+                )
             if not reply.get("ok"):
                 # The worker started a job in the meantime; nothing changed.
                 slot.releasing = False

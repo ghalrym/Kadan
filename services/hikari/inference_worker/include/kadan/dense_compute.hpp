@@ -300,7 +300,8 @@ public:
     // then per value head the decayed delta rule, RMSNorm by `norm` and the
     // sigmoid or SiLU gate of z. The convolution history and recurrent state of
     // `layer` stay on the device until release_scratch. `fresh` starts them at
-    // zero. False on a fresh step precedes any output write and leaves the
+    // zero, or at initial_state/initial_history when restoring a snapshot.
+    // False on a fresh step precedes any output write and leaves the
     // caller's host path responsible for the request; later steps throw rather
     // than lose device state.
     struct DeltaStep {
@@ -312,7 +313,13 @@ public:
         float eps;
         bool sigmoid_gate;
         std::span<float> output;
+        std::span<const float> initial_state{}, initial_history{};
     };
+
+    virtual void
+    copy_recurrent_state(std::uint64_t, std::span<float>, std::span<float>) {
+        throw std::runtime_error("recurrent_snapshot_unsupported");
+    }
 
     virtual bool delta_step(const DeltaStep&, const std::atomic_bool&) {
         return false;

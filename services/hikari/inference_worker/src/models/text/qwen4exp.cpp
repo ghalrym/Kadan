@@ -207,6 +207,57 @@ public:
         recent_.clear();
     }
 
+    ModelState take_state() override {
+        ModelState state;
+        state.layers.reserve(layers_.size());
+        for (auto& layer : layers_) {
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                state.layers.emplace_back(delta->take_state(compute_));
+            else {
+                auto& attention = std::get<QsaAttention>(layer.attention);
+                state.layers.emplace_back(
+                    QsaState{
+                        attention.attention.take_state(),
+                        std::move(attention.raw_keys),
+                        std::move(attention.pooled)
+                    }
+                );
+            }
+        }
+        state.ple = std::move(ple_state_);
+        state.recent = std::move(recent_);
+        return state;
+    }
+
+    void restore_state(ModelState state) override {
+        need(state.layers.size() == layers_.size(), "gguf_text_snapshot_layers");
+        for (std::size_t i = 0; i < layers_.size(); ++i) {
+            auto& layer = layers_[i];
+            if (auto* delta = std::get_if<DeltaNetLayer>(&layer.attention))
+                delta->restore_state(
+                    std::get<RecurrentState>(std::move(state.layers[i]))
+                );
+            else {
+                auto& attention = std::get<QsaAttention>(layer.attention);
+                auto saved = std::get<QsaState>(std::move(state.layers[i]));
+                need(
+                    saved.raw_keys.size() == attention.raw_keys.size()
+                        && saved.pooled.size() == attention.pooled.size(),
+                    "gguf_text_qsa_snapshot_shape"
+                );
+                attention.attention.restore_state(std::move(saved.attention));
+                attention.raw_keys.swap(saved.raw_keys);
+                attention.pooled.swap(saved.pooled);
+            }
+        }
+        need(
+            state.ple.size() == ple_state_.size() && state.recent.size() <= ngram - 1,
+            "gguf_text_ple_snapshot_shape"
+        );
+        ple_state_.swap(state.ple);
+        recent_.swap(state.recent);
+    }
+
     Vec forward(
         std::span<const unsigned> tokens,
         std::size_t position,

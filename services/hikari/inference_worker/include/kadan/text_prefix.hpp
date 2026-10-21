@@ -49,6 +49,10 @@ public:
         retain_ = valid_ = false;
     }
 
+    std::size_t memory_bytes() const {
+        return tokens_.capacity() * sizeof(unsigned) + conversation_.capacity();
+    }
+
     bool retaining() const {
         return retain_;
     }

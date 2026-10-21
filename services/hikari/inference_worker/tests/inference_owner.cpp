@@ -1,5 +1,6 @@
 #include "kadan/inference_owner.hpp"
 
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -1428,7 +1429,293 @@ void offloaded_owner_retires_a_cancelled_head() {
     assert(state.loads.empty());
 }
 
+// Fake state transfers only: no model graph, generation or device execution.
+struct FakePrefixCache final : InferenceCache {
+    std::array<float, 4> recurrent{1.f, -2.f, 3.f, 4.f};
+
+    Bytes bytes() const override {
+        return 4;
+    }
+};
+
+struct CacheState : FakeState {
+    unsigned restored = 0, discarded = 0, snapshots = 0;
+    bool snapshot_failure = false, prepare_pressure = false;
+};
+
+struct CacheEngine final : FakeEngine {
+    CacheState& cache;
+    bool valid = false;
+
+    CacheEngine(CacheState& state, std::shared_ptr<Resources> resources)
+        : FakeEngine(state, std::move(resources)), cache(state) {
+    }
+
+    void prepare(
+        const InferenceRequest& request,
+        const Footprint& free,
+        const std::atomic_bool& cancel
+    ) override {
+        FakeEngine::prepare(request, free, cancel);
+        if (std::exchange(cache.prepare_pressure, false))
+            throw AdmissionWait("model_physical_headroom");
+    }
+
+    Json
+    execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
+        auto result = FakeEngine::execute(request, cancel);
+        valid = true;
+        return result;
+    }
+
+    std::unique_ptr<InferenceCache> take_cache() override {
+        if (cache.snapshot_failure)
+            throw std::runtime_error("snapshot_failure");
+        if (!valid)
+            return {};
+        ++cache.snapshots;
+        return std::make_unique<FakePrefixCache>();
+    }
+
+    void restore_cache(std::unique_ptr<InferenceCache> saved) override {
+        const auto& prefix = dynamic_cast<const FakePrefixCache&>(*saved);
+        assert((prefix.recurrent == std::array<float, 4>{1.f, -2.f, 3.f, 4.f}));
+        ++cache.restored;
+        valid = true;
+    }
+
+    void discard_cache() override {
+        ++cache.discarded;
+        valid = false;
+    }
+};
+
+void ram_cache_lifecycle() {
+    using namespace std::chrono;
+    CacheState state;
+    auto now = steady_clock::time_point{};
+    Footprint free{100, 100};
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [&] { return free; },
+        [](auto, auto, auto) {},
+        32,
+        {},
+        [&] { return now; }
+    );
+    auto prompt = request("conversation", Workload::llm);
+    owner.submit(prompt);
+    assert(owner.advance());
+    now += seconds(3599);
+    assert(!owner.advance());
+    assert(state.discarded == 0);
+    assert(owner.offload());
+    assert(owner.advance());
+    assert(state.snapshots == 1 && owner.snapshot().used == Footprint({4, 0}));
+    assert(!owner.status().loaded && owner.status().budget == Footprint({4, 0}));
+    assert(owner.load({100, 100}));
+    owner.submit(prompt);
+    assert(owner.advance());
+    assert(state.restored == 1 && state.loads.back()[0] == 96);
+    assert(owner.snapshot().used == Footprint({10, 0}));
+    // A successful use gives the restored state another complete idle period.
+    now += seconds(3599);
+    assert(!owner.advance());
+    now += seconds(1);
+    assert(owner.advance());
+    assert(state.discarded == 1 && state.close_calls == 1);
+    assert(owner.status().loaded && owner.snapshot().used[0] == 10);
+    owner.shutdown();
+    assert(owner.snapshot().residents == 0);
+}
+
+void explicit_unload_preserves_cache_when_returning_budget() {
+    CacheState state;
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {}
+    );
+    auto prompt = request("conversation", Workload::llm);
+    owner.submit(prompt);
+    assert(owner.advance());
+    auto unload = prompt;
+    unload.operation = Operation::unload;
+    owner.submit(unload);
+    assert(owner.advance());
+    assert(owner.snapshot().used[0] == 4);
+    // The API returns the worker budget after the FIFO unload completes.
+    assert(owner.offload() && owner.advance());
+    assert(owner.snapshot().used[0] == 4);
+    assert(owner.load({100, 100}));
+    owner.submit(prompt);
+    assert(owner.advance() && state.restored == 1);
+    owner.shutdown();
+}
+
+void offload_does_not_restart_cache_timer() {
+    using namespace std::chrono;
+    CacheState state;
+    auto now = steady_clock::time_point{};
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {},
+        32,
+        {},
+        [&] { return now; }
+    );
+    owner.submit(request("conversation", Workload::llm));
+    assert(owner.advance());
+    now += seconds(3599);
+    assert(owner.offload() && owner.advance());
+    now += seconds(1);
+    assert(owner.advance());
+    assert(owner.snapshot().used == Footprint({0, 0}));
+    assert(owner.status().budget == Footprint({0, 0}));
+    assert(owner.load({100, 100}));
+    owner.submit(request("conversation", Workload::llm));
+    assert(owner.advance() && state.restored == 0);
+    owner.shutdown();
+}
+
+void cache_timer_yields_to_queued_and_active_work() {
+    using namespace std::chrono;
+    CacheState state;
+    auto now = steady_clock::time_point{};
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {},
+        32,
+        {},
+        [&] { return now; }
+    );
+    owner.submit(request("conversation", Workload::llm));
+    assert(owner.advance());
+    now += seconds(3600);
+    state.during_execute = [&] {
+        now += seconds(3600);
+        assert(!owner.offload());
+        assert(!owner.load({50, 50}));
+        assert(state.discarded == 0);
+    };
+    owner.submit(request("conversation", Workload::llm));
+    assert(owner.advance() && state.discarded == 0);
+    assert(!owner.advance());
+    owner.shutdown();
+}
+
+void incompatible_ram_state_is_discarded() {
+    for (unsigned change = 0; change < 4; ++change) {
+        CacheState state;
+        InferenceOwner owner(
+            {100, 100},
+            [&](auto, auto ledger) {
+                return std::make_unique<CacheEngine>(state, ledger);
+            },
+            [] { return Footprint{100, 100}; },
+            [](auto, auto, auto) {}
+        );
+        auto next = request("conversation", Workload::llm);
+        owner.submit(next);
+        assert(owner.advance());
+        assert(owner.offload() && owner.advance());
+        if (change == 0)
+            next.model = "other-model";
+        if (change == 1)
+            next.configuration.context_limit = 1024;
+        if (change == 2)
+            next.configuration.checkpoint = "/other/revision";
+        if (change == 3)
+            next.workload = Workload::decision;
+        assert(owner.load({100, 100}));
+        owner.submit(next);
+        assert(owner.advance() && state.restored == 0);
+        assert(owner.snapshot().used[0] == 10);
+        owner.shutdown();
+    }
+}
+
+void ram_pressure_reclaims_optional_cache() {
+    for (bool physical : {false, true}) {
+        CacheState state;
+        auto now = std::chrono::steady_clock::time_point{};
+        Footprint free{100, 100};
+        InferenceOwner owner(
+            {100, 100},
+            [&](auto, auto ledger) {
+                return std::make_unique<CacheEngine>(state, ledger);
+            },
+            [&] { return free; },
+            [](auto, auto, auto) {},
+            32,
+            {},
+            [&] { return now; }
+        );
+        owner.submit(request("conversation", Workload::llm));
+        assert(owner.advance());
+        assert(owner.offload() && owner.advance());
+        assert(owner.snapshot().used[0] == 4);
+        if (physical)
+            free[0] = 0;
+        else
+            assert(owner.offload());
+        assert(owner.advance());
+        assert(owner.snapshot().used == Footprint({0, 0}));
+        assert(owner.status().budget == Footprint({0, 0}));
+        owner.shutdown();
+    }
+}
+
+void device_pressure_keeps_completed_state_before_retry() {
+    CacheState state;
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {}
+    );
+    auto prompt = request("conversation", Workload::llm);
+    owner.submit(prompt);
+    assert(owner.advance());
+    state.prepare_pressure = true;
+    owner.submit(prompt);
+    assert(!owner.advance() && owner.pending() == 1);
+    assert(owner.snapshot().used == Footprint({4, 0}));
+    assert(owner.advance() && state.restored == 1);
+    owner.shutdown();
+}
+
+void failed_snapshot_still_unloads_model() {
+    CacheState state;
+    state.snapshot_failure = true;
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, auto ledger) { return std::make_unique<CacheEngine>(state, ledger); },
+        [] { return Footprint{100, 100}; },
+        [](auto, auto, auto) {}
+    );
+    owner.submit(request("conversation", Workload::llm));
+    assert(owner.advance());
+    assert(owner.offload() && owner.advance());
+    assert(owner.snapshot().residents == 0 && owner.snapshot().used[0] == 0);
+    owner.shutdown();
+}
+
 int main() {
+    ram_cache_lifecycle();
+    explicit_unload_preserves_cache_when_returning_budget();
+    offload_does_not_restart_cache_timer();
+    cache_timer_yields_to_queued_and_active_work();
+    incompatible_ram_state_is_discarded();
+    ram_pressure_reclaims_optional_cache();
+    failed_snapshot_still_unloads_model();
+    device_pressure_keeps_completed_state_before_retry();
     offloaded_owner_waits_for_a_budget();
     offload_refuses_while_busy_and_releases_when_idle();
     offloaded_owner_retires_a_cancelled_head();
