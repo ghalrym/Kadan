@@ -1,0 +1,30 @@
+name: Tracing unit tests
+on:
+  push:
+    paths:
+      - 'services/tracing/**'
+      - '.github/workflows/tracing.yml'
+  pull_request:
+    paths:
+      - 'services/tracing/**'
+      - '.github/workflows/tracing.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tracing-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Tracing unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/tracing/pyproject.toml
+      - run: python -m pip install ./services/tracing 'pytest>=9,<10'
+      - run: python -m pytest services/tracing/tests -q
