@@ -42,3 +42,15 @@ Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 ## Constraints
 
 - Results never go through a shared filesystem.
+
+## Job ownership and retention
+
+`POST /v1/videos/generations` accepts server-owned work with HTTP 202. Browser submission lifetime is separate from job lifetime: aborting the wait cannot revoke a job already accepted. Clients must reconcile the job list after an uncertain submission before retrying. Job cancellation requests cleanup of queued or running work, and clients inspect the resulting state.
+
+The API's VideoJobs index is process-local. It tracks Queued, Rendering, Done, Failed and Cancelled records, while the frontend polls pending work about every three seconds. Only Done with an available artifact provides playable output. Completed MP4 bytes are written atomically beneath `HIKARI_VIDEO_DIR`, falling back to `KADAN_VIDEO_DIR` and then the local default. A content lookup requires the indexed Done job, so retained files do not reconstruct old routes after restart.
+
+Separating transferred worker output from API file serving supports workers on other machines, but does not make this index durable. See [Video generation](../../user-expectations/hikari/video-generation.md) for the download expectation.
+
+## Request defaults
+
+Go defaults to five seconds at 480p, Plus to eight seconds at 480p, and Pro to five seconds at 768p. The browser starts at 16:9. The API seed defaults to 42; the browser does not expose it. Prompts must be nonblank and at most 8,000 characters. Negative prompts are unsupported. Explicit settings still pass memory admission rather than being silently reduced.
