@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import WebSocketDisconnect
+from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.services.inference_errors import InferenceFailure
@@ -14,6 +15,7 @@ from api.services.memory_scheduler import GIB, Requirement
 from api.services.worker_hub import (
     RELEASE_TIMEOUT,
     WorkerHub,
+    WorkerSettings,
     authorized,
     requested_model,
 )
@@ -481,6 +483,135 @@ class DisconnectTests(HubTestCase):
         await socket.close()
         with self.assertRaises(InferenceFailure):
             await control
+
+
+class ModelIdleSettingsTests(unittest.TestCase):
+    def test_default_and_configured_period(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(WorkerSettings(_env_file=None).model_idle_seconds, 3600)
+        with patch.dict(os.environ, {"HIKARI_MODEL_IDLE_SECONDS": "120"}):
+            self.assertEqual(WorkerSettings(_env_file=None).model_idle_seconds, 120)
+
+    def test_period_must_be_positive_whole_seconds(self):
+        for value in ("0", "-1", "1.5", "nan", "inf", "later"):
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {"HIKARI_MODEL_IDLE_SECONDS": value}),
+                self.assertRaises(ValidationError),
+            ):
+                WorkerSettings(_env_file=None)
+
+
+class ModelIdleTests(HubTestCase):
+    async def resident(self, kind="llm", **identity):
+        socket, worker = await self.connect(kind, replies={"offload": ok}, **identity)
+        slot = worker.slot
+        slot.loaded, slot.budget, slot.last_used = True, [GIB, GIB], 100
+        slot.requirement = Requirement("m", (GIB, GIB), (GIB, GIB))
+        return socket, worker
+
+    async def test_every_modality_expires_at_the_boundary_and_waits_for_cleanup(self):
+        for kind in (
+            "llm",
+            "decision",
+            "tts",
+            "speech",
+            "formatting",
+            "image",
+            "video",
+        ):
+            with self.subTest(kind=kind):
+                socket, worker = await self.resident(kind, computer=kind)
+                with patch("api.services.worker_hub.time.monotonic", return_value=3699):
+                    await self.hub._schedule(worker.computer)
+                self.assertFalse(socket.commands("offload"))
+                with patch("api.services.worker_hub.time.monotonic", return_value=3700):
+                    await self.hub._schedule(worker.computer)
+                self.assertEqual(len(socket.commands("offload")), 1)
+                self.assertTrue(worker.slot.loaded and worker.slot.releasing)
+                self.assertEqual(worker.slot.budget, [GIB, GIB])
+                socket.push(
+                    {
+                        "state": "worker",
+                        "event": "offloaded",
+                        "worker": kind,
+                        "loaded": False,
+                        "budget": [0, 0],
+                    }
+                )
+                await self.settle()
+                await self.hub._schedule(worker.computer)
+                self.assertFalse(worker.slot.loaded or worker.slot.releasing)
+                self.assertEqual(worker.slot.budget, [0, 0])
+                self.assertFalse(socket.commands("load"))
+
+    async def test_idle_clock_restarts_when_each_request_finishes(self):
+        socket, worker = await self.resident()
+        for completed_at in (5000, 7000):
+            job = await self.hub.submit(chat())
+            socket.push({"id": job.request.id, "state": "running", "worker": "llm"})
+            await self.settle()
+            with patch(
+                "api.services.worker_hub.time.monotonic", return_value=completed_at
+            ):
+                await self.hub._schedule(worker.computer)
+                self.assertFalse(socket.commands("offload"))
+                socket.push(
+                    {
+                        "id": job.request.id,
+                        "state": "succeeded",
+                        "worker": "llm",
+                        "result": {},
+                    }
+                )
+                await job.result
+            self.assertEqual(worker.slot.last_used, completed_at)
+        with patch("api.services.worker_hub.time.monotonic", return_value=10599):
+            await self.hub._schedule(worker.computer)
+        self.assertFalse(socket.commands("offload"))
+        with patch("api.services.worker_hub.time.monotonic", return_value=10600):
+            await self.hub._schedule(worker.computer)
+        self.assertEqual(len(socket.commands("offload")), 1)
+
+    async def test_busy_pending_unloaded_and_releasing_workers_do_not_expire(self):
+        for field, value in (
+            ("busy", True),
+            ("pending", 1),
+            ("loaded", False),
+            ("releasing", True),
+        ):
+            with self.subTest(field=field):
+                socket, worker = await self.resident(computer=field)
+                setattr(worker.slot, field, value)
+                worker.slot.releasing_since = 3700
+                with patch("api.services.worker_hub.time.monotonic", return_value=3700):
+                    await self.hub._schedule(worker.computer)
+                self.assertFalse(socket.commands("offload"))
+
+    async def test_another_workers_queued_request_takes_precedence(self):
+        socket, worker = await self.resident()
+        _, picture = await self.resident("image")
+        await self.hub.submit(image())
+        with patch("api.services.worker_hub.time.monotonic", return_value=3700):
+            await self.hub._schedule(worker.computer)
+        self.assertEqual(picture.slot.pending, 1)
+        self.assertFalse(socket.commands("offload"))
+
+    async def test_request_arriving_during_requirement_query_prevents_expiry(self):
+        socket, worker = await self.resident()
+        worker.slot.requirement = None
+
+        async def requirement(current):
+            await self.hub.submit(chat())
+            return Requirement("m", (GIB, GIB), (GIB, GIB))
+
+        with (
+            patch.object(self.hub, "_requirement", side_effect=requirement),
+            patch("api.services.worker_hub.time.monotonic", return_value=3700),
+        ):
+            await self.hub._schedule(worker.computer)
+        self.assertEqual(worker.slot.pending, 1)
+        self.assertFalse(socket.commands("offload"))
 
 
 class SchedulingTests(HubTestCase):

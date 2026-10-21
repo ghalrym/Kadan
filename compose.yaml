@@ -66,6 +66,7 @@ services:
       <<: *database_environment
       # Every worker container authenticates with this token.
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
+      HIKARI_MODEL_IDLE_SECONDS: ${HIKARI_MODEL_IDLE_SECONDS:-3600}
       WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       hikari-postgres:

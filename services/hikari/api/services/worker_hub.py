@@ -44,7 +44,8 @@ from api.services.memory_scheduler import (
 )
 from api.services.tracing import JobTracing
 from fastapi import WebSocket, WebSocketDisconnect
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,14 @@ RELEASE_TIMEOUT = 60
 
 # How long a request waits for a worker of its type to connect.
 CONNECT_TIMEOUT = 30
+
+
+class WorkerSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="HIKARI_", env_file=".env", extra="ignore"
+    )
+
+    model_idle_seconds: int = Field(default=3600, ge=1)
 
 
 def requirement_key(fields: dict) -> tuple:
@@ -214,6 +223,7 @@ class WorkerHub:
 
     def __init__(self, on_event=None):
         self.on_event = on_event
+        self.model_idle_seconds = WorkerSettings().model_idle_seconds
         self.workers: dict[str, Worker] = {}
         self.computers: dict[str, Computer] = {}
         self.jobs: dict[str, InferenceJob] = {}
@@ -261,6 +271,8 @@ class WorkerHub:
             kind=worker.kind,
             devices=worker.devices,
             budget=[0] * len(computer.ledger.capacity),
+            # A reconnect has no completion history; allow a full idle period.
+            last_used=time.monotonic(),
         )
         self.workers[worker.id] = worker
         if self.primary is None:
@@ -836,4 +848,17 @@ class WorkerHub:
                 continue
             if not await self._apply(computer, actions):
                 return
+        # Requests take precedence, including queued jobs that already have a
+        # budget. Recheck after the requirement and grant RPCs above.
+        if not any(slot.pending for slot in ledger.workers.values()):
+            now = time.monotonic()
+            for slot in slots:
+                if (
+                    slot.loaded
+                    and not slot.busy
+                    and not slot.releasing
+                    and now - slot.last_used >= self.model_idle_seconds
+                ):
+                    await self._apply(computer, [Action("offload", slot.name)])
+                    return
         await self._apply(computer, plan_growth(ledger))
