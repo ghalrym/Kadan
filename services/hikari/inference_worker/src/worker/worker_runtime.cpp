@@ -200,8 +200,7 @@ connect(const websocket::Url& url, const std::string& token) {
 
 int serve(const WorkerProgram& program) {
     const auto name = std::string(worker_name(program.workload));
-    const auto token = environment("HIKARI_WORKER_TOKEN");
-    require(!token.empty(), "HIKARI_WORKER_TOKEN is required");
+    const auto token = environment("HIKARI_WORKER_TOKEN", "insecure-api-key");
     const auto url = websocket::Url::parse(environment("HIKARI_API_URL"));
     const auto models = std::filesystem::path(environment(
         "KADAN_MODEL_DIR", environment("HOME", "/tmp") + "/.local/share/kadan/models"

@@ -16,7 +16,7 @@ Each inference type is its own C++ program in its own container:
 program links only its own engine; they share the worker runtime library (the
 API contract, WebSocket client and model store). Each container connects out to
 the API's `/v1/workers` WebSocket with `Authorization: Bearer
-$HIKARI_WORKER_TOKEN`, handles its own type's jobs and its models' downloads,
+$HIKARI_WORKER_TOKEN` (default `insecure-api-key`), handles its own type's jobs and its models' downloads,
 and exits when that connection drops so its restart policy starts a fresh one.
 Containers scale (`docker compose up --scale hikari-worker-image=2`) and run on
 other computers.
@@ -138,7 +138,7 @@ options in its `inference_worker/workers/<type>/Dockerfile`, install its
 `kadan-worker-<type>` component, and run `bin/kadan-worker-<type>` with
 `HIKARI_API_URL`, `HIKARI_WORKER_TOKEN` and `KADAN_MODEL_DIR` (writable checkpoint
 storage) set. Install `api/requirements.txt` in a virtual environment with the
-same `HIKARI_WORKER_TOKEN` before starting one Uvicorn worker for the API.
+same `HIKARI_WORKER_TOKEN` (default `insecure-api-key`) before starting one Uvicorn worker for the API.
 `API_PROXY_TARGET` selects the Vite proxy destination. In Compose it points at
 the `hikari-api` service.
 

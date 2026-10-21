@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 
 // API_PROXY_TARGET lets the Compose development override reach kadan-api.
 const apiTarget = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8630";
-// Forward the browser's Host header like nginx does; the API rejects unknown hosts.
 // ws relays the agent computer's VNC stream.
 const apiProxy = { target: apiTarget, changeOrigin: false, ws: true };
 
@@ -13,7 +12,8 @@ export default defineConfig({
   build: { target: "es2022" },
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
   server: {
-    host: "127.0.0.1",
+    host: "0.0.0.0",
+    allowedHosts: true,
     proxy: { "/api": apiProxy, "/openapi.json": apiProxy, "/docs": apiProxy },
     // Poll bind-mounted files when running inside Docker.
     watch: { usePolling: process.env.WATCH_POLLING === "true", interval: 250 },

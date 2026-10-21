@@ -15,9 +15,9 @@ Kadan at <http://127.0.0.1:8630> is the everyday agent interface. Tsuchi's site 
 
 Open <http://127.0.0.1:8620>. Create an agent namespace using a name and a key such as `research`. No accounts, passwords, API credentials, or sample data are created. Interactive API documentation is at <http://127.0.0.1:8620/docs> and the schema is at `/openapi.json`.
 
-Compose publishes **127.0.0.1 only**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Keep the service on loopback or a private container network. Do not publish it to the internet. Compose runs `tsuchi-api`, whose `0.0.0.0:8000` listener stays inside Docker, and `tsuchi-frontend`, a Vite container that serves the site with hot reload and proxies `/api`, `/docs` and `/openapi.json` to it. Only the frontend publishes a port, on loopback.
+Compose publishes on **all host interfaces**. This is a single-owner local prototype with no authentication. Agent keys select separate namespaces; they do not grant or restrict access to the owner. Operators are responsible for securing access; see the [security expectations](../../docs/user-expectations/security.md). Compose runs `tsuchi-api`, whose `0.0.0.0:8000` listener stays inside Docker, and `tsuchi-frontend`, a Vite container that serves the site with hot reload and proxies `/api`, `/docs` and `/openapi.json` to it. Only the frontend publishes a port.
 
-The service runs as UID 10001 with a read-only application filesystem. The `tsuchi_tsuchi_data` Docker volume holds SQLite and uploaded files. Restarting or rebuilding the containers preserves data. `docker compose down` preserves the volume; **do not use `down -v` with data you want to keep**.
+The `tsuchi_tsuchi_data` Docker volume holds SQLite and uploaded files. Restarting or rebuilding the containers preserves data. `docker compose down` preserves the volume; **do not use `down -v` with data you want to keep**.
 
 Set `TSUCHI_PORT` or `TSUCHI_MAX_UPLOAD_BYTES` in the repository root `.env` to change the local port or upload limit. The default per-file limit is 100 MiB. There is no GPU requirement or model download.
 
@@ -147,7 +147,7 @@ cd ..
 .venv/bin/uvicorn tsuchi.main:app --host 127.0.0.1 --port 8620
 ```
 
-To run the frontend separately, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Keep listeners local. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
+To run the frontend separately, run `npm run dev` in `web` after starting the API. Vite proxies `/api` to `127.0.0.1:8620`. Local data defaults to `./data`; set `TSUCHI_DATA_DIR` for another dedicated directory. Do not point tests or temporary checks at a real data volume.
 
 The backend has explicit Pydantic models, SQLite transactions, and namespace-qualified lookups. Uploaded filenames never become disk paths. Raster images are verified before inline display. HTML, SVG, and general files download as attachments. The server does not restrict request hosts or origins. These safeguards support a local app; they are not an authentication system.
 

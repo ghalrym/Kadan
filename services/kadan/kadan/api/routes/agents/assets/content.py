@@ -22,7 +22,6 @@ class AssetStream(StreamingResponse):
         headers.update(
             {
                 "Cache-Control": "private, no-store",
-                "Content-Security-Policy": "default-src 'none'; sandbox",
             }
         )
         super().__init__(response.aiter_raw(), headers=headers)
