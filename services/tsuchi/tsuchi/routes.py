@@ -83,6 +83,11 @@ class PetUpdate(PetState):
     worker_id: UUID | None = None
 
 
+class PetDoctor(Model):
+    id: UUID
+    expected_version: int = Field(ge=1)
+
+
 class PetSelection(Model):
     pet_id: UUID | None
 
@@ -288,6 +293,12 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.get("/agents/{key}/pets/{pet_id}", response_model=PetJob)
     def get_pet(key: AgentKey, pet_id: UUID):
         return repository.get_pet(key, pet_id)
+
+    @router.post(
+        "/agents/{key}/pets/{pet_id}/doctor", response_model=PetJob, status_code=201
+    )
+    def doctor_pet(key: AgentKey, pet_id: UUID, value: PetDoctor):
+        return repository.doctor_pet(key, pet_id, value.id, value.expected_version)
 
     @router.put("/agents/{key}/pets/{pet_id}", response_model=PetJob)
     def update_pet(key: AgentKey, pet_id: UUID, value: PetUpdate):

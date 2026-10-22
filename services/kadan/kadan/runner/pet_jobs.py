@@ -28,6 +28,7 @@ from ..api.pet_artwork import (
     validate_row,
 )
 from ..api.pet_client import PetClient
+from ..api.pet_doctor import PetDoctor
 from ..api.pydantic_models.pets import (
     GeneratedImage,
     PetAsset,
@@ -185,7 +186,10 @@ class PetJobs(PetClient):
         work = asyncio.current_task()
         heartbeat = asyncio.create_task(self.heartbeat(job, work))
         try:
-            await self.generate(job)
+            if job.doctor:
+                await self.normalize(job)
+            else:
+                await self.generate(job)
         except (Exception, asyncio.CancelledError) as error:  # noqa: BLE001 - every worker exit must release its durable lease.
             try:
                 async with self.lock:
@@ -600,6 +604,62 @@ class PetJobs(PetClient):
                 # hint if pressure changed between sub-batches; missing advice
                 # returns to a singleton instead of guessing from GPU count.
                 capacity = min(MAX_PENDING_FRAMES, *(result or 1 for result in results))
+        await self.assemble(job)
+
+    async def normalize(self, job: PetJob) -> None:
+        reference = await self.content(job.agent_key, job.steps[0].output_asset_id)
+        doctor = await asyncio.to_thread(PetDoctor, reference)
+        sources = {entry.step.name: entry.step for entry in job.rejections}
+        for row in ROWS:
+            for index in range(row.frame_count):
+                job = await self.owned_job(job)
+                name = frame_name(row, index)
+                if any(step.name == name for step in job.steps):
+                    continue
+                job = await self.owned_update(job, stage=f"Doctor · {name}")
+                original = sources[name]
+                png = await self.content(job.agent_key, original.output_asset_id)
+                output, result = await asyncio.to_thread(doctor.correct, png)
+                step = original.model_copy(update={"normalization": result})
+                if result.outcome == "corrected":
+                    output_id = uuid5(job.id, name + "/normalized")
+                    provenance_id = uuid5(job.id, name + "/normalization")
+                    metadata = json.dumps(
+                        {
+                            "method": "normalized",
+                            "source_step": original.model_dump(
+                                mode="json", exclude={"meta"}
+                            ),
+                            "normalization": result.model_dump(),
+                        },
+                        sort_keys=True,
+                    )
+                    await self.upload(job, output_id, name, output, "image/png")
+                    await self.upload(
+                        job,
+                        provenance_id,
+                        name + "-normalization",
+                        metadata.encode(),
+                        "application/json",
+                    )
+                    step = step.model_copy(
+                        update={
+                            "method": "normalized",
+                            "source_asset_id": original.output_asset_id,
+                            "output_asset_id": output_id,
+                            "provenance_asset_id": provenance_id,
+                            "request_id": uuid5(job.id, name),
+                            "meta": metadata,
+                        }
+                    )
+                job = await self.owned_update(
+                    job,
+                    steps=[*job.steps, step],
+                    completed_steps=len(job.steps) + 1,
+                )
+        await self.assemble(job)
+
+    async def assemble(self, job: PetJob) -> None:
         job = await self.owned_update(job, stage="Validating and assembling animation")
         frames = {
             step.name: await self.content(job.agent_key, step.output_asset_id)

@@ -123,6 +123,17 @@ class PetClient:
         )
         return self.checked(value, key) if value is not None else None
 
+    async def doctor(
+        self, key: str, pet_id: UUID, revision_id: UUID, expected_version: int
+    ) -> PetJob:
+        value = await self.services.json_request(
+            "Tsuchi",
+            "POST",
+            self.path(key, pet_id) + "/doctor",
+            json={"id": str(revision_id), "expected_version": expected_version},
+        )
+        return self.checked(value, key, revision_id)
+
     async def select(self, key: str, pet_id: UUID | None) -> PetJob | None:
         self.path(key)
         value = await self.services.json_request(

@@ -29,9 +29,16 @@ class PetManifest(BaseModel):
     animations: list[PetAnimation]
 
 
+class PetScaleCorrection(BaseModel):
+    outcome: Literal["corrected", "consistent", "skipped"]
+    scale: float = Field(default=1, ge=0.67, le=1.5)
+    reason: str
+
+
 class PetStep(BaseModel):
     name: str
-    method: Literal["generated", "canonical"] = "generated"
+    method: Literal["generated", "canonical", "normalized"] = "generated"
+    normalization: PetScaleCorrection | None = None
     source_asset_id: UUID | None = None
     output_asset_id: UUID
     raw_asset_id: UUID
@@ -56,6 +63,7 @@ class PetPendingFrame(BaseModel):
 
 
 class PetState(BaseModel):
+    doctor: bool = False
     origin: Literal["generated", "imported"] = "generated"
     status: Literal[
         "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"

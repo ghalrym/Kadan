@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Egg, FileArchive, FolderOpen, Plus, Sparkles, Upload, Wrench, X } from "lucide-react";
+import { Egg, FileArchive, FolderOpen, Plus, Sparkles, Stethoscope, Upload, Wrench, X } from "lucide-react";
 import { agentPath, api, ApiError } from "./api";
 import { agentPet } from "./Pet";
 import { petSheet, usePetImage } from "./PetContext";
@@ -14,6 +14,8 @@ const statuses: Record<PetJob["status"], string> = {
   interrupted: "Interrupted", failed: "Failed", ready: "Ready to preview",
 };
 const active = (job: PetJob) => ["queued", "running", "cancelling"].includes(job.status);
+const statusLabel = (job: PetJob) => job.doctor && job.status === "queued" ? "Doctor queued"
+  : job.doctor && job.status === "running" ? "Doctor working" : statuses[job.status];
 const NEW = "new";
 const HATCHLING = "hatchling";
 const ideas = [
@@ -25,6 +27,7 @@ const ideas = [
 
 interface CreationRequest { id: string; prompt: string }
 interface RevisionRequest {
+  action: "revisions" | "doctor";
   parentId: string;
   id: string;
   expected_version: number;
@@ -38,8 +41,9 @@ function readPendingRevision(key: string): RevisionRequest | null {
     const value = JSON.parse(sessionStorage.getItem(key) ?? "null");
     return value && typeof value.parentId === "string" && typeof value.id === "string"
       && Number.isInteger(value.expected_version) && typeof value.reason === "string"
-      && Array.isArray(value.frame_names) && value.frame_names.length === 1
-      && typeof value.frame_names[0] === "string" ? value : null;
+      && Array.isArray(value.frame_names)
+      && ((value.action === "revisions" && value.frame_names.length === 1 && typeof value.frame_names[0] === "string")
+        || (value.action === "doctor" && value.frame_names.length === 0)) ? value : null;
   } catch { return null; }
 }
 
@@ -333,14 +337,18 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     }
   }
 
-  async function regenerate() {
+  async function regenerate(action: "revisions" | "doctor" = "revisions") {
     if (busy) return;
     let request = pendingRevision.current;
     if (!request) {
-      if (!candidate || active(candidate) || hasActive || !frame || !repairReason.trim()) return;
+      if (!candidate || active(candidate) || hasActive) return;
+      if (action === "revisions" && (!frame || !repairReason.trim())) return;
+      if (action === "doctor" && (candidate.status !== "ready" || candidate.origin !== "generated")) return;
       request = {
+        action,
         parentId: candidate.id, id: randomUuid(), expected_version: candidate.version,
-        frame_names: [frame.name], reason: repairReason.trim(),
+        frame_names: action === "revisions" ? [frame!.name] : [],
+        reason: action === "revisions" ? repairReason.trim() : "",
       };
       pendingRevision.current = request;
       sessionStorage.setItem(revisionKey, JSON.stringify(request));
@@ -348,9 +356,10 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     }
     setBusy(true);
     setError("");
-    const { parentId, ...body } = request;
+    const { parentId, action: endpoint, frame_names, reason, ...identity } = request;
+    const body = endpoint === "doctor" ? identity : { ...identity, frame_names, reason };
     try {
-      update(await api<PetJob>(`${path}/${encodeURIComponent(parentId)}/revisions`, body));
+      update(await api<PetJob>(`${path}/${encodeURIComponent(parentId)}/${endpoint}`, body));
       pendingRevision.current = null;
       sessionStorage.removeItem(revisionKey);
       if (alive.current) {
@@ -490,43 +499,60 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const candidatePanel = candidate && (() => {
     const { title, detail } = petTitle(candidate);
     const inUse = selected?.id === candidate.id;
+    const checked = candidate.steps.filter((step) => step.normalization);
     return (
       <section className="pet-panel" aria-labelledby="pet-candidate-title">
         <div className="pet-panel-head">
           <h3 id="pet-candidate-title">{title}</h3>
           <span className={`pet-badge ${inUse ? "in-use" : candidate.status}`} role="status">
-            {inUse ? "In use" : statuses[candidate.status]}
+            {inUse ? "In use" : statusLabel(candidate)}
           </span>
         </div>
         {detail && <p className="pet-description">{detail}</p>}
         <p className="field-hint">
           {candidate.origin === "imported"
             ? `Imported ${candidate.manifest?.sprite_version === 1 ? "v1 sheet · no look directions" : "v2 sheet"}`
+            : candidate.doctor ? "Doctor · body size consistency"
             : candidate.parent_pet_id ? "Frame revision · other saved artwork retained" : "Generated"}
         </p>
         {active(candidate) && <div className="pet-progress">
-          <progress value={candidate.completed_steps} max={candidate.total_steps} aria-label="Pet creation progress" />
+          <progress value={candidate.completed_steps} max={candidate.total_steps} aria-label={candidate.doctor ? "Doctor progress" : "Pet creation progress"} />
           <div className="pet-progress-label">
             <span>{candidate.stage.replaceAll("_", " ")}</span>
             <span>{candidate.completed_steps} / {candidate.total_steps}</span>
           </div>
-          <p className="field-hint">Creation continues when you close this window. Your current pet stays in use.</p>
+          <p className="field-hint">{candidate.doctor ? "Doctor continues" : "Creation continues"} when you close this window. Your current pet stays in use.</p>
         </div>}
         {candidate.error && <p className="error">{candidate.error}</p>}
         {candidate.status === "interrupted" && <p className="field-hint">Resume to continue from the saved artwork.</p>}
+        {candidate.doctor && checked.length > 0 && <details className="pet-repair">
+          <summary>Doctor report · {checked.filter((step) => step.normalization?.outcome === "corrected").length} corrected
+            {" · "}{checked.filter((step) => step.normalization?.outcome === "consistent").length} consistent
+            {" · "}{checked.filter((step) => step.normalization?.outcome === "skipped").length} skipped</summary>
+          <p className="field-hint">Frames without reliable matches stay unchanged. Preview the result before choosing Use pet.</p>
+          <ul className="pet-doctor-report">{checked.map((step) => <li key={step.name}>
+            <strong>{frameLabel(step.name)}</strong>{" · "}
+            {step.normalization!.outcome === "corrected" ? `Scaled to ${Math.round(step.normalization!.scale * 100)}%. ` : ""}
+            {step.normalization!.reason}
+          </li>)}</ul>
+        </details>}
         {!active(candidate) && candidate.status !== "ready" && hasActive && <p className="field-hint">
           Another pet is being created. Resume this one after it finishes.
         </p>}
         {sheet && <PetStage key={candidate.id} sheet={sheet} ready={image.ready} failed={image.failed} />}
         <div className="form-actions">
           {active(candidate) && <button disabled={busy || revisionPending || candidate.status === "cancelling"} onClick={() => void changeJob("cancel")}>
-            {candidate.status === "cancelling" ? "Cancelling…" : "Cancel creation"}
+            {candidate.status === "cancelling" ? "Cancelling…" : candidate.doctor ? "Cancel Doctor" : "Cancel creation"}
           </button>}
-          {["failed", "interrupted", "cancelled"].includes(candidate.status) && <button disabled={busy || hasActive || revisionPending} onClick={() => void changeJob("resume")}>Resume creation</button>}
+          {["failed", "interrupted", "cancelled"].includes(candidate.status) && <button disabled={busy || hasActive || revisionPending} onClick={() => void changeJob("resume")}>{candidate.doctor ? "Resume Doctor" : "Resume creation"}</button>}
           {sheet && <button className="primary" disabled={busy || !image.ready || inUse}
             onClick={() => void select(candidate.id)}>{inUse ? "In use" : "Use pet"}</button>}
+          {sheet && <button disabled={busy || loading || hasActive || revisionPending || candidate.origin !== "generated"}
+            title={candidate.origin === "imported" ? "Doctor needs the original character reference, which imported sheets do not include."
+              : "Check character size and save a corrected candidate. Your current pet stays in use."}
+            onClick={() => void regenerate("doctor")}><Stethoscope size={14} aria-hidden="true" /> Doctor</button>}
         </div>
-        {!active(candidate) && frame && <details className="pet-repair" open={revisionPending || undefined}>
+        {!active(candidate) && frame && <details className="pet-repair" open={(revisionPending && pendingRevision.current?.action === "revisions") || undefined}>
           <summary><Wrench size={14} aria-hidden="true" /> Repair a frame</summary>
           <div className="pet-repair-body">
             <img className="pet-repair-image" width={144} height={156}
@@ -590,8 +616,8 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
               <span className="pet-card-text">
                 <span className="pet-card-title">{petTitle(job).title}</span>
                 <span className={`pet-card-meta ${inUse ? "in-use" : job.status}`}>
-                  {inUse ? "In use" : active(job) ? `${statuses[job.status]} · ${Math.round((job.completed_steps / job.total_steps) * 100)}%`
-                    : job.status === "ready" ? job.origin === "imported" ? "Imported" : "Ready" : statuses[job.status]}
+                  {inUse ? "In use" : active(job) ? `${statusLabel(job)} · ${Math.round((job.completed_steps / job.total_steps) * 100)}%`
+                    : job.status === "ready" ? job.doctor ? "Doctor · ready" : job.origin === "imported" ? "Imported" : "Ready" : statuses[job.status]}
                 </span>
               </span>
             </button>;
@@ -600,7 +626,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
         <div className="pet-main">
           {error && !importErrorInline && <p className="error" role="alert">{error}</p>}
           {revisionPending && <div className="banner" role="status">
-            Checking whether the frame repair was saved.
+            Checking whether the {pendingRevision.current?.action === "doctor" ? "Doctor request" : "frame repair"} was saved.
             <button disabled={busy} onClick={() => void regenerate()}>Retry confirmation</button>
           </div>}
           {selectionError && <div className="banner" role="alert">Could not confirm the selected pet: {selectionError}

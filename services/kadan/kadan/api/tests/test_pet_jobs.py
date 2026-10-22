@@ -16,6 +16,7 @@ from kadan.api.pydantic_models.pets import (
     GeneratedImage,
     PetJob,
     PetPendingFrame,
+    PetScaleCorrection,
     PetStep,
 )
 from kadan.runner.pet_jobs import IMAGE_MODEL, PetJobs
@@ -613,6 +614,102 @@ def test_revision_regenerates_only_rejected_middle_frame(monkeypatch):
         pets.image.assert_awaited_once()
         assert pets.image.await_args.args[-1] == 8
         assert "wrong eyelids" in pets.image.await_args.args[1]
+
+    asyncio.run(run())
+
+
+def test_doctor_resumes_saved_checks_without_inference_or_selection(monkeypatch):
+    checked = []
+    fail_once = True
+
+    class Doctor:
+        def __init__(self, reference):
+            assert reference == PNG
+
+        def correct(self, png):
+            nonlocal fail_once
+            if len(checked) == 3 and fail_once:
+                fail_once = False
+                raise ValueError("Interrupted check")
+            outcome = ["corrected", "consistent", "skipped"][len(checked) % 3]
+            checked.append(png)
+            return PNG, PetScaleCorrection(
+                outcome=outcome,
+                scale=0.8 if outcome == "corrected" else 1,
+                reason="Measured scale" if outcome != "skipped" else "Uncertain match",
+            )
+
+    monkeypatch.setattr("kadan.runner.pet_jobs.PetDoctor", Doctor)
+    monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", lambda frames: b"atlas")
+
+    async def run():
+        pets, services, job = await setup_running()
+        names = [
+            "base",
+            *(f"{row.name}/{i}" for row in ROWS for i in range(row.frame_count)),
+        ]
+        original = [
+            PetStep(
+                name=name,
+                output_asset_id=uuid4(),
+                raw_asset_id=uuid4(),
+                provenance_asset_id=uuid4(),
+                prompt="Fox",
+                request_id=uuid4(),
+                model_id=IMAGE_MODEL,
+            )
+            for name in names
+        ]
+        job = await pets.owned_update(
+            job,
+            doctor=True,
+            parent_pet_id=uuid4(),
+            steps=original[:1],
+            completed_steps=1,
+            rejections=[
+                {"step": step.model_dump(), "reason": "Doctor source frame"}
+                for step in original[1:]
+            ],
+        )
+
+        async def content(key, asset_id):
+            return PNG if asset_id == original[0].output_asset_id else asset_id.bytes
+
+        pets.content = content
+        pets.upload = AsyncMock()
+        pets.image = AsyncMock(
+            side_effect=AssertionError("Doctor must not generate artwork")
+        )
+        await pets.process(job)
+        failed = services.jobs[job.id]
+        assert failed.status == "failed"
+        assert len(failed.steps) == 4
+        completed = failed.steps[:]
+        resumed = await pets.resume(KEY, job.id)
+        resumed = await pets.save(
+            resumed,
+            worker_id=pets.owner,
+            status="running",
+            owner_id=pets.owner,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+        )
+        await pets.process(resumed)
+        result = services.jobs[job.id]
+        assert result.status == "ready"
+        assert result.steps[:4] == completed
+        assert [step.name for step in result.steps] == names
+        assert checked == [step.output_asset_id.bytes for step in original[1:]]
+        corrected, consistent, skipped = result.steps[1:4]
+        assert corrected.method == "normalized"
+        assert corrected.source_asset_id == original[1].output_asset_id
+        assert corrected.raw_asset_id == original[1].raw_asset_id
+        assert corrected.provenance_asset_id != original[1].provenance_asset_id
+        assert consistent.output_asset_id == original[2].output_asset_id
+        assert skipped.output_asset_id == original[3].output_asset_id
+        assert [entry.step for entry in result.rejections] == original[1:]
+        pets.image.assert_not_awaited()
+        assert all(call[0] == "Tsuchi" for call in services.calls)
+        assert all(not call[2].endswith("/pet") for call in services.calls)
 
     asyncio.run(run())
 
