@@ -67,7 +67,17 @@ void eligibility_and_mixed_dispatch() {
         }));
         jobs = saved;
     };
-    std::vector<float> large(9 * 256), large_output(9);
+    // Prefill experts beyond one matvec pass are accepted up to the job bound.
+    std::vector<float> prefill(9 * 256), prefill_output(9);
+    {
+        auto saved = jobs;
+        jobs[1].input = prefill;
+        jobs[1].output = prefill_output;
+        check(gguf_batch_supported(jobs, capacities.size()));
+        jobs = saved;
+    }
+    constexpr auto too_many = DenseCompute::gguf_batch_max_rows + 1;
+    std::vector<float> large(too_many * 256), large_output(too_many);
     rejected([&](auto& job) {
         job.input = large;
         job.output = large_output;

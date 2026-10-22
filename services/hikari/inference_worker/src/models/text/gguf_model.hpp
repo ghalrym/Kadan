@@ -115,7 +115,8 @@ public:
     };
 
     // Independent projections in one device submission when every input is a
-    // few decode rows; otherwise each runs as project() would.
+    // few decode rows or a routed expert's rows; otherwise each runs as
+    // project() would.
     std::vector<Vec> project(DenseCompute& compute, std::span<const Projection>) const;
     void check_unchanged() const;
 
@@ -201,8 +202,9 @@ private:
     bool projection_timing_ = false;
     // Thread stacks are covered by the engine's fixed host allowance.
     mutable std::unique_ptr<Workers> workers_;
-    // Measured bytes per second of host-executed experts and of slices the
-    // device streams over PCIe; they split misses so both sides finish together.
+    // Measured bytes times input rows per second of host-executed experts, and
+    // bytes per second of slices the device streams over PCIe; they split
+    // misses so both sides finish together.
     mutable double host_rate_ = 20e9, stream_rate_ = 10e9;
 
     void place(DenseCompute&, const SliceKey&, Bytes bytes, Placement::Decision&) const;

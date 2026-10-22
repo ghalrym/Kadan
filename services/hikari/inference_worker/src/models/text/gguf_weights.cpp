@@ -359,21 +359,32 @@ std::vector<Vec> GgufWeights::project(
     // batch runs, as long as the host is expected to finish no later than the
     // device's PCIe stream (FreeToken's split of misses between CPU execution
     // and transfer). Resident, newly admitted and disk slices stay on the device.
+    // Routed experts batch at any prefill row count: the device reruns its
+    // packed pass per row group over weights it reads once. Other matrices with
+    // more than decode rows use the device's SGEMM path.
+    const auto batched = [&](std::size_t i) {
+        const auto rows = requests[i].input.size() / prepared[i].matrix->columns;
+        return rows
+               <= (prepared[i].matrix->experts > 1 ? DenseCompute::gguf_batch_max_rows
+                                                   : DenseCompute::gguf_batch_rows);
+    };
+    // Host work grows with input rows while the stream moves each slice once,
+    // so host cost is bytes times rows.
     std::vector<bool> on_host(requests.size());
-    Bytes host_bytes = 0, stream_bytes = 0;
+    Bytes host_bytes = 0, host_work = 0, stream_bytes = 0;
     for (std::size_t i = 0; i < requests.size(); ++i) {
         const auto& p = prepared[i];
-        if (p.device
-            || requests[i].input.size() / p.matrix->columns
-                   > DenseCompute::gguf_batch_rows)
+        if (p.device || !batched(i))
             continue;
+        const auto work = p.bytes * (requests[i].input.size() / p.matrix->columns);
         const bool host = p.matrix->experts > 1 && ram_.contains(p.key)
                           && CpuMatvec::supported(p.tensor->type, p.matrix->columns);
         if (host
-            && double(host_bytes + p.bytes) / host_rate_
+            && double(host_work + work) / host_rate_
                    <= double(stream_bytes + p.bytes) / stream_rate_) {
             on_host[i] = true;
             host_bytes += p.bytes;
+            host_work += work;
         } else
             stream_bytes += p.bytes;
     }
@@ -438,14 +449,12 @@ std::vector<Vec> GgufWeights::project(
     const auto prepared_at = std::chrono::steady_clock::now();
     timing_.prepare += std::chrono::duration<double>(prepared_at - started).count();
     std::vector<DenseCompute::GgufBatchJob> jobs;
-    std::vector<std::size_t> batched;
+    std::vector<std::size_t> in_batch;
     for (std::size_t i = 0; i < requests.size(); ++i) {
         const auto& p = prepared[i];
-        if (on_host[i]
-            || requests[i].input.size() / p.matrix->columns
-                   > DenseCompute::gguf_batch_rows)
+        if (on_host[i] || !batched(i))
             continue;
-        batched.push_back(i);
+        in_batch.push_back(i);
         jobs.push_back(
             {&p.identity,
              p.tensor->type == 0 ? std::nullopt : gguf::encoding(p.tensor->type),
@@ -467,7 +476,7 @@ std::vector<Vec> GgufWeights::project(
                                        .count();
         timing_.device += batch_seconds;
         if (result != ProjectionResult::unsupported) {
-            for (const auto i : batched) {
+            for (const auto i : in_batch) {
                 need(
                     projection_output_finite(result, outputs[i]), "gguf_text_nonfinite"
                 );
@@ -514,7 +523,7 @@ std::vector<Vec> GgufWeights::project(
                 std::chrono::duration<double>(host_finished - host_started).count();
             if (seconds > 0)
                 host_rate_ = std::clamp(
-                    .8 * host_rate_ + .2 * double(host_bytes) / seconds, 1e8, 1e12
+                    .8 * host_rate_ + .2 * double(host_work) / seconds, 1e8, 1e13
                 );
         }
         timing_.host += host_bytes;

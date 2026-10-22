@@ -193,8 +193,12 @@ public:
         return ProjectionResult::unsupported;
     }
 
-    // Input rows per job that dense_gguf_batch accepts.
+    // Input rows one packed matvec pass reduces; decode rows fit in one pass.
     static constexpr std::size_t gguf_batch_rows = 8;
+    // Input rows per job that dense_gguf_batch accepts. Larger jobs (routed
+    // experts during prefill) rerun the pass over each group of rows against
+    // the same resident or staged weights, so packed bytes cross PCIe once.
+    static constexpr std::size_t gguf_batch_max_rows = 4096;
 
     // One small-row product of a packed GGUF matrix; no encoding means F32 rows.
     // Bank keys match dense_gguf_source/dense_source, so residency is shared.

@@ -306,6 +306,18 @@ void launch_matvec(const MatvecJob& job) {
     checked(cudaGetLastError());
 }
 
+// A job over more rows than one pass reduces becomes one pass per group of
+// rows; every pass reads the same weights and shares the job's status.
+void append_row_groups(const MatvecJob& job, std::vector<MatvecJob>& to) {
+    for (unsigned first = 0; first < job.rows; first += gguf_matvec_rows) {
+        auto group = job;
+        group.input += std::size_t(first) * job.in;
+        group.output += std::size_t(first) * job.stride;
+        group.rows = std::min(gguf_matvec_rows, job.rows - first);
+        to.push_back(group);
+    }
+}
+
 // One launch per weight format over table[first, end); block numbers restart
 // at zero in each launch.
 struct MatvecLaunch {
@@ -3606,11 +3618,25 @@ public:
                 const auto segments = unsigned(
                     (longest + cached_attention_segment - 1) / cached_attention_segment
                 );
+                // Long prefill chunks score their rows in groups whose segment
+                // partials fit the scratch beside the whole query and result.
+                const auto layout = [&](std::size_t group) {
+                    Layout l;
+                    l.add(q.size_bytes());
+                    l.add(output.size_bytes());
+                    l.add(group * heads * segments * (dim + 2) * sizeof(float));
+                    l.add(selected.size_bytes());
+                    l.add(offsets.size_bytes());
+                    return l.bytes;
+                };
+                std::size_t group = rows;
+                while (group > 1 && layout(group) > arena.scratch_limit)
+                    group = (group + 1) / 2;
                 Layout l;
                 const auto query = l.add(q.size_bytes()),
                            result = l.add(output.size_bytes()),
                            partial = l.add(
-                               rows * heads * segments * (dim + 2) * sizeof(float)
+                               group * heads * segments * (dim + 2) * sizeof(float)
                            ),
                            indices = l.add(selected.size_bytes()),
                            starts = l.add(offsets.size_bytes());
@@ -3643,44 +3669,51 @@ public:
                         )
                     );
                 }
-                cuda_trace::kernel(
-                    serving::CudaKernel::cached_attention_kernel,
-                    cudaStreamLegacy,
-                    [&] {
-                        cached_attention_kernel<<<
-                            dim3(unsigned(rows), unsigned(heads), segments),
-                            cached_attention_threads>>>(
-                            arena.at<float>(query),
-                            m->data,
-                            m->data + m->capacity * width,
-                            arena.at<float>(partial),
-                            unsigned(position),
-                            unsigned(heads),
-                            unsigned(kv_heads),
-                            unsigned(dim),
-                            scale,
-                            selected.empty() ? nullptr : arena.at<unsigned>(indices),
-                            selected.empty() ? nullptr : arena.at<unsigned>(starts)
-                        );
-                    }
-                );
-                checked(cudaGetLastError());
-                cuda_trace::kernel(
-                    serving::CudaKernel::cached_attention_combine,
-                    cudaStreamLegacy,
-                    [&] {
-                        cached_attention_combine<<<
-                            dim3(unsigned(rows), unsigned(heads)),
-                            256>>>(
-                            arena.at<float>(partial),
-                            arena.at<float>(result),
-                            unsigned(heads),
-                            unsigned(dim),
-                            segments
-                        );
-                    }
-                );
-                checked(cudaGetLastError());
+                for (std::size_t first = 0; first < rows; first += group) {
+                    stop(cancel, failed);
+                    const auto count = std::min(group, rows - first);
+                    const auto row_values = first * heads * dim;
+                    cuda_trace::kernel(
+                        serving::CudaKernel::cached_attention_kernel,
+                        cudaStreamLegacy,
+                        [&] {
+                            cached_attention_kernel<<<
+                                dim3(unsigned(count), unsigned(heads), segments),
+                                cached_attention_threads>>>(
+                                arena.at<float>(query) + row_values,
+                                m->data,
+                                m->data + m->capacity * width,
+                                arena.at<float>(partial),
+                                unsigned(position + first),
+                                unsigned(heads),
+                                unsigned(kv_heads),
+                                unsigned(dim),
+                                scale,
+                                selected.empty() ? nullptr
+                                                 : arena.at<unsigned>(indices),
+                                selected.empty() ? nullptr
+                                                 : arena.at<unsigned>(starts) + first
+                            );
+                        }
+                    );
+                    checked(cudaGetLastError());
+                    cuda_trace::kernel(
+                        serving::CudaKernel::cached_attention_combine,
+                        cudaStreamLegacy,
+                        [&] {
+                            cached_attention_combine<<<
+                                dim3(unsigned(count), unsigned(heads)),
+                                256>>>(
+                                arena.at<float>(partial),
+                                arena.at<float>(result) + row_values,
+                                unsigned(heads),
+                                unsigned(dim),
+                                segments
+                            );
+                        }
+                    );
+                    checked(cudaGetLastError());
+                }
                 checked(
                     cuda_trace::copy(
                         output.data(),
@@ -3977,7 +4010,7 @@ public:
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
                 std::vector<GgufBatchPartition> partitions;
-                std::size_t chunks = 0, device_outputs = 0;
+                std::size_t chunks = 0, passes = 0, device_outputs = 0;
                 for (const auto& job : jobs) {
                     partitions.push_back(gguf_batch_partition(
                         job.in,
@@ -3988,6 +4021,9 @@ public:
                         arena.scratch_limit
                     ));
                     chunks += partitions.back().chunks();
+                    passes += partitions.back().chunks()
+                              * ((job.input.size() / job.in + gguf_matvec_rows - 1)
+                                 / gguf_matvec_rows);
                     device_outputs +=
                         partitions.back().count * (job.input.size() / job.in);
                 }
@@ -3997,12 +4033,12 @@ public:
                 // Inputs and the resident table go up in one copy; outputs and
                 // their weight status come back in one copy.
                 const auto input = l.add(inputs * sizeof(float)),
-                           resident_table = l.add(chunks * sizeof(MatvecJob)),
+                           resident_table = l.add(passes * sizeof(MatvecJob)),
                            output = l.add(device_outputs * sizeof(float)),
                            weight_status = l.add(sizeof(unsigned)),
                            miss_status = l.add(chunks * sizeof(unsigned)),
                            staging = l.add(gguf_projection_staging_bytes),
-                           table = l.add(chunks * sizeof(MatvecJob));
+                           table = l.add(passes * sizeof(MatvecJob));
                 require(l.bytes <= arena.scratch_limit, "h3_cuda_projection_scratch");
                 device_workspace.ensure(l.bytes);
                 checked(cudaMemsetAsync(
@@ -4071,7 +4107,7 @@ public:
                             // Validated when the bank admitted it.
                             chunk.weights = static_cast<const unsigned char*>(hit);
                             chunk.status = nullptr;
-                            resident.push_back(chunk);
+                            append_row_groups(chunk, resident);
                         } else
                             misses.push_back(
                                 {chunk,
@@ -4157,7 +4193,10 @@ public:
                     checked(cudaMemset(statuses, 0, sizeof(unsigned)));
                     miss.chunk.weights = staged;
                     miss.chunk.status = statuses;
-                    launch_matvec(miss.chunk);
+                    std::vector<MatvecJob> passes;
+                    append_row_groups(miss.chunk, passes);
+                    for (const auto& pass : passes)
+                        launch_matvec(pass);
                     read_status(miss_status);
                     stop(cancel, failed);
                     retain(miss, staged);
@@ -4181,7 +4220,7 @@ public:
                         offsets[small[group.end]] = group.used;
                         miss.chunk.weights = staged + parity * half + group.used;
                         miss.chunk.status = statuses + group.end;
-                        chunks.push_back(miss.chunk);
+                        append_row_groups(miss.chunk, chunks);
                         // 256-byte starts keep F32 rows aligned for vector loads.
                         group.used += (miss.bytes + 255) / 256 * 256;
                         ++group.end;
