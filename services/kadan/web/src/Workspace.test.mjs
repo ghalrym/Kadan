@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { ApiError } from "./api.ts";
 import * as documentNavigation from "./workspaceDocuments.ts";
 
 const source = ts.transpileModule(
@@ -51,6 +52,7 @@ function workspace() {
     "./Markdown": { default: "Markdown" },
     "./workspaceDocuments": documentNavigation,
     "./api": {
+      ApiError,
       agentPath: key => `/agents/${key}`,
       api: path => request([path]),
       allResources: (...args) => request(args),
@@ -107,7 +109,7 @@ function workspace() {
       callbacks.forEach(callback => callback());
     },
     async settle(index, value, failure = false) {
-      requests[index][failure ? "reject" : "resolve"](failure ? new Error(value) : value);
+      requests[index][failure ? "reject" : "resolve"](failure ? value instanceof Error ? value : new Error(value) : value);
       await new Promise(resolve => setImmediate(resolve));
       render();
     },
@@ -157,11 +159,11 @@ test("Document contents retry keeps the Space, search and collection without rel
   view.click("Retry");
   assert.equal(view.search(), "project");
   assert.match(view.text(), /Project Space text/);
-  assert.match(view.text(), /Loading documents/);
+  assert.match(view.text(), /Refreshing record/);
   assert.doesNotMatch(view.text(), /Contents unavailable|No subdocuments/);
   assert.equal(view.requests.length, 3);
   assert.deepEqual(view.requests[2].args, ["agent"]);
-  await view.settle(2, [record("Child", "space", "Project Space"), record("Other")]);
+  await view.settle(2, [record("Project Space", "space"), record("Child", "space", "Project Space"), record("Other")]);
   assert.match(view.text(), /Child/);
   assert.doesNotMatch(view.text(), /Other/);
   view.click("Child");
@@ -174,7 +176,7 @@ test("a successful empty Space read shows the empty state", async () => {
   view.start();
   await view.settle(0, [record("Space", "space")]);
   view.click("Space");
-  await view.settle(1, []);
+  await view.settle(1, [record("Space", "space")]);
   assert.match(view.text(), /No subdocuments/);
   assert.equal(view.button("Retry"), undefined);
 });
@@ -220,11 +222,11 @@ for (const failure of [false, true]) {
     await view.settle(0, [record("First", "space"), record("Second", "space")]);
     view.click("First");
     view.click("Second");
-    await view.settle(2, [record("Current child", "space", "Second")]);
+    await view.settle(2, [record("Second", "space"), record("Current child", "space", "Second")]);
     await view.settle(1, failure ? "Old contents error" : [record("Old child", "space", "First")], failure);
     assert.match(view.text(), /Second text/);
     assert.match(view.text(), /Current child/);
-    assert.doesNotMatch(view.text(), /Old|Loading documents/);
+    assert.doesNotMatch(view.text(), /Old|Refreshing record/);
     view.click("Close record");
     assert.match(view.text(), /Select a (record|document)/);
     assert.equal(view.button("Retry"), undefined);
@@ -259,11 +261,11 @@ test("overlapping Space retries accept only the latest response", async () => {
   retry();
   // Commit a second activation of the same control while the first read waits.
   view.render();
-  await view.settle(3, [record("Latest child", "space", "Space")]);
+  await view.settle(3, [record("Space", "space"), record("Latest child", "space", "Space")]);
   await view.settle(2, "Older retry failed", true);
   assert.match(view.text(), /Space text/);
   assert.match(view.text(), /Latest child/);
-  assert.doesNotMatch(view.text(), /Older retry failed|Loading documents/);
+  assert.doesNotMatch(view.text(), /Older retry failed|Refreshing record/);
 });
 
 test("unmount cancels debounced reads and prevents pending reads from writing state", async () => {
@@ -331,4 +333,185 @@ test("a document opened from search resolves its full breadcrumb and returns to 
   view.click("Project");
   assert.match(view.text(), /Project text/);
   assert.equal(view.search(), "Plan");
+});
+
+test("Refresh preserves the document search and selection while updating text, ancestors and children", async () => {
+  const view = workspace();
+  view.click("Documents");
+  view.query("Plan");
+  view.start();
+  const project = record("Project", "space");
+  const plan = record("Plan", "space", "Project");
+  await view.settle(0, [plan]);
+  view.click("Plan");
+  await view.settle(1, [project, plan]);
+  view.click("Refresh");
+  view.start();
+  assert.deepEqual(view.requests[2].args, ["agent"]);
+  assert.deepEqual(view.requests[3].args, ["agent", undefined, "Plan"]);
+  await view.settle(2, [
+    { ...project, title: "Updated project" },
+    { ...plan, title: "Revised notes", markdown: "Fresh document text" },
+    record("New subdocument", "space", "Plan"),
+  ]);
+  await view.settle(3, []);
+  assert.equal(view.search(), "Plan");
+  assert.equal(view.button("Documents").props["aria-pressed"], true);
+  assert.match(view.text(), /No matching records/);
+  assert.match(view.text(), /Revised notes|Fresh document text/);
+  assert.match(view.text(), /New subdocument/);
+  assert.ok(view.button("Back to Updated project"));
+  assert.doesNotMatch(view.text(), /Plan text/);
+});
+
+const file = { id: "file", title: "File", filename: "before.txt", media_type: "text/plain", size_bytes: 12, tags: [] };
+for (const [tab, original, updated, path, expected] of [
+  ["Memories", record("Memory"), { ...record("Memory"), markdown: "Fresh memory" }, "/agents/agent/resources/Memory", /Fresh memory/],
+  ["Files", file, { ...file, filename: "after.txt", size_bytes: 24 }, "/agents/agent/assets/file", /after.txtType/],
+]) test(`Refresh updates a selected ${tab} record even when it no longer matches the query`, async () => {
+  const view = workspace();
+  view.click(tab);
+  view.query("previous title");
+  view.start();
+  await view.settle(0, [original]);
+  view.click(original.title);
+  assert.deepEqual(view.requests[1].args, [path]);
+  await view.settle(1, original);
+  view.click("Refresh");
+  view.start();
+  assert.deepEqual(view.requests[2].args, [path]);
+  await view.settle(2, updated);
+  await view.settle(3, []);
+  assert.match(view.text(), expected);
+  assert.match(view.text(), /No matching records/);
+  assert.equal(view.search(), "previous title");
+  assert.equal(view.button(tab).props["aria-pressed"], true);
+});
+
+for (const [state, rows] of [
+  ["missing", []],
+  ["trashed", [{ ...record("Plan", "space"), deleted_at: "2026-10-22T12:00:00Z" }]],
+  ["changed kind", [record("Plan", "memory")]],
+]) test(`Refresh hides obsolete document content when the saved document is ${state}`, async () => {
+  const view = workspace();
+  view.click("Documents");
+  view.start();
+  const plan = record("Plan", "space");
+  await view.settle(0, [plan]);
+  view.click("Plan");
+  await view.settle(1, [plan]);
+  view.click("Refresh");
+  view.start();
+  await view.settle(2, rows);
+  await view.settle(3, []);
+  assert.match(view.text(), /This record is no longer available in this view/);
+  assert.doesNotMatch(view.text(), /Plan text|No subdocuments/);
+  assert.equal(view.find(node => node.type === "h2").props.children, "Plan");
+  view.click("Refresh");
+  view.start();
+  await view.settle(4, [{ ...plan, markdown: "Restored text" }]);
+  await view.settle(5, [plan]);
+  assert.match(view.text(), /Restored text/);
+  assert.doesNotMatch(view.text(), /no longer available/);
+});
+
+for (const [state, value, failure] of [
+  ["missing", new ApiError("Resource not found", 404), true],
+  ["trashed", { ...record("Memory"), deleted_at: "2026-10-22T12:00:00Z" }, false],
+  ["changed kind", record("Memory", "persona"), false],
+]) test(`Refresh shows a missing record rather than stale memory text after it is ${state}`, async () => {
+  const view = workspace();
+  view.start();
+  const memory = record("Memory");
+  await view.settle(0, [memory]);
+  view.click("Memory");
+  await view.settle(1, memory);
+  view.click("Refresh");
+  view.start();
+  await view.settle(2, value, failure);
+  await view.settle(3, []);
+  assert.match(view.text(), /no longer available/);
+  assert.doesNotMatch(view.text(), /Memory text/);
+});
+
+test("failed detail refresh keeps the last loaded record and retries without changing search or collection", async () => {
+  const view = workspace();
+  view.query("Memory");
+  view.start();
+  const memory = record("Memory");
+  await view.settle(0, [memory]);
+  view.click("Memory");
+  await view.settle(1, memory);
+  view.click("Refresh");
+  view.start();
+  await view.settle(2, "Storage unavailable", true);
+  await view.settle(3, [memory]);
+  assert.match(view.text(), /Memory text/);
+  assert.match(view.text(), /Storage unavailable.*Showing the last loaded record/);
+  assert.doesNotMatch(view.text(), /no longer available/);
+  view.click("Retry");
+  assert.equal(view.search(), "Memory");
+  assert.equal(view.requests.length, 5);
+  await view.settle(4, { ...memory, markdown: "Recovered memory" });
+  assert.match(view.text(), /Recovered memory/);
+  assert.doesNotMatch(view.text(), /Storage unavailable/);
+});
+
+test("Refresh failures never masquerade as an empty collection", async () => {
+  const view = workspace();
+  view.start();
+  await view.settle(0, [record("Memory")]);
+  view.click("Refresh");
+  view.start();
+  await view.settle(1, "Storage unavailable", true);
+  assert.match(view.text(), /Storage unavailable/);
+  assert.doesNotMatch(view.text(), /No memories|0 records/);
+});
+
+for (const failure of [false, true]) test(`a selected memory's late refresh ${failure ? "failure" : "success"} cannot replace newer navigation`, async () => {
+  const view = workspace();
+  view.start();
+  const first = record("First"), second = record("Second");
+  await view.settle(0, [first, second]);
+  view.click("First");
+  await view.settle(1, first);
+  view.click("Refresh");
+  view.start();
+  await view.settle(3, [first, second]);
+  view.click("Second");
+  await view.settle(4, { ...second, markdown: "Current second text" });
+  await view.settle(2, failure ? new ApiError("Gone", 404) : { ...first, markdown: "Late first text" }, failure);
+  assert.match(view.text(), /Current second text/);
+  assert.doesNotMatch(view.text(), /Late first text|no longer available/);
+});
+
+test("changing agents ignores a pending selected-record refresh", async () => {
+  const view = workspace();
+  view.start();
+  const memory = record("Memory");
+  await view.settle(0, [memory]);
+  view.click("Memory");
+  await view.settle(1, memory);
+  view.click("Refresh");
+  view.agent("other");
+  await view.settle(2, { ...memory, markdown: "Old agent content" });
+  assert.match(view.text(), /Select a record/);
+  assert.doesNotMatch(view.text(), /Old agent content|Memory text/);
+});
+
+test("reopening the same record supersedes an earlier refresh of that record", async () => {
+  const view = workspace();
+  view.start();
+  const memory = record("Memory");
+  await view.settle(0, [memory]);
+  view.click("Memory");
+  await view.settle(1, memory);
+  view.click("Refresh");
+  view.start();
+  await view.settle(3, [memory]);
+  view.click("Memory");
+  await view.settle(4, { ...memory, markdown: "Newest text" });
+  await view.settle(2, { ...memory, markdown: "Older text" });
+  assert.match(view.text(), /Newest text/);
+  assert.doesNotMatch(view.text(), /Older text/);
 });

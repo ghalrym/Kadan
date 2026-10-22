@@ -7,10 +7,11 @@ import {
   Download,
   File,
   Folder,
+  RefreshCw,
   Search,
   X,
 } from "lucide-react";
-import { agentPath, allResources, api } from "./api";
+import { agentPath, allResources, api, ApiError } from "./api";
 import type { Asset, Resource } from "./types";
 import Markdown from "./Markdown";
 import { documentOutline, documentTrail, workspaceDocuments } from "./workspaceDocuments";
@@ -26,9 +27,12 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [children, setChildren] = useState<Resource[]>([]);
-  const [childrenLoading, setChildrenLoading] = useState(false);
-  const [childrenError, setChildrenError] = useState("");
-  const [childrenRefresh, setChildrenRefresh] = useState(0);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [detailRefresh, setDetailRefresh] = useState(0);
+  const [missingId, setMissingId] = useState<string | null>(null);
+  const selectedKind = selected && "kind" in selected ? selected.kind : "file";
+  const missing = !!selected && missingId === selected.id;
   useEffect(() => {
     setSelected(null);
   }, [agentKey, tab]);
@@ -49,7 +53,6 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                 if (current) {
                   const matches = workspaceDocuments(rows);
                   setResources(matches);
-                  if (!query) setDocuments(matches);
                 }
               })
             : allResources(agentKey, tab, query).then((rows) => {
@@ -71,36 +74,54 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
   useEffect(() => {
     let current = true;
     setChildren([]);
-    setChildrenError("");
-    if (!selected || !("kind" in selected) || (selected.kind !== "space" && selected.kind !== "deck")) {
-      setChildrenLoading(false);
+    setDetailError("");
+    if (!selected) {
+      setDetailLoading(false);
       return;
     }
-    setChildrenLoading(true);
-    allResources(agentKey)
-      .then((rows) => {
-        if (current) {
-          const documents = workspaceDocuments(rows);
+    const selectedId = selected.id;
+    setDetailLoading(true);
+    async function load() {
+      try {
+        let saved: Resource | Asset | undefined;
+        if (selectedKind === "space" || selectedKind === "deck") {
+          const rows = await allResources(agentKey);
+          if (!current) return;
+          const documents = workspaceDocuments(rows).filter(row => !row.deleted_at);
           setDocuments(documents);
-          setChildren(documents.filter((row) => row.parent_id === selected.id));
+          saved = documents.find(row => row.id === selectedId && row.kind === selectedKind);
+          setChildren(documents.filter((row) => row.parent_id === selectedId));
+        } else {
+          saved = await api<Resource | Asset>(`${agentPath(agentKey)}/${selectedKind === "file" ? "assets" : "resources"}/${encodeURIComponent(selectedId)}`);
+          if (!current) return;
+          if (("deleted_at" in saved && saved.deleted_at)
+            || (selectedKind === "file" ? !("filename" in saved) : !("kind" in saved) || saved.kind !== selectedKind)) saved = undefined;
         }
-      })
-      .catch((e) => {
-        if (current) setChildrenError(e.message);
-      })
-      .finally(() => {
-        if (current) setChildrenLoading(false);
-      });
+        setMissingId(saved ? null : selectedId);
+        if (saved) setSelected(saved);
+      } catch (e) {
+        if (!current) return;
+        if (e instanceof ApiError && e.status === 404) setMissingId(selectedId);
+        else setDetailError((e as Error).message);
+      } finally {
+        if (current) setDetailLoading(false);
+      }
+    }
+    void load();
     return () => {
       current = false;
     };
-  }, [selected, agentKey, childrenRefresh]);
+  }, [selected?.id, selectedKind, agentKey, detailRefresh, refresh]);
   const rows = tab === "files" ? assets : resources;
   const outline = tab === "space" ? documentOutline(resources) : [];
-  const trail = selected && "kind" in selected && tab === "space"
+  const trail = selected && !missing && "kind" in selected && tab === "space"
     ? documentTrail(selected, documents) : [];
   const parent = trail.length > 1 ? trail[trail.length - 2] : null;
   const rowLabel = tab === "space" ? "document" : "record";
+  function openRecord(record: Resource | Asset) {
+    setSelected(record);
+    setDetailRefresh((n) => n + 1);
+  }
   return (
     <section
       className={`workspace ${selected ? "has-detail" : ""}`}
@@ -133,6 +154,11 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             </button>
           ))}
         </div>
+        <button className="text-link" disabled={loading || detailLoading}
+          onClick={() => setRefresh((n) => n + 1)}>
+          <RefreshCw size={15} />
+          Refresh
+        </button>
         {browserUrl && <a
           className="text-link"
           href={browserUrl}
@@ -180,8 +206,8 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                     key={document.id}
                     style={{ paddingInlineStart: `${8 + Math.min(depth, 6) * 16}px` }}
                     aria-current={selected?.id === document.id ? "page" : undefined}
-                    aria-label={documentTrail(document, documents).map(row => row.title).join(" / ")}
-                    onClick={() => setSelected(document)}
+                    aria-label={documentTrail(document, query ? documents : resources).map(row => row.title).join(" / ")}
+                    onClick={() => openRecord(document)}
                     title={document.title}
                   >
                     <File size={16} />
@@ -194,7 +220,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                 <button
                   className={`resource-row ${selected?.id === item.id ? "selected" : ""}`}
                   key={item.id}
-                  onClick={() => setSelected(item)}
+                  onClick={() => openRecord(item)}
                 >
                   <span className="resource-icon">
                     {tab === "files" ? (
@@ -240,14 +266,14 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                       {index === trail.length - 1 ? (
                         <span aria-current="page">{document.title}</span>
                       ) : (
-                        <button onClick={() => setSelected(document)}>{document.title}</button>
+                        <button onClick={() => openRecord(document)}>{document.title}</button>
                       )}
                     </span>
                   ))}
                 </nav>
               )}
               {parent && (
-                <button className="document-parent" onClick={() => setSelected(parent)}>
+                <button className="document-parent" onClick={() => openRecord(parent)}>
                   <ArrowLeft size={16} />
                   <span>Back to {parent.title}</span>
                 </button>
@@ -269,6 +295,12 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                   <X size={18} />
                 </button>
               </div>
+              {detailLoading && <p className="quiet" role="status">Refreshing record…</p>}
+              {detailError && <div role="alert" className="error feedback">
+                {detailError} {missing ? "The record’s availability could not be refreshed." : "Showing the last loaded record."}
+                <button onClick={() => setDetailRefresh((n) => n + 1)}>Retry</button>
+              </div>}
+              {missing ? <p className="quiet" role="status">This record is no longer available in this view.</p> : <>
               {"filename" in selected ? (
                 <>
                   <dl className="metadata">
@@ -297,21 +329,12 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                   </Markdown>
                   {(selected.kind === "space" || selected.kind === "deck") && (
                     <div className="space-children">
-                      {childrenLoading ? (
-                        <p className="quiet">Loading documents…</p>
-                      ) : childrenError ? (
-                        <div role="alert" className="error feedback">
-                          {childrenError}
-                          <button onClick={() => setChildrenRefresh((n) => n + 1)}>
-                            Retry
-                          </button>
-                        </div>
-                      ) : children.length ? (
+                      {detailLoading || detailError ? null : children.length ? (
                         children.map((child) => (
                           <button
                             className="child-row"
                             key={child.id}
-                            onClick={() => setSelected(child)}
+                            onClick={() => openRecord(child)}
                           >
                             {child.kind === "space" ? (
                               <Folder size={16} />
@@ -346,6 +369,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                   ))}
                 </div>
               )}
+              </>}
             </>
           )}
         </div>
