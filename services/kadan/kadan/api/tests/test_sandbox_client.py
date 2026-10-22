@@ -321,7 +321,9 @@ def test_download_http_errors_never_copy_error_or_partial_response_bodies(status
     output = BytesIO()
     with pytest.raises(ServiceError) as raised:
         asyncio.run(sandbox(handler).download_file("/tmp/report", output))
-    assert raised.value.code == ("file_changed" if status == 409 else "computer_error")
+    assert raised.value.code == {404: "file_not_found", 409: "file_changed"}.get(
+        status, "computer_error"
+    )
     assert output.getvalue() == b""
     assert stream.closed
     assert len(seen) == 1
@@ -435,3 +437,73 @@ def test_download_cancellation_propagates_and_closes_upstream():
     assert output.tell() == 65536
     assert stream.closed
     assert not output.closed
+
+
+def upload_receipt(path="/tmp/destination", size=4):
+    return {
+        "success": True,
+        "data": {"success": True, "file_path": path, "file_size": size},
+    }
+
+
+def test_file_upload_sends_seekable_binary_file_and_requires_full_receipt():
+    handler, seen = serving(httpx.Response(200, json=upload_receipt()))
+    source = BytesIO(b"\x00\xffab")
+    source.seek(3)
+    asyncio.run(sandbox(handler).upload_file("/tmp/destination", source))
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/v1/file/upload"
+    assert seen[0].headers["authorization"] == "Bearer secret"
+    assert b'name="path"' in seen[0].content
+    assert b"/tmp/destination" in seen[0].content
+    assert b"\x00\xffab" in seen[0].content
+    assert not source.closed
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"success": False, "data": {"error_type": "permission_denied"}},
+        {**upload_receipt(), "success": False},
+        {"success": True, "data": {**upload_receipt()["data"], "success": False}},
+        upload_receipt(path="/tmp/other"),
+        upload_receipt(size=3),
+        upload_receipt(size=True),
+        {"success": True},
+        {"data": upload_receipt()["data"]},
+    ],
+)
+def test_file_upload_rejects_failed_or_mismatched_receipt(receipt):
+    handler, seen = serving(httpx.Response(200, json=receipt))
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert raised.value.code == "invalid_file_upload"
+    assert len(seen) == 1
+
+
+def test_file_upload_rejects_non_json_receipt():
+    handler, _ = serving(httpx.Response(200, text="not JSON"))
+    with pytest.raises(ServiceError, match="invalid file upload receipt"):
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+
+
+def test_file_upload_rejects_oversized_staging_before_sending(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.MAX_FILE_BYTES", 3)
+    handler, seen = serving()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert raised.value.status == 413
+    assert seen == []
+
+
+def test_file_upload_deadline_never_retries(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.OPERATION_SECONDS", 0.01)
+    seen = []
+
+    async def stalled(request):
+        seen.append(request)
+        await asyncio.Event().wait()
+
+    with pytest.raises(ServiceError, match="did not confirm"):
+        asyncio.run(sandbox(stalled).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert len(seen) == 1

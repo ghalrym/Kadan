@@ -51,6 +51,8 @@ class Workspace(Protocol):
 
     async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict: ...
 
+    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict: ...
+
 
 class ListWorkspaceDocumentsArguments(Arguments):
     query: str = Field(default="", max_length=500)
@@ -188,6 +190,10 @@ class ReadWorkspaceFileArguments(Arguments):
     file_id: UUID
 
 
+class OpenWorkspaceFileArguments(Arguments):
+    file_id: UUID
+
+
 @conversation_tool
 async def save_workspace_file(
     args: SaveWorkspaceFileArguments, conversation: Workspace
@@ -214,6 +220,21 @@ async def read_workspace_file(
     return await conversation.read_workspace_file(args)
 
 
+@conversation_tool
+async def open_workspace_file(
+    args: OpenWorkspaceFileArguments, conversation: Workspace
+) -> dict:
+    """Copy an active Workspace file, up to 100 MiB, onto the agent's computer.
+
+    Returns a verified local path for file, shell or browser tools. This does not
+    read the contents into chat. The saved original is unchanged; edits to the
+    computer copy are not synchronized. An interrupted copy is checked on restart
+    and is never uploaded again automatically. Inspect an unconfirmed path before
+    requesting another copy.
+    """
+    return await conversation.open_workspace_file(args)
+
+
 TOOLS = [
     create_workspace_document,
     list_workspace_documents,
@@ -223,4 +244,5 @@ TOOLS = [
     update_project,
     save_workspace_file,
     read_workspace_file,
+    open_workspace_file,
 ]
