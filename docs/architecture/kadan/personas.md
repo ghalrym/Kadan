@@ -8,4 +8,10 @@ Kadan's `read_persona` and `update_persona` tools use the running agent's namesp
 
 Context preparation appends the owned persona to the shared instruction file, followed by any explicitly selected persona. Identical IDs are included once. Selection stays a per-message input and is not resolved into the canonical ID at enqueue time, preserving submission retry identity. Newly prepared image-event runs use the current canonical persona too. The completed instruction snapshot is persisted with the run, so recovery does not substitute later edits. Both personas count against the existing context budget; an oversized instruction set fails rather than truncating instructions.
 
-The existing named-persona editor and selection remain independent. Its updates use resource versions and preserve unrelated metadata. The browser selection resets when the chat view opens. Voice calls retain their separate instruction path and do not read the owned persona.
+The existing named-persona editor and selection remain independent. Its updates use resource versions and preserve unrelated metadata. The browser selection resets when the chat view opens.
+
+## Voice calls
+
+The browser opens `/api/agents/{key}/calls` and sends `{type: "start", persona_id: UUID | null}`. Kadan requires this first message within 15 seconds, reads the canonical persona through `LocalServices.agent_persona`, and resolves any distinct selected persona in the same agent namespace. Selected resources must be active personas. The instruction snapshot uses a short spoken-conversation base rather than the shared tool-bearing instruction file. Kadan rejects combined instructions above Hikari's 8,000-character limit before connecting to Hikari; neither persona is truncated.
+
+Kadan sends the resolved `{type: "start", instruction: string}` upstream, then hands the socket to the existing bidirectional relay. Setup owns cleanup until this handoff, including a failed or cancelled initial send. The snapshot lives only in the call, without run persistence or persona writes. See [Voice calls](../../user-expectations/kadan/voice-calls.md) for caller behavior and limitations.
