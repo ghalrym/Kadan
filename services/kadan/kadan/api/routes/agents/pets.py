@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...config import ServiceError
 from ...pet_import import MAX_FILE_BYTES, read_package
-from ...pydantic_models.pets import PetJob
+from ...pydantic_models.pets import PetJob, PetReferenceMode
 from ...pydantic_models.resources import AgentKey
 
 router = APIRouter()
@@ -17,6 +17,7 @@ class CreatePet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: UUID
     prompt: str = Field(min_length=1, max_length=4000, pattern=r"\S")
+    reference_mode: PetReferenceMode = "single_image"
 
 
 class SelectPet(BaseModel):
@@ -48,7 +49,9 @@ async def list_pets(key: AgentKey, request: Request) -> list[PetJob]:
 
 @router.post("/api/agents/{key}/pets", status_code=202)
 async def create_pet(key: AgentKey, value: CreatePet, request: Request) -> PetJob:
-    return await request.app.state.services.pets.create(key, value.id, value.prompt)
+    return await request.app.state.services.pets.create(
+        key, value.id, value.prompt, value.reference_mode
+    )
 
 
 @router.post("/api/agents/{key}/pets/imports", status_code=201)

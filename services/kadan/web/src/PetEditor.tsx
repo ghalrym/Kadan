@@ -8,6 +8,7 @@ import { agentHue, cellPosition, COLUMNS, sheetRows, type PetSheet } from "./pet
 import { atlasVersion, resolvePetPackage, type PetPackage, type PickedFile } from "./petImport";
 import type { PetJob } from "./types";
 import { randomUuid } from "./uuid";
+import { creationRequest, parsePendingCreation, type CreationRequest } from "./petCreation";
 
 const statuses: Record<PetJob["status"], string> = {
   queued: "Queued", running: "Creating", cancelling: "Cancelling", cancelled: "Cancelled",
@@ -23,7 +24,6 @@ const ideas = [
   "A sleepy ink-drop octopus, flat vector style",
 ];
 
-interface CreationRequest { id: string; prompt: string }
 interface RevisionRequest {
   parentId: string;
   id: string;
@@ -45,8 +45,7 @@ function readPendingRevision(key: string): RevisionRequest | null {
 
 function readPendingCreation(key: string): CreationRequest | null {
   try {
-    const value = JSON.parse(sessionStorage.getItem(key) ?? "null");
-    return value && typeof value.id === "string" && typeof value.prompt === "string" ? value : null;
+    return parsePendingCreation(sessionStorage.getItem(key));
   } catch { return null; }
 }
 
@@ -136,6 +135,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const [view, setView] = useState(initialRevision?.parentId ?? (initialCreation ? NEW : selected?.id ?? ""));
   const [newTab, setNewTab] = useState<"describe" | "import">("describe");
   const [prompt, setPrompt] = useState(initialCreation?.prompt ?? "");
+  const [referenceMode, setReferenceMode] = useState<PetJob["reference_mode"]>(initialCreation?.reference_mode ?? "single_image");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -149,7 +149,8 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const candidate = jobs.find((job) => job.id === view) ?? null;
-  const repairFrames = candidate?.steps.filter((step) => step.name !== "base" && step.method !== "canonical") ?? [];
+  const characterSheet = candidate?.steps.find((step) => step.name === "character-sheet");
+  const repairFrames = candidate?.steps.filter((step) => step.name.includes("/") && step.method !== "canonical") ?? [];
   const frame = repairFrames.find((step) => step.name === repairFrame) ?? repairFrames[0];
   const sheet = useMemo(() => petSheet(candidate), [candidate]);
   const image = usePetImage(sheet);
@@ -242,15 +243,13 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     if (busy || !prompt.trim() || hasActive || revisionPending) return;
     setBusy(true);
     setError("");
-    if (pendingCreation.current?.prompt !== prompt.trim()) {
-      pendingCreation.current = { id: randomUuid(), prompt: prompt.trim() };
-      sessionStorage.setItem(creationKey, JSON.stringify(pendingCreation.current));
-    }
+    pendingCreation.current = creationRequest(pendingCreation.current, prompt, referenceMode, randomUuid);
+    sessionStorage.setItem(creationKey, JSON.stringify(pendingCreation.current));
     try {
       update(await api<PetJob>(path, pendingCreation.current));
       pendingCreation.current = null;
       sessionStorage.removeItem(creationKey);
-      if (alive.current) setPrompt("");
+      if (alive.current) { setPrompt(""); setReferenceMode("single_image"); }
     } catch (e) {
       if (alive.current) setError((e as Error).message);
     } finally {
@@ -412,6 +411,15 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
         <div className="pet-ideas" aria-label="Ideas">
           {ideas.map((idea) => <button key={idea} type="button" className="chip" onClick={() => setPrompt(idea)}>{idea}</button>)}
         </div>
+        <label htmlFor="pet-reference-mode">Generation reference</label>
+        <select id="pet-reference-mode" value={referenceMode} disabled={busy}
+          onChange={(event) => setReferenceMode(event.target.value as PetJob["reference_mode"])}>
+          <option value="single_image">Single image</option>
+          <option value="character_sheet">Character sheet</option>
+        </select>
+        {referenceMode === "character_sheet" && <p className="field-hint">
+          Generate a reference showing the same character from several views and poses, then draw each animation frame separately. Adds a generation step; consistency is not guaranteed.
+        </p>}
         <p className="field-hint">
           Kadan draws 73 animation and look frames in the background, which takes a while. You can close this window; your current pet stays in use until you choose the new one.
         </p>
@@ -499,6 +507,11 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
           </span>
         </div>
         {detail && <p className="pet-description">{detail}</p>}
+        {candidate.reference_mode === "character_sheet" && <p className="field-hint">
+          Character sheet reference{characterSheet && <> · <a
+            href={`/api${agentPath(agentKey)}/assets/${encodeURIComponent(characterSheet.output_asset_id)}/content`}
+            target="_blank" rel="noreferrer">View sheet</a></>}
+        </p>}
         <p className="field-hint">
           {candidate.origin === "imported"
             ? `Imported ${candidate.manifest?.sprite_version === 1 ? "v1 sheet · no look directions" : "v2 sheet"}`

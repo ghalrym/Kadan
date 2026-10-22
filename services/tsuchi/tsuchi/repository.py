@@ -24,6 +24,7 @@ from .models import (
     Metadata,
     PetJob,
     PetManifest,
+    PetReferenceMode,
     PetRejection,
     PetState,
     Resource,
@@ -885,13 +886,21 @@ class Repository:
             ),
         )
 
-    def create_pet(self, key: str, pet_id: UUID, prompt: str) -> PetJob:
+    def create_pet(
+        self,
+        key: str,
+        pet_id: UUID,
+        prompt: str,
+        reference_mode: PetReferenceMode = "single_image",
+    ) -> PetJob:
         now = utc_now()
         pet = PetJob(
             id=pet_id,
             trace_parent=carrier().get("traceparent"),
             agent_key=key,
             prompt=prompt,
+            reference_mode=reference_mode,
+            total_steps=75 if reference_mode == "character_sheet" else 74,
             version=1,
             created_at=now,
             updated_at=now,
@@ -903,7 +912,12 @@ class Repository:
             ).fetchone()
             if row is not None:
                 current = PetJob.model_validate_json(row[0])
-                if current.agent_key == key and current.prompt == prompt:
+                if (
+                    current.agent_key == key
+                    and current.prompt == prompt
+                    and current.origin == "generated"
+                    and current.reference_mode == reference_mode
+                ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
             self._save_pet(db, pet)
@@ -960,10 +974,10 @@ class Repository:
         if (
             not frame_names
             or len(set(frame_names)) != len(frame_names)
-            or "base" in frame_names
+            or any(name in {"base", "character-sheet"} for name in frame_names)
         ):
             raise StorageError(
-                "Choose distinct completed frames to repair; the base cannot be replaced"
+                "Choose distinct completed frames to repair; references cannot be replaced"
             )
         with self.connect(write=True) as db:
             self._agent(db, key)
@@ -1002,6 +1016,8 @@ class Repository:
                 trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 prompt=source.prompt,
+                reference_mode=source.reference_mode,
+                total_steps=source.total_steps,
                 parent_pet_id=source.id,
                 rejections=rejections,
                 steps=steps,
@@ -1094,6 +1110,8 @@ class Repository:
                 raise StorageError("Completed pet steps are immutable", 409)
             if (
                 value.origin != current.origin
+                or value.reference_mode != current.reference_mode
+                or value.total_steps != current.total_steps
                 or value.parent_pet_id != current.parent_pet_id
                 or value.rejections != current.rejections
             ):
