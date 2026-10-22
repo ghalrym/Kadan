@@ -241,8 +241,8 @@ public:
                 auto& attention = std::get<QsaAttention>(layer.attention);
                 auto saved = std::get<QsaState>(std::move(state.layers[i]));
                 need(
-                    saved.raw_keys.size() == attention.raw_keys.size()
-                        && saved.pooled.size() == attention.pooled.size(),
+                    saved.raw_keys.size() == context_ * index_dim
+                        && saved.pooled.size() == context_ / pool * index_dim,
                     "gguf_text_qsa_snapshot_shape"
                 );
                 attention.attention.restore_state(std::move(saved.attention));
@@ -251,7 +251,7 @@ public:
             }
         }
         need(
-            state.ple.size() == ple_state_.size() && state.recent.size() <= ngram - 1,
+            state.ple.size() == ple_history * wide && state.recent.size() <= ngram - 1,
             "gguf_text_ple_snapshot_shape"
         );
         ple_state_.swap(state.ple);

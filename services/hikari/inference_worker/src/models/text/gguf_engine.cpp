@@ -43,9 +43,10 @@ std::size_t host_bytes(const std::string& name, std::size_t context) {
     return fixed_bytes
            + 2 * (architecture(name).state(context) + context * sizeof(unsigned));
 }
+}  // namespace
 
 // Copies the leading `positions` of every context-sized buffer (KV and
-// indexer keys); recurrent state and n-gram history are copied whole. An
+// indexer keys); pooled keys, recurrent state and n-gram history are copied whole. An
 // empty target takes a whole copy, which sizes it for later partial copies.
 void copy_state(
     const ModelState& from, ModelState& to, std::size_t positions, std::size_t context
@@ -80,7 +81,9 @@ void copy_state(
                     leading(source.attention.keys, target.attention.keys);
                     leading(source.attention.values, target.attention.values);
                     leading(source.raw_keys, target.raw_keys);
-                    leading(source.pooled, target.pooled);
+                    // Pooled keys have floor(context / pool) rows, so their
+                    // prefix cannot be scaled by the unpooled context length.
+                    target.pooled = source.pooled;
                 }
             },
             from.layers[i]
@@ -89,7 +92,6 @@ void copy_state(
     to.ple = from.ple;
     to.recent = from.recent;
 }
-}  // namespace
 
 std::string validate_metadata(const checkpoint::GgufMetadata& m) {
     const auto name = m.string("general.architecture");
