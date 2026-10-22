@@ -23,6 +23,7 @@ from kadan.runner.tools.conversation import send_message
 from kadan.runner.tools.file import file_poll_events, file_upload_file
 from kadan.runner.tools.mcp import mcp_execute_mcp_tool
 from kadan.runner.tools.nodejs import nodejs_update_nodejs_session
+from kadan.runner.tools.workspace import create_workspace_document
 
 
 class Computer:
@@ -66,8 +67,8 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 15
-    assert len(CONVERSATION_TOOLS) == 3
+    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 24
+    assert len(CONVERSATION_TOOLS) == 12
     assert all(tool.description for tool in ALL_TOOLS)
 
 
@@ -151,6 +152,13 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
         (browser_wait, {"type": "forever"}),
         (browser_execute_action, {"action": {"action_type": "TELEPORT"}}),
         (send_message, {"content": "Hi"}),
+        (create_workspace_document, {"title": " "}),
+        (create_workspace_document, {"title": "x" * 501}),
+        (create_workspace_document, {"title": "Notes", "markdown": "x" * 48001}),
+        (create_workspace_document, {"title": "Notes", "parent_id": "../alpha"}),
+        (create_workspace_document, {"title": "Notes", "agent_key": "other"}),
+        (create_workspace_document, {"title": "Notes", "kind": "memory"}),
+        (create_workspace_document, {"title": "Notes", "id": "chosen-id"}),
     ],
 )
 def test_invalid_arguments_are_rejected_by_the_tool_schema(tool, arguments):

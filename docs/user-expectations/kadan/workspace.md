@@ -10,4 +10,8 @@ Search matches stored text and metadata. It does not search inside uploaded PDFs
 
 Opening a record does not attach it to chat or make the agent recall it. The current response flow does not automatically retrieve the memories or Spaces being viewed.
 
+[Agent-owned projects](agent-projects.md) add a small index of saved plans to new
+responses. The agent can read a relevant plan and maintain its documents; viewing
+a particular record still does not attach its contents to chat.
+
 See [Workspace access](../../architecture/kadan/workspace.md) for the storage boundary and [Tsuchi memories](../tsuchi/memories.md), [Spaces](../tsuchi/spaces.md), [files](../tsuchi/files.md) and [revisions](../tsuchi/revisions.md) for editing and revisions.

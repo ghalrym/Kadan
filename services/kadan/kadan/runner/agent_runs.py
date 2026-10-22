@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -33,6 +34,7 @@ from ..api.pydantic_models.agent_runs import (
 )
 from ..api.pydantic_models.resources import Message, ResourceKind
 from ..api.run_client import RunClient
+from ..api.services import parse_resource
 from .agent_inference import (
     AgentInference,
     ToolCommand,
@@ -41,6 +43,19 @@ from .agent_inference import (
 )
 from .tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.workspace import (
+    CreateProjectArguments,
+    CreateWorkspaceDocumentArguments,
+    ListWorkspaceDocumentsArguments,
+    OpenWorkspaceFileArguments,
+    ReadWorkspaceDocumentArguments,
+    ReadWorkspaceFileArguments,
+    SaveWorkspaceFileArguments,
+    UpdateProjectArguments,
+    UpdateWorkspaceDocumentArguments,
+)
+from .workspace import AgentWorkspace, ProjectStatus, document_content
+from .workspace_files import WorkspaceFiles
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -117,12 +132,13 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
-    def __init__(self, runs: AgentRuns, run: AgentRun):
+    def __init__(self, runs: AgentRuns, run: AgentRun, replayed: bool = False):
         self.runs = runs
         self.run = run
         self.action_id = uuid5(run.id, f"command:{len(run.transcript)}")
         self.end_run = False
         self.finished = False
+        self.replayed = replayed
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -171,6 +187,170 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def save_workspace_file(self, args: SaveWorkspaceFileArguments) -> dict:
+        result = {"tool": "save_workspace_file", "file_id": str(self.action_id)}
+        files = WorkspaceFiles(self.runs.services, self.run.agent_key)
+        try:
+            saved = await files.save(
+                self.action_id,
+                args.path,
+                args.title,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except ServiceError as error:
+            return {**result, "error": str(error)}
+        except OSError as error:
+            return {
+                **result,
+                "error": "The file transfer could not be confirmed. Check this file_id "
+                "with read_workspace_file before retrying. " + str(error),
+            }
+        return {**result, **saved}
+
+    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict:
+        result = {"tool": "open_workspace_file", "file_id": str(args.file_id)}
+        try:
+            opened = await WorkspaceFiles(self.runs.services, self.run.agent_key).open(
+                args.file_id,
+                self.action_id,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except (ServiceError, OSError) as error:
+            return {**result, "error": str(error)}
+        return {**result, **opened}
+
+    async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
+        await self.runs.owned(self.run)
+        try:
+            saved = await WorkspaceFiles(self.runs.services, self.run.agent_key).read(
+                args.file_id
+            )
+        except ServiceError as error:
+            return {
+                "tool": "read_workspace_file",
+                "file_id": str(args.file_id),
+                "error": str(error),
+            }
+        return {"tool": "read_workspace_file", **saved}
+
+    async def workspace_operation(
+        self,
+        name: str,
+        operation: Callable[[AgentWorkspace], Awaitable[dict]],
+        *,
+        writing: bool = False,
+    ) -> dict:
+        result = {"tool": name}
+        if writing and self.replayed:
+            return {
+                **result,
+                "error": "The runner restarted before this write reported a result. It may have been saved; read Workspace before retrying.",
+            }
+        workspace = AgentWorkspace(self.runs.services, self.run.agent_key)
+        async with self.runs.lock:
+            await self.runs.owned(self.run)
+            try:
+                value = await operation(workspace)
+            except ServiceError as error:
+                message = str(error)
+                if writing and error.status >= 500:
+                    message += " The write may have been saved; read Workspace before retrying."
+                return {**result, "error": message}
+        return {**result, **value}
+
+    async def list_workspace_documents(
+        self, args: ListWorkspaceDocumentsArguments
+    ) -> dict:
+        return await self.workspace_operation(
+            "list_workspace_documents",
+            lambda workspace: workspace.list(
+                query=args.query,
+                limit=args.limit,
+                offset=args.offset,
+                projects_only=args.projects_only,
+            ),
+        )
+
+    async def read_workspace_document(
+        self, args: ReadWorkspaceDocumentArguments
+    ) -> dict:
+        async def read(workspace: AgentWorkspace) -> dict:
+            return document_content(await workspace.get(args.document_id))
+
+        return await self.workspace_operation("read_workspace_document", read)
+
+    async def create_project(self, args: CreateProjectArguments) -> dict:
+        return await self.workspace_operation(
+            "create_project",
+            lambda workspace: workspace.create_project(args.title, args.markdown),
+            writing=True,
+        )
+
+    async def update_workspace_document(
+        self, args: UpdateWorkspaceDocumentArguments
+    ) -> dict:
+        return await self.update_document(args)
+
+    async def update_project(self, args: UpdateProjectArguments) -> dict:
+        return await self.update_document(args, args.status)
+
+    async def update_document(
+        self,
+        args: UpdateWorkspaceDocumentArguments,
+        status: ProjectStatus | None = None,
+    ) -> dict:
+        async def write(workspace: AgentWorkspace) -> dict:
+            current = await workspace.get(args.document_id)
+            # Storage reads may wait; fence again immediately before the write.
+            await self.runs.owned(self.run)
+            return await workspace.update(
+                current, args.expected_version, args.markdown, status
+            )
+
+        return await self.workspace_operation(
+            "update_project" if status is not None else "update_workspace_document",
+            write,
+            writing=True,
+        )
+
+    async def create_workspace_document(
+        self, args: CreateWorkspaceDocumentArguments
+    ) -> dict:
+        result = {"tool": "create_workspace_document"}
+        # Resource creation has no idempotency key. A saved command without a
+        # result may already have created its document before a runner restart.
+        if self.replayed:
+            return {
+                **result,
+                "error": "The runner restarted before document creation reported "
+                "a result. It may have been saved; check Workspace before retrying.",
+            }
+        async with self.runs.lock:
+            await self.runs.owned(self.run)
+            try:
+                document = parse_resource(
+                    await self.runs.services.json_request(
+                        "Tsuchi",
+                        "POST",
+                        f"/api/agents/{self.run.agent_key}/resources",
+                        json={"kind": "space", **args.model_dump(mode="json")},
+                    )
+                )
+            except ServiceError as error:
+                message = str(error)
+                if error.status >= 500:
+                    message += " The document may have been saved; check Workspace before retrying."
+                return {**result, "error": message}
+        return {
+            **result,
+            "document_id": str(document.id),
+            "title": document.title,
+            "parent_id": str(document.parent_id) if document.parent_id else None,
+            "version": document.version,
+        }
 
 
 class RunState(BaseModel):
@@ -342,6 +522,21 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
+        try:
+            projects = await AgentWorkspace(self.services, run.agent_key).list(
+                limit=8, projects_only=True
+            )
+            if projects["documents"] or projects["next_offset"] is not None:
+                trigger.content += (
+                    "\nWorkspace project index (saved plans, not running jobs). Read relevant plans before acting; do not resume waiting or terminal projects without explicit user direction. Use list_workspace_documents(projects_only=true, offset=next_offset) for more: "
+                    + json.dumps(projects)
+                )
+        except ServiceError as error:
+            trigger.content += (
+                "\nWorkspace project index unavailable: "
+                + str(error)
+                + ". Do not assume there are no existing projects or create a duplicate; check Workspace first."
+            )
         if limit is None:
             limit = MAX_CONTEXT - tool_characters(self.bound_tools())
         budget = limit - len(system.content) - len(trigger.content)
@@ -472,7 +667,7 @@ class AgentRuns(RunClient):
         assert command is not None
         run = state.run
         tool = TOOLS_BY_NAME.get(command.tool)
-        conversation = RunConversation(self, run)
+        conversation = RunConversation(self, run, state.replayed)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
         elif tool in CONVERSATION_TOOLS:

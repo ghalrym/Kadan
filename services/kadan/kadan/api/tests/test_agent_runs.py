@@ -15,11 +15,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
     MAX_CONTEXT,
     AgentRuns,
+    RunState,
     context_characters,
     transcript_messages,
 )
@@ -99,6 +100,8 @@ class Boundary:
         assert service == "Tsuchi"
         base = self.controller.path("test", self.current.id)
         body = kwargs.get("json", {})
+        if path == "/api/agents/test/resources" and method == "GET":
+            return []
         if path == base and method == "GET":
             return self.current.model_dump(mode="json")
         if path == base and method == "PUT":
@@ -742,6 +745,149 @@ def test_computer_errors_become_tool_results(boundary):
     assert boundary.current.status == "completed"
 
 
+@pytest.mark.parametrize("parent_id", [None, uuid4()])
+def test_workspace_creation_uses_the_run_agent_without_a_computer(boundary, parent_id):
+    document_id = uuid4()
+    saved = boundary.conversation.model_copy(
+        update={
+            "id": document_id,
+            "kind": ResourceKind.SPACE,
+            "title": "Notes",
+            "markdown": "# Plan",
+            "messages": [],
+            "parent_id": parent_id,
+        }
+    )
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            assert (service, path, kwargs) == (
+                "Tsuchi",
+                "/api/agents/test/resources",
+                {
+                    "json": {
+                        "kind": "space",
+                        "title": "Notes",
+                        "markdown": "# Plan",
+                        "parent_id": str(parent_id) if parent_id else None,
+                    }
+                },
+            )
+            return saved.model_dump(mode="json")
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    run = boundary.start_owned()
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=run,
+                command=command(
+                    "create_workspace_document",
+                    title=" Notes ",
+                    markdown="# Plan",
+                    parent_id=parent_id,
+                ),
+            )
+        )
+    )
+    assert tool_result(boundary) == {
+        "tool": "create_workspace_document",
+        "document_id": str(document_id),
+        "title": "Notes",
+        "parent_id": str(parent_id) if parent_id else None,
+        "version": 1,
+    }
+    assert boundary.current.status == "running"
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 409, 503])
+def test_workspace_write_failure_is_reported_without_success_or_retry(boundary, status):
+    original_request = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            writes.append(path)
+            raise ServiceError(
+                "Parent unavailable" if status < 500 else "Timed out", status
+            )
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(
+                    "create_workspace_document", title="Notes", parent_id=uuid4()
+                ),
+            )
+        )
+    )
+    result = tool_result(boundary)
+    assert "document_id" not in result
+    assert ("may have been saved" in result["error"]) is (status >= 500)
+    assert len(writes) == 1
+
+
+def test_restart_does_not_repeat_an_unconfirmed_workspace_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        assert method != "POST"
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+                replayed=True,
+            )
+        )
+    )
+    assert "check Workspace before retrying" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
+
+
+def test_cancelled_run_cannot_create_a_workspace_document(boundary):
+    run = boundary.start_owned()
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=run, command=command("create_workspace_document", title="Notes")
+                )
+            )
+        )
+
+
+def test_invalid_workspace_response_is_an_uncertain_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            return {"id": str(uuid4())}
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+            )
+        )
+    )
+    assert "may have been saved" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -904,3 +1050,385 @@ def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.deliveries == []
+
+
+@pytest.fixture
+def workspace_storage(boundary):
+    """Record resource requests without starting a storage service."""
+    original = boundary.json_request
+    documents = {}
+    writes = []
+    root = "/api/agents/test/resources"
+
+    async def request(service, method, path, **kwargs):
+        if path == root and method == "GET":
+            return [row.model_dump(mode="json") for row in documents.values()]
+        if path == root and method == "POST":
+            writes.append((method, kwargs["json"]))
+            now = datetime.now(UTC)
+            saved = Resource(
+                id=uuid4(),
+                agent_key="test",
+                version=1,
+                created_at=now,
+                updated_at=now,
+                **kwargs["json"],
+            )
+            documents[saved.id] = saved
+            return saved.model_dump(mode="json")
+        if path.startswith(root + "/") and not path.endswith("/image-jobs"):
+            document_id = UUID(path.rsplit("/", 1)[1])
+            saved = documents[document_id]
+            if method == "PUT":
+                writes.append((method, kwargs["json"]))
+                body = {
+                    key: value
+                    for key, value in kwargs["json"].items()
+                    if key != "expected_version"
+                }
+                saved = Resource.model_validate(
+                    {**saved.model_dump(), **body, "version": saved.version + 1}
+                )
+                documents[document_id] = saved
+            return saved.model_dump(mode="json")
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    return SimpleNamespace(documents=documents, writes=writes)
+
+
+def test_goal_run_saves_plan_updates_useful_document_and_surfaces_a_decision(
+    boundary, workspace_storage
+):
+    storage = workspace_storage
+
+    def plan():
+        return next(
+            row for row in storage.documents.values() if "kadan-project" in row.tags
+        )
+
+    def output():
+        return next(row for row in storage.documents.values() if row.parent_id)
+
+    boundary.controller.inference = Commands(
+        command(
+            "create_project",
+            title="Launch",
+            markdown="Goal: launch.\n- [ ] Draft\n- [ ] Choose date",
+        ),
+        lambda: command(
+            "create_workspace_document",
+            title="Announcement",
+            markdown="First draft",
+            parent_id=plan().id,
+        ),
+        lambda: command("read_workspace_document", document_id=output().id),
+        lambda: command(
+            "update_workspace_document",
+            document_id=output().id,
+            expected_version=output().version,
+            markdown="Useful revised announcement",
+        ),
+        lambda: command("read_workspace_document", document_id=plan().id),
+        lambda: command(
+            "update_project",
+            document_id=plan().id,
+            expected_version=plan().version,
+            status="awaiting_decision",
+            markdown=f"Goal: launch.\n- [x] Draft saved as {output().id}\n- [ ] Choose date\nDecision: Monday or Tuesday?",
+        ),
+        send(
+            end_run=True,
+            content="The announcement is drafted. Should we launch Monday or Tuesday?",
+        ),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert "project-status:awaiting_decision" in plan().tags
+    assert output().markdown == "Useful revised announcement"
+    assert output().parent_id == plan().id
+    assert len(storage.writes) == 4
+    assert [row.content for row in boundary.deliveries] == [
+        "The announcement is drafted. Should we launch Monday or Tuesday?"
+    ]
+    assert all(
+        "create_project" in tools for tools in boundary.controller.inference.tools
+    )
+    assert boundary.current.owner_id is None
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["active", "awaiting_decision", "blocked", "paused", "completed", "cancelled"],
+)
+def test_new_run_discovers_saved_plan_state_outside_recent_chat(
+    boundary, workspace_storage, status
+):
+    now = datetime.now(UTC)
+    saved = Resource(
+        id=uuid4(),
+        agent_key="test",
+        kind="space",
+        title="Old goal",
+        markdown="Pending user decision",
+        tags=["kadan-project", "project-status:" + status],
+        version=8,
+        created_at=now,
+        updated_at=now,
+    )
+    workspace_storage.documents[saved.id] = saved
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    context = boundary.current.transcript[-2].content
+    assert str(saved.id) in context
+    assert f'"project_status": "{status}"' in context
+    assert "not running jobs" in context
+    assert "Pending user decision" not in context  # Body is fetched only if relevant.
+    assert workspace_storage.writes == []
+    assert len(boundary.controller.inference.calls) == 1
+
+
+def test_failed_index_does_not_silently_claim_that_no_projects_exist(boundary):
+    original = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if path == "/api/agents/test/resources":
+            raise ServiceError("Storage unavailable", 503)
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert "project index unavailable" in boundary.current.transcript[-2].content
+    assert "Do not assume" in boundary.current.transcript[-2].content
+
+
+@pytest.mark.parametrize(
+    "name,arguments",
+    [
+        ("create_project", {"title": "Launch", "markdown": "Goal and steps"}),
+        (
+            "update_project",
+            {
+                "document_id": str(uuid4()),
+                "expected_version": 1,
+                "status": "completed",
+                "markdown": "Done",
+            },
+        ),
+        (
+            "update_workspace_document",
+            {"document_id": str(uuid4()), "expected_version": 1, "markdown": "Revised"},
+        ),
+    ],
+)
+def test_restart_never_repeats_unconfirmed_plan_or_document_writes(
+    boundary, name, arguments
+):
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(name, **arguments),
+                replayed=True,
+            )
+        )
+    )
+    result = tool_result(boundary)
+    assert "may have been saved" in result["error"]
+    assert "read Workspace" in result["error"]
+    assert "id" not in result
+
+
+def test_restarted_document_read_is_repeatable(boundary, workspace_storage):
+    now = datetime.now(UTC)
+    saved = Resource(
+        id=uuid4(),
+        agent_key="test",
+        kind="space",
+        title="Notes",
+        markdown="Current user edit",
+        version=4,
+        created_at=now,
+        updated_at=now,
+    )
+    workspace_storage.documents[saved.id] = saved
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("read_workspace_document", document_id=saved.id),
+                replayed=True,
+            )
+        )
+    )
+    assert tool_result(boundary)["markdown"] == "Current user edit"
+    assert tool_result(boundary)["version"] == 4
+    assert workspace_storage.writes == []
+
+
+def test_stop_between_document_read_and_write_prevents_mutation(boundary):
+    original = boundary.json_request
+    now = datetime.now(UTC)
+    saved = Resource(
+        id=uuid4(),
+        agent_key="test",
+        kind="space",
+        title="Notes",
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+    async def request(service, method, path, **kwargs):
+        if path.endswith(str(saved.id)):
+            assert method == "GET"
+            boundary.cancel()
+            return saved.model_dump(mode="json")
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=boundary.start_owned(),
+                    command=command(
+                        "update_workspace_document",
+                        document_id=saved.id,
+                        expected_version=1,
+                        markdown="Stale",
+                    ),
+                )
+            )
+        )
+    assert boundary.current.status == "cancelled"
+
+
+@pytest.mark.parametrize("status", [409, 503])
+def test_plan_write_errors_are_not_retried_or_reported_as_saved(boundary, status):
+    original = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if path == "/api/agents/test/resources" and method == "POST":
+            writes.append(kwargs["json"])
+            raise ServiceError("Storage rejected request", status)
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(
+                    "create_project", title="Launch", markdown="Goal and steps"
+                ),
+            )
+        )
+    )
+    result = tool_result(boundary)
+    assert "id" not in result
+    assert ("may have been saved" in result["error"]) is (status >= 500)
+    assert len(writes) == 1
+
+
+def test_concurrent_user_edit_conflict_is_returned_without_replacement_retry(boundary):
+    original = boundary.json_request
+    now = datetime.now(UTC)
+    saved = Resource(
+        id=uuid4(),
+        agent_key="test",
+        kind="space",
+        title="Plan",
+        markdown="User content",
+        tags=["kadan-project", "project-status:active"],
+        version=2,
+        created_at=now,
+        updated_at=now,
+    )
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if path.endswith(str(saved.id)):
+            if method == "PUT":
+                writes.append(kwargs["json"])
+                raise ServiceError("User edited the plan after the read", 409)
+            return saved.model_dump(mode="json")
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(
+                    "update_project",
+                    document_id=saved.id,
+                    expected_version=2,
+                    status="completed",
+                    markdown="Draft replacement",
+                ),
+            )
+        )
+    )
+    assert len(writes) == 1
+    assert "User edited" in tool_result(boundary)["error"]
+    assert "id" not in tool_result(boundary)
+
+
+def test_cancellation_during_storage_write_keeps_saved_document_without_false_delivery(
+    boundary,
+):
+    original = boundary.json_request
+    saved = []
+
+    async def request(service, method, path, **kwargs):
+        if path == "/api/agents/test/resources" and method == "POST":
+            now = datetime.now(UTC)
+            document = Resource(
+                id=uuid4(),
+                agent_key="test",
+                version=1,
+                created_at=now,
+                updated_at=now,
+                **kwargs["json"],
+            )
+            saved.append(document)
+            boundary.cancel()
+            return document.model_dump(mode="json")
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=boundary.start_owned(),
+                    command=command(
+                        "create_project", title="Launch", markdown="Goal and steps"
+                    ),
+                )
+            )
+        )
+    assert len(saved) == 1
+    assert "project-status:active" in saved[0].tags
+    assert boundary.current.status == "cancelled"
+    assert boundary.deliveries == []
+
+
+def test_stopped_run_cannot_start_a_project_write(boundary):
+    run = boundary.start_owned()
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=run,
+                    command=command(
+                        "create_project", title="Launch", markdown="Goal and steps"
+                    ),
+                )
+            )
+        )
