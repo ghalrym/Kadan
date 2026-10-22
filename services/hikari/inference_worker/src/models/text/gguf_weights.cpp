@@ -376,8 +376,7 @@ std::vector<Vec> GgufWeights::project(
         const auto& p = prepared[i];
         if (p.device || !batched(i))
             continue;
-        const auto work =
-            p.bytes * (requests[i].input.size() / p.matrix->columns);
+        const auto work = p.bytes * (requests[i].input.size() / p.matrix->columns);
         const bool host = p.matrix->experts > 1 && ram_.contains(p.key)
                           && CpuMatvec::supported(p.tensor->type, p.matrix->columns);
         if (host
