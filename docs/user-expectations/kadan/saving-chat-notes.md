@@ -1,6 +1,6 @@
 # Saving chat notes
 
-Kadan lets users save text in an agent's chat without asking for a reply. Saving requires Kadan and Tsuchi to be available, but does not require Hikari or a downloaded model.
+Kadan lets users save text in an agent's chat without asking for a reply. Saving requires Kadan and Tsuchi to be available, but does not require Hikari or a downloaded model. Notes can include [uploaded attachments](chat-attachments.md).
 
 Choose **Save as note · no reply**. When Hikari is unavailable or no usable model is selected, the main action becomes **Save note**, and Enter saves a note. Making the model ready later does not answer old notes; send a new message when a reply is wanted.
 

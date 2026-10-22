@@ -73,3 +73,14 @@ test("malformed outbox records do not become sends", () => {
     assert.equal(readPending(raw), null);
   }
 });
+
+test("attachment IDs round-trip in order and retry retains the original message snapshot", () => {
+  const original = { ...first, attachment_ids: ["second-file", "first-file"] };
+  const pending = readPending(JSON.stringify(original));
+  assert.deepEqual(pending, original);
+  assert.deepEqual(queueSend(pending, { ...original, attachment_ids: ["new-file"] }), original);
+  assert.deepEqual(readPending(JSON.stringify(first)), first);
+  for (const attachment_ids of [null, "file", [1], ["same", "same"], Array.from({ length: 101 }, (_, i) => String(i))]) {
+    assert.equal(readPending(JSON.stringify({ ...first, attachment_ids })), null);
+  }
+});

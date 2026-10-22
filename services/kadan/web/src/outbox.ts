@@ -3,6 +3,7 @@ export interface PendingMessage {
   content: string;
   generate: boolean;
   persona: string;
+  attachment_ids?: string[];
 }
 
 export function chatStorageKeys(agentKey: string, conversationId: string) {
@@ -15,7 +16,10 @@ export function readPending(raw: string | null): PendingMessage | null {
     const value = JSON.parse(raw || "null");
     return value && typeof value.id === "string" &&
       typeof value.content === "string" && typeof value.generate === "boolean" &&
-      typeof value.persona === "string" ? value : null;
+      typeof value.persona === "string" && (value.attachment_ids === undefined ||
+        (Array.isArray(value.attachment_ids) && value.attachment_ids.length <= 100 &&
+          value.attachment_ids.every((id: unknown) => typeof id === "string") &&
+          new Set(value.attachment_ids).size === value.attachment_ids.length)) ? value : null;
   } catch {
     return null;
   }

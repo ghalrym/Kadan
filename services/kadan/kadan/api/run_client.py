@@ -34,6 +34,7 @@ class RunClient:
             id=value.message_id,
             role="user",
             content=value.content,
+            attachment_ids=value.attachment_ids,
             resource_ids=[value.persona_id] if value.persona_id else [],
         )
         return AgentRun.model_validate(
