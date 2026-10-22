@@ -223,6 +223,7 @@ def test_api_run_client_only_persists_enqueue_and_cancellation():
         value = SimpleNamespace(
             message_id=uuid4(),
             content="Hello",
+            attachment_ids=[],
             persona_id=None,
             expected_version=1,
         )
