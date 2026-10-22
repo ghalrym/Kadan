@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import ServiceError
 
@@ -54,6 +54,17 @@ def truncated(value: str, limit: int) -> dict:
 class DownloadedFile(BaseModel):
     size_bytes: int
     sha256: str
+
+
+class UploadedFile(BaseModel):
+    file_path: str
+    file_size: int = Field(ge=0, strict=True)
+    success: bool = Field(strict=True)
+
+
+class FileUploadResponse(BaseModel):
+    success: bool = Field(strict=True)
+    data: UploadedFile
 
 
 class SandboxClient:
@@ -138,6 +149,46 @@ class SandboxClient:
             )
         return response.content, media_type.split(";")[0]
 
+    async def upload_file(self, path: str, source: BinaryIO) -> None:
+        """Upload a staged file and require the sandbox's full success receipt."""
+        size = source.seek(0, 2)
+        source.seek(0)
+        if size > MAX_FILE_BYTES:
+            raise ServiceError("Files cannot exceed 100 MiB.", 413, "file_too_large")
+        try:
+            async with asyncio.timeout(OPERATION_SECONDS):
+                response = await self.request(
+                    "POST",
+                    "/v1/file/upload",
+                    seconds=OPERATION_SECONDS,
+                    data={"path": path},
+                    files={"file": ("file", source, "application/octet-stream")},
+                )
+                receipt = FileUploadResponse.model_validate_json(response.content)
+        except TimeoutError as error:
+            raise ServiceError(
+                "The agent's computer did not confirm the file upload.",
+                503,
+                "computer_unavailable",
+            ) from error
+        except ValidationError as error:
+            raise ServiceError(
+                "The agent's computer returned an invalid file upload receipt.",
+                502,
+                "invalid_file_upload",
+            ) from error
+        if (
+            not receipt.success
+            or not receipt.data.success
+            or receipt.data.file_path != path
+            or receipt.data.file_size != size
+        ):
+            raise ServiceError(
+                "The agent's computer did not confirm the complete file upload.",
+                502,
+                "invalid_file_upload",
+            )
+
     async def download_file(self, path: str, output: BinaryIO) -> DownloadedFile:
         """Copy a complete file into the caller's empty temporary stream."""
         size = 0
@@ -151,6 +202,12 @@ class SandboxClient:
                     headers={**self.headers(), "Accept-Encoding": "identity"},
                     timeout=httpx.Timeout(OPERATION_SECONDS, connect=3),
                 ) as response:
+                    if response.status_code == 404:
+                        raise ServiceError(
+                            "The file was not found on the agent's computer.",
+                            404,
+                            "file_not_found",
+                        )
                     if response.status_code == 409:
                         raise ServiceError(
                             "The source file changed during download. Wait for writing to finish before saving it.",
