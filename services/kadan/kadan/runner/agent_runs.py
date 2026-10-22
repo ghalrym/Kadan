@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -42,7 +43,15 @@ from .agent_inference import (
 )
 from .tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
-from .tools.workspace import CreateWorkspaceDocumentArguments
+from .tools.workspace import (
+    CreateProjectArguments,
+    CreateWorkspaceDocumentArguments,
+    ListWorkspaceDocumentsArguments,
+    ReadWorkspaceDocumentArguments,
+    UpdateProjectArguments,
+    UpdateWorkspaceDocumentArguments,
+)
+from .workspace import AgentWorkspace, ProjectStatus, document_content
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -174,6 +183,86 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def workspace_operation(
+        self,
+        name: str,
+        operation: Callable[[AgentWorkspace], Awaitable[dict]],
+        *,
+        writing: bool = False,
+    ) -> dict:
+        result = {"tool": name}
+        if writing and self.replayed:
+            return {
+                **result,
+                "error": "The runner restarted before this write reported a result. It may have been saved; read Workspace before retrying.",
+            }
+        workspace = AgentWorkspace(self.runs.services, self.run.agent_key)
+        async with self.runs.lock:
+            await self.runs.owned(self.run)
+            try:
+                value = await operation(workspace)
+            except ServiceError as error:
+                message = str(error)
+                if writing and error.status >= 500:
+                    message += " The write may have been saved; read Workspace before retrying."
+                return {**result, "error": message}
+        return {**result, **value}
+
+    async def list_workspace_documents(
+        self, args: ListWorkspaceDocumentsArguments
+    ) -> dict:
+        return await self.workspace_operation(
+            "list_workspace_documents",
+            lambda workspace: workspace.list(
+                query=args.query,
+                limit=args.limit,
+                offset=args.offset,
+                projects_only=args.projects_only,
+            ),
+        )
+
+    async def read_workspace_document(
+        self, args: ReadWorkspaceDocumentArguments
+    ) -> dict:
+        async def read(workspace: AgentWorkspace) -> dict:
+            return document_content(await workspace.get(args.document_id))
+
+        return await self.workspace_operation("read_workspace_document", read)
+
+    async def create_project(self, args: CreateProjectArguments) -> dict:
+        return await self.workspace_operation(
+            "create_project",
+            lambda workspace: workspace.create_project(args.title, args.markdown),
+            writing=True,
+        )
+
+    async def update_workspace_document(
+        self, args: UpdateWorkspaceDocumentArguments
+    ) -> dict:
+        return await self.update_document(args)
+
+    async def update_project(self, args: UpdateProjectArguments) -> dict:
+        return await self.update_document(args, args.status)
+
+    async def update_document(
+        self,
+        args: UpdateWorkspaceDocumentArguments,
+        status: ProjectStatus | None = None,
+    ) -> dict:
+        async def write(workspace: AgentWorkspace) -> dict:
+            current = await workspace.get(args.document_id)
+            # Storage reads may wait; fence again immediately before the write.
+            await self.runs.owned(self.run)
+            return await workspace.update(
+                current, args.expected_version, args.markdown, status
+            )
+
+        return await self.workspace_operation(
+            "update_project" if status is not None else "update_workspace_document",
+            write,
+            writing=True,
+        )
 
     async def create_workspace_document(
         self, args: CreateWorkspaceDocumentArguments
@@ -380,6 +469,21 @@ class AgentRuns(RunClient):
                     {"job_id": str(job.id), "status": job.status, "prompt": job.prompt}
                     for job in pending
                 ]
+            )
+        try:
+            projects = await AgentWorkspace(self.services, run.agent_key).list(
+                limit=8, projects_only=True
+            )
+            if projects["documents"] or projects["next_offset"] is not None:
+                trigger.content += (
+                    "\nWorkspace project index (saved plans, not running jobs). Read relevant plans before acting; do not resume waiting or terminal projects without explicit user direction. Use list_workspace_documents(projects_only=true, offset=next_offset) for more: "
+                    + json.dumps(projects)
+                )
+        except ServiceError as error:
+            trigger.content += (
+                "\nWorkspace project index unavailable: "
+                + str(error)
+                + ". Do not assume there are no existing projects or create a duplicate; check Workspace first."
             )
         if limit is None:
             limit = MAX_CONTEXT - tool_characters(self.bound_tools())
