@@ -14,7 +14,7 @@ export function useVoiceCall(instruction: string, disabled: boolean) {
   useEffect(() => { if (disabled) session.current?.end(); }, [disabled]);
 
   function start() {
-    if (disabled || session.current || callUnavailable()) return;
+    if (disabled || session.current) return;
     setError("");
     const next = new VoiceCallSession(setCall, (message) => {
       session.current = null; setCall(null); setActive(false); setError(message ?? "");
