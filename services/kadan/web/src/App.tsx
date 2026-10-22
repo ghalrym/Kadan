@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
+import { latestConversation } from "./agentRuns";
 import type { Agent, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Workspace from "./Workspace";
@@ -231,7 +232,9 @@ export default function App() {
   }, [key, resourceRevision]);
 
   function updateChain(value: Resource) {
-    if (value.agent_key === activeAgent.current) setChain(value);
+    if (value.agent_key === activeAgent.current) {
+      setChain((current) => current ? latestConversation(current, value) : current);
+    }
   }
   function show(next: typeof view) {
     setMenu(false);
@@ -461,7 +464,7 @@ export default function App() {
           />
         ) : chain ? (
           <Chat
-            key={key}
+            key={`${key}:${chain.id}`}
             agentKey={key}
             agentName={selectedAgent?.name || key}
             chain={chain}

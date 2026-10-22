@@ -5,6 +5,11 @@ export interface PendingMessage {
   persona: string;
 }
 
+export function chatStorageKeys(agentKey: string, conversationId: string) {
+  const draft = `kadan.draft.${agentKey}`;
+  return { draft, pending: `${draft}.${conversationId}.pending` };
+}
+
 export function readPending(raw: string | null): PendingMessage | null {
   try {
     const value = JSON.parse(raw || "null");

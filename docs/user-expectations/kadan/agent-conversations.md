@@ -14,4 +14,6 @@ Each response has a limit of 24 commands and a bounded context for instructions,
 
 After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission and persona. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).
 
+Trashing or restoring conversations in Tsuchi can change which chat opens after refreshing Kadan. Unsent submissions remain with their original conversation in the current browser tab and reappear if that conversation is reopened. The agent's ordinary draft remains available across this change.
+
 See [Conversation architecture](../../architecture/kadan/agent-conversations.md) for ownership, context and recovery.

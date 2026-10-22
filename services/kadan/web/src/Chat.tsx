@@ -13,7 +13,7 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
 import { randomUuid } from "./uuid";
-import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
+import { chatStorageKeys, confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -92,8 +92,7 @@ export default function Chat({
   refreshStatus,
 }: Props) {
   const petSheet = useAgentPet(agentKey);
-  const draftKey = `kadan.draft.${agentKey}`;
-  const pendingKey = `${draftKey}.pending`;
+  const { draft: draftKey, pending: pendingKey } = chatStorageKeys(agentKey, chain.id);
   const pending = useRef<PendingMessage | null>(
     confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
   );

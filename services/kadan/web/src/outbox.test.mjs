@@ -1,9 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { confirmSend, queueSend, readPending } from "./outbox.ts";
+import { chatStorageKeys, confirmSend, queueSend, readPending } from "./outbox.ts";
 
 const first = { id: "a", content: "First", generate: true, persona: "persona-a" };
 const next = { id: "b", content: "Next draft", generate: false, persona: "" };
+
+test("changing the active conversation preserves each conversation's unconfirmed send", () => {
+  const storage = new Map();
+  const original = chatStorageKeys("agent", "original");
+  const replacement = chatStorageKeys("agent", "replacement");
+  storage.set(original.pending, JSON.stringify(first));
+  storage.set(original.draft, "Still writing");
+
+  assert.equal(readPending(storage.get(replacement.pending)), null);
+  assert.equal(storage.get(replacement.draft), "Still writing");
+  storage.set(replacement.pending, JSON.stringify(next));
+  assert.deepEqual(readPending(storage.get(original.pending)), first);
+
+  assert.equal(confirmSend(readPending(storage.get(replacement.pending)), [next]), null);
+  storage.delete(replacement.pending);
+  assert.deepEqual(readPending(storage.get(original.pending)), first);
+  assert.equal(readPending(storage.get(chatStorageKeys("another-agent", "original").pending)), null);
+});
 
 test("a failed send cannot be overwritten by the next draft", () => {
   const pending = queueSend(null, first);
