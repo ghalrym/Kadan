@@ -7,9 +7,9 @@ Their management interfaces are for inspecting and operating those services.
 
 | Service | Responsibility | Local interface |
 | --- | --- | --- |
-| [Kadan](services/kadan/README.md) | Agent conversations and actions | <http://127.0.0.1:8630> |
-| [Tsuchi](services/tsuchi/README.md) | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
-| [Hikari](services/hikari/README.md) | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
+| [Kadan](docs/user-expectations/kadan/overview.md) | Agent conversations and actions | <http://127.0.0.1:8630> |
+| [Tsuchi](docs/user-expectations/tsuchi/overview.md) | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
+| [Hikari](docs/user-expectations/hikari/overview.md) | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
 Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
@@ -105,7 +105,7 @@ agent keys (default **5**, a validated positive integer). Idle agents retain the
 slots. This is assignment capacity, not active-run concurrency, OS threads, inference
 workers or one container per agent. Excess agents remain durably unassigned until a
 slot becomes available or an operator explicitly reassigns them. Stopping a runner
-does not release its assignments. See [assignment and recovery](services/kadan/README.md#runner-assignment-and-recovery).
+does not release its assignments. See [assignment and recovery](docs/architecture/kadan/runners.md).
 
 The optional `runners` profile adds `runner-2` alongside the default `runner-1`,
 with five slots each. Enable it with:

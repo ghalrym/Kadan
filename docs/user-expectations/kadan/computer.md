@@ -6,6 +6,8 @@ Kadan lets users open the computer from an agent's card when it is ready. The ca
 
 The current deployment shares one computer across all agents. Switching agents does not create a separate desktop, browser or filesystem. Kadan reports an unconfigured or unavailable computer rather than showing it as ready.
 
+Agents can use the same computer for [browser, file and command actions](agent-actions.md). Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly uploaded.
+
 A disconnected view offers **Reconnect**. Reconnecting does not undo actions or restart the browser. Some browser failures can require a restart that loses open tabs and page state. A timed-out action may already have happened, so uncertain changes need inspection before retrying.
 
 The [security and operator responsibilities](../security.md) apply. See [Computer architecture](../../architecture/kadan/agent-computer.md) for access and recovery.

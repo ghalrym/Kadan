@@ -12,4 +12,4 @@ Image cancellation remains visible as "Stopping image…" while cleanup is pendi
 
 A service restart must recover durable work without duplicating messages already delivered. It must not restart a cancelled response. The user can send another message in the same conversation after stopping.
 
-See the [chat behavior and persistence design](../../../services/kadan/README.md#chat) for the supporting service contract.
+See the [chat behavior and persistence design](../../architecture/kadan/agent-conversations.md) for the supporting service contract.
