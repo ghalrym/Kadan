@@ -10,4 +10,6 @@ The download dialog shows each model's progress. Percentages are estimates; the 
 
 Direct inference can also download a missing model, so the first request may take longer or fail during acquisition. Changing tiers can unload the previous language model after earlier chat work finishes. It does not delete downloaded models or save playground conversations.
 
+Downloaded checkpoints persist in their model store across ordinary container restarts. Deleting that store loses them. Hikari verifies downloads before treating a checkpoint as complete; users must not modify completed checkpoints externally or share one store between independent installations. With [remote workers](remote-workers.md), model files reside on the computers serving the workloads.
+
 See [Model loading and context](model-lifecycle.md) for loaded-state behavior and [Settings architecture](../../architecture/hikari/model-settings.md) for download controls and saved settings.

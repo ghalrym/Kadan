@@ -34,3 +34,11 @@ These receipts do not make every external effect repeatable. The [agent computer
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
 Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.
+
+## Shared instruction file
+
+The human-maintained `services/kadan/AGENT.md` supplies base instructions. Context preparation reads it once per new run and saves the resulting snapshot in Tsuchi; resumed runs keep that snapshot. This prevents an edit from changing the meaning of already checkpointed work.
+
+The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
+
+See [Shared agent instructions](../../user-expectations/kadan/agent-instructions.md) for user expectations.

@@ -8,6 +8,8 @@ Editing a persona before queued work starts can change the instructions that wor
 
 A persona adds instructions. It does not change the model or clear conversation history. Choosing **No persona** leaves earlier messages in the conversation, and instructions remain subject to the model's context and ability to follow them.
 
-Saving must not silently replace a newer edit. **Load latest for comparison** shows the saved version while retaining the draft so the user can revise it. Tsuchi manages revisions and trash.
+Personas supplement Kadan's [shared agent instructions](agent-instructions.md); choosing **No persona** does not remove those shared instructions.
+
+Saving must not silently replace a newer edit. **Load latest for comparison** shows the saved version while retaining the draft so the user can revise it. Tsuchi manages [stored persona metadata](../tsuchi/personas.md), revisions and trash.
 
 See [Persona instructions](../../architecture/kadan/personas.md) for the saved-state contract.

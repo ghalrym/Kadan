@@ -61,3 +61,23 @@ Restoration requires the same model ID, workload, checkpoint path, context, toke
 Detached bytes remain charged as a host-only worker budget after confirmed offload. A second scheduler offload can reclaim that RAM before admitting another job, with the same busy/queued-work rules. Physical RAM pressure can also discard optional state; cache admission failure must not prevent model eviction or make a job wait indefinitely. Engine cleanup still independently proves that its device/model allocations are gone.
 
 `HIKARI_KV_CACHE_IDLE_SECONDS` uses the existing typed API settings and budget-control path, defaulting to 3600 positive seconds. The execution thread checks expiry only while its queue is empty; it never interrupts a running request. A successful generation starts the retained state's idle period, and model unloading, budget changes or model-loading requests do not extend it. Expiry releases reusable device state or the detached RAM entry independently of model expiry. Worker restart loses all reusable state; checkpoint files and conversation history are separate.
+
+## Workers on another computer
+
+`compose.yaml` also runs workers on a computer other than the API's. Configure
+`.env` as described in the [root README](../../../README.md#docker-compose), then start selected workers with
+`--no-deps` so the local API and database stay stopped. Set the remote API URL
+and its worker token; source edits rebuild and restart these workers too:
+
+```sh
+HIKARI_API_URL=ws://API_HOST:8000/v1/workers HIKARI_WORKER_TOKEN=... \
+  docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-video
+```
+
+To reuse a model store created by the former standalone worker configuration,
+set `HIKARI_MODEL_VOLUME=kadan-workers_worker_models` in that computer's `.env`.
+Otherwise the workers project uses `kadan-workers_model_data`. Keep the existing
+project name if it differs from `kadan-workers`.
+
+Compose publishes the API on `0.0.0.0` (all IPv4 interfaces). Remote workers
+connect using the server's reachable address; use TLS for `wss://`.

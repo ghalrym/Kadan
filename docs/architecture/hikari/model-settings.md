@@ -10,4 +10,16 @@ Native request preparation can acquire a missing checkpoint. An unusable existin
 
 Progress is reported per checkpoint. Aggregate percentages may use catalog estimates before byte totals are known; checkpoint state establishes completion. Tier changes can unload the prior resident language model after earlier chat work finishes, but do not delete its stored checkpoint.
 
-The existing [checkpoint storage instructions](../../../services/hikari/README.md#checkpoint-storage) describe persistence, integrity and license responsibilities.
+## Checkpoint storage
+
+The catalog pins revisions and verifies downloaded files before publishing them.
+Docker Compose persists models in `model_data` at `/var/lib/kadan/models`.
+`docker compose down -v` deletes named volumes, including stored data.
+Do not modify completed checkpoints externally or share a store between
+independent API servers. Review the catalog model cards and licenses before use.
+
+Cancellation joins checkpoint preparation and native cleanup. Memory reservations
+are conservative admission estimates, not physical hard limits; other programs
+can change available memory. A cleanup failure stops admission rather than
+reusing uncertain allocations. Recovered model directories can remain on their
+existing storage; copying the entire collection is unnecessary.
