@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
     MAX_CONTEXT,
@@ -23,7 +23,7 @@ from kadan.runner.agent_runs import (
     context_characters,
     transcript_messages,
 )
-from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS
+from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS, PERSONA_TOOLS
 
 
 class Boundary:
@@ -85,6 +85,9 @@ class Boundary:
     async def resource(self, key, conversation_id):
         assert key == "test" and conversation_id == self.conversation.id
         return self.conversation
+
+    async def agent_persona(self, key):
+        assert key == "test"
 
     async def inference_status(self):
         return SimpleNamespace(state="ready", model_id="selected-model")
@@ -694,7 +697,7 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in CONVERSATION_TOOLS]
+        [tool.name for tool in [*CONVERSATION_TOOLS, *PERSONA_TOOLS]]
     ]
 
     boundary.sandbox = Computer()
@@ -806,7 +809,7 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
-    ) - tool_characters(CONVERSATION_TOOLS)
+    ) - tool_characters([*CONVERSATION_TOOLS, *PERSONA_TOOLS])
     boundary.controller.services.sandbox.configured = True
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
@@ -904,3 +907,179 @@ def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.deliveries == []
+
+
+def persona_record(boundary, markdown="Use concise answers."):
+    return boundary.conversation.model_copy(
+        update={
+            "id": uuid4(),
+            "kind": ResourceKind.PERSONA,
+            "markdown": markdown,
+            "messages": [],
+        }
+    )
+
+
+def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch):
+    persona = persona_record(boundary)
+
+    async def read(key):
+        assert key == "test"
+        return persona
+
+    monkeypatch.setattr(boundary, "agent_persona", read)
+    first = asyncio.run(boundary.controller.context(boundary.current))
+    assert "Your saved persona:\nUse concise answers." in first[0].content
+    persona.markdown = "Use detailed answers."
+    second = asyncio.run(boundary.controller.context(boundary.current))
+    assert "Use detailed answers." in second[0].content
+    assert "Use concise answers." in first[0].content
+
+
+@pytest.mark.parametrize("same_persona", [True, False])
+def test_explicit_persona_supplements_owned_persona_once(
+    boundary, monkeypatch, same_persona
+):
+    owned = persona_record(boundary, "Owned instructions")
+    selected = (
+        owned if same_persona else persona_record(boundary, "Selected instructions")
+    )
+    original_resource = boundary.resource
+
+    async def read(key):
+        return owned
+
+    async def resource(key, resource_id):
+        if resource_id == selected.id:
+            return selected
+        return await original_resource(key, resource_id)
+
+    monkeypatch.setattr(boundary, "agent_persona", read)
+    monkeypatch.setattr(boundary, "resource", resource)
+    run = boundary.current.model_copy(update={"persona_id": selected.id})
+    context = asyncio.run(boundary.controller.context(run))
+    assert context[0].content.count("Owned instructions") == 1
+    if not same_persona:
+        assert context[0].content.endswith("Selected persona:\nSelected instructions")
+
+
+def test_recovery_does_not_reread_owned_persona(boundary, monkeypatch):
+    async def unavailable(key):
+        raise AssertionError("Prepared work must keep its persona snapshot")
+
+    monkeypatch.setattr(boundary, "agent_persona", unavailable)
+    boundary.controller.inference = Commands(finish())
+    run = boundary.start_owned(
+        transcript=[RunMessage(role="system", content="Saved persona")]
+    )
+    asyncio.run(boundary.controller.advance(run))
+    assert boundary.current.status == "completed"
+    assert boundary.current.transcript[0].content == "Saved persona"
+
+
+def test_persona_save_uses_agent_scope_and_read_version(boundary, monkeypatch):
+    persona = persona_record(boundary)
+    original_request = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if path.endswith("/persona"):
+            writes.append((method, path, kwargs["json"]))
+            return persona.model_dump(mode="json")
+        return await original_request(service, method, path, **kwargs)
+
+    monkeypatch.setattr(boundary, "json_request", request)
+    boundary.controller.inference = Commands(
+        command(
+            "update_persona",
+            title="My persona",
+            markdown="Be concise.",
+            expected_version=None,
+        ),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert writes == [
+        (
+            "PUT",
+            "/api/agents/test/persona",
+            {
+                "title": "My persona",
+                "markdown": "Be concise.",
+                "expected_version": None,
+            },
+        )
+    ]
+    assert tool_result(boundary, -2)["persona"]["version"] == 1
+    assert boundary.current.status == "completed"
+
+
+def test_recovered_persona_write_is_not_repeated(boundary):
+    pending = command(
+        "update_persona", title="My persona", markdown="Be concise.", expected_version=1
+    )
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunMessage(role="assistant", content=pending.model_dump_json()),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    assert "read_persona before retrying" in tool_result(boundary, -2)["error"]
+    assert len(boundary.controller.inference.calls) == 1
+
+
+def test_recovered_persona_read_is_repeated(boundary):
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunMessage(
+                role="assistant", content=command("read_persona").model_dump_json()
+            ),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    assert tool_result(boundary, -2) == {"persona": None}
+
+
+def test_cancelled_run_cannot_start_persona_save(boundary):
+    from kadan.runner.agent_runs import RunConversation
+    from kadan.runner.tools.persona import UpdatePersonaArguments
+
+    conversation = RunConversation(boundary.controller, boundary.start_owned())
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            conversation.update_persona(
+                UpdatePersonaArguments(
+                    title="Persona",
+                    markdown="Be concise.",
+                    expected_version=None,
+                )
+            )
+        )
+
+
+def test_persona_conflict_is_a_tool_result(boundary, monkeypatch):
+    original_request = boundary.json_request
+
+    async def conflict(service, method, path, **kwargs):
+        if path.endswith("/persona"):
+            raise ServiceError("Persona changed; read it again.", 409)
+        return await original_request(service, method, path, **kwargs)
+
+    monkeypatch.setattr(boundary, "json_request", conflict)
+    boundary.controller.inference = Commands(
+        command(
+            "update_persona",
+            title="Persona",
+            markdown="Be concise.",
+            expected_version=2,
+        ),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert tool_result(boundary, -2) == {"error": "Persona changed; read it again."}
+    assert boundary.current.status == "completed"
