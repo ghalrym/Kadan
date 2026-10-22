@@ -16,6 +16,7 @@ class ListMemoriesArguments(Arguments):
 
 class ReadMemoryArguments(Arguments):
     memory_id: UUID
+    include_trashed: bool = Field(default=False, strict=True)
 
 
 class CreateMemoryArguments(Arguments):
@@ -32,6 +33,11 @@ class UpdateMemoryArguments(Arguments):
     tags: list[str] | None = Field(default=None, max_length=100)
 
 
+class ForgetMemoryArguments(Arguments):
+    memory_id: UUID
+    expected_version: int = Field(ge=1, strict=True)
+
+
 @memory_tool("GET")
 async def list_memories(args: ListMemoriesArguments, memories: AgentMemories) -> dict:
     """List your active memory summaries, optionally searching stored words.
@@ -44,8 +50,12 @@ async def list_memories(args: ListMemoriesArguments, memories: AgentMemories) ->
 
 @memory_tool("GET")
 async def read_memory(args: ReadMemoryArguments, memories: AgentMemories) -> dict:
-    """Read one of your active memories, including its current version."""
-    return await memories.read(args.memory_id)
+    """Read one of your active memories, including its current version.
+
+    Set include_trashed to check an uncertain forget operation. Trashed memories
+    return identity, version and deleted_at without their content.
+    """
+    return await memories.read(args.memory_id, args.include_trashed)
 
 
 @memory_tool("POST")
@@ -70,4 +80,15 @@ async def update_memory(args: UpdateMemoryArguments, memories: AgentMemories) ->
     )
 
 
-TOOLS = [list_memories, read_memory, create_memory, update_memory]
+@memory_tool("DELETE")
+async def forget_memory(args: ForgetMemoryArguments, memories: AgentMemories) -> dict:
+    """Move an outdated memory to Tsuchi trash using the version you read.
+
+    Use when the user asks to forget a memory. The user can restore it in Tsuchi;
+    this does not erase chat history or revisions. After a conflict or uncertain
+    result, read_memory with include_trashed before retrying.
+    """
+    return await memories.forget(args.memory_id, args.expected_version)
+
+
+TOOLS = [list_memories, read_memory, create_memory, update_memory, forget_memory]

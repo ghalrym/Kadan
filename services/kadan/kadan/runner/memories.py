@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -14,24 +15,46 @@ if TYPE_CHECKING:
 
 
 def memory_content(resource: Resource) -> dict:
-    return resource.model_dump(
-        mode="json", include={"id", "title", "markdown", "tags", "version"}
-    )
+    fields = {"id", "title", "version", "deleted_at"}
+    if resource.deleted_at is None:
+        fields.update({"markdown", "tags"})
+    return resource.model_dump(mode="json", include=fields)
 
 
 class AgentMemories:
     """The runner supplies the agent key; tool arguments cannot change it."""
 
-    def __init__(self, services: LocalServices, agent_key: str):
+    def __init__(
+        self,
+        services: LocalServices,
+        agent_key: str,
+        check_ownership: Callable[[], Awaitable[object]],
+    ):
         self.services = services
         self.agent_key = agent_key
+        self.check_ownership = check_ownership
         self.path = f"/api/agents/{agent_key}/resources"
 
-    def checked(self, value: object) -> Resource:
+    def checked(
+        self,
+        value: object,
+        *,
+        memory_id: UUID | None = None,
+        include_trashed: bool = False,
+    ) -> Resource:
         resource = parse_resource(value)
         if resource.agent_key != self.agent_key:
             raise ServiceError("Memory belongs to another agent.", 404, "not_found")
-        require_active(resource, ResourceKind.MEMORY)
+        if memory_id is not None and resource.id != memory_id:
+            raise ServiceError(
+                "Tsuchi returned the wrong memory.", 502, "invalid_response"
+            )
+        if resource.kind != ResourceKind.MEMORY:
+            raise ServiceError(
+                "This operation requires a memory.", 422, "wrong_resource_kind"
+            )
+        if not include_trashed:
+            require_active(resource, ResourceKind.MEMORY)
         return resource
 
     async def list(self, query: str, limit: int, offset: int) -> dict:
@@ -58,16 +81,19 @@ class AgentMemories:
             "limit": limit,
         }
 
-    async def get(self, memory_id: UUID) -> Resource:
+    async def get(self, memory_id: UUID, *, include_trashed: bool = False) -> Resource:
         value = await self.services.json_request(
             "Tsuchi", "GET", f"{self.path}/{memory_id}"
         )
-        return self.checked(value)
+        return self.checked(value, memory_id=memory_id, include_trashed=include_trashed)
 
-    async def read(self, memory_id: UUID) -> dict:
-        return memory_content(await self.get(memory_id))
+    async def read(self, memory_id: UUID, include_trashed: bool = False) -> dict:
+        return memory_content(
+            await self.get(memory_id, include_trashed=include_trashed)
+        )
 
     async def create(self, title: str, markdown: str, tags: list[str]) -> dict:
+        await self.check_ownership()
         value = await self.services.json_request(
             "Tsuchi",
             "POST",
@@ -102,7 +128,28 @@ class AgentMemories:
         )
         if tags is not None:
             content["tags"] = tags
+        await self.check_ownership()
         value = await self.services.json_request(
             "Tsuchi", "PUT", f"{self.path}/{memory_id}", json=content
         )
-        return memory_content(self.checked(value))
+        return memory_content(self.checked(value, memory_id=memory_id))
+
+    async def forget(self, memory_id: UUID, expected_version: int) -> dict:
+        current = await self.get(memory_id)
+        require_active(current, ResourceKind.MEMORY, expected_version)
+        await self.check_ownership()
+        value = await self.services.json_request(
+            "Tsuchi",
+            "DELETE",
+            f"{self.path}/{memory_id}",
+            params={"expected_version": expected_version},
+        )
+        forgotten = self.checked(value, memory_id=memory_id, include_trashed=True)
+        if forgotten.deleted_at is None or forgotten.version != expected_version + 1:
+            raise ServiceError(
+                "Tsuchi did not confirm that the memory was moved to trash. "
+                "Read its trash state before retrying.",
+                502,
+                "invalid_response",
+            )
+        return memory_content(forgotten)
