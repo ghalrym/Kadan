@@ -36,12 +36,12 @@ const mocks = {
   react: reactUrl,
   "react/jsx-runtime": jsxUrl,
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
-  "lucide-react": moduleUrl("export const BookUser='', FolderOpen='', Menu='', MessageCircle='', Plus='', Palette='', Pencil='', RefreshCw='', X='';"),
+  "lucide-react": moduleUrl("export const BookUser='', FolderOpen='', Menu='', MessageCircle='', Plus='', Palette='', Pencil='', Server='', RefreshCw='', X='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Workspace", "Personas", "Hatch", "PetEditor", "RenameAgent"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Workspace", "Personas", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -66,7 +66,7 @@ loader.deregister();
 
 const originals = new Map(["localStorage", "matchMedia"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENTS = 0, RENAMING_AGENT = 3, AGENT_KEY = 4, CHAIN = 6, LOADING = 10, BUSY = 11;
+const AGENTS = 0, RENAMING_AGENT = 3, RUNNER_AGENT = 4, AGENT_KEY = 5, CHAIN = 7, LOADING = 11, BUSY = 12;
 const original = { id: "original", agent_key: "agent", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 beforeEach(() => {
@@ -147,4 +147,24 @@ test("renaming updates only the selected agent's name without replacing the conv
   const updatedChat = chat();
   assert.equal(updatedChat.key, previousChat.key);
   assert.equal(updatedChat.props.agentName, "Renamed");
+});
+
+test("runner assignment belongs to the selected agent and closes on agent change", () => {
+  state[LOADING] = false;
+  chat();
+  const open = elements.find(element => element.type === "button"
+    && Array.isArray(element.props.children) && element.props.children.includes("Runner assignment"));
+  assert.equal(open.props.disabled, false);
+  open.props.onClick();
+  chat();
+  const assignment = elements.find(element => element.type === "RunnerAssignment");
+  assert.equal(assignment.key, "agent");
+  assert.equal(assignment.props.agent.key, "agent");
+  assignment.props.onClose();
+  assert.equal(state[RUNNER_AGENT], "");
+  state[RUNNER_AGENT] = "agent";
+  state[AGENTS].push({ key: "other", name: "Other" });
+  state[AGENT_KEY] = "other";
+  chat();
+  assert.equal(elements.some(element => element.type === "RunnerAssignment"), false);
 });

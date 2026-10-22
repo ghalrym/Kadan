@@ -26,6 +26,8 @@ capacity and fences earlier ownership. A capacity reduction below the number of
 existing assignments is rejected; explicitly move agents before reducing it.
 Assignments are durable across process restarts; they are not queue leases.
 
+Kadan's assignment dialog derives the current owner from the runner roster and sends that observed owner as `expected_runner_id`. Roster snapshots refresh explicitly and after confirmed writes; mutation failures block another write until a fresh read succeeds. A release is not represented optimistically as an unassigned agent because another runner can claim it before the next read. The browser offers only destinations with free capacity and an unexpired heartbeat in its snapshot, rechecking expiry at submission. Tsuchi remains responsible for atomic ownership and capacity checks.
+
 Keep IDs unique and stable. The root `compose.yaml` provides a second explicit service behind the
 `runners` profile with ID `runner-2`; do not scale identical copies of `runner-1`.
 When mounting a custom instruction file, mount it in every runner: snapshots are
