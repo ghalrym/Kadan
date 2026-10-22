@@ -2,7 +2,7 @@
 
 Kadan agents can use their configured computer to browse websites, read and change files, and run commands or code during text conversations. Hikari supplies the model's decisions; Kadan executes the actions. Voice calls do not provide these tools.
 
-The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library.
+The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library. Agents can explicitly [save and deliver a file](file-delivery.md).
 
 A computer action can fail because the computer, website, program or requested file is unavailable. Kadan returns action errors to the agent so it can decide what to do next. This does not guarantee that it will recover or send a visible explanation. Invalid agent commands can fail the response, and work remains subject to the conversation's command and context limits.
 

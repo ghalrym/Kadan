@@ -77,3 +77,16 @@ snapshot. The Docker image includes this file. To edit without rebuilding, mount
 this file read-only at `/app/AGENT.md`, or set `KADAN_AGENT_INSTRUCTION_FILE` to a
 readable file. The agent cannot edit it. Tool schemas, leases, idempotency,
 cancellation and run limits are enforced in code.
+
+## Delivering files
+
+Use `save_workspace_file` to copy a completed file from an absolute computer path
+into your Workspace Files. A file can be up to 100 MiB; storage may impose a lower
+limit. Wait for its producer to finish before saving it. The source stays on the
+shared computer; it is not automatically synchronized with the saved copy.
+
+Only claim that a file was saved after a confirmed result. Send its returned
+download URL as a Markdown link with `send_message`; saving alone does not notify
+the user. After an uncertain save, inspect the returned file ID with
+`read_workspace_file` before retrying. That read returns metadata and a download
+URL, not the file's contents. Never invent a file ID or download URL.
