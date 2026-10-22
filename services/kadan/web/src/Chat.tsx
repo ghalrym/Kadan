@@ -13,7 +13,7 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
 import { randomUuid } from "./uuid";
-import { chatStorageKeys, confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
+import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -97,6 +97,7 @@ export default function Chat({
     confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
   );
   const [recovery, setRecovery] = useState(pending.current);
+  const [unassigned, setUnassigned] = useState(() => readPending(sessionStorage.getItem(`${draftKey}.pending`)));
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
@@ -494,6 +495,23 @@ export default function Chat({
           <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
+        </div>
+      )}
+      {unassigned && (
+        <div className="banner inline" role="status">
+          <div>
+            <strong>Earlier unsent message</strong>
+            <p>{unassigned.content}</p>
+            <p>Its original conversation is unknown, so it cannot be safely retried. Check saved history to avoid a duplicate. Copying adds the text to your draft; it sends as a new message only when you submit it.</p>
+          </div>
+          <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
+            try { setDraft(copyPendingToDraft(draft, unassigned)); }
+            catch (error) { setError((error as Error).message); }
+          }}>Copy to draft</button>
+          <button disabled={blocked} onClick={() => {
+            discardUnassignedPending(sessionStorage, agentKey);
+            setUnassigned(null);
+          }}>Discard</button>
         </div>
       )}
       <Composer

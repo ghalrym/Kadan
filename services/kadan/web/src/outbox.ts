@@ -21,6 +21,18 @@ export function readPending(raw: string | null): PendingMessage | null {
   }
 }
 
+export function copyPendingToDraft(draft: string, pending: PendingMessage): string {
+  const text = draft ? `${draft}\n${pending.content}` : pending.content;
+  if (text.length > 16000) {
+    throw new Error("The copied text would exceed the message limit. Shorten the draft before copying.");
+  }
+  return text;
+}
+
+export function discardUnassignedPending(storage: Pick<Storage, "removeItem">, agentKey: string) {
+  storage.removeItem(`kadan.draft.${agentKey}.pending`);
+}
+
 export function queueSend(pending: PendingMessage | null, next: PendingMessage): PendingMessage {
   if (pending && pending.id !== next.id) {
     throw new Error("Retry or discard the unsent message before sending another.");
