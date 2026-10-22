@@ -60,3 +60,10 @@ def computer_tool(
 def conversation_tool(function: Callable[..., Awaitable[Any]]) -> StructuredTool:
     """A tool that acts on the conversation: messages, images or the run itself."""
     return register(function, "conversation", {})
+
+
+def memory_tool(
+    method: str,
+) -> Callable[[Callable[..., Awaitable[Any]]], StructuredTool]:
+    """A scoped memory operation; only reads are safe to replay after a restart."""
+    return lambda function: register(function, "memories", {"method": method})
