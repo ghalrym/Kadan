@@ -1,6 +1,6 @@
 # Personas
 
-Kadan lets users save named instructions for an agent's responses. Open **Personas**, create or edit a persona, and save it. Unsaved edits are browser drafts and can be lost.
+Each Kadan agent owns its persona and should curate it for the user. Kadan hides the standalone **Personas** page from its navigation. Existing saved persona instructions remain available to that agent; hiding the page does not delete them.
 
 **Persona for next response** starts at **No persona**. The selection applies to messages sent from that chat view until changed; reopening chat resets it. Opening the editor does not select a persona, and saving a note does not apply one.
 
@@ -10,6 +10,6 @@ A persona adds instructions. It does not change the model or clear conversation 
 
 Personas supplement Kadan's [shared agent instructions](agent-instructions.md); choosing **No persona** does not remove those shared instructions.
 
-Saving must not silently replace a newer edit. **Load latest for comparison** shows the saved version while retaining the draft so the user can revise it. Tsuchi manages [stored persona metadata](../tsuchi/personas.md), revisions and trash.
+Tsuchi retains its [stored persona editor](../tsuchi/personas.md), metadata, revisions and trash. Saving must not silently replace a newer edit. Hiding Kadan's editor does not add automatic persona selection or agent editing tools.
 
 See [Persona instructions](../../architecture/kadan/personas.md) for the saved-state contract.
