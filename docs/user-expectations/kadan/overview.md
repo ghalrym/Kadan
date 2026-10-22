@@ -12,6 +12,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Personas](personas.md) | Save and select instructions for an agent's responses. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
+| [Agent-owned projects](agent-projects.md) | Give an agent a goal, keep a Workspace plan and documents, and receive progress, blockers and decisions. |
 | [Computer](computer.md) | Watch or control the shared computer without pausing the agent. |
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
