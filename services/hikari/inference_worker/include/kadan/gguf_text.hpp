@@ -61,6 +61,12 @@ public:
         bool reuse_prefix
     ) override;
     void end_request() override;
+    // Prefill of the next request keeps a host copy of the model state after
+    // this many prompt tokens (zero for none). A later request in the same
+    // conversation whose prompt extends those tokens resumes from that copy
+    // when the live state has moved past them, as when callers replace the
+    // last message each turn.
+    void checkpoint_at(std::size_t tokens);
     Footprint prefix_memory() const;
     std::unique_ptr<PrefixSnapshot> take_prefix();
     bool restore_prefix(std::unique_ptr<PrefixSnapshot>);

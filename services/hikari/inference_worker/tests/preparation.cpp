@@ -500,6 +500,13 @@ void typed_request_units() {
     const auto& input = std::get<ChatRequest>(chat.input);
     assert(input.messages.size() == 1 && input.messages[0].text == "Hello");
     assert(chat_prompt(input.messages, 4096).find("Hello") != std::string::npos);
+    // Leading messages render to the full prompt's leading text.
+    const std::vector<ChatMessage> turns{
+        {"system", "Rules"}, {"user", "Hi"}, {"assistant", "Hey"}, {"user", "Next"}
+    };
+    const auto whole = chat_prompt(turns, 4096);
+    const auto earlier = chat_messages(std::span(turns).first(3), 4096);
+    assert(whole.starts_with(earlier) && earlier.ends_with("<|im_end|>\n"));
     auto load = request("load", {{"feature", "llm"}}, "load");
     assert(!std::get<ChatRequest>(load.input).context_supplied);
     load = request("load", {{"feature", "llm"}, {"context_limit", nullptr}}, "load");

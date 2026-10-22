@@ -64,5 +64,14 @@ int main() {
         rejected = true;
     }
     assert(rejected && prefix.stored() == 0);
+    // A checkpoint's leading tokens seed a miss and become the stored prefix.
+    const std::array<unsigned, 5> replaced{1, 2, 7, 8, 9};
+    assert(prefix.begin(replaced, "conversation", true) == 0);
+    prefix.resume(std::span(replaced).first(2));
+    assert(prefix.reason() == "checkpoint_hit");
+    assert(prefix.committed().size() == 2 && prefix.conversation() == "conversation");
+    prefix.commit(std::span(replaced).subspan(2));
+    prefix.complete();
+    assert(prefix.stored() == 5);
     std::cout << "Resident prefix bookkeeping units passed; no inference\n";
 }

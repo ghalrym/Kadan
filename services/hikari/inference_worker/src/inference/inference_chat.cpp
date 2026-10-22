@@ -103,8 +103,9 @@ public:
         require(
             input_bytes > 0 && input_bytes <= byte_limit, "chat_input_transport_bound"
         );
+        // The prompt and its leading messages' tokens.
         const Bytes scratch =
-            8 * 1024 * 1024 + 8 * input_bytes + capacity_ * sizeof(std::uint32_t);
+            8 * 1024 * 1024 + 8 * input_bytes + 2 * capacity_ * sizeof(std::uint32_t);
         if (available[0]
             < scratch + std::max<Bytes>(32 * 1024 * 1024, input_bytes * 1024ULL))
             throw AdmissionWait("chat_request_headroom");
@@ -119,6 +120,19 @@ public:
         prompt_.resize(count);
         prompt_tokens_ = count;
         require(count + max_output_ <= capacity_, "chat_context_exceeded");
+        // Callers append each turn before a final instruction they replace, so
+        // the state before the last message is what the next turn shares.
+        std::size_t leading = 0;
+        if (input.reuse_prefix && input.conversation_id && input.messages.size() > 1) {
+            std::vector<std::uint32_t> tokens(capacity_);
+            const auto earlier = std::span(input.messages).first(input.messages.size() - 1);
+            const auto n = tokenizer_->encode(
+                chat_messages(earlier, byte_limit), tokens, cancel, byte_limit
+            );
+            if (n < count && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin()))
+                leading = n;
+        }
+        model_->checkpoint_at(leading);
         // Admission belongs before execution so fresh pressure can release/replan.
         try {
             model_->set_cancel(cancel);

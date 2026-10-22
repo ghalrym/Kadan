@@ -31,6 +31,12 @@ public:
         return reused;
     }
 
+    // Continues a miss from a checkpoint of an earlier prompt's leading tokens.
+    void resume(std::span<const unsigned> tokens) {
+        commit(tokens);
+        reason_ = "checkpoint_hit";
+    }
+
     void commit(std::span<const unsigned> tokens) {
         if (!retain_)
             return;
@@ -55,6 +61,15 @@ public:
 
     bool retaining() const {
         return retain_;
+    }
+
+    // Tokens committed by the current request so far.
+    std::span<const unsigned> committed() const {
+        return tokens_;
+    }
+
+    std::string_view conversation() const {
+        return conversation_;
     }
 
     std::size_t stored() const {

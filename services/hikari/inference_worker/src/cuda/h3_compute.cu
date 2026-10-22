@@ -2595,7 +2595,12 @@ public:
             ));
             native_bf16_ = native_bf16_ && major >= 8;
             const auto available = capacity[device + 1] - used[device + 1];
-            const Bytes scratch = std::min<Bytes>(2ULL * 1024 * 1024 * 1024, available);
+            // Text projections and grouped attention stay within 1 GiB; the
+            // rest of the device goes to the routed-expert bank.
+            const Bytes scratch = std::min<Bytes>(
+                (workload_ == Workload::llm ? 1ULL : 2ULL) * 1024 * 1024 * 1024,
+                available
+            );
             scratch_limits_.push_back(scratch);
             const Bytes limit = available > scratch ? available - scratch : 0;
             threads_.push_back(
