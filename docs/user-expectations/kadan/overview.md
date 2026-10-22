@@ -7,6 +7,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | Feature | What to expect |
 | --- | --- |
 | [Agent conversations](agent-conversations.md) | Hatch agents, send messages and return to saved history within bounded response context. |
+| [Renaming agents](renaming-agents.md) | Change a display name while keeping its permanent key and saved content. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
 | [Personas](personas.md) | Save and select instructions for an agent's responses. |
