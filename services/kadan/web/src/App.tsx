@@ -71,6 +71,7 @@ export default function App() {
   // Each agent has one continuous conversation rather than separate threads.
   const [chain, setChain] = useState<Resource | null>(null);
   const [view, setView] = useState<"chat" | "workspace" | "personas">("chat");
+  const [workspaceVisited, setWorkspaceVisited] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -235,6 +236,7 @@ export default function App() {
   }
   function show(next: typeof view) {
     setMenu(false);
+    if (next === "workspace") setWorkspaceVisited(true);
     transition(() => setView(next));
   }
   const disabled = busy || loading;
@@ -428,6 +430,11 @@ export default function App() {
             </button>
           </div>
         )}
+        {key && workspaceVisited && (
+          <div className="workspace-pane" hidden={view !== "workspace"}>
+            <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
+          </div>
+        )}
         {loading && !key ? (
           <div className="center-empty" role="status">
             <span className="sr-only">Loading agents</span>
@@ -446,9 +453,7 @@ export default function App() {
               Hatch agent
             </button>
           </div>
-        ) : view === "workspace" ? (
-          <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
-        ) : view === "personas" ? (
+        ) : view === "workspace" ? null : view === "personas" ? (
           <Personas
             key={key}
             agentKey={key}
