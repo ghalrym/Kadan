@@ -125,11 +125,13 @@ public:
         std::size_t leading = 0;
         if (input.reuse_prefix && input.conversation_id && input.messages.size() > 1) {
             std::vector<std::uint32_t> tokens(capacity_);
-            const auto earlier = std::span(input.messages).first(input.messages.size() - 1);
+            const auto earlier =
+                std::span(input.messages).first(input.messages.size() - 1);
             const auto n = tokenizer_->encode(
                 chat_messages(earlier, byte_limit), tokens, cancel, byte_limit
             );
-            if (n < count && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin()))
+            if (n < count
+                && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin()))
                 leading = n;
         }
         model_->checkpoint_at(leading);

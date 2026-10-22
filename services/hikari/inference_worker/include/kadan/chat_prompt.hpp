@@ -16,9 +16,8 @@ inline std::string trim_chat_text(std::string text) {
 
 // Whole messages in the Qwen checkpoint template's text-only form, without
 // the reply prompt. A prompt's leading messages render to its leading text.
-inline std::string chat_messages(
-    std::span<const ChatMessage> messages, std::size_t byte_limit
-) {
+inline std::string
+chat_messages(std::span<const ChatMessage> messages, std::size_t byte_limit) {
     std::string result;
     for (std::size_t index = 0; index < messages.size(); ++index) {
         const auto& message = messages[index];

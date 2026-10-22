@@ -49,7 +49,7 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: services/hikari/frontend/package-lock.json
-      - run: npm ci --prefix services/hikari/frontend
+      - run: npm ci --prefix services/hikari/frontend --prefer-offline --no-audit
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

@@ -155,8 +155,8 @@ struct Engine::Impl {
         checkpoint.conversation = prefix.conversation();
     }
 
-    bool resumes(std::span<const unsigned> prompt, std::string_view conversation)
-        const {
+    bool
+    resumes(std::span<const unsigned> prompt, std::string_view conversation) const {
         const auto& c = checkpoint.tokens;
         return !c.empty() && !conversation.empty()
                && conversation == checkpoint.conversation && c.size() < prompt.size()
