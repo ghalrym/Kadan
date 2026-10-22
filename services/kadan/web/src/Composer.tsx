@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Square, UserRound, X } from "lucide-react";
 import type { Resource, Status } from "./types";
-import VoiceCallControl from "./VoiceCallControl";
+import VoiceCallControl, { type VoiceCall } from "./VoiceCallControl";
 import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
 
 export function readiness(status: Status | null) {
@@ -42,6 +42,8 @@ interface Props {
   onPersona: (id: string) => void;
   pet: ReactNode;
   autoFocus?: boolean;
+  voiceCall: VoiceCall;
+  onDictating: (active: boolean) => void;
 }
 
 export default function Composer({
@@ -59,19 +61,22 @@ export default function Composer({
   onPersona,
   pet,
   autoFocus,
+  voiceCall,
+  onDictating,
 }: Props) {
   const field = useRef<HTMLTextAreaElement>(null);
   const microphone = useRef<VoiceInput | null>(null);
   const [voice, setVoice] = useState<VoiceState | null>(null);
-  const [callActive, setCallActive] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const draft = useRef({ value, onChange });
   draft.current = { value, onChange };
   const ready = readiness(status);
   const issue = attention(status);
   const empty = !value.trim();
+  const callActive = voiceCall.active;
   const locked = sending || blocked || voice !== null || callActive;
   useEffect(() => () => microphone.current?.cancel(), []);
+  useEffect(() => onDictating(voice !== null), [voice, onDictating]);
   useEffect(() => {
     if (blocked || sending || !ready.chat) {
       microphone.current?.cancel();
@@ -121,11 +126,7 @@ export default function Composer({
           {issue.href && <ArrowUpRight size={13} />}
         </a>
       )}
-      {ready.chat && <VoiceCallControl
-        instruction={`You are ${agentName}. Have a spoken conversation. Keep replies short. You have no tools.\n${personas.find((item) => item.id === persona)?.markdown.slice(0, 6000) ?? ""}`}
-        disabled={sending || blocked || voice !== null}
-        onActive={setCallActive}
-      />}
+      <VoiceCallControl voiceCall={voiceCall} />
       <form
         className={`composer ${sending ? "is-sending" : ""}`}
         onSubmit={(event) => {

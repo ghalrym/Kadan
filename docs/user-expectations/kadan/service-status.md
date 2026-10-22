@@ -8,4 +8,4 @@ Hikari can require a hardware tier, a model download or attention to an unavaila
 
 When language inference is unavailable, users can [save chat notes](saving-chat-notes.md) if storage is working. Restoring inference does not automatically answer those notes. Readiness also does not prove that an agent has an available [runner](runner-availability.md).
 
-An agent card's last-active label is based on its latest delivered assistant message. It does not prove that the agent is currently computing or that all of its background work has finished. The card's **Call** action is currently unavailable; spoken conversations use the chat's [Start call](voice-calls.md) control.
+An agent card's last-active label is based on its latest delivered assistant message. It does not prove that the agent is currently computing or that all of its background work has finished. The card's **Call** action starts a [voice call](voice-calls.md).

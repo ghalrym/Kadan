@@ -1936,11 +1936,6 @@ dialog::backdrop {
 .agent-card-actions button:hover {
   background: var(--hover);
 }
-.agent-card-error {
-  margin: -4px 0 0;
-  color: var(--error);
-  font-size: 13px;
-}
 .agent-card-computers h3 {
   margin: 0 0 6px;
   color: var(--muted);

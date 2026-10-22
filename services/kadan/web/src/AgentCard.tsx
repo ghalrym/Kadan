@@ -19,16 +19,18 @@ interface Props {
   mood: PetState;
   presence: string;
   onClose: () => void;
+  callDisabled: boolean;
+  callTitle: string;
+  onCall: () => void;
   onOpenComputer: () => void;
 }
 
 /** The agent's contact card, opened from its pet: presence, calling and its computer. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, onOpenComputer }: Props) {
+export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [frame, setFrame] = useState(0);
   const [thumbnail, setThumbnail] = useState(false);
-  const [callError, setCallError] = useState("");
 
   useEffect(() => {
     card.current?.focus();
@@ -76,12 +78,11 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, o
         </div>
       </header>
       <div className="agent-card-actions">
-        <button onClick={() => setCallError(`Calling ${agentName} isn’t available yet.`)}>
+        <button disabled={callDisabled} title={callTitle} onClick={onCall}>
           <Phone size={18} />
           Call
         </button>
       </div>
-      {callError && <p className="agent-card-error" role="alert">{callError}</p>}
       <section className="agent-card-computers" aria-labelledby="agent-card-computers">
         <h3 id="agent-card-computers">Computers</h3>
         <button className="computer-row" disabled={!ready} onClick={onOpenComputer}

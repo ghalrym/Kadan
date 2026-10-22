@@ -1,6 +1,6 @@
 # Voice calls
 
-Kadan's Start call opens a separate spoken conversation using the selected Hikari tier's language, transcription and speech models. All three must already be downloaded and available. The selected persona applies when the call starts. Calls have no tools, access to workspace resources, or saved transcript; the text conversation remains separate. End call or leaving the chat releases the microphone and call history.
+The **Call** action on an agent's card opens a separate spoken conversation using the selected Hikari tier's language, transcription and speech models. All three must already be downloaded and available. The selected persona applies when the call starts. Calls have no tools, access to workspace resources, or saved transcript; the text conversation remains separate. End call or leaving the chat releases the microphone and call history.
 
 The microphone keeps listening during spoken replies. Speaking interrupts the previous reply, discards its remaining audio, and cancels its generation. Only fully played segments are retained as assistant context after an interruption. Mute disables microphone input and discards unfinished speech while allowing the reply to play. Each utterance is limited to twenty seconds; recognition currently uses English Whisper. HTTPS or localhost and browser microphone permission are required. Headphones reduce acoustic feedback; energy-based voice detection and browser echo cancellation can still mistake noise or loudspeaker audio for speech.
 
