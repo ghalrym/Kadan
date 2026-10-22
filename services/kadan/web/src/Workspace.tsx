@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   Brain,
+  ChevronRight,
   Download,
   File,
   Folder,
@@ -12,11 +13,13 @@ import {
 import { agentPath, allResources, api } from "./api";
 import type { Asset, Resource } from "./types";
 import Markdown from "./Markdown";
+import { documentOutline, documentTrail, workspaceDocuments } from "./workspaceDocuments";
 
 export default function Workspace({ agentKey, browserUrl }: { agentKey: string; browserUrl: string | null }) {
-  const [tab, setTab] = useState<"memory" | "space" | "files">("memory");
+  const [tab, setTab] = useState<"memory" | "space" | "files">("space");
   const [query, setQuery] = useState("");
   const [resources, setResources] = useState<Resource[]>([]);
+  const [documents, setDocuments] = useState<Resource[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selected, setSelected] = useState<Resource | Asset | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,7 +31,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
   const [childrenRefresh, setChildrenRefresh] = useState(0);
   useEffect(() => {
     setSelected(null);
-  }, [agentKey, tab, query]);
+  }, [agentKey, tab]);
   useEffect(() => {
     let current = true;
     setLoading(true);
@@ -41,9 +44,17 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             ).then((rows) => {
               if (current) setAssets(rows);
             })
-          : allResources(agentKey, tab, query).then((rows) => {
-              if (current) setResources(rows);
-            });
+          : tab === "space"
+            ? allResources(agentKey, undefined, query).then((rows) => {
+                if (current) {
+                  const matches = workspaceDocuments(rows);
+                  setResources(matches);
+                  if (!query) setDocuments(matches);
+                }
+              })
+            : allResources(agentKey, tab, query).then((rows) => {
+                if (current) setResources(rows);
+              });
       request
         .catch((e) => {
           if (current) setError(e.message);
@@ -61,15 +72,18 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
     let current = true;
     setChildren([]);
     setChildrenError("");
-    if (!selected || !("kind" in selected) || selected.kind !== "space") {
+    if (!selected || !("kind" in selected) || (selected.kind !== "space" && selected.kind !== "deck")) {
       setChildrenLoading(false);
       return;
     }
     setChildrenLoading(true);
     allResources(agentKey)
       .then((rows) => {
-        if (current)
-          setChildren(rows.filter((row) => row.parent_id === selected.id));
+        if (current) {
+          const documents = workspaceDocuments(rows);
+          setDocuments(documents);
+          setChildren(documents.filter((row) => row.parent_id === selected.id));
+        }
       })
       .catch((e) => {
         if (current) setChildrenError(e.message);
@@ -82,6 +96,11 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
     };
   }, [selected, agentKey, childrenRefresh]);
   const rows = tab === "files" ? assets : resources;
+  const outline = tab === "space" ? documentOutline(resources) : [];
+  const trail = selected && "kind" in selected && tab === "space"
+    ? documentTrail(selected, documents) : [];
+  const parent = trail.length > 1 ? trail[trail.length - 2] : null;
+  const rowLabel = tab === "space" ? "document" : "record";
   return (
     <section
       className={`workspace ${selected ? "has-detail" : ""}`}
@@ -89,8 +108,9 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
     >
       <div className="workspace-toolbar">
         <div className="tabs" role="group" aria-label="Workspace type">
-          {(["memory", "space", "files"] as const).map((kind) => (
+          {(["space", "memory", "files"] as const).map((kind) => (
             <button
+              aria-label={kind === "space" ? "Documents" : kind === "memory" ? "Memories" : "Files"}
               aria-pressed={tab === kind}
               className={tab === kind ? "active" : ""}
               key={kind}
@@ -107,7 +127,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                 {kind === "memory"
                   ? "Memories"
                   : kind === "space"
-                    ? "Spaces"
+                    ? "Documents"
                     : "Files"}
               </span>
             </button>
@@ -130,7 +150,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             <span className="sr-only">Search workspace</span>
             <input
               type="search"
-              placeholder={`Search ${tab === "memory" ? "memories" : tab === "space" ? "Spaces" : "files"}…`}
+              placeholder={`Search ${tab === "memory" ? "memories" : tab === "space" ? "documents" : "files"}…`}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -150,8 +170,25 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
               <p className="quiet">
                 {query
                   ? "No matching records."
-                  : `No ${tab === "memory" ? "memories" : tab === "space" ? "Spaces" : "files"} yet.`}
+                  : `No ${tab === "memory" ? "memories" : tab === "space" ? "documents" : "files"} yet.`}
               </p>
+            ) : tab === "space" ? (
+              <nav aria-label={query ? "Document search results" : "Documents"}>
+                {outline.map(({ document, depth }) => (
+                  <button
+                    className={`resource-row document-row ${selected?.id === document.id ? "selected" : ""}`}
+                    key={document.id}
+                    style={{ paddingInlineStart: `${8 + Math.min(depth, 6) * 16}px` }}
+                    aria-current={selected?.id === document.id ? "page" : undefined}
+                    aria-label={documentTrail(document, documents).map(row => row.title).join(" / ")}
+                    onClick={() => setSelected(document)}
+                    title={document.title}
+                  >
+                    <File size={16} />
+                    <span><strong>{document.title}</strong></span>
+                  </button>
+                ))}
+              </nav>
             ) : (
               rows.map((item) => (
                 <button
@@ -162,8 +199,6 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                   <span className="resource-icon">
                     {tab === "files" ? (
                       <File size={18} />
-                    ) : tab === "space" ? (
-                      <Folder size={18} />
                     ) : (
                       <Brain size={18} />
                     )}
@@ -185,17 +220,38 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
           </div>
           <div className="list-count">
             {!loading && !error &&
-              `${rows.length} ${rows.length === 1 ? "record" : "records"}`}
+              `${rows.length} ${rowLabel}${rows.length === 1 ? "" : "s"}`}
           </div>
         </div>
         <div className="resource-detail">
           {!selected ? (
             <div className="detail-empty">
               <Folder size={24} />
-              <p>Select a record</p>
+              <p>{tab === "space" ? "Select a document" : "Select a record"}</p>
             </div>
           ) : (
             <>
+              {trail.length > 0 && (
+                <nav className="document-breadcrumbs" aria-label="Document path">
+                  <button onClick={() => setSelected(null)}>Documents</button>
+                  {trail.map((document, index) => (
+                    <span key={document.id}>
+                      <ChevronRight size={14} aria-hidden="true" />
+                      {index === trail.length - 1 ? (
+                        <span aria-current="page">{document.title}</span>
+                      ) : (
+                        <button onClick={() => setSelected(document)}>{document.title}</button>
+                      )}
+                    </span>
+                  ))}
+                </nav>
+              )}
+              {parent && (
+                <button className="document-parent" onClick={() => setSelected(parent)}>
+                  <ArrowLeft size={16} />
+                  <span>Back to {parent.title}</span>
+                </button>
+              )}
               <div className="detail-header">
                 <button
                   className="icon mobile-only"
@@ -239,10 +295,10 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                   <Markdown>
                     {selected.markdown || "No text in this record."}
                   </Markdown>
-                  {selected.kind === "space" && (
+                  {(selected.kind === "space" || selected.kind === "deck") && (
                     <div className="space-children">
                       {childrenLoading ? (
-                        <p className="quiet">Loading Space contents…</p>
+                        <p className="quiet">Loading documents…</p>
                       ) : childrenError ? (
                         <div role="alert" className="error feedback">
                           {childrenError}
@@ -263,11 +319,11 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                               <File size={16} />
                             )}
                             <span>{child.title}</span>
-                            <span className="quiet">{child.kind}</span>
+                            <ChevronRight size={14} aria-hidden="true" />
                           </button>
                         ))
                       ) : (
-                        <p className="quiet">No records in this Space.</p>
+                        <p className="quiet">No subdocuments.</p>
                       )}
                     </div>
                   )}

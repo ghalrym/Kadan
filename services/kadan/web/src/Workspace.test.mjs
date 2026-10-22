@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import * as documentNavigation from "./workspaceDocuments.ts";
 
 const source = ts.transpileModule(
   readFileSync(new URL("./Workspace.tsx", import.meta.url), "utf8"),
@@ -48,6 +49,7 @@ function workspace() {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
+    "./workspaceDocuments": documentNavigation,
     "./api": {
       agentPath: key => `/agents/${key}`,
       api: path => request([path]),
@@ -89,6 +91,7 @@ function workspace() {
         find(child => child.type === "strong" && text(child) === label, node))));
   const click = label => { assert.ok(button(label), label); button(label).props.onClick(); render(); };
   render();
+  click("Memories");
   return {
     requests, render, text: () => text(tree), find: element, button, click,
     writes: () => writes,
@@ -112,7 +115,7 @@ function workspace() {
   };
 }
 
-for (const [tab, kind] of [["Memories", "memory"], ["Spaces", "space"], ["Files", "files"]]) {
+for (const [tab, kind] of [["Memories", "memory"], ["Documents", "space"], ["Files", "files"]]) {
   test(`${tab} failure retries the same search without claiming an empty collection`, async () => {
     const view = workspace();
     view.click(tab);
@@ -121,10 +124,10 @@ for (const [tab, kind] of [["Memories", "memory"], ["Spaces", "space"], ["Files"
     assert.equal(view.requests.length, 1);
     const args = view.requests[0].args;
     if (kind === "files") assert.deepEqual(args, ["/agents/agent/assets?q=my%20notes%20%26%20plans"]);
-    else assert.deepEqual(args, ["agent", kind, "my notes & plans"]);
+    else assert.deepEqual(args, ["agent", kind === "space" ? undefined : kind, "my notes & plans"]);
     await view.settle(0, "Storage unavailable", true);
     assert.match(view.text(), /Storage unavailable/);
-    assert.doesNotMatch(view.text(), /No matching records|No .* yet|0 records/);
+    assert.doesNotMatch(view.text(), /No matching records|No .* yet|0 (records|documents)/);
     view.click("Retry");
     assert.equal(view.search(), "my notes & plans");
     assert.match(view.text(), /Searching workspace/);
@@ -133,14 +136,14 @@ for (const [tab, kind] of [["Memories", "memory"], ["Spaces", "space"], ["Files"
     assert.deepEqual(view.requests[1].args, args);
     await view.settle(1, []);
     assert.match(view.text(), /No matching records/);
-    assert.match(view.text(), /0 records/);
+    assert.match(view.text(), /0 (records|documents)/);
     assert.equal(view.button("Retry"), undefined);
   });
 }
 
-test("Space contents retry keeps the Space, search and collection without reloading the list", async () => {
+test("Document contents retry keeps the Space, search and collection without reloading the list", async () => {
   const view = workspace();
-  view.click("Spaces");
+  view.click("Documents");
   view.query("project");
   view.start();
   await view.settle(0, [record("Project Space", "space")]);
@@ -148,31 +151,31 @@ test("Space contents retry keeps the Space, search and collection without reload
   await view.settle(1, "Contents unavailable", true);
   assert.match(view.text(), /Project Space text/);
   assert.match(view.text(), /Contents unavailable/);
-  assert.doesNotMatch(view.text(), /No records in this Space/);
+  assert.doesNotMatch(view.text(), /No subdocuments/);
   assert.equal(view.find(node => node.props?.className === "resource-list")?.props.children
     .some(node => node?.props?.role === "alert"), false);
   view.click("Retry");
   assert.equal(view.search(), "project");
   assert.match(view.text(), /Project Space text/);
-  assert.match(view.text(), /Loading Space contents/);
-  assert.doesNotMatch(view.text(), /Contents unavailable|No records in this Space/);
+  assert.match(view.text(), /Loading documents/);
+  assert.doesNotMatch(view.text(), /Contents unavailable|No subdocuments/);
   assert.equal(view.requests.length, 3);
   assert.deepEqual(view.requests[2].args, ["agent"]);
-  await view.settle(2, [record("Child", "memory", "Project Space"), record("Other")]);
+  await view.settle(2, [record("Child", "space", "Project Space"), record("Other")]);
   assert.match(view.text(), /Child/);
   assert.doesNotMatch(view.text(), /Other/);
-  view.click("Childmemory");
+  view.click("Child");
   assert.match(view.text(), /Child text/);
 });
 
 test("a successful empty Space read shows the empty state", async () => {
   const view = workspace();
-  view.click("Spaces");
+  view.click("Documents");
   view.start();
   await view.settle(0, [record("Space", "space")]);
   view.click("Space");
   await view.settle(1, []);
-  assert.match(view.text(), /No records in this Space/);
+  assert.match(view.text(), /No subdocuments/);
   assert.equal(view.button("Retry"), undefined);
 });
 
@@ -212,42 +215,41 @@ test("switching collections and agents ignores earlier collection responses", as
 for (const failure of [false, true]) {
   test(`an older Space ${failure ? "failure" : "success"} cannot replace the selected Space`, async () => {
     const view = workspace();
-    view.click("Spaces");
+    view.click("Documents");
     view.start();
     await view.settle(0, [record("First", "space"), record("Second", "space")]);
     view.click("First");
     view.click("Second");
-    await view.settle(2, [record("Current child", "memory", "Second")]);
-    await view.settle(1, failure ? "Old contents error" : [record("Old child", "memory", "First")], failure);
+    await view.settle(2, [record("Current child", "space", "Second")]);
+    await view.settle(1, failure ? "Old contents error" : [record("Old child", "space", "First")], failure);
     assert.match(view.text(), /Second text/);
     assert.match(view.text(), /Current child/);
-    assert.doesNotMatch(view.text(), /Old|Loading Space contents/);
+    assert.doesNotMatch(view.text(), /Old|Loading documents/);
     view.click("Close record");
-    assert.match(view.text(), /Select a record/);
+    assert.match(view.text(), /Select a (record|document)/);
     assert.equal(view.button("Retry"), undefined);
   });
 }
 
 for (const [navigation, navigate] of [
-  ["changing search", view => view.query("new search")],
   ["changing collection", view => view.click("Files")],
   ["changing agent", view => view.agent("other")],
   ["closing the record", view => view.click("Close record")],
 ]) test(`${navigation} dismisses a Space and ignores its pending contents failure`, async () => {
   const view = workspace();
-  view.click("Spaces");
+  view.click("Documents");
   view.start();
   await view.settle(0, [record("Space", "space")]);
   view.click("Space");
   navigate(view);
   await view.settle(1, "Old contents error", true);
-  assert.match(view.text(), /Select a record/);
+  assert.match(view.text(), /Select a (record|document)/);
   assert.doesNotMatch(view.text(), /Space text|Old contents error/);
 });
 
 test("overlapping Space retries accept only the latest response", async () => {
   const view = workspace();
-  view.click("Spaces");
+  view.click("Documents");
   view.start();
   await view.settle(0, [record("Space", "space")]);
   view.click("Space");
@@ -257,11 +259,11 @@ test("overlapping Space retries accept only the latest response", async () => {
   retry();
   // Commit a second activation of the same control while the first read waits.
   view.render();
-  await view.settle(3, [record("Latest child", "memory", "Space")]);
+  await view.settle(3, [record("Latest child", "space", "Space")]);
   await view.settle(2, "Older retry failed", true);
   assert.match(view.text(), /Space text/);
   assert.match(view.text(), /Latest child/);
-  assert.doesNotMatch(view.text(), /Older retry failed|Loading Space contents/);
+  assert.doesNotMatch(view.text(), /Older retry failed|Loading documents/);
 });
 
 test("unmount cancels debounced reads and prevents pending reads from writing state", async () => {
@@ -270,7 +272,7 @@ test("unmount cancels debounced reads and prevents pending reads from writing st
   idle.start();
   assert.equal(idle.requests.length, 0);
   const pending = workspace();
-  pending.click("Spaces");
+  pending.click("Documents");
   pending.start();
   await pending.settle(0, [record("Space", "space")]);
   pending.click("Space");
@@ -278,4 +280,55 @@ test("unmount cancels debounced reads and prevents pending reads from writing st
   const writes = pending.writes();
   await pending.settle(1, "Late failure", true);
   assert.equal(pending.writes(), writes);
+});
+
+
+test("document search keeps the open document and its parent navigation", async () => {
+  const view = workspace();
+  view.click("Documents");
+  view.start();
+  const documents = [record("Project", "space"), record("Plan", "space", "Project")];
+  await view.settle(0, documents);
+  view.click("Plan");
+  await view.settle(1, documents);
+  view.query("unmatched");
+  view.start();
+  await view.settle(2, []);
+  assert.match(view.text(), /No matching records/);
+  assert.match(view.text(), /Plan text/);
+  view.click("Back to Project");
+  assert.match(view.text(), /Project text/);
+  assert.equal(view.search(), "unmatched");
+});
+
+test("documents exclude memories, personas and conversations at every level", async () => {
+  const view = workspace();
+  view.click("Documents");
+  view.start();
+  const documents = [record("Project", "space"), record("Slides", "deck", "Project")];
+  const records = [...documents, record("Private memory", "memory", "Project"),
+    record("Persona", "persona"), record("Chat", "conversation", "Project")];
+  await view.settle(0, records);
+  assert.match(view.text(), /Slides/);
+  assert.doesNotMatch(view.text(), /Private memory|Persona|Chat/);
+  view.click("Project");
+  await view.settle(1, records);
+  assert.match(view.text(), /Slides/);
+  assert.doesNotMatch(view.text(), /Private memory|Persona|Chat/);
+});
+
+test("a document opened from search resolves its full breadcrumb and returns to an ancestor", async () => {
+  const view = workspace();
+  view.click("Documents");
+  view.query("Plan");
+  view.start();
+  const plan = record("Plan", "space", "Project");
+  await view.settle(0, [plan]);
+  view.click("Plan");
+  await view.settle(1, [record("Project", "space"), plan]);
+  const path = view.find(node => node.props?.["aria-label"] === "Document path");
+  assert.equal(path.props.children[1][0].props.children[1].props.children, "Project");
+  view.click("Project");
+  assert.match(view.text(), /Project text/);
+  assert.equal(view.search(), "Plan");
 });
